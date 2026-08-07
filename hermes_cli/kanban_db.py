@@ -1421,7 +1421,7 @@ def _resolve_busy_timeout_ms() -> int:
     return DEFAULT_BUSY_TIMEOUT_MS
 
 
-def _sqlite_connect(path: Path) -> sqlite3.Connection:
+def _sqlite_connect(path: Path, *, read_only: bool = False) -> sqlite3.Connection:
     """Open a Kanban SQLite connection with consistent lock waiting.
 
     Uses ``connect_tracked`` so the live-connection registry knows this file
@@ -1429,14 +1429,25 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     because an ``open()``/``close()`` would cancel this process's POSIX
     advisory locks on the database (see ``hermes_cli.sqlite_safe_read``).
     The registration is released automatically when the connection closes.
+
+    ``read_only`` opens via a ``mode=ro`` URI, for callers that only inspect
+    the file (see :func:`_guard_existing_db_is_healthy`). A read/write handle
+    checkpoints a hot WAL into the main DB and unlinks the sidecars when it
+    closes; ``mode=ro`` still replays that WAL for its own reads — SQLite
+    restricts the database file, not the WAL index — while leaving both files
+    byte-identical. ``path`` must be absolute here, as the URI form requires.
     """
     from hermes_cli.sqlite_safe_read import connect_tracked
 
     busy_timeout_ms = _resolve_busy_timeout_ms()
     conn = connect_tracked(
-        path,
+        f"{path.as_uri()}?mode=ro" if read_only else path,
+        # The URI spelling is not a filesystem path; hand the registry the
+        # real one so its key matches every other connection to this DB.
+        tracking_path=path if read_only else None,
         connect_fn=sqlite3.connect,
         isolation_level=None,
+        uri=read_only,
         timeout=busy_timeout_ms / 1000.0,
     )
     # ``sqlite3.connect(timeout=...)`` normally maps to busy_timeout, but set
@@ -1872,6 +1883,27 @@ _REPAIRABLE_INDEX_ERROR_PATTERNS = (
 )
 
 
+# How a read-only open refuses when it cannot build the WAL index: SQLite may
+# not replay a hot WAL through a handle it cannot write, and may not create
+# ``-shm`` in a directory it cannot write. Neither means the DB is damaged —
+# see _refused_because_read_only().
+_READ_ONLY_REFUSAL_MARKERS = (
+    "readonly",
+    "unable to open database file",
+)
+
+
+def _refused_because_read_only(exc: sqlite3.OperationalError) -> bool:
+    """Did the integrity probe fail *because* it was read-only, not find damage?
+
+    Told apart from a locked board (``database is locked``) by the message,
+    which is all the DB-API exposes — and from real damage by the class, since
+    a malformed image or a non-database raises plain ``sqlite3.DatabaseError``.
+    """
+    text = str(exc).lower()
+    return any(marker in text for marker in _READ_ONLY_REFUSAL_MARKERS)
+
+
 def _integrity_messages_ok(messages: list[str]) -> bool:
     """True iff ``PRAGMA integrity_check`` output is the single ``ok`` row."""
     return len(messages) == 1 and messages[0].strip().lower() == "ok"
@@ -1948,9 +1980,15 @@ def _attempt_index_reindex_repair(
 def _guard_existing_db_is_healthy(path: Path) -> None:
     """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
 
-    Opens the probe in read/write mode so SQLite can recover or
-    checkpoint a healthy WAL/hot-journal DB before we declare it
-    corrupt.
+    Opens the probe **read-only**. A read/write probe rewrites the very file
+    it is judging: on close it checkpoints the WAL into the main DB and
+    unlinks ``-wal``/``-shm``, so by the time a failed check reaches
+    :func:`_backup_corrupt_db` below the quarantined bytes are no longer the
+    bytes that arrived — and on a board that opened cleanly it means merely
+    *looking* at a board rewrites it. ``mode=ro`` still replays a hot WAL for
+    the probe's own reads, so the check sees exactly what it saw before; a
+    read-only open that cannot proceed at all stands aside for the read/write
+    open that follows (see :func:`_refused_because_read_only`).
 
     **Narrow auto-repair:** when the integrity failure consists *only* of
     index-scoped errors (``wrong # of entries in index <name>`` / ``row N
@@ -1996,7 +2034,7 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     reason: Optional[str] = None
     messages: list[str] = []
     try:
-        probe = _sqlite_connect(resolved)
+        probe = _sqlite_connect(resolved, read_only=True)
         try:
             messages = _run_integrity_check(probe)
         finally:
@@ -2006,7 +2044,14 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
                 f"integrity_check returned "
                 f"{messages[0] if messages else '<no row>'!r}"
             )
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        if _refused_because_read_only(exc):
+            # Not this function's job: recovering a hot WAL, or a directory it
+            # may not create -shm in, belongs to the read/write open that
+            # follows. Standing aside leaves that open to fail loudly if the
+            # file really is unusable; condemning the board here would
+            # quarantine a healthy one.
+            return
         # Lock contention, busy, transient IO — not corruption. Let it propagate.
         raise
     except sqlite3.DatabaseError as exc:
@@ -2526,22 +2571,33 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
     # Synthesize a matching task_runs row so subsequent end-run / heartbeat
-    # calls have something to write to. Wrapped in write_txn to serialize
-    # against any concurrent dispatcher, and the per-row UPDATE uses
-    # ``current_run_id IS NULL`` as a CAS guard so a racing claim can't
-    # produce an orphaned row if it interleaves with the backfill pass.
+    # calls have something to write to. The adoption is wrapped in write_txn
+    # to serialize against any concurrent dispatcher.
+    #
+    # The preflight search outside that transaction is an optimization only:
+    # this pass runs on every process's first open of a board, and on a board
+    # migrated long ago (i.e. nearly all of them) it was taking the write lock
+    # per process to adopt nothing. A preflight hit can go stale before the
+    # lock is granted, so it decides only *whether* to open the transaction —
+    # the list that is actually adopted is re-read under the lock. That
+    # re-read is what carries correctness: ``release_stale_claims`` can move a
+    # legacy task running -> ready in between, and on such a task ``_end_run``
+    # leaves ``current_run_id`` NULL, so the CAS below would happily hang a
+    # live run on a task that is no longer running. An empty re-read means the
+    # window closed on us and the transaction simply writes nothing.
     runs_exist = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='task_runs'"
     ).fetchone() is not None
-    if runs_exist:
+    legacy_inflight_sql = (
+        "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
+        "       max_runtime_seconds, last_heartbeat_at, started_at "
+        "FROM tasks "
+        "WHERE status = 'running' AND current_run_id IS NULL"
+    )
+    preflight = conn.execute(legacy_inflight_sql).fetchall() if runs_exist else []
+    if preflight:
         with write_txn(conn):
-            inflight = conn.execute(
-                "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
-                "       max_runtime_seconds, last_heartbeat_at, started_at "
-                "FROM tasks "
-                "WHERE status = 'running' AND current_run_id IS NULL"
-            ).fetchall()
-            for row in inflight:
+            for row in conn.execute(legacy_inflight_sql).fetchall():
                 started = row["started_at"] or int(time.time())
                 cur = conn.execute(
                     """
@@ -2559,11 +2615,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                         started,
                     ),
                 )
-                # CAS: only install the pointer if nothing else claimed
-                # the task between our SELECT and here (shouldn't happen
-                # under the write_txn, but belt-and-suspenders). If the
-                # CAS fails we've got an orphan run_row — mark it
-                # reclaimed so it doesn't look in-flight.
+                # CAS: only install the pointer if nothing else claimed the
+                # task between the re-read above and here. Under the write
+                # lock nothing should, so this is belt-and-suspenders against
+                # a non-serializable interleave rather than the guard that
+                # carries the race. If it does fail we've got an orphan run
+                # row — mark it reclaimed so it doesn't look in-flight.
                 upd = conn.execute(
                     "UPDATE tasks SET current_run_id = ? "
                     "WHERE id = ? AND current_run_id IS NULL",

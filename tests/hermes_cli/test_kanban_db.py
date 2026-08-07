@@ -1356,6 +1356,193 @@ def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
     assert "still here" in titles
 
 
+def _skip_unless_board_is_wal(db_path: Path) -> None:
+    """Skip when this SQLite build left the board in a rollback journal.
+
+    ``hermes_state`` refuses to enable WAL on builds carrying the WAL-reset
+    corruption bug and falls back to ``journal_mode=DELETE`` (it says so once
+    per process in the log). Such a board has no ``-wal`` to preserve and no
+    ``-shm`` a read-only open could fail to create, so the WAL behaviour these
+    tests pin down simply isn't in play — that is a skip, not a failure.
+    """
+    probe = sqlite3.connect(db_path)
+    try:
+        mode = probe.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        probe.close()
+    if str(mode).lower() != "wal":
+        pytest.skip(f"board is in journal_mode={mode}, not WAL; nothing to assert")
+
+
+def _crash_a_writer(db_path: Path) -> None:
+    """Leave the board with an uncheckpointed WAL, the way a killed worker does.
+
+    The child exits via ``os._exit`` so nothing closes the connection: the
+    committed frames stay in ``-wal`` instead of being checkpointed away.
+    """
+    source = (
+        "import os, pathlib, sys\n"
+        f"sys.path.insert(0, {str(Path(kb.__file__).parents[1])!r})\n"
+        "from hermes_cli import kanban_db as kb\n"
+        f"conn = kb.connect(db_path=pathlib.Path({str(db_path)!r}))\n"
+        "kb.create_task(conn, title='committed by the crashed writer')\n"
+        "os._exit(0)\n"
+    )
+    subprocess.run([sys.executable, "-c", source], check=True, capture_output=True)
+
+
+def test_integrity_probe_does_not_rewrite_the_db_it_judges(tmp_path):
+    """The probe is a read: it must leave both the DB and its WAL byte-identical.
+
+    A read/write probe checkpoints the WAL into the main DB and unlinks the
+    sidecars when it closes. Two things follow, and neither is acceptable for a
+    diagnostic: opening a board to look at it rewrites it, and the
+    ``.corrupt.<sha>.bak`` quarantine taken further down
+    :func:`kb._guard_existing_db_is_healthy` no longer holds the bytes that
+    arrived. ``mode=ro`` still replays the WAL for the probe's own reads, so the
+    check itself sees exactly what it saw before — asserted here by reading the
+    crashed writer's committed row back afterwards.
+    """
+    db_path = tmp_path / "kanban.db"
+    kb.init_db(db_path=db_path)
+    _skip_unless_board_is_wal(db_path)
+    _crash_a_writer(db_path)
+    wal = db_path.with_name(db_path.name + "-wal")
+    assert wal.exists() and wal.stat().st_size > 0, "expected an uncheckpointed WAL"
+    before = (db_path.read_bytes(), wal.read_bytes())
+
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    kb._guard_existing_db_is_healthy(db_path)
+
+    assert db_path.read_bytes() == before[0], "the probe rewrote the main DB"
+    assert wal.exists(), "the probe unlinked the WAL"
+    assert wal.read_bytes() == before[1], "the probe rewrote the WAL"
+    with kb.connect(db_path=db_path) as conn:
+        titles = [t.title for t in kb.list_tasks(conn)]
+    assert "committed by the crashed writer" in titles
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX directory modes are not enforced on NTFS")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                    reason="root ignores the directory mode this test relies on")
+def test_probe_stands_aside_when_it_may_not_read(tmp_path):
+    """A directory the probe cannot write is not a damaged board.
+
+    A read-only open needs ``-shm`` to build the WAL index, and with the
+    sidecars gone it would have to create one in a directory it may not write.
+    That is not corruption and must not be quarantined as such: the probe steps
+    aside for the read/write open that follows, which reports its own failure.
+    """
+    board = tmp_path / "board"
+    board.mkdir()
+    db_path = board / "kanban.db"
+    kb.init_db(db_path=db_path)
+    _skip_unless_board_is_wal(db_path)
+    for sidecar in ("-wal", "-shm"):
+        db_path.with_name(db_path.name + sidecar).unlink(missing_ok=True)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    board.chmod(0o500)
+    try:
+        # Precondition: this is the shape the stand-aside branch exists for.
+        with pytest.raises(sqlite3.OperationalError):
+            kb._sqlite_connect(db_path.resolve(), read_only=True).execute(
+                "PRAGMA integrity_check")
+        kb._guard_existing_db_is_healthy(db_path)
+    finally:
+        board.chmod(0o700)
+    assert list(board.glob("*.corrupt.*")) == [], "a healthy board was quarantined"
+
+
+def test_first_open_of_a_migrated_board_opens_no_write_transaction(tmp_path):
+    """The in-flight-run backfill is a migration, and migrations are rare.
+
+    It runs on every process's first open of a board, and on a board with
+    nothing in flight — which is nearly all of them, nearly always — it was
+    taking the write lock to adopt nothing.
+    """
+    db_path = tmp_path / "kanban.db"
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    boundaries: list[str] = []
+    real_sqlite_connect = kb._sqlite_connect
+
+    def tracing_connect(path, **kwargs):
+        conn = real_sqlite_connect(path, **kwargs)
+        conn.set_trace_callback(
+            lambda sql: boundaries.append(sql.strip())
+            if sql.strip().upper().startswith("BEGIN") else None
+        )
+        return conn
+
+    with unittest.mock.patch.object(kb, "_sqlite_connect", tracing_connect):
+        kb.connect(db_path=db_path).close()
+
+    assert boundaries == [], f"first open opened a transaction: {boundaries}"
+
+
+def test_backfill_ignores_a_task_reclaimed_after_its_preflight(tmp_path):
+    """A preflight hit outside the lock may be stale by the time the lock lands.
+
+    ``release_stale_claims`` moves a legacy in-flight task running -> ready,
+    and on such a task ``_end_run`` finds no run to close, so
+    ``current_run_id`` stays NULL. If the backfill adopts the list it saw
+    *before* the write lock, its ``current_run_id IS NULL`` CAS still matches
+    and a live ``running`` run is hung on a task nobody is working on. Only a
+    re-read under the lock is serialized against the reclaim.
+
+    The reclaim is injected at the moment the backfill asks for its
+    transaction — i.e. after the preflight has already read the task as
+    running, which is exactly the window that matters.
+    """
+    db_path = tmp_path / "kanban.db"
+    kb.init_db(db_path=db_path)
+    now = int(time.time())
+    with kb.connect(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="legacy in flight", assignee="worker")
+        conn.execute(
+            "UPDATE tasks SET status='running', current_run_id=NULL, "
+            "claim_lock=?, claim_expires=?, worker_pid=?, started_at=? "
+            "WHERE id=?",
+            ("host:1", now + 60, 4242, now, tid),
+        )
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    reclaimed: list[str] = []
+    real_write_txn = kb.write_txn
+
+    def reclaiming_write_txn(conn):
+        backfill = sys._getframe(1).f_code.co_name == "_migrate_add_optional_columns"
+        if backfill and not reclaimed:
+            # What release_stale_claims commits: the claim is dropped and the
+            # task goes back to ready, while current_run_id stays NULL.
+            conn.execute(
+                "UPDATE tasks SET status='ready', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL WHERE id=?",
+                (tid,),
+            )
+            reclaimed.append(tid)
+        return real_write_txn(conn)
+
+    with unittest.mock.patch.object(kb, "write_txn", reclaiming_write_txn):
+        kb.connect(db_path=db_path).close()
+
+    assert reclaimed, "the backfill never opened its transaction — nothing was raced"
+    with kb.connect(db_path=db_path) as conn:
+        task = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id=?", (tid,)
+        ).fetchone()
+        runs = conn.execute(
+            "SELECT status FROM task_runs WHERE task_id=?", (tid,)
+        ).fetchall()
+    assert task["status"] == "ready"
+    assert task["current_run_id"] is None, (
+        "the backfill adopted a task the reclaim had already released"
+    )
+    assert [r["status"] for r in runs] == [], (
+        "the backfill synthesized a run for a task that is no longer running"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -239,6 +239,19 @@ async def _lifespan(app: "FastAPI"):
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
+        # Before forking a fresh gateway, reap any orphan left by a previous
+        # serve session. Graceful shutdown reaps the managed child, but an
+        # abnormal exit (crash, SIGKILL, power loss, forced update) reparents
+        # the old gateway to launchd (PPID=1). It keeps holding the QQ
+        # WebSocket, and a newly forked gateway then races the same credential,
+        # splitting messages across parallel session trees (#77276).
+        try:
+            from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
+
+            _reap_unsupervised_gateway_orphans()
+        except Exception:
+            _log.exception("Desktop startup: orphan gateway reap failed")
+
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
             target=_start_desktop_cron_ticker,

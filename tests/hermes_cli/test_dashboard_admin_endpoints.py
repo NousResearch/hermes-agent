@@ -967,3 +967,45 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 
     assert "_HERMES_GATEWAY" not in captured["env"]
     assert captured["env"]["HERMES_NONINTERACTIVE"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# Desktop lifespan reaps orphan gateways at serve startup (#77276)
+# ---------------------------------------------------------------------------
+
+def test_desktop_lifespan_reaps_orphan_gateways_on_startup(
+    monkeypatch, _isolate_hermes_home
+):
+    """Starting a Desktop serve backend should reap orphan gateways left by a
+    previous serve session before forking a fresh one (#77276).
+
+    Graceful shutdown reaps the managed child, but an abnormal exit reparents
+    the old gateway to launchd (PPID=1) where it keeps holding the QQ
+    WebSocket. The lifespan calls _reap_unsupervised_gateway_orphans() once at
+    startup under HERMES_DESKTOP=1 so the stale orphan is cleared first.
+    """
+    import hermes_cli.web_server as ws
+
+    called = []
+
+    def _fake_reap():
+        called.append(True)
+        return True
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    # Keep the lifespan cheap: don't re-import the gateway module or spin up the
+    # real cron scheduler thread.
+    monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
+    # web_server imports the reaper lazily from hermes_cli.gateway, so patch it
+    # on that module.
+    import hermes_cli.gateway as g
+
+    monkeypatch.setattr(g, "_reap_unsupervised_gateway_orphans", _fake_reap)
+
+    client, _header = _client()
+    with client:
+        pass
+
+    assert called == [True]
+

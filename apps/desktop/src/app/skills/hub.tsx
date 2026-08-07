@@ -42,6 +42,8 @@ import {
 } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
 
+import { getSkillHubQueryState } from './hub-query-state'
+
 // Dedup rank when the same skill surfaces from multiple sources — higher trust
 // wins. Mirrors the backend's unified_search `_TRUST_RANK`.
 const TRUST_RANK: Record<string, number> = { builtin: 2, trusted: 1, community: 0 }
@@ -155,6 +157,7 @@ export function SkillsHub({ query }: SkillsHubProps) {
   // Debounced hub search, keyed on the settled query so RQ dedupes/caches per
   // term and abandons stale terms for us (no hand-rolled sequence guard).
   const term = useDebounced(query.trim(), 350)
+  const queryState = getSkillHubQueryState(query, term)
 
   // Progressive per-source search: one query per source the backend says is
   // worth hitting individually (it marks index-covered API sources unsearchable
@@ -232,7 +235,10 @@ export function SkillsHub({ query }: SkillsHubProps) {
   const searchStateById = new Map<string, { failed: boolean; fetching: boolean }>()
   searchableSources.forEach((source, i) => {
     const q = sourceSearches[i]
-    searchStateById.set(source.id, { failed: q.isError, fetching: term.length > 0 && q.isFetching })
+    searchStateById.set(source.id, {
+      failed: q.isError,
+      fetching: queryState.showResults && q.isFetching
+    })
   })
 
   // Merge every source's results, deduped by identifier preferring higher trust
@@ -271,13 +277,16 @@ export function SkillsHub({ query }: SkillsHubProps) {
 
   // Still fetching from at least one source; "done" only once every source has
   // settled (so "No results" doesn't flash while slower sources are still in).
-  const anyFetching = term.length > 0 && sourceSearches.some(q => q.isFetching)
-  const searched = term.length > 0 && sourceSearches.length > 0 && sourceSearches.every(q => !q.isFetching)
-  const showLanding = term.length === 0
-  const listed = showLanding ? featured : results
+  const anyFetching = queryState.showResults && sourceSearches.some(q => q.isFetching)
+
+  const searched =
+    queryState.showResults && sourceSearches.length > 0 && sourceSearches.every(q => !q.isFetching)
+
+  const listed = queryState.showLanding ? featured : queryState.showResults ? results : []
+
   // Only block the whole pane on the first sources landing; after that results
   // stream in progressively while a subtle footer shows more are coming.
-  const searching = anyFetching && results.length === 0
+  const searching = queryState.pending || (anyFetching && results.length === 0)
   const hasInstalled = Object.keys(installed).length > 0
 
   return (
@@ -299,7 +308,7 @@ export function SkillsHub({ query }: SkillsHubProps) {
                       'relative rounded px-1.5 py-0.5 text-[0.6rem] transition-opacity',
                       degraded ? 'bg-amber-500/15 text-amber-400' : 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)',
                       // While searching, un-hit sources dim so the active ones read clearly.
-                      term.length > 0 && !fetching && !state?.failed && 'opacity-55'
+                      queryState.showResults && !fetching && !state?.failed && 'opacity-55'
                     )}
                     key={source.id}
                   >
@@ -322,7 +331,7 @@ export function SkillsHub({ query }: SkillsHubProps) {
       {listed.length > 0 && (
         <div className="flex shrink-0 items-center justify-between gap-3 px-4 pb-1.5 text-[0.68rem] text-(--ui-text-tertiary)">
           <span className="min-w-0 truncate">
-            {term.length > 0 ? h.resultCount(results.length, null) : h.featured}
+            {queryState.showResults ? h.resultCount(results.length, null) : h.featured}
             {anyFetching && results.length > 0 && (
               <span className="ml-2 text-(--ui-text-quaternary)">{h.searching}</span>
             )}

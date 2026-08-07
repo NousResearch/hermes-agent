@@ -864,7 +864,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         if sys.platform == "win32":
             try:
                 _popen_kwargs["creationflags"] = windows_detach_flags()
-                subprocess.Popen(cmd, **_popen_kwargs)
+                _p = subprocess.Popen(cmd, **_popen_kwargs)
             except OSError:
                 # CREATE_BREAKAWAY_FROM_JOB can be rejected with
                 # ERROR_ACCESS_DENIED when the parent's job object refuses
@@ -872,10 +872,17 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
                 # alone are enough in most setups. Mirrors the canonical
                 # fallback in gateway_windows._spawn_detached.
                 _popen_kwargs["creationflags"] = windows_detach_flags_without_breakaway()
-                subprocess.Popen(cmd, **_popen_kwargs)
+                _p = subprocess.Popen(cmd, **_popen_kwargs)
         else:
             _popen_kwargs["start_new_session"] = True
-            subprocess.Popen(cmd, **_popen_kwargs)
+            _p = subprocess.Popen(cmd, **_popen_kwargs)
+        # Wait for the spawned gateway to finish.  Without this wait the child
+        # (a session-leader from start_new_session=True on POSIX, or a
+        # DETACHED_PROCESS on Windows) loses its parent when this watcher
+        # exits and becomes an unreapable ppid=1 orphan that races systemd's
+        # own supervision (#73480).  By staying alive as the parent we ensure
+        # the child is always reaped via the kernel's normal waitpid chain.
+        _p.wait()
         """
     ).strip().format(
         respawn_cwd_literal=respawn_cwd_literal,

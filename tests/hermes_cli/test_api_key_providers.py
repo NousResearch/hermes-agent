@@ -1,7 +1,9 @@
 """Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
+import email.message
 import json
 import os
+import urllib.error
 
 import pytest
 
@@ -1183,6 +1185,190 @@ class TestDeepInfraPricingFetcher:
         assert float(result["vendor/model-a"]["completion"]) == pytest.approx(0.3 / 1_000_000)
         assert "input_cache_read" in result["vendor/model-a"]
         assert "input_cache_read" not in result["vendor/model-b"]
+
+
+@pytest.fixture
+def _kilocode_cache_isolation(monkeypatch):
+    """Reset the shared _pricing_cache around each Kilo pricing test.
+
+    The Kilo fetcher keys _pricing_cache by the resolved base URL; without
+    resetting it, a simulated failure (negative cache) or a base-URL override
+    would leak into the next test in the same session.
+    """
+    import hermes_cli.models as _models_mod
+    monkeypatch.setattr(_models_mod, "_pricing_cache", {})
+    yield
+
+
+@pytest.mark.usefixtures("_kilocode_cache_isolation")
+class TestKilocodePricingFetcher:
+    """_fetch_kilocode_pricing maps Kilo's OpenRouter-shaped catalog (per-token
+    pricing + explicit isFree) into picker-shape strings, honors
+    KILOCODE_BASE_URL, and is wired into the get_pricing_for_provider
+    dispatch."""
+
+    def test_pricing_shape_and_dispatch(self, monkeypatch):
+        payload = {"data": [
+            {
+                "id": "vendor/model-paid",
+                "pricing": {
+                    "prompt": "0.000005",
+                    "completion": "0.000025",
+                    "input_cache_read": "0.000001",
+                },
+            },
+            {
+                "id": "vendor/model-free",
+                "isFree": True,
+                # Non-zero underlying cost — isFree must win over pricing
+                # (the kilo-auto/free router case).
+                "pricing": {"prompt": "0.000002", "completion": "0.000010"},
+            },
+            {
+                "id": "vendor/model-zero-numeric",
+                # Custom proxy reporting numeric zeros — must surface as "0".
+                "pricing": {"prompt": 0, "completion": 0.0},
+            },
+            # Malformed records must be skipped, not crash the parser.
+            {"id": "vendor/no-pricing"},
+            {"id": ""},
+            "not-a-dict",
+        ]}
+        import hermes_cli.models as models
+        monkeypatch.setattr(
+            models,
+            "_urlopen_model_catalog_request",
+            _make_urlopen_returning(payload),
+        )
+        from hermes_cli.models import get_pricing_for_provider
+
+        # get_pricing_for_provider → _fetch_kilocode_pricing dispatch path
+        result = get_pricing_for_provider("kilocode")
+        assert set(result) == {"vendor/model-paid", "vendor/model-free", "vendor/model-zero-numeric"}
+        # Paid: per-token strings pass through unchanged.
+        assert result["vendor/model-paid"]["prompt"] == "0.000005"
+        assert result["vendor/model-paid"]["completion"] == "0.000025"
+        assert result["vendor/model-paid"]["input_cache_read"] == "0.000001"
+        # isFree: explicit zero mapping.
+        assert result["vendor/model-free"]["prompt"] == "0"
+        assert result["vendor/model-free"]["completion"] == "0"
+        # Numeric zero pricing (custom proxy) is surfaced, not dropped; the
+        # shared formatter maps both "0" and "0.0" to "free" downstream.
+        assert result["vendor/model-zero-numeric"]["prompt"] == "0"
+        assert result["vendor/model-zero-numeric"]["completion"] == "0.0"
+
+    def test_catalog_fetchable_without_api_key(self, monkeypatch):
+        """The Kilo catalog endpoint is public — no key, no gate."""
+        import hermes_cli.models as models
+        monkeypatch.delenv("KILOCODE_API_KEY", raising=False)
+        monkeypatch.setattr(
+            models,
+            "_urlopen_model_catalog_request",
+            _make_urlopen_returning({"data": [
+                {"id": "a/b", "pricing": {"prompt": "0.1", "completion": "0.2"}},
+            ]}),
+        )
+        from hermes_cli.models import get_pricing_for_provider
+
+        result = get_pricing_for_provider("kilocode")
+        assert set(result) == {"a/b"}
+
+    def test_default_base_uses_gateway_models_endpoint(self, monkeypatch):
+        """No KILOCODE_BASE_URL → default base + /models (doctor-probe
+        composition, same catalog as /api/openrouter/models)."""
+        import hermes_cli.models as models
+        monkeypatch.delenv("KILOCODE_BASE_URL", raising=False)
+        seen: dict[str, str] = {}
+
+        def fake_urlopen(req, timeout=None):
+            seen["url"] = req.full_url
+            return _make_urlopen_returning({"data": []})(req, timeout=timeout)
+
+        monkeypatch.setattr(models, "_urlopen_model_catalog_request", fake_urlopen)
+        from hermes_cli.models import _fetch_kilocode_pricing
+
+        _fetch_kilocode_pricing()
+        assert seen["url"] == "https://api.kilo.ai/api/gateway/models"
+
+    def test_base_url_override_controls_endpoint(self, monkeypatch):
+        """KILOCODE_BASE_URL override → catalog fetched from {base}/models."""
+        import hermes_cli.models as models
+        monkeypatch.setenv("KILOCODE_BASE_URL", "https://proxy.example.com/kilo")
+        seen: dict[str, str] = {}
+
+        def fake_urlopen(req, timeout=None):
+            seen["url"] = req.full_url
+            return _make_urlopen_returning({"data": [
+                {"id": "x/y", "pricing": {"prompt": "0.1", "completion": "0.2"}},
+            ]})(req, timeout=timeout)
+
+        monkeypatch.setattr(models, "_urlopen_model_catalog_request", fake_urlopen)
+        from hermes_cli.models import _fetch_kilocode_pricing
+
+        result = _fetch_kilocode_pricing()
+        assert seen["url"] == "https://proxy.example.com/kilo/models"
+        assert "x/y" in result
+
+    def test_network_failure_returns_empty(self, monkeypatch):
+        import hermes_cli.models as models
+        monkeypatch.setattr(
+            models,
+            "_urlopen_model_catalog_request",
+            lambda *a, **kw: (_ for _ in ()).throw(Exception("timeout")),
+        )
+        from hermes_cli.models import _fetch_kilocode_pricing
+
+        assert _fetch_kilocode_pricing() == {}
+
+    def test_custom_base_404_returns_empty_and_caches_negative(self, monkeypatch):
+        """A custom base that doesn't serve /models fails gracefully: {} with
+        no retry on the next call (negative cache), matching _fetch_novita_pricing."""
+        import hermes_cli.models as models
+        monkeypatch.setenv("KILOCODE_BASE_URL", "https://proxy.example.com/kilo")
+        call_count = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            call_count["n"] += 1
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", email.message.Message(), None)
+
+        monkeypatch.setattr(models, "_urlopen_model_catalog_request", fake_urlopen)
+        from hermes_cli.models import _fetch_kilocode_pricing
+
+        assert _fetch_kilocode_pricing() == {}
+        assert _fetch_kilocode_pricing() == {}
+        assert call_count["n"] == 1  # failure cached — no immediate retry
+
+    def test_cache_hit_and_force_refresh(self, monkeypatch):
+        import hermes_cli.models as models
+        call_count = {"n": 0}
+        payload = {"data": [
+            {"id": "a/b", "pricing": {"prompt": "0.1", "completion": "0.2"}},
+        ]}
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                import json as _json
+                return _json.dumps(payload).encode()
+
+        def fake_urlopen(req, timeout=None):
+            call_count["n"] += 1
+            return _FakeResp()
+
+        monkeypatch.setattr(models, "_urlopen_model_catalog_request", fake_urlopen)
+        from hermes_cli.models import _fetch_kilocode_pricing
+
+        first = _fetch_kilocode_pricing()
+        second = _fetch_kilocode_pricing()
+        assert call_count["n"] == 1  # cache hit
+        third = _fetch_kilocode_pricing(force_refresh=True)
+        assert call_count["n"] == 2  # forced refetch
+        assert first == second == third
 
 
 class TestDeepInfraProviderProfile:

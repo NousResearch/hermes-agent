@@ -274,6 +274,108 @@ def _container_finished_at(docker_exe: str, container_id: str):
         return None
 
 
+def _volume_destination(vol: str) -> Optional[str]:
+    """Extract the container-side destination from a ``host:container[:mode]`` spec.
+
+    A leading Windows drive-letter prefix (``C:`` or ``C:\\``) is
+    stripped first so its colon is not mistaken for the host/container
+    field separator — e.g. ``C:\\Users:/data`` must yield ``/data``,
+    not ``\\Users``.  After stripping, ``rsplit(":", 2)`` from the
+    right isolates the container segment (and an optional trailing
+    ``:ro`` / ``:rw`` / ``:z`` mode token).  Returns ``None`` if there
+    is no container side.
+    """
+    if len(vol) >= 2 and vol[0].isalpha() and vol[1] == ":":
+        vol = vol[2:]
+    parts = vol.rsplit(":", 2)
+    if len(parts) < 2:
+        return None
+    return parts[1]
+
+
+def _resolved_docker_volumes(passed_volumes) -> list[str]:
+    """Re-resolve ``terminal.docker_volumes`` against the *current* config.yaml.
+
+    The gateway process snapshots ``docker_volumes`` into the
+    ``TERMINAL_DOCKER_VOLUMES`` env var at boot.  A long-running gateway
+    that outlives an edit to config.yaml keeps passing that stale list into
+    DockerEnvironment, so a freshly-created container (e.g. after the
+    operator runs ``docker rm -f`` on the cached container) silently omits
+    mounts added since the gateway started — issue #69575.  ``load_config``
+    is mtime-cached, so reading it here picks up the edit without a full
+    restart.
+
+    Returns the union of ``passed_volumes`` and the current config's
+    ``docker_volumes`` (deduped, order-preserving).  Union — not replace —
+    so a caller-provided mount is never dropped, while a mount added to
+    config.yaml since the gateway started is picked up on the next create.
+    Falls back to ``passed_volumes`` alone if config can't be read.
+    """
+    cfg_volumes: list = []
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config() or {}
+        _term = _cfg.get("terminal") or {}
+        cfg_volumes = _term.get("docker_volumes", []) or []
+    except Exception as e:  # noqa: BLE001 — best-effort re-resolution
+        logger.debug("Could not re-resolve docker_volumes from config: %s", e)
+        cfg_volumes = []
+
+    seen: set[str] = set()
+    merged: list[str] = []
+    for vol in list(passed_volumes or []) + list(cfg_volumes):
+        if not isinstance(vol, str):
+            continue
+        vol = vol.strip()
+        if not vol or vol in seen:
+            continue
+        seen.add(vol)
+        merged.append(vol)
+    return merged
+
+
+def _container_bind_mounts(docker_exe: str, container_id: str) -> Optional[set[str]]:
+    """Return the set of bind-mount ``Destination`` paths in *container_id*.
+
+    Black-box: asks the Docker daemon via ``inspect`` (the same source the
+    reuse path already trusts for NetworkMode / FinishedAt).  ``tmpfs`` and
+    named-volume mounts are excluded — only ``bind`` mounts correspond to
+    ``docker_volumes`` entries.  Returns ``None`` on any failure so the
+    caller can *skip* the stale-mount check rather than treating every
+    configured mount as missing and ``rm -f``'ing a healthy container on
+    a transient inspect error.
+    """
+    try:
+        result = subprocess.run(
+            [
+                docker_exe, "inspect",
+                "--format",
+                "{{range .Mounts}}{{.Type}}:{{.Destination}}\n{{end}}",
+                container_id,
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10, check=False, stdin=subprocess.DEVNULL,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("docker inspect Mounts failed for %s: %s", container_id[:12], e)
+        return None
+    if result.returncode != 0:
+        logger.debug(
+            "docker inspect Mounts returned %d for %s: %s",
+            result.returncode, container_id[:12], result.stderr.strip(),
+        )
+        return None
+    dests: set[str] = set()
+    for ln in result.stdout.splitlines():
+        ln = ln.strip()
+        if not ln or ":" not in ln:
+            continue
+        mtype, _, dest = ln.partition(":")
+        if mtype == "bind" and dest:
+            dests.add(dest)
+    return dests
+
+
 def find_docker() -> Optional[str]:
     """Locate the docker (or podman) CLI binary.
 
@@ -945,10 +1047,17 @@ class DockerEnvironment(BaseEnvironment):
         # mode uses tmpfs (ephemeral, fast, gone on cleanup).
         from tools.environments.base import get_sandbox_dir
 
-        # User-configured volume mounts (from config.yaml docker_volumes)
+        # User-configured volume mounts (from config.yaml docker_volumes).
+        # Re-resolve against the *current* config.yaml so a mount added since
+        # the gateway process started (whose TERMINAL_DOCKER_VOLUMES env var
+        # is stale) still lands on a freshly-created container — issue #69575.
+        # The reuse path's stale-mount check (below) covers the case where an
+        # old container is still present; this covers the ``docker rm -f``
+        # fresh-create path the issue's repro actually exercises.
+        resolved_volumes = _resolved_docker_volumes(volumes)
         volume_args = []
         workspace_explicitly_mounted = False
-        for vol in (volumes or []):
+        for vol in resolved_volumes:
             if not isinstance(vol, str):
                 logger.warning("Docker volume entry is not a string: %r", vol)
                 continue
@@ -1440,6 +1549,63 @@ class DockerEnvironment(BaseEnvironment):
                     except (subprocess.TimeoutExpired, OSError) as e:
                         logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
                     existing = None
+            # Stale bind-mount check (issue #69575): if the operator edited
+            # ``docker_volumes`` in config.yaml since this container was
+            # created, the cached container is missing the new mount.
+            # Re-resolve against the current config (the gateway's
+            # TERMINAL_DOCKER_VOLUMES env var may be stale) and, when a
+            # required bind-mount destination is absent from the running
+            # container, remove it and fall through to a fresh create —
+            # which re-resolves the same config and lands the new mount.
+            # Skipped entirely when no docker_volumes are configured so the
+            # common case adds no ``docker inspect`` round-trip.
+            if existing is not None:
+                required_dests = {
+                    d for d in (
+                        _volume_destination(v)
+                        for v in _resolved_docker_volumes(volumes)
+                    ) if d
+                }
+                if required_dests:
+                    actual_dests = _container_bind_mounts(
+                        self._docker_exe, container_id,
+                    )
+                    if actual_dests is None:
+                        # Inspection failed (timeout / non-zero exit /
+                        # transient daemon blip).  Skip the stale-mount
+                        # check rather than treating every configured
+                        # destination as missing and rm -f'ing a
+                        # potentially-healthy container — fail open.
+                        logger.info(
+                            "Skipping stale-bind-mount check for %s: "
+                            "docker inspect failed (task=%s, profile=%s).",
+                            container_id[:12], task_label, profile_name,
+                        )
+                    else:
+                        missing = required_dests - actual_dests
+                        if missing:
+                            logger.warning(
+                                "Existing container %s is missing configured "
+                                "docker_volumes destination(s) %s — removing it "
+                                "and starting fresh so the new mounts apply "
+                                "(task=%s, profile=%s).",
+                                container_id[:12], sorted(missing),
+                                task_label, profile_name,
+                            )
+                            try:
+                                subprocess.run(
+                                    [self._docker_exe, "rm", "-f", container_id],
+                                    capture_output=True,
+                                    text=True, encoding="utf-8",
+                                    errors="replace", timeout=30, check=False,
+                                    stdin=subprocess.DEVNULL,
+                                )
+                            except (subprocess.TimeoutExpired, OSError) as e:
+                                logger.warning(
+                                    "Failed to remove stale-mount container %s: %s",
+                                    container_id[:12], e,
+                                )
+                            existing = None
             if existing is not None:
                 container_id, state = existing
                 self._container_id = container_id

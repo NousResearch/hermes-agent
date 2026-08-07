@@ -34,7 +34,7 @@ import { playWakeSound } from '@/lib/wake-sound'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
-import { setCronFocusJobId } from '@/store/cron'
+import { invalidateCronJobRuns, setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $previewTarget } from '@/store/preview'
 import {
@@ -902,7 +902,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onTranscribeAudio: transcribeVoiceAudio,
     onTriggerCronJob: jobId => {
       void triggerCronJob(jobId)
-        .then(() => refreshCronJobs())
+        .then(() => {
+          invalidateCronJobRuns(jobId)
+
+          return refreshCronJobs()
+        })
         .catch(() => undefined)
     },
     getGateway: () => gatewayRef.current,

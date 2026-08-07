@@ -15,10 +15,9 @@
  */
 
 import assert from 'node:assert/strict'
+import type { Dirent } from 'node:fs'
 
 import { test } from 'vitest'
-
-import type { Dirent } from 'node:fs'
 
 import {
   decideMigration,
@@ -53,41 +52,62 @@ function makeFs(files: Record<string, FileFixture>) {
 
   const readFileSync = (p: string, _enc: 'utf8') => {
     const e = map.get(p)
-    if (!e || e.content === undefined) throw new Error(`ENOENT: ${p}`)
+
+    if (!e || e.content === undefined) {
+      throw new Error(`ENOENT: ${p}`)
+    }
+
     return e.content
   }
 
   const statSync = (p: string) => {
     const e = map.get(p)
-    if (!e || e.size === undefined) throw new Error(`ENOENT: ${p}`)
+
+    if (!e || e.size === undefined) {
+      throw new Error(`ENOENT: ${p}`)
+    }
+
     return { size: e.size, mtimeMs: e.mtime ?? NOW - 86_400_000 }
   }
 
   const readdirSync = (p: string, _options?: { withFileTypes?: boolean }): Dirent[] => {
     const names = new Set<string>()
+
     // 1. Explicit dir markers at this exact level.
     for (const [fullPath, fixture] of map.entries()) {
       if (fullPath === p && fixture.dir) {
         // This is the dir itself; not a child. Skip.
         continue
       }
+
       if (fullPath.startsWith(p + '/')) {
         const rest = fullPath.slice(p.length + 1)
+
         if (!rest.includes('/') && fixture.dir) {
           names.add(rest)
         }
       }
     }
+
     // 2. Implicit directories: any nested path under `p` implies the intermediate
     // directory exists (mirrors how mkdir({recursive:true}) populates the tree).
     for (const key of map.keys()) {
-      if (!key.startsWith(p + '/')) continue
+      if (!key.startsWith(p + '/')) {
+        continue
+      }
+
       const rest = key.slice(p.length + 1)
       const parts = rest.split('/')
-      if (parts.length < 2) continue
+
+      if (parts.length < 2) {
+        continue
+      }
+
       names.add(parts[0])
     }
+
     const entries: Dirent[] = []
+
     for (const name of names) {
       entries.push({
         name,
@@ -100,7 +120,11 @@ function makeFs(files: Record<string, FileFixture>) {
         isSocket: () => false
       } as unknown as Dirent)
     }
-    if (entries.length === 0 && !map.has(p)) throw new Error(`ENOENT: ${p}`)
+
+    if (entries.length === 0 && !map.has(p)) {
+      throw new Error(`ENOENT: ${p}`)
+    }
+
     return entries
   }
 
@@ -109,6 +133,7 @@ function makeFs(files: Record<string, FileFixture>) {
 
 function baseDeps(overrides: Record<string, unknown> = {}) {
   const fs = makeFs({})
+
   return {
     legacyActivePath: '/home/u/.hermes/active_profile',
     profilesRoot: '/home/u/.hermes/profiles',
@@ -130,7 +155,13 @@ function baseDeps(overrides: Record<string, unknown> = {}) {
 
 test('readLegacyActiveProfile returns null when file missing', () => {
   assert.equal(
-    readLegacyActiveProfile('/missing', () => { throw new Error('ENOENT') }, isValidProfileName),
+    readLegacyActiveProfile(
+      '/missing',
+      () => {
+        throw new Error('ENOENT')
+      },
+      isValidProfileName
+    ),
     null
   )
 })
@@ -187,20 +218,20 @@ test('findRunningGatewayProfiles drops stale (non-hermes) recycled PIDs', () => 
     '/home/u/.hermes/profiles/coder/gateway.pid': { content: '{"pid":1234}' },
     '/home/u/.hermes/profiles/writer/gateway.pid': { content: '{"pid":5678}' }
   })
+
   const deps = {
     ...fs,
     isHermesProcess: (pid: number) => pid === 1234
   }
-  assert.deepEqual(
-    findRunningGatewayProfiles('/home/u/.hermes/profiles', ['coder', 'writer'], deps),
-    ['coder']
-  )
+
+  assert.deepEqual(findRunningGatewayProfiles('/home/u/.hermes/profiles', ['coder', 'writer'], deps), ['coder'])
 })
 
 test('findRunningGatewayProfiles tolerates malformed pid files', () => {
   const fs = makeFs({
     '/home/u/.hermes/profiles/coder/gateway.pid': { content: '{not json' }
   })
+
   assert.deepEqual(
     findRunningGatewayProfiles('/home/u/.hermes/profiles', ['coder'], {
       ...fs,
@@ -216,6 +247,7 @@ test('findRunningGatewayProfiles drops non-integer and non-positive PIDs', () =>
     '/home/u/.hermes/profiles/writer/gateway.pid': { content: '{"pid":1.5}' },
     '/home/u/.hermes/profiles/extra/gateway.pid': { content: '{"pid":0}' }
   })
+
   assert.deepEqual(
     findRunningGatewayProfiles('/home/u/.hermes/profiles', ['coder', 'writer', 'extra'], {
       ...fs,
@@ -230,11 +262,12 @@ test('findRunningGatewayProfiles preserves order of allProfiles', () => {
     '/home/u/.hermes/profiles/coder/gateway.pid': { content: '{"pid":1}' },
     '/home/u/.hermes/profiles/writer/gateway.pid': { content: '{"pid":2}' }
   })
+
   const deps = { ...fs, isHermesProcess: () => true }
-  assert.deepEqual(
-    findRunningGatewayProfiles('/home/u/.hermes/profiles', ['coder', 'writer'], deps),
-    ['coder', 'writer']
-  )
+  assert.deepEqual(findRunningGatewayProfiles('/home/u/.hermes/profiles', ['coder', 'writer'], deps), [
+    'coder',
+    'writer'
+  ])
 })
 
 // ---------------------------------------------------------------------------
@@ -243,7 +276,9 @@ test('findRunningGatewayProfiles preserves order of allProfiles', () => {
 
 test('scoreStateDb returns null on missing file', () => {
   assert.equal(
-    scoreStateDb('/missing', NOW, () => { throw new Error('ENOENT') }),
+    scoreStateDb('/missing', NOW, () => {
+      throw new Error('ENOENT')
+    }),
     null
   )
 })
@@ -287,10 +322,8 @@ test('listProfileDirs includes default and any name passing the regex', () => {
     '/home/u/.hermes/profiles/coder': { dir: true },
     '/home/u/.hermes/profiles/writer': { dir: true }
   })
-  assert.deepEqual(
-    listProfileDirs(baseDeps({ ...fs })),
-    ['default', 'coder', 'writer']
-  )
+
+  assert.deepEqual(listProfileDirs(baseDeps({ ...fs })), ['default', 'coder', 'writer'])
 })
 
 test('listProfileDirs skips files (not directories) and invalid names', () => {
@@ -299,6 +332,7 @@ test('listProfileDirs skips files (not directories) and invalid names', () => {
     '/home/u/.hermes/profiles/some-file.txt': { dir: false },
     '/home/u/.hermes/profiles/UPPERCASE': { dir: true } // regex rejects
   })
+
   assert.deepEqual(listProfileDirs(baseDeps({ ...fs })), ['default'])
 })
 
@@ -324,9 +358,11 @@ test('decideMigration falls through to scoring when multiple gateways run', () =
   // When running.length > 1 the heuristic must score the running set, not all
   // profiles, so a stopped profile can't win against two live ones.
   const deps = baseDeps()
+
   const d = decideMigration(null, ['coder', 'writer'], ['coder', 'writer'], deps, p =>
     p.endsWith('/writer/state.db') ? 50 : 10
   )
+
   assert.deepEqual(d, { profile: 'writer', _migrated: true })
 })
 
@@ -343,9 +379,9 @@ test('decideMigration suppresses write when best is default (single-profile fall
   // better candidate exists. If 'default' wins the score, the install is
   // single-profile and we leave it alone.
   const deps = baseDeps()
-  const d = decideMigration(null, [], ['default', 'coder'], deps, p =>
-    p.endsWith('/default/state.db') ? 99 : 50
-  )
+
+  const d = decideMigration(null, [], ['default', 'coder'], deps, p => (p.endsWith('/default/state.db') ? 99 : 50))
+
   assert.equal(d, null)
 })
 
@@ -363,39 +399,53 @@ test('decideMigration still flags _migrated when legacy is invalid (undefined) b
 
 test('migrateActiveProfileIfMissing is a no-op when the preference file exists', () => {
   let written: unknown = null
+
   const deps = baseDeps({
     existsSync: (p: string) => p === '/cfg/active-profile.json',
-    writeJson: (_p: string, payload: unknown) => { written = payload }
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
   })
+
   assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), false)
   assert.equal(written, null)
 })
 
 test('migrateActiveProfileIfMissing writes legacy choice with no _migrated flag', () => {
   let written: unknown = null
+
   const fs = makeFs({
     '/home/u/.hermes/active_profile': { content: 'coder' },
     '/home/u/.hermes/profiles/coder': { dir: true },
     '/home/u/.hermes/profiles/writer': { dir: true }
   })
+
   const deps = baseDeps({
     ...fs,
-    writeJson: (_p: string, payload: unknown) => { written = payload }
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
   })
+
   assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), true)
   assert.deepEqual(written, { profile: 'coder' })
 })
 
 test('migrateActiveProfileIfMissing writes heuristic choice with _migrated=true', () => {
   let written: unknown = null
+
   const fs = makeFs({
     '/home/u/.hermes/profiles/coder/state.db': { size: 50 * 1024 * 1024, mtime: NOW - 86_400_000 },
     '/home/u/.hermes/profiles/writer/state.db': { size: 200 * 1024 * 1024, mtime: NOW - 86_400_000 }
   })
+
   const deps = baseDeps({
     ...fs,
-    writeJson: (_p: string, payload: unknown) => { written = payload }
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
   })
+
   assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), true)
   assert.deepEqual(written, { profile: 'writer', _migrated: true })
 })
@@ -404,13 +454,18 @@ test('migrateActiveProfileIfMissing is a no-op for single-profile (default-only)
   // No heuristic candidate can beat 'default', so the orchestrator must NOT
   // write a file — preserves legacy launch behavior for the 99% case.
   let written: unknown = null
+
   const fs = makeFs({
     '/home/u/.hermes/profiles/default/state.db': { size: 10 * 1024 * 1024, mtime: NOW - 86_400_000 }
   })
+
   const deps = baseDeps({
     ...fs,
-    writeJson: (_p: string, payload: unknown) => { written = payload }
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
   })
+
   assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), false)
   assert.equal(written, null)
 })
@@ -418,10 +473,14 @@ test('migrateActiveProfileIfMissing is a no-op for single-profile (default-only)
 test('migrateActiveProfileIfMissing is a no-op when no profiles directory exists', () => {
   let written: unknown = null
   const fs = makeFs({})
+
   const deps = baseDeps({
     ...fs,
-    writeJson: (_p: string, payload: unknown) => { written = payload }
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
   })
+
   assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), false)
   assert.equal(written, null)
 })
@@ -430,15 +489,20 @@ test('migrateActiveProfileIfMissing prefers a single running gateway over heuris
   // running=['coder'] regardless of what the heuristic would score — gateway
   // ownership is the strongest signal we have for the active profile.
   let written: unknown = null
+
   const fs = makeFs({
     '/home/u/.hermes/profiles/coder/gateway.pid': { content: '{"pid":42}' },
     '/home/u/.hermes/profiles/writer/state.db': { size: 500 * 1024 * 1024, mtime: NOW - 86_400_000 }
   })
+
   const deps = baseDeps({
     ...fs,
     isHermesProcess: (pid: number) => pid === 42,
-    writeJson: (_p: string, payload: unknown) => { written = payload }
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
   })
+
   assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), true)
   assert.deepEqual(written, { profile: 'coder' })
 })

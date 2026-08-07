@@ -905,7 +905,17 @@ def session_search(
             current_session_id = None
 
     # Scroll shape takes precedence — explicit anchor beats any query.
-    if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
+    # Guard: a non-positive anchor (0 or negative) can never match a real
+    # message id in the DB. Some models emit around_message_id=0 as a
+    # placeholder when they have no real anchor (gpt-5.6-luna does this
+    # consistently); treating it as a valid scroll anchor makes every call
+    # fail and the agent retry forever. Treat non-positive anchors as "no
+    # anchor" and fall through to read/discovery.
+    try:
+        _anchor_ok = around_message_id is not None and int(around_message_id) > 0
+    except (TypeError, ValueError):
+        _anchor_ok = False
+    if (isinstance(session_id, str) and session_id.strip()) and _anchor_ok:
         return _scroll(
             db=db,
             session_id=session_id,

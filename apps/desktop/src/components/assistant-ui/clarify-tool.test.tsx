@@ -1,11 +1,11 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { I18nProvider } from '@/i18n'
-import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { $clarifyInputs, $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { $activeSessionId } from '@/store/session'
 
@@ -19,6 +19,8 @@ vi.mock('@assistant-ui/react', () => ({
 
 afterEach(() => {
   cleanup()
+  $clarifyInputs.set({})
+  $clarifyRequests.set({})
   clearClarifyRequest()
   $activeSessionId.set(null)
   $gateway.set(null)
@@ -68,6 +70,13 @@ function liveClarifyProps(choices = ['staging', 'production']): ToolCallMessageP
     toolCallId: 'clarify-live',
     toolName: 'clarify',
     type: 'tool-call'
+  }
+}
+
+function pendingClarifyProps(args: ToolCallMessagePartProps['args'], toolCallId: string): ToolCallMessagePartProps {
+  return {
+    ...settledClarifyProps(args, undefined, toolCallId),
+    status: { type: 'running' }
   }
 }
 
@@ -126,6 +135,51 @@ describe('readClarifyResult', () => {
   })
 })
 
+describe('ClarifyTool pending view', () => {
+  it('restores the draft, focus, selection, and scroll position after a remount', async () => {
+    const question = 'What deployment context should I use?'
+    const answer = Array.from({ length: 12 }, (_, index) => `Line ${index + 1}: preserve this context.`).join('\n')
+
+    $activeSessionId.set('session-a')
+    setClarifyRequest({ choices: null, question, requestId: 'req-a', sessionId: 'session-a' })
+
+    const props = pendingClarifyProps({ question }, 'clarify-pending')
+    const first = renderClarify(<ClarifyTool {...props} />)
+    const textarea = screen.getByPlaceholderText(/type your answer/i) as HTMLTextAreaElement
+
+    act(() => {
+      textarea.focus()
+    })
+    fireEvent.change(textarea, { target: { value: answer } })
+    textarea.setSelectionRange(answer.length - 8, answer.length - 3)
+    textarea.scrollTop = 48
+    fireEvent.select(textarea)
+    fireEvent.scroll(textarea)
+
+    first.unmount()
+
+    // The remount restores focus through the layout effect's rAF/setTimeout
+    // chain, which fires outside the initial render. Wrap it so the focus
+    // restore (and its state writes) land inside act.
+    await act(async () => {
+      renderClarify(<ClarifyTool {...props} />)
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      await new Promise(resolve => window.requestAnimationFrame(() => resolve(null)))
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+    })
+
+    const restored = screen.getByPlaceholderText(/type your answer/i) as HTMLTextAreaElement
+
+    await waitFor(() => {
+      expect(restored.value).toBe(answer)
+      expect(globalThis.document.activeElement).toBe(restored)
+      expect(restored.selectionStart).toBe(answer.length - 8)
+      expect(restored.selectionEnd).toBe(answer.length - 3)
+      expect(restored.scrollTop).toBe(48)
+    })
+  })
+})
+
 describe('ClarifyTool settled view', () => {
   it('keeps the question and answer visible after the tool completes', () => {
     renderClarify(
@@ -144,8 +198,8 @@ describe('ClarifyTool settled view', () => {
 
     expect(screen.getByText('Which deployment target?')).toBeTruthy()
     expect(screen.getByText('staging')).toBeTruthy()
-    expect(document.querySelector('[data-clarify-settled]')).toBeTruthy()
-    expect(document.querySelector('[data-clarify-answer]')?.textContent).toBe('staging')
+    expect(globalThis.document.querySelector('[data-clarify-settled]')).toBeTruthy()
+    expect(globalThis.document.querySelector('[data-clarify-answer]')?.textContent).toBe('staging')
   })
 
   it('labels an empty response as Skipped', () => {

@@ -1,5 +1,5 @@
 import type { ChatMessage } from '@/lib/chat-messages'
-import { messageRenderWeight } from '@/lib/render-weight'
+import { messageStoreWeight } from '@/lib/render-weight'
 
 /**
  * Bound what reaches assistant-ui at all.
@@ -88,7 +88,7 @@ export function selectTranscriptWindow(messages: readonly ChatMessage[], pages =
   let weight = 0
 
   for (let i = messages.length - 1; i >= 0; i--) {
-    weight += messageRenderWeight(messages[i].parts)
+    weight += messageStoreWeight(messages[i].parts)
     start = i
 
     if (weight >= budget && messages.length - i >= TRANSCRIPT_WINDOW_MIN_MESSAGES) {

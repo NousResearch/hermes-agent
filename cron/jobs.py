@@ -1421,6 +1421,7 @@ def create_job(
         "last_status": None,
         "last_error": None,
         "last_delivery_error": None,
+        "failure_streak": 0,
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
@@ -1705,6 +1706,15 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None
+                # Consecutive agent-failure streak. Any successful run resets
+                # it; delivery failures alone do NOT count (the agent did its
+                # job). Read by the scheduler's failure-delivery path to nudge
+                # the user to review a repeatedly-failing automation
+                # (Poke-inspired; see cron/scheduler._failure_streak_nudge).
+                if success:
+                    job["failure_streak"] = 0
+                else:
+                    job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 # Clear any external-fire claim so a re-armed recurring job can

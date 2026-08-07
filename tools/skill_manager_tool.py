@@ -1423,6 +1423,11 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     # stage — record the full skill_manage kwargs so approval can replay it.
     payload = {"action": action, "name": name}
     payload.update({k: v for k, v in payload_kwargs.items() if v is not None})
+    # Normalize: LLM may pass "content" instead of "file_content" for
+    # write_file actions (#78519).  Ensure the staged payload always has
+    # the field apply_skill_pending expects.
+    if action == "write_file" and "file_content" not in payload and payload.get("content"):
+        payload["file_content"] = payload.pop("content")
     gist = wa.skill_gist(
         action, name,
         content=payload_kwargs.get("content") or "",

@@ -2187,13 +2187,14 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                     from hermes_cli.goals import judge_goal
                     verdict = "done"
                     reason = ""
+                    transport_failed = False
                     try:
                         # judge_goal returns (verdict, reason, parse_failed,
                         # wait_directive, transport_failed) — see
                         # hermes_cli/goals.py. Unpacking fewer raises
                         # ValueError into the fail-open handler below,
                         # silently disabling the gate.
-                        verdict, reason, _, _, _ = judge_goal(
+                        verdict, reason, _, _, transport_failed = judge_goal(
                             goal=f"{task.title}\n\n{task.body or ''}".strip(),
                             last_response=(summary or args.result or "").strip(),
                         )
@@ -2204,6 +2205,17 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                             judge_exc,
                             exc_info=True,
                         )
+                    # Fail OPEN on transport failure (401 auth, timeout, DNS):
+                    # a broken judge credential returns verdict="continue" with
+                    # transport_failed=True every call, which would otherwise
+                    # wedge every goal_mode worker from ever completing.
+                    # judge_goal is fail-open by design; the gate must honor it.
+                    if transport_failed:
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "goal judge unreachable (%s), allowing completion", reason
+                        )
+                        verdict = "done"
                     if verdict != "done":
                         print(
                             f"kanban: goal completion of {tid} rejected by judge: {reason}. "

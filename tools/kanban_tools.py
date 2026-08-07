@@ -733,13 +733,14 @@ def _handle_complete(args: dict, **kw) -> str:
             if task and task.goal_mode and _goal_judge_available():
                 verdict = "done"
                 reason = ""
+                transport_failed = False
                 try:
                     # judge_goal returns (verdict, reason, parse_failed,
                     # wait_directive, transport_failed) — see
                     # hermes_cli/goals.py. Unpacking fewer raises ValueError,
                     # which the defensive handler below swallows, leaving
                     # verdict="done" and silently disabling the gate.
-                    verdict, reason, _, _, _ = judge_goal(
+                    verdict, reason, _, _, transport_failed = judge_goal(
                         goal=f"{task.title}\n\n{task.body or ''}".strip(),
                         last_response=(summary or result or "").strip(),
                     )
@@ -751,6 +752,16 @@ def _handle_complete(args: dict, **kw) -> str:
                         judge_exc,
                         exc_info=True,
                     )
+                # Fail OPEN on transport failure (401 auth, timeout, DNS): a
+                # broken judge credential returns verdict="continue" with
+                # transport_failed=True on every call, which would otherwise
+                # wedge every goal_mode worker from ever completing its task.
+                # judge_goal is fail-open by design; the gate must honor that.
+                if transport_failed:
+                    logger.warning(
+                        "goal judge unreachable (%s), allowing completion", reason
+                    )
+                    verdict = "done"
                 if verdict != "done":
                     return tool_error(
                         f"Goal completion rejected by judge: {reason}. "

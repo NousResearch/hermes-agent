@@ -1415,26 +1415,31 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
     def _run() -> None:
         from hermes_state import (
-            MAX_SAFE_EXPORT_MESSAGES,
             SessionDB,
             SessionExportTooLargeError,
+            resolved_max_export_messages,
         )
 
         db = SessionDB()
         try:
             def _guard_exports(session_ids: list[str]) -> None:
-                total_messages = 0
+                # Per-session budget: each session is checked independently
+                # against the configured limit, so a full-DB backup of many
+                # small sessions never trips the guard — only an individual
+                # runaway transcript does. 0 disables the guard.
+                limit = resolved_max_export_messages()
+                if limit <= 0:
+                    return
                 try:
                     for session_id in session_ids:
-                        total_messages += db.assert_export_safe(
-                            session_id,
-                            max_messages=MAX_SAFE_EXPORT_MESSAGES - total_messages,
-                        )
+                        db.assert_export_safe(session_id, max_messages=limit)
                 except SessionExportTooLargeError as exc:
                     raise ConsoleCommandError(
-                        f"Export includes more than {MAX_SAFE_EXPORT_MESSAGES:,} active "
-                        f"messages (limit reached at session '{exc.session_id}'). "
-                        "Use the Sessions page's streaming Export action instead."
+                        f"Session '{exc.session_id}' has more than {limit:,} active "
+                        "messages; in-memory export is capped per session. "
+                        "Use the Sessions page's streaming Export action, or set "
+                        "sessions.max_export_messages: 0 in config.yaml to disable "
+                        "the guard."
                     ) from exc
 
             if ns.session_id:

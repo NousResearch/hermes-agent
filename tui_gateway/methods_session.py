@@ -382,17 +382,22 @@ def _(rid, params: dict) -> dict:
         # omit_messages suppresses the response copy. Count the complete lineage
         # before any reopen/history read so a runaway transcript cannot exhaust
         # the dashboard. The metadata fallback keeps lightweight test/adaptor DBs
-        # that predate the shared SessionDB guard compatible.
-        from hermes_state import MAX_SAFE_RESUME_MESSAGES, SessionResumeTooLargeError
+        # that predate the shared SessionDB guard compatible. The limit resolves
+        # from config (sessions.max_resume_messages, 0 disables).
+        from hermes_state import (
+            SessionResumeTooLargeError,
+            resolved_max_resume_messages,
+        )
 
         safety_check = getattr(db, "assert_resume_safe", None)
         try:
             if callable(safety_check):
                 safety_check(target)
             else:
+                resume_limit = resolved_max_resume_messages()
                 stored_message_count = int(found.get("message_count") or 0)
-                if stored_message_count > MAX_SAFE_RESUME_MESSAGES:
-                    raise SessionResumeTooLargeError(stored_message_count)
+                if resume_limit and stored_message_count > resume_limit:
+                    raise SessionResumeTooLargeError(stored_message_count, resume_limit)
         except SessionResumeTooLargeError as exc:
             return _err(rid, 4130, str(exc))
         except Exception as exc:

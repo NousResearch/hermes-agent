@@ -88,14 +88,51 @@ MAX_SAFE_RESUME_MESSAGES = 20_000
 MAX_SAFE_EXPORT_MESSAGES = 20_000
 
 
+def _configured_transcript_limit(key: str, fallback: int) -> int:
+    """Resolve a transcript safety limit from config at call time.
+
+    Reads ``sessions.<key>`` from config.yaml lazily (avoiding a circular
+    import at module load) and falls back to the module constant when the
+    config subsystem is unavailable (scaffold installs, stripped test
+    environments). A value of 0 disables the guard entirely. No caching:
+    ``load_config_readonly`` is already mtime-cached, and resolving fresh
+    keeps tests that monkeypatch config or the module constants working.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        sessions_cfg = load_config_readonly().get("sessions") or {}
+        value = sessions_cfg.get(key)
+        if value is None:
+            return fallback
+        limit = int(value)
+        return limit if limit >= 0 else fallback
+    except Exception:
+        return fallback
+
+
+def resolved_max_resume_messages() -> int:
+    """Config-resolved resume guard limit (0 disables the guard)."""
+    return _configured_transcript_limit(
+        "max_resume_messages", MAX_SAFE_RESUME_MESSAGES
+    )
+
+
+def resolved_max_export_messages() -> int:
+    """Config-resolved in-memory export guard limit (0 disables the guard)."""
+    return _configured_transcript_limit(
+        "max_export_messages", MAX_SAFE_EXPORT_MESSAGES
+    )
+
+
 class SessionResumeTooLargeError(ValueError):
     def __init__(self, message_count: int, limit: int = MAX_SAFE_RESUME_MESSAGES):
         self.message_count = message_count
         self.limit = limit
         super().__init__(
             f"session has at least {message_count} active messages across its lineage; "
-            f"safe resume limit is {limit}. Export or repair the session before "
-            "resuming it."
+            f"safe resume limit is {limit}. Export the session instead, or set "
+            "sessions.max_resume_messages: 0 in config.yaml to disable the guard."
         )
 
 
@@ -7869,11 +7906,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def assert_resume_safe(
         self,
         session_id: str,
-        max_messages: int = MAX_SAFE_RESUME_MESSAGES,
+        max_messages: Optional[int] = None,
     ) -> int:
-        """Return resume row count or reject a transcript too large to load."""
+        """Return resume row count or reject a transcript too large to load.
+
+        ``max_messages=None`` resolves the limit from config
+        (``sessions.max_resume_messages``); 0 disables the guard and returns
+        the (bounded) count without raising.
+        """
+        if max_messages is None:
+            max_messages = resolved_max_resume_messages()
         if max_messages < 0:
             raise ValueError("max_messages must be non-negative")
+        if max_messages == 0:
+            # Guard disabled by config — never materialize an unbounded
+            # COUNT here; callers only need "safe", not an exact figure.
+            return self.get_resume_message_count(session_id)
         session_ids = self._session_lineage_root_to_tip(session_id)
         placeholders = ",".join("?" for _ in session_ids)
         with self._read_ctx() as conn:
@@ -7892,17 +7940,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def assert_export_safe(
         self,
         session_id: str,
-        max_messages: int = MAX_SAFE_EXPORT_MESSAGES,
+        max_messages: Optional[int] = None,
     ) -> int:
         """Return active row count or reject an unsafe in-memory export.
 
         Exporting one session does not include compression ancestors, so this
         guard deliberately counts only the requested segment. The limited
         subquery stops as soon as it proves the transcript exceeds the bound.
+
+        ``max_messages=None`` resolves the limit from config
+        (``sessions.max_export_messages``); 0 disables the guard and returns
+        the active row count without raising.
         """
+        if max_messages is None:
+            max_messages = resolved_max_export_messages()
         if max_messages < 0:
             raise ValueError("max_messages must be non-negative")
         with self._read_ctx() as conn:
+            if max_messages == 0:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM messages "
+                    "WHERE session_id = ? AND active = 1",
+                    (session_id,),
+                ).fetchone()
+                return int(row[0] if row else 0)
             row = conn.execute(
                 "SELECT COUNT(*) FROM ("
                 "SELECT 1 FROM messages WHERE session_id = ? AND active = 1 LIMIT ?"

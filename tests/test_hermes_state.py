@@ -3820,6 +3820,46 @@ class TestGetMessagesPagination:
         assert exc_info.value.message_count == 3
         assert exc_info.value.limit == 2
 
+    def test_zero_limit_disables_resume_and_export_guards(self, db, monkeypatch):
+        """sessions.max_*_messages: 0 disables the guard entirely."""
+        db.create_session(session_id="big", source="cli")
+        db.append_messages_batch(
+            "big",
+            [{"role": "user", "content": f"msg-{i}"} for i in range(5)],
+        )
+
+        # A small explicit limit rejects...
+        with pytest.raises(hermes_state.SessionResumeTooLargeError):
+            db.assert_resume_safe("big", max_messages=2)
+        with pytest.raises(hermes_state.SessionExportTooLargeError):
+            db.assert_export_safe("big", max_messages=2)
+
+        # ...but a config-resolved limit of 0 disables both guards and
+        # returns the true count without raising.
+        monkeypatch.setattr(hermes_state, "resolved_max_resume_messages", lambda: 0)
+        monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 0)
+        assert db.assert_resume_safe("big") == 5
+        assert db.assert_export_safe("big") == 5
+        # An explicit 0 disables too, independent of config.
+        assert db.assert_resume_safe("big", max_messages=0) == 5
+        assert db.assert_export_safe("big", max_messages=0) == 5
+
+    def test_guard_limits_resolve_from_config_at_call_time(self, db, monkeypatch):
+        db.create_session(session_id="cfg", source="cli")
+        db.append_messages_batch(
+            "cfg",
+            [{"role": "user", "content": f"msg-{i}"} for i in range(4)],
+        )
+
+        monkeypatch.setattr(hermes_state, "resolved_max_resume_messages", lambda: 3)
+        monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 3)
+        with pytest.raises(hermes_state.SessionResumeTooLargeError) as resume_exc:
+            db.assert_resume_safe("cfg")
+        assert resume_exc.value.limit == 3
+        with pytest.raises(hermes_state.SessionExportTooLargeError) as export_exc:
+            db.assert_export_safe("cfg")
+        assert export_exc.value.limit == 3
+
 
 
 

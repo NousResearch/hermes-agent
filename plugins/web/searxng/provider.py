@@ -66,7 +66,26 @@ class SearXNGWebSearchProvider(WebSearchProvider):
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a search against the configured SearXNG instance."""
+        """Execute a search against the configured SearXNG instance.
+
+        Uses ``format=html`` + regex parsing of ``<article class="result">``
+        containers rather than ``format=json`` because SearXNG returns
+        HTTP 403 on ``format=json`` whenever ``server.public_instance``
+        is ``false`` (intentional design — JSON output is restricted on
+        private instances to limit bot access). ``format=html`` is the
+        same rendered page users see in the browser, always available
+        on every SearXNG instance (no flag required), and the
+        ``<article class="result">`` markup is stable across SearXNG
+        themes and result-type variants (default, images, videos, …).
+        This works on both private and public instances with no
+        ``link_token`` handshake required.
+
+        See https://docs.searxng.org/admin/searx.limiter.html for the
+        rationale (SearXNG intentionally restricts JSON output on
+        private instances to limit bot access).
+        """
+        import re
+
         import httpx
 
         base_url = _searxng_url().rstrip("/")
@@ -75,8 +94,9 @@ class SearXNGWebSearchProvider(WebSearchProvider):
 
         params: Dict[str, Any] = {
             "q": query,
-            "format": "json",
-            "pageno": 1,
+            "format": "html",
+            "language": "auto",
+            "safesearch": 0,
         }
 
         try:
@@ -84,7 +104,14 @@ class SearXNGWebSearchProvider(WebSearchProvider):
                 f"{base_url}/search",
                 params=params,
                 timeout=15,
-                headers={"Accept": "application/json"},
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Hermes SearXNG Provider) "
+                        "AppleWebKit/537.36 Chrome/126.0"
+                    ),
+                    "Accept": "text/html, application/xhtml+xml, */*",
+                    "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+                },
             )
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -100,39 +127,55 @@ class SearXNGWebSearchProvider(WebSearchProvider):
                 "error": f"Could not reach SearXNG at {base_url}: {exc}",
             }
 
-        try:
-            data = resp.json()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("SearXNG response parse error: %s", exc)
-            return {
-                "success": False,
-                "error": "Could not parse SearXNG response as JSON",
-            }
+        body = resp.text
 
-        raw_results = data.get("results", [])
+        # Extract <article class="result...">...</article> containers. The
+        # `result` prefix matches all result-type variants (`result-default`,
+        # `result-images`, `result-videos`, `result-map`, ...).
+        articles = re.findall(
+            r'<article[^>]*class="result[^"]*"[^>]*>(.*?)</article>',
+            body,
+            re.DOTALL,
+        )
 
-        # SearXNG may return a score field; sort descending and cap to limit.
-        sorted_results = sorted(
-            raw_results,
-            key=lambda r: float(r.get("score", 0)),
-            reverse=True,
-        )[:limit]
+        results: list = []
+        for art in articles:
+            title_url_m = re.search(
+                r'<h3[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.+?)</a>',
+                art,
+                re.DOTALL,
+            )
+            if not title_url_m:
+                # Container without a parsable title link — skip.
+                continue
+            title = re.sub(r"<[^>]+>", "", title_url_m.group(2)).strip()
+            url = title_url_m.group(1).strip()
 
-        web_results = [
-            {
-                "title": str(r.get("title", "")),
-                "url": str(r.get("url", "")),
-                "description": str(r.get("content", "")),
-                "position": i + 1,
-            }
-            for i, r in enumerate(sorted_results)
-        ]
+            snippet = ""
+            snippet_m = re.search(
+                r'<p[^>]+class="content[^"]*"[^>]*>(.+?)</p>',
+                art,
+                re.DOTALL,
+            )
+            if snippet_m:
+                snippet = re.sub(r"<[^>]+>", "", snippet_m.group(1))
+                snippet = re.sub(r"\s+", " ", snippet).strip()
+
+            results.append(
+                {"title": title, "url": url, "description": snippet}
+            )
+
+        # SearXNG's HTML returns results in relevance order; cap to ``limit``
+        # and add 1-based position so downstream consumers don't have to.
+        web_results = results[:limit]
+        for i, r in enumerate(web_results):
+            r["position"] = i + 1
 
         logger.info(
-            "SearXNG search '%s': %d results (from %d raw, limit %d)",
+            "SearXNG (html) search '%s': %d results (from %d articles, limit %d)",
             query,
             len(web_results),
-            len(raw_results),
+            len(articles),
             limit,
         )
 

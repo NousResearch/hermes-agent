@@ -1716,7 +1716,12 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
 
 
 def _apply_main_model_assignment(
-    model_cfg: "Any", provider: str, model: str, base_url: str = "", api_key: str = ""
+    model_cfg: "Any",
+    provider: str,
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+    key_env: str = "",
 ) -> dict:
     """Apply a main-slot model assignment to a ``model`` config dict in place.
 
@@ -1760,9 +1765,16 @@ def _apply_main_model_assignment(
     # is always persisted; an existing key is dropped only when switching to a
     # different provider (it belonged to the old endpoint), and preserved on a
     # same-provider re-pick so re-selecting a model doesn't wipe the key.
-    if api_key.strip():
+    # When ``key_env`` is supplied the secret lives in ``.env``; config.yaml
+    # only references the env var (#57547).
+    if key_env.strip():
+        model_cfg["key_env"] = key_env.strip()
+        # Remove inline key aliases so the secret never lives in config.yaml.
+        clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
+    elif api_key.strip():
         model_cfg["api_key"] = api_key.strip()
         model_cfg.pop("api", None)
+        model_cfg.pop("key_env", None)
     elif (model_cfg.get("api_key") or model_cfg.get("api")) and new_provider != prev_provider:
         # A stale endpoint secret can live under the legacy ``api`` alias with
         # no ``api_key`` (the resolver still reads ``model.api`` as a key), so
@@ -7338,10 +7350,34 @@ def _apply_model_assignment_sync(
         provider_entry = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
         if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
             base_url = str(provider_entry.get("base_url") or "").strip()
+
+        # Custom/local endpoints must not store API keys in config.yaml.
+        # Derive a per-endpoint env var, persist the secret in ``.env``, and
+        # pass the env-var name instead of the secret (#57547).
+        key_env = ""
+        if provider.strip().lower() in {"custom", "local"} and base_url and api_key:
+            _parsed = urllib.parse.urlparse(base_url)
+            _identity = _parsed.hostname or ""
+            if _parsed.port:
+                _identity = f"{_identity}_{_parsed.port}"
+            key_env = custom_endpoint_key_env(_identity)
+            save_env_value(key_env, api_key)
+
         model_cfg = _apply_main_model_assignment(
-            cfg.get("model", {}), provider, model, base_url, api_key
+            cfg.get("model", {}), provider, model, base_url, api_key="", key_env=key_env
         )
-        if isinstance(provider_entry, dict) and provider_entry.get("api_key"):
+        # Fall back to the provider entry's stored key only when the request
+        # didn't carry one and no env var was derived — same precedence as the
+        # base_url fill above. An unconditional overwrite silently discards a
+        # key the caller is rotating in, and model.api_key outranks the
+        # environment at client construction (#62269), so the stale key keeps
+        # authenticating.
+        if (
+            not api_key
+            and not key_env
+            and isinstance(provider_entry, dict)
+            and provider_entry.get("api_key")
+        ):
             model_cfg["api_key"] = provider_entry["api_key"]
         cfg["model"] = model_cfg
 
@@ -7388,9 +7424,10 @@ def _apply_model_assignment_sync(
 
                 _save_custom_provider(
                     base_url,
-                    api_key,
-                    model,
+                    api_key="",
+                    model=model,
                     name=_auto_provider_name(base_url),
+                    key_env=key_env,
                 )
             except Exception:
                 # Never block the assignment on the bookkeeping write —

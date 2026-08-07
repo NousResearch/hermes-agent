@@ -1294,6 +1294,9 @@ def _resolve_openrouter_runtime(
         if isinstance(v, str) and v.strip():
             cfg_api_key = v.strip()
             break
+    cfg_key_env = str(
+        model_cfg.get("key_env") or model_cfg.get("api_key_env") or ""
+    ).strip()
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
     # GitHub #27132: provider aliases that resolve to "custom" (ollama,
@@ -1371,6 +1374,7 @@ def _resolve_openrouter_runtime(
         # Mirrors the OLLAMA_API_KEY host-gate added in GHSA-76xc-57q6-vm5m.
         api_key_candidates = [
             explicit_api_key,
+            (_getenv(cfg_key_env, "").strip() if (use_config_base_url and cfg_key_env) else ""),
             (cfg_api_key if use_config_base_url else ""),
             (_getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
             (_getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),

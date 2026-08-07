@@ -1573,13 +1573,12 @@ class TestWebServerEndpoints:
         assert _parse_model_ids(FakeResp(ValueError("bad json"))) == []
 
 
-    def test_set_model_main_custom_persists_api_key_and_registers_provider(self):
-        """A custom endpoint that requires auth must persist model.api_key (where
-        the runtime reads it) AND register a named custom_providers entry so the
-        endpoint reappears as a ready row in the picker — matching the
-        ``hermes model`` custom flow. Regression for the desktop loop where a
-        keyed custom endpoint could never be configured from the GUI."""
-        from hermes_cli.config import load_config
+    def test_set_model_main_custom_persists_key_env_and_registers_provider(self):
+        """A custom endpoint that requires auth must NOT write the secret to
+        config.yaml. The API key is written to ``~/.hermes/.env`` and both
+        ``model.key_env`` and the ``custom_providers`` entry reference it,
+        matching the ``hermes model`` custom flow. Regression for #57547."""
+        from hermes_cli.config import load_config, get_env_path
 
         resp = self.client.post(
             "/api/model/set",
@@ -1599,7 +1598,12 @@ class TestWebServerEndpoints:
         assert isinstance(model_cfg, dict)
         assert model_cfg["provider"] == "custom"
         assert model_cfg["base_url"] == "https://text.example.com/v1"
-        assert model_cfg["api_key"] == "sk-secret"
+        assert "api_key" not in model_cfg
+        assert model_cfg["key_env"] == "HERMES_CUSTOM_TEXT_EXAMPLE_COM_API_KEY"
+
+        # Secret lives in .env, not config.yaml.
+        env_text = get_env_path().read_text(encoding="utf-8")
+        assert "HERMES_CUSTOM_TEXT_EXAMPLE_COM_API_KEY=sk-secret" in env_text
 
         # Registered in custom_providers (dedup by base_url) so the picker shows
         # a proper ready row instead of the "needs setup" dead-end.
@@ -1607,7 +1611,8 @@ class TestWebServerEndpoints:
         assert any(
             isinstance(e, dict)
             and e.get("base_url") == "https://text.example.com/v1"
-            and e.get("api_key") == "sk-secret"
+            and e.get("key_env") == "HERMES_CUSTOM_TEXT_EXAMPLE_COM_API_KEY"
+            and e.get("api_key") is None
             and e.get("model") == "gpt-oss-120b"
             for e in custom
         )

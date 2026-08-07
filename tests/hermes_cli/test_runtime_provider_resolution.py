@@ -594,6 +594,26 @@ def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
     assert resolved["api_key"] == "sk-vllm-key"
 
 
+def test_custom_endpoint_uses_model_key_env(monkeypatch):
+    """``model.key_env`` resolves the secret from .env instead of inlining it
+    in config.yaml (#57547)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom",
+        "base_url": "https://my-vllm-server.example.com/v1",
+        "key_env": "HERMES_CUSTOM_MY_VLLM_SERVER_EXAMPLE_COM_API_KEY",
+    })
+    monkeypatch.setenv("HERMES_CUSTOM_MY_VLLM_SERVER_EXAMPLE_COM_API_KEY", "sk-vllm-env")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-...leak")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "https://my-vllm-server.example.com/v1"
+    assert resolved["api_key"] == "sk-vllm-env"
+
+
 def test_bare_custom_uses_loopback_model_base_url_when_provider_not_custom(monkeypatch):
     """Regression for #14676: /model can select Custom while YAML still lists another provider."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")

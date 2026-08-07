@@ -3103,21 +3103,29 @@ def _read_main_api_key() -> str:
     Mirrors ``_read_main_model`` / ``_read_main_provider``: checks the
     process-local ``_RUNTIME_MAIN_API_KEY`` override first (set by
     ``set_runtime_main`` when an AIAgent is active), then falls back to
-    ``model.api_key`` in config.yaml.
+    ``model.api_key`` or ``model.key_env`` in config.yaml.
 
     Used by the ``custom`` provider fallback chain so that auxiliary tasks
     configured with an explicit ``base_url`` but empty ``api_key`` inherit
     the main model's credentials instead of falling to ``no-key-required``
-    (issue #9318).
+    (issue #9318). Also supports ``key_env`` so secrets never need to be
+    inlined in config.yaml (#57547).
     """
     override = _runtime_main_value("api_key")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config, get_env_value
         cfg = load_config()
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, dict):
+            key_env = str(
+                model_cfg.get("key_env") or model_cfg.get("api_key_env") or ""
+            ).strip()
+            if key_env:
+                key = (get_env_value(key_env) or "").strip()
+                if key:
+                    return key
             key = model_cfg.get("api_key", "")
             if isinstance(key, str) and key.strip():
                 return key.strip()

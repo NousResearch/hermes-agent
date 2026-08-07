@@ -1085,7 +1085,9 @@ def _model_flow_custom(config):
         model["provider"] = "custom"
         model["base_url"] = effective_url
         if custom_key_env:
-            model["api_key"] = f"${{{custom_key_env}}}"
+            model["key_env"] = custom_key_env
+            model.pop("api_key", None)
+            model.pop("api", None)
         if api_mode:
             model["api_mode"] = api_mode
         else:
@@ -1111,7 +1113,9 @@ def _model_flow_custom(config):
         _caller_model["provider"] = "custom"
         _caller_model["base_url"] = effective_url
         if custom_key_env:
-            _caller_model["api_key"] = f"${{{custom_key_env}}}"
+            _caller_model["key_env"] = custom_key_env
+            _caller_model.pop("api_key", None)
+            _caller_model.pop("api", None)
         if api_mode:
             _caller_model["api_mode"] = api_mode
         else:

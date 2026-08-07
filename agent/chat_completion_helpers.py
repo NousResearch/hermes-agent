@@ -1074,12 +1074,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
         _ttfb_strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {
             "1", "true", "yes", "on"
         }
+        _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
         if (
             not _ttfb_strict
             and _ttfb_disable_above > 0
             and _est_tokens_for_codex_watchdog >= _ttfb_disable_above
         ):
             _large_request_ttfb_timeout = _codex_idle_timeout_default
+            if _ttfb_cap > 0:
+                # Respect the cap up front so we never announce a scale-up
+                # that the cap would immediately undo (log noise).
+                _large_request_ttfb_timeout = min(_large_request_ttfb_timeout, _ttfb_cap)
             if _ttfb_timeout < _large_request_ttfb_timeout:
                 logger.info(
                     "Scaling openai-codex no-byte TTFB watchdog from %.0fs to %.0fs "
@@ -1091,7 +1096,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     _ttfb_disable_above,
                 )
                 _ttfb_timeout = _large_request_ttfb_timeout
-        _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
         if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
             logger.info(
                 "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "

@@ -30,7 +30,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.memory_manager import build_memory_context_block
-from agent.turn_context import build_turn_context, compose_user_api_content
+from agent.turn_context import (
+    build_turn_context,
+    compose_multimodal_context_part,
+    compose_user_api_content,
+)
 from hermes_state import SessionDB
 
 
@@ -49,6 +53,29 @@ class TestComposeUserApiContent:
         assert out == "hello" + "\n\n" + fenced + "\n\n" + "PLUGIN-CTX"
 
 
+
+
+class TestComposeMultimodalContextPart:
+    """#71998: the injection composed as a standalone text part for the
+    multimodal (list) content path, mirroring the string sidecar's sources."""
+
+    def test_none_when_nothing_to_inject(self):
+        assert compose_multimodal_context_part("", "") is None
+
+    def test_plugin_context_only(self):
+        assert compose_multimodal_context_part("", "CTX") == "CTX"
+
+    def test_memory_block_and_plugin_context(self):
+        out = compose_multimodal_context_part("likes tea", "CTX")
+        fenced = build_memory_context_block("likes tea")
+        assert out == fenced + "\n\n" + "CTX"
+
+    def test_matches_string_sidecar_injection_tail(self):
+        # The multimodal part is exactly the string sidecar minus the leading
+        # content + separator, so both paths inject byte-identical context.
+        sidecar = compose_user_api_content("hello", "likes tea", "CTX")
+        part = compose_multimodal_context_part("likes tea", "CTX")
+        assert sidecar == "hello\n\n" + part
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +306,46 @@ class TestPrologueStamping:
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
             ctx = _build(agent)
+        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
+
+    def test_appends_context_part_for_multimodal_turn(self):
+        """#71998: pre_llm_call context must reach an image-only (multimodal)
+        turn as a durable text part, not silently drop.
+
+        The string api_content sidecar can't ride on list content, so the
+        context is appended to the content list (the gateway must-deliver-note
+        channel) — durable, so wire == persisted == replay."""
+        agent = _FakeAgent()
+        blocks = [{"type": "image_url", "image_url": {"url": "data:img"}}]
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": "PLUGIN-CTX"}],
+        ):
+            ctx = _build(
+                agent,
+                user_message=blocks,
+                summarize_user_message_for_log=lambda _m: "[image]",
+            )
+        content = ctx.messages[ctx.current_turn_user_idx]["content"]
+        assert isinstance(content, list)
+        # Original image part preserved; plugin context appended as a text part.
+        assert content[0] == {"type": "image_url", "image_url": {"url": "data:img"}}
+        assert content[-1] == {"type": "text", "text": "PLUGIN-CTX"}
+        # Multimodal turns carry the context durably, not via the string sidecar.
+        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
+
+    def test_no_context_part_for_multimodal_without_injections(self):
+        """A multimodal turn with no ephemeral context is left untouched."""
+        agent = _FakeAgent()
+        blocks = [{"type": "image_url", "image_url": {"url": "data:img"}}]
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            ctx = _build(
+                agent,
+                user_message=blocks,
+                summarize_user_message_for_log=lambda _m: "[image]",
+            )
+        content = ctx.messages[ctx.current_turn_user_idx]["content"]
+        assert content == blocks  # no stray text part appended
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
 
 

@@ -3420,11 +3420,13 @@ class AIAgent:
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
 
-        On failure, store ``{path: {error_preview, tool}}`` entries.  On
-        success, remove any prior failure entries for the same paths (the
-        model recovered within the turn).  Silently no-ops if the per-turn
-        state dict hasn't been initialised yet (e.g. a tool dispatched
-        outside ``run_conversation``).
+        On failure, store ``{path: {error_preview, tool, kind}}`` entries.
+        ``kind`` is ``args_missing`` when the tool never reached disk (bad
+        call shape) or ``apply_failed`` after a real attempt.  On success,
+        remove any prior failure entries for the same paths (the model
+        recovered within the turn).  Silently no-ops if the per-turn state
+        dict hasn't been initialised yet (e.g. a tool dispatched outside
+        ``run_conversation``).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
             return
@@ -3441,14 +3443,35 @@ class AIAgent:
                 changed.update(_extract_landed_file_mutation_paths(tool_name, args, result))
         if is_error and not landed:
             preview = _extract_error_preview(result)
+            # Formation errors never touched disk. Keep them in per-turn
+            # state so a later success can clear them, but do not treat them
+            # as overclaim-worthy attempted edits (#70719).
+            preview_l = preview.strip().lower()
+            args_missing_markers = (
+                "path required",
+                "old_string and new_string required",
+                "patch content required",
+                "content required",
+            )
+            kind = (
+                "args_missing"
+                if any(m in preview_l for m in args_missing_markers)
+                else "apply_failed"
+            )
             for path in targets:
                 # Keep the FIRST error we saw for a given path unless we
-                # later see success.  A repeated failure with a different
-                # message shouldn't silently overwrite the original.
-                if path not in state:
+                # later see success.  Exception: promote args_missing to
+                # apply_failed so a real failed edit is not hidden by the
+                # formation-error footer filter.
+                existing = state.get(path)
+                if existing is None or (
+                    existing.get("kind") == "args_missing"
+                    and kind == "apply_failed"
+                ):
                     state[path] = {
                         "tool": tool_name,
                         "error_preview": preview,
+                        "kind": kind,
                     }
         else:
             for path in targets:
@@ -3524,6 +3547,14 @@ class AIAgent:
         bare-path media extractor can never auto-attach a protected file
         (e.g. ``~/.hermes/config.yaml``) to a messaging channel (#35584).
         """
+        # Formation errors never attempted a write. Keep the tool error for
+        # the model; reserve the overclaim footer for real apply failures
+        # (#70719). Missing ``kind`` keeps pre-classification behavior.
+        failed = {
+            path: info
+            for path, info in failed.items()
+            if info.get("kind", "apply_failed") != "args_missing"
+        }
         if not failed:
             return ""
         lines = [

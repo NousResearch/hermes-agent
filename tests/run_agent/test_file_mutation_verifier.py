@@ -133,6 +133,45 @@ class TestRecordFileMutationResult:
         assert "/tmp/a.md" in state
         assert state["/tmp/a.md"]["tool"] == "patch"
         assert "Could not find old_string" in state["/tmp/a.md"]["error_preview"]
+        assert state["/tmp/a.md"]["kind"] == "apply_failed"
+
+    def test_missing_patch_arguments_do_not_render_overclaim_footer(self):
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": "/tmp/a.md"},
+            json.dumps({"success": False, "error": "old_string and new_string required"}),
+            is_error=True,
+        )
+
+        state = agent._turn_failed_file_mutations
+        assert state["/tmp/a.md"]["kind"] == "args_missing"
+        assert AIAgent._format_file_mutation_failure_footer(state) == ""
+
+    def test_args_missing_promoted_by_later_apply_failed(self):
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": "/tmp/a.md"},
+            json.dumps({"success": False, "error": "old_string and new_string required"}),
+            is_error=True,
+        )
+        agent._record_file_mutation_result(
+            "patch",
+            {
+                "mode": "replace",
+                "path": "/tmp/a.md",
+                "old_string": "x",
+                "new_string": "y",
+            },
+            json.dumps({"success": False, "error": "Could not find old_string"}),
+            is_error=True,
+        )
+
+        state = agent._turn_failed_file_mutations
+        assert state["/tmp/a.md"]["kind"] == "apply_failed"
+        assert "Could not find old_string" in state["/tmp/a.md"]["error_preview"]
+        footer = AIAgent._format_file_mutation_failure_footer(state)
+        assert footer
+        assert "/tmp/a.md" in footer
 
     def test_success_removes_prior_failure(self):
         agent = _bare_agent()

@@ -859,8 +859,16 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    _interim_delivery_check = getattr(agent, "_interim_text_was_delivered", None)
+    response_previewed = bool(
+        turn.final_text
+        and callable(_interim_delivery_check)
+        and _interim_delivery_check(turn.final_text)
+    )
+
     return {
         "final_response": turn.final_text,
+        "response_previewed": response_previewed,
         "messages": messages,
         "api_calls": api_calls,
         "completed": not turn.interrupted and turn.error is None,

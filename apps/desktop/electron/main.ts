@@ -93,6 +93,7 @@ import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import { installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
+import { countLocalBackends, partitionIdleReapable, selectLruEvictionCandidates } from './pool-reaper'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
@@ -1065,7 +1066,10 @@ let softRehomeInProgress = false
 const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt }
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
-// exist while a non-primary profile is actively being chatted through.
+// exist while a non-primary profile is actively being chatted through. Both
+// policies apply to LOCAL child backends only — remote pool entries hold no
+// local process, cost nothing to keep, and dropping them strands open
+// sessions; dead remotes are handled by liveness revalidation instead.
 const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 3)
 const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
 // A backend touched within this window has a live renderer socket (the keepalive
@@ -8080,6 +8084,12 @@ function touchPoolBackend(profile) {
 // ever evict backends without a live renderer socket (stale beyond the keepalive
 // window). When every backend is actively kept alive we let the pool exceed the
 // soft cap rather than kill a running session.
+//
+// The eviction budget counts only entries with a local child `process`. Remote
+// descriptors (`process === null`) are excluded from eviction candidates already
+// (see pool-reaper.ts); they must not inflate the budget either, or a mixed pool
+// with several cheap remote descriptors would wrongly mark a still-needed local
+// backend as over-cap and evict it.
 function evictLruPoolBackends(keep) {
   if (backendPool.size <= keep) {
     return
@@ -8087,13 +8097,12 @@ function evictLruPoolBackends(keep) {
 
   const now = Date.now()
 
-  const evictable = [...backendPool.entries()]
-    .filter(([, entry]) => now - (entry.lastActiveAt || 0) > POOL_KEEPALIVE_FRESH_MS)
-    .sort((a, b) => (a[1].lastActiveAt || 0) - (b[1].lastActiveAt || 0))
+  const evictable = selectLruEvictionCandidates(backendPool, now, POOL_KEEPALIVE_FRESH_MS)
 
-  let removable = backendPool.size - Math.max(0, keep)
+  const localCount = countLocalBackends(backendPool)
+  let removable = localCount - Math.max(0, keep)
 
-  for (const [profile] of evictable) {
+  for (const profile of evictable) {
     if (removable <= 0) {
       break
     }
@@ -8112,11 +8121,15 @@ function startPoolIdleReaper() {
   poolIdleReaper = setInterval(() => {
     const now = Date.now()
 
-    for (const [profile, entry] of [...backendPool.entries()]) {
-      if (now - (entry.lastActiveAt || 0) > POOL_IDLE_MS) {
-        rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(POOL_IDLE_MS / 1000)}s)`)
-        stopPoolBackend(profile)
-      }
+    // Remote pool entries (no local child process) are never idle-reaped: an
+    // idle-but-healthy remote backend is indistinguishable from a dead one to
+    // a timer, and reaping it silently strands the renderer's open sessions.
+    // Dead remotes are dropped by the liveness revalidation instead.
+    const { reap } = partitionIdleReapable(backendPool, now, POOL_IDLE_MS)
+
+    for (const { profile, idleMs } of reap) {
+      rememberLog(`Reaping idle profile backend "${profile}" (idle > ${idleMs}s)`)
+      stopPoolBackend(profile)
     }
 
     if (backendPool.size === 0 && poolIdleReaper) {

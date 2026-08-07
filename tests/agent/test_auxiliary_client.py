@@ -732,6 +732,32 @@ class TestBuildCodexClient:
         assert client is None
         assert model is None
 
+    def test_explicit_api_key_skips_pool_select(self):
+        """Pinned credentials must not call _select_pool_entry."""
+        with (
+            patch(
+                "agent.auxiliary_client._select_pool_entry",
+                side_effect=AssertionError("pool select must not run"),
+            ),
+            patch(
+                "agent.auxiliary_client._read_codex_access_token",
+                side_effect=AssertionError("auth store must not run"),
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock(api_key="pinned-codex-token")
+            from agent.auxiliary_client import _build_codex_client
+
+            client, model = _build_codex_client(
+                "gpt-5.4",
+                explicit_api_key="pinned-codex-token",
+                explicit_base_url="https://chatgpt.com/backend-api/codex",
+            )
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["api_key"] == "pinned-codex-token"
+
     def test_cached_codex_client_rebuilds_when_pool_entry_changes(self):
         import agent.auxiliary_client as aux
 
@@ -3748,6 +3774,217 @@ class TestOpenRouterExplicitApiKey:
             assert call_kwargs["api_key"] == "env-fallback-key", (
                 f"Expected env fallback key to be used when explicit_api_key is None, got: {call_kwargs['api_key']}"
             )
+
+    def test_resolve_provider_client_async_honors_explicit_api_key_over_pool(
+        self, monkeypatch
+    ):
+        """Async openrouter path must build with the pinned key, not pool select()."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "env-fallback-key")
+        selected = SimpleNamespace(
+            runtime_api_key="sk-pool-active",
+            access_token="sk-pool-active",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        mock_openai = MagicMock(return_value=MagicMock(name="or-sync"))
+        mock_async = MagicMock(return_value=MagicMock(name="or-async", api_key="sk-work"))
+
+        with (
+            patch(
+                "agent.auxiliary_client._select_pool_entry",
+                return_value=(True, selected),
+            ) as mock_select,
+            patch("agent.auxiliary_client.OpenAI", mock_openai),
+            patch("openai.AsyncOpenAI", mock_async),
+        ):
+            client, _model = resolve_provider_client(
+                provider="openrouter",
+                explicit_api_key="sk-work",
+                async_mode=True,
+            )
+
+        assert client is not None
+        assert mock_openai.call_args.kwargs["api_key"] == "sk-work"
+        # Pool may be probed for metadata, but the constructed client must
+        # use the explicit key rather than the selected entry's key.
+        if mock_select.called:
+            assert selected.runtime_api_key != "sk-work"
+
+
+class TestOauthExplicitApiKeyPinning:
+    """Pinned explicit_api_key must survive OAuth-specialized resolver paths.
+
+    Plugin profile= resolves a pool entry and forwards its runtime key via
+    call_llm(..., api_key=...). openai-codex / nous previously ignored that
+    key and re-selected from the pool.
+    """
+
+    def test_resolve_codex_sync_uses_explicit_key_not_pool_active(self):
+        active = SimpleNamespace(
+            runtime_api_key="tok-active-default",
+            access_token="tok-active-default",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        with (
+            patch(
+                "agent.auxiliary_client._select_pool_entry",
+                side_effect=AssertionError("must not re-select pool"),
+            ),
+            patch(
+                "agent.auxiliary_client._read_codex_access_token",
+                return_value="tok-active-default",
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock(api_key="tok-profile-work")
+            client, model = resolve_provider_client(
+                provider="openai-codex",
+                model="gpt-5.4",
+                explicit_api_key="tok-profile-work",
+                explicit_base_url="https://chatgpt.com/backend-api/codex",
+            )
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["api_key"] == "tok-profile-work"
+        assert mock_openai.call_args.kwargs["api_key"] != active.runtime_api_key
+
+    def test_resolve_codex_async_uses_explicit_key_not_pool_active(self):
+        with (
+            patch(
+                "agent.auxiliary_client._select_pool_entry",
+                side_effect=AssertionError("must not re-select pool"),
+            ),
+            patch(
+                "agent.auxiliary_client._read_codex_access_token",
+                return_value="tok-active-default",
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock(api_key="tok-profile-work")
+            client, model = resolve_provider_client(
+                provider="openai-codex",
+                model="gpt-5.4",
+                explicit_api_key="tok-profile-work",
+                async_mode=True,
+            )
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["api_key"] == "tok-profile-work"
+        assert getattr(client, "api_key", None) == "tok-profile-work"
+
+    def test_resolve_nous_sync_uses_explicit_key_not_runtime(self):
+        with (
+            patch(
+                "agent.auxiliary_client._read_nous_auth",
+                side_effect=AssertionError("auth store must not run"),
+            ),
+            patch(
+                "agent.auxiliary_client._resolve_nous_runtime_api",
+                side_effect=AssertionError("runtime resolve must not run"),
+            ),
+            patch(
+                "hermes_cli.models.get_nous_recommended_aux_model",
+                return_value=None,
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock(api_key="jwt-profile-work")
+            client, model = resolve_provider_client(
+                provider="nous",
+                model="google/gemini-3-flash-preview",
+                explicit_api_key="jwt-profile-work",
+                explicit_base_url="https://inference.pool.example/v1",
+            )
+
+        assert client is not None
+        assert mock_openai.call_args.kwargs["api_key"] == "jwt-profile-work"
+        assert mock_openai.call_args.kwargs["base_url"] == (
+            "https://inference.pool.example/v1"
+        )
+
+    def test_resolve_nous_async_uses_explicit_key_not_runtime(self):
+        mock_async = MagicMock(
+            return_value=MagicMock(name="nous-async", api_key="jwt-profile-work")
+        )
+        with (
+            patch(
+                "agent.auxiliary_client._read_nous_auth",
+                side_effect=AssertionError("auth store must not run"),
+            ),
+            patch(
+                "agent.auxiliary_client._resolve_nous_runtime_api",
+                side_effect=AssertionError("runtime resolve must not run"),
+            ),
+            patch(
+                "hermes_cli.models.get_nous_recommended_aux_model",
+                return_value=None,
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("openai.AsyncOpenAI", mock_async),
+        ):
+            mock_openai.return_value = MagicMock(api_key="jwt-profile-work")
+            client, _model = resolve_provider_client(
+                provider="nous",
+                model="google/gemini-3-flash-preview",
+                explicit_api_key="jwt-profile-work",
+                explicit_base_url="https://inference.pool.example/v1",
+                async_mode=True,
+            )
+
+        assert client is not None
+        assert mock_openai.call_args.kwargs["api_key"] == "jwt-profile-work"
+
+    def test_resolve_xai_oauth_sync_uses_explicit_key_not_pool(self):
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_xai_oauth_for_aux",
+                side_effect=AssertionError("must not re-resolve default oauth"),
+            ),
+            patch(
+                "tools.xai_http.hermes_xai_default_headers",
+                return_value={},
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock(api_key="tok-xai-work")
+            client, model = resolve_provider_client(
+                provider="xai-oauth",
+                model="grok-4",
+                explicit_api_key="tok-xai-work",
+                explicit_base_url="https://api.x.ai/v1",
+            )
+
+        assert client is not None
+        assert model == "grok-4"
+        assert mock_openai.call_args.kwargs["api_key"] == "tok-xai-work"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://api.x.ai/v1"
+
+    def test_resolve_xai_oauth_async_uses_explicit_key_not_pool(self):
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_xai_oauth_for_aux",
+                side_effect=AssertionError("must not re-resolve default oauth"),
+            ),
+            patch(
+                "tools.xai_http.hermes_xai_default_headers",
+                return_value={},
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock(api_key="tok-xai-work")
+            client, model = resolve_provider_client(
+                provider="xai-oauth",
+                model="grok-4",
+                explicit_api_key="tok-xai-work",
+                explicit_base_url="https://api.x.ai/v1",
+                async_mode=True,
+            )
+
+        assert client is not None
+        assert model == "grok-4"
+        assert mock_openai.call_args.kwargs["api_key"] == "tok-xai-work"
+        assert getattr(client, "api_key", None) == "tok-xai-work"
 
 
 def test_pool_runtime_base_url_uses_nous_env_override(monkeypatch):

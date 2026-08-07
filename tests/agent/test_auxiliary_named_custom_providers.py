@@ -122,6 +122,36 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # no-key-required should be used
 
+    def test_named_custom_honors_explicit_api_key_over_config_default(
+        self, tmp_path
+    ):
+        """profile= pins must win over the named custom entry's default key.
+
+        When the pool entry has no base_url, provider stays custom:<name>
+        and resolve_provider_client must still use explicit_api_key rather
+        than the config entry's api_key.
+        """
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {
+                    "name": "together",
+                    "base_url": "https://together.example/v1",
+                    "api_key": "sk-config-default",
+                },
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+
+        client, model = resolve_provider_client(
+            "custom:together",
+            model="meta-llama/Llama-3",
+            explicit_api_key="sk-work-profile",
+        )
+        assert client is not None
+        assert model == "meta-llama/Llama-3"
+        assert client.api_key == "sk-work-profile"
+        assert "together.example" in str(client.base_url)
 
 
 class TestResolveProviderClientModelNormalization:

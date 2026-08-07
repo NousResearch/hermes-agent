@@ -2527,7 +2527,12 @@ def _describe_openrouter_unavailable() -> str:
     return "no usable OpenRouter credentials found"
 
 
-def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_nous(
+    vision: bool = False,
+    *,
+    explicit_api_key: str = None,
+    explicit_base_url: str = None,
+) -> Tuple[Optional[OpenAI], Optional[str]]:
     # Check cross-session rate limit guard before attempting Nous —
     # if another session already recorded a 429, skip Nous entirely
     # to avoid piling more requests onto the tapped RPH bucket.
@@ -2544,20 +2549,26 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     except Exception:
         pass
 
-    nous = _read_nous_auth()
-    runtime = _resolve_nous_runtime_api(force_refresh=False)
-    if runtime is None and not nous:
-        logger.warning(
-            "Auxiliary Nous client unavailable: no Nous authentication found "
-            "(run: hermes auth)."
-        )
-        _mark_provider_unhealthy("nous", ttl=60)
-        return None, None
-    if runtime is None and nous:
-        logger.debug(
-            "Auxiliary Nous: runtime JWT refresh failed; checking stored "
-            "auth.json token."
-        )
+    pinned_key = (explicit_api_key or "").strip() or None
+    pinned_base = (explicit_base_url or "").strip().rstrip("/") or None
+
+    nous = None
+    runtime = None
+    if pinned_key is None:
+        nous = _read_nous_auth()
+        runtime = _resolve_nous_runtime_api(force_refresh=False)
+        if runtime is None and not nous:
+            logger.warning(
+                "Auxiliary Nous client unavailable: no Nous authentication found "
+                "(run: hermes auth)."
+            )
+            _mark_provider_unhealthy("nous", ttl=60)
+            return None, None
+        if runtime is None and nous:
+            logger.debug(
+                "Auxiliary Nous: runtime JWT refresh failed; checking stored "
+                "auth.json token."
+            )
     global auxiliary_is_nous
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
@@ -2590,7 +2601,10 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             "vision" if vision else "text", exc, model,
         )
 
-    if runtime is not None:
+    if pinned_key is not None:
+        api_key = pinned_key
+        base_url = pinned_base or _nous_base_url()
+    elif runtime is not None:
         api_key, base_url = runtime
     else:
         api_key = _nous_api_key(nous or {})
@@ -3295,7 +3309,12 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     return _fallback_client, model
 
 
-def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+def _build_xai_oauth_aux_client(
+    model: str,
+    *,
+    explicit_api_key: str = None,
+    explicit_base_url: str = None,
+) -> Tuple[Optional[Any], Optional[str]]:
     """Build a CodexAuxiliaryClient for an xAI Grok OAuth-authenticated session.
 
     xAI's ``/v1/responses`` endpoint speaks the OpenAI Responses API, so we
@@ -3305,6 +3324,9 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     The caller must pass an explicit model — pinning a default for Grok
     would silently rot when xAI's allowlist drifts.  Returns ``(None, None)``
     when the user has not authenticated with xAI Grok OAuth.
+
+    ``explicit_api_key`` / ``explicit_base_url`` pin a specific pool entry
+    (e.g. plugin ``profile=``) and skip pool ``select()``.
     """
     if not model:
         logger.warning(
@@ -3312,10 +3334,17 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    resolved = _resolve_xai_oauth_for_aux()
-    if resolved is None:
-        return None, None
-    api_key, base_url = resolved
+    pinned_key = (explicit_api_key or "").strip() or None
+    if pinned_key is not None:
+        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+
+        api_key = pinned_key
+        base_url = (explicit_base_url or "").strip().rstrip("/") or DEFAULT_XAI_OAUTH_BASE_URL
+    else:
+        resolved = _resolve_xai_oauth_for_aux()
+        if resolved is None:
+            return None, None
+        api_key, base_url = resolved
     logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
     from tools.xai_http import hermes_xai_default_headers
 
@@ -3327,7 +3356,12 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
-def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+def _build_codex_client(
+    model: str,
+    *,
+    explicit_api_key: str = None,
+    explicit_base_url: str = None,
+) -> Tuple[Optional[Any], Optional[str]]:
     """Build a CodexAuxiliaryClient for an explicitly-requested model.
 
     There is no auto-selection of the Codex model: the ChatGPT-account
@@ -3335,6 +3369,9 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     allow-list, so any hardcoded default we pick goes stale.  The caller
     is responsible for passing the model (e.g. from the user's own
     ``model.model`` or ``auxiliary.<task>.model`` config).
+
+    ``explicit_api_key`` / ``explicit_base_url`` pin a specific pool entry
+    (e.g. plugin ``profile=``) and skip ``_select_pool_entry``.
 
     Returns (None, None) when no Codex OAuth token is available.
     """
@@ -3344,21 +3381,26 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        codex_token = _pool_runtime_api_key(entry)
-        if codex_token:
-            base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+    pinned_key = (explicit_api_key or "").strip() or None
+    if pinned_key is not None:
+        codex_token = pinned_key
+        base_url = (explicit_base_url or "").strip().rstrip("/") or _CODEX_AUX_BASE_URL
+    else:
+        pool_present, entry = _select_pool_entry("openai-codex")
+        if pool_present:
+            codex_token = _pool_runtime_api_key(entry)
+            if codex_token:
+                base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+            else:
+                codex_token = _read_codex_access_token()
+                if not codex_token:
+                    return None, None
+                base_url = _CODEX_AUX_BASE_URL
         else:
             codex_token = _read_codex_access_token()
             if not codex_token:
                 return None, None
             base_url = _CODEX_AUX_BASE_URL
-    else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(
         api_key=codex_token,
@@ -5928,7 +5970,11 @@ def resolve_provider_client(
             or model in _PROVIDER_VISION_MODELS.values()
             or (model or "").strip().lower() == "mimo-v2-omni"
         )
-        client, default = _try_nous(vision=_is_vision)
+        client, default = _try_nous(
+            vision=_is_vision,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
         if client is None:
             logger.warning("resolve_provider_client: nous requested "
                            "but Nous Portal not configured (run: hermes auth)")
@@ -5960,20 +6006,27 @@ def resolve_provider_client(
         if raw_codex:
             # Return the raw OpenAI client for callers that need direct
             # access to responses.stream() (e.g., the main agent loop).
-            codex_token = _read_codex_access_token()
+            codex_token = (explicit_api_key or "").strip() or _read_codex_access_token()
             if not codex_token:
                 logger.warning("resolve_provider_client: openai-codex requested "
                                "but no Codex OAuth token found (run: hermes model)")
                 return None, None
             final_model = _normalize_resolved_model(model, provider)
+            codex_base = (
+                (explicit_base_url or "").strip().rstrip("/") or _CODEX_AUX_BASE_URL
+            )
             raw_client = _create_openai_client(
                 api_key=codex_token,
-                base_url=_CODEX_AUX_BASE_URL,
+                base_url=codex_base,
                 default_headers=_codex_cloudflare_headers(codex_token),
             )
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
-        client, default = _build_codex_client(model)
+        client, default = _build_codex_client(
+            model,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
         if client is None:
             logger.warning("resolve_provider_client: openai-codex requested "
                            "but no Codex OAuth token found (run: hermes model)")
@@ -5991,7 +6044,11 @@ def resolve_provider_client(
     # OpenRouter / Nous bills for side tasks they thought were running on
     # their xAI subscription.
     if provider == "xai-oauth":
-        client, default = _build_xai_oauth_aux_client(model)
+        client, default = _build_xai_oauth_aux_client(
+            model,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
         if client is None:
             logger.warning(
                 "resolve_provider_client: xai-oauth requested but no xAI "
@@ -6102,8 +6159,10 @@ def resolve_provider_client(
         if custom_entry is None:
             custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
-            custom_base = (custom_entry.get("base_url") or "").strip()
-            custom_key = (custom_entry.get("api_key") or "").strip()
+            pinned_key = (explicit_api_key or "").strip() or None
+            pinned_base = (explicit_base_url or "").strip().rstrip("/") or None
+            custom_base = pinned_base or (custom_entry.get("base_url") or "").strip()
+            custom_key = pinned_key or (custom_entry.get("api_key") or "").strip()
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = _scoped_key_env(custom_key_env)

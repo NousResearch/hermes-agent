@@ -230,8 +230,10 @@ class TestResolveVisionMainFirst:
         nous_client.api_key = "jwt-test"
         nous_client.base_url = "https://inference-api.nousresearch.com/v1"
 
-        def fake_try_nous(vision=False):
+        def fake_try_nous(vision=False, *, explicit_api_key=None, explicit_base_url=None):
             seen["vision"] = vision
+            seen["explicit_api_key"] = explicit_api_key
+            seen["explicit_base_url"] = explicit_base_url
             return nous_client, (
                 "stepfun/step-3.7-flash:free" if vision else "tencent/hy3:free"
             )

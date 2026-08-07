@@ -61,7 +61,7 @@ brew install huggingface-cli
 Then download:
 
 ```bash
-huggingface-cli download unsloth/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/models
+hf download unsloth/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/models
 ```
 
 :::tip Gated models

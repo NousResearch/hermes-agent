@@ -130,3 +130,64 @@ class TestResolveGatewayModel:
     def test_string_model_config(self):
         from gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": "my-model"}) == "my-model"
+
+
+class TestConfiguredSilentDefault:
+    def test_config_silent_default_wins_over_catalog_label(self):
+        """``model.silent_default`` (config.yaml) beats the cached catalog
+        label AND the in-repo constant: curated fleets pin the model that
+        silently backs surfaces created without an explicit model."""
+        from unittest.mock import patch
+
+        from hermes_cli import models as models_mod
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"model": {"silent_default": "claude-sonnet-5"}},
+        ), patch(
+            "hermes_cli.model_catalog.get_default_model_from_cache",
+            return_value="qwen/qwen3.7-max",
+        ):
+            assert (
+                models_mod.get_preferred_silent_default_model("nous")
+                == "claude-sonnet-5"
+            )
+
+    def test_non_string_silent_default_is_ignored(self):
+        """YAML booleans / numbers are config mistakes, not model ids —
+        the resolver must fall through to the normal chain."""
+        from unittest.mock import patch
+
+        from hermes_cli import models as models_mod
+
+        for bogus in (True, 1, ["x"], ""):
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"silent_default": bogus}},
+            ), patch(
+                "hermes_cli.model_catalog.get_default_model_from_cache",
+                return_value=None,
+            ):
+                assert (
+                    models_mod.get_preferred_silent_default_model("openrouter")
+                    == models_mod.PREFERRED_SILENT_DEFAULT_MODEL
+                )
+
+    def test_scalar_model_config_is_tolerated(self):
+        """Installs where ``model`` is the legacy scalar form must not
+        crash the resolver."""
+        from unittest.mock import patch
+
+        from hermes_cli import models as models_mod
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"model": "qwen/qwen3.7-max"},
+        ), patch(
+            "hermes_cli.model_catalog.get_default_model_from_cache",
+            return_value=None,
+        ):
+            assert (
+                models_mod.get_preferred_silent_default_model("openrouter")
+                == models_mod.PREFERRED_SILENT_DEFAULT_MODEL
+            )

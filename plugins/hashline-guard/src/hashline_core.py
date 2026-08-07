@@ -3,18 +3,27 @@
 verify_anchor(file_text, old_string) -> ('ok', None) | ('block', reason)
 context_hash(file_text, old_string, window=2) -> SHA-256 hex string
 
-Fail-open: any IO/setup error is logged and skipped, never blocks.
+FAIL-OPEN: any IO/setup error is logged and skipped, never blocks.
+
+CANONICALIZATION
+----------------
+- Newline normalization: CRLF/LFCR/CR are normalized to LF before matching/hashing.
+- Trailing whitespace: kept byte-exact on each line; do NOT strip.
+- Hash payload version tag: 'hashline:v1:<windowed_text>' so future format
+  changes don't collide with prior hashline values.
+- Window size is part of the computed text shape; changing window changes the hash.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 _EMPTY_REASON = "old_string must be non-empty"
+_VERSION_TAG = "hashline:v1"
 
 
 def verify_anchor(file_text: str, old_string: str) -> Tuple[str, Optional[str]]:
@@ -22,7 +31,8 @@ def verify_anchor(file_text: str, old_string: str) -> Tuple[str, Optional[str]]:
     if not old_string:
         return "block", _EMPTY_REASON
 
-    count = file_text.count(old_string)
+    canonical = _canonicalize(file_text)
+    count = canonical.count(_canonicalize(old_string))
     if count == 0:
         return "block", "old_string not found in live file — anchor drifted"
     if count > 1:
@@ -35,17 +45,85 @@ def context_hash(file_text: str, old_string: str, window: int = 2) -> str:
     if not old_string:
         return hashlib.sha256(b"").hexdigest()
 
-    lines = file_text.splitlines()
-    idx = file_text.find(old_string)
-    if idx == -1:
-        # Anchor absent: hash old_string alone with no context
+    return compute_hashline(file_text, old_string, 0, window=window)
+
+
+def find_all(file_text: str, old_string: str) -> List[Tuple[int, int, int]]:
+    """Return list of (start_idx, end_idx, line_number) for every occurrence of old_string."""
+    if not old_string:
+        return []
+    text = _canonicalize(file_text)
+    anchor = _canonicalize(old_string)
+    out = []
+    start = 0
+    while True:
+        idx = text.find(anchor, start)
+        if idx == -1:
+            break
+        end_idx = idx + len(anchor)
+        line_number = text[:idx].count("\n") + 1
+        out.append((idx, end_idx, line_number))
+        start = end_idx
+    return out
+
+
+def compute_hashline(file_text: str, old_string: str, occurrence_index: int, window: int = 2) -> str:
+    """SHA-256 hex digest of a versioned window around the `occurrence_index`-th match."""
+    if not old_string:
+        return hashlib.sha256(b"").hexdigest()
+    matches = find_all(file_text, old_string)
+    if not matches or occurrence_index < 0 or occurrence_index >= len(matches):
         return hashlib.sha256(old_string.encode("utf-8")).hexdigest()
 
-    # Compute line index of the anchor's first line
-    preceding = file_text[:idx]
-    anchor_line = preceding.count("\n")
+    lines = _canonicalize(file_text).splitlines()
+    anchor_line = matches[occurrence_index][2] - 1
     start = max(0, anchor_line - window)
     end = min(len(lines), anchor_line + old_string.count("\n") + 1 + window)
     window_lines = lines[start:end]
-    payload = "\n".join(window_lines)
+    payload = f"{_VERSION_TAG}:{occurrence_index}:" + "\n".join(window_lines)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def verify_anchor_by_hash(file_text: str, old_string: str, expected_hashline: str, window: int = 2) -> Tuple[str, Tuple]:
+    """Pin an exact occurrence by hashline.
+
+    Returns:
+      ('ok', occurrence_index)
+      ('block', {'reason': str, 'found': [hashline, ...], 'lines': [line_number, ...]})
+    """
+    if not old_string:
+        return "block", {"reason": _EMPTY_REASON, "found": [], "lines": []}
+
+    matches = find_all(file_text, old_string)
+    count = len(matches)
+    if count == 0:
+        return "block", {"reason": "old_string not found in live file — anchor drifted", "found": [], "lines": []}
+
+    found = []
+    lines = []
+    for idx in range(count):
+        lines.append(matches[idx][2])
+        found.append(compute_hashline(file_text, old_string, idx, window=window))
+
+    if count == 1:
+        if found[0] == expected_hashline:
+            return "ok", 0
+        return "block", {"reason": "single occurrence hashline mismatch", "found": found, "lines": lines}
+
+    exact_matches = [i for i, h in enumerate(found) if h == expected_hashline]
+    if len(exact_matches) == 1:
+        return "ok", exact_matches[0]
+    if not exact_matches:
+        reason = f"hashline did not match any occurrence; found {count} anchors"
+    else:
+        reason = f"hashline is ambiguous: matched {len(exact_matches)} occurrences"
+    return "block", {"reason": reason, "found": found, "lines": lines}
+
+
+def _canonicalize(text: str) -> str:
+    if not text:
+        return ""
+    out = text.replace("\r\n", "\n").replace("\r", "\n")
+    # normalize NEL/line-separator/paragraph-separator if present
+    out = out.replace("\u0085", "\n").replace("\u2028", "\n").replace("\u2029", "\n")
+    return out

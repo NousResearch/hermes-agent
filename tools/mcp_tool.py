@@ -5303,15 +5303,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
-            try:
-                parsed = json.loads(result)
-                if "error" in parsed:
-                    _bump_server_error(server_name)
-                else:
-                    _reset_server_error(server_name)  # success — reset
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)  # non-JSON = success
+            # A completed MCP RPC proves that the server transport is healthy.
+            # CallToolResult.isError is an application/tool rejection (invalid
+            # arguments, missing resource, policy denial, etc.), so it remains
+            # visible to the caller but must not trip the server-wide circuit
+            # and block neighboring valid tools.
+            _reset_server_error(server_name)
             return result
         except InterruptedError:
             return _interrupted_call_result()

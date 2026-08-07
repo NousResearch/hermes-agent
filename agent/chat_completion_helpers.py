@@ -39,6 +39,7 @@ from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
 )
+from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -3256,6 +3257,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Accumulate reasoning content
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             if reasoning_text:
+                # Summary-part models (gpt-5.x and other Responses relays) send
+                # one complete markdown block per delta with no separator, so
+                # the parts glue into a single unreadable run. Only the tail of
+                # what's accumulated matters. See agent/reasoning_summaries.py.
+                reasoning_text = separate_glued_reasoning_blocks(
+                    reasoning_parts[-1] if reasoning_parts else "",
+                    reasoning_text,
+                )
                 reasoning_parts.append(reasoning_text)
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)

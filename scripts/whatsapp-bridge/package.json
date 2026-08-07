@@ -5,7 +5,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node bridge.js"
+    "start": "node bridge.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc13",

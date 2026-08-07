@@ -4450,3 +4450,166 @@ describe('usePromptActions stale-closure session routing', () => {
     }
   })
 })
+
+// The stale-closure suite above seeds the GLOBAL `$messages` mirror, which
+// exercises only the `?? $messages.get()` FALLBACK of the dual-store read —
+// a plan could still come from the mirror and the tests would pass. Active
+// sessions publish their transcript into `$sessionStates[runtimeId].messages`
+// while the global mirror stays empty/divergent, so these tests pin the
+// PRIMARY path: all three planners must derive their plan from the runtime
+// slice.
+describe('usePromptActions derives plans from the runtime slice ($sessionStates)', () => {
+  const RUNTIME_SESSION_B = 'rt-session-b-runtime-slice'
+
+  const RUNTIME_SLICE_MESSAGES = [
+    { id: 'u1', parts: [textPart('first prompt')], role: 'user' as const, timestamp: 0 },
+    { id: 'a1', parts: [textPart('first reply')], role: 'assistant' as const, timestamp: 1 },
+    { id: 'u2', parts: [textPart('second prompt')], role: 'user' as const, timestamp: 2 }
+  ]
+
+  beforeEach(() => {
+    // reloadFromMessage bails on a busy session; other suites leave $busy true.
+    $busy.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    setMessages([])
+    dropSessionState(RUNTIME_SESSION_B)
+    $busy.set(false)
+    vi.restoreAllMocks()
+  })
+
+  type GatewayCall = [string, Record<string, unknown>?]
+  type GatewayRequestFn = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+  type GatewayMock = GatewayRequestFn & { mock: { calls: unknown[][] } }
+
+  function gatewayCalls(requestGateway: GatewayMock): GatewayCall[] {
+    return requestGateway.mock.calls as unknown as GatewayCall[]
+  }
+
+  // Renders with the ref pinned to a runtime session whose transcript lives
+  // ONLY in $sessionStates — the global $messages mirror stays empty (or
+  // divergent when seedMirror is given), so a plan derived from the mirror
+  // would be null and the action would bail before any gateway call.
+  async function renderWithRuntimeSlice(requestGateway: GatewayMock, seedMirror?: unknown[]) {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const updated: string[] = []
+
+    if (seedMirror) {
+      setMessages(seedMirror as never)
+    }
+
+    publishSessionState(RUNTIME_SESSION_B, createClientSessionState(RUNTIME_SESSION_B, RUNTIME_SLICE_MESSAGES))
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_ID}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        onUpdateState={sessionId => updated.push(sessionId)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={{ current: null }}
+      />
+    )
+
+    // The user switched to a runtime session whose transcript is in the slice.
+    activeSessionIdRef.current = RUNTIME_SESSION_B
+
+    return { handle: handle!, updated }
+  }
+
+  it('regenerates from a message that exists only in the runtime slice (empty global mirror)', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never) as unknown as GatewayMock
+
+    const { handle } = await renderWithRuntimeSlice(requestGateway)
+
+    await handle.reloadFromMessage('u2')
+
+    // u2 exists only in $sessionStates — the global mirror is [], so a plan
+    // from the mirror would be null and no prompt.submit would ever fire.
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({
+        session_id: RUNTIME_SESSION_B,
+        text: 'second prompt',
+        truncate_before_user_ordinal: 1
+      }),
+      expect.anything()
+    )
+  })
+
+  it('restores a checkpoint from a message that exists only in the runtime slice (empty global mirror)', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never) as unknown as GatewayMock
+
+    const { handle } = await renderWithRuntimeSlice(requestGateway)
+
+    await handle.restoreToMessage('u2')
+
+    // planRestore could only resolve u2 from $sessionStates — the global
+    // mirror is [], so a mirror-based plan would throw before any submit.
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({
+        session_id: RUNTIME_SESSION_B,
+        text: 'second prompt',
+        truncate_before_user_ordinal: 1
+      }),
+      expect.anything()
+    )
+  })
+
+  it('edits a message that exists only in the runtime slice (empty global mirror)', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never) as unknown as GatewayMock
+
+    const { handle } = await renderWithRuntimeSlice(requestGateway)
+
+    await handle.editMessage({
+      content: [{ text: 'edited prompt', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u2'
+    } as never)
+
+    // planEdit could only resolve u2 from $sessionStates — the global mirror
+    // is [], so a mirror-based plan would be null and nothing would submit.
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({
+        session_id: RUNTIME_SESSION_B,
+        text: 'edited prompt',
+        truncate_before_user_ordinal: 1
+      }),
+      expect.anything()
+    )
+  })
+
+  it('prefers the runtime slice over a divergent global $messages mirror', async () => {
+    // Same message id in both stores, but DIFFERENT text: the mirror holds a
+    // stale transcript. The plan must come from the runtime slice, not the
+    // mirror's copy.
+    const requestGateway = vi.fn(async () => ({}) as never) as unknown as GatewayMock
+
+    const { handle } = await renderWithRuntimeSlice(requestGateway, [
+      { id: 'u2', parts: [textPart('stale mirror prompt')], role: 'user', timestamp: 0 }
+    ])
+
+    await handle.reloadFromMessage('u2')
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({
+        session_id: RUNTIME_SESSION_B,
+        text: 'second prompt'
+      }),
+      expect.anything()
+    )
+    expect(requestGateway).not.toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ text: 'stale mirror prompt' }),
+      expect.anything()
+    )
+  })
+})

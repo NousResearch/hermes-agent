@@ -841,7 +841,7 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
     return base
 
 
-def _validate_file_path(file_path: str) -> Optional[str]:
+def _validate_file_path(file_path: str, skill_name: str = "") -> Optional[str]:
     """
     Validate a file path for write_file/remove_file.
     Must be under an allowed subdirectory and not escape the skill dir.
@@ -862,9 +862,18 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     # under an allowed subdirectory. Accept its two natural spellings —
     # 'SKILL.md' and '<skill-name>/SKILL.md' — so callers can target the main
     # file. The traversal guard above still applies, so this can't escape.
+    # The 2-part form must name THIS skill: anything else plants a nested
+    # skill directory whose SKILL.md is discovered as a separate shadow skill.
     if normalized.parts and normalized.name == "SKILL.md":
-        if len(normalized.parts) == 1 or len(normalized.parts) == 2:
+        if len(normalized.parts) == 1:
             return None
+        if len(normalized.parts) == 2 and normalized.parts[0] == skill_name:
+            return None
+        if len(normalized.parts) == 2:
+            return (
+                f"'{file_path}' does not refer to skill '{skill_name}'. "
+                f"Use 'SKILL.md' or '{skill_name}/SKILL.md'."
+            )
 
     # Must be under an allowed subdirectory
     if not normalized.parts or normalized.parts[0] not in ALLOWED_SUBDIRS:
@@ -876,6 +885,21 @@ def _validate_file_path(file_path: str) -> Optional[str]:
         return f"Provide a file path, not just a directory. Example: '{normalized.parts[0]}/myfile.md'"
 
     return None
+
+
+def _is_skill_md_spelling(file_path: str, skill_name: str) -> bool:
+    """True if *file_path* is a canonical spelling of the skill's main file.
+
+    Accepts 'SKILL.md' and '<skill-name>/SKILL.md'. The 2-part form must
+    name THIS skill — anything else plants a nested skill directory whose
+    SKILL.md is discovered as a separate shadow skill.
+    """
+    normalized = Path(file_path)
+    if normalized.name != "SKILL.md":
+        return False
+    if len(normalized.parts) == 1:
+        return True
+    return len(normalized.parts) == 2 and normalized.parts[0] == skill_name
 
 
 def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Path], Optional[str]]:
@@ -1067,10 +1091,16 @@ def _patch_skill(
 
     if file_path:
         # Patching a supporting file
-        err = _validate_file_path(file_path)
+        err = _validate_file_path(file_path, name)
         if err:
             return {"success": False, "error": err}
-        target, err = _resolve_skill_target(skill_dir, file_path)
+        if _is_skill_md_spelling(file_path, name):
+            # The main-file spellings address the root SKILL.md: route to
+            # the default path so the frontmatter guard below applies.
+            file_path = None
+            target = skill_dir / "SKILL.md"
+        else:
+            target, err = _resolve_skill_target(skill_dir, file_path)
         if err:
             return {"success": False, "error": err}
         assert target is not None
@@ -1266,9 +1296,15 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
 
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
-    err = _validate_file_path(file_path)
+    err = _validate_file_path(file_path, name)
     if err:
         return {"success": False, "error": err}
+    if _is_skill_md_spelling(file_path, name):
+        # The main-file spellings are full-rewrite requests for the root
+        # SKILL.md: route to edit so frontmatter validation and
+        # scan-rollback apply (bypassing them lets a write corrupt the
+        # skill's frontmatter).
+        return _edit_skill(name, file_content)
 
     if not file_content and file_content != "":
         return {"success": False, "error": "file_content is required."}
@@ -1336,9 +1372,19 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     """Remove a supporting file from any skill directory."""
-    err = _validate_file_path(file_path)
+    err = _validate_file_path(file_path, name)
     if err:
         return {"success": False, "error": err}
+    if _is_skill_md_spelling(file_path, name):
+        # SKILL.md *is* the skill — removing it would leave a broken skill
+        # directory. Deleting the skill itself is a separate action.
+        return {
+            "success": False,
+            "error": (
+                "SKILL.md is the skill's main file and cannot be removed "
+                "with remove_file. Use action='delete' to delete the skill."
+            ),
+        }
 
     existing = _find_skill(name)
     if not existing:

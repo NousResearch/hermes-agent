@@ -241,7 +241,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     source.buffer = buffer
     source.connect(context.destination)
 
-    const startAt = Math.max(context.currentTime + 0.05, nextStartAt)
+    const startAt = Math.max(context.currentTime + 0.3, nextStartAt)
     source.start(startAt)
     nextStartAt = startAt + buffer.duration
 

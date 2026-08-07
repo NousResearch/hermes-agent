@@ -18479,7 +18479,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
                         await self._deliver_media_from_response(
-                            response, event, _media_adapter,
+                            response,
+                            event.source,
+                            _media_adapter,
+                            self._thread_metadata_for_source(
+                                event.source, self._reply_anchor_for_event(event)
+                            ),
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -19669,14 +19674,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _deliver_media_from_response(
         self,
         response: str,
-        event: MessageEvent,
+        source: SessionSource,
         adapter,
+        thread_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Extract explicit MEDIA: tags from a response and deliver them.
 
-        Called after streaming has already sent the text to the user, so the
-        text itself is already delivered — this only handles file attachments
-        that the normal _process_message_background path would have caught.
+        Called once the response text has already been delivered to the user,
+        either by streaming or by the queued-follow-up resend that flushes the
+        first response before processing a queued message. It therefore only
+        handles file attachments that the normal _process_message_background
+        path would have caught. ``thread_metadata`` is the reply/thread
+        metadata to attach to each upload.
 
         Unlike the non-streaming path in ``gateway/platforms/base.py`` (which
         also auto-detects bare local paths via ``extract_local_files``), this
@@ -19717,7 +19726,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # stale inspected content), not an attachment request.
             adapter.extract_images(cleaned)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            _thread_meta = thread_metadata
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -19741,7 +19750,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     await adapter.send_multiple_images(
-                        chat_id=event.source.chat_id,
+                        chat_id=source.chat_id,
                         images=images,
                         metadata=_thread_meta,
                     )
@@ -19751,21 +19760,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
-                    if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
+                    if should_send_media_as_audio(source.platform, ext, is_voice=is_voice):
                         await adapter.send_voice(
-                            chat_id=event.source.chat_id,
+                            chat_id=source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
                         await adapter.send_video(
-                            chat_id=event.source.chat_id,
+                            chat_id=source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
                         await adapter.send_document(
-                            chat_id=event.source.chat_id,
+                            chat_id=source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
@@ -19775,7 +19784,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
 
+    async def _send_queued_first_response(
+        self,
+        response: str,
+        source: SessionSource,
+        adapter,
+        thread_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Deliver a queued-turn first response with normal media handling."""
+        if not response:
+            return
 
+        # Strip only the explicit MEDIA: directives. Delivery here is
+        # explicit-only (#20834), so a bare local path stays in the text: it
+        # is content the user is meant to read, and nothing else would send
+        # it.
+        text_content = response
+        try:
+            from gateway.platforms.base import _strip_media_directives
+
+            _, text_content = adapter.extract_media(text_content)
+            text_content = _strip_media_directives(text_content).strip()
+        except Exception as exc:
+            logger.warning(
+                "[%s] Queued follow-up response media cleanup failed: %s",
+                getattr(adapter, "name", "adapter"),
+                exc,
+            )
+            text_content = response
+
+        if text_content:
+            await adapter.send(
+                source.chat_id,
+                text_content,
+                metadata=thread_metadata,
+            )
+
+        await self._deliver_media_from_response(
+            response,
+            source,
+            adapter,
+            thread_metadata,
+        )
 
     async def _run_background_task(
         self,
@@ -26150,10 +26200,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
-                            await adapter.send(
-                                source.chat_id,
+                            await self._send_queued_first_response(
                                 first_response,
-                                metadata=_status_thread_metadata,
+                                source,
+                                adapter,
+                                _status_thread_metadata,
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)

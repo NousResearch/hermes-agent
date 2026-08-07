@@ -253,16 +253,14 @@ async def test_streamed_explicit_media_resend_is_delivered(tmp_path, monkeypatch
     accidental echo of auto-appended history)."""
     img = _allowed_file(tmp_path, monkeypatch, "flyer.png")
     adapter = _stream_adapter()
-    runner = SimpleNamespace(
-        _thread_metadata_for_source=lambda source, anchor=None: {},
-        _reply_anchor_for_event=lambda event: None,
-    )
+    runner = SimpleNamespace()
 
     await GatewayRunner._deliver_media_from_response(
         runner,
         f"Here's the flyer again.\nMEDIA:{img}",
-        _stream_event(),
+        _stream_event().source,
         adapter,
+        {},
     )
 
     adapter.send_multiple_images.assert_awaited_once()

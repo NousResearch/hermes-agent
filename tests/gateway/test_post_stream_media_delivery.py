@@ -38,11 +38,11 @@ def _event():
     )
 
 
-def _fake_runner(thread_meta):
-    return SimpleNamespace(
-        _thread_metadata_for_source=lambda source, anchor=None: thread_meta,
-        _reply_anchor_for_event=lambda event: None,
-    )
+def _runner():
+    """Stand-in for the GatewayRunner ``self``. ``_deliver_media_from_response``
+    takes the reply/thread metadata as an argument, so the runner itself is an
+    inert placeholder."""
+    return SimpleNamespace()
 
 
 def _adapter():
@@ -79,10 +79,11 @@ async def test_bare_local_path_in_streamed_reply_is_not_uploaded(tmp_path, monke
     adapter = _adapter()
 
     await GatewayRunner._deliver_media_from_response(
-        _fake_runner({}),
+        _runner(),
         f"The design lives at {media_file} if you want to look later.",
-        _event(),
+        _event().source,
         adapter,
+        {},
     )
 
     adapter.send_multiple_images.assert_not_awaited()
@@ -99,10 +100,11 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     adapter = _adapter()
 
     await GatewayRunner._deliver_media_from_response(
-        _fake_runner({}),
+        _runner(),
         f"Here is the chart.\nMEDIA:{media_file}",
-        _event(),
+        _event().source,
         adapter,
+        {},
     )
 
     adapter.send_multiple_images.assert_awaited_once()

@@ -83,14 +83,11 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_document.assert_not_awaited()
 
 
-def _fake_runner(thread_meta):
-    """Build a fake GatewayRunner-like object with the helper methods needed by
-    _deliver_media_from_response."""
-    runner = SimpleNamespace(
-        _thread_metadata_for_source=lambda source, anchor=None: thread_meta,
-        _reply_anchor_for_event=lambda event: None,
-    )
-    return runner
+def _runner():
+    """Stand-in for the GatewayRunner ``self``. ``_deliver_media_from_response``
+    takes the reply/thread metadata as an argument, so the runner itself is an
+    inert placeholder."""
+    return SimpleNamespace()
 
 
 @pytest.mark.asyncio
@@ -123,10 +120,11 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
     )
 
     await GatewayRunner._deliver_media_from_response(
-        _fake_runner({"thread_id": "topic-1"}),
+        _runner(),
         f"MEDIA:{secret}",
-        event,
+        event.source,
         adapter,
+        {"thread_id": "topic-1"},
     )
 
     adapter.send_document.assert_not_awaited()

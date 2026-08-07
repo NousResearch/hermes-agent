@@ -260,6 +260,8 @@ class TestConfig:
         assert provider._retain_every_n_turns == 1
         assert provider._recall_max_tokens == 4096
         assert provider._recall_max_input_chars == 800
+        assert provider.prefetch_timeout == 30.0
+        assert provider._retain_shutdown_timeout == 30.0
         assert provider._tags is None
         assert provider._observation_scopes is None
         assert provider._recall_tags is None
@@ -591,8 +593,12 @@ class TestToolHandlers:
 
 
 class TestPrefetch:
-    def test_prefetch_returns_empty_when_no_result(self, provider):
-        assert provider.prefetch("test") == ""
+    def test_prefetch_runs_synchronous_recall_when_no_warm_result(self, provider):
+        result = provider.prefetch("test")
+
+        assert "Memory 1" in result
+        assert "Memory 2" in result
+        provider._client.arecall.assert_awaited_once()
 
 
     def test_queue_prefetch_skipped_in_tools_mode(self, provider_with_config):
@@ -676,6 +682,31 @@ class TestPrefetchServerRetainVisibility:
         provider.sync_turn("hello", "world")
         provider._retain_queue.join()
         assert "op-async-1" in provider._pending_retain_ops
+        provider._pending_retain_ops.clear()
+
+    def test_tracks_parent_operation_by_document_id_when_response_omits_id(self, provider):
+        provider._document_id = "test-doc"
+        provider._client.aretain_batch = AsyncMock(
+            return_value=SimpleNamespace(operation_id=None, operation_ids=None)
+        )
+        provider._client.operations = MagicMock()
+        provider._client.operations.list_operations = AsyncMock(
+            return_value=SimpleNamespace(
+                operations=[
+                    SimpleNamespace(
+                        id="op-parent",
+                        document_id="test-doc",
+                        status="pending",
+                    )
+                ]
+            )
+        )
+
+        provider.sync_turn("hello", "world")
+        provider._retain_queue.join()
+
+        assert "op-parent" in provider._pending_retain_ops
+        provider._pending_retain_ops.clear()
 
     def test_tracks_multiple_operation_ids(self, provider):
         provider._client.aretain_batch = AsyncMock(
@@ -686,6 +717,7 @@ class TestPrefetchServerRetainVisibility:
         provider.sync_turn("hello", "world")
         provider._retain_queue.join()
         assert {"op-a", "op-b"} <= provider._pending_retain_ops
+        provider._pending_retain_ops.clear()
 
     def test_sync_retain_tracks_no_ops(self, provider_with_config):
         p = provider_with_config(retain_async=False)
@@ -910,6 +942,29 @@ class TestShutdownRace:
         assert provider._writer_thread is first_writer
         assert provider._client.aretain_batch.call_count == 2
 
+
+    def test_shutdown_waits_for_pending_server_retain(self, provider):
+        provider._pending_retain_ops = {"op-pending"}
+        provider._retain_shutdown_timeout = 0.25
+        provider._writer_thread = None
+        provider._wait_for_server_retain_ops = MagicMock(return_value=True)
+
+        provider.shutdown()
+
+        provider._wait_for_server_retain_ops.assert_called_once()
+        args, kwargs = provider._wait_for_server_retain_ops.call_args
+        assert args[1] == 0.25
+        assert kwargs["allow_shutdown"] is True
+
+    def test_shutdown_uses_retain_drain_timeout(self, provider):
+        writer = MagicMock()
+        writer.is_alive.return_value = True
+        provider._writer_thread = writer
+        provider._retain_shutdown_timeout = 0.25
+
+        provider.shutdown()
+
+        writer.join.assert_called_once_with(timeout=0.25)
 
     def test_shutdown_drains_pending_retains(self, provider):
         """Shutdown must wait for queued retains to complete, not abandon them.

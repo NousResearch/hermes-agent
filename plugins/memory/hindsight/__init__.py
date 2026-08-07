@@ -64,6 +64,7 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 # Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
 _MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
+_DEFAULT_PREFETCH_TIMEOUT = 30.0  # local embedded recall may need cold-start time
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 _PROFILE_ENV_LOCK = threading.RLock()
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
@@ -98,6 +99,21 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+def _parse_float_setting(value: Any, default: float) -> float:
+    """Parse a positive float config value, falling back when invalid."""
+    if value is None or value == "":
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid float Hindsight setting %r; using default %s", value, default)
+        return default
+    if parsed <= 0:
+        logger.warning("Non-positive Hindsight setting %r; using default %s", value, default)
+        return default
+    return parsed
 
 
 # Env var the embedded daemon manager reads (at import time, as a module-level
@@ -814,6 +830,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._client_lock = threading.RLock()
         self._daemon_thread: threading.Thread | None = None
         self._timeout = _DEFAULT_TIMEOUT
+        self._prefetch_timeout = _DEFAULT_PREFETCH_TIMEOUT
+        self._retain_shutdown_timeout = _DEFAULT_PREFETCH_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -899,6 +917,11 @@ class HindsightMemoryProvider(MemoryProvider):
     @property
     def name(self) -> str:
         return "hindsight"
+
+    @property
+    def prefetch_timeout(self) -> float:
+        """Allow MemoryManager to wait for embedded cold-start recall."""
+        return self._prefetch_timeout
 
     def is_available(self) -> bool:
         try:
@@ -1203,6 +1226,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
+            {"key": "prefetch_timeout", "description": "Maximum seconds to wait for automatic recall before a turn (local embedded cold-start may need more than the generic provider timeout)", "default": _DEFAULT_PREFETCH_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
         ]
@@ -1414,13 +1438,19 @@ class HindsightMemoryProvider(MemoryProvider):
         self._sync_thread = thread
         thread.start()
 
-    def _track_retain_ops(self, retain_response, bank_id: str) -> None:
+    def _track_retain_ops(
+        self,
+        retain_response,
+        bank_id: str,
+        document_id: str = "",
+    ) -> None:
         """Record server-side async operation id(s) from an aretain_batch reply.
 
         Async retains return ``operation_id`` / ``operation_ids`` that stay
         ``pending`` on the server until the write is durable and recall-visible.
-        The bank_id is captured alongside so completion can be polled with the
-        same bank the write targeted.
+        Some Hindsight batch responses create a parent operation without
+        returning its id through the client wrapper. In that case, discover the
+        active operation by document_id before declaring the write untracked.
         """
         ids: list[str] = []
         single = getattr(retain_response, "operation_id", None)
@@ -1429,9 +1459,44 @@ class HindsightMemoryProvider(MemoryProvider):
         multiple = getattr(retain_response, "operation_ids", None)
         if multiple:
             ids.extend(str(op) for op in multiple if op)
+
+        if not ids and document_id:
+            try:
+                operations_response = self._run_hindsight_operation(
+                    lambda client: client.operations.list_operations(
+                        bank_id=bank_id,
+                        limit=100,
+                    )
+                )
+                operations = getattr(operations_response, "operations", None) or []
+                terminal_statuses = {"completed", "failed", "cancelled"}
+                for operation in operations:
+                    if isinstance(operation, dict):
+                        operation_id = operation.get("id") or operation.get("operation_id")
+                        operation_document_id = operation.get("document_id")
+                        status = operation.get("status")
+                    else:
+                        operation_id = getattr(operation, "id", None) or getattr(
+                            operation, "operation_id", None
+                        )
+                        operation_document_id = getattr(operation, "document_id", None)
+                        status = getattr(operation, "status", None)
+                    if (
+                        operation_id
+                        and str(operation_document_id or "") == str(document_id)
+                        and str(status or "").lower() not in terminal_statuses
+                    ):
+                        ids.append(str(operation_id))
+            except Exception as exc:
+                logger.debug(
+                    "Hindsight retain operation discovery failed for doc=%s: %s",
+                    document_id,
+                    exc,
+                )
+
         if not ids:
-            # Server didn't hand back an op id (older API, or it completed
-            # synchronously). Nothing to poll — local queue drain is the only
+            # Server didn't hand back an op id and discovery found none (older
+            # API, or it completed synchronously). Local queue drain is the only
             # available signal in that case.
             return
         self._retain_ops_bank_id = bank_id
@@ -1504,7 +1569,13 @@ class HindsightMemoryProvider(MemoryProvider):
         # Barrier 2: server-side async retain completion (read-after-write).
         return self._wait_for_server_retain_ops(deadline, timeout)
 
-    def _wait_for_server_retain_ops(self, deadline: float | None, timeout: float) -> bool:
+    def _wait_for_server_retain_ops(
+        self,
+        deadline: float | None,
+        timeout: float,
+        *,
+        allow_shutdown: bool = False,
+    ) -> bool:
         """Poll tracked async retain ops until complete or the deadline passes.
 
         *deadline* is a ``time.monotonic()`` value (None = no bound). Completed
@@ -1532,13 +1603,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 pending = list(self._pending_retain_ops)
             if not pending:
                 return True
-            if self._shutting_down.is_set():
+            if self._shutting_down.is_set() and not allow_shutdown:
                 return False
 
             done: set[str] = set()
             expired = False
             for op_id in pending:
-                if self._shutting_down.is_set():
+                if self._shutting_down.is_set() and not allow_shutdown:
                     return False
                 if deadline is not None and time.monotonic() >= deadline:
                     expired = True
@@ -1725,6 +1796,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._timeout = _parse_int_setting(
             self._config.get("timeout") if self._config.get("timeout") is not None else os.environ.get("HINDSIGHT_TIMEOUT"),
             _DEFAULT_TIMEOUT,
+        )
+        self._prefetch_timeout = _parse_float_setting(
+            self._config.get("prefetch_timeout"),
+            _DEFAULT_PREFETCH_TIMEOUT,
+        )
+        self._retain_shutdown_timeout = max(
+            _DEFAULT_PREFETCH_TIMEOUT,
+            self._prefetch_timeout,
         )
         self._idle_timeout = _parse_int_setting(
             self._config.get("idle_timeout") if self._config.get("idle_timeout") is not None else os.environ.get("HINDSIGHT_IDLE_TIMEOUT"),
@@ -1957,6 +2036,64 @@ class HindsightMemoryProvider(MemoryProvider):
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""
+
+        # A newly-created agent has no background-prefetched result yet. Run
+        # one bounded synchronous recall for its first turn so cross-session
+        # memory is available immediately; subsequent turns use the existing
+        # background prefetch path and do not pay this fallback cost.
+        if (
+            not result
+            and self._auto_recall
+            and self._memory_mode != "tools"
+            and not self._shutting_down.is_set()
+            and not (self._prefetch_thread and self._prefetch_thread.is_alive())
+        ):
+            if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
+                query = query[:self._recall_max_input_chars]
+            try:
+                logger.debug(
+                    "Prefetch: no warm result; running synchronous first-turn recall "
+                    "(bank=%s, query_len=%d, budget=%s)",
+                    self._bank_id,
+                    len(query),
+                    self._budget,
+                )
+                if self._prefetch_method == "reflect":
+                    resp = self._run_hindsight_operation(
+                        lambda client: client.areflect(
+                            bank_id=self._bank_id,
+                            query=query,
+                            budget=self._budget,
+                        )
+                    )
+                    result = resp.text or ""
+                else:
+                    recall_kwargs: dict = {
+                        "bank_id": self._bank_id,
+                        "query": query,
+                        "budget": self._budget,
+                        "max_tokens": self._recall_max_tokens,
+                    }
+                    if self._recall_tags:
+                        recall_kwargs["tags"] = self._recall_tags
+                        recall_kwargs["tags_match"] = self._recall_tags_match
+                    if self._recall_types:
+                        recall_kwargs["types"] = self._recall_types
+                    resp = self._run_hindsight_operation(
+                        lambda client: client.arecall(**recall_kwargs)
+                    )
+                    result = "\n".join(
+                        f"- {item.text}"
+                        for item in (resp.results or [])
+                        if item.text
+                    )
+                logger.debug(
+                    "Prefetch: synchronous first-turn recall returned %d chars",
+                    len(result),
+                )
+            except Exception as exc:
+                logger.debug("Hindsight first-turn prefetch failed: %s", exc, exc_info=True)
+
         if not result:
             logger.debug("Prefetch: no results available")
             return ""
@@ -2185,7 +2322,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # returned operation id(s) so the next-turn prefetch can wait for
             # true server-side completion (read-after-write) before recalling.
             if retain_async_flag:
-                self._track_retain_ops(resp, bank_id)
+                self._track_retain_ops(resp, bank_id, document_id)
             logger.debug("Hindsight retain succeeded")
 
         self._ensure_writer()
@@ -2466,12 +2603,26 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._retain_queue.put(_WRITER_SENTINEL)
             except Exception:
                 pass
-            writer.join(timeout=10.0)
+            writer.join(timeout=self._retain_shutdown_timeout)
             if writer.is_alive():
                 logger.warning(
-                    "Hindsight writer did not stop within 10s; "
+                    "Hindsight writer did not stop within %.1fs; "
                     "abandoning %d pending retain(s)",
+                    self._retain_shutdown_timeout,
                     self._retain_queue.qsize(),
+                )
+        with self._pending_retain_ops_lock:
+            pending_server_ops = bool(self._pending_retain_ops)
+        if pending_server_ops:
+            retain_deadline = time.monotonic() + self._retain_shutdown_timeout
+            if not self._wait_for_server_retain_ops(
+                retain_deadline,
+                self._retain_shutdown_timeout,
+                allow_shutdown=True,
+            ):
+                logger.warning(
+                    "Hindsight shutdown retain visibility wait expired after %.1fs",
+                    self._retain_shutdown_timeout,
                 )
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=5.0)

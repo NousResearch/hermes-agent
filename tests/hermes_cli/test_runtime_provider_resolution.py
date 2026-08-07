@@ -1553,3 +1553,73 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["source"] == "pool:lmstudio-pool"
     assert resolved["provider"] == "custom"
     assert resolved["requested_provider"] == "custom:lmstudio"
+
+
+def test_custom_provider_explicit_target_model_wins(monkeypatch):
+    """An explicit target_model must not be silently replaced by the custom
+    provider's configured default model (regression: auxiliary slots such as
+    background-review resolve a concrete model and got default_model instead)."""
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "myproxy",
+            "base_url": "http://127.0.0.1:10100/v1",
+            "api_key": "no-key-required",
+            "model": "default-model",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="myproxy", target_model="myproxy/gemini-flash")
+
+    assert resolved is not None
+    assert resolved["provider"] == "custom"
+    assert resolved["model"] == "myproxy/gemini-flash"
+    assert resolved["base_url"] == "http://127.0.0.1:10100/v1"
+
+
+def test_custom_provider_without_target_model_keeps_default(monkeypatch):
+    """No target_model -> the provider's configured model is preserved."""
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "myproxy",
+            "base_url": "http://127.0.0.1:10100/v1",
+            "api_key": "no-key-required",
+            "model": "default-model",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="myproxy")
+
+    assert resolved is not None
+    assert resolved["model"] == "default-model"
+
+
+def test_custom_provider_pool_target_model_wins(monkeypatch):
+    """Pooled-credentials path also honors target_model over the default."""
+    monkeypatch.setattr(
+        rp,
+        "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_key": "pooled-key",
+            "base_url": "http://127.0.0.1:10100/v1",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "myproxy",
+            "base_url": "http://127.0.0.1:10100/v1",
+            "api_key": "no-key-required",
+            "model": "default-model",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="myproxy", target_model="myproxy/gemini-flash")
+
+    assert resolved is not None
+    assert resolved["model"] == "myproxy/gemini-flash"

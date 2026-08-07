@@ -503,6 +503,78 @@ class TestCmdUpdateBranchFlag:
         assert "does not exist locally or on origin" in out
         assert "nonexistent" in out
 
+    @pytest.mark.parametrize("scenario", ["never_launched", "launched_default", "launched_env_override"])
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_update_skips_desktop_rebuild_unless_app_has_launched(
+        self, mock_run, mock_which, mock_args, tmp_path, monkeypatch, scenario
+    ):
+        """Desktop rebuild must require Electron's userData directory.
+
+        Build output alone (``dist``, packaged executable) is not proof the
+        app is in use — the updater creates those artifacts itself, which
+        would make the gate self-perpetuating on headless machines.  Electron
+        creates its userData directory on first launch, so require that
+        runtime signal.
+
+        The ``HERMES_DESKTOP_USER_DATA_DIR`` env var overrides the default
+        OS path (matching ``apps/desktop/electron/main.ts``).  A
+        launched app that used this supported override must still be
+        recognised as in-use.
+        """
+        from hermes_cli import update_cmd
+
+        mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+        packaged_executable = tmp_path / "desktop-app"
+
+        if scenario == "never_launched":
+            # userData directory never created — app was never launched
+            userdata = tmp_path / "Hermes"
+        elif scenario == "launched_default":
+            # Default OS path: set XDG_CONFIG_HOME so we control the lookup
+            userdata = tmp_path / "Hermes"
+            userdata.mkdir()
+            monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        elif scenario == "launched_env_override":
+            # Env var override path — Electron honours this, so must we
+            userdata = tmp_path / "custom-hermes-data"
+            userdata.mkdir()
+            monkeypatch.setenv("HERMES_DESKTOP_USER_DATA_DIR", str(userdata))
+        else:
+            pytest.fail(f"Unknown scenario: {scenario}")
+
+        with patch.object(update_cmd._m(), "_is_termux_env", return_value=False), \
+             patch("hermes_cli.update_cmd._update_node_dependencies", return_value=[]), \
+             patch.object(update_cmd._m(), "_build_web_ui"), \
+             patch.object(
+                 update_cmd._m(), "_desktop_packaged_executable",
+                 return_value=packaged_executable,
+             ), \
+             patch.object(
+                 update_cmd._m(), "_desktop_dist_exists", return_value=True,
+             ), \
+             patch.object(
+                 update_cmd._m(), "_resolve_node_runtime_npm",
+                 return_value="/usr/bin/npm",
+             ):  # pragma: no cover — npm is mocked, won't actually run
+            cmd_update(mock_args)
+
+        desktop_builds = [
+            call
+            for call in mock_run.call_args_list
+            if call.args
+            and "desktop" in call.args[0]
+            and "--build-only" in call.args[0]
+        ]
+        expect_build = scenario != "never_launched"
+        assert len(desktop_builds) == int(expect_build), (
+            f"Scenario {scenario}: expected {'build' if expect_build else 'skip'}, "
+            f"got {len(desktop_builds)} desktop build calls"
+        )
+
 
 class TestCmdUpdateCheckBranchFlag:
     """``hermes update --check --branch <name>`` honors the branch override.

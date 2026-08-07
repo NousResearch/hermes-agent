@@ -4204,14 +4204,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._build_web_ui(_m().PROJECT_ROOT / "web")
 
         # Rebuild the desktop app if the source tree changed since the last
-        # build.  ``hermes desktop --build-only`` uses the content-hash stamp
+        # build. ``hermes desktop --build-only`` uses the content-hash stamp
         # internally, so this is effectively a no-op when nothing changed.
-        # Only bother if the user has a desktop app installed (indicated by
-        # an existing packaged executable or desktop dist); people who have
-        # never run ``hermes desktop`` shouldn't be forced into a full
-        # Electron build by ``hermes update``.
+        #
+        # Build output alone is not proof that the app is in use: this updater
+        # creates ``dist`` and ``release`` itself, which otherwise makes the
+        # gate self-perpetuating on headless machines. Electron creates its
+        # userData directory on first launch, so require that runtime signal
+        # alongside an existing source-built artifact.
+        from hermes_cli.gui_uninstall import desktop_userdata_dir
+
         desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-        has_desktop_app = _m()._desktop_packaged_executable(desktop_dir) is not None or _m()._desktop_dist_exists(desktop_dir)
+        has_desktop_app = desktop_userdata_dir().exists() and (
+            _m()._desktop_packaged_executable(desktop_dir) is not None
+            or _m()._desktop_dist_exists(desktop_dir)
+        )
         if (desktop_dir / "package.json").exists() and _m()._resolve_node_runtime_npm() and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             # Consult the content-hash stamp IN-PROCESS first. The spawned

@@ -71,9 +71,14 @@ def desktop_userdata_dir() -> Path:
     """Return the Electron ``userData`` directory for the desktop app.
 
     Mirrors Electron's ``app.getPath('userData')`` for an app named "Hermes"
-    on each platform. This is GUI-only state (connection.json, updates.json,
-    Chromium cache) and never holds agent config or sessions.
+    on each platform. The ``HERMES_DESKTOP_USER_DATA_DIR`` env var overrides
+    the default OS path, matching ``apps/desktop/electron/main.ts``.
+    This is GUI-only state (connection.json, updates.json, Chromium cache)
+    and never holds agent config or sessions.
     """
+    override = os.environ.get("HERMES_DESKTOP_USER_DATA_DIR")
+    if override:
+        return Path(override).resolve()
     home = Path.home()
     if sys.platform == "darwin":
         return home / "Library" / "Application Support" / "Hermes"

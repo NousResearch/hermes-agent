@@ -48,6 +48,29 @@ def _make_user_data(hermes_home: Path) -> None:
 
 
 
+class TestDesktopUserdataDir:
+    """``desktop_userdata_dir()`` must mirror Electron's userData resolution.
+
+    Electron defaults to OS-specific paths but honours the
+    ``HERMES_DESKTOP_USER_DATA_DIR`` env var override
+    (``apps/desktop/electron/main.ts``).  The Python helper must
+    match this so the update-time check doesn't misclassify a launched
+    Desktop as unused.
+    """
+
+    def test_env_var_override_takes_priority(self, tmp_path, monkeypatch):
+        custom = tmp_path / "custom-hermes-data"
+        monkeypatch.setenv("HERMES_DESKTOP_USER_DATA_DIR", str(custom))
+        assert gu.desktop_userdata_dir() == custom.resolve()
+
+    def test_env_var_unset_falls_through_to_os_default(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DESKTOP_USER_DATA_DIR", raising=False)
+        result = gu.desktop_userdata_dir()
+        assert result.name == "Hermes"
+        # Must be an absolute path.
+        assert result.is_absolute()
+
+
 def test_gui_install_summary_shape(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     _make_agent(hermes_home)

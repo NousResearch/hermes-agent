@@ -23,6 +23,10 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
+from tools.environments.ssh_destination import (
+    build_ssh_probe_command,
+    validate_ssh_identity,
+)
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from hermes_constants import get_optional_skills_dir
 
@@ -1599,46 +1603,68 @@ def setup_terminal_backend(config: dict):
         # SSH host
         current_host = get_env_value("TERMINAL_SSH_HOST") or ""
         host = prompt("  SSH host (hostname or IP)", current_host)
-        if host:
-            save_env_value("TERMINAL_SSH_HOST", host)
 
         # SSH user
         current_user = get_env_value("TERMINAL_SSH_USER") or ""
         user = prompt("  SSH user", current_user or os.getenv("USER", ""))
-        if user:
-            save_env_value("TERMINAL_SSH_USER", user)
 
         # SSH port
         current_port = get_env_value("TERMINAL_SSH_PORT") or "22"
         port = prompt("  SSH port", current_port)
-        if port and port != "22":
-            save_env_value("TERMINAL_SSH_PORT", port)
 
         # SSH key
         current_key = get_env_value("TERMINAL_SSH_KEY") or ""
         default_key = str(Path.home() / ".ssh" / "id_rsa")
         ssh_key = prompt("  SSH private key path", current_key or default_key)
-        if ssh_key:
-            save_env_value("TERMINAL_SSH_KEY", ssh_key)
 
-        # Test connection
-        if host and prompt_yes_no("  Test SSH connection?", True):
-            print_info("  Testing connection...")
-            import subprocess
+        # Validate destination before persisting — a leading-dash host/user
+        # would be treated as OpenSSH options (CWE-88) by doctor / runtime.
+        ssh_ok = True
+        probe_cmd = None
+        try:
+            dest = validate_ssh_identity(host, user)
+            if dest is not None:
+                probe_cmd = build_ssh_probe_command(
+                    host,
+                    user,
+                    port=port if port and port != "22" else None,
+                    key=ssh_key or None,
+                )
+        except ValueError as exc:
+            print_error(f"  Invalid SSH destination: {exc}")
+            print_info("  Not saved. Host/user must not start with '-'.")
+            ssh_ok = False
+            config.setdefault("terminal", {})["backend"] = current_backend
+            selected_backend = current_backend
 
-            ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
-            if ssh_key:
-                ssh_cmd.extend(["-i", ssh_key])
+        if ssh_ok:
+            if host:
+                save_env_value("TERMINAL_SSH_HOST", host)
+            if user:
+                save_env_value("TERMINAL_SSH_USER", user)
             if port and port != "22":
-                ssh_cmd.extend(["-p", port])
-            ssh_cmd.append(f"{user}@{host}" if user else host)
-            ssh_cmd.append("echo ok")
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
-            if result.returncode == 0:
-                print_success("  SSH connection successful!")
-            else:
-                print_warning(f"  SSH connection failed: {result.stderr.strip()}")
-                print_info("  Check your SSH key and host settings.")
+                save_env_value("TERMINAL_SSH_PORT", port)
+            if ssh_key:
+                save_env_value("TERMINAL_SSH_KEY", ssh_key)
+
+            # Test connection
+            if host and probe_cmd and prompt_yes_no("  Test SSH connection?", True):
+                print_info("  Testing connection...")
+                import subprocess
+
+                result = subprocess.run(
+                    probe_cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    print_success("  SSH connection successful!")
+                else:
+                    print_warning(f"  SSH connection failed: {result.stderr.strip()}")
+                    print_info("  Check your SSH key and host settings.")
 
     # Sync terminal backend to .env so terminal_tool picks it up directly.
     # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.

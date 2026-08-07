@@ -605,7 +605,45 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     if env_provider:
         return env_provider
 
+    # cc-switch-style setups: the tray tool manages the custom_providers /
+    # providers section directly and replaces it wholesale on switch, so the
+    # section holds exactly the currently-active provider while model.* stays
+    # unset. When the model section is entirely empty (no provider AND no
+    # base_url) and exactly one usable custom provider is configured, that
+    # entry IS the default — resolve it by name instead of falling through to
+    # "auto", which fails with "No inference provider configured" even though
+    # the provider works (visible as a false "needs setup" in the desktop
+    # statusbar's setup.runtime_check). With zero or multiple entries we keep
+    # the historical "auto" behavior — guessing among several is wrong.
+    if not (model_cfg.get("provider") or model_cfg.get("base_url")):
+        solo = _single_enabled_custom_provider()
+        if solo:
+            return solo
+
     return "auto"
+
+
+def _single_enabled_custom_provider() -> Optional[str]:
+    """Return the name of the sole configured custom provider, or None.
+
+    Returns a name only when exactly one usable ``providers:`` /
+    ``custom_providers:`` entry exists (``providers_dict_to_custom_providers``
+    already drops ``enabled: false`` entries, and the legacy list has no
+    disabled state). Zero or multiple entries return None so callers keep
+    the historical "auto" behavior instead of guessing.
+    """
+    try:
+        entries = get_compatible_custom_providers(load_config())
+    except Exception:
+        return None
+
+    usable = [e for e in entries if isinstance(e, dict) and str(e.get("name") or "").strip()]
+
+    if len(usable) != 1:
+        return None
+
+    return str(usable[0].get("name") or "").strip().lower()
+
 
 
 def _try_resolve_from_custom_pool(

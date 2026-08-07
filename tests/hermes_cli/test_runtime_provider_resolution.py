@@ -1553,3 +1553,111 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["source"] == "pool:lmstudio-pool"
     assert resolved["provider"] == "custom"
     assert resolved["requested_provider"] == "custom:lmstudio"
+
+
+def _config_with_custom_providers(entries, model=None):
+    return {"custom_providers": entries, "model": model or {}}
+
+
+def test_solo_custom_provider_is_default_when_model_section_empty(monkeypatch):
+    """cc-switch layout: the sole custom_providers entry + an empty model
+    section resolves as the default provider instead of falling to 'auto'."""
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: _config_with_custom_providers(
+            [{"name": "ds", "base_url": "https://api.deepseek.com", "api_key": "sk-x"}]
+        ),
+    )
+
+    assert rp.resolve_requested_provider() == "ds"
+
+
+def test_multiple_custom_providers_keep_auto(monkeypatch):
+    """With several custom entries there is no unambiguous default — 'auto'."""
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: _config_with_custom_providers(
+            [
+                {"name": "ds", "base_url": "https://api.deepseek.com", "api_key": "sk-1"},
+                {"name": "other", "base_url": "https://other.example.com", "api_key": "sk-2"},
+            ]
+        ),
+    )
+
+    assert rp.resolve_requested_provider() == "auto"
+
+
+def test_no_custom_providers_keeps_auto(monkeypatch):
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "load_config", lambda: {"model": {}})
+
+    assert rp.resolve_requested_provider() == "auto"
+
+
+def test_solo_custom_provider_not_used_when_model_base_url_set(monkeypatch):
+    """model.base_url owns the auto path; a solo custom provider must not
+    hijack a user who pointed model.base_url at a local endpoint."""
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"base_url": "http://localhost:11434/v1"},
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: _config_with_custom_providers(
+            [{"name": "ds", "base_url": "https://api.deepseek.com", "api_key": "sk-x"}]
+        ),
+    )
+
+    assert rp.resolve_requested_provider() == "auto"
+
+
+def test_model_provider_wins_over_solo_custom_provider(monkeypatch):
+    """An explicit model.provider keeps priority over the solo-entry fallback."""
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "openrouter"},
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: _config_with_custom_providers(
+            [{"name": "ds", "base_url": "https://api.deepseek.com", "api_key": "sk-x"}]
+        ),
+    )
+
+    assert rp.resolve_requested_provider() == "openrouter"
+
+
+def test_resolve_runtime_provider_resolves_solo_custom_provider_by_default(monkeypatch):
+    """The full resolution path (the one setup.runtime_check exercises) resolves
+    a solo custom_providers entry when model.* is empty — the cc-switch layout
+    that previously raised AuthError('No inference provider configured') and
+    surfaced as a false 'needs setup' in the desktop statusbar."""
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: _config_with_custom_providers(
+            [{"name": "ds", "base_url": "https://api.deepseek.com", "api_key": "sk-ds"}]
+        ),
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda *a, **k: SimpleNamespace(has_credentials=lambda: False),
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    assert resolved is not None
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://api.deepseek.com"
+    assert resolved["api_key"] == "sk-ds"
+

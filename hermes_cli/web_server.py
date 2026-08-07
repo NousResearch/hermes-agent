@@ -7875,7 +7875,7 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     "relay": {
         "name": "Relay (experimental)",
         "description": "Generic relay adapter fronted by the Hermes Relay connector.",
-        "docs_url": "",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/relay",
         "required_env": (),
     },
 }

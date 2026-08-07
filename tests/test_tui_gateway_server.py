@@ -16375,3 +16375,38 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch):
         assert cleanup_order == ["trim", "reset_home"]
     finally:
         server._sessions.pop("sid_trim", None)
+
+
+def test_fallback_session_info_reports_session_cwd_not_launch_dir(monkeypatch):
+    """A lazily-resumed session must report ITS workspace, not the gateway's.
+
+    ``_fallback_session_info`` used ``_default_session_cwd()`` — the directory the
+    gateway process happened to start in — so the desktop Files pane painted the
+    wrong project for any session resumed without a built agent (#71254).
+    """
+    monkeypatch.setattr(server, "_default_session_cwd", lambda: "/gateway/launch/dir")
+    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda cwd: "bb/feature")
+    monkeypatch.setattr(server, "_project_info_for_cwd", lambda cwd: None)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    info = server._fallback_session_info({"cwd": "/projects/session-own-repo"})
+
+    assert info["cwd"] == "/projects/session-own-repo"
+    assert info["branch"] == "bb/feature"
+
+
+def test_fallback_session_info_always_emits_branch(monkeypatch):
+    """``branch`` is always present so a client can CLEAR a stale label.
+
+    Omitting the key left the desktop showing the previous conversation's branch
+    after switching into a non-git session.
+    """
+    monkeypatch.setattr(server, "_default_session_cwd", lambda: "/gateway/launch/dir")
+    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda cwd: "")
+    monkeypatch.setattr(server, "_project_info_for_cwd", lambda cwd: None)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    info = server._fallback_session_info({"cwd": "/plain/folder"})
+
+    assert "branch" in info
+    assert info["branch"] == ""

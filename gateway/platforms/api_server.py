@@ -1821,8 +1821,23 @@ class APIServerAdapter(BasePlatformAdapter):
             if hmac.compare_digest(token.encode(), expected_key.encode()):
                 return None  # Auth OK
 
+        # Name which of the three rejections this was. They have different
+        # remedies: no header means the caller never authenticated (fix the
+        # client), a non-Bearer scheme means it authenticated the wrong way,
+        # and only a mismatched Bearer token is actually a bad key. Logging
+        # all three as "invalid API key" sends the operator to check a key
+        # that was never sent. Deliberately classifies without echoing any
+        # part of the supplied credential.
+        if not auth_header:
+            reason = "no Authorization header"
+        elif not auth_header.startswith("Bearer "):
+            reason = "unsupported Authorization scheme (expected Bearer)"
+        else:
+            reason = "invalid API key"
+
         logger.warning(
-            "API server rejected invalid API key: %s",
+            "API server rejected request — %s: %s",
+            reason,
             self._request_audit_log_suffix(request),
         )
         return web.json_response(

@@ -241,6 +241,66 @@ class TestAuth:
         assert adapter._check_auth(mock_request) is None
 
 
+    def test_rejection_log_names_the_actual_cause(self, caplog):
+        """The 401 log must say WHICH auth failure happened.
+
+        `_check_auth` rejects three distinct situations - no Authorization
+        header, a non-Bearer scheme, and a Bearer token that does not match -
+        but logged all three as "rejected invalid API key". An operator
+        reading that goes and checks whether their key is wrong, when the
+        common case is a client sending no credentials at all, which is a
+        different fix entirely (client config, not key mismatch).
+
+        Observed on a live install: 57 such warnings, every one of them a
+        caller sending no Authorization header.
+        """
+        config = PlatformConfig(enabled=True, extra={"key": "sk-test123"})
+        adapter = APIServerAdapter(config)
+
+        def reject(headers):
+            request = MagicMock()
+            request.headers = headers
+            with caplog.at_level("WARNING"):
+                caplog.clear()
+                assert adapter._check_auth(request) is not None
+            return " ".join(r.getMessage() for r in caplog.records)
+
+        missing = reject({})
+        assert "no Authorization header" in missing
+        assert "invalid API key" not in missing, (
+            f"no credentials were sent, so this must not blame the key: {missing}"
+        )
+
+        scheme = reject({"Authorization": "Basic dXNlcjpwYXNz"})
+        assert "unsupported Authorization scheme (expected Bearer)" in scheme
+        assert "invalid API key" not in scheme, (
+            f"a non-Bearer scheme is not a bad key: {scheme}"
+        )
+
+        wrong = reject({"Authorization": "Bearer wrong-key"})
+        assert "invalid API key" in wrong, (
+            f"a mismatched Bearer token IS an invalid key: {wrong}"
+        )
+
+    def test_rejection_log_never_echoes_the_supplied_credential(self, caplog):
+        """Classifying the failure must not leak what the client sent."""
+        config = PlatformConfig(enabled=True, extra={"key": "sk-test123"})
+        adapter = APIServerAdapter(config)
+
+        for authorization in (
+            "Bearer super-secret-wrong-token",
+            "Basic dXNlcjpwYXNz",
+        ):
+            request = MagicMock()
+            request.headers = {"Authorization": authorization}
+
+            with caplog.at_level("WARNING"):
+                caplog.clear()
+                adapter._check_auth(request)
+
+            logged = " ".join(r.getMessage() for r in caplog.records)
+            assert authorization.split(" ", 1)[1] not in logged
+
     def test_non_ascii_bearer_token_returns_401_not_500(self):
         """A non-ASCII byte in the bearer token must be rejected with 401, not
         crash the handler: hmac.compare_digest raises TypeError on a str with

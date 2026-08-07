@@ -194,8 +194,16 @@ tts:
     ref_audio: ''
     ref_text: ''
     model: neuphonic/neutts-air-q4-gguf
+    codec_repo: neuphonic/neucodec
     device: cpu
+    output_format: mp3
+    warm_cache: false
+    idle_unload_seconds: 1800
 ```
+
+Warm caching is disabled by default so the roughly 500 MB model exits with the
+one-shot synthesis subprocess. Enable `warm_cache` for lower repeat latency;
+`idle_unload_seconds` controls when the retained model is released.
 
 ## Use case 1: CLI voice mode
 

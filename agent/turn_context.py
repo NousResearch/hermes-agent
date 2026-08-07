@@ -38,7 +38,10 @@ from agent.conversation_compression import (
     conversation_history_after_compression,
     recover_rotated_compression_session,
 )
-from agent.context_engine import automatic_compaction_status_message
+from agent.context_engine import (
+    ContextEngine as _ContextEngine,
+    automatic_compaction_status_message,
+)
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
@@ -684,10 +687,17 @@ def build_turn_context(
                 tools=agent.tools or None,
             )
             # Post-compression target size: don't summarise a thread already
-            # below what compaction would reduce it to.
-            _idle_floor = int(
-                _compressor.threshold_tokens * _compressor.summary_target_ratio
+            # below what compaction would reduce it to. ``summary_target_ratio``
+            # is a ContextEngine field, but read it defensively: minimal
+            # compressor doubles and engines constructed before the field was
+            # declared on the ABC would otherwise raise AttributeError here and
+            # abort the turn.
+            _idle_ratio = getattr(
+                _compressor, "summary_target_ratio", _ContextEngine.summary_target_ratio
             )
+            if not isinstance(_idle_ratio, (int, float)) or isinstance(_idle_ratio, bool):
+                _idle_ratio = _ContextEngine.summary_target_ratio
+            _idle_floor = int(_compressor.threshold_tokens * _idle_ratio)
             _idle_cooldown = getattr(
                 _compressor, "get_active_compression_failure_cooldown", lambda: None
             )()
@@ -819,7 +829,12 @@ def build_turn_context(
                 "but last real provider prompt was %s after compression",
                 f"{_preflight_tokens:,}",
                 f"{_compressor.threshold_tokens:,}",
-                f"{_compressor.last_real_prompt_tokens:,}",
+                # ``last_real_prompt_tokens`` is a ContextEngine field, but an
+                # engine that implements ``should_defer_preflight_to_real_usage``
+                # without tracking it (or one constructed before the field was
+                # declared on the ABC) would otherwise raise AttributeError
+                # inside this log call and abort the turn.
+                f"{getattr(_compressor, 'last_real_prompt_tokens', 0) or 0:,}",
             )
         elif _compression_cooldown:
             logger.info(

@@ -124,6 +124,63 @@ async def test_astral_cjk_rich_content_skips_rich_send_to_avoid_tdesktop_garble(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fence",
+    [
+        "```bash\n~/.local/bin/hermes gateway status\n```",
+        "~~~bash\n~/.local/bin/hermes gateway status\n~~~",
+        "   ```bash\n~/.local/bin/hermes gateway status\n   ```",
+    ],
+)
+async def test_code_fence_content_skips_rich_send_to_preserve_copy_affordance(fence):
+    """Fenced code blocks (backtick or tilde, indented or flush) keep
+    Telegram's client copy button via the legacy MarkdownV2 path; rich
+    preformatted blocks currently omit it (#79331)."""
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "12345",
+        f"## Results\n\n| Case | Status |\n|---|---|\n| rich | ✅ |\n\n{fence}",
+    )
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_inline_triple_backtick_mention_does_not_skip_rich():
+    """A prose mention of triple backticks (not on its own line) is not a
+    fenced block and must not force the legacy path."""
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "12345",
+        "| Case | Status |\n|---|---|\n| rich | ✅ |\n\nWrap it with ``` for code.",
+    )
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_table_without_code_fence_still_uses_rich_send():
+    """The copy-gap guard must not over-trigger: tables alone stay rich."""
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", TABLE_ONLY_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_plain_markdown_stays_on_legacy_path():
     """Ordinary replies (no table/task-list/details/math) stay on the legacy
     MarkdownV2 path for consistent client rendering, even with rich enabled."""
@@ -374,6 +431,24 @@ async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
     adapter._bot.send_message_draft.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_code_fence_content_skips_rich_draft_to_preserve_copy_affordance():
+    """Draft previews mirror the final path: fenced code skips rich so the
+    typing preview never shows a copy-less preformatted block (#79331)."""
+    adapter = _make_adapter(extra={"rich_drafts": True})
+    adapter._bot.do_api_request = AsyncMock(return_value=True)
+
+    result = await adapter.send_draft(
+        "12345",
+        draft_id=7,
+        content="## Results\n\n| Case | Status |\n|---|---|\n| rich | ✅ |\n\n```bash\nhermes gateway status\n```",
+    )
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message_draft.assert_awaited_once()
+
+
 # ----------------------------------------------------------------------
 # prefers_fresh_final_streaming: Telegram keeps streamed finals on the edit
 # path, even when rich messages are enabled, so users do not briefly see two
@@ -430,6 +505,26 @@ async def test_finalize_edit_uses_rich_for_table_content():
     assert api_kwargs["rich_message"]["markdown"] == RICH_CONTENT
     # No fresh send / delete — the whole point of the in-place rich edit.
     adapter._bot.edit_message_text.assert_not_called()
+    adapter._bot.delete_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_with_code_fence_uses_legacy_edit():
+    """Finalizing a preview containing a fenced code block edits via the
+    legacy MarkdownV2 path so the client keeps the code copy button
+    (#79331)."""
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message(
+        "12345",
+        "555",
+        "| Case | Status |\n|---|---|\n| rich | ✅ |\n\n```bash\nhermes gateway status\n```",
+        finalize=True,
+    )
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.edit_message_text.assert_awaited_once()
     adapter._bot.delete_message.assert_not_called()
 
 

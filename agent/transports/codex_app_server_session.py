@@ -502,7 +502,8 @@ class CodexAppServerSession:
             result.should_retire = True
             self._interrupt_event.clear()
             return result
-        assert self._client is not None and self._thread_id is not None
+        if self._client is None or self._thread_id is None:
+            raise RuntimeError("Codex app-server client or thread_id not initialized")
         result.thread_id = self._thread_id
 
         # Do not clear here: a hard stop can arrive while ensure_started() is
@@ -811,7 +812,8 @@ class CodexAppServerSession:
             result.should_retire = True
             return result
 
-        assert self._client is not None and self._thread_id is not None
+        if self._client is None or self._thread_id is None:
+            raise RuntimeError("Codex app-server client or thread_id not initialized")
         result.thread_id = self._thread_id
         self._interrupt_event.clear()
         projector = CodexEventProjector()

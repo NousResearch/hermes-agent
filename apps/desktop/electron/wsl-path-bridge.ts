@@ -51,7 +51,13 @@ export function resolveDefaultWslDistro(): string {
       encoding: 'utf8',
       env: { ...process.env, WSL_UTF8: '1' },
       timeout: 2000,
-      windowsHide: true
+      windowsHide: true,
+      // Do not open a stdin pipe: when wsl.exe dies abruptly (broken WSL
+      // install, service hiccup), writing the stdin close can surface an
+      // asynchronous EPIPE on the child socket that escapes the synchronous
+      // try/catch above and crashes the Electron main process as an
+      // uncaughtException. `-l -q` never reads stdin anyway.
+      stdio: ['ignore', 'pipe', 'ignore']
     })
 
     cachedDistro = parseDefaultDistro(out) || 'Ubuntu'

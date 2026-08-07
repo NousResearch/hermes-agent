@@ -78,7 +78,10 @@ function readWindowsUserEnvVar(
     stdout = exec('reg', ['query', 'HKCU\\Environment', '/v', name], {
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 5000
+      timeout: 5000,
+      // `reg query` never reads stdin; keep the pipe closed so an abrupt
+      // reg.exe exit can't surface an async EPIPE that escapes the try/catch.
+      stdio: ['ignore', 'pipe', 'ignore']
     })
   } catch {
     // `reg` missing, or value absent (reg exits 1) — caller falls back.

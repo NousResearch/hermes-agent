@@ -7378,7 +7378,15 @@ function effectiveSshConfigFingerprint(sshConfig) {
   }
 
   args.push('--', sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host)
-  const output = execFileSync(ssh, args, { encoding: 'utf8', timeout: 10_000, windowsHide: true })
+  // `-G` dumps config and exits; never reads stdin. Keep stdin closed so an
+  // abruptly-terminated ssh.exe can't surface an async EPIPE on the child
+  // socket (which escapes execFileSync's try/catch and kills the main process).
+  const output = execFileSync(ssh, args, {
+    encoding: 'utf8',
+    timeout: 10_000,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'ignore']
+  })
 
   return crypto.createHash('sha256').update(output).digest('hex')
 }

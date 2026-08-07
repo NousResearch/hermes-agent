@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 
-import { test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 
-import { parseDefaultDistro, resolvePickerDefaultPath, wslPosixToWindowsAccessible } from './wsl-path-bridge'
+import { parseDefaultDistro, resolveDefaultWslDistro, resolvePickerDefaultPath, wslPosixToWindowsAccessible } from './wsl-path-bridge'
+
+vi.mock('node:child_process', () => ({
+  execFileSync: vi.fn()
+}))
 
 test('parseDefaultDistro reads the first distro from clean utf-8 output', () => {
   assert.equal(parseDefaultDistro('Ubuntu\nDebian\n'), 'Ubuntu')
@@ -38,4 +43,28 @@ test('resolvePickerDefaultPath bridges a WSL cwd but passes Windows paths and em
   assert.equal(resolvePickerDefaultPath('/home/alex', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
   assert.equal(resolvePickerDefaultPath('C:\\proj', 'Ubuntu'), 'C:\\proj')
   assert.equal(resolvePickerDefaultPath(undefined, 'Ubuntu'), undefined)
+})
+
+test('resolveDefaultWslDistro spawns wsl.exe with stdin closed (async EPIPE crash guard)', t => {
+  // Regression: wsl-path-bridge crashed the Electron main process with an
+  // uncaught `EPIPE: broken pipe, write` when wsl.exe died abruptly. With the
+  // default stdio, execFileSync opens a stdin pipe; the child's death surfaces
+  // an *asynchronous* EPIPE on that socket that escapes the synchronous
+  // try/catch. `-l -q` never reads stdin, so the pipe must stay closed.
+  vi.mocked(execFileSync).mockReturnValue('Ubuntu\n' as never)
+
+  assert.equal(resolveDefaultWslDistro(), 'Ubuntu')
+
+  if (process.platform !== 'win32') {
+    // Non-Windows short-circuits without spawning — the guard is Windows-only.
+    expect(execFileSync).not.toHaveBeenCalled()
+
+    return
+  }
+
+  expect(execFileSync).toHaveBeenCalledWith(
+    'wsl.exe',
+    ['-l', '-q'],
+    expect.objectContaining({ stdio: ['ignore', 'pipe', 'ignore'] })
+  )
 })

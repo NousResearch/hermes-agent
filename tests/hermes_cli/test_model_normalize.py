@@ -187,6 +187,7 @@ class TestIssue78796NvidiaPrefixRepair:
             == "anthropic/claude-sonnet-4.6"
         )
 
+    @pytest.mark.parametrize("model", ["mimo-v2.5-pro", "glm-5.1", "qwen3.5-plus"])
     def test_anthropic_does_not_hyphenate_non_claude_models(self, model):
         """Only Claude marketing IDs use dots-as-version separators on Anthropic.
 
@@ -223,7 +224,4 @@ class TestVertexModelNormalization:
     ])
     def test_vertex_strips_only_matching_provider_aliases(self, model, expected):
         assert normalize_model_for_provider(model, "vertex") == expected
-
-
-# ── OpenCode Zen regression ────────────────────────────────────────────
 

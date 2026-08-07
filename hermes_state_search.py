@@ -1495,6 +1495,19 @@ class SessionSearchMixin:
         pre-compaction transcript stays discoverable after in-place compaction
         (#38763). Pass ``include_inactive=True`` to search every row regardless.
         """
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 20
+        try:
+            offset = int(offset)
+        except (TypeError, ValueError):
+            offset = 0
+        # SQLite treats LIMIT < 0 as unbounded. Cap so FTS/LIKE scans cannot
+        # materialize every match (plus per-hit context enrichment).
+        limit = max(1, min(limit, 500))
+        offset = max(0, offset)
+
         result_fields = self._search_message_fields(fields)
 
         if not self._fts_enabled:

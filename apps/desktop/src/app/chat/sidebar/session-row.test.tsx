@@ -135,6 +135,25 @@ describe('SidebarSessionRow', () => {
     expect(tipTrigger(kebab)).toBeNull()
   })
 
+  it('allows a long session title to wrap to two lines instead of applying single-line truncation', () => {
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        isWorking={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        session={makeSession({ title: 'Fix background process exit error during Hermes auto-update' })}
+      />
+    )
+
+    const title = screen.getByText('Fix background process exit error during Hermes auto-update')
+    expect(title.className).toContain('line-clamp-2')
+    expect(title.className).not.toContain('truncate')
+  })
+
   it('does not render a handoff avatar for a locally-started session', () => {
     const { container } = render(
       <SidebarSessionRow

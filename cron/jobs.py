@@ -298,6 +298,12 @@ def _jobs_lock():
 
     with _jobs_file_lock:
         _jobs_lock_state.depth = 1
+        # Stamp of jobs.json as of this section's load_jobs() (#80703's
+        # fast-path, credit @JoaoMarcos44): lets _save_jobs_unlocked skip the
+        # shrink-merge parse when the file provably hasn't changed since this
+        # section read it. Reset on entry/exit so stale stamps from unlocked
+        # loads or prior sections can never suppress a needed merge.
+        _jobs_lock_state.load_stamp = None
         lock_fd = None
         try:
             try:
@@ -363,6 +369,7 @@ def _jobs_lock():
                         lock_fd.close()
         finally:
             _jobs_lock_state.depth = 0
+            _jobs_lock_state.load_stamp = None
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
@@ -1010,33 +1017,43 @@ def get_ticker_last_error() -> Optional[str]:
 # Job CRUD Operations
 # =============================================================================
 
+def _parse_jobs_file(jobs_file: Path) -> Tuple[Any, bool]:
+    """Tolerantly parse jobs.json; shared by load_jobs and the save-path peek.
+
+    Returns ``(data, used_strict_fallback)``. utf-8-sig absorbs a Windows
+    BOM; a strict parse failure is retried with ``strict=False`` to survive
+    bare control characters in string values. IO errors from the open and
+    parse errors from the fallback propagate to the caller, which decides
+    between repair (load_jobs) and bail-out (peek).
+    """
+    with open(jobs_file, "r", encoding="utf-8-sig") as f:
+        raw = f.read()
+    try:
+        return json.loads(raw), False
+    except json.JSONDecodeError:
+        return json.loads(raw, strict=False), True
+
+
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
+    # Stamp BEFORE reading (fail-safe direction — see _record_load_stamp):
+    # a sibling write racing this load leaves the stamp older than disk, so
+    # the save-path merge runs instead of being wrongly skipped.
+    pre_read_stamp = _jobs_file_stamp(jobs_file)
     if not jobs_file.exists():
+        _record_load_stamp(None)
         return []
 
-    _strict_retry = False  # track whether we used the strict=False fallback
-
     try:
-        # utf-8-sig: Windows Notepad / PowerShell 5.1 Set-Content -Encoding UTF8
-        # write a leading BOM; json.load under plain utf-8 raises
-        # JSONDecodeError("Unexpected UTF-8 BOM") and takes down cron.
-        with open(jobs_file, 'r', encoding='utf-8-sig') as f:
-            data = json.load(f)
-    except json.JSONDecodeError:
-        # Retry with strict=False to handle bare control chars in string values
-        _strict_retry = True
-        try:
-            with open(jobs_file, 'r', encoding='utf-8-sig') as f:
-                data = json.loads(f.read(), strict=False)
-        except Exception as e:
-            logger.error("Failed to auto-repair jobs.json: %s", e)
-            raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
+        data, _strict_retry = _parse_jobs_file(jobs_file)
     except IOError as e:
         logger.error("IOError reading jobs.json: %s", e)
         raise RuntimeError(f"Failed to read cron database: {e}") from e
+    except Exception as e:
+        logger.error("Failed to auto-repair jobs.json: %s", e)
+        raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
 
     # Validate the top-level JSON shape: accept a dict (expected) or a bare
     # list (auto-repair). Anything else (str/number/null) is corruption that
@@ -1048,6 +1065,7 @@ def load_jobs() -> List[Dict[str, Any]]:
             # Hit control-character corruption — rewrite with proper escaping.
             save_jobs(jobs)
             logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+        _record_load_stamp(pre_read_stamp)
         return jobs
     if isinstance(data, list):
         # Bare array — likely saved/edited outside save_jobs(). Wrap it back
@@ -1055,6 +1073,7 @@ def load_jobs() -> List[Dict[str, Any]]:
         if data:
             save_jobs(data)
             logger.warning("Auto-repaired jobs.json (bare list wrapped as dict)")
+        _record_load_stamp(pre_read_stamp)
         return data
 
     raise RuntimeError(
@@ -1067,20 +1086,18 @@ def _peek_jobs_unlocked() -> Optional[List[Dict[str, Any]]]:
 
     Caller must hold ``_jobs_lock()``. Returns ``[]`` when the file is
     missing, ``None`` when the payload is unreadable/corrupt (caller should
-    not attempt a shrink-merge against an unknown baseline).
+    not attempt a shrink-merge against an unknown baseline). Never calls
+    ``save_jobs`` — the repair-free property is what keeps the save path
+    re-entrancy-safe (a repairing read here would recurse through
+    ``_save_jobs_unlocked``).
     """
     jobs_file = _current_cron_store().jobs_file
     if not jobs_file.exists():
         return []
     try:
-        with open(jobs_file, "r", encoding="utf-8-sig") as f:
-            data = json.load(f)
+        data, _ = _parse_jobs_file(jobs_file)
     except Exception:
-        try:
-            with open(jobs_file, "r", encoding="utf-8-sig") as f:
-                data = json.loads(f.read(), strict=False)
-        except Exception:
-            return None
+        return None
     if isinstance(data, dict):
         jobs = data.get("jobs", [])
         return jobs if isinstance(jobs, list) else None
@@ -1089,12 +1106,48 @@ def _peek_jobs_unlocked() -> Optional[List[Dict[str, Any]]]:
     return None
 
 
+def _jobs_file_stamp(jobs_file: Path) -> Optional[Tuple[int, int, int]]:
+    """Cheap change-detection stamp for jobs.json: ``(mtime_ns, size, ino)``.
+
+    ``None`` means the file is missing/unstatable. Used as a fast-path gate
+    in front of the shrink-merge so the healthy no-race save costs one
+    ``stat()`` instead of a full read+parse (the ``advance_next_runs``
+    batching exists because this path is hot — see its docstring).
+    ``st_ino`` is included because every legitimate writer goes through
+    mkstemp+rename (new inode), so even a same-size write inside one mtime
+    quantum on a coarse-clock filesystem (ext4 jiffies, network mounts)
+    cannot false-match.
+    """
+    try:
+        st = jobs_file.stat()
+        return (st.st_mtime_ns, st.st_size, st.st_ino)
+    except OSError:
+        return None
+
+
+def _record_load_stamp(stamp: Optional[Tuple[int, int, int]]) -> None:
+    """Remember jobs.json's stamp for the enclosing _jobs_lock() section.
+
+    No-op outside a critical section. Lets the save path skip the
+    shrink-merge parse when the file provably hasn't changed since this
+    section loaded it (#80703's fast-path). The caller must capture the
+    stamp BEFORE reading the file: a sibling landing mid-read then leaves
+    the recorded stamp OLDER than disk — a mismatch, so the merge runs
+    (fail-safe direction). Stamping after the read would let that sibling's
+    write be certified as "seen" without being in the loaded payload,
+    wrongly suppressing the recovery.
+    """
+    if not getattr(_jobs_lock_state, "depth", 0):
+        return
+    _jobs_lock_state.load_stamp = stamp
+
+
 def _merge_unexpected_disk_jobs(
     jobs: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Collection[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Re-attach on-disk jobs missing from a save payload (#80624).
+    """Return *jobs* plus any on-disk jobs missing from the save payload (#80624).
 
     Under ``_jobs_lock()``'s degraded flock-timeout path (#60703), two
     processes can both believe they own the store. A writer that loaded an
@@ -1105,8 +1158,18 @@ def _merge_unexpected_disk_jobs(
 
     Intentional deletes pass ``removed_ids``. Any other id present on disk
     but absent from *jobs* is treated as a concurrent create and merged
-    back before the atomic write.
+    back before the atomic write. The caller's list is never mutated — a
+    new list is returned when anything was recovered.
+
+    Fast path: when the enclosing critical section recorded a load stamp
+    and the file's ``(mtime_ns, size)`` still matches, nothing can have
+    changed underneath us, so the read+parse is skipped entirely — one
+    ``stat()`` on the healthy no-race save.
     """
+    stamp = getattr(_jobs_lock_state, "load_stamp", None)
+    if stamp is not None and _jobs_file_stamp(_current_cron_store().jobs_file) == stamp:
+        return jobs
+
     disk_jobs = _peek_jobs_unlocked()
     if disk_jobs is None:
         return jobs
@@ -1117,7 +1180,7 @@ def _merge_unexpected_disk_jobs(
         if isinstance(job, dict) and job.get("id"):
             new_ids.add(str(job["id"]))
 
-    preserved = 0
+    recovered: List[Dict[str, Any]] = []
     for disk_job in disk_jobs:
         if not isinstance(disk_job, dict):
             continue
@@ -1127,18 +1190,19 @@ def _merge_unexpected_disk_jobs(
         disk_id = str(disk_id)
         if disk_id in new_ids or disk_id in intended_remove:
             continue
-        jobs.append(disk_job)
+        recovered.append(disk_job)
         new_ids.add(disk_id)
-        preserved += 1
 
-    if preserved:
-        logger.warning(
-            "Preserved %d cron job(s) present on disk but missing from the "
-            "in-memory save payload (concurrent create under degraded lock "
-            "or stale writer) (#80624)",
-            preserved,
-        )
-    return jobs
+    if not recovered:
+        return jobs
+    logger.warning(
+        "Preserved %d cron job(s) present on disk but missing from the "
+        "in-memory save payload (concurrent create under degraded lock "
+        "or stale writer) (#80624): %s",
+        len(recovered),
+        [j.get("id") for j in recovered],
+    )
+    return jobs + recovered
 
 
 def _save_jobs_unlocked(
@@ -1173,11 +1237,13 @@ def _save_jobs_unlocked(
     # path another process can create a job between our load and our write.
     # Merge unexpected disk ids into the payload, stage the write, then
     # re-peek; if new ids appeared, merge again and restage before replace.
+    # The merge itself fast-paths to a single stat() when the enclosing
+    # section's load stamp still matches (see _merge_unexpected_disk_jobs).
     tmp_path = None
     try:
         for _attempt in range(5):
             if not replace:
-                _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
+                jobs = _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
             fd, tmp_path = tempfile.mkstemp(
                 dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_"
             )
@@ -1199,7 +1265,15 @@ def _save_jobs_unlocked(
                 raise
 
             if not replace:
-                disk_jobs = _peek_jobs_unlocked()
+                # Verify-after-stage: a sibling landing while we serialized
+                # the payload must trigger another merge round. Same stamp
+                # fast path as the merge — an unchanged stamp proves nothing
+                # was written, so the full parse is skipped.
+                _stamp = getattr(_jobs_lock_state, "load_stamp", None)
+                _unchanged = (
+                    _stamp is not None and _jobs_file_stamp(jobs_file) == _stamp
+                )
+                disk_jobs = None if _unchanged else _peek_jobs_unlocked()
                 if disk_jobs is not None:
                     payload_ids = {
                         str(j["id"])
@@ -1225,11 +1299,20 @@ def _save_jobs_unlocked(
             tmp_path = None
             _secure_file(jobs_file)
             _preserve_file_ownership(jobs_file, _stat_before)
+            # Invalidate (never refresh) the stamp after writing: the stamp
+            # certifies "this section's loaded payload still matches disk",
+            # which stops being provable the moment anyone writes. A refresh
+            # here would let a nested save (e.g. create_job inside a broader
+            # section) certify disk against an OUTER caller's stale payload
+            # and deterministically clobber the nested create; it also races
+            # a degraded sibling landing between replace and stat. Later
+            # saves in this section simply take the full merge (fail-safe).
+            _record_load_stamp(None)
             return
 
         # Exhausted retries — last merge + write without another re-peek.
         if not replace:
-            _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
+            jobs = _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
         fd, tmp_path = tempfile.mkstemp(
             dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_"
         )

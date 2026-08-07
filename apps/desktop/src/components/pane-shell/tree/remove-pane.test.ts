@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { findGroup, group, removePane, split } from './model'
+import { allPaneIds, findGroup, group, normalize, removePane, split } from './model'
 
 describe('removePane close-neighbor selection', () => {
   it('closing a middle active tab keeps you on the tab that slides into its slot', () => {
@@ -38,5 +38,17 @@ describe('removePane close-neighbor selection', () => {
     const stack = next ? findGroup(next, 'stack') : null
 
     expect(stack).toMatchObject({ panes: ['tile:1', 'tile:3'], active: 'tile:3' })
+  })
+
+  it('keeps a pane id in only one group when normalizing a persisted tree', () => {
+    const next = normalize(
+      split('row', [
+        group(['workspace', 'preview-tile:url:browser'], { id: 'main' }),
+        group(['preview-tile:url:browser'], { id: 'duplicate-browser' })
+      ])
+    )
+
+    expect(allPaneIds(next!)).toEqual(['workspace', 'preview-tile:url:browser'])
+    expect(findGroup(next!, 'duplicate-browser')).toBeNull()
   })
 })

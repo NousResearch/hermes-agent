@@ -128,61 +128,85 @@ export function allPaneIds(node: LayoutNode): string[] {
  * editor-applied tree keeps them until the first structural op.
  */
 export function normalize(node: LayoutNode): LayoutNode | null {
-  if (node.type === 'group') {
-    if (node.panes.length === 0) {
+  // Pane ids are contribution keys, not instance ids: one pane can only be
+  // mounted once in the layout tree. Keep the first occurrence in tree order
+  // so a stale persisted duplicate cannot render the same Browser twice.
+  const seenPanes = new Set<string>()
+
+  const walk = (current: LayoutNode): LayoutNode | null => {
+    if (current.type === 'group') {
+      const panes: string[] = []
+      let deduped = false
+
+      for (const paneId of current.panes) {
+        if (seenPanes.has(paneId)) {
+          deduped = true
+
+          continue
+        }
+
+        seenPanes.add(paneId)
+
+        panes.push(paneId)
+      }
+
+      if (panes.length === 0) {
+        return null
+      }
+
+      const active = panes.includes(current.active) ? current.active : panes[0]
+
+      // NOTE: `headerHidden` is deliberately untouched here. A zone down to one
+      // pane is headerless by default anyway, so a stored `true` is visually
+      // redundant *while it's alone* — but normalize used to DROP it, which threw
+      // away the user's standing choice: the bar came back the moment a pane
+      // rejoined (close a stacked tool panel, toggle it back on). `false` is
+      // sticky for the mirror reason — once a zone has had a tab bar, it keeps it.
+      if (!deduped && active === current.active) {
+        return current
+      }
+
+      return { ...current, panes, active }
+    }
+
+    const children: LayoutNode[] = []
+    const weights: number[] = []
+
+    current.children.forEach((child, i) => {
+      const kept = walk(child)
+
+      if (!kept) {
+        return
+      }
+
+      if (kept.type === 'split' && kept.orientation === current.orientation) {
+        // Flatten: distribute this slot's weight across the flattened children
+        // proportionally to their internal weights.
+        const total = kept.weights.reduce((a, b) => a + b, 0) || 1
+        kept.children.forEach((grandchild, j) => {
+          children.push(grandchild)
+          weights.push((current.weights[i] ?? 1) * ((kept.weights[j] ?? 1) / total))
+        })
+
+        return
+      }
+
+      children.push(kept)
+      weights.push(current.weights[i] ?? 1)
+    })
+
+    if (children.length === 0) {
       return null
     }
 
-    const active = node.panes.includes(node.active) ? node.active : node.panes[0]
-
-    // NOTE: `headerHidden` is deliberately untouched here. A zone down to one
-    // pane is headerless by default anyway, so a stored `true` is visually
-    // redundant *while it's alone* — but normalize used to DROP it, which threw
-    // away the user's standing choice: the bar came back the moment a pane
-    // rejoined (close a stacked tool panel, toggle it back on). `false` is
-    // sticky for the mirror reason — once a zone has had a tab bar, it keeps it.
-    if (active === node.active) {
-      return node
+    if (children.length === 1) {
+      return children[0]
     }
 
-    return { ...node, active }
+    return { ...current, children, weights }
   }
 
-  const children: LayoutNode[] = []
-  const weights: number[] = []
-
-  node.children.forEach((child, i) => {
-    const kept = normalize(child)
-
-    if (!kept) {
-      return
-    }
-
-    if (kept.type === 'split' && kept.orientation === node.orientation) {
-      // Flatten: distribute this slot's weight across the flattened children
-      // proportionally to their internal weights.
-      const total = kept.weights.reduce((a, b) => a + b, 0) || 1
-      kept.children.forEach((grandchild, j) => {
-        children.push(grandchild)
-        weights.push((node.weights[i] ?? 1) * ((kept.weights[j] ?? 1) / total))
-      })
-
-      return
-    }
-
-    children.push(kept)
-    weights.push(node.weights[i] ?? 1)
-  })
-
-  if (children.length === 0) {
-    return null
-  }
-
-  if (children.length === 1) {
-    return children[0]
-  }
-
-  return { ...node, children, weights }
+  return walk(node)
 }
 
 /** Remove a pane wherever it lives. Closing the ACTIVE tab leaves selection on

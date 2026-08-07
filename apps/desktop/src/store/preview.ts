@@ -60,6 +60,13 @@ export interface PreviewTab {
   target: PreviewTarget
 }
 
+/** The one Browser tab's id. URL targets all share it: the tab names the
+ *  SURFACE (Browser), not the page, so opening a second URL navigates the
+ *  browser it already has — re-front the tab, swap its target, and the pane
+ *  rebuilds its webview against the new url. Files and artifacts stay keyed
+ *  by identity; only the web surface is a singleton. */
+const BROWSER_TAB_ID: RightRailTabId = 'url:browser'
+
 const TABS_STORAGE_KEY = 'hermes.desktop.previewTabs.v2'
 /** Superseded by the tab list above; cleared so it can't leak forever. */
 const LEGACY_SESSION_REGISTRY_KEY = 'hermes.desktop.sessionPreviews.v1'
@@ -186,13 +193,6 @@ export const $previewTabSources = computed($previewTabs, tabs => tabs.map(tab =>
 export const $previewReloadRequest = atom(0)
 export const $previewServerRestart = atom<PreviewServerRestart | null>(null)
 export const $previewServerRestartStatus = computed($previewServerRestart, restart => restart?.status ?? 'idle')
-
-/** The one Browser tab's id. URL targets all share it: the tab names the
- *  SURFACE (Browser), not the page, so opening a second URL navigates the
- *  browser it already has — re-front the tab, swap its target, and the pane
- *  rebuilds its webview against the new url. Files and artifacts stay keyed
- *  by identity; only the web surface is a singleton. */
-const BROWSER_TAB_ID: RightRailTabId = 'url:browser'
 
 export function previewTabId(target: PreviewTarget): RightRailTabId {
   return target.kind === 'url' ? BROWSER_TAB_ID : `${target.kind}:${target.url}`

@@ -94,4 +94,35 @@ describe('persisted preview migration', () => {
 
     expect(restored?.target.previewKind).toBe('text')
   })
+
+  it('restores URL tabs as one Browser tab, keeping the latest URL', () => {
+    const restored = decodePreviewTabs(
+      JSON.stringify([
+        {
+          id: 'url:https://old.example',
+          target: {
+            kind: 'url',
+            label: 'old',
+            source: 'https://old.example',
+            url: 'https://old.example'
+          }
+        },
+        {
+          id: 'url:https://new.example',
+          target: {
+            kind: 'url',
+            label: 'new',
+            source: 'https://new.example',
+            url: 'https://new.example'
+          }
+        }
+      ])
+    )
+
+    expect(restored).toHaveLength(1)
+    expect(restored[0]).toMatchObject({
+      id: 'url:browser',
+      target: { url: 'https://new.example' }
+    })
+  })
 })

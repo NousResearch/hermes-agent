@@ -10440,15 +10440,14 @@ def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: 
     ``session["attached_images"]`` so the next ``prompt.submit`` picks it up via
     the existing native-image-attach pipeline. Returns the written path.
     """
-    session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _session_images_dir(session)
     img_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+    unique = uuid.uuid4().hex[:12]
+    img_path = img_dir / f"{prefix}_{ts}_{unique}{ext}"
     try:
         img_path.write_bytes(img_bytes)
     except Exception:
-        session["image_counter"] = max(0, session["image_counter"] - 1)
         raise
     session.setdefault("attached_images", []).append(str(img_path))
     return img_path

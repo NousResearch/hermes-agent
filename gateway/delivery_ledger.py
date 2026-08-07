@@ -32,6 +32,10 @@ ambiguous sends):
 
 Poison rows cannot spin: attempts are capped, stale rows expire, and both
 transition to ``abandoned`` (kept briefly for inspection, then pruned).
+Row-count pressure prefers dropping terminal rows; if a live-owner backlog
+still exceeds ``_MAX_ROWS``, oldest owed rows are abandoned (with an
+overflow reason) then dropped so storage stays bounded without a silent
+owed DELETE.
 
 Everything here is best-effort by design: ledger failures must never block
 or delay an actual send. Callers wrap every call in try/except.
@@ -61,7 +65,10 @@ _DB_LOCK = threading.Lock()
 MAX_ATTEMPTS = 3
 STALE_AFTER_SECONDS = 24 * 60 * 60
 _RETENTION_SECONDS = 7 * 24 * 60 * 60
-_MAX_ROWS = 500
+_MAX_ROWS = 500  # count pressure prefers deleting delivered/abandoned; if
+                 # still over (live-owner owed backlog), oldest owed are
+                 # abandoned then dropped so the table stays bounded
+_OVERFLOW_ABANDON_ERROR = "row-cap overflow"
 
 # Visible prefix for redeliveries that might duplicate an already-received
 # message (crash mid-send / post-rejection retry). Honest at-least-once.
@@ -316,24 +323,66 @@ def _prune(now: Optional[float] = None) -> None:
                    WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""",
                 (cutoff,),
             )
-            total = conn.execute(
-                "SELECT COUNT(*) FROM delivery_obligations"
-            ).fetchone()[0]
-            excess = max(0, total - _MAX_ROWS)
-            if excess:
-                conn.execute(
-                    """DELETE FROM delivery_obligations WHERE obligation_id IN (
-                         SELECT obligation_id FROM delivery_obligations
-                         ORDER BY CASE state
-                                    WHEN 'delivered' THEN 0
-                                    WHEN 'abandoned' THEN 1
-                                    ELSE 2
-                                  END, updated_at ASC
-                         LIMIT ?)""",
-                    (excess,),
-                )
+            _prune_to_max_rows(conn, now)
     except Exception:
         logger.debug("delivery ledger prune failed", exc_info=True)
+
+
+def _prune_to_max_rows(conn: sqlite3.Connection, now: float) -> None:
+    """Enforce ``_MAX_ROWS`` without silently hard-deleting owed replies.
+
+    1. Drop excess terminal rows (delivered before abandoned, oldest first).
+    2. If still over — a live gateway can accumulate pending/attempting/failed
+       forever because ``sweep_recoverable`` skips live owners — abandon the
+       oldest owed rows (explicit terminal transition + overflow reason), then
+       drop those terminals so storage stays bounded.
+    """
+    total = conn.execute(
+        "SELECT COUNT(*) FROM delivery_obligations"
+    ).fetchone()[0]
+    excess = max(0, total - _MAX_ROWS)
+    if not excess:
+        return
+
+    conn.execute(
+        """DELETE FROM delivery_obligations WHERE obligation_id IN (
+             SELECT obligation_id FROM delivery_obligations
+             WHERE state IN ('delivered', 'abandoned')
+             ORDER BY CASE state WHEN 'delivered' THEN 0 ELSE 1 END,
+                      updated_at ASC
+             LIMIT ?)""",
+        (excess,),
+    )
+
+    total = conn.execute(
+        "SELECT COUNT(*) FROM delivery_obligations"
+    ).fetchone()[0]
+    remaining = max(0, total - _MAX_ROWS)
+    if not remaining:
+        return
+
+    # Bound live-owner backlog: abandon oldest owed, then delete terminals.
+    # Never DELETE pending/attempting/failed directly — that was the original
+    # silent-loss bug under count pressure.
+    conn.execute(
+        """UPDATE delivery_obligations
+           SET state='abandoned', updated_at=?, last_error=?
+           WHERE obligation_id IN (
+             SELECT obligation_id FROM delivery_obligations
+             WHERE state IN ('pending', 'attempting', 'failed')
+             ORDER BY updated_at ASC
+             LIMIT ?)""",
+        (now, _OVERFLOW_ABANDON_ERROR, remaining),
+    )
+    conn.execute(
+        """DELETE FROM delivery_obligations WHERE obligation_id IN (
+             SELECT obligation_id FROM delivery_obligations
+             WHERE state IN ('delivered', 'abandoned')
+             ORDER BY CASE state WHEN 'delivered' THEN 0 ELSE 1 END,
+                      updated_at ASC
+             LIMIT ?)""",
+        (remaining,),
+    )
 
 
 def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:

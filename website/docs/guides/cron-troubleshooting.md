@@ -144,7 +144,7 @@ If a job ran and failed, you may see error context in:
 ### Check 2: Common error patterns
 
 **"No such file or directory" for scripts**
-For a backend-target job, `script` must be an absolute path visible inside that backend. For a scheduler-target job, use a relative name beneath `~/.hermes/scripts/`. Verify a scheduler-host script with:
+For a backend-target job using a non-local backend, `script` must be an absolute path visible inside that backend. With the effective `local` backend, backend-target jobs use the same relative-path rule as scheduler-target jobs: a name beneath `~/.hermes/scripts/`. Verify a scheduler-host script with:
 ```bash
 ls ~/.hermes/scripts/your-script.py   # Must exist on the scheduler host
 hermes cron edit <job_id> --script your-script.py --target scheduler

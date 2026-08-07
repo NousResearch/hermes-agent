@@ -58,6 +58,16 @@ def test_explicit_config_backend_overrides_stale_env(monkeypatch):
     assert os.environ["TERMINAL_ENV"] == "docker"
 
 
+def test_effective_backend_matches_terminal_dispatch_config_after_bridge(monkeypatch):
+    """Cron's backend choice follows terminal_tool's bridged dispatch config."""
+    _write_config("terminal:\n  backend: docker\n")
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+
+    dispatch_config = terminal_tool._get_env_config()
+
+    assert terminal_tool.get_effective_terminal_backend() == dispatch_config["env_type"] == "docker"
+
+
 def test_partial_terminal_config_preserves_unrelated_env_values(monkeypatch):
     _write_config("terminal:\n  backend: docker\n")
     monkeypatch.setenv("TERMINAL_ENV", "ssh")

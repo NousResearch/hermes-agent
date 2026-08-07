@@ -1514,7 +1514,26 @@ def run_doctor(args):
             # repaired in place with --fix).
             from hermes_state import _db_opens_cleanly, repair_state_db_schema
 
-            _write_reason = _db_opens_cleanly(state_db_path)
+            # _db_opens_cleanly runs PRAGMA integrity_check which can take
+            # minutes on large databases (2000+ sessions).  Wrap in a thread
+            # with a timeout so hermes doctor doesn't hang indefinitely.
+            # See: #72441
+            import concurrent.futures
+            _probe_timeout = 30.0  # seconds
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
+                _fut = _ex.submit(_db_opens_cleanly, state_db_path)
+                try:
+                    _write_reason = _fut.result(timeout=_probe_timeout)
+                except concurrent.futures.TimeoutError:
+                    _write_reason = None
+                    check_warn(
+                        f"{_DHH}/state.db write-health probe timed out",
+                        f"(>{_probe_timeout:.0f}s — database may be locked or very large)",
+                    )
+                    issues.append(
+                        "state.db health probe timed out — close other Hermes "
+                        "instances and retry, or run 'hermes sessions repair'"
+                    )
             if _write_reason is not None:
                 check_warn(
                     f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)",

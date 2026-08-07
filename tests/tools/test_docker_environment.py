@@ -1100,8 +1100,11 @@ def _reaper_run_mock(monkeypatch, ps_ids: list[str], inspect_responses: dict[str
                       rm_succeeds: bool = True):
     """Build a subprocess.run mock for reaper tests.
 
-    * ``ps_ids`` — what ``docker ps -a --filter ... --format '{{.ID}}'`` returns
-    * ``inspect_responses[cid]`` — what ``docker inspect ... FinishedAt`` returns
+    * ``ps_ids`` — what ``docker ps -a --filter ... --format '{{.ID}}'``
+      returns for the **exited** pass.  The running pass always returns
+      empty (no running containers) — override the mock directly for
+      running-container tests.
+    * ``inspect_responses[cid]`` — what ``docker inspect`` returns
       for each cid; ``""`` means "field unset".
     * ``rm_succeeds`` — whether ``docker rm -f`` returns 0.
 
@@ -1115,6 +1118,9 @@ def _reaper_run_mock(monkeypatch, ps_ids: list[str], inspect_responses: dict[str
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         sub = cmd[1]
         if sub == "ps":
+            filters = " ".join(cmd)
+            if "status=running" in filters:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return subprocess.CompletedProcess(
                 cmd, 0, stdout="\n".join(ps_ids) + ("\n" if ps_ids else ""), stderr="",
             )
@@ -1161,6 +1167,10 @@ def test_reap_orphan_continues_after_individual_rm_failure(monkeypatch):
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         sub = cmd[1]
         if sub == "ps":
+            filters = " ".join(cmd)
+            if "status=running" in filters:
+                # No running containers for this test.
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return subprocess.CompletedProcess(
                 cmd, 0, stdout="cid-a\ncid-b\ncid-c\n", stderr="",
             )
@@ -1185,6 +1195,121 @@ def test_reap_orphan_continues_after_individual_rm_failure(monkeypatch):
     assert set(rm_calls) == {"cid-a", "cid-b", "cid-c"}, (
         f"reaper must attempt all candidates even when one fails; got: {rm_calls}"
     )
+
+
+def test_reap_orphan_reaps_stale_running_containers(monkeypatch):
+    """Persist-mode containers (status=running, sleep infinity) must be
+    reaped when their Created timestamp exceeds max_age_seconds.
+
+    Regression test for #75467: the exited-only reaper never sees
+    persist-mode containers because they never reach status=exited.
+    """
+    old_created = _now_iso(offset_seconds=900)  # created 15 min ago
+    recent_finished = _now_iso(offset_seconds=100)  # exited 100s ago
+    rm_calls = []
+    ps_call_count = [0]
+
+    def _run(cmd, **kwargs):
+        if not isinstance(cmd, list) or len(cmd) < 2:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        sub = cmd[1]
+        if sub == "ps":
+            ps_call_count[0] += 1
+            # First call (status=exited): one recently-exited container
+            # Second call (status=running): one old running container
+            filters = " ".join(cmd)
+            if "status=exited" in filters:
+                return subprocess.CompletedProcess(cmd, 0, stdout="cid-exited\n", stderr="")
+            if "status=running" in filters:
+                return subprocess.CompletedProcess(cmd, 0, stdout="cid-running\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if sub == "inspect":
+            cid = cmd[-1]
+            if cid == "cid-exited":
+                return subprocess.CompletedProcess(cmd, 0, stdout=recent_finished + "\n", stderr="")
+            if cid == "cid-running":
+                return subprocess.CompletedProcess(cmd, 0, stdout=old_created + "\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="\n", stderr="")
+        if sub == "rm":
+            rm_calls.append(cmd[-1])
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    # The exited container is too recent (100s < 600s) — not reaped.
+    # The running container is old (900s > 600s) — reaped.
+    assert removed == 1, f"expected 1 stale running container reaped, got {removed}"
+    assert rm_calls == ["cid-running"], (
+        f"expected rm of cid-running, got: {rm_calls}"
+    )
+    assert ps_call_count[0] == 2, "expected two ps calls (exited + running)"
+
+
+def test_reap_orphan_skips_fresh_running_containers(monkeypatch):
+    """Running containers younger than max_age_seconds must NOT be reaped.
+    Only stale persist-mode containers should be removed."""
+    fresh_created = _now_iso(offset_seconds=100)  # created 100s ago
+    rm_calls = []
+
+    def _run(cmd, **kwargs):
+        if not isinstance(cmd, list) or len(cmd) < 2:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        sub = cmd[1]
+        if sub == "ps":
+            return subprocess.CompletedProcess(cmd, 0, stdout="cid-fresh\n", stderr="")
+        if sub == "inspect":
+            return subprocess.CompletedProcess(cmd, 0, stdout=fresh_created + "\n", stderr="")
+        if sub == "rm":
+            rm_calls.append(cmd[-1])
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 0, f"fresh container should not be reaped, got {removed}"
+    assert rm_calls == [], f"no rm calls expected for fresh container, got: {rm_calls}"
+
+
+def test_container_created_at_parses_rfc3339(monkeypatch):
+    """_container_created_at must parse Docker's RFC3339 Created field."""
+    def _run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0,
+            stdout="2026-07-15T10:30:00.123456789Z\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    result = docker_env._container_created_at("/usr/bin/docker", "test-cid")
+    assert result is not None, "must parse RFC3339 Created field"
+    import datetime
+    assert result.tzinfo == datetime.timezone.utc
+    assert result.year == 2026 and result.month == 7 and result.day == 15
+
+
+def test_container_created_at_returns_none_on_empty():
+    """_container_created_at must return None when inspect returns empty."""
+    import unittest.mock
+    class _MockRun:
+        def __init__(self, stdout):
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+    with unittest.mock.patch.object(
+        docker_env.subprocess, "run", return_value=_MockRun(""),
+    ):
+        result = docker_env._container_created_at("/usr/bin/docker", "test-cid")
+    assert result is None
 
 
 def test_container_finished_at_parses_nanosecond_timestamp(monkeypatch):

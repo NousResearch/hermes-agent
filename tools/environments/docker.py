@@ -153,18 +153,32 @@ def reap_orphan_containers(
 ) -> int:
     """Remove stale hermes-tagged containers left behind by prior processes.
 
-    Targets containers that match all of:
+    Two passes:
 
-    * ``label=hermes-agent=1`` (created by this codebase)
-    * ``status=exited`` (running containers are NEVER reaped — they may
-      belong to a sibling Hermes process whose reuse path will pick them
-      up; killing them would crash the sibling mid-command)
-    * (optional) ``label=hermes-profile=<profile_filter>`` (sweep only the
-      caller's profile by default; a hermes process in profile A must not
-      tear down profile B's containers)
-    * ``State.FinishedAt`` older than *max_age_seconds* ago (so a sibling
-      process that just exited and is about to be replaced doesn't get
-      its container yanked out from under it)
+    **Pass 1 — exited containers:**
+
+    * ``label=hermes-agent=1``
+    * ``status=exited``
+    * (optional) ``label=hermes-profile=<profile_filter>``
+    * ``State.FinishedAt`` older than *max_age_seconds* ago
+
+    Running containers that belong to a sibling Hermes process whose reuse
+    path will pick them up are *not* touched in this pass.
+
+    **Pass 2 — stale running containers (persist-mode leak fix):**
+
+    * ``label=hermes-agent=1``
+    * ``status=running``
+    * (optional) ``label=hermes-profile=<profile_filter>``
+    * ``Created`` older than *max_age_seconds* ago
+
+    Persist-mode containers (``persist_across_processes=True``) run
+    ``sleep infinity`` and never exit, so Pass 1 never sees them.
+    Pass 2 reclaims containers whose creation timestamp indicates they
+    have been idle longer than the lifetime budget.  A persist-mode
+    container that is still actively serving commands will be refreshed
+    before this age threshold is reached; one that survives a SIGKILL /
+    OOM / abandoned-laptop scenario will not.
 
     Returns the number of containers removed. Best-effort: any failure
     (docker daemon unreachable, slow inspect, parse error) is logged at
@@ -236,6 +250,57 @@ def reap_orphan_containers(
                 )
         except (subprocess.TimeoutExpired, OSError) as e:
             logger.debug("orphan reaper docker rm %s failed: %s", cid[:12], e)
+
+    # Pass 2: reap stale *running* containers (persist-mode leak fix).
+    # Persist-mode containers run ``sleep infinity`` and never reach
+    # status=exited, so Pass 1 never sees them.  Check ``Created``
+    # instead of ``FinishedAt`` to determine age.
+    filters_running = ["--filter", "label=hermes-agent=1", "--filter", "status=running"]
+    if profile_filter:
+        filters_running.extend(["--filter", f"label=hermes-profile={_sanitize_label_value(profile_filter)}"])
+    try:
+        listing2 = subprocess.run(
+            [docker, "ps", *filters_running, "--format", "{{.ID}}"],
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15, check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("orphan reaper (running pass) docker ps failed: %s", e)
+        return removed
+    if listing2.returncode != 0:
+        logger.debug(
+            "orphan reaper (running pass) docker ps returned %d: %s",
+            listing2.returncode, listing2.stderr.strip(),
+        )
+        return removed
+
+    for cid in (ln.strip() for ln in listing2.stdout.splitlines() if ln.strip()):
+        created_at = _container_created_at(docker, cid)
+        if created_at is None:
+            continue
+        age = (now - created_at).total_seconds()
+        if age < max_age_seconds:
+            continue
+        try:
+            result = subprocess.run(
+                [docker, "rm", "-f", cid],
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
+                stdin=subprocess.DEVNULL,
+            )
+            if result.returncode == 0:
+                removed += 1
+                logger.info(
+                    "Reaped stale running container %s (created %d seconds ago)",
+                    cid[:12], int(age),
+                )
+            else:
+                logger.debug(
+                    "docker rm -f running %s failed: %s",
+                    cid[:12], result.stderr.strip(),
+                )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("orphan reaper docker rm running %s failed: %s", cid[:12], e)
+
     return removed
 
 
@@ -271,6 +336,40 @@ def _container_finished_at(docker_exe: str, container_id: str):
         return datetime.datetime.fromisoformat(raw)
     except ValueError as e:
         logger.debug("could not parse FinishedAt %r for %s: %s", raw, container_id[:12], e)
+        return None
+
+
+def _container_created_at(docker_exe: str, container_id: str):
+    """Parse ``docker inspect`` Created for *container_id*.
+
+    Returns a timezone-aware datetime, or ``None`` if the field is missing,
+    unparseable, or the inspect call fails. Used by the running-container
+    reaper to determine age when ``FinishedAt`` is meaningless (the
+    container has never exited).
+    """
+    try:
+        result = subprocess.run(
+            [docker_exe, "inspect", "--format", "{{.Created}}", container_id],
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("orphan reaper docker inspect Created %s failed: %s", container_id[:12], e)
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+    # Docker's Created field uses the same RFC3339-with-nanoseconds format.
+    import re as _re
+    raw = _re.sub(r"(\.\d{6})\d+", r"\1", raw)
+    raw = raw.replace("Z", "+00:00")
+    try:
+        import datetime
+        return datetime.datetime.fromisoformat(raw)
+    except ValueError as e:
+        logger.debug("could not parse Created %r for %s: %s", raw, container_id[:12], e)
         return None
 
 

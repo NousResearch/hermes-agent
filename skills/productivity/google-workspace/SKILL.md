@@ -185,6 +185,11 @@ $GAPI gmail get MESSAGE_ID
 
 # Send
 $GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
+
+# Attach local files (repeat --attach for several)
+$GAPI gmail send --to hr@company.com --subject "Application" \
+  --body "CV and cover letter attached." \
+  --attach ~/docs/cv.pdf --attach ~/docs/cover-letter.pdf
 $GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
 $GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
 

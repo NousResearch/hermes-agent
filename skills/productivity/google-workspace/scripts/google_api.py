@@ -28,6 +28,10 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+import mimetypes
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -315,17 +319,87 @@ def gmail_get(args):
 
 
 
+# Gmail's documented cap is 25 MB for the whole MIME message -- body, headers,
+# framing and base64-expanded attachments together, not the source files.
+_GMAIL_MAX_RAW_BYTES = 25 * 1024 * 1024
+
+
+def _attach_file(message, path_str: str) -> None:
+    """Attach one local file to *message*, preserving its filename and type."""
+    path = Path(path_str).expanduser()
+    if not path.exists():
+        raise SystemExit(f"Attachment not found: {path}")
+    if not path.is_file():
+        raise SystemExit(f"Attachment is not a regular file: {path}")
+
+    ctype, encoding = mimetypes.guess_type(str(path))
+    if ctype is None or encoding is not None:
+        # Unknown or compressed — let Gmail treat it as an opaque download
+        # rather than guessing a type the client would try to render.
+        ctype = "application/octet-stream"
+    maintype, _, subtype = ctype.partition("/")
+
+    part = MIMEBase(maintype, subtype or "octet-stream")
+    part.set_payload(path.read_bytes())
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", "attachment", filename=path.name)
+    message.attach(part)
+
+
+def _build_gmail_message(args):
+    """Build the outbound MIME message for `gmail send`.
+
+    With no ``--attach`` this returns the same single-part ``MIMEText`` the
+    command has always produced, so existing invocations are byte-identical.
+    Attachments switch it to ``multipart/mixed`` with the body as the first
+    part, which is what a mail client renders as "body, then attachments".
+
+    Both the ``gws`` binary path and the API path base64 the same message, so
+    building it here gives attachments to both rather than only one.
+    """
+    attachments = list(getattr(args, "attach", None) or [])
+    subtype = "html" if args.html else "plain"
+
+    if not attachments:
+        message = MIMEText(args.body, subtype)
+    else:
+        message = MIMEMultipart("mixed")
+        message.attach(MIMEText(args.body, subtype))
+        for raw_path in attachments:
+            _attach_file(message, raw_path)
+
+    message["To"] = args.to
+    message["Subject"] = args.subject
+    if args.cc:
+        message["Cc"] = args.cc
+    if args.from_header:
+        message["From"] = args.from_header
+
+    return message
+
+
+def _gmail_raw(message) -> str:
+    """Serialize *message* for the API, refusing one Gmail would reject.
+
+    Gmail's cap is on the whole MIME message -- body, headers, framing and
+    base64-expanded attachments together -- so the check has to measure what is
+    actually sent rather than the attachment source bytes. Doing it here, where
+    the message is serialized anyway, means one pass over the payload and one
+    check covering both send paths.
+    """
+    raw_bytes = message.as_bytes()
+    if len(raw_bytes) > _GMAIL_MAX_RAW_BYTES:
+        raise SystemExit(
+            f"Message is {len(raw_bytes) / 1048576:.1f} MB, over Gmail's "
+            f"{_GMAIL_MAX_RAW_BYTES // 1048576} MB limit. Send fewer or smaller "
+            f"attachments, shorten the body, or share a link instead."
+        )
+    return base64.urlsafe_b64encode(raw_bytes).decode()
+
+
 def gmail_send(args):
     if _gws_binary():
-        message = MIMEText(args.body, "html" if args.html else "plain")
-        message["To"] = args.to
-        message["Subject"] = args.subject
-        if args.cc:
-            message["Cc"] = args.cc
-        if args.from_header:
-            message["From"] = args.from_header
-
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        raw = _gmail_raw(_build_gmail_message(args))
         body = {"raw": raw}
         if args.thread_id:
             body["threadId"] = args.thread_id
@@ -339,15 +413,7 @@ def gmail_send(args):
         return
 
     service = build_service("gmail", "v1")
-    message = MIMEText(args.body, "html" if args.html else "plain")
-    message["To"] = args.to
-    message["Subject"] = args.subject
-    if args.cc:
-        message["Cc"] = args.cc
-    if args.from_header:
-        message["From"] = args.from_header
-
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    raw = _gmail_raw(_build_gmail_message(args))
     body = {"raw": raw}
 
     if args.thread_id:
@@ -1076,6 +1142,8 @@ def main():
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
     p.add_argument("--html", action="store_true", help="Send body as HTML")
     p.add_argument("--thread-id", default="", help="Thread ID for threading")
+    p.add_argument("--attach", action="append", default=[], metavar="PATH",
+                   help="Attach a local file (repeat for several)")
     p.set_defaults(func=gmail_send)
 
     p = gmail_sub.add_parser("reply")

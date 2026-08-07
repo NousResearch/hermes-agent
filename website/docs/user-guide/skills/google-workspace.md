@@ -50,6 +50,11 @@ Returns the full message body as text (prefers plain text, falls back to HTML).
 # Basic send
 $GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
 
+# With attachments (repeat --attach for several files)
+$GAPI gmail send --to hr@company.com --subject "Application" \
+  --body "CV and cover letter attached." \
+  --attach ~/docs/cv.pdf --attach ~/docs/cover-letter.pdf
+
 # HTML email
 $GAPI gmail send --to user@example.com --subject "Report" \
   --body "<h1>Q4 Results</h1><p>Details here</p>" --html

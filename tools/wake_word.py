@@ -438,6 +438,40 @@ def _device_label(details: Dict[str, Any]) -> str:
     return f"{label} ({hostapi})" if hostapi else label
 
 
+def _capture_sample_rate(details: Dict[str, Any]) -> int:
+    """Use the selected device's native rate when PortAudio reports one."""
+    rate = details.get("default_samplerate")
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate > 0:
+        try:
+            return int(round(rate))
+        except (OverflowError, ValueError):
+            pass
+    return SAMPLE_RATE
+
+
+def _resample_audio_frame(np, frame, output_length: int):
+    """Convert one native-rate capture block to an exact engine frame."""
+    source = np.asarray(frame, dtype=np.float64).reshape(-1)
+    if source.size == output_length:
+        return np.asarray(frame, dtype=np.int16).reshape(-1)
+    if source.size == 0:
+        return np.zeros(output_length, dtype=np.int16)
+
+    if source.size > output_length:
+        # Match the desktop wake capture path: average each source window when
+        # reducing the rate so speech energy is retained instead of decimating.
+        edges = np.linspace(0, source.size, output_length + 1, dtype=np.int64)
+        values = np.add.reduceat(source, edges[:-1]) / np.diff(edges)
+    else:
+        # Unusual low-rate devices need interpolation to reach the 16 kHz
+        # frame size expected by every wake-word engine.
+        source_positions = np.arange(source.size, dtype=np.float64)
+        target_positions = np.linspace(0, source.size - 1, output_length)
+        values = np.interp(target_positions, source_positions, source)
+
+    return np.rint(values).clip(-32768, 32767).astype(np.int16)
+
+
 def silent_audio_hint(details: Dict[str, Any]) -> str:
     """Platform-specific remediation for an armed stream delivering silence."""
     if sys.platform == "darwin":
@@ -1091,6 +1125,9 @@ class WakeWordDetector:
     def _run(self, ready: threading.Event,
              startup_errors: list[BaseException]) -> None:
         frame_length = self.engine.frame_length
+        capture_frame_length = frame_length
+        capture_rate = SAMPLE_RATE
+        np = None
         stream = None
 
         if self.external_audio:
@@ -1106,7 +1143,7 @@ class WakeWordDetector:
             )
         else:
             try:
-                sd, _ = _import_audio()
+                sd, np = _import_audio()
             except (ImportError, OSError) as e:
                 logger.error("wake word: audio libraries unavailable: %s", e)
                 startup_errors.append(e)
@@ -1114,22 +1151,27 @@ class WakeWordDetector:
                 return
 
             self.input_device_details = _describe_input_device(sd, self.input_device)
+            capture_rate = _capture_sample_rate(self.input_device_details)
+            capture_frame_length = max(
+                1, int(round(frame_length * capture_rate / SAMPLE_RATE))
+            )
             logger.info(
                 "wake word: opening microphone device=%s selector=%r hostapi=%s "
-                "default_rate=%s requested_rate=%d",
+                "default_rate=%s capture_rate=%d engine_rate=%d",
                 self.input_device_details.get("name") or "system default",
                 self.input_device,
                 self.input_device_details.get("hostapi") or "unknown",
                 self.input_device_details.get("default_samplerate") or "unknown",
+                capture_rate,
                 SAMPLE_RATE,
             )
             try:
                 stream = sd.InputStream(
                     device=self.input_device,
-                    samplerate=SAMPLE_RATE,
+                    samplerate=capture_rate,
                     channels=1,
                     dtype="int16",
-                    blocksize=frame_length,
+                    blocksize=capture_frame_length,
                 )
                 stream.start()
             except Exception as e:
@@ -1167,12 +1209,14 @@ class WakeWordDetector:
                             continue
                         data = frame
                     else:
-                        data, _overflow = stream.read(frame_length)
+                        data, _overflow = stream.read(capture_frame_length)
                 except Exception as e:
                     logger.warning("wake word: stream read error: %s", e)
                     failed = not self._stop.is_set()
                     break
                 frame = data[:, 0] if getattr(data, "ndim", 1) == 2 else data
+                if capture_rate != SAMPLE_RATE:
+                    frame = _resample_audio_frame(np, frame, frame_length)
                 try:
                     peak = int(abs(frame).max()) if len(frame) else 0
                 except Exception:

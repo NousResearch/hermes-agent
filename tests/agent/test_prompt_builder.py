@@ -30,6 +30,7 @@ from agent.prompt_builder import (
     PARALLEL_TOOL_CALL_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
+    KANBAN_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
@@ -53,6 +54,14 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_project_workflow_overrides_generic_review_and_successor_defaults(self):
+        assert "Project workflow precedence" in KANBAN_GUIDANCE
+        assert "project-specific workflow skill" in KANBAN_GUIDANCE
+        assert "generic `review-required` exception does not apply" in KANBAN_GUIDANCE
+        assert "project workflow assigns successor ownership" in KANBAN_GUIDANCE
+        # Unmanaged boards retain the existing safe default.
+        assert 'kanban_block(reason="review-required:' in KANBAN_GUIDANCE
 
 
 # =========================================================================

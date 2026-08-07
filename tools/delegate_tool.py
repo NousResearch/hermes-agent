@@ -1317,9 +1317,12 @@ def _resolve_child_fallback_chain(parent_agent, delegation_cfg, pinned):
     ============ ======================= =========================================
 
     Rationale for the pin+declared cell: the silent-drag problem in #80450 is
-    specifically the *parent's* chain substituting a pinned provider with no
-    surfaced signal. A chain declared under ``delegation.*`` is scoped to
-    workers by construction — honoring it respects both explicit intents.
+    specifically the *parent's* chain substituting a pinned provider or model
+    with no surfaced signal. A chain declared under ``delegation.*`` is scoped
+    to workers by construction — honoring it respects both explicit intents.
+    "Pinned" covers every explicit routing arm of #80450: delegation.provider,
+    delegation.base_url (which resolves to a provider override), and a
+    model-only delegation.model pin.
 
     A malformed declared value logs and falls back to the PIN-AWARE default
     (None when pinned, parent chain otherwise): falling back to the parent
@@ -1621,8 +1624,13 @@ def _build_child_agent(
     # Fallback chain: full decision matrix in _resolve_child_fallback_chain
     # (#80450 cross-PR map — composes the pin semantics of #80465 with the
     # delegation.fallback_providers semantics of #80438/#80421).
+    # Pin = any explicit delegation routing: provider, base_url (which
+    # resolves to a provider override), or a model-only pin — `model` here is
+    # creds["model"], i.e. delegation.model config, at both call sites. A
+    # model-only pin with the parent chain inherited would let a mid-run
+    # failure silently swap the pinned model (the model arm of #80450).
     parent_fallback = _resolve_child_fallback_chain(
-        parent_agent, delegation_cfg, pinned=bool(override_provider)
+        parent_agent, delegation_cfg, pinned=bool(override_provider or model)
     )
 
     # Inherit the parent's OpenRouter provider-preference filters by default

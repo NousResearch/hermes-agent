@@ -3571,6 +3571,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else None
     )
     assume_yes = bool(getattr(args, "yes", False))
+    skip_desktop_build = bool(getattr(args, "skip_desktop_build", False))
 
     # Whether this update is running without a human at the keyboard.
     # Interactive terminal updates always stash-and-ask (unchanged behavior);
@@ -4212,7 +4213,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Electron build by ``hermes update``.
         desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _m()._desktop_packaged_executable(desktop_dir) is not None or _m()._desktop_dist_exists(desktop_dir)
-        if (desktop_dir / "package.json").exists() and _m()._resolve_node_runtime_npm() and has_desktop_app:
+        if (
+            not skip_desktop_build
+            and (desktop_dir / "package.json").exists()
+            and _m()._resolve_node_runtime_npm()
+            and has_desktop_app
+        ):
             print("→ Checking if desktop app needs rebuilding...")
             # Consult the content-hash stamp IN-PROCESS first. The spawned
             # `hermes desktop --build-only` subprocess re-imports the whole

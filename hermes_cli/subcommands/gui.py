@@ -6,6 +6,7 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 
@@ -31,6 +32,10 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         "--build-only",
         action="store_true",
         help="Build the desktop app but do not launch it (used by the installer's --update flow)",
+    )
+    gui_parser.add_argument(
+        "--output-dir",
+        help=argparse.SUPPRESS,
     )
     gui_parser.add_argument(
         "--fake-boot",

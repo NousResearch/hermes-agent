@@ -5943,23 +5943,22 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
         logger.debug("Failed to write desktop build stamp: %s", exc)
 
 
-def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
-    """Return the current platform's unpacked Electron app executable."""
-    release_dir = desktop_dir / "release"
+def _desktop_packaged_executable_in_output(output_dir: Path) -> Optional[Path]:
+    """Return the current platform's unpacked executable under ``output_dir``."""
     if sys.platform == "darwin":
-        candidates = list(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
+        candidates = list(output_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
     elif sys.platform == "win32":
         candidates = [
-            release_dir / "win-unpacked" / "Hermes.exe",
-            release_dir / "win-ia32-unpacked" / "Hermes.exe",
-            release_dir / "win-arm64-unpacked" / "Hermes.exe",
+            output_dir / "win-unpacked" / "Hermes.exe",
+            output_dir / "win-ia32-unpacked" / "Hermes.exe",
+            output_dir / "win-arm64-unpacked" / "Hermes.exe",
         ]
     else:
         candidates = [
-            release_dir / "linux-unpacked" / "hermes",
-            release_dir / "linux-unpacked" / "Hermes",
-            release_dir / "linux-arm64-unpacked" / "hermes",
-            release_dir / "linux-arm64-unpacked" / "Hermes",
+            output_dir / "linux-unpacked" / "hermes",
+            output_dir / "linux-unpacked" / "Hermes",
+            output_dir / "linux-arm64-unpacked" / "hermes",
+            output_dir / "linux-arm64-unpacked" / "Hermes",
         ]
 
     existing = [p for p in candidates if p.exists()]
@@ -5977,6 +5976,48 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
         if matching:
             existing = matching
     return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
+    """Return the current platform's unpacked Electron app executable."""
+    return _desktop_packaged_executable_in_output(desktop_dir / "release")
+
+
+def _resolve_desktop_output_dir(
+    args: argparse.Namespace, desktop_dir: Path
+) -> Optional[Path]:
+    """Validate and create the isolated output root for a staged build."""
+    raw_output = getattr(args, "output_dir", None)
+    if not raw_output:
+        return None
+    if not getattr(args, "build_only", False):
+        raise ValueError("--output-dir requires --build-only")
+    if getattr(args, "source", False):
+        raise ValueError("--output-dir cannot be combined with --source")
+    if getattr(args, "skip_build", False):
+        raise ValueError("--output-dir cannot be combined with --skip-build")
+
+    requested = Path(raw_output)
+    if not requested.is_absolute():
+        raise ValueError("--output-dir must be an absolute path")
+
+    try:
+        output_dir = requested.resolve()
+        resolved_desktop = desktop_dir.resolve()
+        release_dir = (resolved_desktop / "release").resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"unsafe desktop output directory: {exc}") from exc
+
+    output_in_release = output_dir == release_dir or release_dir in output_dir.parents
+    release_in_output = release_dir == output_dir or output_dir in release_dir.parents
+    output_contains_desktop = (
+        output_dir == resolved_desktop or output_dir in resolved_desktop.parents
+    )
+    if output_in_release or release_in_output or output_contains_desktop:
+        raise ValueError("unsafe desktop output directory")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
 
 
 # ─── Desktop exe integrity gate (#69179) ────────────────────────────────────
@@ -6520,6 +6561,47 @@ def _try_redownload_electron_dist(project_root: Path, env: dict) -> bool:
     return _redownload_electron_dist(project_root, env, mirror=_ELECTRON_FALLBACK_MIRROR)
 
 
+def _desktop_processes_reading_release(desktop_dir: Path) -> Optional[list[int]]:
+    """Return PIDs executing inside ``release``, or ``None`` if unknowable."""
+    try:
+        import psutil
+    except Exception:
+        return None
+    try:
+        release_dir = (desktop_dir / "release").resolve()
+    except (OSError, RuntimeError):
+        return None
+
+    try:
+        processes = psutil.process_iter(["pid", "exe"])
+    except Exception:
+        return None
+
+    me = os.getpid()
+    readable_executables = 0
+    readers: set[int] = set()
+    try:
+        for proc in processes:
+            try:
+                info = proc.info
+                pid = info.get("pid")
+                exe = info.get("exe")
+                if pid is None or not exe:
+                    continue
+                exe_path = Path(exe).resolve()
+            except Exception:
+                continue
+            readable_executables += 1
+            if pid != me and release_dir in exe_path.parents:
+                readers.add(int(pid))
+    except Exception:
+        return None
+
+    if readable_executables == 0:
+        return None
+    return sorted(readers)
+
+
 def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     """Terminate any running desktop app executing from this build's ``release``
     dir so a rebuild can replace its (otherwise locked) executable.
@@ -6777,6 +6859,7 @@ def _desktop_macos_local_codesign(
 def _desktop_macos_relaunchable_fixup(
     desktop_dir: Path,
     *,
+    output_dir: Optional[Path] = None,
     publisher_signing_configured: Optional[bool] = None,
 ) -> bool:
     """Make a locally-built macOS desktop app survive in-place self-update
@@ -6809,7 +6892,11 @@ def _desktop_macos_relaunchable_fixup(
         )
     if publisher_signing_configured:
         return True
-    exe = _desktop_packaged_executable(desktop_dir)
+    exe = (
+        _desktop_packaged_executable_in_output(output_dir)
+        if output_dir is not None
+        else _desktop_packaged_executable(desktop_dir)
+    )
     if exe is None:
         return True
     # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
@@ -7016,6 +7103,12 @@ def cmd_gui(args: argparse.Namespace):
         sys.exit(1)
 
     try:
+        output_dir = _resolve_desktop_output_dir(args, desktop_dir)
+    except ValueError as exc:
+        print(f"✗ {exc}")
+        sys.exit(2)
+
+    try:
         from hermes_logging import setup_logging as _setup_logging_gui
         _setup_logging_gui(mode="gui")
     except Exception:
@@ -7048,7 +7141,11 @@ def cmd_gui(args: argparse.Namespace):
     skip_build = getattr(args, "skip_build", False)
     force_build = getattr(args, "force_build", False)
 
-    packaged_executable = _desktop_packaged_executable(desktop_dir)
+    packaged_executable = (
+        _desktop_packaged_executable_in_output(output_dir)
+        if output_dir is not None
+        else _desktop_packaged_executable(desktop_dir)
+    )
 
     if source_mode or not skip_build:
         npm = _resolve_node_runtime_npm()
@@ -7084,9 +7181,11 @@ def cmd_gui(args: argparse.Namespace):
         # If the source tree hasn't changed since the last successful build,
         # skip the npm install + build entirely (saves a ton of useless work).
         # --force-build overrides the stamp and always rebuilds.
-        build_needed = force_build or _desktop_build_needed(
-            desktop_dir, PROJECT_ROOT, source_mode=source_mode
-        )
+        build_needed = output_dir is not None or force_build
+        if not build_needed:
+            build_needed = _desktop_build_needed(
+                desktop_dir, PROJECT_ROOT, source_mode=source_mode
+            )
         if not build_needed:
             build_label = "source build" if source_mode else "packaged app"
             print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
@@ -7121,7 +7220,51 @@ def cmd_gui(args: argparse.Namespace):
             if _force_adhoc_macos_signing(env, source_mode=source_mode):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
-            if not source_mode:
+
+            def _run_desktop_build(build_env: dict) -> subprocess.CompletedProcess:
+                if output_dir is None:
+                    return subprocess.run(
+                        [npm, "run", build_script],
+                        cwd=desktop_dir,
+                        env=build_env,
+                        check=False,
+                    )
+                compile_result = subprocess.run(
+                    [npm, "run", "build"],
+                    cwd=desktop_dir,
+                    env=build_env,
+                    check=False,
+                )
+                if compile_result.returncode != 0:
+                    return compile_result
+                return subprocess.run(
+                    [
+                        npm,
+                        "run",
+                        "builder",
+                        "--",
+                        "--dir",
+                        f"-c.directories.output={output_dir}",
+                    ],
+                    cwd=desktop_dir,
+                    env=build_env,
+                    check=False,
+                )
+
+            if not source_mode and output_dir is None:
+                if sys.platform == "darwin":
+                    readers = _desktop_processes_reading_release(desktop_dir)
+                    if readers is None:
+                        print("✗ Refusing to rebuild the live Desktop release: "
+                              "could not verify that no process is reading it.")
+                        print("  Close Hermes Desktop or use an isolated staged build, then retry.")
+                        sys.exit(2)
+                    if readers:
+                        print("✗ Refusing to rebuild the live Desktop release while it is in use "
+                              f"(pid {', '.join(map(str, readers))}).")
+                        print("  Close Hermes Desktop or use an isolated staged build, then retry.")
+                        sys.exit(2)
+
                 # A running desktop instance launched from release/win-unpacked
                 # holds Hermes.exe locked on Windows, so the pack can't replace
                 # it ("Access is denied" / ERR_ELECTRON_BUILDER_CANNOT_EXECUTE).
@@ -7130,10 +7273,11 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
-            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            build_result = _run_desktop_build(env)
             if (
                 build_result.returncode != 0
                 and not source_mode
+                and output_dir is None
                 and _desktop_packaged_executable(desktop_dir) is None
             ):
                 # Corrupt cached Electron zip → partial unpack → ENOENT on rename.
@@ -7157,10 +7301,11 @@ def cmd_gui(args: argparse.Namespace):
                     # The purge can't remove a win-unpacked tree whose Hermes.exe
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
-                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+                    build_result = _run_desktop_build(env)
             if (
                 build_result.returncode != 0
                 and not source_mode
+                and output_dir is None
                 and not env.get("ELECTRON_MIRROR")
                 and _desktop_packaged_executable(desktop_dir) is None
             ):
@@ -7173,7 +7318,7 @@ def cmd_gui(args: argparse.Namespace):
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
                 _stop_desktop_processes_locking_build(desktop_dir)
-                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
+                build_result = _run_desktop_build(mirror_env)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
@@ -7183,12 +7328,18 @@ def cmd_gui(args: argparse.Namespace):
                 print("  If the log shows Electron download retries, rebuild via a mirror:")
                 print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
-            packaged_executable = _desktop_packaged_executable(desktop_dir)
+            packaged_executable = (
+                _desktop_packaged_executable_in_output(output_dir)
+                if output_dir is not None
+                else _desktop_packaged_executable(desktop_dir)
+            )
             if not source_mode:
                 # Locally-built apps are ad-hoc signed; make them relaunchable after
                 # an in-place self-update (otherwise macOS reports "Hermes is
                 # damaged"). No-op on non-macOS and on real-identity builds.
-                _desktop_macos_relaunchable_fixup(desktop_dir)
+                _desktop_macos_relaunchable_fixup(
+                    desktop_dir, output_dir=output_dir
+                )
 
                 # Windows integrity gate (#69179): never declare the rebuild a
                 # success on a Hermes.exe Windows cannot load (truncated PE from
@@ -7197,17 +7348,19 @@ def cmd_gui(args: argparse.Namespace):
                 # before-pack.mjs when possible, then fail loudly so the
                 # updater's retry-once rebuilds from a fresh Electron download
                 # instead of silently shipping the broken exe.
-                verified_executable, rolled_back = _ensure_desktop_exe_launchable(
-                    desktop_dir, packaged_executable
-                )
-                if packaged_executable is not None and (
-                    rolled_back or verified_executable is None
-                ):
-                    sys.exit(1)
-                packaged_executable = verified_executable
+                if output_dir is None:
+                    verified_executable, rolled_back = _ensure_desktop_exe_launchable(
+                        desktop_dir, packaged_executable
+                    )
+                    if packaged_executable is not None and (
+                        rolled_back or verified_executable is None
+                    ):
+                        sys.exit(1)
+                    packaged_executable = verified_executable
 
             # Build succeeded — write the stamp so next run can skip
-            _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
+            if output_dir is None:
+                _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
 
     # Linux: register the app in the desktop launcher, so Hermes shows up
     # in the application menu with its icon. Best-effort and idempotent.
@@ -7227,11 +7380,14 @@ def cmd_gui(args: argparse.Namespace):
                 sys.exit(1)
             print(f"✓ Desktop source build ready at {desktop_dir / 'dist'} (not launching; --build-only)")
         elif packaged_executable is None:
-            print(f"✗ --build-only produced no launchable app at: {desktop_dir / 'release'}")
+            packaged_output = output_dir or desktop_dir / "release"
+            print(f"✗ --build-only produced no launchable app at: {packaged_output}")
             print("  Expected an unpacked Electron app for the current OS.")
             sys.exit(1)
         else:
-            print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
+            stage_note = f" in stage {output_dir}" if output_dir is not None else ""
+            print(f"✓ Desktop packaged app ready{stage_note}: {packaged_executable} "
+                  "(not launching; --build-only)")
         return
 
     if source_mode:

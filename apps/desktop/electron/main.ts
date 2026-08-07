@@ -189,6 +189,12 @@ import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
+import {
+  buildDesktopUpdateArgs,
+  buildMacPublishScript,
+  resolveStagedMacApp,
+  validateMacUpdatePaths
+} from './update-macos-publish'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
 import {
@@ -201,6 +207,7 @@ import {
   sandboxPreflight
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
+import { probeDesktopUpdateRuntime } from './update-runtime-identity'
 import {
   resolveStagedUpdaterBinary,
   spawnUpdaterProcess,
@@ -2478,6 +2485,29 @@ async function checkUpdates() {
     }
   }
 
+  // The checkout selected above is only the launcher identity. The venv can
+  // import Hermes from a different immutable generation via editable finder
+  // metadata. In that split-brain state `hermes update` ignores this cwd,
+  // derives its project root from the imported package, and fails after doing
+  // pre-update work because the generation intentionally has no .git. Resolve
+  // the effective runtime identity before offering the Git update at all.
+  const runtime = probeDesktopUpdateRuntime(updateRoot, { isWindows: IS_WINDOWS })
+
+  if (!runtime.supported) {
+    rememberLog(
+      `[updates] refusing git updater: launcher=${runtime.updateRoot} runtime=${runtime.runtimeRoot || 'unknown'} kind=${runtime.kind}`
+    )
+
+    return {
+      supported: false,
+      reason: runtime.kind,
+      message: runtime.message,
+      hermesRoot: updateRoot,
+      runtimeRoot: runtime.runtimeRoot,
+      branch
+    }
+  }
+
   branch = await resolveHealedBranch(updateRoot, branch)
   const originUrl = await getOriginUrl(updateRoot)
 
@@ -2849,6 +2879,24 @@ async function applyUpdates(opts = {}) {
   updateInFlight = true
 
   try {
+    const updateRoot = resolveUpdateRoot()
+    const runtime = probeDesktopUpdateRuntime(updateRoot, { isWindows: IS_WINDOWS })
+
+    if (!runtime.supported) {
+      rememberLog(
+        `[updates] refusing git updater: launcher=${runtime.updateRoot} runtime=${runtime.runtimeRoot || 'unknown'} kind=${runtime.kind}`
+      )
+      emitUpdateProgress({ stage: 'error', message: runtime.message, error: runtime.kind, percent: null })
+
+      return {
+        ok: false,
+        error: runtime.kind,
+        message: runtime.message,
+        hermesRoot: updateRoot,
+        runtimeRoot: runtime.runtimeRoot
+      }
+    }
+
     const updater = resolveUpdaterBinary()
 
     if (!updater && !IS_WINDOWS) {
@@ -2872,7 +2920,6 @@ async function applyUpdates(opts = {}) {
       // silently switch a bb/gui (or any non-main) install off-branch. Mirror
       // the GUI button's contract: append --branch <current> for non-main
       // checkouts, keep it bare for main so the card stays clean.
-      const updateRoot = resolveUpdateRoot()
       let command = 'hermes update'
 
       try {
@@ -2917,7 +2964,6 @@ async function applyUpdates(opts = {}) {
     })
     repairMacUpdaterHelper(updater)
 
-    const updateRoot = resolveUpdateRoot()
     const { branch: configuredBranch } = readDesktopUpdateConfig()
     const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     const updaterArgs = ['--update', '--branch', branch]
@@ -3365,11 +3411,15 @@ async function applyUpdatesPosixInApp(opts: any) {
 
   emitUpdateProgress({ stage: 'update', message: 'Updating Hermes (git + dependencies)…', percent: 10 })
 
-  const updated = (await runStreamedUpdate(hermes, ['update', '--yes', ...branchArgs], {
-    cwd: updateRoot,
-    env,
-    stage: 'update'
-  })) as any
+  const updated = (await runStreamedUpdate(
+    hermes,
+    buildDesktopUpdateArgs(branchArgs),
+    {
+      cwd: updateRoot,
+      env,
+      stage: 'update'
+    }
+  )) as any
 
   if (updated.code !== 0) {
     emitUpdateProgress({ stage: 'error', message: 'hermes update failed.', error: updated.error || 'update-failed' })
@@ -3379,6 +3429,16 @@ async function applyUpdatesPosixInApp(opts: any) {
 
   emitUpdateProgress({ stage: 'rebuild', message: 'Rebuilding the desktop app…', percent: 60 })
 
+  // macOS package production is transaction-isolated. The old Desktop and
+  // helpers may keep app.asar mapped until quit, so electron-builder must not
+  // touch apps/desktop/release (the running bundle) during this process.
+  const macStageRoot = IS_MAC
+    ? fs.mkdtempSync(path.join(HERMES_HOME, 'desktop-update-stage-'))
+    : null
+  const rebuildArgs = macStageRoot
+    ? buildDesktopUpdateArgs([], { stageRoot: macStageRoot })
+    : ['desktop', '--build-only']
+
   // Retry-once: a first rebuild can fail on a still-settling tree or a
   // self-healed (network-blocked) Electron download; a second run builds clean
   // off the healed dist so we reach the swap+relaunch below instead of bailing.
@@ -3387,10 +3447,13 @@ async function applyUpdatesPosixInApp(opts: any) {
       emitUpdateProgress({ stage: 'rebuild', message: 'Retrying the desktop rebuild…', percent: 60 })
     }
 
-    return runStreamedUpdate(hermes, ['desktop', '--build-only'], { cwd: updateRoot, env, stage: 'rebuild' })
+    return runStreamedUpdate(hermes, rebuildArgs, { cwd: updateRoot, env, stage: 'rebuild' })
   })
 
   if (rebuilt.code !== 0) {
+    if (macStageRoot) {
+      fs.rmSync(macStageRoot, { recursive: true, force: true })
+    }
     emitUpdateProgress({
       stage: 'error',
       message: 'Backend updated, but the desktop rebuild failed. Restart Hermes to retry.',
@@ -3518,49 +3581,46 @@ async function applyUpdatesPosixInApp(opts: any) {
     }
   }
 
-  const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
-  ].find(directoryExists)
-
+  const rebuiltApp = macStageRoot ? resolveStagedMacApp(macStageRoot) : null
   const targetApp = runningAppBundle()
 
-  // No bundle to swap (dev run, Linux AppImage, or unresolved paths): the
-  // backend is updated; the next launch picks up the rebuilt GUI.
-  if (!rebuiltApp || !targetApp) {
+  // A packaged macOS update without an exact staged candidate and running
+  // target cannot be published honestly. Preserve the stage for forensics and
+  // fail closed instead of falling back to a live-release search.
+  if (!macStageRoot || !rebuiltApp || !targetApp) {
     emitUpdateProgress({
-      stage: 'done',
-      message: 'Backend updated. Restart Hermes to load the new version.',
-      percent: 100
+      stage: 'error',
+      message: 'Backend updated, but the staged desktop app could not be published.',
+      error: 'staged-app-unavailable',
+      percent: null
     })
 
-    return { ok: true, backendUpdated: true, rebuiltApp: rebuiltApp || null }
+    return { ok: false, backendUpdated: true, error: 'staged app unavailable', rebuiltApp, stageRoot: macStageRoot }
   }
 
   emitUpdateProgress({ stage: 'restart', message: 'Installing the updated app and restarting…', percent: 95 })
 
-  // Detached swapper: wait for THIS process to exit (so the bundle is free),
-  // ditto the rebuilt app over the running one, clear quarantine, relaunch.
-  const swapScript = `#!/bin/bash
-set -u
-APP_PID=${process.pid}
-SRC=${shellQuote(rebuiltApp)}
-DST=${shellQuote(targetApp)}
-for _ in $(seq 1 240); do
-  kill -0 "$APP_PID" 2>/dev/null || break
-  sleep 0.5
-done
-if [ "$SRC" != "$DST" ]; then
-  if /usr/bin/ditto "$SRC" "$DST.hermes-update-new"; then
-    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
-    mv "$DST" "$DST.hermes-update-old" 2>/dev/null || rm -rf "$DST"
-    mv "$DST.hermes-update-new" "$DST"
-    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
-  fi
-fi
-/usr/bin/xattr -dr com.apple.quarantine "$DST" 2>/dev/null || true
-/usr/bin/open "$DST"
-`
+  let swapScript
+
+  try {
+    validateMacUpdatePaths({ stageRoot: macStageRoot, candidateApp: rebuiltApp, targetApp })
+    swapScript = buildMacPublishScript({
+      pid: process.pid,
+      stageRoot: macStageRoot,
+      candidateApp: rebuiltApp,
+      targetApp
+    })
+  } catch (err) {
+    emitUpdateProgress({
+      stage: 'error',
+      message: 'Backend updated, but staged app validation failed.',
+      error: err.message || 'staged-app-invalid',
+      percent: null
+    })
+    rememberLog(`[updates] refusing mac publish: ${err.message}; staged app at ${rebuiltApp}`)
+
+    return { ok: false, backendUpdated: true, error: 'staged app invalid', rebuiltApp, stageRoot: macStageRoot }
+  }
 
   const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)
 
@@ -3568,23 +3628,36 @@ fi
     fs.writeFileSync(scriptPath, swapScript, { mode: 0o755 })
   } catch (err) {
     emitUpdateProgress({
-      stage: 'done',
-      message: 'Backend + app updated. Restart Hermes to load the new version.',
-      percent: 100
+      stage: 'error',
+      message: 'Backend updated, but the safe app publisher could not be prepared.',
+      error: err.message || 'publisher-write-failed',
+      percent: null
     })
     rememberLog(`[updates] could not write swap script: ${err.message}; rebuilt app at ${rebuiltApp}`)
 
-    return { ok: true, backendUpdated: true, rebuiltApp }
+    return { ok: false, backendUpdated: true, error: 'publisher write failed', rebuiltApp, stageRoot: macStageRoot }
   }
 
-  const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
-  child.unref()
+  try {
+    const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
+    child.unref()
+  } catch (err) {
+    emitUpdateProgress({
+      stage: 'error',
+      message: 'Backend updated, but the safe app publisher could not start.',
+      error: err.message || 'publisher-spawn-failed',
+      percent: null
+    })
+    rememberLog(`[updates] could not launch mac publisher: ${err.message}; staged app at ${rebuiltApp}`)
+
+    return { ok: false, backendUpdated: true, error: 'publisher spawn failed', rebuiltApp, stageRoot: macStageRoot }
+  }
   rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
 
   isQuittingForHandoff = true
   setTimeout(() => app.quit(), 600)
 
-  return { ok: true, handedOff: true, rebuiltApp, targetApp }
+  return { ok: true, handedOff: true, rebuiltApp, targetApp, stageRoot: macStageRoot }
 }
 
 function readJson(filePath) {

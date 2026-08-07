@@ -280,6 +280,101 @@ def _get_enabled_plugins() -> Optional[set]:
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 
 
+def _detect_kind_from_source(source_text: str) -> Optional[str]:
+    """Return the plugin kind implied by source markers, or ``None``.
+
+    Mirrors ``plugins/memory/__init__.py:_is_memory_provider_dir``: a
+    module that registers a memory provider (``register_memory_provider``
+    or ``MemoryProvider``) belongs to the memory-provider discovery
+    system (``exclusive``); a module that registers a model provider
+    (``register_provider`` + ``ProviderProfile``) belongs to the
+    providers discovery (``model-provider``). Applied to both directory
+    plugins and pip entry-point plugins so neither is eagerly imported
+    by the general PluginManager.
+    """
+    if "register_memory_provider" in source_text or "MemoryProvider" in source_text:
+        return "exclusive"
+    if "register_provider" in source_text and "ProviderProfile" in source_text:
+        return "model-provider"
+    return None
+
+
+def _read_source_from_origin(origin: Optional[str], limit: int = 8192) -> str:
+    """Read the first ``limit`` chars of a module's source file.
+
+    Returns ``""`` on any failure (callers fall back to ``standalone``).
+    ``.pyc``/``.pyo`` origins are mapped back to their source path so
+    source is still scanned when only the bytecode cache is present.
+    """
+    if not origin:
+        return ""
+    if origin.endswith((".pyc", ".pyo")):
+        try:
+            origin = importlib.util.source_from_cache(origin)
+        except Exception:
+            return ""
+    if not origin.endswith(".py"):
+        return ""
+    try:
+        return Path(origin).read_text(encoding="utf-8", errors="replace")[:limit]
+    except Exception:
+        return ""
+
+
+def _resolve_module_source(module_name: str, limit: int = 8192) -> str:
+    """Return the first ``limit`` chars of a module's source WITHOUT importing it.
+
+    ``importlib.util.find_spec`` on a dotted name imports the parent
+    package first (executing its ``__init__.py``), which would run
+    arbitrary package initialization during discovery and pay the very
+    import cost this classification exists to avoid — a provider whose
+    heavy imports live in ``package/__init__.py`` would still pay them.
+
+    Only the top-level name is resolved with ``find_spec`` (import-free
+    for top-level names); the remaining dotted segments are walked
+    through ``submodule_search_locations`` by hand, mirroring the file
+    layout conventions of the default PathFinder (``part.py`` module or
+    ``part/__init__.py`` package). Namespace packages, zipped modules,
+    extension modules, and anything else unexpected fall back to ``""``
+    (→ ``standalone``, the safe default).
+    """
+    parts = [p for p in module_name.split(".") if p]
+    if not parts:
+        return ""
+    try:
+        spec = importlib.util.find_spec(parts[0])
+        if spec is None or not spec.origin:
+            return ""
+        if len(parts) == 1:
+            return _read_source_from_origin(spec.origin, limit)
+
+        search_paths = spec.submodule_search_locations
+        if not search_paths:
+            return ""
+        for i, part in enumerate(parts[1:], start=2):
+            found_origin = None
+            next_paths = None
+            for base in search_paths:
+                base = Path(base)
+                pkg_init = base / part / "__init__.py"
+                if pkg_init.is_file():
+                    found_origin = str(pkg_init)
+                    next_paths = [base / part]
+                    break
+                mod_file = base / (part + ".py")
+                if mod_file.is_file():
+                    found_origin = str(mod_file)
+                    break
+            if found_origin is None:
+                return ""
+            if i == len(parts) or next_paths is None:
+                return _read_source_from_origin(found_origin, limit)
+            search_paths = next_paths
+        return ""
+    except Exception:
+        return ""
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -1631,29 +1726,16 @@ class PluginManager:
                 init_file = plugin_dir / "__init__.py"
                 if init_file.exists():
                     try:
-                        source_text = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
-                        if (
-                            "register_memory_provider" in source_text
-                            or "MemoryProvider" in source_text
-                        ):
-                            kind = "exclusive"
+                        detected = _detect_kind_from_source(
+                            init_file.read_text(
+                                errors="replace", encoding="utf-8"
+                            )[:8192]
+                        )
+                        if detected:
+                            kind = detected
                             logger.debug(
-                                "Plugin %s: detected memory provider, "
-                                "treating as kind='exclusive'",
-                                key,
-                            )
-                        elif (
-                            "register_provider" in source_text
-                            and "ProviderProfile" in source_text
-                        ):
-                            # Model provider plugin (calls register_provider()
-                            # from ``providers`` with a ProviderProfile). Route
-                            # to providers/__init__.py discovery.
-                            kind = "model-provider"
-                            logger.debug(
-                                "Plugin %s: detected model provider, "
-                                "treating as kind='model-provider'",
-                                key,
+                                "Plugin %s: detected %s, treating as kind='%s'",
+                                key, detected, detected,
                             )
                     except Exception:
                         pass
@@ -1685,6 +1767,46 @@ class PluginManager:
     # Entry-point scanning
     # -----------------------------------------------------------------------
 
+    def _classify_entrypoint_kind(self, ep) -> str:
+        """Classify a pip entry-point plugin by scanning its module source.
+
+        The ``kind`` semantics are the same for pip entry points as for
+        directory plugins: memory providers (``exclusive``) and model
+        providers (``model-provider``) have their own discovery systems,
+        so importing them here registers nothing and only pays the
+        module's import cost in every Hermes process (e.g. a pip
+        memory-provider plugin pulling in onnxruntime via fastembed —
+        ~60 MB RSS on startup).
+
+        The module source is read without importing the module or any
+        of its parent packages (see ``_resolve_module_source``); only
+        the first 8192 chars are scanned, mirroring the directory-plugin
+        heuristic. Unresolvable or non-Python modules stay ``standalone``.
+
+        Activation contract: this method only decides whether the general
+        manager imports the module — it does not activate anything.
+        Memory and model providers activate through their own systems
+        (``memory.provider`` config via ``plugins/memory`` directory
+        discovery; ``providers/`` lazy directory discovery). Both are
+        directory-based today, so a pip-only provider is recorded for
+        introspection but not activatable until those systems gain
+        entry-point discovery (tracked for memory: #40644). That is not
+        a regression: pre-change such a provider was equally
+        unactivatable — it was merely imported first, at full cost
+        (e.g. fastembed -> onnxruntime), and logged
+        ``no register() function``. Classification removes the cost
+        without changing the activation surface, and is the prerequisite
+        that prevents double-import once entry-point activation lands.
+        """
+        try:
+            module_name = ep.value.split(":", 1)[0].strip()
+            if not module_name:
+                return "standalone"
+            source_text = _resolve_module_source(module_name)
+            return _detect_kind_from_source(source_text) or "standalone"
+        except Exception:
+            return "standalone"
+
     def _scan_entry_points(self) -> List[PluginManifest]:
         """Check ``importlib.metadata`` for pip-installed plugins."""
         manifests: List[PluginManifest] = []
@@ -1705,6 +1827,7 @@ class PluginManager:
                     path=ep.value,
                     key=ep.name,
                 )
+                manifest.kind = self._classify_entrypoint_kind(ep)
                 manifests.append(manifest)
         except Exception as exc:
             logger.debug("Entry-point scan failed: %s", exc)

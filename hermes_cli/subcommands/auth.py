@@ -95,4 +95,14 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_spotify.add_argument(
         "--timeout", type=float, help="Callback/token exchange timeout in seconds"
     )
+    auth_spotify.add_argument(
+        "--manual-paste",
+        action="store_true",
+        help=(
+            "Skip the loopback callback listener and paste the failed "
+            "callback URL from your browser instead. Use this on "
+            "VPS / SSH remotes where 127.0.0.1 on the server "
+            "isn't reachable from your laptop."
+        ),
+    )
     auth_parser.set_defaults(func=cmd_auth)

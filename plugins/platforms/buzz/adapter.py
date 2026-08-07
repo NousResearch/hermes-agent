@@ -44,7 +44,8 @@ import re
 import shutil
 import time
 from collections import OrderedDict
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
@@ -92,6 +93,9 @@ _CHAT_KIND = 9
 _FETCH_LIMIT = 50
 # Bound on the per-channel de-dupe set (events, not bytes).
 _SEEN_CAP = 500
+# Bound for a POSIX timestamp representable by ``datetime`` (9999-12-31 UTC).
+# Keep relay-provided timestamps inside this range before any high-water update.
+_MAX_CREATED_AT = 253402300799
 # Re-run DM discovery (``dms list`` plus the channels-list fallback) every
 # N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
@@ -110,6 +114,34 @@ _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
 # Where to look for a credentials JSON (keys: nsec / private_key_hex) when
 # BUZZ_PRIVATE_KEY is not set.  Module-level so tests can point it at a tmpdir.
 _DEFAULT_CREDENTIALS_DIR = Path("~/.config/buzz").expanduser()
+
+@dataclass(frozen=True)
+class _CanonicalChannelEvent:
+    """Typed, fully validated relay message allowed to affect inbound state."""
+    event_id: str
+    created_at: int
+    pubkey: str
+    content: str
+
+
+@dataclass(frozen=True)
+class _CanonicalSendResponse:
+    """Typed successful send response from an untrusted Buzz CLI result."""
+    event_id: Optional[str]
+    raw_response: Dict[str, Any]
+
+
+def _canonical_send_response(output: str) -> Optional[_CanonicalSendResponse]:
+    """Parse a relay/CLI send result without coercing its fields."""
+    try:
+        data = json.loads(output or "{}")
+    except (TypeError, ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict) or data.get("accepted") is not True:
+        return None
+    raw_event_id = data.get("event_id")
+    event_id = raw_event_id.strip() if isinstance(raw_event_id, str) and raw_event_id.strip() else None
+    return _CanonicalSendResponse(event_id=event_id, raw_response=data)
 
 
 def _load_nostr_auth():
@@ -337,7 +369,7 @@ def _parse_json_list(stdout: str) -> List[dict]:
     """Parse CLI stdout expected to be a JSON array of objects."""
     try:
         data = json.loads(stdout or "[]")
-    except ValueError:
+    except (TypeError, ValueError, RecursionError):
         return []
     if not isinstance(data, list):
         return []
@@ -349,7 +381,7 @@ def _parse_json_list(stdout: str) -> List[dict]:
 # ---------------------------------------------------------------------------
 
 class BuzzAdapter(BasePlatformAdapter):
-    """Poll-based Buzz adapter implementing the BasePlatformAdapter interface.
+    """WebSocket-first Buzz adapter with CLI polling fallback.
 
     Instantiated by the adapter_factory passed to register_platform().
     """
@@ -435,6 +467,9 @@ class BuzzAdapter(BasePlatformAdapter):
         # classification (see _may_reclassify_as_dm).
         self._channel_meta: Dict[str, dict] = {}
         self._user_names: Dict[str, str] = {}
+        # Invalid relay events must not affect delivery state, but cache their
+        # diagnostics separately so a replaying relay cannot flood logs.
+        self._rejected_events: OrderedDict[Tuple[str, str], None] = OrderedDict()
         self._poll_count = 0
 
     @property
@@ -457,7 +492,7 @@ class BuzzAdapter(BasePlatformAdapter):
     # ── Connection lifecycle ──────────────────────────────────────────────
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Verify relay credentials, seed high-water marks, start polling."""
+        """Verify relay credentials, seed high-water marks, and start inbound transport."""
         if not self.relay_url:
             logger.error("Buzz: relay URL must be configured")
             self._set_fatal_error("config_missing", "BUZZ_RELAY_URL must be set", retryable=False)
@@ -481,55 +516,71 @@ class BuzzAdapter(BasePlatformAdapter):
             self._set_fatal_error("connect_failed", message, retryable=code == 2)
             return False
         profiles = _parse_json_list(out)
-        if not profiles or not profiles[0].get("pubkey"):
-            logger.error("Buzz: 'users get' returned no profile — is the key a member of this community?")
-            self._set_fatal_error("connect_failed", "buzz users get returned no profile", retryable=True)
+        profile = profiles[0] if profiles and isinstance(profiles[0], dict) else None
+        raw_pubkey = profile.get("pubkey") if profile is not None else None
+        if not isinstance(raw_pubkey, str) or not raw_pubkey.strip():
+            logger.error("Buzz: 'users get' returned no valid profile — is the key a member of this community?")
+            self._set_fatal_error("connect_failed", "buzz users get returned no valid profile", retryable=True)
             return False
-        self._self_pubkey = str(profiles[0]["pubkey"]).lower()
-        self._display_name = str(profiles[0].get("display_name") or "").strip()
+        self._self_pubkey = raw_pubkey.strip().lower()
+        raw_display_name = profile.get("display_name")
+        self._display_name = raw_display_name.strip() if isinstance(raw_display_name, str) else ""
         self._self_npub = hex_to_npub(self._self_pubkey) or ""
 
         # Prevent two profiles from driving the same Buzz identity on the
-        # same relay (duplicate replies, split de-dupe state). Mirrors the
-        # IRC adapter's scoped-lock pattern.
+        # same relay (duplicate replies, split de-dupe state). Use the base
+        # helper so we share the real scoped-lock tuple contract and explicit
+        # takeover semantics used by the other gateway adapters.
+        lock_key = f"{self.relay_url}:{self._self_pubkey}"
+        if not self._acquire_platform_lock("buzz", lock_key, "Buzz identity"):
+            self._platform_lock_identity = None
+            return False
+        self._lock_key = lock_key
+
         try:
-            from gateway.status import acquire_scoped_lock
+            return await self._initialize_after_lock()
+        except asyncio.CancelledError:
+            await self.disconnect()
+            raise
+        except Exception:
+            # Relay output and optional transport initialization are untrusted
+            # post-lock work. Never leave the identity held when either fails.
+            logger.exception("Buzz: post-lock initialization failed")
+            self._set_fatal_error(
+                "connect_failed",
+                "Buzz setup failed after identity lock acquisition",
+                retryable=True,
+            )
+            await self.disconnect()
+            return False
 
-            lock_key = f"{self.relay_url}:{self._self_pubkey}"
-            if not acquire_scoped_lock("buzz", lock_key):
-                logger.error(
-                    "Buzz: identity %s… on %s already in use by another profile",
-                    self._self_pubkey[:8],
-                    self.relay_url,
-                )
-                self._set_fatal_error(
-                    "lock_conflict", "Buzz identity in use by another profile", retryable=False
-                )
-                return False
-            self._lock_key = lock_key
-        except ImportError:
-            self._lock_key = None  # status module not available (e.g. tests)
-
+    async def _initialize_after_lock(self) -> bool:
+        """Map, seed, and start transports after ``connect`` owns the identity lock."""
         # Map channel ids to names and pick the watch set.
         code, out, err = await self._run_cli(["channels", "list"])
         if code != 0:
             message = _cli_error_message(err, code)
             logger.error("Buzz: failed to list channels — %s", message)
             self._set_fatal_error("connect_failed", message, retryable=code == 2)
+            await self.disconnect()
             return False
         listed = _parse_json_list(out)
-        self._channel_names = {
-            str(ch.get("channel_id")): str(ch.get("name") or ch.get("channel_id"))
-            for ch in listed
-            if ch.get("channel_id")
-        }
-        for ch in listed:
-            if ch.get("channel_id"):
-                self._channel_meta[str(ch["channel_id"])] = ch
+        self._channel_names = {}
+        self._channel_meta = {}
+        for channel in listed:
+            if not isinstance(channel, dict):
+                continue
+            channel_id = self._relay_identifier(channel, "channel_id")
+            if channel_id is None:
+                continue
+            raw_name = channel.get("name")
+            self._channel_names[channel_id] = raw_name if isinstance(raw_name, str) and raw_name else channel_id
+            self._channel_meta[channel_id] = channel
         watch = self.channels or list(self._channel_names)
         if not watch:
             logger.error("Buzz: no channels to watch (configure BUZZ_CHANNELS or join a channel)")
             self._set_fatal_error("config_missing", "no Buzz channels to watch", retryable=False)
+            await self.disconnect()
             return False
 
         # Seed high-water marks from the newest events so a (re)start never
@@ -573,9 +624,7 @@ class BuzzAdapter(BasePlatformAdapter):
         lock_key = getattr(self, "_lock_key", None)
         if lock_key:
             try:
-                from gateway.status import release_scoped_lock
-
-                release_scoped_lock("buzz", lock_key)
+                self._release_platform_lock()
             except Exception:
                 pass
             self._lock_key = None
@@ -595,6 +644,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 pass
         self._poll_task = None
         self._channel_state = {}
+        self._rejected_events.clear()
         self._poll_count = 0
 
     # ── Sending ───────────────────────────────────────────────────────────
@@ -619,19 +669,17 @@ class BuzzAdapter(BasePlatformAdapter):
                 error=_cli_error_message(err, code),
                 retryable=code == 2,
             )
-        try:
-            data = json.loads(out or "{}")
-        except ValueError:
-            data = {}
-        event_id = data.get("event_id")
-        if event_id:
+        response = _canonical_send_response(out)
+        if response is None:
+            return SendResult(success=False, error="Buzz send response was malformed or not accepted")
+        if response.event_id:
             # Belt-and-braces echo suppression: the poll loop already skips
             # our own pubkey, but marking the id seen makes de-dupe explicit.
-            self._mark_seen(str(chat_id), str(event_id))
+            self._mark_seen(str(chat_id), response.event_id)
         return SendResult(
-            success=bool(data.get("accepted", True)),
-            message_id=str(event_id) if event_id else None,
-            raw_response=data,
+            success=True,
+            message_id=response.event_id,
+            raw_response=response.raw_response,
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -686,17 +734,15 @@ class BuzzAdapter(BasePlatformAdapter):
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
-            try:
-                data = json.loads(out or "{}")
-            except ValueError:
-                data = {}
-            event_id = data.get("event_id")
-            if event_id:
-                self._mark_seen(str(chat_id), str(event_id))
+            response = _canonical_send_response(out)
+            if response is None:
+                return SendResult(success=False, error="Buzz send response was malformed or not accepted")
+            if response.event_id:
+                self._mark_seen(str(chat_id), response.event_id)
             return SendResult(
-                success=bool(data.get("accepted", True)),
-                message_id=str(event_id) if event_id else None,
-                raw_response=data,
+                success=True,
+                message_id=response.event_id,
+                raw_response=response.raw_response,
             )
         # Markdown renders in Buzz, so a URL arrives as a clickable image link.
         text = f"{caption}\n{image_url}" if caption else image_url
@@ -767,19 +813,31 @@ class BuzzAdapter(BasePlatformAdapter):
         build_auth_event = _load_nostr_auth().build_auth_event
 
         raw = await asyncio.wait_for(websocket.recv(), timeout=_WS_AUTH_TIMEOUT)
-        message = json.loads(raw)
-        if not isinstance(message, list) or len(message) < 2 or message[0] != "AUTH":
-            raise ConnectionError("Buzz relay did not send a NIP-42 AUTH challenge")
+        try:
+            message = json.loads(raw)
+        except (TypeError, ValueError, RecursionError):
+            raise ConnectionError("Buzz relay sent a malformed AUTH challenge")
+        if (
+            not isinstance(message, list)
+            or len(message) < 2
+            or message[0] != "AUTH"
+            or not isinstance(message[1], str)
+            or not message[1]
+        ):
+            raise ConnectionError("Buzz relay did not send a valid NIP-42 AUTH challenge")
         event = build_auth_event(
             private_key=self._private_key,
-            challenge=str(message[1]),
+            challenge=message[1],
             relay_url=self._websocket_url(),
             auth_tag_json=os.getenv("BUZZ_AUTH_TAG", ""),
         )
         await websocket.send(json.dumps(["AUTH", event], separators=(",", ":")))
         while True:
             raw = await asyncio.wait_for(websocket.recv(), timeout=_WS_AUTH_TIMEOUT)
-            response = json.loads(raw)
+            try:
+                response = json.loads(raw)
+            except (TypeError, ValueError, RecursionError):
+                continue
             if not isinstance(response, list) or not response:
                 continue
             if response[0] == "OK" and len(response) >= 4 and response[1] == event["id"]:
@@ -825,7 +883,11 @@ class BuzzAdapter(BasePlatformAdapter):
     async def _handle_membership_event(self, websocket, subscriptions: Dict[str, Optional[str]], event: dict) -> None:
         """A membership event p-tagged to us: rediscover conversations and
         subscribe to any new ones (fresh DMs dispatch from their beginning)."""
-        self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
+        created_at = self._canonical_membership_event(event)
+        if created_at is None:
+            logger.debug("Buzz: dropping membership event with unsafe timestamp")
+            return
+        self._membership_since = max(self._membership_since, created_at)
         before = set(self._channel_state)
         await self._discover_dms(seed=False)
         for channel_id in self._channel_state:
@@ -865,14 +927,16 @@ class BuzzAdapter(BasePlatformAdapter):
                         async for raw in websocket:
                             try:
                                 message = json.loads(raw)
-                            except (ValueError, TypeError):
+                            except (ValueError, TypeError, RecursionError):
                                 logger.warning("Buzz: ignoring malformed WebSocket frame")
                                 continue
                             if not isinstance(message, list) or not message:
                                 continue
                             if message[0] == "EVENT" and len(message) >= 3:
-                                subscription_id = str(message[1])
+                                subscription_id = message[1]
                                 event = message[2]
+                                if not isinstance(subscription_id, str):
+                                    continue
                                 if not isinstance(event, dict):
                                     continue
                                 if subscription_id == _WS_MEMBERSHIP_SUB_ID:
@@ -934,11 +998,11 @@ class BuzzAdapter(BasePlatformAdapter):
             state["last_ts"] = int(time.time())
             return
         for event in _parse_json_list(out):
-            event_id = event.get("id")
-            created_at = int(event.get("created_at") or 0)
-            if event_id:
-                state["seen"][str(event_id)] = None
-            state["last_ts"] = max(state["last_ts"], created_at)
+            canonical = self._canonical_channel_event(event, channel_id)
+            if canonical is None:
+                continue
+            state["seen"][canonical.event_id] = None
+            state["last_ts"] = max(state["last_ts"], canonical.created_at)
             # History is never dispatched, but it still classifies: a DM that
             # leaked in via ``channels list`` latches to chat_type="dm" here,
             # so it bypasses the mention gate from the very first poll.
@@ -961,8 +1025,10 @@ class BuzzAdapter(BasePlatformAdapter):
         code, out, _err = await self._run_cli(["dms", "list"])
         if code == 0:
             for dm in _parse_json_list(out):
-                dm_id = str(dm.get("dm_id") or "")
-                if not dm_id or dm_id in self._channel_state:
+                if not isinstance(dm, dict):
+                    continue
+                dm_id = self._relay_identifier(dm, "dm_id")
+                if dm_id is None or dm_id in self._channel_state:
                     continue
                 if seed:
                     await self._seed_channel(dm_id, chat_type="dm")
@@ -974,11 +1040,14 @@ class BuzzAdapter(BasePlatformAdapter):
         if code != 0:
             return
         for ch in _parse_json_list(out):
-            ch_id = str(ch.get("channel_id") or "")
-            if not ch_id:
+            if not isinstance(ch, dict):
+                continue
+            ch_id = self._relay_identifier(ch, "channel_id")
+            if ch_id is None:
                 continue
             self._channel_meta[ch_id] = ch
-            self._channel_names.setdefault(ch_id, str(ch.get("name") or ch_id))
+            raw_name = ch.get("name")
+            self._channel_names.setdefault(ch_id, raw_name if isinstance(raw_name, str) and raw_name else ch_id)
             if ch_id in self._channel_state or not self._may_reclassify_as_dm(ch_id):
                 continue
             if seed:
@@ -1007,19 +1076,22 @@ class BuzzAdapter(BasePlatformAdapter):
 
     async def _handle_event(self, channel_id: str, state: dict, event: dict) -> None:
         """De-dupe, filter, and dispatch a single ``messages get`` event."""
-        event_id = str(event.get("id") or "")
-        created_at = int(event.get("created_at") or 0)
-        if not event_id or event_id in state["seen"]:
+        canonical = self._canonical_channel_event(event, channel_id)
+        if canonical is None:
+            event_id = event.get("id")
+            if isinstance(event_id, str) and event_id and event_id not in state["seen"]:
+                self._warn_rejected_event(channel_id, event_id)
             return
+        event_id = canonical.event_id
+        created_at = canonical.created_at
+        if event_id in state["seen"]:
+            return
+
         state["seen"][event_id] = None
         state["last_ts"] = max(state["last_ts"], created_at)
 
-        if int(event.get("kind") or 0) != _CHAT_KIND:
-            return
-        pubkey = str(event.get("pubkey") or "").lower()
-        content = event.get("content")
-        if not pubkey or not isinstance(content, str) or not content.strip():
-            return
+        pubkey = canonical.pubkey
+        content = canonical.content
 
         # Suppress self-echo: never dispatch our own messages back to the agent.
         if pubkey == self._self_pubkey:
@@ -1095,9 +1167,17 @@ class BuzzAdapter(BasePlatformAdapter):
         meta = self._channel_meta.get(channel_id)
         if meta is None:
             return channel_id not in self.channels
-        name = str(meta.get("name") or "").strip()
-        description = str(meta.get("description") or "").strip()
-        return name == "DM" and not description
+        if not isinstance(meta, dict):
+            return False
+        raw_name = meta.get("name")
+        raw_description = meta.get("description")
+        if (raw_name is not None and not isinstance(raw_name, str)) or (
+            raw_description is not None and not isinstance(raw_description, str)
+        ):
+            return False
+        name = (raw_name or "").strip()
+        description = (raw_description or "").strip()
+        return name.casefold() == "dm" and not description
 
     def _is_direct_message_event(self, channel_id: str, event: dict) -> bool:
         """True when ``event`` is shaped like a direct message to us: a chat
@@ -1106,10 +1186,13 @@ class BuzzAdapter(BasePlatformAdapter):
         not the artifact of a typed @mention (see block comment above)."""
         if not self._self_pubkey or not self._may_reclassify_as_dm(channel_id):
             return False
-        if int(event.get("kind") or 0) != _CHAT_KIND:
+        if type(event.get("kind")) is not int or event["kind"] != _CHAT_KIND:
             return False
-        pubkey = str(event.get("pubkey") or "").lower()
-        if not pubkey or pubkey == self._self_pubkey:
+        raw_pubkey = event.get("pubkey")
+        if not isinstance(raw_pubkey, str) or not raw_pubkey.strip():
+            return False
+        pubkey = raw_pubkey.strip().lower()
+        if pubkey == self._self_pubkey:
             return False
         tags = event.get("tags")
         if not isinstance(tags, list):
@@ -1118,13 +1201,111 @@ class BuzzAdapter(BasePlatformAdapter):
             isinstance(tag, (list, tuple))
             and len(tag) > 1
             and tag[0] == "p"
-            and str(tag[1]).lower() == self._self_pubkey
+            and isinstance(tag[1], str)
+            and tag[1].lower() == self._self_pubkey
             for tag in tags
         )
         if not p_tagged_to_self:
             return False
         content = event.get("content")
         return isinstance(content, str) and not self._is_mentioned(content)
+
+    @staticmethod
+    def _relay_identifier(record: dict, field: str) -> Optional[str]:
+        """Return a non-empty string relay identifier without coercion."""
+        value = record.get(field)
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _created_at(event: dict) -> Optional[int]:
+        """Parse a relay timestamp without accepting malformed or unsafe values."""
+        raw = event.get("created_at")
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            value = raw
+        elif isinstance(raw, str) and raw.isascii() and raw.isdecimal() and len(raw) <= 12:
+            try:
+                value = int(raw)
+            except ValueError:
+                return None
+        else:
+            return None
+        return value if 0 <= value <= _MAX_CREATED_AT else None
+
+    def _canonical_channel_event(self, event: dict, channel_id: str) -> Optional[_CanonicalChannelEvent]:
+        """Return the only fully typed event permitted to mutate inbound state.
+
+        Relay results are untrusted. This single parser is shared by startup
+        seed, polling, and WebSocket ingress so type, range, signed-channel,
+        sender, and content checks cannot drift across paths.
+        """
+        event_id = event.get("id")
+        raw_pubkey = event.get("pubkey")
+        content = event.get("content")
+        if (
+            not isinstance(event_id, str)
+            or not event_id
+            or not isinstance(raw_pubkey, str)
+            or not raw_pubkey.strip()
+            or not isinstance(content, str)
+            or not content.strip()
+        ):
+            return None
+        if type(event.get("kind")) is not int or event["kind"] != _CHAT_KIND:
+            return None
+        created_at = self._created_at(event)
+        if created_at is None or not self._event_matches_channel(event, channel_id):
+            return None
+        return _CanonicalChannelEvent(event_id, created_at, raw_pubkey.strip().lower(), content)
+
+    def _canonical_membership_event(self, event: dict) -> Optional[int]:
+        """Return a safe timestamp only for a membership event addressed to us."""
+        event_id = event.get("id")
+        if not isinstance(event_id, str) or not event_id:
+            return None
+        if type(event.get("kind")) is not int or event["kind"] != _WS_MEMBERSHIP_KIND:
+            return None
+        if not self._self_pubkey:
+            return None
+        tags = event.get("tags")
+        if not isinstance(tags, list) or not any(
+            isinstance(tag, (list, tuple))
+            and len(tag) > 1
+            and tag[0] == "p"
+            and isinstance(tag[1], str)
+            and tag[1].lower() == self._self_pubkey.lower()
+            for tag in tags
+        ):
+            return None
+        return self._created_at(event)
+
+    @staticmethod
+    def _event_matches_channel(event: dict, channel_id: str) -> bool:
+        """Require one unambiguous signed ``h`` tag for ``channel_id``.
+
+        Polling and WebSocket subscription IDs are transport routing hints,
+        not proof that an event belongs to that channel. A missing, mismatched,
+        or multi-channel tag is rejected rather than being re-labeled by the
+        transport path.
+        """
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return False
+        h_tags = [
+            tag[1] if len(tag) > 1 else None
+            for tag in tags
+            if isinstance(tag, (list, tuple)) and len(tag) >= 1 and tag[0] == "h"
+        ]
+        return len(h_tags) == 1 and isinstance(h_tags[0], str) and h_tags[0] == channel_id
+
+    def _warn_rejected_event(self, channel_id: str, event_id: str) -> None:
+        """Log a malformed/foreign relay event once without changing delivery state."""
+        key = (channel_id, event_id)
+        if key in self._rejected_events:
+            return
+        self._rejected_events[key] = None
+        while len(self._rejected_events) > _SEEN_CAP:
+            self._rejected_events.popitem(last=False)
+        logger.warning("Buzz: dropping event %s that failed canonical channel validation", event_id[:12])
 
     def _maybe_latch_dm(self, channel_id: str, state: dict, event: dict) -> None:
         """Latch a group conversation to chat_type="dm" once any direct
@@ -1192,7 +1373,8 @@ class BuzzAdapter(BasePlatformAdapter):
         if code == 0:
             profiles = _parse_json_list(out)
             if profiles:
-                name = str(profiles[0].get("display_name") or "").strip()
+                raw_name = profiles[0].get("display_name")
+                name = raw_name.strip() if isinstance(raw_name, str) else ""
         if not name:
             name = (hex_to_npub(pubkey) or pubkey)[:16]
         self._user_names[pubkey] = name
@@ -1237,7 +1419,7 @@ class BuzzAdapter(BasePlatformAdapter):
             message_type=MessageType.TEXT,
             source=source,
             message_id=message_id,
-            timestamp=datetime.fromtimestamp(created_at) if created_at else datetime.now(),
+            timestamp=datetime.fromtimestamp(created_at, tz=timezone.utc) if created_at else datetime.now(),
         )
 
         await self.handle_message(event)
@@ -1400,11 +1582,13 @@ async def _standalone_send(
         return {"error": f"Buzz standalone send failed to launch CLI: {e}"}
     if code != 0:
         return {"error": f"Buzz standalone send failed: {_cli_error_message(err, code)}"}
-    try:
-        data = json.loads(out or "{}")
-    except ValueError:
-        data = {}
-    return {"success": True, "message_id": str(data.get("event_id") or "")}
+    response = _canonical_send_response(out)
+    if response is None:
+        return {"error": "Buzz standalone send was not accepted"}
+    result: Dict[str, Any] = {"success": True}
+    if response.event_id:
+        result["message_id"] = response.event_id
+    return result
 
 
 def interactive_setup() -> None:

@@ -734,6 +734,13 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
     if constraints is not None:
         constraint_args = ["--constraint", str(constraints)]
 
+    # Normalize cwd to the project checkout so subprocesses (uv, pip)
+    # don't inherit an inaccessible directory from su/sudo invocations
+    # (e.g. root's home when launched via `su -c 'hermes update'`).
+    # uv reads uv.toml from cwd and fails with "Permission denied" when
+    # cwd is unreadable (#71165).
+    _project_root = Path(__file__).parent.parent.resolve()
+
     try:
         venv_root = Path(sys.executable).parent.parent
         from tools.environments.local import hermes_subprocess_env
@@ -759,6 +766,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                     [uv_bin, "pip", "install", *target_args, *constraint_args, *specs],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout, env=uv_env,
                     stdin=subprocess.DEVNULL,
+                    cwd=_project_root,
                     creationflags=windows_hide_flags(),
                 )
                 if r.returncode == 0:
@@ -776,6 +784,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 pip_cmd + ["--version"],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
                 stdin=subprocess.DEVNULL,
+                cwd=_project_root,
                 creationflags=windows_hide_flags(),
             )
             if probe.returncode != 0:
@@ -786,6 +795,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                     [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, check=True,
                     stdin=subprocess.DEVNULL,
+                    cwd=_project_root,
                     creationflags=windows_hide_flags(),
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
@@ -797,6 +807,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 pip_cmd + ["install", *target_args, *constraint_args, *specs],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
                 stdin=subprocess.DEVNULL,
+                cwd=_project_root,
                 creationflags=windows_hide_flags(),
             )
             if r.returncode == 0 and target is not None:

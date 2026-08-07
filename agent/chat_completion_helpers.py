@@ -2433,7 +2433,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         if agent.api_mode == "codex_responses":
             codex_kwargs = agent._build_api_kwargs(api_messages)
             codex_kwargs.pop("tools", None)
-            summary_response = agent._run_codex_stream(codex_kwargs)
+            # Keep max-iteration summaries on the same request seam as normal
+            # Codex turns. Calling _run_codex_stream directly bypasses the
+            # absolute stale timeout, interrupt handling, and request-local
+            # client cleanup, so an unattended cron summary can wedge forever
+            # instead of returning control to cron's completion/error delivery lifecycle.
+            summary_response = agent._interruptible_api_call(codex_kwargs)
             _ct_sum = agent._get_transport()
             _cnr_sum = _ct_sum.normalize_response(summary_response)
             final_response = (_cnr_sum.content or "").strip()
@@ -2545,7 +2550,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if agent.api_mode == "codex_responses":
                 codex_kwargs = agent._build_api_kwargs(api_messages)
                 codex_kwargs.pop("tools", None)
-                retry_response = agent._run_codex_stream(codex_kwargs)
+                retry_response = agent._interruptible_api_call(codex_kwargs)
                 _ct_retry = agent._get_transport()
                 _cnr_retry = _ct_retry.normalize_response(retry_response)
                 final_response = (_cnr_retry.content or "").strip()

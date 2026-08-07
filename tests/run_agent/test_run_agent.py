@@ -2596,6 +2596,86 @@ class TestHandleMaxIterations:
 
 
 
+    def test_codex_summary_uses_interruptible_request_path(self, agent):
+        """Max-iteration Codex summaries must retain request watchdogs.
+
+        A direct ``_run_codex_stream`` call bypasses the absolute stale timeout,
+        interrupt handling, and request-local client cleanup. In unattended cron
+        sessions that turns a wedged summary stream into a job that never returns
+        to cron's completion/error delivery lifecycle (#70943).
+        """
+        agent.api_mode = "codex_responses"
+        agent.provider = "xai-oauth"
+        agent.base_url = "https://api.x.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "api.x.ai"
+        agent.model = "grok-4.5"
+        agent.platform = "cron"
+        agent._cached_system_prompt = "You are helpful."
+        response = SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="Summary")],
+                )
+            ],
+        )
+
+        with patch.object(
+            agent, "_interruptible_api_call", return_value=response
+        ) as guarded_call, patch.object(
+            agent,
+            "_run_codex_stream",
+            side_effect=AssertionError("summary bypassed request watchdogs"),
+        ):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 4
+            )
+
+        assert result == "Summary"
+        guarded_call.assert_called_once()
+
+    def test_codex_summary_retry_uses_interruptible_request_path(self, agent):
+        """The empty-summary retry must use the same bounded request seam."""
+        agent.api_mode = "codex_responses"
+        agent.provider = "xai-oauth"
+        agent.base_url = "https://api.x.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "api.x.ai"
+        agent.model = "grok-4.5"
+        agent.platform = "cron"
+        agent._cached_system_prompt = "You are helpful."
+
+        def codex_response(text):
+            return SimpleNamespace(
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=text)],
+                    )
+                ],
+            )
+
+        with patch.object(
+            agent,
+            "_interruptible_api_call",
+            side_effect=[codex_response(""), codex_response("Summary after retry")],
+        ) as guarded_call, patch.object(
+            agent,
+            "_run_codex_stream",
+            side_effect=AssertionError("summary retry bypassed request watchdogs"),
+        ):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 4
+            )
+
+        assert result == "Summary after retry"
+        assert guarded_call.call_count == 2
+
     def test_codex_summary_sanitizes_orphan_tool_results(self, agent):
         agent.api_mode = "codex_responses"
         agent.provider = "openai-codex"
@@ -2606,7 +2686,7 @@ class TestHandleMaxIterations:
         agent._cached_system_prompt = "You are helpful."
         captured = {}
 
-        def fake_run_codex_stream(kwargs):
+        def fake_run_codex_stream(kwargs, client=None, on_first_delta=None):
             captured.update(kwargs)
             return SimpleNamespace(
                 status="completed",

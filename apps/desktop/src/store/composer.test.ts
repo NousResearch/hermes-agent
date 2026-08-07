@@ -4,15 +4,21 @@ import {
   $composerAttachments,
   $voiceConversationStartRequest,
   addComposerAttachment,
+  clearComposerTerminalSelections,
   clearSessionDraft,
   type ComposerAttachment,
+  expandComposerDraftWithTerminalContext,
+  freezeComposerDraftWithTerminalContext,
+  missingComposerTerminalSelectionLabels,
   migrateSessionDraft,
   removeComposerAttachment,
   requestVoiceConversationStart,
   SESSION_DRAFTS_STORAGE_KEY,
+  setComposerTerminalSelection,
   stashSessionDraft,
   takeSessionDraft,
   takeVoiceConversationStart,
+  terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from './composer'
 
@@ -26,6 +32,78 @@ describe('voice conversation start requests', () => {
 
     requestVoiceConversationStart()
     expect(takeVoiceConversationStart($voiceConversationStartRequest.get())).toBe(true)
+  })
+})
+
+describe('terminal selection expansion', () => {
+  afterEach(() => {
+    clearComposerTerminalSelections()
+  })
+
+  it('freezes @terminal chips into fenced transport without tokens', () => {
+    setComposerTerminalSelection('zsh:23-58', 'line one\nline two')
+
+    const frozen = freezeComposerDraftWithTerminalContext('see @terminal:`zsh:23-58` please')
+
+    expect(frozen.transportText).toBe('```terminal\nline one\nline two\n```\n\nsee please')
+    expect(frozen.displayText).toBe('see @terminal:`zsh:23-58` please')
+    expect(frozen.missingLabels).toEqual([])
+    expect(expandComposerDraftWithTerminalContext('see @terminal:`zsh:23-58` please')).toBe(frozen.transportText)
+    expect(terminalContextBlocksFromDraft('see @terminal:`zsh:23-58` please')).toEqual([
+      '```terminal\nline one\nline two\n```'
+    ])
+  })
+
+  it('does not re-resolve a frozen queue entry after the label is overwritten', () => {
+    setComposerTerminalSelection('zsh:23-58', 'selection A')
+
+    const frozen = freezeComposerDraftWithTerminalContext('look at @terminal:`zsh:23-58`')
+
+    setComposerTerminalSelection('zsh:23-58', 'selection B from another tab')
+
+    // Drain / submit must not call terminalContextBlocksFromDraft on frozen
+    // transport — no tokens remain, so a mutated map cannot inject B.
+    expect(frozen.transportText).toContain('selection A')
+    expect(frozen.transportText).not.toContain('selection B')
+    expect(terminalContextBlocksFromDraft(frozen.transportText)).toEqual([])
+    expect(freezeComposerDraftWithTerminalContext(frozen.transportText).transportText).toBe(frozen.transportText)
+  })
+
+  it('leaves already-frozen transport alone (idempotent for steer re-queue)', () => {
+    setComposerTerminalSelection('zsh:23-58', 'line one\nline two')
+
+    const once = expandComposerDraftWithTerminalContext('see @terminal:`zsh:23-58` please')
+    const twice = expandComposerDraftWithTerminalContext(once)
+
+    expect(twice).toBe(once)
+  })
+
+  it('only prepends missing fences when one chip is already expanded', () => {
+    setComposerTerminalSelection('zsh:1-2', 'first block')
+    setComposerTerminalSelection('zsh:3-4', 'second block')
+
+    const partial =
+      '```terminal\nfirst block\n```\n\nsee @terminal:`zsh:1-2` and @terminal:`zsh:3-4`'
+
+    expect(expandComposerDraftWithTerminalContext(partial)).toBe(
+      '```terminal\nsecond block\n```\n\n```terminal\nfirst block\n```\n\nsee and'
+    )
+  })
+
+  it('reports chips whose selection text is missing from the map', () => {
+    const frozen = freezeComposerDraftWithTerminalContext('@terminal:`zsh:1-2`')
+
+    expect(frozen.transportText).toBe('@terminal:`zsh:1-2`')
+    expect(frozen.missingLabels).toEqual(['zsh:1-2'])
+    expect(missingComposerTerminalSelectionLabels('@terminal:`zsh:1-2`')).toEqual(['zsh:1-2'])
+    expect(terminalContextBlocksFromDraft('@terminal:`zsh:1-2`')).toEqual([])
+  })
+
+  it('leaves drafts without terminal chips unchanged', () => {
+    setComposerTerminalSelection('zsh:1-2', 'unused')
+
+    expect(expandComposerDraftWithTerminalContext('just a question')).toBe('just a question')
+    expect(missingComposerTerminalSelectionLabels('just a question')).toEqual([])
   })
 })
 

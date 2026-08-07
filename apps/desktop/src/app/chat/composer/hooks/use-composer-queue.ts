@@ -4,7 +4,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
-import { type ComposerAttachment } from '@/store/composer'
+import { type ComposerAttachment, freezeComposerDraftWithTerminalContext } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
@@ -25,6 +25,36 @@ import { notify } from '@/store/notifications'
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
+
+/** Freeze terminal chips for queue persistence. Returns null when a chip has
+ *  no selection payload (caller should abort without mutating the queue). */
+function freezeQueuedDraftText(
+  text: string,
+  copy: { terminalSelectionMissingTitle: string; terminalSelectionMissingBody: string }
+): null | { text: string; displayText?: string } {
+  const trimmed = text.trim()
+
+  if (!trimmed) {
+    return { text }
+  }
+
+  const frozen = freezeComposerDraftWithTerminalContext(trimmed)
+
+  if (frozen.missingLabels.length > 0) {
+    notify({
+      kind: 'warning',
+      title: copy.terminalSelectionMissingTitle,
+      message: copy.terminalSelectionMissingBody
+    })
+
+    return null
+  }
+
+  return {
+    text: frozen.transportText,
+    ...(frozen.displayText !== frozen.transportText ? { displayText: frozen.displayText } : {})
+  }
+}
 
 interface UseComposerQueueArgs {
   activeQueueSessionKey: string | null
@@ -128,9 +158,18 @@ export function useComposerQueue({
       return index >= 0 // at the oldest: swallow; missing entry: let it fall through
     }
 
+    const frozen = draftRef.current.trim()
+      ? freezeQueuedDraftText(draftRef.current, t.composer)
+      : { text: draftRef.current }
+
+    if (!frozen) {
+      return true
+    }
+
     const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
       attachments: cloneAttachments(attachments),
-      text: draftRef.current
+      text: frozen.text,
+      displayText: frozen.displayText ?? null
     })
 
     const next = queuedPrompts[target]
@@ -162,7 +201,17 @@ export function useComposerQueue({
         return false
       }
 
-      const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { attachments: next, text })
+      const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
+
+      if (!frozen) {
+        return false
+      }
+
+      const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
+        attachments: next,
+        text: frozen.text,
+        displayText: frozen.displayText ?? null
+      })
       triggerHaptic(saved ? 'success' : 'selection')
     } else {
       triggerHaptic('cancel')
@@ -182,7 +231,22 @@ export function useComposerQueue({
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
+    // Freeze `@terminal:` chips into transport text + chip displayText before
+    // enqueue. The selection map is memory-only and label-colliding; drain
+    // must never re-resolve against it (#77078).
+    const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
+
+    if (!frozen) {
+      return false
+    }
+
+    if (
+      !enqueueQueuedPrompt(activeQueueSessionKey, {
+        text: frozen.text,
+        attachments,
+        ...(frozen.displayText ? { displayText: frozen.displayText } : {})
+      })
+    ) {
       return false
     }
 
@@ -191,7 +255,7 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, t.composer])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.

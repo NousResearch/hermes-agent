@@ -2,6 +2,10 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  clearComposerTerminalSelections,
+  setComposerTerminalSelection
+} from '@/store/composer'
+import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
@@ -23,10 +27,13 @@ import { useComposerQueue } from './use-composer-queue'
 
 const SESSION_KEY = 'stored-session-queue-hook'
 
-function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void } = {}) {
+function renderQueueHook(
+  overrides: { busy?: boolean; onCancel?: () => void; draft?: string } = {}
+) {
   const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
   const onCancel = overrides.onCancel ?? vi.fn()
   const queueEditRef: { current: QueueEditState | null } = { current: null }
+  const draftRef = { current: overrides.draft ?? '' }
 
   const hook = renderHook(
     ({ busy }: { busy: boolean }) =>
@@ -34,10 +41,14 @@ function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void } = 
         activeQueueSessionKey: SESSION_KEY,
         attachments: [],
         busy,
-        clearDraft: () => undefined,
-        draftRef: { current: '' },
+        clearDraft: () => {
+          draftRef.current = ''
+        },
+        draftRef,
         focusInput: () => undefined,
-        loadIntoComposer: () => undefined,
+        loadIntoComposer: (text: string) => {
+          draftRef.current = text
+        },
         onCancel,
         onSubmit,
         queueEditRef,
@@ -47,7 +58,7 @@ function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void } = 
     { initialProps: { busy: overrides.busy ?? false } }
   )
 
-  return { hook, onCancel, onSubmit }
+  return { draftRef, hook, onCancel, onSubmit }
 }
 
 describe('useComposerQueue park integration', () => {
@@ -55,6 +66,7 @@ describe('useComposerQueue park integration', () => {
     window.localStorage.clear()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    clearComposerTerminalSelections()
   })
 
   afterEach(() => {
@@ -62,6 +74,7 @@ describe('useComposerQueue park integration', () => {
     vi.restoreAllMocks()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    clearComposerTerminalSelections()
   })
 
   it('auto-drains an unparked queue once idle', async () => {
@@ -126,5 +139,38 @@ describe('useComposerQueue park integration', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(onSubmit.mock.calls[0]?.[0]).toBe('send me now')
+  })
+
+  it('freezes @terminal selection at enqueue so a later label collision cannot inject unrelated output', async () => {
+    setComposerTerminalSelection('zsh:23-58', 'selection A')
+
+    const { draftRef, hook, onSubmit } = renderQueueHook({
+      busy: true,
+      draft: 'look at @terminal:`zsh:23-58`'
+    })
+
+    act(() => {
+      expect(hook.result.current.queueCurrentDraft()).toBe(true)
+    })
+
+    const queued = getQueuedPrompts(SESSION_KEY)
+
+    expect(queued).toHaveLength(1)
+    expect(queued[0]?.text).toContain('selection A')
+    expect(queued[0]?.text).not.toContain('@terminal:')
+    expect(queued[0]?.displayText).toBe('look at @terminal:`zsh:23-58`')
+    expect(draftRef.current).toBe('')
+
+    // Another tab reuses the same shell:row label before drain.
+    setComposerTerminalSelection('zsh:23-58', 'selection B from another tab')
+
+    await act(async () => {
+      await hook.result.current.drainNextQueued()
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit.mock.calls[0]?.[0]).toContain('selection A')
+    expect(onSubmit.mock.calls[0]?.[0]).not.toContain('selection B')
+    expect(onSubmit.mock.calls[0]?.[1]).toMatchObject({ fromQueue: true })
   })
 })

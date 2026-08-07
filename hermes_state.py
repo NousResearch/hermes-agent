@@ -7082,8 +7082,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         now_ts = time.time()
         inserted = 0
         tool_calls_total = 0
+        # Multi-row persistence paths bypass AIAgent's incremental flush.
+        # Import lazily to keep the state module's optional agent surface out
+        # of module initialization while applying one shared summary policy.
+        from agent.context_compressor import summary_carrier_persistence_display
+
         for msg in messages:
             role = msg.get("role", "unknown")
+            display_kind, display_metadata = summary_carrier_persistence_display(msg)
             tool_calls = msg.get("tool_calls")
             message_timestamp = now_ts
             if msg.get("timestamp") is not None:
@@ -7155,8 +7161,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     1 if msg.get("observed") else 0,
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
-                    _scrub_surrogates(msg.get("display_kind")) if isinstance(msg.get("display_kind"), str) else None,
-                    self._encode_display_metadata(msg.get("display_metadata")),
+                    _scrub_surrogates(display_kind) if isinstance(display_kind, str) else None,
+                    self._encode_display_metadata(display_metadata),
                 ),
             )
             inserted += 1

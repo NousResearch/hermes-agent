@@ -1210,7 +1210,8 @@ stt:
     #                          # Set false to restore raw behavior (e.g. transcribing music/ambient audio).
     # vad_min_silence_ms: 500  # min silence (ms) that splits speech chunks when vad is on
     # no_speech_prob_threshold: 0.6  # drop a segment only if no_speech_prob > this...
-    # logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
+    # logprob_threshold: -1.0       # ...AND avg_logprob < this (both must hit — quiet real speech survives)
+    # unload_after_idle_seconds: 0  # 0=never unload (default); 300=frees RAM/VRAM after 5min with no voice messages
   language: "en"               # GLOBAL language hint for every STT provider (per-provider language wins). Set "" for auto-detect.
   # groq:
   #   model: "whisper-large-v3-turbo"

@@ -139,6 +139,19 @@ _local_model_name: Optional[str] = None
 # None` and download/load the whisper model twice (#24767).
 _local_model_lock = threading.Lock()
 
+# --- Idle unload ---------------------------------------------------------------
+# The model singleton above is loaded once and never released — hundreds of MB
+# of RAM/VRAM sit idle between voice messages. On long-running gateway
+# processes (especially with local LLMs competing for the same GPU) this is
+# wasteful. A lightweight daemon thread checks _last_transcription_time and
+# unloads the model after a configurable idle period. The next voice message
+# reloads it transparently.
+_last_transcription_time: float = 0.0
+_idle_unload_thread: Optional[threading.Thread] = None
+_idle_unload_stop = threading.Event()
+
+_IDLE_UNLOAD_CHECK_INTERVAL = 30  # seconds between idle checks
+
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
@@ -1470,6 +1483,72 @@ def _should_force_faster_whisper_cpu() -> bool:
     return _sysctl_value("hw.optional.arm64") == "1"
 
 
+def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
+    """Resolve the idle unload timeout from config.
+
+    0 = never unload (default). Negative values are treated as 0.
+    """
+    try:
+        val = int(local_cfg.get("unload_after_idle_seconds", 0))
+    except (TypeError, ValueError):
+        return 0
+    return max(val, 0)
+
+
+def _unload_local_model() -> None:
+    """Release the cached local whisper model and free its memory.
+
+    Safe to call from any thread. The model lock prevents races with a
+    concurrent transcription that is mid-load.
+    """
+    global _local_model, _local_model_name
+    with _local_model_lock:
+        if _local_model is not None:
+            logger.info(
+                "Unloading local whisper model '%s' after idle timeout",
+                _local_model_name or "unknown",
+            )
+            _local_model = None
+            _local_model_name = None
+
+
+def _start_idle_unload_watcher(timeout_seconds: int) -> None:
+    """Start (or replace) the background idle-unload thread.
+
+    The thread checks every ``_IDLE_UNLOAD_CHECK_INTERVAL`` seconds whether
+    ``_last_transcription_time`` is older than ``timeout_seconds``. If so, it
+    unloads the model and exits. The next transcription restarts it.
+    """
+    global _idle_unload_thread
+    # Stop any existing watcher — a new timeout may have been configured
+    _idle_unload_stop.set()
+    if _idle_unload_thread is not None and _idle_unload_thread.is_alive():
+        _idle_unload_thread.join(timeout=5)
+    _idle_unload_stop.clear()
+
+    def _watch():
+        while not _idle_unload_stop.is_set():
+            if _idle_unload_stop.wait(_IDLE_UNLOAD_CHECK_INTERVAL):
+                break
+            if _local_model is None:
+                break
+            idle_for = time.monotonic() - _last_transcription_time
+            if idle_for >= timeout_seconds:
+                _unload_local_model()
+                break
+
+    _idle_unload_thread = threading.Thread(
+        target=_watch, name="hermes-stt-idle-unload", daemon=True
+    )
+    _idle_unload_thread.start()
+
+
+def _touch_transcription_time() -> None:
+    """Record that a transcription just completed (resets the idle timer)."""
+    global _last_transcription_time
+    _last_transcription_time = time.monotonic()
+
+
 def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
     """Load faster-whisper with graceful CUDA → CPU fallback.
 
@@ -1704,6 +1783,11 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             "Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
             Path(file_path).name, model_name, info.language, info.duration,
         )
+
+        _touch_transcription_time()
+        idle_timeout = _get_idle_unload_seconds(local_cfg)
+        if idle_timeout > 0:
+            _start_idle_unload_watcher(idle_timeout)
 
         return {"success": True, "transcript": transcript, "provider": "local"}
 

@@ -18,6 +18,12 @@ export function normalizeWhatsAppId(value) {
   return String(value).replace(':', '@');
 }
 
+export async function sendTypingPresence(sock, chatId, state) {
+  const presence = state === 'paused' ? 'paused' : 'composing';
+  await sock.sendPresenceUpdate(presence, chatId);
+  return presence;
+}
+
 export function getMessageContent(msg) {
   const content = msg?.message || {};
   if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;

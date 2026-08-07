@@ -1249,7 +1249,7 @@ class GatewayStreamConsumer:
 
         Returns the message_id so callers can thread subsequent chunks.
         """
-        text = self._clean_for_display(text)
+        text = self._clean_for_display(text).lstrip("\n")
         if not text.strip():
             return reply_to_id
         try:
@@ -1359,7 +1359,7 @@ class GatewayStreamConsumer:
 
         Retries each chunk once on flood-control failures with a short delay.
         """
-        final_text = self._clean_for_display(text)
+        final_text = self._clean_for_display(text).lstrip("\n")
         # Ensure balanced code fences before computing continuation,
         # so the closing fence reaches the user even when the fallback
         # only delivers the tail after mid-stream edits failed.
@@ -1768,7 +1768,7 @@ class GatewayStreamConsumer:
         tail = self._accumulated
         if visible and tail.startswith(visible):
             tail = tail[len(visible):].lstrip()
-        tail = self._clean_for_display(tail)
+        tail = self._clean_for_display(tail).lstrip("\n")
         if not tail.strip():
             return
         try:
@@ -1805,7 +1805,7 @@ class GatewayStreamConsumer:
 
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""
-        text = self._clean_for_display(text)
+        text = self._clean_for_display(text).lstrip("\n")
         if not text.strip():
             return False
         try:
@@ -2073,7 +2073,13 @@ class GatewayStreamConsumer:
         # Strip MEDIA: directives so they don't appear as visible text.
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
-        text = self._clean_for_display(text)
+        # A model may prefix post-tool continuation text with paragraph
+        # breaks. Once the segment boundary makes this a fresh bubble, those
+        # leading newlines only render as blank space. Normalize every payload
+        # for that bubble so a later streaming edit cannot add them back.
+        # Keep this out of _clean_for_display so _visible_prefix retains its
+        # exact prefix-matching semantics for fallback delivery.
+        text = self._clean_for_display(text).lstrip("\n")
         # Ensure code fences are balanced before send/edit.  Model output
         # truncated mid-code-block (e.g. finish_reason="length") leaves an
         # orphaned ``` which, on Discord/Slack/Matrix, causes the entire

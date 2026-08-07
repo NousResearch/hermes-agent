@@ -351,6 +351,54 @@ class TestSegmentBreakOnToolBoundary:
             f"Cursor found in finalized segment: {thinking_texts[-1]!r}"
         )
 
+    @pytest.mark.asyncio
+    async def test_normal_sized_post_tool_continuation_strips_leading_newlines(self):
+        """A post-tool first send and later edit both start without ``\n\n``."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ])
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(
+                edit_interval=0.01,
+                buffer_threshold=5,
+                cursor="",
+            ),
+        )
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("I'll inspect the repository first.")
+        await asyncio.sleep(0.08)
+        consumer.on_delta(None)  # tool boundary
+        await asyncio.sleep(0.08)
+        consumer.on_delta("\n\nThe repository is clean.")
+        await asyncio.sleep(0.08)
+        consumer.on_delta(" More detail.")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        sent_texts = [call.kwargs["content"] for call in adapter.send.call_args_list]
+        assert sent_texts == [
+            "I'll inspect the repository first.",
+            "The repository is clean.",
+        ]
+        continuation_payloads = [
+            call.kwargs["content"]
+            for call in adapter.send.call_args_list + adapter.edit_message.call_args_list
+            if "repository is clean" in call.kwargs["content"]
+        ]
+        assert len(continuation_payloads) >= 2
+        assert all(not text.startswith("\n") for text in continuation_payloads)
+        assert continuation_payloads[-1] == "The repository is clean. More detail."
+
 
     @pytest.mark.asyncio
     async def test_segment_break_clears_failed_edit_fallback_state(self):
@@ -831,6 +879,72 @@ class TestInterimCommentaryMessages:
         assert sent_texts == ["I'll inspect the repository first.", "Done."]
         assert consumer.final_response_sent is True
 
+
+class TestLeadingNewlineStripping:
+    """Leading newlines have no meaning once text starts a fresh bubble."""
+
+    @pytest.mark.asyncio
+    async def test_send_new_chunk_strips_only_leading_newlines(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+
+        await consumer._send_new_chunk(
+            "\n\nFirst paragraph.\n\nSecond paragraph.",
+            None,
+        )
+
+        assert adapter.send.call_args.kwargs["content"] == (
+            "First paragraph.\n\nSecond paragraph."
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_commentary_strips_leading_newlines(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+
+        await consumer._send_commentary("\n\nInterim commentary")
+
+        assert adapter.send.call_args.kwargs["content"] == "Interim commentary"
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_normalizes_before_prefix_matching(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_2"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._fallback_prefix = "Visible prefix"
+        consumer._last_sent_text = "Visible prefix"
+
+        await consumer._send_fallback_final(
+            "\n\nVisible prefix\n\nMissing tail",
+        )
+
+        assert adapter.send.call_args.kwargs["content"] == "Missing tail"
+
+    @pytest.mark.asyncio
+    async def test_edit_failure_tail_flush_strips_leading_newlines(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_2"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._fallback_final_send = True
+        consumer._accumulated = "\n\nUnsent tail"
+
+        await consumer._flush_segment_tail_on_edit_failure()
+
+        assert adapter.send.call_args.kwargs["content"] == "Unsent tail"
 
 class TestCancelledConsumerSetsFlags:
     """Cancellation must set final_response_sent when already_sent is True.

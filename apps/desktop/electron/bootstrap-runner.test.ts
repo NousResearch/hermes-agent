@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   buildPinArgs,
@@ -15,7 +15,8 @@ import {
   isPinnedCommit,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  spawnPowerShell
 } from './bootstrap-runner'
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
@@ -24,6 +25,15 @@ const ZERO_COMMIT = '0000000000000000000000000000000000000000'
 function mkTmpHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bootstrap-test-'))
 }
+
+vi.mock('node:child_process', async importOriginal => {
+  const mod = await importOriginal<any>()
+
+  return {
+    ...mod,
+    spawn: vi.fn()
+  }
+})
 
 test('runBootstrap bails immediately when the signal is already aborted', async () => {
   const controller = new AbortController()
@@ -270,5 +280,56 @@ test('resolveInstallScript rethrows when the 404 fallback is unavailable', async
     )
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('spawnPowerShell preserves explicit PYTHONUTF8 and PYTHONIOENCODING values and provides defaults if absent', async () => {
+  if (process.platform !== 'win32') {
+    return
+  }
+
+  // Save original env
+  const originalEnv = process.env
+  process.env = { ...originalEnv }
+
+  try {
+    // 1. Explicit user overrides
+    process.env.PYTHONUTF8 = '0'
+    process.env.PYTHONIOENCODING = 'cp1252'
+
+    // Mock child_process spawn
+    const { spawn } = await import('node:child_process')
+    const spawnMock = spawn as any
+    spawnMock.mockImplementation(() => {
+      return {
+        stdout: { on: vi.fn(), setEncoding: vi.fn() },
+        stderr: { on: vi.fn(), setEncoding: vi.fn() },
+        on: vi.fn()
+      }
+    })
+
+    spawnPowerShell('test.ps1', [], {})
+
+    assert.equal(spawnMock.mock.calls.length, 1)
+    const callEnv1 = (spawnMock.mock.calls[0][2] as any).env
+    assert.equal(callEnv1.PYTHONUTF8, '0', 'Should preserve explicit PYTHONUTF8=0')
+    assert.equal(callEnv1.PYTHONIOENCODING, 'cp1252', 'Should preserve explicit PYTHONIOENCODING=cp1252')
+
+    spawnMock.mockClear()
+
+    // 2. Absent values default to '1' and 'utf-8'
+    delete process.env.PYTHONUTF8
+    delete process.env.PYTHONIOENCODING
+
+    spawnPowerShell('test.ps1', [], {})
+
+    assert.equal(spawnMock.mock.calls.length, 1)
+    const callEnv2 = (spawnMock.mock.calls[0][2] as any).env
+    assert.equal(callEnv2.PYTHONUTF8, '1', 'Should default to PYTHONUTF8=1 when absent')
+    assert.equal(callEnv2.PYTHONIOENCODING, 'utf-8', 'Should default to PYTHONIOENCODING=utf-8 when absent')
+
+    spawnMock.mockRestore()
+  } finally {
+    process.env = originalEnv
   }
 })

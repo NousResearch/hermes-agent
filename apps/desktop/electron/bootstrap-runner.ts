@@ -470,7 +470,9 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
           ...process.env,
           // Pass HERMES_HOME through so install.ps1 respects the caller's
           // choice rather than re-computing the default.
-          HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
+          HERMES_HOME: hermesHome || process.env.HERMES_HOME || '',
+          PYTHONUTF8: process.env.PYTHONUTF8 ?? '1',
+          PYTHONIOENCODING: process.env.PYTHONIOENCODING ?? 'utf-8'
         }
       })
     )
@@ -1033,5 +1035,6 @@ export {
   resolveInstallScript,
   resolveLocalInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  spawnPowerShell
 }

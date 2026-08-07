@@ -3311,12 +3311,22 @@ def run_conversation(
                                 # network stall doesn't need a bigger budget, but
                                 # a genuine output-cap truncation does, and the
                                 # boost is harmless for the stall case.
-                                _tc_boost_base = agent.max_tokens if agent.max_tokens else 4096
-                                _tc_boost = _tc_boost_base * (2 ** truncated_tool_call_retries)
                                 _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+                                # Use the effective output cap as the base when
+                                # the user did not set max_tokens, so the doubling
+                                # ladder starts from the actual budget being used
+                                # rather than a fixed 4096 that can never reach
+                                # a large provider default (e.g. 65536) in 4 retries.
+                                _tc_boost_base = agent.max_tokens if agent.max_tokens else (_tc_requested_cap or 4096)
+                                _tc_boost = _tc_boost_base * (2 ** truncated_tool_call_retries)
                                 if _tc_requested_cap is not None:
                                     _tc_boost = max(_tc_boost, _tc_requested_cap)
-                                _tc_boost_cap = max(32768, _tc_requested_cap or 0)
+                                # Use a relative ceiling (2× the original cap) so
+                                # the budget can actually increase on retry.
+                                # Without this, a requested cap ≥ 32768 makes the
+                                # ceiling equal to the floor, and every retry sends
+                                # the same budget — the boost is dead (#72770).
+                                _tc_boost_cap = max(32768, (_tc_requested_cap or 0) * 2)
                                 agent._ephemeral_max_output_tokens = min(_tc_boost, _tc_boost_cap)
                                 # Don't append the broken response to messages;
                                 # just re-run the same API call from the current
@@ -5845,17 +5855,20 @@ def run_conversation(
         if _retry.restart_with_length_continuation:
             # Progressively boost the output token budget on each retry.
             # Retry 1 → 2× base, retry 2 → 4× base, retry 3 → 8× base,
-            # retry 4 → 16× base, then cap at 32 768.
+            # retry 4 → 16× base, then cap at 2× the original cap.
             # Applies to all providers via _ephemeral_max_output_tokens.
-            # If the original request already used a larger provider/model
-            # default budget, keep that floor so continuation retries do
-            # not accidentally downshift to a much smaller cap.
-            _boost_base = agent.max_tokens if agent.max_tokens else 4096
-            _boost = _boost_base * (2 ** length_continue_retries)
+            # Use the effective output cap as the base when the user did not
+            # set max_tokens, so the doubling ladder starts from the actual
+            # budget being used rather than a fixed 4096 that can never reach
+            # a large provider default in 4 retries.  The relative ceiling
+            # (2× the original cap) ensures retries can actually raise the
+            # budget instead of being clamped to the same failing cap (#72770).
             _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+            _boost_base = agent.max_tokens if agent.max_tokens else (_requested_cap or 4096)
+            _boost = _boost_base * (2 ** length_continue_retries)
             if _requested_cap is not None:
                 _boost = max(_boost, _requested_cap)
-            _boost_cap = max(32768, _requested_cap or 0)
+            _boost_cap = max(32768, (_requested_cap or 0) * 2)
             agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
             continue
 

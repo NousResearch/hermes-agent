@@ -3,6 +3,12 @@ import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
+import {
+  findNextInlineMath,
+  type InlineMathSpan,
+  stripInlineMathDelimiters,
+  unescapeMarkdownDollars
+} from '../lib/inlineMath.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
@@ -99,12 +105,10 @@ export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
 // doesn't pair up the first `~` with the next one on the line and swallow
 // the text between them as a dim `_`-prefixed span.
 //
-// Inline math (`$x$` and `\(x\)`) takes precedence over emphasis at the
-// same start position because regex alternation is leftmost-first; a
-// dollar-delimited span at column N wins over a `*` at column N+1, so
-// `$P=a*b*c$` renders as math instead of having `*b*` corrupted into
-// italics. Single-character minimums and "no space adjacent to delimiter"
-// rules keep currency prose like `$5 to $10` from being swallowed.
+// `\(...\)` inline math remains a regular regex token. Single-dollar math is
+// merged in separately by `inlineTokens`: escape parity and escaped dollars
+// inside a formula require a small scanner, not another lookaround-heavy
+// alternative here.
 export const INLINE_RE = new RegExp(
   [
     `!\\[(.*?)\\]\\(${MD_URL_RE}\\)`, // 1,2  image
@@ -122,11 +126,10 @@ export const INLINE_RE = new RegExp(
     `~([A-Za-z0-9]{1,8})~`, // 15   subscript
     `(https?:\\/\\/[^\\s<]+)`, // 16   bare URL — wrapped so it owns its own
     //                                capture group; without this, the math
-    //                                spans below would land in m[16] and the
+    //                                span below would land in m[16] and the
     //                                MdInline dispatcher would treat them as
     //                                bare URLs and render them as autolinks.
-    `(?<!\\$)\\$([^\\s$](?:[^$\\n]*?[^\\s$])?)\\$(?!\\$)`, // 17   inline math $...$
-    `\\\\\\(([^\\n]+?)\\\\\\)` // 18   inline math \(...\)
+    `\\\\\\(([^\\n]+?)\\\\\\)` // 17   inline math \(...\)
   ].join('|'),
   'g'
 )
@@ -191,7 +194,8 @@ const renderResolvedLink = (k: number, t: Theme, rawUrl: string, label?: string)
 }
 
 export const stripInlineMarkup = (v: string) =>
-  v
+  stripInlineMathDelimiters(
+    v
     .replace(/!\[(.*?)\]\(((?:[^\s()]|\([^\s()]*\))+?)\)/g, '[image: $1] $2')
     .replace(/\[(.+?)\]\(((?:[^\s()]|\([^\s()]*\))+?)\)/g, '$1')
     .replace(/<((?:https?:\/\/|mailto:)[^>\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>/g, '$1')
@@ -205,8 +209,8 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/\[\^([^\]]+)\]/g, '[$1]')
     .replace(/\^([^^\s][^^]*?)\^/g, '^$1')
     .replace(/~([A-Za-z0-9]{1,8})~/g, '_$1')
-    .replace(/(?<!\$)\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?!\$)/g, '$1')
     .replace(/\\\(([^\n]+?)\\\)/g, '$1')
+  )
 
 const SAFETY_MARGIN = 4
 const MIN_COL_WIDTH = 3
@@ -541,6 +545,52 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   )
 }
 
+interface RegexInlineToken {
+  kind: 'regex'
+  match: RegExpMatchArray
+}
+
+interface MathInlineToken {
+  kind: 'math'
+  span: InlineMathSpan
+}
+
+type InlineToken = MathInlineToken | RegexInlineToken
+
+function* inlineTokens(text: string): Generator<InlineToken> {
+  const regexMatches = text.matchAll(INLINE_RE)
+  let nextRegex = regexMatches.next()
+  let nextMath = findNextInlineMath(text)
+  let cursor = 0
+
+  while (!nextRegex.done || nextMath) {
+    while (!nextRegex.done && (nextRegex.value.index ?? 0) < cursor) {
+      nextRegex = regexMatches.next()
+    }
+
+    if (nextMath && nextMath.index < cursor) {
+      nextMath = findNextInlineMath(text, cursor)
+    }
+
+    const regexIndex = nextRegex.done ? Number.POSITIVE_INFINITY : (nextRegex.value.index ?? 0)
+    const mathIndex = nextMath?.index ?? Number.POSITIVE_INFINITY
+
+    // Existing regex tokens retain priority on an exact tie. This keeps code
+    // spans verbatim and lets emphasis recurse into its body as before.
+    if (!nextRegex.done && regexIndex <= mathIndex) {
+      const match = nextRegex.value
+
+      yield { kind: 'regex', match }
+      cursor = regexIndex + match[0].length
+      nextRegex = regexMatches.next()
+    } else if (nextMath) {
+      yield { kind: 'math', span: nextMath }
+      cursor = mathIndex + nextMath.raw.length
+      nextMath = findNextInlineMath(text, cursor)
+    }
+  }
+}
+
 // `color` anchors the prose runs to a palette tone. Block callers that
 // already wrap MdInline in a colored <Text> (headings, quotes, footnotes)
 // leave it unset and inherit that parent; body-prose callers pass
@@ -553,13 +603,26 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
 
   let last = 0
 
-  for (const m of text.matchAll(INLINE_RE)) {
-    const i = m.index ?? 0
+  for (const token of inlineTokens(text)) {
+    const i = token.kind === 'math' ? token.span.index : (token.match.index ?? 0)
     const k = parts.length
 
     if (i > last) {
-      parts.push(<Text key={k}>{text.slice(last, i)}</Text>)
+      parts.push(<Text key={k}>{unescapeMarkdownDollars(text.slice(last, i))}</Text>)
     }
+
+    if (token.kind === 'math') {
+      parts.push(
+        <Text color={t.color.accent} italic key={parts.length}>
+          {renderMath(texToUnicode(token.span.content))}
+        </Text>
+      )
+      last = i + token.span.raw.length
+
+      continue
+    }
+
+    const m = token.match
 
     if (m[1] && m[2]) {
       parts.push(
@@ -637,7 +700,7 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
       if (url.length < m[16].length) {
         parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)
       }
-    } else if (m[17] ?? m[18]) {
+    } else if (m[17]) {
       // Inline math is run through `texToUnicode` (Greek letters, ℕℤℚℝ,
       // operators, sub/superscripts, fractions) and rendered in italic
       // accent. Italic is the disambiguator — links use accent+underline,
@@ -647,7 +710,7 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
       // raw LaTeX rather than vanishing.
       parts.push(
         <Text color={t.color.accent} italic key={parts.length}>
-          {renderMath(texToUnicode(m[17] ?? m[18]!))}
+          {renderMath(texToUnicode(m[17]))}
         </Text>
       )
     }
@@ -656,12 +719,12 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
   }
 
   if (last < text.length) {
-    parts.push(<Text key={parts.length}>{text.slice(last)}</Text>)
+    parts.push(<Text key={parts.length}>{unescapeMarkdownDollars(text.slice(last))}</Text>)
   }
 
   return (
     <Text {...(color ? { color } : {})} wrap="wrap-trim">
-      {parts.length ? parts : text}
+      {parts.length ? parts : unescapeMarkdownDollars(text)}
     </Text>
   )
 }

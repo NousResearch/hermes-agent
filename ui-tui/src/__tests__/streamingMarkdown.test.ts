@@ -149,6 +149,7 @@ const CORPUS = [
   '\nA paragraph before code.\n',
   '\n```ts\nconst a = 1\n\nconst b = 2\n// $$ not math $$\n```\n',
   '\nBetween-blocks narration.\n',
+  '\nInline $x^2$ math, a $5-$10 range, and an escaped closer $x + \\$5$.\n',
   '\n$$\nE = mc^2\n\n\\sum_i x_i\n$$\n',
   '\n- item one\n- item two\n\n1. first\n2. second\n',
   '\n| a | b |\n|---|---|\n| 1 | 2 |\n',

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
 import { __resetLinkTitleCache, fetchLinkTitle } from '../lib/externalLink.js'
+import { inlineMathSpans } from '../lib/inlineMath.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME, LIGHT_THEME } from '../theme.js'
 
@@ -32,6 +33,7 @@ const stubFetchedTitle = (url: string, title: string) => {
 }
 
 const matches = (text: string) => [...text.matchAll(INLINE_RE)].map(m => m[0])
+const dollarMatches = (text: string) => [...inlineMathSpans(text)].map(span => span.raw)
 const BEL = String.fromCharCode(7)
 const ESC = String.fromCharCode(27)
 const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
@@ -139,60 +141,112 @@ describe('stripInlineMarkup', () => {
     expect(stripInlineMarkup('$\\mathbb{Z}$ is a ring')).toBe('\\mathbb{Z} is a ring')
     expect(stripInlineMarkup('see \\(a + b\\) ok')).toBe('see a + b ok')
   })
+
+  it('preserves currency ranges and escaped dollar delimiters', () => {
+    expect(stripInlineMarkup('$5-$10')).toBe('$5-$10')
+    expect(stripInlineMarkup('literal \\$x$')).toBe('literal \\$x$')
+    expect(stripInlineMarkup('formula $x + \\$5$')).toBe('formula x + \\$5')
+  })
 })
 
-describe('INLINE_RE inline math', () => {
+describe('inline math tokenization', () => {
   it('matches single-dollar math and beats emphasis at the same start', () => {
-    // Without math handling, `*b*` would have matched as italics and
-    // corrupted the formula. With math added to INLINE_RE, the leftmost
-    // match at column 0 (`$P=a*b*c$`) wins.
-    expect(matches('$P=a*b*c$')).toEqual(['$P=a*b*c$'])
-    expect(matches('see $\\mathbb{Z}$ here')).toEqual(['$\\mathbb{Z}$'])
+    expect(dollarMatches('$P=a*b*c$')).toEqual(['$P=a*b*c$'])
+    expect(dollarMatches('see $\\mathbb{Z}$ here')).toEqual(['$\\mathbb{Z}$'])
   })
 
   it('does not match currency-style prose', () => {
-    expect(matches('it costs $5 and $10')).toEqual([])
-    expect(matches('paid $5')).toEqual([])
+    expect(dollarMatches('it costs $5 and $10')).toEqual([])
+    expect(dollarMatches('paid $5')).toEqual([])
+    expect(dollarMatches('$5-$10')).toEqual([])
   })
 
   it('does not let inline math swallow a $$ display fence', () => {
     // `$$x$$` is a display block, not two abutting inline-math spans.
-    expect(matches('$$x$$')).toEqual([])
+    expect(dollarMatches('$$x$$')).toEqual([])
+  })
+
+  it('finds valid math after an unmatched dollar on an earlier line', () => {
+    expect(dollarMatches('price $5\nformula $x$')).toEqual(['$x$'])
   })
 
   it('matches \\(...\\) inline math', () => {
     expect(matches('foo \\(x + y\\) bar')).toEqual(['\\(x + y\\)'])
   })
 
-  it('does not corrupt subscripts/superscripts inside math', () => {
-    // `_n` and `^r` are markdown emphasis/superscript markers in prose, but
-    // inside a `$...$` span the entire formula is captured as a single
-    // inline-math token so the inner regexes never see those characters.
-    expect(matches('$P=a_n x^n + a_0$')).toEqual(['$P=a_n x^n + a_0$'])
-    expect(matches('$\\beta_1,\\dots,\\beta_r$')).toEqual(['$\\beta_1,\\dots,\\beta_r$'])
+  it('ignores escaped delimiters and skips escaped dollars inside math', () => {
+    expect(dollarMatches('literal \\$x$')).toEqual([])
+    expect(dollarMatches('formula $x + \\$5$')).toEqual(['$x + \\$5$'])
   })
 
-  it('places math content in the correct capture group (regression: m[16] is bare URL)', () => {
+  it('uses backslash parity when deciding whether a dollar is escaped', () => {
+    expect(dollarMatches(String.raw`one slash: \$x$`)).toEqual([])
+    expect(dollarMatches(String.raw`two slashes: \\$x$`)).toEqual(['$x$'])
+    expect(dollarMatches(String.raw`three slashes: \\\$x$`)).toEqual([])
+  })
+
+  it('allows escaped literal dollars next to inline math delimiters', () => {
+    expect(dollarMatches(String.raw`\$$x$`)).toEqual(['$x$'])
+    expect(dollarMatches(String.raw`$x\$$`)).toEqual([String.raw`$x\$$`])
+  })
+
+  it('keeps dollar math inside inline code verbatim', () => {
+    const rendered = renderPlain(
+      React.createElement(Md, { t: DEFAULT_THEME, text: 'code: `$x^2$ and \\$x$`; math: $x^2$' })
+    ).join('\n')
+
+    expect(rendered).toContain(String.raw`code: $x^2$ and \$x$; math: x²`)
+  })
+
+  it.each(['$4$', '$2/3$', '$5x=10$', '$4xy$', '$10kg$'])('preserves numeric inline math: %s', input => {
+    expect(dollarMatches(input)).toEqual([input])
+  })
+
+  it('does not corrupt subscripts/superscripts inside math', () => {
+    expect(dollarMatches('$P=a_n x^n + a_0$')).toEqual(['$P=a_n x^n + a_0$'])
+    expect(dollarMatches('$\\beta_1,\\dots,\\beta_r$')).toEqual(['$\\beta_1,\\dots,\\beta_r$'])
+  })
+
+  it('keeps regex math content separate from the bare URL capture group', () => {
     // When `m[16]` was the bare URL group AND the inline-math `$...$`
-    // group simultaneously (because the bare URL pattern lacked its own
-    // capturing parens), MdInline rendered `$\\mathbb{R}$` as an
-    // underlined autolink instead of italic amber math. Lock down the
-    // numbering: math goes in m[17] / m[18], URLs go in m[16].
+    // group simultaneously, MdInline rendered math as an underlined autolink.
+    // Dollar math now uses the scanner; `\\(...\\)` remains in m[17].
     const url = [...'see https://example.com here'.matchAll(INLINE_RE)][0]!
-    const dollarMath = [...'$\\mathbb{R}$'.matchAll(INLINE_RE)][0]!
     const parenMath = [...'\\(\\pi\\)'.matchAll(INLINE_RE)][0]!
 
     expect(url[16]).toBe('https://example.com')
     expect(url[17]).toBeUndefined()
-    expect(url[18]).toBeUndefined()
-
-    expect(dollarMath[16]).toBeUndefined()
-    expect(dollarMath[17]).toBe('\\mathbb{R}')
-    expect(dollarMath[18]).toBeUndefined()
 
     expect(parenMath[16]).toBeUndefined()
-    expect(parenMath[17]).toBeUndefined()
-    expect(parenMath[18]).toBe('\\pi')
+    expect(parenMath[17]).toBe('\\pi')
+  })
+
+  it('renders the reported five-line reproduction without losing dollars', () => {
+    const text = [
+      '$x^2$ is valid math',
+      'it costs $5 and $10',
+      '$5-$10',
+      'literal \\$x$',
+      'formula $x + \\$5$'
+    ].join('\n')
+
+    const rendered = renderPlain(React.createElement(Md, { t: DEFAULT_THEME, text })).join('\n')
+
+    expect(rendered).toContain('x² is valid math')
+    expect(rendered).toContain('it costs $5 and $10')
+    expect(rendered).toContain('$5-$10')
+    expect(rendered).toContain('literal $x$')
+    expect(rendered).not.toContain('literal \\$x$')
+    expect(rendered).toContain('formula x + $5')
+  })
+
+  it('renders escaped literal dollars adjacent to math without leaking escapes', () => {
+    const text = [String.raw`literal then math: \$$x$`, String.raw`math then literal: $x\$$`].join('\n')
+    const rendered = renderPlain(React.createElement(Md, { t: DEFAULT_THEME, text })).join('\n')
+
+    expect(rendered).toContain('literal then math: $x')
+    expect(rendered).toContain('math then literal: x$')
+    expect(rendered).not.toContain('\\$')
   })
 })
 

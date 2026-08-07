@@ -204,6 +204,13 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                 drift_err = _detect_escape_drift(content, matches, old_string, new_string)
                 if drift_err:
                     return content, 0, None, drift_err
+                # Indentation-typo guard: non-exact strategies (CRLF file +
+                # LF old_string) bypass _reindent_replacement when
+                # old_indent == file_indent, so a model indent typo would be
+                # written verbatim. Detect and refuse instead.
+                indent_err = _detect_rogue_indent(old_string, new_string)
+                if indent_err:
+                    return content, 0, None, indent_err
 
             # Perform replacement. When the matched strategy is NOT `exact`,
             # the file's indentation may differ from what the LLM sent in
@@ -479,6 +486,43 @@ def _preserve_unicode_in_replacement(
             result_parts.append(new_string[j1:j2])
 
     return "".join(result_parts)
+
+
+def _detect_rogue_indent(old_string: str, new_string: str) -> Optional[str]:
+    """Detect new_string indentation typos after a non-exact fuzzy match.
+
+    CRLF files (e.g. Windows checkouts) + LF old_string make exact matching
+    fail, so the chain falls through to line_trimmed / indentation_flexible.
+    ``_reindent_replacement`` only re-indents when old_indent != file_indent;
+    when they are equal (the common case) it returns new_string verbatim, so
+    a model indentation typo (a line indented deeper than the surrounding
+    block with no nesting opener) is silently written into the file.
+
+    This guard: when neither old_string nor new_string opens a nesting block
+    (':', '{', '('), but new_string has lines indented deeper than
+    old_string's max indent, the new lines are almost certainly a typo —
+    report an error so the caller re-reads and re-patches instead of
+    silently corrupting indentation.
+    """
+    old_lines = [l for l in old_string.split("\n") if l.strip()]
+    new_lines = [l for l in new_string.split("\n") if l.strip()]
+    if not old_lines or not new_lines:
+        return None
+    max_old = max(len(_leading_whitespace(l)) for l in old_lines)
+    if any(l.rstrip().endswith((":", "{", "(")) for l in old_lines):
+        return None  # old_string nests; deeper indent may be legitimate
+    if any(l.rstrip().endswith((":", "{", "(")) for l in new_lines):
+        return None  # new_string intentionally adds a block (e.g. if x:)
+    deeper = [l for l in new_lines if len(_leading_whitespace(l)) > max_old]
+    if not deeper:
+        return None
+    sample = deeper[0].strip()[:60]
+    return (
+        f"Suspicious indentation in new_string: {len(deeper)} line(s) indented "
+        f"deeper than old_string's max indent ({max_old} spaces), but neither "
+        f"old_string nor new_string opens a nesting block (':', '{{', '('). "
+        f"Likely a model indent typo — check the indentation of: {sample!r}"
+    )
 
 
 def _apply_replacements(content: str, matches: List[Tuple[int, int]],

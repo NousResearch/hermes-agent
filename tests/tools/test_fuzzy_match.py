@@ -138,6 +138,93 @@ class TestIndentationPreservation:
         assert lines[2] == "    b = 99"
 
 
+class TestRogueIndentGuard:
+    """CRLF files (Windows checkouts) + LF old_string make exact matching
+    fail, so the chain falls through to line_trimmed / indentation_flexible.
+    In that path _reindent_replacement only re-indents when old_indent !=
+    file_indent; when they are equal (the common case) it returns new_string
+    verbatim — so a model indentation typo (a line indented deeper than the
+    surrounding block with no nesting opener) is silently written into the
+    file. _detect_rogue_indent refuses such patches instead.
+    """
+
+    def test_crlf_file_lf_old_typo_rejected(self):
+        # Reproduction: CRLF file + LF old_string + model indentation typo.
+        # The new_string's inner lines are indented 16 spaces while the
+        # surrounding block (and old_string) is 8 — no nesting opener
+        # anywhere, so this is a typo, not a real nested block.
+        content = (
+            "if (cd >= bestD) continue;\r\n"
+            "        if (data.cells[cand[0] + ',' + cand[1]] === 'OBSTACLE') continue;\r\n"
+            "        bestD = cd; best = cand;\r\n"
+        )
+        old = (
+            "if (cd >= bestD) continue;\n"
+            "        if (data.cells[cand[0] + ',' + cand[1]] === 'OBSTACLE') continue;\n"
+            "        bestD = cd; best = cand;"
+        )
+        # Typo: 16-space indent on the inserted lines (file/old use 8).
+        new_err = (
+            "if (cd >= bestD) continue;\n"
+            "                const ck = cand[0] + ',' + cand[1];\n"
+            "                const ckind = data.cells[ck];\n"
+            "                if (ckind === 'OBSTACLE' || !ckind) continue;\n"
+            "        bestD = cd; best = cand;"
+        )
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new_err)
+        assert count == 0
+        assert err is not None and "Suspicious indentation" in err
+        # File untouched.
+        assert out == content
+
+    def test_crlf_file_lf_old_correct_indent_passes(self):
+        # Same reproduction but the correct 8-space indent -> must succeed.
+        content = (
+            "if (cd >= bestD) continue;\r\n"
+            "        if (data.cells[cand[0] + ',' + cand[1]] === 'OBSTACLE') continue;\r\n"
+            "        bestD = cd; best = cand;\r\n"
+        )
+        old = (
+            "if (cd >= bestD) continue;\n"
+            "        if (data.cells[cand[0] + ',' + cand[1]] === 'OBSTACLE') continue;\n"
+            "        bestD = cd; best = cand;"
+        )
+        new_ok = (
+            "if (cd >= bestD) continue;\n"
+            "        const ck = cand[0] + ',' + cand[1];\n"
+            "        const ckind = data.cells[ck];\n"
+            "        if (ckind === 'OBSTACLE' || !ckind) continue;\n"
+            "        bestD = cd; best = cand;"
+        )
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new_ok)
+        assert err is None and count == 1
+        assert strategy != "exact"  # CRLF file -> non-exact path
+        for line in out.split("\n"):
+            if "const ck" in line:
+                indent = len(line) - len(line.lstrip())
+                assert indent == 8, f"Expected 8-space indent, got {indent}: {line!r}"
+
+    def test_intentional_nesting_not_flagged(self):
+        # new_string legitimately adds a nested block (if x: followed by a
+        # deeper-indented body) -> the guard must not refuse it.
+        content = "def f():\r\n    a = 1\r\n    b = 2\r\n"
+        old = "a = 1\nb = 2"
+        new = "a = 1\nif a > 0:\n    b = 2"
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1
+        assert "if a > 0:" in out and "    b = 2" in out
+
+    def test_lf_exact_match_unaffected(self):
+        # Pure-LF file + exact old_string -> exact strategy, no guard run.
+        content = "def f():\n    return 1\n"
+        old = "    return 1"
+        new = "    return 2"
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1
+        assert strategy == "exact"
+        assert "    return 2" in out
+
+
 class TestReplaceAll:
     def test_multiple_matches_without_flag_errors(self):
         content = "aaa bbb aaa"

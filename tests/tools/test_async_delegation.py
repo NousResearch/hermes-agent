@@ -623,6 +623,106 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text
 
 
+def test_real_batch_publishes_finished_child_before_sibling_join(monkeypatch):
+    """The production aggregation callback closes the partial-crash window.
+
+    PR2 keeps PR1's pre-join durability and additionally makes the finished
+    child visible on the shared completion queue before its sibling finishes.
+    """
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "partial-crash-parent"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    first_published = threading.Event()
+    release_sibling = threading.Event()
+    sibling_returned = threading.Event()
+
+    def child_result(task_index, goal, child=None, parent_agent=None, **kw):
+        if task_index == 1:
+            assert release_sibling.wait(timeout=10)
+            sibling_returned.set()
+        return {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": f"done: {goal}",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "m",
+            "exit_reason": "completed",
+        }
+
+    real_publish = ad.publish_batch_child_completion
+
+    def observe_publish(delegation_id, task_index, result):
+        inserted = real_publish(delegation_id, task_index, result)
+        if task_index == 0 and inserted:
+            first_published.set()
+        return inserted
+
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+    monkeypatch.setattr(dt, "_run_single_child", child_result)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(ad, "publish_batch_child_completion", observe_publish)
+
+    out = dt.delegate_task(
+        tasks=[{"goal": "fast child"}, {"goal": "blocked child"}],
+        background=True,
+        parent_agent=parent,
+    )
+    parsed = json.loads(out)
+    delegation_id = parsed["delegation_id"]
+
+    try:
+        assert parsed["status"] == "dispatched"
+        assert first_published.wait(timeout=5)
+        with ad._DB_LOCK, ad._transaction() as conn:
+            rows = conn.execute(
+                "SELECT event_key FROM async_delegation_events "
+                "WHERE delegation_id=? ORDER BY event_key",
+                (delegation_id,),
+            ).fetchall()
+        assert rows == [("task:0",)]
+        queued = process_registry.completion_queue.get_nowait()
+        assert queued["delivery_event_key"] == "task:0"
+        assert process_registry.completion_queue.empty()
+
+        # Simulate the owner disappearing in this exact pre-join state. Recovery
+        # must use the real callback's durable child row, not a test-fabricated row.
+        with ad._DB_LOCK, ad._transaction() as conn:
+            conn.execute(
+                "UPDATE async_delegations SET owner_pid=99999999, owner_started_at=0 "
+                "WHERE delegation_id=?",
+                (delegation_id,),
+            )
+        assert ad.recover_abandoned_delegations() == 1
+        with ad._DB_LOCK, ad._transaction() as conn:
+            rows = conn.execute(
+                "SELECT event_key FROM async_delegation_events "
+                "WHERE delegation_id=? ORDER BY event_key",
+                (delegation_id,),
+            ).fetchall()
+        assert rows == [("task:0",), ("terminal",)]
+    finally:
+        # A real crash would remove the worker and memory record. Make the
+        # in-process simulation match that before releasing the daemon child.
+        with ad._records_lock:
+            ad._records.pop(delegation_id, None)
+        release_sibling.set()
+        assert sibling_returned.wait(timeout=5)
+
+
 def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     """TUI async delegation must route to the live/compressed agent id.
 

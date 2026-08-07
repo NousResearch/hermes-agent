@@ -7443,7 +7443,7 @@ def _prompt_model_selection(
     confirm_base_url: str = "",
     confirm_api_key: str = "",
 ) -> Optional[str]:
-    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
+    """Interactive model selection. Lists models in the given order, marking current_model in place. Returns chosen model ID or None.
 
     If *pricing* is provided (``{model_id: {prompt, completion}}``), a compact
     price indicator is shown next to each model in aligned columns.
@@ -7473,12 +7473,16 @@ def _prompt_model_selection(
             return None
         return mid
 
-    # Reorder: current model first, then the rest (deduplicated)
+    # Keep the caller's order (probe order / catalog order) and only
+    # deduplicate. Hoisting current_model to the top hid the real list order
+    # and parked the cursor on it, so ENTER silently re-picked the model the
+    # user was trying to change away from (#5248). It still gets its
+    # "← currently in use" marker wherever it naturally lands.
+    seen = set()
     ordered = []
-    if current_model and current_model in model_ids:
-        ordered.append(current_model)
     for mid in model_ids:
-        if mid not in ordered:
+        if mid not in seen:
+            seen.add(mid)
             ordered.append(mid)
 
     # All models for column-width computation (selectable + unavailable)
@@ -7581,7 +7585,9 @@ def _prompt_model_selection(
     def _label(mid):
         return "".join(text for text, _style in _label_segments(mid))
 
-    # Default cursor on the current model (index 0 if it was reordered to top)
+    # Cursor starts at the top of the list, never on current_model (#5248) —
+    # the user opened this picker to change models, so ENTER should not be a
+    # no-op re-selection of what is already active.
     default_idx = 0
 
     # Build a pricing header hint for the menu title

@@ -628,6 +628,43 @@ class TestSafeCopyDb:
         conn.close()
         assert rows == [(42,)]
 
+    def test_failure_preserves_previous_backup(self, tmp_path):
+        """A failed copy must never destroy a previous good backup at dst.
+
+        The old implementation wrote into ``dst`` directly and unlinked it on
+        failure — one unreadable source deleted the last good snapshot."""
+        from hermes_cli.backup import _safe_copy_db
+        src = tmp_path / "test.db"
+        conn = sqlite3.connect(str(src))
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.execute("INSERT INTO t VALUES (42)")
+        conn.commit()
+        conn.close()
+
+        dst = tmp_path / "backup.db"
+        assert _safe_copy_db(src, dst) is True
+
+        corrupt = tmp_path / "corrupt.db"
+        corrupt.write_text("this is not a sqlite database")
+        assert _safe_copy_db(corrupt, dst) is False
+
+        conn = sqlite3.connect(str(dst))
+        rows = conn.execute("SELECT x FROM t").fetchall()
+        conn.close()
+        assert rows == [(42,)]
+        leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".")]
+        assert leftovers == []
+
+    def test_unwritable_destination_returns_false(self, tmp_path):
+        """Callers rely on the bool contract to collect per-file errors; an
+        unwritable destination directory must not raise out of the copy."""
+        from hermes_cli.backup import _safe_copy_db
+        src = tmp_path / "test.db"
+        sqlite3.connect(str(src)).close()
+
+        missing = tmp_path / "no" / "such" / "dir" / "out.db"
+        assert _safe_copy_db(src, missing) is False
+
 
     def test_is_zeroed_sqlite_file_detects_nul_header(self, tmp_path):
         from hermes_cli.backup import is_zeroed_sqlite_file

@@ -2235,7 +2235,22 @@ def compress_context(
     # The memory-provider context handoff below is intentionally Hermes-only:
     # the app server does not expose its native summary prompt, so there is no
     # truthful injection point for ``on_pre_compress()`` return text here.
-    if getattr(agent, "api_mode", None) == "codex_app_server":
+    #
+    # Only divert when a live codex thread actually exists to compact. Without
+    # one there is nothing for the app server to shrink, and
+    # ``_compress_context_via_codex_app_server()`` returns the transcript
+    # unchanged — so diverting here would make compaction a silent permanent
+    # no-op. Two routine cases hit that: gateway session-hygiene builds a fresh
+    # throwaway AIAgent (it never owns a thread), and preflight compaction runs
+    # before a retired thread has been re-established. In both the local
+    # transcript IS the whole context that seeds the next thread, so Hermes'
+    # own in-place compaction is the correct — and only — way to shrink it.
+    # Falling through here also keeps the count-based hard safety valve
+    # (``compression.hygiene_hard_message_limit``) able to do its job.
+    if (
+        getattr(agent, "api_mode", None) == "codex_app_server"
+        and getattr(agent, "_codex_session", None) is not None
+    ):
         _codex_fence_entered = False
         if commit_fence is not None:
             _codex_fence_entered = commit_fence.begin_commit(

@@ -3953,6 +3953,16 @@ FOCUS TOPIC: "{focus_topic}"
 This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
 
         try:
+            # codex_app_server is a stateful thread transport with no one-shot
+            # completion surface; the auxiliary client has no route for it and
+            # would fall through to a plain chat.completions call against the
+            # Codex backend, which fails. The summary call is a single stateless
+            # request, so downgrade to the Responses wire — same credentials,
+            # same billing, same model. Mirrors the identical downgrade in
+            # ``agent/background_review.py::_resolve_review_runtime``.
+            _summary_api_mode = self.api_mode
+            if _summary_api_mode == "codex_app_server":
+                _summary_api_mode = "codex_responses"
             call_kwargs = {
                 "task": "compression",
                 "main_runtime": {
@@ -3960,7 +3970,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                     "provider": self.provider,
                     "base_url": self.base_url,
                     "api_key": self.api_key,
-                    "api_mode": self.api_mode,
+                    "api_mode": _summary_api_mode,
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 # NO max_tokens: the output cap must never truncate a summary.

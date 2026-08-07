@@ -180,3 +180,75 @@ def test_codex_native_boundary_clears_stale_hermes_fallback_streak():
     assert _record_codex_app_server_compaction(agent, turn) is True
     assert compressor._fallback_compression_streak == 0
     assert compressor._verify_compaction_cleared_threshold is True
+
+
+def test_codex_app_server_without_live_thread_falls_through_to_hermes_compaction(
+    monkeypatch,
+):
+    """No codex thread => Hermes must compact its own transcript instead.
+
+    Diverting to the app server when ``_codex_session`` is None made
+    compaction a permanent silent no-op: the app-server helper returns the
+    transcript unchanged, so the caller saw neither a rotation nor an in-place
+    compaction and preserved the full history. Two routine paths hit this on
+    every cycle — gateway session-hygiene builds a fresh throwaway AIAgent that
+    never owns a thread, and preflight compaction runs before a retired thread
+    is re-established. The transcript then grows without bound until the replay
+    is too large for the app server, which retires the thread again: a spiral
+    that never self-recovers and reads to the user as the agent losing its
+    memory between messages.
+    """
+    agent = DummyAgent(TurnResult(thread_id="thread-1", turn_id="compact-turn-1"))
+    agent._codex_session = None
+
+    diverted = []
+    monkeypatch.setattr(
+        "agent.conversation_compression._compress_context_via_codex_app_server",
+        lambda *a, **kw: diverted.append(True) or (a[1], "cached prompt"),
+    )
+    # Stop the fall-through at its first guard so the assertion is about the
+    # routing decision only, not the whole local compression pipeline (which
+    # needs a full AIAgent). Reaching this sentinel IS the pass condition.
+    class ReachedHermesPath(Exception):
+        pass
+
+    def _guard(*_a, **_kw):
+        raise ReachedHermesPath
+
+    monkeypatch.setattr(
+        "agent.conversation_compression._refresh_persisted_compression_guards",
+        _guard,
+    )
+
+    with pytest.raises(ReachedHermesPath):
+        compress_context(
+            agent,
+            [{"role": "user", "content": "hi"}],
+            "system",
+            approx_tokens=100000,
+            task_id="test",
+        )
+
+    assert diverted == [], "must not divert to the app server with no live thread"
+
+
+def test_codex_app_server_with_live_thread_still_routes_to_codex(monkeypatch):
+    """The fall-through must not regress native thread compaction."""
+    agent = DummyAgent(TurnResult(thread_id="thread-1", turn_id="compact-turn-1"))
+
+    diverted = []
+    monkeypatch.setattr(
+        "agent.conversation_compression._compress_context_via_codex_app_server",
+        lambda *a, **kw: diverted.append(True) or (a[1], "cached prompt"),
+    )
+
+    compress_context(
+        agent,
+        [{"role": "user", "content": "hi"}],
+        "system",
+        approx_tokens=100000,
+        task_id="test",
+        force=True,
+    )
+
+    assert diverted == [True]

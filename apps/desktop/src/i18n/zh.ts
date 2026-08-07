@@ -2042,6 +2042,7 @@ export const zh: Translations = {
     groupAriaUngrouped: '按工作区分组会话',
     showProjects: '显示项目',
     showSessions: '显示会话',
+    refreshSessions: '刷新会话',
     groupTitleGrouped: '取消分组',
     groupTitleUngrouped: '按工作区分组',
     allPinned: '这里的全部已置顶。取消置顶某个对话即可在最近中显示。',

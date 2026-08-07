@@ -1848,6 +1848,7 @@ export const en: Translations = {
     groupAriaUngrouped: 'Group sessions by workspace',
     showProjects: 'Show projects',
     showSessions: 'Show sessions',
+    refreshSessions: 'Refresh sessions',
     groupTitleGrouped: 'Ungroup sessions',
     groupTitleUngrouped: 'Group by workspace',
     allPinned: 'Everything here is pinned. Unpin a chat to show it in recents.',

@@ -237,6 +237,8 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onNewSessionInWorkspace: (path: null | string) => void
   /** Create a brand-new session and open it as a tile on `dir`. */
   onNewSessionSplit: (dir: SplitDir) => void
+  /** Re-pull the stored session list from the backend (sidebar ↺ button). */
+  onRefreshSessions?: () => Promise<void> | void
   onManageCronJob: (jobId: string) => void
   onTriggerCronJob: (jobId: string) => void
 }
@@ -253,6 +255,7 @@ export function ChatSidebar({
   onBranchSession,
   onNewSessionInWorkspace,
   onNewSessionSplit,
+  onRefreshSessions,
   onManageCronJob,
   onTriggerCronJob
 }: ChatSidebarProps) {
@@ -1402,6 +1405,22 @@ export function ChatSidebar({
                             variant="ghost"
                           >
                             <Codicon name="add" size="0.75rem" />
+                          </Button>
+                        </Tip>
+                      ) : null}
+                      {onRefreshSessions ? (
+                        <Tip label={s.refreshSessions}>
+                          <Button
+                            aria-label={s.refreshSessions}
+                            className={HEADER_ACTION_BTN}
+                            onClick={event => {
+                              event.stopPropagation()
+                              void onRefreshSessions()
+                            }}
+                            size="icon-xs"
+                            variant="ghost"
+                          >
+                            <Codicon name="refresh" size="0.75rem" />
                           </Button>
                         </Tip>
                       ) : null}

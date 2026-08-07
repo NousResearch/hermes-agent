@@ -1552,6 +1552,7 @@ export const ar = defineLocale({
     groupAriaUngrouped: 'الجلسات غير مجمعة',
     showProjects: 'عرض المشاريع',
     showSessions: 'عرض الجلسات',
+    refreshSessions: 'تحديث الجلسات',
     groupTitleGrouped: 'مجمعة حسب مساحة العمل',
     groupTitleUngrouped: 'كل الجلسات',
     allPinned: 'كل الجلسات مثبتة',

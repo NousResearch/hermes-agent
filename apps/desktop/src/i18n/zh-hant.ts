@@ -1634,6 +1634,7 @@ export const zhHant = defineLocale({
     groupAriaUngrouped: '依工作區分組工作階段',
     showProjects: '顯示專案',
     showSessions: '顯示工作階段',
+    refreshSessions: '重新整理工作階段',
     groupTitleGrouped: '取消分組',
     groupTitleUngrouped: '依工作區分組',
     allPinned: '這裡的全部已釘選。取消釘選某個聊天即可在最近中顯示。',

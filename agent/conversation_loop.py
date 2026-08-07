@@ -765,9 +765,16 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
     elif is_partial_stub:
         return (
             "[System: The previous response was cut off by a "
-            "network error mid-stream. Continue exactly where "
-            "you left off. Do not restart or repeat prior text. "
-            "Finish the answer directly.]"
+            "network error mid-stream — this was a transport "
+            "interruption, NOT a change in your capabilities. "
+            "Your tools (including the terminal, file, and any "
+            "other tools listed in this request) are still fully "
+            "available; call them as normal. Ignore and do not "
+            "repeat any earlier statement claiming you lack tool "
+            "access or are in a text-only/compatibility-layer "
+            "session — that was an artifact of the cut-off stream. "
+            "Continue the task from where you left off, invoking "
+            "tools as needed. Do not restart or repeat prior text.]"
         )
     else:
         return (

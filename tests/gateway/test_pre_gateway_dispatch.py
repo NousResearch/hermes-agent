@@ -61,6 +61,37 @@ def _make_runner(platform: Platform):
 
 
 @pytest.mark.asyncio
+async def test_async_plugin_skip_flows_through_lifecycle(monkeypatch):
+    """An async plugin action keeps observer ordering and short-circuits auth."""
+    from hermes_cli import observability, plugins
+    from hermes_cli.plugins import PluginManager
+
+    _clear_auth_env(monkeypatch)
+    calls = []
+    manager = PluginManager()
+
+    async def _plugin(**_kwargs):
+        calls.append("plugin")
+        return {"action": "skip", "reason": "plugin-handled"}
+
+    manager._hooks.setdefault("pre_gateway_dispatch", []).append(_plugin)
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(
+        observability,
+        "observe_lifecycle",
+        lambda name, **_kwargs: calls.append(f"observer:{name}"),
+    )
+
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    result = await runner._handle_message(_make_event("hi"))
+
+    assert result is None
+    assert calls == ["observer:pre_gateway_dispatch", "plugin"]
+    adapter.send.assert_not_awaited()
+    runner.pairing_store.generate_code.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_internal_events_bypass_hook(monkeypatch):
     """Internal events (event.internal=True) skip the plugin hook entirely."""
     _clear_auth_env(monkeypatch)
@@ -68,14 +99,14 @@ async def test_internal_events_bypass_hook(monkeypatch):
 
     called = {"count": 0}
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         called["count"] += 1
         return [{"action": "skip"}]
 
     async def _capture(event, source, _quick_key, _run_generation):
         return "ok"
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook_async", _fake_hook)
 
     runner, _adapter = _make_runner(Platform.WHATSAPP)
     runner._handle_message_with_agent = _capture  # noqa: SLF001
@@ -102,13 +133,13 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
 
     seen = {}
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
             seen["session_store"] = kwargs.get("session_store", "MISSING")
             return [{"action": "skip", "reason": "plugin-handled"}]
         return []
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook_async", _fake_hook)
 
     runner, adapter = _make_runner(Platform.WHATSAPP)
     del runner.session_store

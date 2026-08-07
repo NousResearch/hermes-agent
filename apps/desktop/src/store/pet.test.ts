@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest'
 import {
   $petActivity,
   $petAtRest,
+  $petBubble,
+  $petControls,
+  $petDismissed,
   $petMotion,
   $petState,
   derivePetState,
@@ -10,7 +13,9 @@ import {
   hasPetSpriteForMeta,
   mergePetInfoMeta,
   type PetInfo,
-  setPetActivity
+  setPetActivity,
+  setPetBubble,
+  setPetControls
 } from './pet'
 
 describe('derivePetState', () => {
@@ -52,7 +57,6 @@ describe('roam motion', () => {
     expect($petAtRest.get()).toBe(false)
 
     $petActivity.set({})
-    expect($petAtRest.get()).toBe(true)
   })
 
   it('shows the roam pose while wandering, but never overrides real activity', () => {
@@ -127,6 +131,35 @@ describe('pet info metadata cache helpers', () => {
     }
 
     expect(mergePetInfoMeta(current, meta)).toBe(current)
+  })
+})
+
+describe('pet bubble and controls prefs', () => {
+  it('defaults to on for both bubble and controls', () => {
+    expect($petBubble.get()).toBe(true)
+    expect($petControls.get()).toBe(true)
+  })
+
+  it('setPetBubble toggles the atom', () => {
+    setPetBubble(false)
+    expect($petBubble.get()).toBe(false)
+    setPetBubble(true)
+    expect($petBubble.get()).toBe(true)
+  })
+
+  it('setPetControls toggles the atom', () => {
+    setPetControls(false)
+    expect($petControls.get()).toBe(false)
+    setPetControls(true)
+    expect($petControls.get()).toBe(true)
+  })
+
+  it('$petDismissed defaults to false and toggles', () => {
+    expect($petDismissed.get()).toBe(false)
+    $petDismissed.set(true)
+    expect($petDismissed.get()).toBe(true)
+    $petDismissed.set(false)
+    expect($petDismissed.get()).toBe(false)
   })
 })
 

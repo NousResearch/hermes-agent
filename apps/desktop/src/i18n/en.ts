@@ -416,7 +416,8 @@ export const en: Translations = {
       appearance: 'Appearance',
       workspace: 'Workspace',
       safety: 'Safety',
-      memory: 'Memory & Context',
+      memory: 'Memory',
+      context: 'Context',
       voice: 'Voice',
       advanced: 'Advanced'
     },

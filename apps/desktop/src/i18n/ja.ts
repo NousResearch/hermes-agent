@@ -291,7 +291,8 @@ export const ja = defineLocale({
       appearance: '外観',
       workspace: 'ワークスペース',
       safety: '安全性',
-      memory: 'メモリとコンテキスト',
+      memory: 'メモリ',
+      context: 'コンテキスト',
       voice: '音声',
       advanced: '詳細'
     },
@@ -532,10 +533,10 @@ export const ja = defineLocale({
         }
       },
       memory: {
-        memoryEnabled: '永続メモリ',
-        userProfileEnabled: 'ユーザープロファイル',
-        memoryCharLimit: 'メモリ予算',
-        userCharLimit: 'プロファイル予算',
+        memoryEnabled: 'エージェントメモリ',
+        memoryCharLimit: 'エージェントメモリ予算',
+        userProfileEnabled: 'ユーザープロファイルメモリ',
+        userCharLimit: 'ユーザープロファイルメモリ予算',
         provider: 'メモリプロバイダー'
       },
       context: {
@@ -599,7 +600,9 @@ export const ja = defineLocale({
       },
       memory: {
         memoryEnabled: '将来のセッションに役立つ永続メモリを保存します。',
-        userProfileEnabled: 'ユーザーの好みをまとめた簡潔なプロファイルを維持します。'
+        memoryCharLimit: 'セッションあたりのエージェントメモリの最大文字数です。',
+        userProfileEnabled: 'ユーザーの好みをまとめた簡潔なプロファイルを維持します。',
+        userCharLimit: 'ユーザープロファイルメモリの最大文字数です。'
       },
       context: {
         engine: '長い会話がコンテキスト上限に近づいたときの管理戦略です。'

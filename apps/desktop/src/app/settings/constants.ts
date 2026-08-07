@@ -2,6 +2,7 @@ import {
   Box,
   Brain,
   type IconComponent,
+  Layers3,
   Lock,
   MessageCircle,
   Mic,
@@ -525,10 +526,10 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     }
   },
   memory: {
-    memoryEnabled: 'Persistent Memory',
-    userProfileEnabled: 'User Profile',
-    memoryCharLimit: 'Memory Budget',
-    userCharLimit: 'Profile Budget',
+    memoryEnabled: 'Agent Memory',
+    memoryCharLimit: 'Agent Memory Budget',
+    userProfileEnabled: 'User Profile Memory',
+    userCharLimit: 'User Profile Memory Budget',
     provider: 'Memory Provider'
   },
   context: {
@@ -596,7 +597,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   memory: {
     memoryEnabled: 'Save durable memories that can help future sessions.',
-    userProfileEnabled: 'Maintain a compact profile of user preferences.'
+    memoryCharLimit: 'Maximum characters for agent memory per session.',
+    userProfileEnabled: 'Maintain a compact profile of user preferences.',
+    userCharLimit: 'Maximum characters for the user profile memory.'
   },
   context: {
     engine: 'Strategy for managing long conversations near the context limit.'
@@ -687,14 +690,21 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'memory',
-    label: 'Memory & Context',
+    label: 'Memory',
     icon: Brain,
     keys: [
       'memory.memory_enabled',
-      'memory.user_profile_enabled',
       'memory.memory_char_limit',
+      'memory.user_profile_enabled',
       'memory.user_char_limit',
-      'memory.provider',
+      'memory.provider'
+    ]
+  },
+  {
+    id: 'context',
+    label: 'Context',
+    icon: Layers3,
+    keys: [
       'context.engine',
       'compression.enabled',
       'compression.threshold',

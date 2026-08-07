@@ -628,8 +628,8 @@ class TestRunEventCallback:
     async def test_subagent_events_redact_secrets_and_carry_child_session(self, adapter):
         """Free-text fields (goal/summary/output_tail/preview) must pass the
         forced secret redaction before hitting the public /v1/runs stream,
-        and child_session_id must survive the allowlist so clients can
-        correlate the child's session."""
+        and both correlation IDs must survive the allowlist so clients can
+        attach the child session to its parent tool call."""
         run_id = "run_subagent_redact"
         loop = asyncio.get_running_loop()
         queue = asyncio.Queue()
@@ -644,6 +644,7 @@ class TestRunEventCallback:
             goal=f"use key {secret} to fetch data",
             subagent_id="deleg_999",
             child_session_id="child-sess-42",
+            parent_tool_call_id="call-parent-1",
             status="completed",
             summary=f"exported OPENAI_API_KEY={secret} then ran",
             output_tail=f"env shows {secret}",
@@ -651,6 +652,7 @@ class TestRunEventCallback:
 
         event = await asyncio.wait_for(queue.get(), timeout=1.0)
         assert event["child_session_id"] == "child-sess-42"
+        assert event["parent_tool_call_id"] == "call-parent-1"
         for field in ("preview", "goal", "summary", "output_tail"):
             assert secret not in event[field], field
 
@@ -2859,4 +2861,3 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
-

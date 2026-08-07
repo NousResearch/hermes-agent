@@ -12,6 +12,7 @@ export { ProjectMenu } from './project-menu'
 export { SidebarWorkspaceGroup } from './workspace-group'
 export {
   excludeProjectSessions,
+  KEEP_ALL_PROJECT_SESSIONS,
   overlayLiveLanes,
   overlayLivePreviews,
   sessionRecency,

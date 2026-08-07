@@ -627,6 +627,15 @@ function overlayHomeLane(
  * that never had a session. Only the rows move. Memo-stable: returns the same
  * ref when nothing matched.
  */
+
+/**
+ * Pinned sessions stay in their project group (#80013): pinning adds a
+ * Pinned-section accelerator, it does not remove the session from the
+ * project tree. Both the overview and the drill-in pass this predicate so
+ * the two call sites can never diverge.
+ */
+export const KEEP_ALL_PROJECT_SESSIONS = (): boolean => false
+
 export function excludeProjectSessions(
   project: SidebarProjectTree,
   isExcluded: (session: SessionInfo) => boolean

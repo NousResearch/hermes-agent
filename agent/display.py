@@ -1283,6 +1283,7 @@ class KawaiiSpinner:
 # =========================================================================
 
 _ERROR_SUFFIX_MAX_LEN = 48
+_MAX_STRUCTURED_RESULT_DEPTH = 4
 
 
 def _trim_error(msg: str) -> str:
@@ -1303,7 +1304,31 @@ def _trim_error(msg: str) -> str:
     return msg
 
 
-def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
+def _structured_failure_message(result: Any) -> str | None:
+    """Return a failure message from bounded nested MCP result envelopes."""
+    current = result
+    for _ in range(_MAX_STRUCTURED_RESULT_DEPTH):
+        if isinstance(current, str):
+            current = safe_json_loads(current)
+        if not isinstance(current, dict):
+            return None
+        if current.get("ok") is False:
+            return str(
+                current.get("error")
+                or current.get("message")
+                or current.get("status")
+                or "reported ok=false"
+            )
+        err = current.get("error") or current.get("message")
+        if err and (current.get("success") is False or "error" in current):
+            return str(err)
+        if "result" not in current:
+            return None
+        current = current["result"]
+    return None
+
+
+def _detect_tool_failure(tool_name: str, result: Any | None) -> tuple[bool, str]:
     """Inspect a tool result string for signs of failure.
 
     Returns ``(is_failure, suffix)`` where *suffix* is a short informational
@@ -1316,7 +1341,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     if file_mutation_result_landed(tool_name, result):
         return False, ""
 
-    data = safe_json_loads(result)
+    data = result if isinstance(result, dict) else safe_json_loads(result)
 
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
@@ -1335,11 +1360,12 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
 
-    # Structured error in JSON result (any tool that surfaces {"error": ...}).
-    if isinstance(data, dict):
-        err = data.get("error") or data.get("message")
-        if err and (data.get("success") is False or "error" in data):
-            return True, f" [{_trim_error(str(err))}]"
+    # Structured errors may be wrapped by MCP as {"result": "<json>"} or
+    # {"result": {...}}. Only follow that explicit envelope, with a small
+    # depth cap, so arbitrary nested payload data is not treated as failure.
+    structured_error = _structured_failure_message(result)
+    if structured_error:
+        return True, f" [{_trim_error(structured_error)}]"
 
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —
@@ -1354,7 +1380,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
 
 
 def _get_cute_tool_message(
-    tool_name: str, args: dict, duration: float, result: str | None = None,
+    tool_name: str, args: dict, duration: float, result: Any | None = None,
 ) -> str:
     """Generate a formatted tool completion line for CLI quiet mode.
 
@@ -1530,7 +1556,7 @@ def _get_cute_tool_message(
 
 
 def get_cute_tool_message(
-    tool_name: str, args: dict, duration: float, result: str | None = None,
+    tool_name: str, args: dict, duration: float, result: Any | None = None,
 ) -> str:
     """Render a completion label without letting cosmetic failures escape."""
     try:

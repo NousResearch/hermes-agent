@@ -93,7 +93,11 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m", "provider": "p"}}),
+        mod(
+            "hermes_cli.config",
+            load_config=lambda: {"model": {"default": "m", "provider": "p"}},
+            read_raw_config_readonly=lambda: {},
+        ),
     )
     monkeypatch.setitem(
         sys.modules,

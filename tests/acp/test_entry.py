@@ -16,11 +16,16 @@ def test_main_enables_unstable_protocol(monkeypatch):
 
     monkeypatch.setattr(entry, "_setup_logging", lambda: None)
     monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.discover_plugins",
+        lambda: calls.setdefault("plugins_discovered", True),
+    )
     monkeypatch.setattr(acp, "run_agent", fake_run_agent)
 
     entry.main([])
 
     assert calls["kwargs"]["use_unstable_protocol"] is True
+    assert calls["plugins_discovered"] is True
 
 
 def test_main_skips_configured_mcp_discovery_when_requested(monkeypatch):

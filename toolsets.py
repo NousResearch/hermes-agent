@@ -85,6 +85,11 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Knowledge Retrieval (RAG) — long-term semantic memory over the user's
+    # own notes/docs/code/conversations. Backend-agnostic: the tools talk to
+    # KnowledgeService, never to a specific vector store. Gated on
+    # knowledge.enabled via check_fn in tools/knowledge_tools.py.
+    "knowledge_search", "knowledge_sync", "knowledge_health",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -111,6 +116,18 @@ TOOLSETS = {
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],
+        "includes": []
+    },
+
+    "knowledge": {
+        "description": (
+            "Knowledge Retrieval (RAG): semantic search, indexing and "
+            "synchronization over the user's long-term knowledge base "
+            "(Obsidian, docs, repos, PDFs, past conversations). "
+            "Provider-agnostic — AnythingLLM, Qdrant, pgvector, Chroma, "
+            "Weaviate or the built-in local store."
+        ),
+        "tools": ["knowledge_search", "knowledge_sync", "knowledge_health"],
         "includes": []
     },
 

@@ -262,6 +262,16 @@ def _ordered_enabled_sources(secrets_cfg: dict) -> List[SecretSource]:
     """
     _ensure_builtin_sources()
 
+    if "provider" in secrets_cfg:
+        # An earlier iteration selected ONE backend via ``secrets.provider``.
+        # Sources compose now, so the key is read by nothing — warn rather
+        # than leave a config that looks configured but loads no secrets.
+        logger.warning(
+            "secrets.provider is no longer supported and is being ignored; "
+            "secret sources now compose — enable each one under its own key "
+            "(e.g. 'secrets.command.enabled: true')",
+        )
+
     explicit = secrets_cfg.get("sources")
     order: List[str] = []
     if isinstance(explicit, list):
@@ -283,6 +293,17 @@ def _ordered_enabled_sources(secrets_cfg: dict) -> List[SecretSource]:
     for name in order:
         source = _SOURCES[name]
         cfg = secrets_cfg.get(name)
+        if cfg is not None and not isinstance(cfg, dict):
+            # A non-mapping section is silently unusable: it coerces to {}
+            # below, ``is_enabled`` says False, and the source contributes
+            # nothing.  Say so — a credential that never loads must not fail
+            # quietly.
+            logger.warning(
+                "secrets.%s must be a mapping of settings (with 'enabled: "
+                "true'), but is a %s — ignoring it; this source will provide "
+                "no secrets",
+                name, type(cfg).__name__,
+            )
         cfg = cfg if isinstance(cfg, dict) else {}
         try:
             if source.is_enabled(cfg):

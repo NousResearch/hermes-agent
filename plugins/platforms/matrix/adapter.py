@@ -3337,7 +3337,10 @@ class MatrixAdapter(BasePlatformAdapter):
         mention_user_ids = (
             mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
         )
-        is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+        mention_room = (
+            mentions_block.get("room", False) if isinstance(mentions_block, dict) else False
+        )
+        is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids, mention_room)
 
         # Require-mention gating.
         if not is_dm:
@@ -4879,6 +4882,7 @@ class MatrixAdapter(BasePlatformAdapter):
         body: str,
         formatted_body: Optional[str] = None,
         mention_user_ids: Optional[list] = None,
+        mention_room: bool = False,
     ) -> bool:
         """Return True if the bot is mentioned in the message.
 
@@ -4888,6 +4892,10 @@ class MatrixAdapter(BasePlatformAdapter):
         body text does not contain an explicit ``@bot`` string (some clients
         only render mention "pills" in ``formatted_body`` or use display
         names).
+
+        ``mention_room`` (``m.mentions.room``) signals an ``@room`` mention
+        that notifies everyone in the room.  When ``@room`` also appears
+        in the message body, the bot treats it as a mention of itself.
         """
         # m.mentions.user_ids — authoritative per MSC3952 / Matrix v1.7.
         if mention_user_ids and self._user_id and self._user_id in mention_user_ids:
@@ -4905,6 +4913,10 @@ class MatrixAdapter(BasePlatformAdapter):
         if formatted_body and self._user_id:
             if f"matrix.to/#/{self._user_id}" in formatted_body:
                 return True
+        # @room mention: treat as bot mention.  Some Matrix clients only send
+        # @room in the body without the structured m.mentions.room field.
+        if body and "@room" in body.lower():
+            return True
         return False
 
     def _strip_mention(self, body: str) -> str:

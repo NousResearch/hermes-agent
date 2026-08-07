@@ -31,6 +31,7 @@ from agent.prompt_builder import (
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
+    TASK_COMPLETION_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -53,6 +54,14 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_judgment_requires_reading_source_instead_of_enumerating_guesses(self):
+        guidance = TASK_COMPLETION_GUIDANCE.lower()
+        assert "read the complete relevant source" in guidance
+        assert "search is only for navigation" in guidance
+        assert all(term in guidance for term in ("grep", "fixed vocabulary", "lookup table"))
+        assert "quote the evidence you read" in guidance
+        assert "better-structured input" in guidance
 
 
 # =========================================================================

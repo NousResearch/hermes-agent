@@ -353,7 +353,13 @@ TASK_COMPLETION_GUIDANCE = (
     "approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) "
     "for results you couldn't actually produce. Reporting a blocker honestly "
-    "is always better than inventing a result."
+    "is always better than inventing a result.\n"
+    "When a task requires judgment over source material, read the complete relevant "
+    "source and understand it before drawing conclusions. Search is only for "
+    "navigation within material you already understand; do not replace reading with "
+    "grep, guessed phrases, a fixed vocabulary, or a lookup table. Put your reasoning "
+    "in front of the actual source and quote the evidence you read. Do not request "
+    "better-structured input merely to avoid reasoning over material already available."
 )
 
 # Universal parallel-tool-call guidance — applied to ALL models.

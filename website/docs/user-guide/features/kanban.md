@@ -707,8 +707,10 @@ hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived
 hermes kanban show <id> [--json]
 hermes kanban assign <id> <profile>                    # or 'none' to unassign
 hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to a profile
-hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
-        [--priority N]
+hermes kanban edit <id> --result "..."                 # backfill the result on an already-completed task
+        [--summary ...] [--metadata JSON]
+hermes kanban amend <id> [--title ...]                 # edit a live task's title and/or body in place
+        [--body ... | --body-file <path|->]
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
 hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
@@ -1009,7 +1011,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | Kind | Payload | When |
 |---|---|---|
 | `assigned` | `{assignee}` | Assignee changed (including unassignment). |
-| `edited` | `{fields}` | Title or body updated. |
+| `edited` | `{fields, …}` | Task fields updated in place. Title/body amends (`hermes kanban amend`, dashboard) carry `fields` plus a 200-char `title` excerpt and `body_len`; result backfills (`hermes kanban edit`) carry `fields` plus `result_len` and `summary`. |
 | `reprioritized` | `{priority}` | Priority changed. |
 | `status` | `{status}` | Dashboard drag-drop wrote a status directly (e.g. `todo → ready`). Carries the `run_id` of the run that was reclaimed when dragging off `running`; otherwise `run_id` is NULL. |
 

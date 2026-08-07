@@ -166,3 +166,135 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# amend — edit a live task's title/body (CLI surface)
+# ---------------------------------------------------------------------------
+
+def _kanban_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    return parser
+
+
+def _amend_rc(argv: list[str]) -> int:
+    """Parse ``hermes kanban …`` argv and dispatch, returning the exit code."""
+    parser = _kanban_parser()
+    args = parser.parse_args(["kanban", *argv])
+    return kc.kanban_command(args)
+
+
+def _create_task_via_slash(title: str, body: str | None = None) -> str:
+    import re
+
+    cmd = f"create '{title}'"
+    if body is not None:
+        cmd += f" --body '{body}'"
+    out = kc.run_slash(cmd)
+    m = re.search(r"(t_[a-f0-9]+)", out)
+    assert m, out
+    return m.group(1)
+
+
+def test_run_slash_amend_title_and_body(kanban_home):
+    tid = _create_task_via_slash("wrong source", body="old body")
+
+    out = kc.run_slash(f"amend {tid} --title 'right source' --body 'new body'")
+    assert "Amended" in out, out
+    assert "title" in out and "body" in out
+
+    show = json.loads(kc.run_slash(f"show {tid} --json"))
+    assert show["task"]["title"] == "right source"
+    assert show["task"]["body"] == "new body"
+
+    # Auditable `edited` event with the documented payload shape.
+    with kb.connect() as conn:
+        rows = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id",
+            (tid,),
+        ).fetchall()
+    edited = [r for r in rows if r["kind"] == "edited"]
+    assert len(edited) == 1
+    payload = json.loads(edited[0]["payload"])
+    assert payload["fields"] == ["title", "body"]
+    assert payload["title"] == "right source"
+    assert payload["body_len"] == len("new body")
+
+
+def test_amend_rejects_body_and_body_file_together(kanban_home, tmp_path, capsys):
+    tid = _create_task_via_slash("t")
+    bf = tmp_path / "body.md"
+    bf.write_text("from file")
+    rc = _amend_rc(["amend", tid, "--body", "inline", "--body-file", str(bf)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "only one of --body / --body-file" in err
+    # Task untouched.
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).title == "t"
+
+
+def test_amend_no_flags_is_usage_error(kanban_home, capsys):
+    tid = _create_task_via_slash("t")
+    rc = _amend_rc(["amend", tid])
+    assert rc == 2
+    assert "nothing to edit" in capsys.readouterr().err
+
+
+def test_amend_unknown_task_id(kanban_home, capsys):
+    rc = _amend_rc(["amend", "t_ghost", "--title", "x"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "t_ghost" in err
+    assert "unknown id" in err
+
+
+def test_amend_blank_title_rejected(kanban_home, capsys):
+    tid = _create_task_via_slash("keep me")
+    rc = _amend_rc(["amend", tid, "--title", "  "])
+    assert rc == 2
+    assert "blank" in capsys.readouterr().err
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).title == "keep me"
+
+
+def test_amend_body_file_reads_file(kanban_home, tmp_path):
+    tid = _create_task_via_slash("t", body="old")
+    bf = tmp_path / "body.md"
+    bf.write_text("# repointed\n\nmulti-line body\n", encoding="utf-8")
+    rc = _amend_rc(["amend", tid, "--body-file", str(bf)])
+    assert rc == 0
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).body == "# repointed\n\nmulti-line body\n"
+
+
+def test_amend_body_file_dash_reads_stdin(kanban_home, monkeypatch):
+    import io
+    import sys as _sys
+
+    tid = _create_task_via_slash("t", body="old")
+    monkeypatch.setattr(_sys, "stdin", io.StringIO("body from stdin\n"))
+    rc = _amend_rc(["amend", tid, "--body-file", "-"])
+    assert rc == 0
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).body == "body from stdin\n"
+
+
+def test_amend_body_file_missing_path(kanban_home, tmp_path, capsys):
+    tid = _create_task_via_slash("t", body="old")
+    missing = tmp_path / "does-not-exist.md"
+    rc = _amend_rc(["amend", tid, "--body-file", str(missing)])
+    assert rc == 2
+    assert "--body-file" in capsys.readouterr().err
+    # Body untouched on failure.
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).body == "old"
+
+
+def test_amend_archived_task_rejected(kanban_home, capsys):
+    tid = _create_task_via_slash("t")
+    with kb.connect() as conn:
+        assert kb.archive_task(conn, tid) is True
+    rc = _amend_rc(["amend", tid, "--title", "new"])
+    assert rc == 2
+    assert "archived" in capsys.readouterr().err

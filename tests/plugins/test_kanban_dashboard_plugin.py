@@ -283,6 +283,55 @@ def test_delete_task(client):
 
 
 # ---------------------------------------------------------------------------
+# PATCH /tasks/:id title/body — shared semantics with `hermes kanban amend`
+# (kanban_db.edit_task_fields owns validation + the `edited` event payload)
+# ---------------------------------------------------------------------------
+
+
+def test_patch_title_body_updates_and_logs_edited_event(client):
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "wrong source", "body": "old body"},
+    ).json()["task"]
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"title": "right source", "body": "new body"},
+    )
+    assert r.status_code == 200, r.text
+    task = r.json()["task"]
+    assert task["title"] == "right source"
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()
+    assert detail["task"]["body"] == "new body"
+    edited = [e for e in detail["events"] if e["kind"] == "edited"]
+    assert len(edited) == 1
+    payload = edited[0]["payload"]
+    assert payload["fields"] == ["title", "body"]
+    assert payload["title"] == "right source"
+    assert payload["body_len"] == len("new body")
+
+
+def test_patch_blank_title_rejected(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "keep"}).json()["task"]
+    r = client.patch(f"/api/plugins/kanban/tasks/{t['id']}", json={"title": "   "})
+    assert r.status_code == 400
+    # Title unchanged.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()
+    assert detail["task"]["title"] == "keep"
+
+
+def test_patch_title_on_archived_task_rejected(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "old"}).json()["task"]
+    r = client.patch(f"/api/plugins/kanban/tasks/{t['id']}", json={"status": "archived"})
+    assert r.status_code == 200
+
+    r = client.patch(f"/api/plugins/kanban/tasks/{t['id']}", json={"title": "new"})
+    assert r.status_code == 400
+    assert "archived" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
 # Comments + Links
 # ---------------------------------------------------------------------------
 

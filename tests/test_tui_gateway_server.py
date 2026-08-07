@@ -1997,7 +1997,7 @@ def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
 
     monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
 
-    assert server._load_enabled_toolsets() == ["coding", "figma", "project"]
+    assert server._load_enabled_toolsets("tui") == ["coding", "figma", "project"]
 
 
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
@@ -3482,7 +3482,7 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
         },
     )
     monkeypatch.setattr("run_agent.AIAgent", fake_agent)
-    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
     agent = server._make_agent("sid", "session-key")
@@ -3503,7 +3503,7 @@ def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
         _fallback_chain=chain,
     )
     monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
-    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
     kwargs = server._background_agent_kwargs(agent, "task-id")
@@ -3527,7 +3527,7 @@ def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
             ],
         },
     )
-    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
     kwargs = server._background_agent_kwargs(agent, "task-id")
@@ -13498,7 +13498,7 @@ def _setup_make_agent_mocks(monkeypatch, cfg):
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
     monkeypatch.setattr(server, "_load_reasoning_config", lambda model="": None)
     monkeypatch.setattr(server, "_load_service_tier", lambda: None)
-    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_agent_cbs", lambda sid: {})
 
@@ -15496,7 +15496,7 @@ class TestResolveRuntimeWithFallback:
             fake_resolve,
         )
         monkeypatch.setattr("run_agent.AIAgent", fake_agent)
-        monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+        monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
         monkeypatch.setattr(server, "_get_db", lambda: None)
 
         agent = server._make_agent(

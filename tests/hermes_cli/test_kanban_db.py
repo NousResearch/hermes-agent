@@ -163,6 +163,36 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_archived_task_idempotency_key_can_be_reused(kanban_home):
+    """Archiving closes an idempotency scope without weakening active retries."""
+    key = "retry-after-archive"
+
+    with kb.connect() as conn:
+        archived_id = kb.create_task(
+            conn, title="first attempt", idempotency_key=key,
+        )
+        assert kb.archive_task(conn, archived_id) is True
+
+        replacement_id = kb.create_task(
+            conn, title="replacement attempt", idempotency_key=key,
+        )
+        assert replacement_id != archived_id
+        assert kb.get_task(conn, replacement_id).title == "replacement attempt"
+
+        # Retries now resolve to the replacement, not the archived task.
+        assert kb.create_task(
+            conn, title="retry after replacement", idempotency_key=key,
+        ) == replacement_id
+
+        rows = conn.execute(
+            "SELECT id, status FROM tasks WHERE idempotency_key = ?", (key,)
+        ).fetchall()
+        assert {row["id"]: row["status"] for row in rows} == {
+            archived_id: "archived",
+            replacement_id: "ready",
+        }
+
+
 
 # ---------------------------------------------------------------------------
 # Links + dependency resolution

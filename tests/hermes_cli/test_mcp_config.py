@@ -747,3 +747,303 @@ class TestMcpReauth:
         cmd_mcp_reauth(_make_args(name="ghost", all=False))
         out = capsys.readouterr().out
         assert "not found" in out
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: hermes mcp add parser — issue #68944
+#
+# Bug: ``hermes mcp add --command CMD --args -y pkg-name --env KEY=VALUE``
+# silently absorbs ``--env KEY=VALUE`` into ``args:`` (as literal argv tokens
+# consumed by argparse.REMAINDER) instead of populating ``env:`` in
+# config.yaml. The stdio subprocess then receives ``--env`` and ``KEY=VALUE``
+# as argv tokens, never as environment variables — a silent credential
+# footgun.
+#
+# The fix is in two parts:
+#   1. Parser (``hermes_cli/subcommands/mcp.py``): declare ``--env`` BEFORE
+#      ``--args`` so the user can write ``--env KEY=VALUE --args ...``.
+#   2. Handler (``hermes_cli/mcp_config.py``): when ``--env KEY=VALUE``
+#      appears AFTER ``--args`` and is therefore swallowed by the greedy
+#      REMAINDER, rescue those tokens from ``cmd_args`` and emit a warning
+#      telling the user to reorder their flags.
+# ---------------------------------------------------------------------------
+
+
+def _build_real_mcp_add_parser():
+    """Build the real ``hermes mcp add`` parser via ``build_mcp_parser``.
+
+    Mirrors the replica pattern in ``test_mcp_add_command_dest.py`` so we
+    exercise the production parser instead of an approximation.
+    """
+    from hermes_cli.subcommands.mcp import build_mcp_parser
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    subparsers = parser.add_subparsers(dest="command")
+    # `cmd_mcp` is unused by the parser itself; pass a stub.
+    build_mcp_parser(subparsers, cmd_mcp=lambda args: None)
+    return parser
+
+
+class TestTrailingEnvWarning:
+    """Warn-only detector: emits a warning but never mutates child argv."""
+
+    def test_no_argv_returns_none(self):
+        from hermes_cli.mcp_config import _detect_trailing_env_suffix
+
+        assert _detect_trailing_env_suffix([]) is None
+
+    def test_normal_argv_no_warning(self):
+        from hermes_cli.mcp_config import _detect_trailing_env_suffix
+
+        assert _detect_trailing_env_suffix(["-y", "pkg"]) is None
+
+    def test_suspicious_suffix_triggers_warning(self):
+        """Trailing ``--env KEY=VALUE`` triggers warning, argv unchanged."""
+        from hermes_cli.mcp_config import _detect_trailing_env_suffix
+
+        msg = _detect_trailing_env_suffix(["-y", "pkg", "--env", "K=V"])
+        assert msg is not None
+        assert "--env K=V" in msg
+        assert "before --args" in msg
+        assert "kept verbatim" in msg
+
+    def test_multiple_suspicious_env_flags(self):
+        from hermes_cli.mcp_config import _detect_trailing_env_suffix
+
+        msg = _detect_trailing_env_suffix(
+            ["-y", "pkg", "--env", "K1=V1", "--env", "K2=V2"]
+        )
+        assert msg is not None
+        assert "2 --env flags" in msg
+        assert "--env K2=V2" in msg
+        assert "before --args" in msg
+
+    def test_docker_legitimate_no_warning(self):
+        """``docker run --env FOO=bar some/image``: no warning (image name follows)."""
+        from hermes_cli.mcp_config import _detect_trailing_env_suffix
+
+        msg = _detect_trailing_env_suffix(
+            ["run", "-i", "--rm", "--env", "FOO=bar", "some/image"]
+        )
+        assert msg is None
+
+    def test_mixed_docker_warning_but_no_mutation(self):
+        """Mixed docker + trailing ``--env KEY=VALUE``: warning emitted, argv preserved."""
+        from hermes_cli.mcp_config import _detect_trailing_env_suffix
+
+        docker_argv = [
+            "run", "-i", "--rm",
+            "--env", "FOO=bar",
+            "some/image",
+            "--env", "KEY=VALUE",
+        ]
+        msg = _detect_trailing_env_suffix(docker_argv)
+        assert msg is not None
+        assert "KEY=VALUE" in msg
+        assert "before --args" in msg
+        # The function never mutates — it returns only Optional[str].
+        # Callers must keep argv verbatim (tested in handler E2E below).
+
+    def test_legitimate_terminal_child_env(self):
+        """Last token ``KEY=VALUE`` without preceding ``--env`` is a child arg — no warning."""
+        from hermes_cli.mcp_config import _detect_trailing_env_suffix
+
+        msg = _detect_trailing_env_suffix(["-y", "pkg", "K=V"])
+        assert msg is None
+
+    def test_lone_env_no_value_no_warning(self):
+        """Lone trailing ``--env`` with no value is ambiguous — conservatively no warning."""
+        from hermes_cli.mcp_config import _detect_trailing_env_suffix
+
+        msg = _detect_trailing_env_suffix(["-y", "pkg", "--env"])
+        assert msg is None
+
+
+class TestMcpAddParserEnvOrdering:
+    """``--env`` must parse correctly when placed BEFORE ``--args``."""
+
+    def test_env_before_args_populates_env(self):
+        """The parser order fix: declare ``--env`` before ``--args`` so the
+        ``--env`` flag is parseable when the user puts it before ``--args``
+        in argv (the documented ordering).
+        """
+        parser = _build_real_mcp_add_parser()
+        secret = "GITHUB_PERSONAL_ACCESS_TOKEN=ghp_AA...DDDD"
+        args = parser.parse_args([
+            "mcp", "add", "github",
+            "--command", "npx",
+            "--env", secret,
+            "--args", "-y", "@modelcontextprotocol/server-github",
+        ])
+        assert args.env == [secret]
+        assert args.args == ["-y", "@modelcontextprotocol/server-github"]
+
+    def test_env_after_args_is_swallowed_by_remainder(self):
+        """Sanity check: the parser alone does NOT fix the bug for the
+        ``--env``-after-``--args`` ordering — that's why the handler warns.
+        """
+        parser = _build_real_mcp_add_parser()
+        secret = "GITHUB_PERSONAL_ACCESS_TOKEN=ghp_AA...DDDD"
+        args = parser.parse_args([
+            "mcp", "add", "github",
+            "--command", "npx",
+            "--args", "-y", "@modelcontextprotocol/server-github",
+            "--env", secret,
+        ])
+        # ``--env`` is absorbed by ``--args`` REMAINDER — that's the bug.
+        assert args.env == []
+        assert "--env" in args.args
+        assert any("=" in str(a) for a in args.args)
+
+
+class TestMcpAddWarnOnlyFlow:
+    """Handler E2E: warning emitted, argv preserved verbatim, reordered case works."""
+
+    def test_suspicious_suffix_emits_warning_keeps_argv(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--env`` after ``--args`` triggers warning; cmd_args stay verbatim."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        fake_tools = [FakeTool("search", "Search repos")]
+        saved_config = {}
+
+        def mock_probe(name, config, **kw):
+            saved_config["args"] = config.get("args", [])
+            saved_config["env"] = config.get("env", {})
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        original_argv = ["-y", "pkg", "--env", "MY_API_KEY=secret123"]
+        cmd_mcp_add(_make_args(
+            name="github",
+            mcp_command="npx",
+            args=list(original_argv),
+            env=[],
+        ))
+
+        out = capsys.readouterr().out
+        # Warning emitted …
+        assert "before --args" in out, (
+            f"expected reorder warning, got: {out!r}"
+        )
+        assert "--env MY_API_KEY=secret123" in out, (
+            f"expected exact env suggestion in warning, got: {out!r}"
+        )
+        # … but argv preserved verbatim.
+        assert saved_config["args"] == original_argv, (
+            f"argv was mutated; got {saved_config['args']!r}, expected {original_argv!r}"
+        )
+        # env block is NOT populated from the swallowed tokens.
+        assert saved_config.get("env", {}) == {}, (
+            f"env should be empty (warn-only, no rescue); got {saved_config['env']!r}"
+        )
+
+    def test_env_before_args_works_no_warning(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--env`` before ``--args``: env populated, no warning emitted."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config.get("env") == {"MY_API_KEY": "secret123"}
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            mcp_command="npx",
+            args=["-y", "@modelcontextprotocol/server-github"],
+            env=["MY_API_KEY=secret123"],
+        ))
+
+        out = capsys.readouterr().out
+        assert "before --args" not in out, (
+            f"unexpected warning for correctly ordered env: {out!r}"
+        )
+
+    def test_docker_argv_no_warning_argv_preserved(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Legitimate docker argv: no warning, argv preserved verbatim."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        fake_tools = [FakeTool("do_thing", "Does a thing")]
+        saved_config = {}
+
+        def mock_probe(name, config, **kw):
+            saved_config["args"] = config.get("args", [])
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        docker_argv = ["run", "-i", "--rm", "--env", "FOO=bar", "some/image"]
+        cmd_mcp_add(_make_args(
+            name="dockersrv",
+            mcp_command="docker",
+            args=list(docker_argv),
+            env=[],
+        ))
+
+        out = capsys.readouterr().out
+        assert "before --args" not in out, (
+            f"unexpected warning for legitimate docker argv: {out!r}"
+        )
+        assert saved_config["args"] == docker_argv
+
+    def test_mixed_docker_warning_keeps_full_argv(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Mixed docker + trailing ``--env``: warning emitted, full argv verbatim."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        fake_tools = [FakeTool("do_thing", "Does a thing")]
+        saved_config = {}
+
+        def mock_probe(name, config, **kw):
+            saved_config["args"] = config.get("args", [])
+            saved_config["env"] = config.get("env", {})
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        docker_argv = [
+            "run", "-i", "--rm",
+            "--env", "FOO=bar",
+            "some/image",
+            "--env", "KEY=VALUE",
+        ]
+        cmd_mcp_add(_make_args(
+            name="dockersrv",
+            mcp_command="docker",
+            args=list(docker_argv),
+            env=[],
+        ))
+
+        out = capsys.readouterr().out
+        assert "before --args" in out, (
+            f"expected warning for trailing --env in mixed docker argv: {out!r}"
+        )
+        # Full argv preserved verbatim.
+        assert saved_config["args"] == docker_argv, (
+            f"argv mutated; got {saved_config['args']!r}, expected {docker_argv!r}"
+        )
+        assert saved_config.get("env", {}) == {}, (
+            f"env should be empty (no rescue); got {saved_config['env']!r}"
+        )

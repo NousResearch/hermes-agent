@@ -196,6 +196,77 @@ def _save_bearer_auth_token(name: str, token: str) -> Dict[str, str]:
     return _bearer_auth_headers(name)
 
 
+def _detect_trailing_env_suffix(cmd_args: List[str]) -> Optional[str]:
+    """Detect suspicious trailing ``--env KEY=VALUE`` suffix in child argv.
+
+    ``--args`` uses ``nargs=argparse.REMAINDER`` so a ``--env`` typed *after*
+    it is captured into the child argv instead of populating the server's env
+    (issue #68944).  This detector returns a warning message describing the
+    exact suggested reorder when the argv appears to end with ``--env
+    KEY=VALUE`` tokens, but **never mutates the argv** — the passthrough
+    contract is preserved verbatim.
+
+    Legitimate child patterns are left alone:
+    * ``docker run --env FOO=bar some/image`` — image name (no ``=``)
+      follows the env pair, so no warning.
+    * ``docker run --env FOO=bar some/image --env KEY=VALUE`` — the stray
+      trailing ``--env KEY=VALUE`` is suspicious, but argv stays verbatim;
+      only a warning with the exact reorder suggestion is emitted.
+    * ``--env K=V`` as the last token in a legitimate child command —
+      warning is acceptable (no mutation), user can ignore it.
+
+    Returns a warning message string if a suspicious suffix is found,
+    or ``None`` if the argv looks fine.
+    """
+    if not cmd_args:
+        return None
+    # Walk backwards to find trailing --env KEY=VALUE run.
+    n = len(cmd_args)
+    i = n - 1
+    suspect_count = 0
+    suspect_envs: List[str] = []
+    while i >= 0:
+        token = cmd_args[i]
+        if "=" in token and not token.startswith("-"):
+            # KEY=VALUE — could be paired with a preceding --env.
+            if i > 0 and cmd_args[i - 1] == "--env":
+                suspect_envs.append(f"--env {token}")
+                suspect_count += 1
+                i -= 2  # skip both value and --env
+                continue
+            else:
+                # Standalone KEY=VALUE, not preceded by --env — could be
+                # a legitimate child arg. Stop looking.
+                break
+        elif token == "--env":
+            # Lone --env at tail with no value — ambiguous, stop.
+            break
+        else:
+            # Non-env token encountered — the trailing env run (if any) ends.
+            break
+        # Should not normally reach here due to inner continue/break,
+        # but guard against infinite loop.
+        i -= 1
+
+    if suspect_count == 0:
+        return None
+
+    if suspect_count == 1:
+        return (
+            f"Detected --env placed after --args in child argv. "
+            f"Put {suspect_envs[0]} before --args to have it populate the "
+            f"server's env block. Current argv is kept verbatim."
+        )
+    else:
+        env_list = ", ".join(suspect_envs)
+        return (
+            f"Detected {suspect_count} --env flags placed after --args "
+            f"in child argv ({env_list}). "
+            f"Put them before --args to have them populate the "
+            f"server's env block. Current argv is kept verbatim."
+        )
+
+
 def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
     """Parse ``KEY=VALUE`` strings from CLI args into an env dict."""
     parsed: Dict[str, str] = {}
@@ -420,13 +491,25 @@ def cmd_mcp_add(args):
     # mcp_add_p.add_argument("--command", dest="mcp_command", ...) in
     # hermes_cli/main.py for why the dest is renamed.
     command = getattr(args, "mcp_command", None)
-    cmd_args = getattr(args, "args", None) or []
+    cmd_args = list(getattr(args, "args", None) or [])
     if cmd_args and cmd_args[0] == "--":
         cmd_args = cmd_args[1:]
     auth_type = getattr(args, "auth", None)
     preset_name = getattr(args, "preset", None)
-    raw_env = getattr(args, "env", None)
+    raw_env = list(getattr(args, "env", None) or [])
     raw_connect_timeout = getattr(args, "connect_timeout", None)
+
+    # Detect ``--env KEY=VALUE`` tokens that were silently swallowed by the
+    # greedy ``--args`` REMAINDER flag. ``--args`` uses
+    # ``nargs=argparse.REMAINDER`` which captures every following token as
+    # stdio argv, so when the user writes ``--args -y pkg --env KEY=VALUE``
+    # the ``--env KEY=VALUE`` portion ends up in ``cmd_args`` instead of
+    # being parsed as the ``--env`` flag.  We emit a warning with the exact
+    # suggested reorder, but **never mutate the argv** — the passthrough
+    # contract is preserved verbatim (issue #68944).
+    env_warning = _detect_trailing_env_suffix(cmd_args)
+    if env_warning:
+        _warning(env_warning)
 
     server_config: Dict[str, Any] = {}
     try:

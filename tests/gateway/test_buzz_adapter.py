@@ -243,6 +243,13 @@ class TestMentionGating:
         await self._poll_with(adapter, _event("e1", content="hey @Chip can you help?", created_at=10))
         assert len(adapter._dispatched) == 1
 
+    @pytest.mark.asyncio
+    async def test_plain_name_reference_ignored(self, adapter):
+        await self._poll_with(
+            adapter,
+            _event("e1", content="@Hermes did you see Chip's request?", created_at=10),
+        )
+        assert adapter._dispatched == []
 
     @pytest.mark.asyncio
     async def test_allowlist_blocks_unauthorized(self, adapter):

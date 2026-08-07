@@ -1144,7 +1144,7 @@ class BuzzAdapter(BasePlatformAdapter):
         if self._self_npub and self._self_npub in lowered:
             return True
         if self._display_name:
-            pattern = rf"(?<!\w)@?{re.escape(self._display_name.lower())}(?!\w)"
+            pattern = rf"(?<!\w)@{re.escape(self._display_name.lower())}(?!\w)"
             if re.search(pattern, lowered):
                 return True
         return False

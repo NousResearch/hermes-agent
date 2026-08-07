@@ -614,6 +614,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `unlink <parent> <child>` | Remove a dependency. |
 | `claim <id>` | Atomically claim a ready task. Prints resolved workspace path. |
 | `comment <id> "<text>"` | Append a comment. The next worker that claims the task reads it as part of its `kanban_show()` response. |
+| `update-body <id> --body "<text>"` | Replace the canonical body of an existing task and audit the change (appends a `body_updated` event carrying only sha256 + lengths; no body text is copied into the event log). Repeating the same body is a no-op. Flags: `--author` (recorded as the event author), `--json` (machine-readable result). Does not recompute readiness or touch assignment/status. |
 | `complete <id>` | Mark task done. Flags: `--result`, `--summary`, `--metadata`. |
 | `block <id> "<reason>"` | Mark task blocked for human input. Also appends the reason as a comment. |
 | `schedule <id> "<reason>"` | Park time-delay/follow-up work in `scheduled` so it is not shown as a human blocker. |

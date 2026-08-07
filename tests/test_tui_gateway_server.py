@@ -348,6 +348,183 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     assert session.get("_compute_host_active") is not True
 
 
+def test_compute_host_interrupt_failure_clears_stuck_running(monkeypatch):
+    """Dead compute host must not leave session.running stuck after Stop.
+
+    When HostSupervisor.interrupt raises (host gone / respawn disabled), no
+    turn.end will arrive to clear busy. Force-clear running + latch cancel so
+    the next prompt.submit is not forever queued.
+    """
+
+    class _DeadHost:
+        def interrupt(self, sid, *, request_id=None):
+            raise RuntimeError("compute host is not running")
+
+        def has_pending_turn(self, sid: str) -> bool:
+            return False
+
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        queued_prompt={"text": "stale next", "transport": None},
+        inflight_turn={"user": "hi", "assistant": "", "streaming": True},
+    )
+    server._sessions["iso-int-dead"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _DeadHost())
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-dead",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-dead"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is False
+        assert session.get("_turn_cancel_requested") is True
+        assert session.get("queued_prompt") is None
+        assert session.get("inflight_turn") is None
+    finally:
+        server._sessions.pop("iso-int-dead", None)
+
+
+def test_compute_host_interrupt_failure_leaves_running_when_turn_pending(monkeypatch):
+    """If a host completion is still registered, leave running for the waiter."""
+
+    class _DeadHostWithPending:
+        def __init__(self):
+            self._lock = threading.Lock()
+            self._pending_turns = {"req-1": ("iso-int-pending", lambda _f: None)}
+
+        def interrupt(self, sid, *, request_id=None):
+            raise RuntimeError("compute host is not running")
+
+        def has_pending_turn(self, sid: str) -> bool:
+            with self._lock:
+                return any(s == sid for s, _ in self._pending_turns.values())
+
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        inflight_turn={"user": "hi", "assistant": "", "streaming": True},
+    )
+    server._sessions["iso-int-pending"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(
+        server, "_get_compute_host_supervisor", lambda _cfg=None: _DeadHostWithPending()
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-pending",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-pending"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is True
+        assert session.get("_turn_cancel_requested") is True
+        assert session.get("inflight_turn") is not None
+    finally:
+        server._sessions.pop("iso-int-pending", None)
+
+
+def test_compute_host_interrupt_failure_leaves_running_after_teardown(monkeypatch):
+    """After pending pop + turn teardown, do not clobber drain-owned busy."""
+
+    class _DeadHostNoPending:
+        def interrupt(self, sid, *, request_id=None):
+            raise RuntimeError("compute host is not running")
+
+        def has_pending_turn(self, sid: str) -> bool:
+            return False
+
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        # Crash waiter already cleared inflight; a successor drain may own running.
+        inflight_turn=None,
+    )
+    server._sessions["iso-int-post"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(
+        server, "_get_compute_host_supervisor", lambda _cfg=None: _DeadHostNoPending()
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-post",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-post"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is True
+        assert session.get("_turn_cancel_requested") is True
+    finally:
+        server._sessions.pop("iso-int-post", None)
+
+
+def test_compute_host_interrupt_failure_does_not_clobber_replaced_inflight(monkeypatch):
+    """Successor submit may replace inflight before pending is registered."""
+
+    class _DeadHostNoPending:
+        def interrupt(self, sid, *, request_id=None):
+            raise RuntimeError("compute host is not running")
+
+        def has_pending_turn(self, sid: str) -> bool:
+            return False
+
+    old_inflight = {"user": "old", "assistant": "", "streaming": True}
+    new_inflight = {"user": "new", "assistant": "", "streaming": True}
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        inflight_turn=old_inflight,
+    )
+    server._sessions["iso-int-race"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+
+    host = _DeadHostNoPending()
+    real_interrupt = host.interrupt
+
+    def _interrupt_and_swap(sid, *, request_id=None):
+        # Simulate prompt.submit replacing inflight after lock release,
+        # before submit_turn registers pending.
+        with session["history_lock"]:
+            session["inflight_turn"] = new_inflight
+            session["_turn_cancel_requested"] = False
+        return real_interrupt(sid, request_id=request_id)
+
+    host.interrupt = _interrupt_and_swap
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: host)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-race",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-race"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is True
+        assert session.get("inflight_turn") is new_inflight
+        assert session.get("_turn_cancel_requested") is True
+    finally:
+        server._sessions.pop("iso-int-race", None)
+
+
 def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
     session = _session(
         agent=None,

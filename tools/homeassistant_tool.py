@@ -1,8 +1,9 @@
 """Home Assistant tool for controlling smart home devices via REST API.
 
-Registers four LLM-callable tools:
+Registers five LLM-callable tools:
 - ``ha_list_entities`` -- list/filter entities by domain or area
 - ``ha_get_state`` -- get detailed state of a single entity
+- ``ha_history`` -- fetch recorded state history for a single entity
 - ``ha_list_services`` -- list available services (actions) per domain
 - ``ha_call_service`` -- call a HA service (turn_on, turn_off, set_temperature, etc.)
 
@@ -137,6 +138,69 @@ async def _async_get_state(entity_id: str) -> Dict[str, Any]:
         "attributes": data.get("attributes", {}),
         "last_changed": data.get("last_changed"),
         "last_updated": data.get("last_updated"),
+    }
+
+
+# Regex for an ISO 8601 timestamp accepted by HA's /api/history/period path.
+# Deliberately strict: the timestamp is interpolated into the URL path
+# (/api/history/period/{start}), so we only allow the characters that make up
+# a legitimate ISO 8601 instant and reject anything that could enable path
+# traversal (e.g. "../") or other URL injection.
+_ISO_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$"
+)
+
+
+async def _async_get_history(
+    entity_id: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    minimal: bool = True,
+    significant_only: bool = False,
+) -> Dict[str, Any]:
+    """Fetch state history for a single entity via /api/history/period.
+
+    Returns a compact list of {state, last_changed} points. ``start`` defaults
+    to HA's own default window (the last day) when omitted.
+    """
+    import aiohttp
+    from urllib.parse import quote
+
+    hass_url, hass_token = _get_config()
+    path = "history/period"
+    if start:
+        path += "/" + quote(start, safe="")
+
+    params = [("filter_entity_id", entity_id)]
+    if end:
+        params.append(("end_time", end))
+    if minimal:
+        params.append(("minimal_response", ""))
+    if significant_only:
+        params.append(("significant_changes_only", ""))
+
+    url = f"{hass_url}/api/{path}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url,
+            headers=_get_headers(hass_token),
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+
+    # HA returns a list of lists: one inner list per requested entity_id.
+    series = data[0] if isinstance(data, list) and data else []
+    points = [
+        {"state": p.get("state"), "last_changed": p.get("last_changed") or p.get("lu")}
+        for p in series
+        if isinstance(p, dict)
+    ]
+    return {
+        "entity_id": entity_id,
+        "count": len(points),
+        "history": points,
     }
 
 
@@ -338,6 +402,35 @@ def _handle_list_services(args: dict, **kw) -> str:
         return tool_error(f"Failed to list services: {e}")
 
 
+def _handle_get_history(args: dict, **kw) -> str:
+    """Handler for ha_history tool."""
+    entity_id = args.get("entity_id", "")
+    if not entity_id:
+        return tool_error("Missing required parameter: entity_id")
+    if not _ENTITY_ID_RE.match(entity_id):
+        return tool_error(f"Invalid entity_id format: {entity_id}")
+
+    start = args.get("start")
+    end = args.get("end")
+    if start and not _ISO_TIMESTAMP_RE.match(start):
+        return tool_error(f"Invalid start timestamp (expected ISO 8601): {start}")
+    if end and not _ISO_TIMESTAMP_RE.match(end):
+        return tool_error(f"Invalid end timestamp (expected ISO 8601): {end}")
+
+    try:
+        result = _run_async(_async_get_history(
+            entity_id=entity_id,
+            start=start,
+            end=end,
+            minimal=bool(args.get("minimal", True)),
+            significant_only=bool(args.get("significant_only", False)),
+        ))
+        return json.dumps({"result": result})
+    except Exception as e:
+        logger.error("ha_history error: %s", e)
+        return tool_error(f"Failed to get history for {entity_id}: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Availability check
 # ---------------------------------------------------------------------------
@@ -470,6 +563,56 @@ HA_CALL_SERVICE_SCHEMA = {
     },
 }
 
+HA_HISTORY_SCHEMA = {
+    "name": "ha_history",
+    "description": (
+        "Fetch the recorded state history of a single Home Assistant entity "
+        "over a time window (e.g. how a sensor, switch, or thermostat changed "
+        "over the last hours or days). Returns a compact list of "
+        "{state, last_changed} points. Use this for trends, verifying that an "
+        "actuator actually toggled, or checking a reading's range over time. "
+        "For the current value only, use ha_get_state instead."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "entity_id": {
+                "type": "string",
+                "description": (
+                    "The entity ID to fetch history for (e.g. "
+                    "'sensor.temperature', 'switch.pump', 'climate.thermostat')."
+                ),
+            },
+            "start": {
+                "type": "string",
+                "description": (
+                    "ISO 8601 start time (e.g. '2026-06-29T00:00:00Z'). "
+                    "Omit to use Home Assistant's default window (the last day)."
+                ),
+            },
+            "end": {
+                "type": "string",
+                "description": "Optional ISO 8601 end time (e.g. '2026-06-30T00:00:00Z').",
+            },
+            "minimal": {
+                "type": "boolean",
+                "description": (
+                    "Return only state + last_changed per point (minimal_response). "
+                    "Default true; keeps the payload small."
+                ),
+            },
+            "significant_only": {
+                "type": "boolean",
+                "description": (
+                    "Return only significant state changes (significant_changes_only). "
+                    "Default false."
+                ),
+            },
+        },
+        "required": ["entity_id"],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -491,6 +634,15 @@ registry.register(
     toolset="homeassistant",
     schema=HA_GET_STATE_SCHEMA,
     handler=_handle_get_state,
+    check_fn=_check_ha_available,
+    emoji="🏠",
+)
+
+registry.register(
+    name="ha_history",
+    toolset="homeassistant",
+    schema=HA_HISTORY_SCHEMA,
+    handler=_handle_get_history,
     check_fn=_check_ha_available,
     emoji="🏠",
 )

@@ -16,9 +16,11 @@ from tools.homeassistant_tool import (
     _parse_service_response,
     _get_headers,
     _handle_get_state,
+    _handle_get_history,
     _handle_call_service,
     _BLOCKED_DOMAINS,
     _ENTITY_ID_RE,
+    _ISO_TIMESTAMP_RE,
     _SERVICE_NAME_RE,
 )
 
@@ -361,6 +363,148 @@ class TestGetHeaders:
 # ---------------------------------------------------------------------------
 
 
+class TestHistory:
+    """ha_history: validation, ISO-timestamp guard, and response parsing."""
+
+    def test_missing_entity_id(self):
+        result = json.loads(_handle_get_history({}))
+        assert "error" in result
+        assert "entity_id" in result["error"]
+
+    def test_invalid_entity_id_rejected(self):
+        result = json.loads(_handle_get_history({"entity_id": "../../config"}))
+        assert "error" in result
+        assert "Invalid entity_id" in result["error"]
+
+    def test_iso_timestamp_regex_accepts_valid(self):
+        assert _ISO_TIMESTAMP_RE.match("2026-06-29T00:00:00Z")
+        assert _ISO_TIMESTAMP_RE.match("2026-06-29T12:34:56")
+        assert _ISO_TIMESTAMP_RE.match("2026-06-29T12:34:56.789Z")
+        assert _ISO_TIMESTAMP_RE.match("2026-06-29T12:34:56+02:00")
+
+    def test_iso_timestamp_regex_rejects_traversal_and_junk(self):
+        assert _ISO_TIMESTAMP_RE.match("../../api/config") is None
+        assert _ISO_TIMESTAMP_RE.match("2026-06-29/../../etc") is None
+        assert _ISO_TIMESTAMP_RE.match("not-a-date") is None
+        assert _ISO_TIMESTAMP_RE.match("") is None
+
+    def test_invalid_start_timestamp_rejected(self):
+        result = json.loads(_handle_get_history({
+            "entity_id": "sensor.temperature",
+            "start": "../../api/config",
+        }))
+        assert "error" in result
+        assert "start timestamp" in result["error"]
+
+    def test_invalid_end_timestamp_rejected(self):
+        result = json.loads(_handle_get_history({
+            "entity_id": "sensor.temperature",
+            "end": "yesterday",
+        }))
+        assert "error" in result
+        assert "end timestamp" in result["error"]
+
+    @patch("tools.homeassistant_tool._run_async")
+    def test_valid_request_reaches_fetch_and_parses(self, mock_run):
+        # HA returns a list-of-lists: one inner list per entity_id.
+        mock_run.return_value = {
+            "entity_id": "sensor.temperature",
+            "count": 2,
+            "history": [
+                {"state": "21.0", "last_changed": "2026-06-29T00:00:00Z"},
+                {"state": "22.5", "last_changed": "2026-06-29T01:00:00Z"},
+            ],
+        }
+        # Close the coroutine that _run_async would have awaited, so the
+        # patched-out call doesn't emit an "unawaited coroutine" warning.
+        def _close_coro(coro):
+            coro.close()
+            return mock_run.return_value
+        mock_run.side_effect = _close_coro
+
+        result = json.loads(_handle_get_history({
+            "entity_id": "sensor.temperature",
+            "start": "2026-06-29T00:00:00Z",
+        }))
+        assert result["result"]["count"] == 2
+        assert result["result"]["history"][0]["state"] == "21.0"
+        mock_run.assert_called_once()
+
+
+class TestHistoryParsing:
+    """The list-of-lists unwrap + compaction in _async_get_history.
+
+    We patch the network fetch at the aiohttp boundary via a small helper so
+    the test exercises the real unwrap/compaction logic without a live HA.
+    """
+
+    def _run_with_payload(self, payload, entity_id="sensor.x"):
+        """Run _async_get_history with the HA JSON response stubbed to `payload`."""
+        import asyncio
+        from tools import homeassistant_tool as ha
+
+        class _FakeResp:
+            def raise_for_status(self):
+                pass
+
+            async def json(self):
+                return payload
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _FakeSession:
+            def get(self, *a, **k):
+                return _FakeResp()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        import aiohttp
+        orig = aiohttp.ClientSession
+        aiohttp.ClientSession = lambda *a, **k: _FakeSession()
+        try:
+            return asyncio.run(ha._async_get_history(entity_id))
+        finally:
+            aiohttp.ClientSession = orig
+
+    def test_parse_empty_history(self):
+        out = self._run_with_payload([])
+        assert out["entity_id"] == "sensor.x"
+        assert out["count"] == 0
+        assert out["history"] == []
+
+    def test_parse_unwraps_list_of_lists_and_compacts(self):
+        payload = [[
+            {"state": "21.0", "last_changed": "2026-06-29T00:00:00Z", "attributes": {"unit": "C"}},
+            {"state": "22.5", "last_changed": "2026-06-29T01:00:00Z"},
+        ]]
+        out = self._run_with_payload(payload, entity_id="sensor.temperature")
+        assert out["entity_id"] == "sensor.temperature"
+        assert out["count"] == 2
+        # Only state + last_changed are kept (attributes dropped for compactness)
+        assert out["history"][0] == {"state": "21.0", "last_changed": "2026-06-29T00:00:00Z"}
+        assert out["history"][1]["state"] == "22.5"
+
+    def test_parse_falls_back_to_lu_timestamp_key(self):
+        # minimal_response uses "lu" (last_updated) instead of "last_changed"
+        payload = [[{"state": "on", "lu": 1720000000.0}]]
+        out = self._run_with_payload(payload, entity_id="switch.pump")
+        assert out["count"] == 1
+        assert out["history"][0]["last_changed"] == 1720000000.0
+
+
+# ---------------------------------------------------------------------------
+# Registry integration
+# ---------------------------------------------------------------------------
+
+
 class TestRegistration:
     def test_tools_registered_in_registry(self):
         from tools.registry import registry
@@ -368,6 +512,7 @@ class TestRegistration:
         names = registry.get_all_tool_names()
         assert "ha_list_entities" in names
         assert "ha_get_state" in names
+        assert "ha_history" in names
         assert "ha_call_service" in names
 
 

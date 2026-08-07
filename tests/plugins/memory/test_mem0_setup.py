@@ -231,3 +231,55 @@ class TestConnectivityChecks:
         assert ok is True
 
 
+
+
+class TestEnvLineSafety:
+    """A pasted secret must not be able to define a second .env entry.
+
+    `.env` is line-oriented, so a value carrying a CR/LF spills onto a new
+    line and is re-parsed as its own KEY=VALUE on the next read. The other
+    three writers in the tree (hermes_cli.memory_setup, the openviking
+    plugin, config.save_env_value) neutralize this; this one did not.
+    """
+
+    @staticmethod
+    def _write(tmp_path, existing, writes):
+        from plugins.memory.mem0._setup import _write_env
+
+        env = tmp_path / ".env"
+        env.write_text(existing, encoding="utf-8")
+        _write_env(env, writes)
+        return env.read_text(encoding="utf-8").splitlines()
+
+    def test_newline_in_value_cannot_inject_another_key(self, tmp_path):
+        lines = self._write(
+            tmp_path,
+            "OPENAI_API_KEY=real-key\n",
+            {"MEM0_API_KEY": "pasted\nOPENAI_API_KEY=clobbered"},
+        )
+
+        assert "OPENAI_API_KEY=real-key" in lines
+        assert "OPENAI_API_KEY=clobbered" not in lines
+        assert sum(1 for line in lines if line.startswith("OPENAI_API_KEY=")) == 1
+
+    def test_crlf_and_nul_are_neutralized(self, tmp_path):
+        lines = self._write(
+            tmp_path, "", {"MEM0_API_KEY": "a\r\nb\x00c"},
+        )
+
+        assert lines == ["MEM0_API_KEY=abc"]
+
+    def test_updating_an_existing_key_is_also_guarded(self, tmp_path):
+        lines = self._write(
+            tmp_path,
+            "MEM0_API_KEY=old\nOPENAI_API_KEY=real-key\n",
+            {"MEM0_API_KEY": "new\nOPENAI_API_KEY=clobbered"},
+        )
+
+        assert "OPENAI_API_KEY=clobbered" not in lines
+        assert "OPENAI_API_KEY=real-key" in lines
+
+    def test_ordinary_value_is_written_unchanged(self, tmp_path):
+        lines = self._write(tmp_path, "", {"MEM0_API_KEY": "sk-plain-value"})
+
+        assert lines == ["MEM0_API_KEY=sk-plain-value"]

@@ -125,6 +125,48 @@ class TestProfileScopedMcp:
 
 
 
+    def test_mcp_test_probe_suppresses_interactive_oauth(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """Opening the Desktop MCP page auto-probes enabled servers.
+
+        A status probe must never start interactive OAuth or open the system
+        browser. Only the explicit /auth endpoint may do that.
+        """
+        import hermes_cli.mcp_config as mcp_config
+        import tools.mcp_oauth as mcp_oauth
+        import tools.mcp_tool as mcp_tool
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "mcp_servers:\n  oauth-srv:\n    url: http://x/sse\n    auth: oauth\n",
+            encoding="utf-8",
+        )
+
+        def probe_without_browser(name, config, connect_timeout=30, details=None):
+            async def oauth_is_interactive():
+                return mcp_oauth._is_interactive()
+
+            mcp_tool._ensure_mcp_loop()
+            try:
+                assert (
+                    mcp_tool._run_on_mcp_loop(oauth_is_interactive(), timeout=10)
+                    is False
+                )
+            finally:
+                mcp_tool._stop_mcp_loop()
+            return [("tool-a", "desc")]
+
+        monkeypatch.setattr(mcp_config, "_probe_single_server", probe_without_browser)
+        monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name: True)
+
+        with mcp_oauth.force_interactive_oauth():
+            resp = client.post(
+                "/api/mcp/servers/oauth-srv/test", params={"profile": "worker_beta"}
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
     def test_mcp_test_oauth_server_without_token_is_not_ok(
         self, client, isolated_profiles, monkeypatch
     ):

@@ -165,7 +165,13 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
         # override for .env interpolation + OAuth token resolution, which the
         # contextvar provides (copied into this to_thread worker; and
         # _run_on_mcp_loop re-wraps it onto the MCP event-loop thread).
-        with _config_profile_scope(profile):
+        #
+        # This endpoint is also called automatically when Desktop opens its MCP
+        # page. A status probe must never start an interactive OAuth flow or
+        # open the system browser; only the explicit /auth endpoint may do so.
+        from tools.mcp_oauth import suppress_interactive_oauth
+
+        with _config_profile_scope(profile), suppress_interactive_oauth():
             tools = _probe_single_server(name, servers[name], details=details)
             token_present = _oauth_tokens_present(name) if needs_oauth_token else True
             return tools, token_present

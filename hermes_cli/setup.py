@@ -1685,6 +1685,20 @@ def _apply_default_agent_settings(config: dict):
     print_info("  Run `hermes setup agent` later to customize.")
 
 
+def _default_max_turns() -> int:
+    """The canonical ``agent.max_turns`` default.
+
+    Read from ``DEFAULT_CONFIG`` rather than hardcoded here: the wizard
+    persists whatever it displays, so a stale literal silently pins the
+    user to a superseded limit (deep-merge then preserves that explicit
+    value across every future default change).
+    """
+    try:
+        return int(DEFAULT_CONFIG.get("agent", {}).get("max_turns"))
+    except (AttributeError, TypeError, ValueError):
+        return 500
+
+
 def setup_agent_settings(config: dict):
     """Configure agent behavior: iterations, progress display, compression, session reset."""
 
@@ -1696,11 +1710,12 @@ def setup_agent_settings(config: dict):
     # config.yaml is authoritative; read from there. If a legacy .env
     # entry is still around (from pre-PR#18413 setups), prefer the
     # config value so we don't surface a stale number to the user.
-    current_max = str(cfg_get(config, "agent", "max_turns", default=90))
+    current_max = str(cfg_get(config, "agent", "max_turns", default=_default_max_turns()))
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
     print_info(
-        f"Press Enter to keep {current_max}. Use 90 for most tasks or 150+ for open exploration."
+        f"Press Enter to keep {current_max}. Lower values cap token spend; "
+        "raise it for long, open-ended tasks."
     )
 
     max_iter_str = prompt("Max iterations", current_max)
@@ -2532,7 +2547,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return f"backend: {backend}"
 
     elif section_key == "agent":
-        max_turns = cfg_get(config, "agent", "max_turns", default=90)
+        max_turns = cfg_get(config, "agent", "max_turns", default=_default_max_turns())
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":

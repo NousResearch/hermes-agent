@@ -34,7 +34,7 @@ $GAPI gmail search "from:boss@company.com newer_than:1d"
 $GAPI gmail search "has:attachment filename:pdf newer_than:7d"
 ```
 
-Returns JSON with `id`, `from`, `subject`, `date`, `snippet`, and `labels` for each message.
+Returns JSON with message IDs, sender and recipient headers, the RFC 5322 `date`, Gmail's `internalDate`, `snippet`, and `labels` for each message.
 
 ### Reading
 
@@ -42,7 +42,7 @@ Returns JSON with `id`, `from`, `subject`, `date`, `snippet`, and `labels` for e
 $GAPI gmail get MESSAGE_ID
 ```
 
-Returns the full message body as text (prefers plain text, falls back to HTML).
+Returns the full message body as text (prefers plain text, falls back to HTML), CC recipients, Gmail's internal date, and nested attachment metadata. Attachment bodies are not downloaded.
 
 ### Sending
 
@@ -171,8 +171,8 @@ All commands return JSON. Key fields per service:
 
 | Command | Fields |
 |---------|--------|
-| `gmail search` | `id`, `threadId`, `from`, `to`, `subject`, `date`, `snippet`, `labels` |
-| `gmail get` | `id`, `threadId`, `from`, `to`, `subject`, `date`, `labels`, `body` |
+| `gmail search` | `id`, `threadId`, `from`, `to`, `subject`, `date`, `internalDate`, `snippet`, `labels` |
+| `gmail get` | `id`, `threadId`, `from`, `to`, `cc`, `subject`, `date`, `internalDate`, `labels`, `body`, `attachments` (`filename`, `mimeType`, `attachmentId`, `size`) |
 | `gmail send/reply` | `status`, `id`, `threadId` |
 | `calendar list` | `id`, `summary`, `start`, `end`, `location`, `description`, `htmlLink` |
 | `calendar create` | `status`, `id`, `summary`, `htmlLink` |

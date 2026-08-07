@@ -195,3 +195,103 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def _gmail_message(api_module):
+    return {
+        "id": "msg-1",
+        "threadId": "thread-1",
+        "internalDate": "1780056000000",
+        "labelIds": ["INBOX"],
+        "snippet": "preview",
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "sender@example.com"},
+                {"name": "To", "value": "recipient@example.com"},
+                {"name": "Cc", "value": "copy@example.com"},
+                {"name": "Subject", "value": "metadata"},
+                {"name": "Date", "value": "Fri, 29 May 2026 12:00:00 +0000"},
+            ],
+            "mimeType": "multipart/mixed",
+            "body": {},
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {
+                        "data": api_module.base64.urlsafe_b64encode(b"Plain body").decode()
+                    },
+                },
+                {
+                    "mimeType": "multipart/related",
+                    "body": {},
+                    "parts": [
+                        {
+                            "filename": "example.pdf",
+                            "mimeType": "application/pdf",
+                            "body": {
+                                "attachmentId": "attachment-1",
+                                "size": 1234,
+                            },
+                        }
+                    ],
+                },
+            ],
+        },
+    }
+
+
+def _use_gmail_backend(api_module, backend, message):
+    if backend == "gws":
+        def fake_run_gws(parts, *, params=None, body=None):
+            if parts[-1] == "list":
+                return {"messages": [{"id": message["id"]}]}
+            return message
+
+        api_module._run_gws = fake_run_gws
+        return
+
+    api_module._gws_binary = lambda: None
+    messages = MagicMock()
+    messages.list.return_value.execute.return_value = {
+        "messages": [{"id": message["id"]}]
+    }
+    messages.get.return_value.execute.return_value = message
+    service = MagicMock()
+    service.users.return_value.messages.return_value = messages
+    api_module.build_service = lambda *_args: service
+
+
+@pytest.mark.parametrize("backend", ["gws", "sdk"])
+def test_api_gmail_search_preserves_internal_date(api_module, capsys, backend):
+    message = _gmail_message(api_module)
+    _use_gmail_backend(api_module, backend, message)
+    args = api_module.argparse.Namespace(query="from:sender", max=5)
+
+    api_module.gmail_search(args)
+
+    result = json.loads(capsys.readouterr().out)
+    assert result[0]["internalDate"] == "1780056000000"
+
+
+@pytest.mark.parametrize("backend", ["gws", "sdk"])
+def test_api_gmail_get_preserves_metadata_and_nested_attachments(
+    api_module, capsys, backend
+):
+    message = _gmail_message(api_module)
+    _use_gmail_backend(api_module, backend, message)
+    args = api_module.argparse.Namespace(message_id="msg-1")
+
+    api_module.gmail_get(args)
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["cc"] == "copy@example.com"
+    assert result["internalDate"] == "1780056000000"
+    assert result["body"] == "Plain body"
+    assert result["attachments"] == [
+        {
+            "filename": "example.pdf",
+            "mimeType": "application/pdf",
+            "attachmentId": "attachment-1",
+            "size": 1234,
+        }
+    ]

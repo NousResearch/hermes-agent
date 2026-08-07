@@ -495,7 +495,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 
-    # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
+        # Hermes rules: always-on rules from project .hermes/rules/ + profile rules/
+        # Resolve the active profile via get_active_profile_dir() inside
+        # _load_hermes_rules -- AIAgent has no `profile_dir` attribute
+        # (cf. PR #66441 review).
+        from agent.prompt_builder import _load_hermes_rules
+        rules_prompt = _load_hermes_rules(
+            cwd_path=Path(resolve_context_cwd() or os.getcwd()),
+            context_length=_ctx_len,
+        )
+        if rules_prompt:
+            context_parts.append(rules_prompt)
+
+    # ── Volatile tier (changes per session/turn — never cached) ───
     volatile_parts: List[str] = []
     # Skills are runtime-mutable: the agent adds and patches them across a
     # session (SKILLS_GUIDANCE tells it to patch a skill the moment it goes

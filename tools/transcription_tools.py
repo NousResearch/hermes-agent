@@ -143,12 +143,15 @@ _local_model_lock = threading.Lock()
 # The model singleton above is loaded once and never released — hundreds of MB
 # of RAM/VRAM sit idle between voice messages. On long-running gateway
 # processes (especially with local LLMs competing for the same GPU) this is
-# wasteful. A lightweight daemon thread checks _last_transcription_time and
-# unloads the model after a configurable idle period. The next voice message
-# reloads it transparently.
+# wasteful. A single long-lived daemon thread checks _last_transcription_time
+# and unloads the model after a configurable idle period, then exits. The next
+# voice message reloads the model and restarts the watcher transparently.
 _last_transcription_time: float = 0.0
 _idle_unload_thread: Optional[threading.Thread] = None
 _idle_unload_stop = threading.Event()
+# Serializes watcher start checks so two concurrent transcriptions can't
+# both observe "no watcher alive" and spawn duplicates.
+_idle_unload_mgmt_lock = threading.Lock()
 
 _IDLE_UNLOAD_CHECK_INTERVAL = 30  # seconds between idle checks
 
@@ -1513,38 +1516,56 @@ def _unload_local_model() -> None:
 
 
 def _start_idle_unload_watcher(timeout_seconds: int) -> None:
-    """Start (or replace) the background idle-unload thread.
+    """Ensure the idle-unload watcher thread is running.
 
-    The thread checks every ``_IDLE_UNLOAD_CHECK_INTERVAL`` seconds whether
-    ``_last_transcription_time`` is older than ``timeout_seconds``. If so, it
-    unloads the model and exits. The next transcription restarts it.
+    A single long-lived watcher: started only when none is alive, so the
+    per-transcription cost is one lock + one ``is_alive()`` check — no
+    stop/join/restart churn on the response path. The loop re-reads the
+    configured timeout from config every cycle, so changing
+    ``stt.local.unload_after_idle_seconds`` takes effect within one check
+    interval without a restart. After unloading (or when the timeout is set
+    to 0/never, or the model is already gone) the thread exits; the next
+    transcription restarts it.
+
+    ``timeout_seconds`` seeds the first cycle so a just-written config is
+    honored even if a concurrent config read would race.
     """
     global _idle_unload_thread
-    # Stop any existing watcher — a new timeout may have been configured
-    _idle_unload_stop.set()
-    if _idle_unload_thread is not None and _idle_unload_thread.is_alive():
-        _idle_unload_thread.join(timeout=5)
-    _idle_unload_stop.clear()
+    with _idle_unload_mgmt_lock:
+        if _idle_unload_thread is not None and _idle_unload_thread.is_alive():
+            return
 
-    def _watch():
-        while not _idle_unload_stop.is_set():
-            if _idle_unload_stop.wait(_IDLE_UNLOAD_CHECK_INTERVAL):
-                break
-            if _local_model is None:
-                break
-            idle_for = time.monotonic() - _last_transcription_time
-            if idle_for >= timeout_seconds:
-                _unload_local_model()
-                break
+        def _watch(initial_timeout=timeout_seconds):
+            timeout = initial_timeout
+            while not _idle_unload_stop.is_set():
+                if _idle_unload_stop.wait(_IDLE_UNLOAD_CHECK_INTERVAL):
+                    break
+                if _local_model is None:
+                    break
+                # Re-read the timeout each cycle: config edits apply without
+                # waiting for the next voice message.
+                try:
+                    timeout = _get_idle_unload_seconds(
+                        _load_stt_config().get("local") or {}
+                    )
+                except Exception:  # noqa: BLE001 - keep the seed value
+                    timeout = initial_timeout
+                if timeout <= 0:
+                    break  # unload disabled mid-flight — stand down
+                idle_for = time.monotonic() - _last_transcription_time
+                if idle_for >= timeout:
+                    _unload_local_model()
+                    break
 
-    _idle_unload_thread = threading.Thread(
-        target=_watch, name="hermes-stt-idle-unload", daemon=True
-    )
-    _idle_unload_thread.start()
+        _idle_unload_stop.clear()
+        _idle_unload_thread = threading.Thread(
+            target=_watch, name="hermes-stt-idle-unload", daemon=True
+        )
+        _idle_unload_thread.start()
 
 
 def _touch_transcription_time() -> None:
-    """Record that a transcription just completed (resets the idle timer)."""
+    """Record transcription activity (resets the idle timer)."""
     global _last_transcription_time
     _last_transcription_time = time.monotonic()
 
@@ -1729,10 +1750,18 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
 
     try:
         local_cfg = _load_stt_config().get("local") or {}
+        # Reset the idle timer BEFORE loading/transcribing so the idle-unload
+        # watcher can't count a long in-flight transcription as idle time and
+        # unload mid-use.
+        _touch_transcription_time()
         # Lazy-load the model (downloads on first use, ~150 MB for 'base').
         # Double-checked lock: concurrent voice messages must not both
         # download/load the model (#24767).
-        if _local_model is None or _local_model_name != model_name:
+        # ``model`` is a strong local reference bound under the lock: the idle
+        # watcher may null the module global at any time, but this
+        # transcription keeps using the instance it grabbed.
+        model = _local_model
+        if model is None or _local_model_name != model_name:
             with _local_model_lock:
                 if _local_model is None or _local_model_name != model_name:
                     logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
@@ -1747,7 +1776,10 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
                         compute_type=local_cfg.get("compute_type", "auto"),
                     )
                     _local_model_name = model_name
+                model = _local_model
 
+        if model is None:  # defensive: load failed without raising
+            return {"success": False, "transcript": "", "error": "Local whisper model failed to load"}
         # Shared hardened kwargs: VAD filter (default on), no cross-window
         # conditioning, language/initial_prompt resolution — one owner for
         # every local faster-whisper call site.
@@ -1756,7 +1788,7 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         transcribe_kwargs = build_local_transcribe_kwargs(stt_config)
 
         try:
-            segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
+            segments, info = model.transcribe(file_path, **transcribe_kwargs)
             transcript = _join_confident_segments(segments, local_config)
         except Exception as exc:
             # CUDA runtime libs sometimes only fail at dlopen-on-first-use,
@@ -1771,12 +1803,12 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
                 "evicting cached model and retrying on CPU (int8).",
                 exc,
             )
-            _local_model = None
-            _local_model_name = None
             from faster_whisper import WhisperModel
-            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
-            _local_model_name = model_name
-            segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
+            model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            with _local_model_lock:
+                _local_model = model
+                _local_model_name = model_name
+            segments, info = model.transcribe(file_path, **transcribe_kwargs)
             transcript = _join_confident_segments(segments, local_config)
 
         logger.info(

@@ -16,9 +16,16 @@ Contract under test:
 3. ``_touch_transcription_time`` resets the idle timer.
 4. ``_unload_local_model`` is safe to call when the model is already None.
 5. Config resolution handles garbage values gracefully.
+6. Watcher start is idempotent (single long-lived thread, no churn on the
+   transcription response path) and the loop re-reads config each cycle.
+7. RACE GUARD: an unload firing mid-transcription must not fail the
+   in-flight transcription — ``_transcribe_local`` binds a strong local
+   reference to the model instance instead of re-reading the global.
 """
 
+import struct
 import time
+import wave
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -127,10 +134,13 @@ class TestIdleUnloadWatcher:
         """The watcher unloads the model after the configured idle period."""
         mock_model = MagicMock(name="whisper_model")
         # Use a very short timeout and patch the check interval to 0.01s
-        # so the test runs in < 1 second.
+        # so the test runs in < 1 second. The watcher re-reads config each
+        # cycle, so patch _load_stt_config to keep the timeout active.
         with patch.object(tt, "_local_model", mock_model), \
              patch.object(tt, "_local_model_name", "base"), \
              patch.object(tt, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.01), \
+             patch.object(tt, "_load_stt_config",
+                          return_value={"local": {"unload_after_idle_seconds": 1}}), \
              patch.object(tt, "_last_transcription_time", time.monotonic() - 100):
             _start_idle_unload_watcher(timeout_seconds=1)
             # Wait for the watcher to fire
@@ -152,10 +162,12 @@ class TestIdleUnloadWatcher:
             tt._local_model_name = "base"
             tt._IDLE_UNLOAD_CHECK_INTERVAL = 0.01
             tt._last_transcription_time = time.monotonic()
-            _start_idle_unload_watcher(timeout_seconds=100)
-            # Give it a few check cycles — model must survive
-            time.sleep(0.1)
-            assert tt._local_model is not None
+            with patch.object(tt, "_load_stt_config",
+                              return_value={"local": {"unload_after_idle_seconds": 100}}):
+                _start_idle_unload_watcher(timeout_seconds=100)
+                # Give it a few check cycles — model must survive
+                time.sleep(0.1)
+                assert tt._local_model is not None
         finally:
             tt._local_model = original_model
             tt._local_model_name = original_name
@@ -171,19 +183,101 @@ class TestIdleUnloadWatcher:
             time.sleep(0.05)
         # No crash, no hang — watcher detected _local_model is None and exited
 
-    def test_watcher_stopped_on_new_start(self):
-        """Starting a new watcher stops the previous one."""
+    def test_start_is_idempotent_while_watcher_alive(self):
+        """A second start while a watcher is alive is a no-op (single
+        long-lived watcher — no stop/join/restart churn on the hot path)."""
         mock_model = MagicMock(name="whisper_model")
         with patch.object(tt, "_local_model", mock_model), \
              patch.object(tt, "_local_model_name", "base"), \
-             patch.object(tt, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.01), \
+             patch.object(tt, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.5), \
+             patch.object(tt, "_load_stt_config",
+                          return_value={"local": {"unload_after_idle_seconds": 100}}), \
              patch.object(tt, "_last_transcription_time", time.monotonic()):
             _start_idle_unload_watcher(timeout_seconds=100)
             first_thread = tt._idle_unload_thread
             assert first_thread is not None and first_thread.is_alive()
             _start_idle_unload_watcher(timeout_seconds=200)
-            second_thread = tt._idle_unload_thread
-            assert second_thread is not first_thread
-            # First thread should have been stopped
-            time.sleep(0.05)
-            assert not first_thread.is_alive()
+            assert tt._idle_unload_thread is first_thread  # same thread, no churn
+            tt._idle_unload_stop.set()  # clean up
+            first_thread.join(timeout=2)
+
+    def test_watcher_rereads_config_and_stands_down_when_disabled(self):
+        """Setting unload_after_idle_seconds to 0 mid-idle stops the watcher
+        without unloading — config edits apply within one check interval."""
+        mock_model = MagicMock(name="whisper_model")
+        original_model = tt._local_model
+        original_name = tt._local_model_name
+        original_interval = tt._IDLE_UNLOAD_CHECK_INTERVAL
+        original_ts = tt._last_transcription_time
+        try:
+            tt._local_model = mock_model
+            tt._local_model_name = "base"
+            tt._IDLE_UNLOAD_CHECK_INTERVAL = 0.01
+            tt._last_transcription_time = time.monotonic() - 1000  # long idle
+            with patch.object(tt, "_load_stt_config",
+                              return_value={"local": {"unload_after_idle_seconds": 0}}):
+                _start_idle_unload_watcher(timeout_seconds=1)
+                thread = tt._idle_unload_thread
+                assert thread is not None
+                thread.join(timeout=2)
+                assert not thread.is_alive()  # stood down...
+                assert tt._local_model is not None  # ...without unloading
+        finally:
+            tt._local_model = original_model
+            tt._local_model_name = original_name
+            tt._IDLE_UNLOAD_CHECK_INTERVAL = original_interval
+            tt._last_transcription_time = original_ts
+
+
+# ============================================================================
+# Race guard: unload mid-transcription must not break the in-flight call
+# ============================================================================
+
+
+class TestUnloadDuringTranscriptionRace:
+    def test_transcribe_survives_concurrent_unload(self, tmp_path):
+        """_transcribe_local binds a strong local ref under the lock; an
+        idle unload nulling the module global mid-transcription must not
+        produce 'NoneType has no attribute transcribe'."""
+        wav_path = tmp_path / "a.wav"
+        n = 16000
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(struct.pack(f"<{n}h", *([0] * n)))
+
+        seg = MagicMock()
+        seg.text = " hello"
+        seg.no_speech_prob = 0.0
+        seg.avg_logprob = -0.2
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        mock_model = MagicMock(name="whisper_model")
+        mock_model.transcribe.return_value = (iter([seg]), info)
+
+        real_kwargs_builder = tt.build_local_transcribe_kwargs
+
+        def kwargs_then_unload(*args, **kwargs):
+            # Simulate the watcher firing in the window BETWEEN the model
+            # load and the transcribe call (build_local_transcribe_kwargs
+            # runs exactly there): the module global goes away while this
+            # transcription is still in flight.
+            out = real_kwargs_builder(*args, **kwargs)
+            _unload_local_model()
+            assert tt._local_model is None
+            return out
+
+        with patch.object(tt, "_HAS_FASTER_WHISPER", True), \
+             patch.object(tt, "_load_stt_config", return_value={"local": {}}), \
+             patch.object(tt, "build_local_transcribe_kwargs",
+                          side_effect=kwargs_then_unload), \
+             patch.object(tt, "_local_model", mock_model), \
+             patch.object(tt, "_local_model_name", "base"):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(wav_path), "base")
+
+        assert result["success"] is True, result.get("error")
+        assert result["transcript"] == "hello"

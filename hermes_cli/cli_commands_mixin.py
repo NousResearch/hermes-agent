@@ -2880,13 +2880,67 @@ class CLICommandsMixin:
         lines = [ln for ln in raw.splitlines() if not ln.startswith("#!")]
         return "\n".join(lines).strip()
 
+    def _schedule_prompt_compose_in_terminal(self, initial_text: str) -> bool:
+        """Schedule the editor through prompt_toolkit's terminal handoff.
+
+        Slash commands run on ``process_loop`` rather than the application
+        event loop. Launching an editor directly from that thread leaves
+        prompt_toolkit attached to stdin and free to repaint over the editor.
+        """
+        app = getattr(self, "_app", None)
+        app_loop = getattr(app, "loop", None)
+        app_context = getattr(app, "context", None)
+        if (
+            app is None
+            or not getattr(app, "is_running", False)
+            or app_loop is None
+            or not app_loop.is_running()
+            or app_context is None
+        ):
+            return False
+
+        from cli import _DIM, _RST, _cprint
+        from prompt_toolkit.application import run_in_terminal
+
+        def _finished(task) -> None:
+            try:
+                composed = task.result()
+            except Exception as exc:
+                _cprint(f"  {_DIM}(>_<) Could not open editor: {exc}{_RST}")
+                return
+
+            if composed:
+                getattr(self, "_pending_input").put(composed)
+            else:
+                _cprint(f"  {_DIM}(._.) Empty prompt — nothing sent.{_RST}")
+
+        def _start() -> None:
+            try:
+                task = run_in_terminal(
+                    lambda: self._compose_in_editor(initial_text),
+                    in_executor=True,
+                )
+                task.add_done_callback(_finished)
+            except Exception as exc:
+                _cprint(f"  {_DIM}(>_<) Could not open editor: {exc}{_RST}")
+
+        def _schedule() -> None:
+            app_context.copy().run(_start)
+
+        try:
+            app_loop.call_soon_threadsafe(_schedule)
+        except Exception:
+            return False
+        return True
+
     def _handle_prompt_compose_command(self, cmd_original: str) -> None:
         """Handle /prompt — compose the next prompt in $EDITOR and send it.
 
         Opens the user's editor on a temporary markdown file (optionally
         seeded with text passed after the command), then queues the saved
-        buffer as the next agent turn via the one-shot ``_pending_agent_seed``
-        the interactive loop already consumes (same path as /blueprint).
+        buffer as the next agent turn. The interactive CLI schedules a managed
+        terminal handoff; non-interactive callers retain the one-shot
+        ``_pending_agent_seed`` fallback used by /blueprint.
         """
         from cli import _DIM, _RST, _cprint
 
@@ -2894,6 +2948,9 @@ class CLICommandsMixin:
         parts = (cmd_original or "").strip().split(None, 1)
         if len(parts) > 1:
             initial = parts[1]
+
+        if self._schedule_prompt_compose_in_terminal(initial):
+            return
 
         try:
             composed = self._compose_in_editor(initial)

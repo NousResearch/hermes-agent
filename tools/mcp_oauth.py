@@ -36,6 +36,7 @@ Configuration in config.yaml::
 
 import asyncio
 import contextvars
+import errno
 import json
 import logging
 import os
@@ -47,7 +48,7 @@ import sys
 import threading
 import time
 import webbrowser
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -421,6 +422,90 @@ def _write_json(path: Path, data: dict) -> None:
         raise
 
 
+_OAUTH_REFRESH_LOCK_POLL_SECONDS = 0.05
+_OAUTH_REFRESH_LOCK_TIMEOUT_SECONDS = 120.0
+
+
+def _try_oauth_refresh_file_lock(handle) -> bool:
+    """Try to take one cross-process advisory lock without blocking."""
+    try:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except (BlockingIOError, OSError) as exc:
+        if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+            return False
+        raise
+
+
+def _release_oauth_refresh_file_lock(handle) -> None:
+    """Release a lock acquired by :func:`_try_oauth_refresh_file_lock`."""
+    try:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except (OSError, ValueError):
+        logger.debug("MCP OAuth refresh lock release failed", exc_info=True)
+
+
+@asynccontextmanager
+async def _oauth_refresh_file_lock(tokens_path: Path):
+    """Serialize one rotating OAuth refresh across Hermes processes.
+
+    The lock is advisory and scoped to one MCP server's token file. Acquisition
+    polls non-blockingly so cancelling the auth flow cannot leave a background
+    thread that later acquires and strands the lock. The file descriptor owns
+    the OS lock, so process exit releases it automatically.
+    """
+    lock_path = tokens_path.with_name(f"{tokens_path.name}.refresh.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    secure_parent_dir(lock_path)
+
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(str(lock_path), flags, stat.S_IRUSR | stat.S_IWUSR)
+    handle = os.fdopen(fd, "r+b", buffering=0)
+    acquired = False
+    try:
+        # msvcrt locks a byte range; materialize that byte once. POSIX flock
+        # does not require it, but sharing one file shape keeps the path simple.
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _OAUTH_REFRESH_LOCK_TIMEOUT_SECONDS
+        while not acquired:
+            acquired = _try_oauth_refresh_file_lock(handle)
+            if acquired:
+                break
+            if loop.time() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for MCP OAuth refresh lock: {lock_path}"
+                )
+            await asyncio.sleep(_OAUTH_REFRESH_LOCK_POLL_SECONDS)
+        yield
+    finally:
+        if acquired:
+            _release_oauth_refresh_file_lock(handle)
+        handle.close()
+
+
 # ---------------------------------------------------------------------------
 # HermesTokenStorage -- persistent token/client-info on disk
 # ---------------------------------------------------------------------------
@@ -450,6 +535,10 @@ class HermesTokenStorage:
         return _get_token_dir(self._hermes_home) / f"{self._server_name}.meta.json"
 
     # -- tokens ------------------------------------------------------------
+
+    def refresh_lock(self):
+        """Return the per-server cross-process refresh lock context."""
+        return _oauth_refresh_file_lock(self._tokens_path())
 
     async def get_tokens(self) -> "OAuthToken | None":
         data = _read_json(self._tokens_path())

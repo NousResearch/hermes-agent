@@ -103,6 +103,10 @@ class _ProviderEntry:
 # ---------------------------------------------------------------------------
 
 
+class _RefreshCompletedByPeer(Exception):
+    """Restart the SDK auth flow after adopting a peer's refreshed grant."""
+
+
 def _make_hermes_provider_class() -> Optional[type]:
     """Lazy-import the SDK base class and return our subclass.
 
@@ -145,6 +149,63 @@ def _make_hermes_provider_class() -> Optional[type]:
             # registration can't help. Only auto-heal dynamically-registered
             # clients. See _maybe_flag_poisoned_client.
             self._hermes_preregistered = preregistered
+            # Active per-server OS lock context while a rotating refresh-token
+            # request is in flight. The SDK auth flow is serialized by its own
+            # asyncio lock, so one provider instance can own at most one.
+            self._hermes_refresh_lock_cm = None
+
+        async def _release_hermes_refresh_lock(self) -> None:
+            # Some compatibility tests/subclasses construct providers without
+            # running this subclass's __init__; absence means no lock is held.
+            lock_cm = getattr(self, "_hermes_refresh_lock_cm", None)
+            self._hermes_refresh_lock_cm = None
+            if lock_cm is not None:
+                await lock_cm.__aexit__(None, None, None)
+
+        async def _refresh_token(self):
+            """Serialize rotating refresh tokens across Hermes processes.
+
+            Re-read disk after acquiring the OS lock. If another process has
+            already rotated the grant, restart the SDK flow with that fresh
+            token instead of replaying the consumed refresh token. Otherwise
+            keep the lock through the token response and atomic persistence.
+            """
+            from tools.mcp_oauth import HermesTokenStorage
+
+            storage = self.context.storage
+            if not isinstance(storage, HermesTokenStorage):
+                return await super()._refresh_token()
+
+            lock_cm = storage.refresh_lock()
+            await lock_cm.__aenter__()
+            self._hermes_refresh_lock_cm = lock_cm
+            try:
+                disk_tokens = await storage.get_tokens()
+                self.context.current_tokens = disk_tokens
+                if disk_tokens is not None and disk_tokens.expires_in is not None:
+                    self.context.update_token_expiry(disk_tokens)
+
+                # The waiter either adopted the winner's valid access token or
+                # observed that the shared grant was removed/no longer
+                # refreshable. Restart so the SDK re-evaluates from that state.
+                if self.context.is_token_valid() or not self.context.can_refresh_token():
+                    await self._release_hermes_refresh_lock()
+                    raise _RefreshCompletedByPeer
+
+                return await super()._refresh_token()
+            except _RefreshCompletedByPeer:
+                raise
+            except BaseException:
+                await self._release_hermes_refresh_lock()
+                raise
+
+        async def _handle_refresh_response(self, response):
+            try:
+                return await super()._handle_refresh_response(response)
+            finally:
+                # set_tokens() completes before the base handler returns, so a
+                # waiter can safely re-read the rotated grant after this release.
+                await self._release_hermes_refresh_lock()
 
         async def _initialize(self) -> None:
             """Load stored tokens + client info AND seed token_expiry_time.
@@ -416,20 +477,34 @@ def _make_hermes_provider_class() -> Optional[type]:
             # generator via inner.asend(incoming), preserving the bidirectional
             # contract. Regression from PR #11383 caught by
             # tests/tools/test_mcp_oauth_bidirectional.py.
-            inner = super().async_auth_flow(request)
-            try:
-                outgoing = await inner.__anext__()
-                while True:
-                    incoming = yield outgoing
-                    # Sniff the response for a dead-client-registration signal
-                    # before handing it back to the SDK (best-effort, GH#36767).
-                    await self._maybe_flag_poisoned_client(incoming)
-                    outgoing = await inner.asend(incoming)
-            except StopAsyncIteration:
-                # Persist any metadata the SDK discovered lazily during the
-                # 401 branch so a subsequent cold-load skips discovery.
-                self._persist_oauth_metadata_if_changed()
-                return
+            while True:
+                inner = super().async_auth_flow(request)
+                try:
+                    outgoing = await inner.__anext__()
+                    while True:
+                        incoming = yield outgoing
+                        # Sniff the response for a dead-client-registration signal
+                        # before handing it back to the SDK (best-effort, GH#36767).
+                        await self._maybe_flag_poisoned_client(incoming)
+                        outgoing = await inner.asend(incoming)
+                except _RefreshCompletedByPeer:
+                    # A sibling process rotated the grant while this flow waited
+                    # for the per-server OS lock. _refresh_token adopted the new
+                    # token from disk; restart so the SDK re-evaluates validity
+                    # and adds the winner's access token to the original request.
+                    continue
+                except StopAsyncIteration:
+                    # Persist any metadata the SDK discovered lazily during the
+                    # 401 branch so a subsequent cold-load skips discovery.
+                    self._persist_oauth_metadata_if_changed()
+                    return
+                finally:
+                    try:
+                        await inner.aclose()
+                    finally:
+                        # Covers client disconnect/cancellation while the SDK is
+                        # parked at ``refresh_response = yield refresh_request``.
+                        await self._release_hermes_refresh_lock()
 
     return HermesMCPOAuthProvider
 

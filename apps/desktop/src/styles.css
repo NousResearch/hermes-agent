@@ -2264,3 +2264,14 @@ button[data-slot='aui_msg-reactions'] svg {
     opacity: 0.4;
   }
 }
+
+/* Keep-alive hidden panes (see pane-visibility.ts) hide with `visibility:
+   hidden` so the layout box — and with it scroll positions — survives a tab
+   round-trip. But `visibility` is inherited-and-overridable: third-party
+   widget scripts (Twitter's embed injects its rendered card with an inline
+   `visibility: visible`) can paint through the hidden pane over the active
+   view (#79833). Force every descendant to follow the pane's visibility; an
+   author `!important` rule beats the widget's inline non-important style. */
+[data-pane-hidden] * {
+  visibility: inherit !important;
+}

@@ -624,6 +624,32 @@ function Install-AgentBrowser {
     }
     Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
 
+    # --ignore-scripts skips agent-browser's postinstall, which normally
+    # (a) downloads the platform binary and (b) rewrites Windows shims to
+    # invoke the native .exe. The tarball already ships
+    # agent-browser-win32-x64.exe, but on Windows ARM64 the Node wrapper
+    # still looks for win32-arm64 and will spawn a 0-byte stub as EFTYPE
+    # (#77051 / vercel-labs/agent-browser#1256). Heal that here.
+    $abPkgBin = Join-Path $prefixDir "node_modules\agent-browser\bin"
+    $abX64 = Join-Path $abPkgBin "agent-browser-win32-x64.exe"
+    $abArm64 = Join-Path $abPkgBin "agent-browser-win32-arm64.exe"
+    if (Test-Path $abX64) {
+        $nativeArch = Get-WindowsArch
+        if ($nativeArch -eq "arm64") {
+            $arm64Len = 0
+            if (Test-Path $abArm64) { $arm64Len = (Get-Item $abArm64).Length }
+            if ($arm64Len -lt 1024) {
+                Copy-Item -Path $abX64 -Destination $abArm64 -Force
+                Write-Info "Healed agent-browser Windows ARM64 stub (using win32-x64 via emulation)"
+            }
+        }
+        # Point the prefix shim at the native exe so Chromium install and
+        # later hermes browser tools skip the broken JS wrapper path.
+        $cmdShim = Join-Path $prefixDir "agent-browser.cmd"
+        $shimBody = "@echo off`r`n`"%~dp0node_modules\agent-browser\bin\agent-browser-win32-x64.exe`" %*`r`n"
+        Set-Content -Path $cmdShim -Value $shimBody -Encoding ASCII
+    }
+
     if (-not $SkipChromium) {
         $sysBrowser = Find-SystemBrowser
         if ($sysBrowser) {
@@ -631,6 +657,9 @@ function Install-AgentBrowser {
             Write-Info "Explicit browser override set -- skipping bundled Chromium download"
         } else {
             $abExe = Join-Path $prefixDir "agent-browser.cmd"
+            if (-not (Test-Path $abExe) -and (Test-Path $abX64)) {
+                $abExe = $abX64
+            }
             if (Test-Path $abExe) {
                 Write-Info "Installing Chromium via agent-browser install..."
                 $abLog = [System.IO.Path]::GetTempFileName()

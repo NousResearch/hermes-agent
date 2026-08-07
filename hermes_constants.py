@@ -679,6 +679,193 @@ def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
     return merged
 
 
+def is_windows_arm64() -> bool:
+    """Return True when this process is running on a Windows ARM64 host/ABI.
+
+    Used to pick the published ``agent-browser-win32-x64.exe`` build: the npm
+    package has no ``win32-arm64`` binary, and the Node wrapper still looks for
+    one (issue #77051 / vercel-labs/agent-browser#1256).
+    """
+    if sys.platform != "win32":
+        return False
+    import platform as _platform
+
+    for raw in (
+        os.environ.get("PROCESSOR_ARCHITEW6432"),
+        os.environ.get("PROCESSOR_ARCHITECTURE"),
+        _platform.machine(),
+    ):
+        arch = (raw or "").strip().upper()
+        if arch in ("ARM64", "AARCH64"):
+            return True
+    return False
+
+
+def _agent_browser_native_binary_usable(path: Path) -> bool:
+    """True when *path* looks like a real packaged agent-browser native binary.
+
+    Rejects missing files and the 0-byte Windows ARM64 stubs left by older
+    ``agent-browser`` postinstall downloads (vercel-labs/agent-browser#1256).
+    """
+    try:
+        return path.is_file() and path.stat().st_size >= 1024
+    except OSError:
+        return False
+
+
+def agent_browser_native_binary_names(*, windows_arm64: bool | None = None) -> tuple[str, ...]:
+    """Ordered native binary filenames to try for the current platform.
+
+    When *windows_arm64* is passed explicitly (including ``False``), Windows
+    naming is used regardless of ``sys.platform`` so unit tests can exercise
+    the Windows ARM64 ladder on other hosts.
+    """
+    if windows_arm64 is not None or sys.platform == "win32":
+        if windows_arm64 is None:
+            windows_arm64 = is_windows_arm64()
+        if windows_arm64:
+            # Only win32-x64 is published; an arm64-named file is often a
+            # 0-byte stub that spawns as EFTYPE under arm64 Node.
+            return ("agent-browser-win32-x64.exe", "agent-browser-win32-arm64.exe")
+        return ("agent-browser-win32-x64.exe",)
+
+    import platform as _platform
+
+    machine = (_platform.machine() or "").lower()
+    if machine in ("aarch64", "arm64"):
+        arch = "arm64"
+    elif machine in ("x86_64", "amd64", "x64"):
+        arch = "x64"
+    else:
+        return ()
+
+    if sys.platform == "darwin":
+        return (f"agent-browser-darwin-{arch}",)
+    if sys.platform.startswith("linux"):
+        # Prefer glibc build; musl variant is a secondary candidate.
+        return (
+            f"agent-browser-linux-{arch}",
+            f"agent-browser-linux-musl-{arch}",
+        )
+    return ()
+
+
+def iter_agent_browser_package_bin_dirs(cli_path: str | None) -> list[Path]:
+    """Return package ``bin/`` directories adjacent to a resolved CLI/shim path."""
+    if not cli_path or " " in cli_path:
+        return []
+    try:
+        path = Path(cli_path).resolve()
+    except OSError:
+        path = Path(cli_path)
+
+    dirs: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(candidate: Path) -> None:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            dirs.append(candidate)
+
+    # Already pointing at bin/agent-browser.js or a native exe in bin/
+    if path.parent.name.lower() == "bin":
+        _add(path.parent)
+    # node_modules/.bin/agent-browser{.cmd,.ps1,}
+    if path.parent.name == ".bin":
+        _add(path.parent.parent / "agent-browser" / "bin")
+    # npm --prefix shim: <prefix>/agent-browser.cmd
+    _add(path.parent / "node_modules" / "agent-browser" / "bin")
+    return dirs
+
+
+def resolve_agent_browser_native_binary(
+    cli_path: str | None = None,
+    *,
+    search_roots: list[Path] | None = None,
+    windows_arm64: bool | None = None,
+) -> str | None:
+    """Locate a packaged native agent-browser binary near *cli_path* or *search_roots*.
+
+    On Windows ARM64 this prefers ``agent-browser-win32-x64.exe`` so callers can
+    bypass the npm JS wrapper, which still requests a non-existent / 0-byte
+    ``win32-arm64`` build and fails with ``spawn EFTYPE`` (issue #77051).
+    """
+    names = agent_browser_native_binary_names(windows_arm64=windows_arm64)
+    if not names:
+        return None
+
+    bin_dirs: list[Path] = []
+    seen: set[str] = set()
+
+    def _add_dir(candidate: Path) -> None:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            bin_dirs.append(candidate)
+
+    for directory in iter_agent_browser_package_bin_dirs(cli_path):
+        _add_dir(directory)
+    for root in search_roots or []:
+        root_path = Path(root)
+        _add_dir(root_path / "node_modules" / "agent-browser" / "bin")
+        if root_path.name == "agent-browser":
+            _add_dir(root_path / "bin")
+        if root_path.name == "bin" and root_path.parent.name == "agent-browser":
+            _add_dir(root_path)
+
+    for directory in bin_dirs:
+        for name in names:
+            candidate = directory / name
+            if _agent_browser_native_binary_usable(candidate):
+                return str(candidate)
+    return None
+
+
+def prefer_agent_browser_native_binary(cli_path: str | None) -> str | None:
+    """Return a native binary path when it should replace an npm shim/JS wrapper.
+
+    Passes through ``None`` / the ``npx agent-browser`` sentinel unchanged.
+    """
+    if not cli_path:
+        return cli_path
+    if " " in cli_path and cli_path.split()[0].endswith("npx"):
+        return cli_path
+    native = resolve_agent_browser_native_binary(cli_path)
+    return native or cli_path
+
+
+def heal_agent_browser_windows_arm64_stub(
+    package_bin_dir: Path | str,
+    *,
+    windows_arm64: bool | None = None,
+) -> str | None:
+    """Replace a 0-byte ``win32-arm64`` stub with the published x64 binary.
+
+    Returns the usable native binary path, or ``None`` when healing is
+    impossible. Safe no-op on non-Windows / non-ARM64 hosts.
+    """
+    if windows_arm64 is None:
+        windows_arm64 = is_windows_arm64()
+    if not windows_arm64:
+        return None
+
+    bin_dir = Path(package_bin_dir)
+    x64 = bin_dir / "agent-browser-win32-x64.exe"
+    arm64 = bin_dir / "agent-browser-win32-arm64.exe"
+    if not _agent_browser_native_binary_usable(x64):
+        return None
+    try:
+        if not _agent_browser_native_binary_usable(arm64):
+            # Copy so npx / the JS wrapper (which still asks for arm64) can
+            # spawn a real PE instead of EFTYPE on a 0-byte stub.
+            arm64.write_bytes(x64.read_bytes())
+    except OSError:
+        # Still usable via direct x64 invocation even if the stub copy fails.
+        return str(x64)
+    return str(x64)
+
+
 def agent_browser_runnable(path: str | None) -> bool:
     """Return True only when *path* is an agent-browser CLI that actually runs.
 
@@ -695,6 +882,10 @@ def agent_browser_runnable(path: str | None) -> bool:
     (exit 0) run, so a dead/wrong-arch/hung binary is rejected and the caller
     can fall through to the next resolution candidate.
 
+    On Windows ARM64, prefers the packaged ``win32-x64`` native binary over the
+    npm JS wrapper, which otherwise spawns a missing/0-byte ``win32-arm64``
+    image and fails with ``EFTYPE`` (issue #77051).
+
     Special cases:
       * ``None`` / empty → False.
       * The ``"npx agent-browser"`` fallback form (contains a space, not a real
@@ -706,17 +897,34 @@ def agent_browser_runnable(path: str | None) -> bool:
     # The npx fallback is a two-token command string, not a filesystem path.
     if " " in path and path.split()[0].endswith("npx"):
         return True
+
+    probe = prefer_agent_browser_native_binary(path) or path
+
     # exists() follows symlinks — a dangling link returns False here, so we
     # never even spawn a subprocess for the broken-link case.
-    if not os.path.exists(path) or not os.access(path, os.X_OK):
+    if not os.path.exists(probe) or not os.access(probe, os.X_OK):
         return False
+    # Reject empty PE stubs without paying for a spawn — Windows ARM64 only.
+    # Short POSIX shell wrappers are often <<1KB and must still reach --version.
+    try:
+        probe_path = Path(probe)
+        if (
+            is_windows_arm64()
+            and probe_path.is_file()
+            and probe_path.suffix.lower() == ".exe"
+            and probe_path.stat().st_size < 1024
+        ):
+            return False
+    except OSError:
+        return False
+
     import subprocess
 
     try:
         from hermes_cli._subprocess_compat import windows_hide_flags
 
         result = subprocess.run(
-            [path, "--version"],
+            [probe, "--version"],
             capture_output=True,
             timeout=10,
             env=with_hermes_node_path(),

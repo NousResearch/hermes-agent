@@ -69,6 +69,9 @@ from hermes_constants import (
     agent_browser_runnable,
     get_hermes_home,
     get_hermes_home_override,
+    heal_agent_browser_windows_arm64_stub,
+    prefer_agent_browser_native_binary,
+    resolve_agent_browser_native_binary,
 )
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -2288,7 +2291,43 @@ def _agent_browser_candidate_present(path: str | None) -> bool:
         return False
     if " " in path and path.split()[0].endswith("npx"):
         return True
-    return os.path.exists(path) and (os.name == "nt" or os.access(path, os.X_OK))
+    coerced = prefer_agent_browser_native_binary(path) or path
+    return os.path.exists(coerced) and (os.name == "nt" or os.access(coerced, os.X_OK))
+
+
+def _coerce_agent_browser_cmd(path: str | None) -> str | None:
+    """Prefer a packaged native binary over the npm JS wrapper when available.
+
+    On Windows ARM64 the published artifact is ``agent-browser-win32-x64.exe``;
+    the Node wrapper still looks for ``win32-arm64`` and can spawn a 0-byte
+    stub as ``EFTYPE`` (issue #77051). Invoking the x64 PE directly preserves
+    the feature under Windows' x64 emulation.
+    """
+    if not path:
+        return path
+    if " " in path and path.split()[0].endswith("npx"):
+        return path
+    try:
+        native = resolve_agent_browser_native_binary(path)
+        if native:
+            # Best-effort: heal a 0-byte arm64 stub so any residual npx/JS
+            # path in the same package also works.
+            heal_agent_browser_windows_arm64_stub(Path(native).parent)
+            return native
+    except OSError:
+        pass
+    return prefer_agent_browser_native_binary(path) or path
+
+
+def _windows_arm64_agent_browser_error() -> str:
+    return (
+        "agent-browser has no native Windows ARM64 build; the published "
+        "agent-browser-win32-x64.exe binary was not found or is unusable "
+        "(empty/corrupt). Reinstall with: npm install -g agent-browser "
+        "(or re-run hermes setup / the Windows installer), then retry. "
+        "If spawn still fails with EFTYPE, invoke the win32-x64 executable "
+        "directly or use a cloud/CDP browser backend. See issue #77051."
+    )
 
 
 def _find_agent_browser(*, validate: bool = True) -> str:
@@ -2328,30 +2367,39 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     # the next working resolution (extended PATH → local .bin → npx) instead of
     # caching the broken one and silently killing every browser tool.
 
+    def _accept(candidate: str | None) -> str | None:
+        if not candidate:
+            return None
+        coerced = _coerce_agent_browser_cmd(candidate)
+        if not coerced:
+            return None
+        ok = (
+            agent_browser_runnable(coerced)
+            if validate
+            else _agent_browser_candidate_present(coerced)
+        )
+        return coerced if ok else None
+
     # Check if it's in PATH (global install)
-    which_result = shutil.which("agent-browser")
-    if which_result and (
-        agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
-    ):
+    accepted = _accept(shutil.which("agent-browser"))
+    if accepted:
         if not validate:
-            return which_result
-        _cached_agent_browser = which_result
+            return accepted
+        _cached_agent_browser = accepted
         _agent_browser_resolved = True
-        return which_result
+        return accepted
 
     # Build an extended search PATH including Hermes-managed Node, macOS
     # versioned Homebrew installs, and fallback system dirs like Termux.
     extended_path = _merge_browser_path("")
     if extended_path:
-        which_result = shutil.which("agent-browser", path=extended_path)
-        if which_result and (
-            agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
-        ):
+        accepted = _accept(shutil.which("agent-browser", path=extended_path))
+        if accepted:
             if not validate:
-                return which_result
-            _cached_agent_browser = which_result
+                return accepted
+            _cached_agent_browser = accepted
             _agent_browser_resolved = True
-            return which_result
+            return accepted
 
     # Check local node_modules/.bin/ (npm install in repo root).
     # On Windows, npm drops three shims in .bin: an extensionless POSIX shell
@@ -2362,28 +2410,57 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     # `.cmd` shim instead. `shutil.which` consults PATHEXT, so we delegate to it
     # with an explicit path so POSIX hosts still pick the extensionless shim.
     repo_root = Path(__file__).parent.parent
+    hermes_home = get_hermes_home()
+    search_roots = [
+        repo_root,
+        hermes_home,
+        hermes_home / "node",
+    ]
+    # Direct native-binary probe before npx: on Windows ARM64, npx routes
+    # through agent-browser.js which still requests win32-arm64 (#77051).
+    native_direct = resolve_agent_browser_native_binary(search_roots=search_roots)
+    if native_direct:
+        heal_agent_browser_windows_arm64_stub(Path(native_direct).parent)
+        if (not validate) or agent_browser_runnable(native_direct):
+            if not validate:
+                return native_direct
+            _cached_agent_browser = native_direct
+            _agent_browser_resolved = True
+            return native_direct
+
     local_bin_dir = repo_root / "node_modules" / ".bin"
     if local_bin_dir.is_dir():
-        local_which = shutil.which("agent-browser", path=str(local_bin_dir))
-        if local_which and (
-            agent_browser_runnable(local_which) if validate else _agent_browser_candidate_present(local_which)
-        ):
+        accepted = _accept(shutil.which("agent-browser", path=str(local_bin_dir)))
+        if accepted:
             if not validate:
-                return local_which
-            _cached_agent_browser = local_which
+                return accepted
+            _cached_agent_browser = accepted
             _agent_browser_resolved = True
-            return _cached_agent_browser
+            return accepted
 
     # Check common npx locations (also search the extended fallback PATH)
     npx_path = shutil.which("npx")
     if not npx_path and extended_path:
         npx_path = shutil.which("npx", path=extended_path)
     if npx_path:
-        if not validate:
-            return "npx agent-browser"
-        _cached_agent_browser = "npx agent-browser"
-        _agent_browser_resolved = True
-        return _cached_agent_browser
+        # Avoid caching a known-broken npx→JS→win32-arm64 path when we can
+        # already see the package tree but its native binary is unusable.
+        if sys.platform == "win32":
+            from hermes_constants import is_windows_arm64
+
+            if is_windows_arm64() and not resolve_agent_browser_native_binary(
+                search_roots=search_roots, windows_arm64=True
+            ):
+                if not validate:
+                    raise FileNotFoundError(_windows_arm64_agent_browser_error())
+                # Fall through to lazy install / final error with the ARM64 hint.
+                npx_path = None
+        if npx_path:
+            if not validate:
+                return "npx agent-browser"
+            _cached_agent_browser = "npx agent-browser"
+            _agent_browser_resolved = True
+            return _cached_agent_browser
 
     if not validate:
         raise FileNotFoundError("agent-browser CLI not found")
@@ -2400,14 +2477,25 @@ def _find_agent_browser(*, validate: bool = True) -> str:
                 shutil.which("agent-browser", path=str(get_hermes_home() / "node")),
             ]
             for recheck in candidates:
-                if recheck and agent_browser_runnable(recheck):
-                    _cached_agent_browser = recheck
+                accepted = _accept(recheck)
+                if accepted:
+                    _cached_agent_browser = accepted
                     _agent_browser_resolved = True
-                    return recheck
+                    return accepted
+            native_after = resolve_agent_browser_native_binary(search_roots=search_roots)
+            if native_after and agent_browser_runnable(native_after):
+                _cached_agent_browser = native_after
+                _agent_browser_resolved = True
+                return native_after
     except Exception:
         pass
 
     _agent_browser_resolved = True
+    if sys.platform == "win32":
+        from hermes_constants import is_windows_arm64
+
+        if is_windows_arm64():
+            raise FileNotFoundError(_windows_arm64_agent_browser_error())
     raise FileNotFoundError(
         "agent-browser CLI not found. Install it with: "
         f"{_browser_install_hint()}\n"

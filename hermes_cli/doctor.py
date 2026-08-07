@@ -20,7 +20,11 @@ from hermes_cli.config import (
 )
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
-from hermes_constants import agent_browser_runnable
+from hermes_constants import (
+    agent_browser_runnable,
+    prefer_agent_browser_native_binary,
+    resolve_agent_browser_native_binary,
+)
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -1911,25 +1915,41 @@ def run_doctor(args):
             or _which_in(HERMES_HOME / "node")
         )
         _legacy_ab = _which_in(HERMES_HOME / "node_modules" / ".bin")
-        if agent_browser_path.exists():
-            check_ok("agent-browser (Node.js)", "(browser automation)")
+        # Prefer a packaged native binary (esp. win32-x64 on Windows ARM64 —
+        # issue #77051) over "node_modules/agent-browser exists".
+        _native_ab = resolve_agent_browser_native_binary(
+            _which_ab or _managed_ab or _legacy_ab,
+            search_roots=[
+                PROJECT_ROOT,
+                HERMES_HOME,
+                HERMES_HOME / "node",
+                agent_browser_path,
+            ],
+        )
+        _probe_candidates = [
+            _native_ab,
+            prefer_agent_browser_native_binary(_which_ab) if _which_ab else None,
+            prefer_agent_browser_native_binary(_managed_ab) if _managed_ab else None,
+            prefer_agent_browser_native_binary(_legacy_ab) if _legacy_ab else None,
+        ]
+        _runnable_ab = next(
+            (c for c in _probe_candidates if c and agent_browser_runnable(c)),
+            None,
+        )
+        if _runnable_ab:
+            if agent_browser_path.exists():
+                check_ok("agent-browser (Node.js)", "(browser automation)")
+            else:
+                check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
-        elif _which_ab and agent_browser_runnable(_which_ab):
-            check_ok("agent-browser", "(browser automation)")
-            agent_browser_ok = True
-        elif _managed_ab and agent_browser_runnable(_managed_ab):
-            check_ok("agent-browser", "(browser automation)")
-            agent_browser_ok = True
-        elif _legacy_ab and agent_browser_runnable(_legacy_ab):
-            check_ok("agent-browser", "(browser automation)")
-            agent_browser_ok = True
-        elif _which_ab:
-            # Found on PATH but won't run — almost always a dangling global
-            # symlink left behind by agent-browser's npm postinstall after a
-            # `hermes update` wiped node_modules (issue #48521).
+        elif agent_browser_path.exists() or _which_ab or _managed_ab or _legacy_ab:
+            # Package/shim present but won't run — common on Windows ARM64
+            # when only a 0-byte win32-arm64 stub exists (#77051), or a
+            # dangling global symlink after `hermes update` (#48521).
+            broken_at = _which_ab or _managed_ab or _legacy_ab or str(agent_browser_path)
             check_warn(
                 "agent-browser found but not runnable",
-                f"(broken symlink at {_which_ab}? run: npm install)",
+                f"(broken install at {broken_at}? run: npm install -g agent-browser)",
             )
         elif _is_termux():
             check_info("agent-browser is not installed (expected in the tested Termux path)")

@@ -611,7 +611,9 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
             out_path = out_path / f"hermes-backup-{stamp}.zip"
     else:
         stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        out_path = Path.home() / f"hermes-backup-{stamp}.zip"
+        # Per AGENTS.md §State files: persistent state under HERMES_HOME,
+        # not Path.home(). Multi-profile safe (each profile gets its own dir).
+        out_path = get_hermes_home() / "backups" / f"hermes-backup-{stamp}.zip"
 
     # Ensure the suffix is .zip
     if out_path.suffix.lower() != ".zip":

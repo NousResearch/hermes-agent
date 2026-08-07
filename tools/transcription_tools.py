@@ -42,6 +42,10 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
 
+from hermes_cli.audio_key_guard import (
+    resolve_provider_key as _guard_provider_key,
+    PLACEHOLDER_KEY as _PLACEHOLDER_OPENAI_KEY,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
@@ -2240,6 +2244,11 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         ).strip().rstrip("/")
 
     base_url = _resolve_base_url(creds)
+    # Never send the real cloud key to a config-overridden private/LAN
+    # base_url — it was not issued for that server, and for http it would
+    # travel in cleartext. A config api_key stays authoritative for
+    # self-hosted-with-auth; keyless self-hosted gets a placeholder.
+    api_key = _guard_provider_key(xai_config.get("api_key"), api_key, base_url)
     language = _resolve_stt_language("xai", stt_config) or ""
     # .get("format", True) already defaults to True when the key is absent;
     # is_truthy_value only normalizes truthy/falsy strings from config.
@@ -2360,6 +2369,11 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
         or get_env_value("ELEVENLABS_STT_BASE_URL")
         or ELEVENLABS_STT_BASE_URL
     ).strip().rstrip("/")
+    # Never send the real cloud key to a config-overridden private/LAN
+    # base_url — it was not issued for that server, and for http it would
+    # travel in cleartext. A config api_key stays authoritative for
+    # self-hosted-with-auth; keyless self-hosted gets a placeholder.
+    api_key = _guard_provider_key(elevenlabs_config.get("api_key"), api_key, base_url)
     language_code = _resolve_stt_language(
         "elevenlabs", stt_config, extra_keys=("language_code",)
     ) or ""
@@ -2459,6 +2473,10 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
     if not isinstance(di_config, dict):
         di_config = {}
     base_url = deepinfra_base_url(di_config)
+    # Never send the real cloud key to a config-overridden private/LAN
+    # base_url; a config ``stt.deepinfra.api_key`` wins for
+    # self-hosted-with-auth, keyless self-hosted gets a placeholder.
+    api_key = _guard_provider_key(di_config.get("api_key"), api_key, base_url)
 
     if not model_name:
         candidates = deepinfra_model_ids("stt")

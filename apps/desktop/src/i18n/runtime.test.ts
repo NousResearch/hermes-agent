@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { fieldCopyForSchemaKey } from '@/app/settings/field-copy'
 
 import { TRANSLATIONS } from './catalog'
+import { ru } from './ru'
 import { setRuntimeI18nLocale, translateNow } from './runtime'
 import { zh } from './zh'
 
@@ -28,6 +29,34 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('notifications.updateReadyMessage', 2)).toBe('2 new changes available.')
   })
 
+  it('registers and translates the Russian locale', () => {
+    expect(TRANSLATIONS.ru).toBe(ru)
+
+    setRuntimeI18nLocale('ru')
+    expect(translateNow('boot.ready')).toBe('Hermes Desktop готов')
+  })
+
+  it('uses Russian plural forms for function translations', () => {
+    setRuntimeI18nLocale('ru')
+
+    const cases = [
+      [0, 'Ещё 0 уведомлений'],
+      [1, 'Ещё 1 уведомление'],
+      [2, 'Ещё 2 уведомления'],
+      [4, 'Ещё 4 уведомления'],
+      [5, 'Ещё 5 уведомлений'],
+      [11, 'Ещё 11 уведомлений'],
+      [21, 'Ещё 21 уведомление'],
+      [22, 'Ещё 22 уведомления'],
+      [25, 'Ещё 25 уведомлений'],
+      [111, 'Ещё 111 уведомлений']
+    ] as const
+
+    for (const [count, expected] of cases) {
+      expect(translateNow('notifications.more', count)).toBe(expected)
+    }
+  })
+
   it('translates migrated overlap keys for newly supported locales', () => {
     setRuntimeI18nLocale('ja')
     expect(translateNow('common.save')).toBe('保存')
@@ -51,6 +80,10 @@ describe('desktop i18n runtime translator', () => {
 
     expect(fieldCopyForSchemaKey(zh.settings.fieldLabels, field)).toBe('推理过程块')
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
+    expect(fieldCopyForSchemaKey(ru.settings.fieldLabels, field)).toBe('Блоки рассуждений')
+    expect(fieldCopyForSchemaKey(ru.settings.fieldDescriptions, field)).toBe(
+      'Показывать блоки рассуждений, когда их предоставляет бэкенд.'
+    )
   })
 
   it('falls back to English when the active locale cannot resolve a key', () => {

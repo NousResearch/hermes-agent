@@ -290,7 +290,8 @@ class TestSearchContextParsing:
         env.cwd = "/tmp"
         ops = ShellFileOperations(env)
 
-        with patch.object(ops, "_exec") as mock_exec:
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=True):
             mock_exec.return_value = MagicMock(
                 exit_code=0,
                 stdout="dir/file-12-name.py-8-context here\n",
@@ -310,3 +311,191 @@ class TestSearchContextParsing:
         assert result.matches[0].path == "dir/file-12-name.py"
         assert result.matches[0].line_number == 8
         assert result.matches[0].content == "context here"
+
+    def test_search_with_grep_busybox_filters_hidden_and_glob(self):
+        """BusyBox path (no --exclude-dir/--include) post-filters in Python."""
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        # grep without GNU flags traverses hidden dirs and ignores file_glob,
+        # so stdout contains a visible .py hit, a hidden-dir hit and a
+        # non-matching extension. Only the first should survive.
+        stdout = (
+            "src/app.py:3:needle here\n"
+            ".git/config.py:1:needle hidden\n"
+            "src/notes.txt:9:needle txt\n"
+        )
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=False):
+            mock_exec.return_value = MagicMock(exit_code=0, stdout=stdout)
+            result = ops._search_with_grep(
+                "needle",
+                path=".",
+                file_glob="*.py",
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=0,
+            )
+
+        assert result.error is None
+        assert result.total_count == 1
+        assert result.matches[0].path == "src/app.py"
+        # GNU-only flags must not be emitted to a BusyBox grep.
+        sent_cmd = mock_exec.call_args[0][0]
+        assert "--exclude-dir" not in sent_cmd
+        assert "--include" not in sent_cmd
+
+    def test_search_with_grep_detects_busybox_usage_text(self):
+        """Leaked BusyBox usage text must surface as an error, not fake hits."""
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        usage = (
+            "grep: unrecognized option: exclude-dir=.*\n"
+            "BusyBox v1.37.0 (2025-12-16 14:19:28 UTC) multi-call binary.\n"
+            "Usage: grep [-HhnlLoqvsrRiwFE] ...\n"
+        )
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=True):
+            mock_exec.return_value = MagicMock(exit_code=0, stdout=usage)
+            result = ops._search_with_grep(
+                "needle",
+                path=".",
+                file_glob=None,
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=0,
+            )
+
+        assert result.error is not None
+        assert result.total_count == 0
+        assert not result.matches
+
+    def test_search_with_grep_busybox_confines_search_to_eligible_paths(self):
+        """BusyBox eligibility must be applied before the output cap.
+
+        Post-filtering a capped ``grep -r`` starves valid matches: the cap is
+        spent on hidden/non-glob rows that Python drops afterwards. The
+        BusyBox command must therefore restrict the searched file set up
+        front (like ``_search_files`` does) and cap the same way the GNU path
+        does, without a fixed pad.
+        """
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=False):
+            mock_exec.return_value = MagicMock(exit_code=0, stdout="")
+            ops._search_with_grep(
+                "needle",
+                path=".",
+                file_glob="*.py",
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=0,
+            )
+
+        sent_cmd = mock_exec.call_args[0][0]
+        # Hidden *directories* are pruned (not hidden files -- see the
+        # dotfile test below), and the glob narrows the file set.
+        assert "-type d -name '.?*' -prune -o" in sent_cmd
+        assert "-name '*.py'" in sent_cmd
+        # The eligible set is already filtered, so the cap is the GNU one.
+        assert "head -n 10" in sent_cmd
+
+    def test_search_with_grep_busybox_keeps_hidden_file_in_visible_dir(self):
+        """Hidden *files* are GNU-visible; BusyBox must not drop them.
+
+        ``--exclude-dir='.*'`` prunes hidden directories only, so GNU grep
+        returns ``src/.env``. Filtering on the basename too would make the
+        result backend-dependent.
+        """
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        stdout = (
+            "src/app.py:3:needle here\n"
+            "src/.env:1:needle in dotfile\n"
+            ".git/config:1:needle hidden dir\n"
+        )
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=False):
+            mock_exec.return_value = MagicMock(exit_code=0, stdout=stdout)
+            result = ops._search_with_grep(
+                "needle",
+                path=".",
+                file_glob=None,
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=0,
+            )
+
+        assert result.error is None
+        paths = [m.path for m in result.matches]
+        assert paths == ["src/app.py", "src/.env"]
+
+    def test_search_with_grep_keeps_match_containing_usage_text(self):
+        """A file whose content mentions ``Usage: grep`` is not a broken grep.
+
+        The leaked-usage guard must read the diagnostic lines split out of
+        the merged stream, not raw stdout, or ordinary matches are rejected
+        as errors.
+        """
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        stdout = "docs/cli.md:42:Usage: grep [OPTIONS] PATTERN\n"
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=True):
+            mock_exec.return_value = MagicMock(exit_code=0, stdout=stdout)
+            result = ops._search_with_grep(
+                "Usage",
+                path=".",
+                file_glob=None,
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=0,
+            )
+
+        assert result.error is None
+        assert result.total_count == 1
+        assert result.matches[0].path == "docs/cli.md"
+
+    def test_search_with_grep_surfaces_find_permission_diagnostics(self):
+        """``find`` writes into the same merged stream as grep.
+
+        Its diagnostics must be split out like grep's: a path containing
+        ``-<digit>`` otherwise matches the search-output shape and the error
+        is silently dropped as an unparseable match.
+        """
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        stdout = "find: '/srv/build-2/private': Permission denied\n"
+        with patch.object(ops, "_exec") as mock_exec, \
+                patch.object(ops, "_grep_supports_exclude_dir", return_value=False):
+            mock_exec.return_value = MagicMock(exit_code=1, stdout=stdout)
+            result = ops._search_with_grep(
+                "needle",
+                path=".",
+                file_glob=None,
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=0,
+            )
+
+        assert result.error is not None
+        assert "Permission denied" in result.error
+        assert not result.matches

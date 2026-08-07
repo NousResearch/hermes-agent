@@ -14,8 +14,12 @@ directories, matching ripgrep's default behavior.
 """
 
 import subprocess
+from unittest.mock import patch
 
 import pytest
+
+from tools.environments.local import LocalEnvironment
+from tools.file_operations import ShellFileOperations
 
 
 @pytest.fixture
@@ -64,25 +68,101 @@ class TestFindExcludesHiddenDirs:
 
 
 class TestGrepExcludesHiddenDirs:
-    """_search_with_grep should exclude hidden directories."""
+    """_search_with_grep should exclude hidden directories on any grep build.
+
+    Drives the real ``_search_with_grep`` method instead of a raw
+    ``grep --exclude-dir`` shell command, so the test is correct on both GNU
+    grep and BusyBox grep hosts -- the method feature-detects and either
+    passes ``--exclude-dir`` (GNU) or post-filters hidden dirs in Python
+    (BusyBox).
+    """
+
+    def _grep_ops(self, root):
+        """ShellFileOperations wired to a real environment rooted at `root`."""
+        env = LocalEnvironment(cwd=str(root), timeout=15)
+        return ShellFileOperations(env, cwd=str(root))
 
     def test_grep_skips_hub_cache(self, searchable_tree):
-        """grep --exclude-dir should skip .hub/ directory."""
-        cmd = (
-            f"grep -rnHE --exclude-dir='.*' 'ignore' {searchable_tree}"
+        """_search_with_grep should skip the .hub/ directory."""
+        ops = self._grep_ops(searchable_tree)
+        result = ops._search_with_grep(
+            "ignore", path=str(searchable_tree), file_glob=None,
+            limit=50, offset=0, output_mode="content", context=0,
         )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        # Should NOT find the injection text in .hub/index-cache/catalog.json
-        assert ".hub" not in result.stdout
-        assert "catalog.json" not in result.stdout
+        assert result.error is None
+        paths = [m.path for m in (result.matches or [])]
+        # Must NOT surface the injection text in .hub/index-cache/catalog.json
+        assert all(".hub" not in p for p in paths)
+        assert all("catalog.json" not in p for p in paths)
 
     def test_grep_still_finds_visible_content(self, searchable_tree):
-        """grep should still find content in visible directories."""
-        cmd = (
-            f"grep -rnHE --exclude-dir='.*' 'real skill' {searchable_tree}"
+        """_search_with_grep should still find content in visible directories."""
+        ops = self._grep_ops(searchable_tree)
+        result = ops._search_with_grep(
+            "real skill", path=str(searchable_tree), file_glob=None,
+            limit=50, offset=0, output_mode="content", context=0,
         )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        assert "SKILL.md" in result.stdout
+        assert result.error is None
+        paths = [m.path for m in (result.matches or [])]
+        assert any("SKILL.md" in p for p in paths)
+
+
+    def test_grep_busybox_prunes_hidden_dirs_but_keeps_dotfiles(self, tmp_path):
+        """BusyBox path must match GNU's --exclude-dir scope, through a shell.
+
+        Mocking ``_exec`` cannot see the ``find`` expression, and the two
+        halves can disagree: pruning ``-path '*/.*'`` also drops a dotfile in
+        a visible directory, which GNU grep returns.
+        """
+        (tmp_path / ".cache").mkdir()
+        (tmp_path / ".cache" / "noise.py").write_text("needle\n")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / ".env").write_text("needle in a dotfile\n")
+        (tmp_path / "src" / "app.py").write_text("needle in a visible file\n")
+
+        ops = self._grep_ops(tmp_path)
+        with patch.object(ops, "_grep_supports_exclude_dir", return_value=False):
+            result = ops._search_with_grep(
+                "needle", path=str(tmp_path), file_glob=None,
+                limit=50, offset=0, output_mode="content", context=0,
+            )
+
+        assert result.error is None
+        names = sorted(p.replace(str(tmp_path) + "/", "")
+                       for p in (m.path for m in result.matches or []))
+        assert names == ["src/.env", "src/app.py"]
+
+
+    def test_grep_busybox_finds_match_behind_more_hidden_rows_than_the_cap(
+        self, tmp_path
+    ):
+        """Ineligible rows must not consume the output cap.
+
+        The BusyBox path used to cap a full ``grep -r`` and filter in Python
+        afterwards, so a hidden directory with more matches than the cap
+        starved every eligible match grep reached later. Verified against a
+        real BusyBox 1.36 grep: before the fix this search returned nothing.
+
+        Order-independent: the eligible set is now built before the cap, so
+        the visible match is returned whatever order the tree is walked in.
+        """
+        # Named so the hidden tree tends to be walked before the target,
+        # which is what exposes the starvation on an unfixed build.
+        hidden_dir = tmp_path / ".aaa-cache"
+        hidden_dir.mkdir()
+        (hidden_dir / "noise.py").write_text("needle\n" * 1000)
+        (tmp_path / "zzz.py").write_text("needle in a visible file\n")
+
+        ops = self._grep_ops(tmp_path)
+        with patch.object(ops, "_grep_supports_exclude_dir", return_value=False):
+            result = ops._search_with_grep(
+                "needle", path=str(tmp_path), file_glob=None,
+                limit=50, offset=0, output_mode="content", context=0,
+            )
+
+        assert result.error is None
+        paths = [m.path for m in (result.matches or [])]
+        assert [p.replace(str(tmp_path) + "/", "") for p in paths] == ["zzz.py"]
 
 
 class TestRipgrepAlreadyExcludesHidden:

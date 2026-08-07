@@ -44,6 +44,10 @@ from tools.transcription_tools import (
     _CLOUD_TRIM_THRESHOLD_DB_DEFAULT,
     _trim_silence_for_cloud_stt,
 )
+import tools.transcription_tools as tt_module
+
+# The E2E fixtures below must be past the short-clip input gate.
+_GATE = tt_module._CLOUD_TRIM_MIN_INPUT_SECONDS
 
 _HAS_FFMPEG = bool(shutil.which("ffmpeg")) and bool(shutil.which("ffprobe"))
 
@@ -180,6 +184,12 @@ class TestCloudTrimSettings:
         enabled, _, _ = _cloud_trim_settings({"cloud_trim_silence": False})
         assert enabled is False
 
+    def test_yaml_string_false_disables(self):
+        # Config strings must be normalized like every other stt boolean
+        # (is_truthy_value) — "false" from YAML/env must not mean enabled.
+        enabled, _, _ = _cloud_trim_settings({"cloud_trim_silence": "false"})
+        assert enabled is False
+
     def test_none_means_default_on(self):
         enabled, _, _ = _cloud_trim_settings({"cloud_trim_silence": None})
         assert enabled is True
@@ -235,7 +245,7 @@ class TestTrimFallbacks:
         import subprocess as sp
 
         def probe(path):
-            return 10.0
+            return 60.0  # past the short-clip gate so the encode is attempted
 
         with patch("tools.transcription_tools._find_ffmpeg_binary", return_value="/bin/ffmpeg"), \
              patch("tools.transcription_tools._probe_audio_duration", side_effect=probe), \
@@ -277,15 +287,28 @@ class TestTrimE2E:
             shutil.rmtree(Path(trimmed).parent, ignore_errors=True)
 
     def test_dense_speech_untouched(self, tmp_path):
-        # Continuous tone — nothing to trim, saving <10% → return None.
-        wav = _write_wav(tmp_path / "dense.wav", [("tone", 5)])
+        # Continuous tone (past the short-clip gate) — nothing to trim,
+        # saving <10% → return None.
+        wav = _write_wav(tmp_path / "dense.wav", [("tone", 14)])
         assert _trim_silence_for_cloud_stt(wav, {}) is None
 
     def test_all_silence_falls_back_to_original(self, tmp_path):
-        # Pure silence collapses to ~nothing; the provider must decide
-        # "no speech", not a client-side dB heuristic → return None.
-        wav = _write_wav(tmp_path / "silence.wav", [("silence", 8)])
+        # Pure silence (past the short-clip gate) collapses to ~nothing; the
+        # provider must decide "no speech", not a client-side dB heuristic
+        # → return None.
+        wav = _write_wav(tmp_path / "silence.wav", [("silence", 14)])
         assert _trim_silence_for_cloud_stt(wav, {}) is None
+
+    def test_short_clip_skips_trim_entirely(self, tmp_path):
+        # Below the input-duration gate the encode pipeline must not run at
+        # all — savings can't matter on short clips and several providers
+        # bill a per-request minimum anyway.
+        wav = _write_wav(
+            tmp_path / "short.wav", [("tone", 2), ("silence", 4), ("tone", 2)]
+        )
+        with patch.object(tt_module, "_run_ffmpeg_stt_encode") as mock_encode:
+            assert _trim_silence_for_cloud_stt(wav, {}) is None
+        mock_encode.assert_not_called()
 
     def test_disabled_config_uploads_original(self, tmp_path):
         wav = _write_wav(

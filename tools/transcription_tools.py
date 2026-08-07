@@ -216,6 +216,34 @@ def _find_ffmpeg_binary() -> Optional[str]:
     return _find_binary("ffmpeg")
 
 
+# Shared encode profile for every STT-bound m4a we produce (transcode and
+# silence-trim): 16 kHz mono 32 kbps AAC, faststart. One owner — codec or
+# bitrate changes must not drift between the two paths.
+_STT_M4A_ENCODE_ARGS = (
+    "-vn", "-ac", "1", "-ar", "16000",
+    "-c:a", "aac", "-b:a", "32k", "-movflags", "+faststart",
+)
+
+
+def _run_ffmpeg_stt_encode(
+    ffmpeg: str, input_path: str, output_path: str, *, audio_filter: Optional[str] = None
+) -> None:
+    """Run the shared STT m4a encode, optionally with an ``-af`` filter.
+
+    Raises on failure (CalledProcessError / TimeoutExpired) — callers own
+    the error semantics (transcode reports, trim swallows).
+    """
+    command = [ffmpeg, "-y", "-i", input_path]
+    if audio_filter:
+        command += ["-af", audio_filter]
+    command += [*_STT_M4A_ENCODE_ARGS, output_path]
+    subprocess.run(
+        command, check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=120,
+        stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
+    )
+
+
 def _transcode_audio_for_stt(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
     """Transcode ``file_path`` to a compact, broadly-accepted .m4a for STT upload.
 
@@ -230,14 +258,8 @@ def _transcode_audio_for_stt(file_path: str, work_dir: str) -> tuple[Optional[st
     if not ffmpeg:
         return None, "audio needs transcoding for the STT API, but ffmpeg was not found"
     converted_path = os.path.join(work_dir, f"{Path(file_path).stem or 'audio'}-stt.m4a")
-    command = [
-        ffmpeg, "-y", "-i", file_path,
-        "-vn", "-ac", "1", "-ar", "16000",
-        "-c:a", "aac", "-b:a", "32k", "-movflags", "+faststart",
-        converted_path,
-    ]
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+        _run_ffmpeg_stt_encode(ffmpeg, file_path, converted_path)
         return converted_path, None
     except subprocess.CalledProcessError as exc:
         details = exc.stderr.strip() or exc.stdout.strip() or str(exc)
@@ -2374,7 +2396,12 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
 _CLOUD_TRIM_THRESHOLD_DB_DEFAULT = -40  # audio below this level counts as silence
 _CLOUD_TRIM_KEEP_MS_DEFAULT = 300  # how much of each pause survives the trim
 _CLOUD_TRIM_MIN_SAVING = 0.10  # use the trimmed file only when >=10% shorter
-_CLOUD_TRIM_MIN_RESULT_SECONDS = 0.3  # all-silence guard: never upload ~empty audio
+_CLOUD_TRIM_MIN_RESULT_SECONDS = 0.3  # all-silence guard floor: never upload ~empty audio
+# Below this duration the trim can't pay for itself: a >=10% saving on a short
+# clip is ~a second of audio, several providers bill a per-request minimum
+# anyway (Groq: 10s), and the encode would sit on the synchronous voice-note
+# response path. Skip the whole pipeline.
+_CLOUD_TRIM_MIN_INPUT_SECONDS = 12.0
 
 # Built-in providers that upload audio to a remote API.
 CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - {"local", "local_command"})
@@ -2385,7 +2412,13 @@ def _find_ffprobe_binary() -> Optional[str]:
 
 
 def _probe_audio_duration(file_path: str) -> Optional[float]:
-    """Return the audio duration in seconds via ffprobe, or None."""
+    """Return the audio duration in seconds via ffprobe, or None.
+
+    Canonical sync seconds-probe. ``gateway/run.py._probe_audio_duration``
+    (async, returns a display string) and the Telegram adapter's
+    ``_probe_voice_duration_seconds`` carry local variants of the same
+    ffprobe invocation — keep the command shape in sync.
+    """
     ffprobe = _find_ffprobe_binary()
     if not ffprobe:
         return None
@@ -2409,9 +2442,9 @@ def _probe_audio_duration(file_path: str) -> Optional[float]:
 def _cloud_trim_settings(stt_config: Dict[str, Any]) -> tuple[bool, int, int]:
     """Resolve (enabled, threshold_db, keep_ms) for the cloud silence trim."""
     cfg = stt_config if isinstance(stt_config, dict) else {}
-    enabled = cfg.get("cloud_trim_silence", True)
-    if enabled is None:
-        enabled = True
+    # is_truthy_value: the module's established config-boolean normalizer —
+    # a YAML string "false" must disable, exactly like is_stt_enabled.
+    enabled = is_truthy_value(cfg.get("cloud_trim_silence", True), default=True)
     try:
         threshold_db = int(cfg.get("cloud_trim_threshold_db", _CLOUD_TRIM_THRESHOLD_DB_DEFAULT))
     except (TypeError, ValueError):
@@ -2420,7 +2453,7 @@ def _cloud_trim_settings(stt_config: Dict[str, Any]) -> tuple[bool, int, int]:
         keep_ms = int(cfg.get("cloud_trim_keep_ms", _CLOUD_TRIM_KEEP_MS_DEFAULT))
     except (TypeError, ValueError):
         keep_ms = _CLOUD_TRIM_KEEP_MS_DEFAULT
-    return bool(enabled), threshold_db, max(keep_ms, 0)
+    return enabled, threshold_db, max(keep_ms, 0)
 
 
 def _trim_silence_for_cloud_stt(
@@ -2429,9 +2462,10 @@ def _trim_silence_for_cloud_stt(
     """Return a silence-trimmed copy of *file_path* for cloud upload, or None.
 
     ``None`` always means "upload the original file": the trim is disabled,
-    the tools are missing, the trim failed, the clip is mostly silence, or
-    trimming would not save enough to justify the re-encode. On success the
-    caller owns deleting the returned file's parent directory.
+    the tools are missing, the clip is too short for a trim to pay for
+    itself, the trim failed, the clip is mostly silence, or trimming would
+    not save enough to justify the re-encode. On success the caller owns
+    deleting the returned file's parent directory.
     """
     enabled, threshold_db, keep_ms = _cloud_trim_settings(stt_config)
     if not enabled:
@@ -2444,6 +2478,14 @@ def _trim_silence_for_cloud_stt(
     if not original_duration or original_duration <= 0:
         logger.debug("Cloud STT silence trim skipped: could not probe %s", file_path)
         return None
+    if original_duration < _CLOUD_TRIM_MIN_INPUT_SECONDS:
+        # Short clip: savings can't matter (some providers bill a 10s
+        # minimum per request anyway) — skip the encode entirely.
+        logger.debug(
+            "Cloud STT silence trim skipped for %s: %.1fs is below the %.0fs gate",
+            Path(file_path).name, original_duration, _CLOUD_TRIM_MIN_INPUT_SECONDS,
+        )
+        return None
 
     keep_seconds = keep_ms / 1000.0
     # start_periods=1 strips leading silence; stop_periods=-1 collapses every
@@ -2455,22 +2497,14 @@ def _trim_silence_for_cloud_stt(
     )
     work_dir = tempfile.mkdtemp(prefix="hermes-stt-trim-")
     trimmed_path = os.path.join(work_dir, f"{Path(file_path).stem or 'audio'}-trimmed.m4a")
-    command = [
-        ffmpeg, "-y", "-i", file_path,
-        "-vn", "-af", filter_expr,
-        "-ac", "1", "-ar", "16000",
-        "-c:a", "aac", "-b:a", "32k", "-movflags", "+faststart",
-        trimmed_path,
-    ]
+    # Scale the all-silence guard with keep_ms: an output consisting solely
+    # of kept pause must never be uploaded as "speech".
+    min_result_seconds = max(_CLOUD_TRIM_MIN_RESULT_SECONDS, 2 * keep_seconds)
     keep_result = False
     try:
-        subprocess.run(
-            command, check=True, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=120,
-            stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
-        )
+        _run_ffmpeg_stt_encode(ffmpeg, file_path, trimmed_path, audio_filter=filter_expr)
         trimmed_duration = _probe_audio_duration(trimmed_path)
-        if not trimmed_duration or trimmed_duration < _CLOUD_TRIM_MIN_RESULT_SECONDS:
+        if not trimmed_duration or trimmed_duration < min_result_seconds:
             # Mostly/all silence. Deciding "no speech" belongs to the
             # provider, not a client-side dB heuristic — upload the original.
             logger.debug(

@@ -2303,6 +2303,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # was built without those tools. Catch up once they land — see
             # _schedule_mcp_late_refresh. Cache-safe (pre-first-turn only).
             _schedule_mcp_late_refresh(sid, agent)
+            # Optionally pay the provider-side prompt-cache write now so the
+            # first real message reads a warm prefix (agent.prewarm_prompt_cache).
+            _schedule_prompt_prewarm(sid, agent)
         except Exception as e:
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
@@ -6332,6 +6335,74 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
     ).start()
 
 
+def _schedule_prompt_prewarm(sid: str, agent) -> None:
+    """Warm the provider prompt cache for a freshly built session agent.
+
+    The first API call of a session pays provider-side ingestion of the whole
+    uncached prefix (system prompt + tool schemas, commonly 50-70k tokens) —
+    observed as 10-20s of first-message latency on Anthropic-cached routes.
+    When ``agent.prewarm_prompt_cache`` is enabled, issue one minimal request
+    off the response path right after the agent is built so the first real
+    turn *reads* the prefix cache instead of writing it cold.
+
+    Ordering: if MCP discovery is still in flight, wait for it (the late
+    refresh rebuilds ``agent.tools``, and the tools block is part of the
+    cached prefix — prewarming before it lands would warm a prefix the real
+    turn no longer sends). Skipped silently the moment the user has already
+    started the conversation; the in-flight real call warms the cache itself.
+    """
+    try:
+        agent_cfg = _load_cfg().get("agent") or {}
+        if not (
+            isinstance(agent_cfg, dict)
+            and is_truthy_value(agent_cfg.get("prewarm_prompt_cache", False))
+        ):
+            return
+        from agent.prompt_prewarm import prewarm_supported
+
+        if not prewarm_supported(agent):
+            return
+    except Exception:
+        return
+
+    def _wait_then_prewarm() -> None:
+        try:
+            from tui_gateway.entry import (
+                mcp_discovery_in_flight,
+                join_mcp_discovery,
+            )
+
+            if mcp_discovery_in_flight():
+                # Same bound as the late MCP refresh; a server slower than
+                # this is dead-ish and the tool snapshot is already frozen.
+                join_mcp_discovery(timeout=30.0)
+                # Give _schedule_mcp_late_refresh's rebuild a beat to land so
+                # the prewarmed tools block matches the refreshed snapshot.
+                time.sleep(0.5)
+        except Exception:
+            pass
+        session = _sessions.get(sid)
+        if session is None or session.get("agent") is not agent:
+            return
+        # The user beat us to it — their real first call is already warming
+        # the cache; a duplicate prefix ingestion would only add cost.
+        if (
+            session.get("running")
+            or int(getattr(agent, "_user_turn_count", 0) or 0) > 0
+            or int(getattr(agent, "_api_call_count", 0) or 0) > 0
+        ):
+            return
+        from agent.prompt_prewarm import prewarm_prompt_cache
+
+        prewarm_prompt_cache(agent)
+
+    threading.Thread(
+        target=_wait_then_prewarm,
+        name=f"tui-prompt-prewarm-{sid}",
+        daemon=True,
+    ).start()
+
+
 class _RuntimeFallbackResolution(NamedTuple):
     runtime: dict
     selected_model: str | None
@@ -6699,6 +6770,9 @@ def _init_session(
     _notify_session_boundary("on_session_reset", key, _session_source(_sessions.get(sid, {})))
     _emit("session.info", sid, _session_info(agent, _sessions.get(sid, {})))
     _schedule_mcp_late_refresh(sid, agent)
+    # Optionally pay the provider-side prompt-cache write now so the first
+    # real message reads a warm prefix (agent.prewarm_prompt_cache).
+    _schedule_prompt_prewarm(sid, agent)
 
 
 def _new_session_key() -> str:

@@ -624,8 +624,27 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         )
 
     # First turn of a new session (or recovering from a broken stored
-    # prompt) — build from scratch.
-    agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    # prompt) — build from scratch. One exception: a prompt-cache prewarm
+    # (agent.prompt_prewarm) already built and SENT a system prompt for this
+    # session before the first user message. Reuse those exact bytes when the
+    # runtime identity still matches — a rebuild here could differ in the
+    # volatile tail (timestamp) and split the just-warmed provider prefix.
+    _prewarmed = getattr(agent, "_prewarmed_system_prompt", None)
+    if (
+        not conversation_history
+        and system_message is None
+        and isinstance(_prewarmed, str)
+        and _prewarmed
+        and _stored_prompt_matches_runtime(agent, _prewarmed)
+    ):
+        agent._cached_system_prompt = _prewarmed
+        from agent.system_prompt import reconstruct_static_prefix
+
+        reconstruct_static_prefix(agent, log_label="prewarm")
+    else:
+        agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    # One-shot: never reuse across /new, compression rebuilds, or model swaps.
+    agent._prewarmed_system_prompt = None
 
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this

@@ -88,6 +88,19 @@ DEFAULT_CONFIG = {
         # on a genuinely hung build. Raise it for deployments with many slow
         # or unreachable MCP servers.
         "build_wait_timeout": 600,
+        # Prompt-cache prewarm (TUI/desktop): right after a session's agent is
+        # built, issue one minimal request (same prefix + a trivial few-token
+        # prompt) so the provider writes the prompt-prefix cache (system
+        # prompt + tool schemas) BEFORE the first user message. Cuts cold
+        # first-message latency from provider
+        # ingestion of a 50-70k-token uncached prefix (10-20s observed) down
+        # to a cache read. Off by default: the write (1.25x input for the 5m
+        # TTL) is WASTED whenever a session is opened but never used — on a
+        # 67k-token prefix that is roughly $0.25 (Sonnet-class) to $1.25
+        # (Opus-class) per abandoned session — and the first real turn
+        # additionally pays one cache read (0.1x). Only applies to
+        # prompt-caching routes (Anthropic-compatible); no-op elsewhere.
+        "prewarm_prompt_cache": False,
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries

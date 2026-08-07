@@ -12,6 +12,7 @@ attributes are overwritten with the freshly-discovered tool set.
 
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from datetime import datetime
 from types import SimpleNamespace
@@ -144,6 +145,23 @@ async def test_reload_mcp_handles_empty_agent_cache():
         result = await runner._execute_mcp_reload(_make_event())
 
     assert isinstance(result, str)
+
+
+@pytest.mark.asyncio
+async def test_reload_mcp_logs_repr_for_empty_exception_message(caplog):
+    """Reload failures remain diagnosable when ``str(exc)`` is empty."""
+    runner = _make_runner_with_cached_agents(num_agents=0)
+
+    with (
+        patch(
+            "tools.mcp_tool.shutdown_mcp_servers",
+            side_effect=RuntimeError(),
+        ),
+        caplog.at_level(logging.WARNING, logger="gateway.run"),
+    ):
+        await runner._execute_mcp_reload(_make_event())
+
+    assert "MCP reload failed: RuntimeError()" in caplog.messages
 
 
 @pytest.mark.asyncio

@@ -61,11 +61,16 @@ describe('cursor-drift regression — composer cursorLayout matches Ink renderin
         const layout = cursorLayout(acc, acc.length, cols)
         const expected = wrapAnsiEnd(acc, cols)
 
-        expect(
-          layout,
-          `mismatch at cols=${cols}, len=${acc.length}, last-char=${JSON.stringify(ch)}, ` +
-            `tail=${JSON.stringify(acc.slice(-30))}`
-        ).toEqual(expected)
+        // This loop covers thousands of prefixes. Avoid paying Vitest's deep
+        // matcher and diagnostic-string costs for every successful case; the
+        // full matcher still runs with rich context on the first mismatch.
+        if (layout.line !== expected.line || layout.column !== expected.column) {
+          expect(
+            layout,
+            `mismatch at cols=${cols}, len=${acc.length}, last-char=${JSON.stringify(ch)}, ` +
+              `tail=${JSON.stringify(acc.slice(-30))}`
+          ).toEqual(expected)
+        }
       }
     }
   }, 30_000)

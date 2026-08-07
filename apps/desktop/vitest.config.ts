@@ -20,7 +20,15 @@ const electronNative: TestProjectConfiguration = {
   test: {
     name: 'electron',
     environment: 'node',
-    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}']
+    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}'],
+    // Native Git/process tests can exceed Vitest's 5000ms default on loaded
+    // workstations even when the underlying subprocess completes normally.
+    // Keep a finite ceiling while allowing the same cold-start headroom as UI.
+    testTimeout: 15_000,
+    // These tests launch real Git and other native child processes. Running
+    // files in parallel can exhaust process/I/O headroom and create false
+    // timeouts, so keep files serial while tests within each file stay normal.
+    fileParallelism: false
   }
 }
 

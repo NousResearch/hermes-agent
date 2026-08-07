@@ -3184,6 +3184,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
 
+
     def _call_chat_completions(stream_attempt_id: int):
         """Stream a chat completions response."""
         import httpx as _httpx
@@ -3253,7 +3254,42 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _writer_token = {"value": None}
         attempt_request_client = {"value": None}
 
+        def _provider_unsupported_streaming(base_url: str) -> bool:
+            """Check if a provider doesn't support SSE streaming."""
+            if not base_url:
+                return False
+            url_lower = base_url.lower()
+            no_stream_markers = ["agnes-ai.cn", "agnes-ai.com"]
+            for marker in no_stream_markers:
+                if marker in url_lower:
+                    return True
+            return False
+
         def _open_stream(next_api_kwargs: dict[str, Any]):
+            # Some providers (e.g. agnes-ai.cn) don't support SSE streaming.
+            # Fall back to a non-streaming request so the call succeeds instead
+            # of hanging until the read timeout.
+            if _provider_unsupported_streaming(agent.base_url):
+                agent._disable_streaming = True
+                nos_kwargs = {
+                    **next_api_kwargs,
+                    "timeout": _httpx.Timeout(
+                        connect=_conn_cap,
+                        read=_base_timeout,
+                        write=_base_timeout,
+                        pool=_conn_cap,
+                    ),
+                }
+                request_client = _set_request_client(
+                    agent._create_request_openai_client(
+                        reason="chat_completion_stream_request",
+                        api_kwargs=nos_kwargs,
+                    )
+                )
+                attempt_request_client["value"] = request_client
+                agent._touch_activity("waiting for provider response (non-streaming)")
+                return request_client.chat.completions.create(**nos_kwargs)
+
             stream_kwargs = {
                 **next_api_kwargs,
                 "stream": True,

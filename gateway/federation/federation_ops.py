@@ -351,26 +351,67 @@ class LostContactSOS:
 
 
 def collect_local_health(hermes_version: str = "") -> dict:
-    """Collect this device's health payload fragment."""
+    """Collect this device's health payload fragment. Cross-platform."""
+    import os as _os
+    import platform as _platform
+
+    # CPU load (Unix-only)
     try:
-        import os as _os
         load_avg = _os.getloadavg()[0] if hasattr(_os, "getloadavg") else 0.0
     except Exception:
         load_avg = 0.0
+
+    # Memory — platform-specific detection with encoding= for footgun rule
     try:
-        import subprocess
-        mem = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=3).stdout.strip()
-        memory_gb = float(mem) / (1024 ** 3) if mem else 0.0
+        system = _platform.system()
+        if system == "Darwin":
+            import subprocess as _subprocess
+            result = _subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True, encoding="utf-8", timeout=3,
+            )
+            raw = result.stdout.strip()
+            memory_gb = float(raw) / (1024 ** 3) if raw else 0.0
+        elif system == "Linux":
+            import subprocess as _subprocess
+            # Try cgroup v2 (modern distros), fall back to /proc/meminfo
+            result = _subprocess.run(
+                ["cat", "/sys/fs/cgroup/memory.max"],
+                capture_output=True, encoding="utf-8", timeout=3,
+            )
+            if result.returncode == 0 and result.stdout.strip() != "max":
+                memory_gb = int(result.stdout.strip()) / (1024 ** 3)
+            else:
+                result = _subprocess.run(
+                    ["awk", "/MemTotal/ {print $2}", "/proc/meminfo"],
+                    capture_output=True, encoding="utf-8", timeout=3,
+                )
+                kb = result.stdout.strip()
+                memory_gb = float(kb) / (1024 * 1024) if kb else 0.0
+        elif system == "Windows":
+            import re as _re
+            import subprocess as _subprocess
+            result = _subprocess.run(
+                ["wmic", "OS", "get", "TotalVisibleMemorySize", "/value"],
+                capture_output=True, encoding="utf-8", timeout=3,
+            )
+            m = _re.search(r"=(\d+)", result.stdout)
+            memory_gb = int(m.group(1)) / 1024 if m else 0.0
+        else:
+            memory_gb = 0.0
     except Exception:
         memory_gb = 0.0
+
+    # Disk free
     try:
-        import shutil
-        disk_free = shutil.disk_usage(os.path.expanduser("~")).free / (1024 ** 3)
+        import shutil as _shutil
+        disk_free = _shutil.disk_usage(_os.path.expanduser("~")).free / (1024 ** 3)
     except Exception:
         disk_free = 0.0
+
     return {
         "cpu_load": round(load_avg, 2),
-        "cpu_cores": os.cpu_count() or 0,
+        "cpu_cores": _os.cpu_count() or 0,
         "memory_gb": round(memory_gb, 1),
         "disk_free_gb": round(disk_free, 1),
         "hermes_version": hermes_version,

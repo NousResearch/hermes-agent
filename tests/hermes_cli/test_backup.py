@@ -201,8 +201,107 @@ class TestBackup:
         assert staged_dirs, "no SQLite snapshot was staged"
         assert all(d == str(out_zip.parent) for d in staged_dirs), staged_dirs
 
+    def test_foreign_db_suffix_does_not_abort_full_zip(self, tmp_path, monkeypatch):
+        """A non-SQLite file that merely ends in .db must be archived as a
+        regular file instead of aborting and deleting the whole backup
+        (#75724). Windows cache blobs land in Kanban workspaces this way."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        foreign = hermes_home / "kanban" / "boards" / "b1" / "workspaces" / "w1"
+        foreign.mkdir(parents=True)
+        (foreign / "cversions.2.db").write_bytes(b"not a database at all")
 
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
+        out_zip = hermes_home / "backups" / "pre-update-test.zip"
+        out_zip.parent.mkdir(parents=True, exist_ok=True)
+
+        import hermes_cli.backup as backup_mod
+        result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
+
+        assert result is not None, "foreign .db aborted the archive"
+        assert out_zip.exists()
+        with zipfile.ZipFile(out_zip) as zf:
+            names = zf.namelist()
+            arc = "kanban/boards/b1/workspaces/w1/cversions.2.db"
+            assert any(n.replace("\\", "/") == arc for n in names), names
+            stored = zf.read(
+                next(n for n in names if n.replace("\\", "/") == arc)
+            )
+        # Copied verbatim, not run through the SQLite backup API.
+        assert stored == b"not a database at all"
+
+    def test_real_sqlite_still_uses_backup_api(self, tmp_path, monkeypatch):
+        """Genuine databases must keep the consistent-snapshot path."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        (hermes_home / "foreign.db").write_bytes(b"not a database at all")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = hermes_home / "backups" / "pre-update-test.zip"
+        out_zip.parent.mkdir(parents=True, exist_ok=True)
+
+        import hermes_cli.backup as backup_mod
+        copied = []
+        real_copy = backup_mod._safe_copy_db
+
+        def _spy(src, dst, *a, **kw):
+            copied.append(Path(src).name)
+            return real_copy(src, dst, *a, **kw)
+
+        monkeypatch.setattr(backup_mod, "_safe_copy_db", _spy)
+        result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
+
+        assert result is not None
+        assert "memory_store.db" in copied, copied
+        # The foreign file must never reach the SQLite backup API.
+        assert "foreign.db" not in copied, copied
+
+    def test_corrupt_known_hermes_db_still_fails_closed(self, tmp_path, monkeypatch):
+        """A Hermes-owned database that cannot be snapshotted must still abort
+        the archive rather than be captured as an opaque blob."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        (hermes_home / "state.db").write_bytes(b"corrupt, no sqlite header")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = hermes_home / "backups" / "pre-update-test.zip"
+        out_zip.parent.mkdir(parents=True, exist_ok=True)
+
+        import hermes_cli.backup as backup_mod
+        result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
+
+        assert result is None, "corrupt state.db must fail closed"
+        assert not out_zip.exists()
+
+    def test_nested_known_db_still_fails_closed(self, tmp_path, monkeypatch):
+        """Hermes databases are matched by name, so a per-board kanban.db is
+        still fail-closed even though it is nested under kanban/boards/."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        board = hermes_home / "kanban" / "boards" / "b1"
+        board.mkdir(parents=True)
+        (board / "kanban.db").write_bytes(b"corrupt, no sqlite header")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = hermes_home / "backups" / "pre-update-test.zip"
+        out_zip.parent.mkdir(parents=True, exist_ok=True)
+
+        import hermes_cli.backup as backup_mod
+        result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
+
+        assert result is None, "nested corrupt kanban.db must fail closed"
 
 
 

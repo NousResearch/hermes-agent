@@ -26,6 +26,7 @@ from agent.secret_scope import (
 from hermes_constants import (
     DEFAULT_INDICATOR_STYLE,
     INDICATOR_STYLES,
+    apply_subprocess_home_env,
     get_hermes_home,
     get_hermes_home_override,
     reset_hermes_home_override,
@@ -365,6 +366,18 @@ class _SlashWorker:
             inherit_profile_home=False,  # base already carries the HOME contract
             extra={"HERMES_HOME": str(profile_home)} if profile_home else None,
         )
+        if profile_home:
+            # hermes_subprocess_env already applied HOME against the launch
+            # HERMES_HOME, and with scrub_secrets=False the factory applies
+            # `extra` after that HOME pass. Re-apply so home_mode=profile
+            # (and container auto) bind HOME to {session profile}/home rather
+            # than the stale launch profile home. Bind the ContextVar for the
+            # apply so an in-process override cannot shadow env["HERMES_HOME"].
+            home_token = set_hermes_home_override(str(profile_home))
+            try:
+                apply_subprocess_home_env(env)
+            finally:
+                reset_hermes_home_override(home_token)
 
         # start_new_session=True detaches the slash worker into its own
         # process group / session. Without this, the worker inherits the

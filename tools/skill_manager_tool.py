@@ -298,10 +298,24 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
+LESSONS_OVERLAY_RELPATH = "references/lessons.md"
+
+
+def _normalize_skill_relpath(file_path: str | None) -> str:
+    return str(file_path or "").replace("\\", "/").lstrip("./")
+
+
+def _is_lessons_overlay_path(file_path: str | None) -> bool:
+    """Return whether a path targets the learning-loop lessons overlay."""
+    return _normalize_skill_relpath(file_path) == LESSONS_OVERLAY_RELPATH
+
+
 def _background_review_write_guard(
     name: str,
     skill_dir: Path,
     action: str,
+    *,
+    file_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
     """Refuse autonomous curator writes to externally owned skills.
 
@@ -317,26 +331,32 @@ def _background_review_write_guard(
     except Exception:
         return None
 
+    lessons_overlay = (
+        action in {"write_file", "patch"}
+        and _is_lessons_overlay_path(file_path)
+    )
+
     # Pin must be respected by autonomous maintenance. The curator already
     # skips pinned skills from every auto-transition; the background review
     # fork is the same kind of autonomous, no-user-present actor, so it must
     # not write to a pinned skill either (issue #25839). This is stricter than
     # the foreground ``_pinned_guard`` (which only blocks deletion) precisely
     # because there is no user in the loop to consent to an edit here.
-    try:
-        from tools import skill_usage
-        if skill_usage.get_record(name).get("pinned"):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for pinned skill "
-                    f"'{name}': pinned skills are off-limits to autonomous "
-                    "maintenance. Ask the user to run "
-                    f"`hermes curator unpin {name}` if they want it changed."
-                ),
-            }
-    except Exception:
-        logger.debug("pinned skill guard lookup failed for %s", name, exc_info=True)
+    if not lessons_overlay:
+        try:
+            from tools import skill_usage
+            if skill_usage.get_record(name).get("pinned"):
+                return {
+                    "success": False,
+                    "error": (
+                        f"Refusing background curator {action} for pinned skill "
+                        f"'{name}': pinned skills are off-limits to autonomous "
+                        "maintenance. Ask the user to run "
+                        f"`hermes curator unpin {name}` if they want it changed."
+                    ),
+                }
+        except Exception:
+            logger.debug("pinned skill guard lookup failed for %s", name, exc_info=True)
 
     try:
         from agent.skill_utils import is_external_skill_path
@@ -351,6 +371,11 @@ def _background_review_write_guard(
             }
     except Exception:
         logger.debug("external skill guard lookup failed for %s", name, exc_info=True)
+
+    # A local lessons overlay is additive learning that is safe on protected
+    # skills. External directories remain blocked above.
+    if lessons_overlay:
+        return None
 
     try:
         from tools import skill_usage
@@ -403,9 +428,11 @@ def _background_review_write_guard(
                 "success": False,
                 "error": (
                     f"Refusing background curator {action} for skill "
-                    f"'{name}': the skill is not curator-managed ({_detail}). "
-                    "User-owned skills are off-limits to autonomous curation. "
-                    f"Run `hermes curator adopt {name}` to opt it in."
+                    f"'{name}': the skill is manually authored or not "
+                    f"curator-managed ({_detail}). Manually authored skills "
+                    "are off-limits to autonomous curation. "
+                    f"Write durable corrections to '{LESSONS_OVERLAY_RELPATH}' "
+                    f"instead, or run `hermes curator adopt {name}` to opt it in."
                 ),
             }
     except Exception:
@@ -451,13 +478,20 @@ def _background_review_read_before_write_guard(
     }
 
 
-def _background_review_preflight(action: str, name: str) -> Optional[Dict[str, Any]]:
+def _background_review_preflight(
+    action: str,
+    name: str,
+    *,
+    file_path: str | None = None,
+) -> Optional[Dict[str, Any]]:
     if action not in {"edit", "patch", "delete", "write_file", "remove_file"}:
         return None
     existing = _find_skill(name)
     if not existing:
         return None
-    return _background_review_write_guard(name, existing["path"], action)
+    return _background_review_write_guard(
+        name, existing["path"], action, file_path=file_path
+    )
 
 
 def _curator_consolidation_delete_guard(
@@ -1061,7 +1095,9 @@ def _patch_skill(
     org_guard = _org_mirror_write_guard(name, skill_dir, "patch")
     if org_guard:
         return org_guard
-    guard = _background_review_write_guard(name, skill_dir, "patch")
+    guard = _background_review_write_guard(
+        name, skill_dir, "patch", file_path=file_path
+    )
     if guard:
         return guard
 
@@ -1294,7 +1330,9 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     org_guard = _org_mirror_write_guard(name, existing["path"], "write_file")
     if org_guard:
         return org_guard
-    guard = _background_review_write_guard(name, existing["path"], "write_file")
+    guard = _background_review_write_guard(
+        name, existing["path"], "write_file", file_path=file_path
+    )
     if guard:
         return guard
 
@@ -1529,7 +1567,9 @@ def skill_manage(
 
     Returns JSON string with results.
     """
-    preflight = _background_review_preflight(action, name)
+    preflight = _background_review_preflight(
+        action, name, file_path=file_path
+    )
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)
 

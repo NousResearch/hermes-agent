@@ -120,6 +120,192 @@ def _msg_text(m: Dict) -> str:
     return ""
 
 
+_CORRECTION_HINTS = (
+    "stop doing",
+    "don't do",
+    "do not",
+    "don't format",
+    "too verbose",
+    "remember this",
+    "always do",
+    "never do",
+    "i hate when",
+    "why are you",
+    "that's not what",
+    "that is not what",
+    "i told you",
+    "i asked you",
+)
+
+
+def _tool_result_has_error(content: Any) -> tuple[bool, str]:
+    """Return whether a tool-result payload represents an error."""
+    if not isinstance(content, str) or not content.strip():
+        return False, ""
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        lower = content.lower()
+        if "error" in lower[:200] and ("traceback" in lower or "failed" in lower):
+            return True, content[:160].replace("\n", " ")
+        return False, ""
+    if not isinstance(data, dict):
+        return False, ""
+    if data.get("error"):
+        return True, str(data["error"])[:160].replace("\n", " ")
+    if data.get("success") is False:
+        return True, str(data.get("message") or "success=false")[:160].replace("\n", " ")
+    return False, ""
+
+
+def build_review_evidence_digest(
+    messages: List[Dict],
+    *,
+    max_skills: int = 12,
+    max_failures: int = 10,
+    max_corrections: int = 6,
+) -> str:
+    """Extract high-signal skill, failure, and correction evidence."""
+    skills: list[str] = []
+    seen_skills: set[str] = set()
+    failures: list[str] = []
+    corrections: list[str] = []
+    successes_after: list[str] = []
+    pending_names: dict[str, str] = {}
+    failed_tools: set[str] = set()
+
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                name = fn.get("name") or "?"
+                tcid = tc.get("id") or ""
+                if tcid:
+                    pending_names[tcid] = name
+                args_raw = fn.get("arguments") or "{}"
+                try:
+                    args = json.loads(args_raw) if isinstance(args_raw, str) else (args_raw or {})
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                if name == "skill_view":
+                    skill_name = str(args.get("name") or "").strip()
+                    if skill_name and skill_name not in seen_skills:
+                        seen_skills.add(skill_name)
+                        skills.append(skill_name)
+                elif name == "skill_manage":
+                    skill_name = str(args.get("name") or "").strip()
+                    if skill_name and skill_name not in seen_skills:
+                        seen_skills.add(skill_name)
+                        skills.append(f"{skill_name} (managed)")
+        elif role == "tool":
+            tool_name = pending_names.get(msg.get("tool_call_id") or "", msg.get("name") or "tool")
+            is_error, error_message = _tool_result_has_error(msg.get("content"))
+            if is_error:
+                failed_tools.add(tool_name)
+                if len(failures) < max_failures:
+                    failures.append(f"{tool_name}: {error_message or 'error'}")
+            elif tool_name in failed_tools and len(successes_after) < max_failures:
+                successes_after.append(f"{tool_name}: later call succeeded")
+        elif role == "user":
+            text = _msg_text(msg)
+            if not text:
+                continue
+            stripped = text.lstrip()
+            if stripped.startswith("/") and not stripped.startswith("//"):
+                token = stripped[1:].split()[0].split("@")[0].strip()
+                if token and token not in {"new", "stop", "help", "reset", "model", "tools"}:
+                    if token not in seen_skills and len(skills) < max_skills:
+                        seen_skills.add(token)
+                        skills.append(f"{token} (slash)")
+            if any(hint in text.lower() for hint in _CORRECTION_HINTS):
+                if len(corrections) < max_corrections:
+                    corrections.append(text[:200].replace("\n", " "))
+
+    if not (skills or failures or corrections or successes_after):
+        return (
+            "## Evidence (machine-extracted)\n"
+            "No skill loads, tool failures, or explicit user corrections detected "
+            "in this transcript. Still review for durable preferences/techniques; "
+            "if nothing stands out, say 'Nothing to save.'"
+        )
+
+    lines = ["## Evidence (machine-extracted)"]
+    if skills:
+        lines.append("Skills loaded/consulted: " + ", ".join(skills[:max_skills]))
+    if failures:
+        lines.append("Tool failures:")
+        lines.extend(f"  - {failure}" for failure in failures)
+    if successes_after:
+        lines.append("Successful retries after failure:")
+        lines.extend(f"  - {success}" for success in successes_after)
+    if corrections:
+        lines.append("User correction signals:")
+        lines.extend(f"  - {correction}" for correction in corrections)
+    lines.append(
+        "When evidence shows a failure + fix (or an explicit correction), you MUST "
+        "persist the lesson via the decision ladder — do not no-op."
+    )
+    return "\n".join(lines)
+
+
+class _ReviewMemoryToolsProxy:
+    """Expose parent memory-provider tools without review lifecycle ingestion."""
+
+    def __init__(self, parent_mm: Any):
+        self._parent = parent_mm
+
+    @property
+    def providers(self) -> Any:
+        return getattr(self._parent, "providers", [])
+
+    def has_tool(self, tool_name: str) -> bool:
+        return bool(self._parent.has_tool(tool_name))
+
+    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs: Any) -> str:
+        return self._parent.handle_tool_call(tool_name, args, **kwargs)
+
+    def get_all_tool_names(self) -> set:
+        return set(self._parent.get_all_tool_names())
+
+    def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
+        getter = getattr(self._parent, "get_all_tool_schemas", None)
+        return list(getter() or []) if callable(getter) else []
+
+    def build_system_prompt(self) -> str:
+        return ""
+
+    def prefetch_all(self, *args: Any, **kwargs: Any) -> str:
+        return ""
+
+    def queue_prefetch_all(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def sync_all(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def on_turn_start(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def on_session_end(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def notify_memory_tool_write(self, *args: Any, **kwargs: Any) -> None:
+        notify = getattr(self._parent, "notify_memory_tool_write", None)
+        if callable(notify):
+            notify(*args, **kwargs)
+
+    def shutdown_all(self) -> None:
+        return None
+
+    def shutdown_drain_state(self) -> Dict[str, Any]:
+        return {}
+
+
 def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]:
     """Compact replay for the routed (different-model) path only.
 
@@ -243,6 +429,23 @@ _SKILL_REVIEW_PROMPT = (
     "codename, library-alone name, or 'fix-X / debug-Y / audit-Z-today' "
     "session artifact. If the proposed name only makes sense for "
     "today's task, it's wrong — fall back to (1), (2), or (3).\n\n"
+    "Learning-loop decision ladder — use this order when a signal fired:\n"
+    "  1. UPDATE A CURRENTLY-LOADED AGENT-CREATED SKILL. If an "
+    "agent-created skill covers the lesson, patch its SKILL.md first.\n"
+    "  2. LESSONS OVERLAY for manual, hub, bundled, or pinned local "
+    "skills. Write the durable correction to `references/lessons.md` "
+    "via skill_manage(action='write_file', "
+    "file_path='references/lessons.md'). skill_view auto-loads this "
+    "file next session; this is the correct escape hatch, not "
+    "'Nothing to save.'\n"
+    "  3. UPDATE AN EXISTING UMBRELLA or add a support file under it.\n"
+    "  4. fact_store lesson (when available): for cross-cutting tool "
+    "quirks or when no skill applies, use "
+    "fact_store(action='add', category='tool', "
+    "tags='lesson,skill:<name>,validated', content=...). Do not store "
+    "message IDs, one-offs, or negative claims that a tool is broken.\n"
+    "  5. CREATE A NEW CLASS-LEVEL UMBRELLA only when no existing "
+    "skill covers the class.\n\n"
     "User-preference embedding (important): when the user expressed a "
     "style/format/workflow preference, the update belongs in the "
     "SKILL.md body, not just in memory. Memory captures 'who the user "
@@ -252,23 +455,20 @@ _SKILL_REVIEW_PROMPT = (
     "skill that governs that task needs to carry the lesson.\n\n"
     "If you notice two existing skills that overlap, note it in your "
     "reply — the background curator handles consolidation at scale.\n\n"
-    "Protected skills (DO NOT edit these):\n"
+    "Protected skills — do NOT edit SKILL.md body for:\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
     "  • Skills in skills.external_dirs (externally owned).\n"
-    "  • PINNED skills (marked via 'hermes curator pin'). You are an "
-    "autonomous no-user-present actor, so pin blocks your writes too — "
-    "content updates included. Only the user, in a foreground session, "
-    "can change a pinned skill.\n"
+    "  • PINNED skills (marked via 'hermes curator pin').\n"
     "  • USER-OWNED skills — anything not curator-managed. A skill the "
     "user hand-wrote, installed by URL, or asked a foreground agent to "
     "create is theirs, not yours; your writes to it WILL be refused. "
     "This includes skills that were loaded or consulted this session: "
     "being in play does not make one yours to edit. If such a skill is "
-    "wrong or outdated, say so in your reply and recommend "
-    "'hermes curator adopt <name>' — do not try to patch it.\n"
-    "If the only skills that need updating are protected, say\n"
-    "'Nothing to save.' and stop.\n\n"
+    "wrong or outdated, write `references/lessons.md` instead.\n"
+    "For any protected local skill, the lessons overlay is allowed; "
+    "SKILL.md body edits remain restricted by ownership. Only say "
+    "'Nothing to save.' when there is truly no durable lesson.\n\n"
     "Do NOT capture (these become persistent self-imposed constraints "
     "that bite you later when the environment changes):\n"
     "  • Environment-dependent failures: missing binaries, fresh-install "
@@ -349,6 +549,18 @@ _COMBINED_REVIEW_PROMPT = (
     "codename, library-alone name, or 'fix-X / debug-Y' session "
     "artifact. If the name only fits today's task, fall back to (1), "
     "(2), or (3).\n\n"
+    "Learning-loop decision ladder — use this order when a signal fired:\n"
+    "  1. UPDATE A CURRENTLY-LOADED AGENT-CREATED SKILL.\n"
+    "  2. LESSONS OVERLAY: for manual, hub, bundled, or pinned local "
+    "skills, use skill_manage(action='write_file', "
+    "file_path='references/lessons.md') with the durable correction. "
+    "Do not say 'Nothing to save.' just because SKILL.md is protected.\n"
+    "  3. UPDATE AN EXISTING UMBRELLA or add a support file.\n"
+    "  4. fact_store lesson (when available): use "
+    "fact_store(action='add', category='tool', "
+    "tags='lesson,skill:<name>,validated', content=...) for "
+    "cross-cutting quirks or when no skill applies.\n"
+    "  5. CREATE A NEW CLASS-LEVEL UMBRELLA only when nothing exists.\n\n"
     "User-preference embedding: when the user complains about how "
     "you handled a task, update the skill that governs that task — "
     "memory alone isn't enough. Memory says 'who the user is and "
@@ -357,20 +569,19 @@ _COMBINED_REVIEW_PROMPT = (
     "should carry user-preference lessons when relevant.\n\n"
     "If you notice overlapping existing skills, mention it — the "
     "background curator handles consolidation.\n\n"
-    "Protected skills (DO NOT edit these):\n"
+    "Protected skills — do NOT edit SKILL.md body for:\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
     "  • Skills in skills.external_dirs (externally owned).\n"
-    "  • PINNED skills (marked via 'hermes curator pin'). Pin blocks "
-    "autonomous writes entirely — content updates included — because no "
-    "user is present to consent. Only a foreground session can change one.\n"
+    "  • PINNED skills (marked via 'hermes curator pin').\n"
     "  • USER-OWNED skills — anything not curator-managed (hand-written, "
     "URL-installed, or created by a foreground agent at the user's "
-    "request). Your writes to these WILL be refused, including to skills "
-    "loaded or consulted this session. If one is wrong, say so in your "
-    "reply and recommend 'hermes curator adopt <name>' instead.\n"
-    "If the only skills that need updating are protected, say\n"
-    "'Nothing to save.' and stop.\n\n"
+    "request). SKILL.md body writes to these will be refused, including "
+    "to skills loaded or consulted this session. Write "
+    "`references/lessons.md` instead.\n"
+    "For any protected local skill, the lessons overlay is allowed; "
+    "SKILL.md body edits remain restricted by ownership. Only say "
+    "'Nothing to save.' when there is truly no durable lesson.\n\n"
     "Do NOT capture as skills (these become persistent self-imposed "
     "constraints that bite you later when the environment changes):\n"
     "  • Environment-dependent failures: missing binaries, fresh-install "
@@ -446,7 +657,7 @@ def summarize_background_review_actions(
     # result JSON only says "Entry added"; the call arguments contain action,
     # target, and content previews.  Restricting to notify_tools also prevents
     # helper tools from surfacing as memory work just because they succeeded.
-    notify_tools = {"memory", "skill_manage"}
+    notify_tools = {"memory", "skill_manage", "fact_store"}
     all_tool_call_ids: set = set()
     call_details: dict = {}
     for msg in review_messages or []:
@@ -505,12 +716,27 @@ def summarize_background_review_actions(
         # Defensively normalize everything through a dict-typed alias so
         # the rest of the function can stay terse without per-call
         # ``isinstance`` guards (#59437).
-        if not isinstance(data, dict) or not data.get("success"):
+        if not isinstance(data, dict):
             continue
         message = data.get("message", "")
         detail = call_details.get(tcid) or {}
         if not isinstance(detail, dict):
             detail = {}
+        is_fact = detail.get("tool") == "fact_store"
+        if is_fact:
+            status = str(data.get("status") or "").lower()
+            if status not in {"added", "updated", "ok", "success"} and "fact_id" not in data:
+                continue
+            action = detail.get("action", "add")
+            content = detail.get("content", "") or data.get("content", "")
+            preview = str(content)[:100].replace("\n", " ")
+            if verbose and preview:
+                actions.append(f"🧠 Fact store {action}: {preview}{'…' if len(str(content)) > 100 else ''}")
+            else:
+                actions.append(f"🧠 Fact store {action}")
+            continue
+        if not data.get("success"):
+            continue
         target = data.get("target", "") or detail.get("target", "")
         is_skill = detail.get("tool") == "skill_manage"
 
@@ -812,6 +1038,11 @@ def _run_review_in_thread(
             review_agent._memory_store = agent._memory_store
             review_agent._memory_enabled = agent._memory_enabled
             review_agent._user_profile_enabled = agent._user_profile_enabled
+            # Share provider tool dispatch only: fact_store writes must use the
+            # parent provider, while the review harness must not ingest itself.
+            parent_mm = getattr(agent, "_memory_manager", None)
+            if parent_mm is not None:
+                review_agent._memory_manager = _ReviewMemoryToolsProxy(parent_mm)
             review_agent._memory_nudge_interval = 0
             review_agent._skill_nudge_interval = 0
             # PERSISTENCE ISOLATION (the curator-takeover root cause): the fork
@@ -900,11 +1131,21 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            if parent_mm is not None:
+                for tool_name in ("fact_store", "fact_feedback"):
+                    try:
+                        if parent_mm.has_tool(tool_name):
+                            review_whitelist.add(tool_name)
+                    except Exception:
+                        pass
+            allowed_kinds = "memory/skill"
+            if "fact_store" in review_whitelist:
+                allowed_kinds = "memory/skill/fact_store"
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    f"{{tool_name}}. Only {allowed_kinds} tools are allowed."
                 ),
             )
             try:
@@ -922,12 +1163,19 @@ def _run_review_in_thread(
                     _digest_history(messages_snapshot) if _routed
                     else messages_snapshot
                 )
+                evidence = build_review_evidence_digest(messages_snapshot)
+                tool_hint = (
+                    "memory and skill management tools"
+                    if "fact_store" not in review_whitelist
+                    else "memory, skill management, and fact_store tools"
+                )
                 review_agent.run_conversation(
                     user_message=(
                         prompt
-                        + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
-                        "at runtime — do not attempt them."
+                        + "\n\n"
+                        + evidence
+                        + f"\n\nYou can only call {tool_hint}. "
+                        "Other tools will be denied at runtime — do not attempt them."
                     ),
                     conversation_history=_review_history,
                 )
@@ -1075,6 +1323,7 @@ __all__ = [
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",
+    "build_review_evidence_digest",
     "spawn_background_review_thread",
     "summarize_background_review_actions",
     "build_memory_write_metadata",

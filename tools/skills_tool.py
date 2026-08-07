@@ -88,6 +88,41 @@ from agent.skill_utils import (
 
 logger = logging.getLogger(__name__)
 
+_LESSONS_OVERLAY_MAX_CHARS = 4000
+_LESSONS_OVERLAY_RELPATH = "references/lessons.md"
+
+
+def _append_lessons_overlay(content: str, skill_dir: Path) -> str:
+    """Append bounded learning-loop corrections to a main skill view."""
+    lessons_path = skill_dir / _LESSONS_OVERLAY_RELPATH
+    if not lessons_path.is_file():
+        return content
+    try:
+        lessons = lessons_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        logger.debug("Could not read lessons overlay at %s", lessons_path, exc_info=True)
+        return content
+    if not lessons:
+        return content
+    if len(lessons) > _LESSONS_OVERLAY_MAX_CHARS:
+        lessons = "…(earlier lessons truncated)…\n" + lessons[-_LESSONS_OVERLAY_MAX_CHARS:]
+    try:
+        from tools.skill_manager_tool import mark_background_review_skill_read
+
+        mark_background_review_skill_read(lessons_path)
+    except Exception:
+        logger.debug(
+            "Could not record background-review read for lessons overlay %s",
+            lessons_path,
+            exc_info=True,
+        )
+    return (
+        f"{content.rstrip()}\n\n"
+        "## Learned corrections (auto-loaded)\n\n"
+        f"{lessons}\n"
+    )
+
+
 # Per-session skill discovery cache.  _find_all_skills() re-reads every
 # SKILL.md on every call; with hundreds of skills this is wasteful.
 # Cache validation (mirrors hermes_cli/profiles.py::_count_skills, d5eee133e):
@@ -1564,6 +1599,11 @@ def skill_view(
                 logger.debug(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
+
+        # Runtime corrections for protected skills are always part of the main
+        # view, so a later session cannot miss the lessons overlay.
+        if skill_dir is not None:
+            rendered_content = _append_lessons_overlay(rendered_content, skill_dir)
 
         # ── M2 org provenance header (load-time) ──────────────────────────
         # An org-shared skill announces its provenance IN the returned content

@@ -313,8 +313,11 @@ for the default profile that is `~/.hermes/.env`, and for named profiles use
 ```text
 OPENVIKING_ENDPOINT=http://127.0.0.1:1933
 # OPENVIKING_API_KEY=...
-# OPENVIKING_ACCOUNT=default
-# OPENVIKING_USER=default
+# Local/trusted mode only — explicit tenant identity (unset by default).
+# api_key deployments must leave these unset: the server derives the tenant
+# from the key and rejects client-asserted X-OpenViking-Account/User headers.
+# OPENVIKING_ACCOUNT=...
+# OPENVIKING_USER=...
 # OPENVIKING_AGENT=hermes
 ```
 

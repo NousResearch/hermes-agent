@@ -945,6 +945,60 @@ class TestDeepSeekNativeWebSearch:
         assert [tool.get("name") for tool in kw["tools"] if tool.get("type") == "function"] == ["terminal"]
         assert [tool for tool in kw["tools"] if tool.get("type") == "web_search"] == [{"type": "web_search"}]
 
+    def test_responses_model_without_native_search_keeps_client_tool(
+        self, transport, monkeypatch
+    ):
+        from hermes_cli import providers as provider_registry
+        from hermes_cli.providers import DeepSeekModelCapabilities
+
+        self._select_backend(monkeypatch, "deepseek")
+        monkeypatch.setitem(
+            provider_registry._DEEPSEEK_MODEL_CAPABILITIES,
+            "deepseek-v4-pro",
+            DeepSeekModelCapabilities(
+                responses_api=True,
+                native_web_search=False,
+            ),
+        )
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "latest news"}],
+            tools=self._tools(),
+            is_deepseek_responses=True,
+        )
+        assert any(tool.get("name") == "web_search" for tool in kw["tools"])
+        assert not any(tool.get("type") == "web_search" for tool in kw["tools"])
+
+    def test_future_pro_capability_enables_existing_native_search_path(
+        self, transport, monkeypatch
+    ):
+        from hermes_cli import providers as provider_registry
+        from hermes_cli.providers import DeepSeekModelCapabilities
+
+        self._select_backend(monkeypatch, "deepseek")
+        monkeypatch.setitem(
+            provider_registry._DEEPSEEK_MODEL_CAPABILITIES,
+            "deepseek-v4-pro",
+            DeepSeekModelCapabilities(
+                responses_api=True,
+                native_web_search=True,
+            ),
+        )
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "latest news"}],
+            tools=self._tools(),
+            is_deepseek_responses=True,
+        )
+        assert [
+            tool.get("name")
+            for tool in kw["tools"]
+            if tool.get("type") == "function"
+        ] == ["terminal"]
+        assert [
+            tool for tool in kw["tools"] if tool.get("type") == "web_search"
+        ] == [{"type": "web_search"}]
+
     def test_non_deepseek_backend_preserves_client_web_search(
         self, transport, monkeypatch
     ):
@@ -980,6 +1034,26 @@ class TestDeepSeekNativeWebSearch:
             is_deepseek_responses=True,
         )
         assert not any(tool.get("type") == "web_search" for tool in kw["tools"])
+
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [
+            ("xhigh", "high"),
+            ("ultra", "max"),
+            ("max", "max"),
+        ],
+    )
+    def test_deepseek_reasoning_effort_clamps_product_aliases(
+        self, transport, configured, expected
+    ):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[],
+            is_deepseek_responses=True,
+            reasoning_config={"effort": configured},
+        )
+        assert kw["reasoning"] == {"effort": expected}
 
     def test_deepseek_sanitizer_runs_after_request_overrides(self, transport):
         kw = transport.build_kwargs(

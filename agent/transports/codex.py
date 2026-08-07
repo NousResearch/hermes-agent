@@ -310,7 +310,7 @@ class ResponsesApiTransport(ProviderTransport):
             is_github_responses: bool — Copilot/GitHub models backend
             is_codex_backend: bool — chatgpt.com/backend-api/codex
             is_xai_responses: bool — xAI/Grok backend
-            is_deepseek_responses: bool — DeepSeek V4 Flash Responses backend
+            is_deepseek_responses: bool — DeepSeek Responses backend
             github_reasoning_extra: dict | None — Copilot reasoning params
         """
         from agent.codex_responses_adapter import (
@@ -333,6 +333,11 @@ class ResponsesApiTransport(ProviderTransport):
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
         is_deepseek_responses = params.get("is_deepseek_responses") is True
+        deepseek_native_web_search = False
+        if is_deepseek_responses:
+            from hermes_cli.providers import deepseek_supports_native_web_search
+
+            deepseek_native_web_search = deepseek_supports_native_web_search(model)
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
@@ -372,6 +377,9 @@ class ResponsesApiTransport(ProviderTransport):
             if not is_grok_46_family(model):
                 _effort_clamp["xhigh"] = "high"
             _effort_clamp.update({"max": "high", "ultra": "high"})
+        elif is_deepseek_responses:
+            # DeepSeek accepts max but not Hermes/OpenAI product aliases.
+            _effort_clamp.update({"xhigh": "high", "ultra": "max"})
         if (params.get("provider") or "").strip().lower() == "actual":
             # Actual Computer relays to SGLang/vLLM backends that accept only
             # none/low/medium/high/max for reasoning effort — a forwarded
@@ -423,6 +431,7 @@ class ResponsesApiTransport(ProviderTransport):
         # configured Firecrawl/Tavily/etc. backend remains client-dispatched.
         if (
             is_deepseek_responses
+            and deepseek_native_web_search
             and response_tools
             and _deepseek_prefers_native_web_search()
         ):

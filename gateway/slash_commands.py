@@ -3514,7 +3514,15 @@ class GatewaySlashCommandsMixin:
         # reads — same fix as /model (#30479).
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(_reasoning_source)
-        self._show_reasoning = self._load_show_reasoning()
+        # Resolve the toggle through the same per-platform chain the recap
+        # render path uses (display.platforms.<platform>.show_reasoning →
+        # display.show_reasoning), so the status card can never disagree with
+        # what actually gets rendered (#79885). Before this, a /reasoning show
+        # written a per-platform override while the picker re-read only the
+        # global key at startup and reported "Display: off".
+        self._show_reasoning = self._load_show_reasoning(
+            _platform_config_key(event.source.platform)
+        )
         # Use the session's effective model (session /model override wins over
         # config default) so per-model reasoning_overrides display correctly.
         _session_model = str(

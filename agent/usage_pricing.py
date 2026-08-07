@@ -1357,7 +1357,7 @@ def estimate_usage_cost(
         amount += Decimal(usage.request_count) * entry.request_cost
 
     status: CostStatus = "estimated"
-    label = f"~${amount:.2f}"
+    label = _format_estimated_cost_label(amount)
     if entry.source == "none" and amount == _ZERO:
         status = "included"
         label = "included"
@@ -1374,6 +1374,20 @@ def estimate_usage_cost(
         pricing_version=entry.pricing_version,
         notes=tuple(notes),
     )
+
+
+def _format_estimated_cost_label(amount: Decimal) -> str:
+    """Format USD estimates without rounding non-zero sub-cent costs to zero."""
+    text = f"{amount:.2f}"
+    if amount.is_finite() and amount != _ZERO and abs(amount) < Decimal("0.01"):
+        # Match the adaptive precision used for model prices: find the first
+        # decimal place that renders a non-zero value, keep one extra digit,
+        # then trim insignificant trailing zeros.
+        precision = 3
+        while precision < 12 and round(abs(amount), precision) == _ZERO:
+            precision += 1
+        text = f"{amount:.{min(precision + 1, 12)}f}".rstrip("0").rstrip(".")
+    return f"~${text}"
 
 
 def has_known_pricing(

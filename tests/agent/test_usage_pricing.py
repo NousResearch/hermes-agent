@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
@@ -120,6 +121,48 @@ def test_deepseek_deprecated_aliases_price_as_v4_flash():
         assert (
             entry.cache_read_cost_per_million == flash.cache_read_cost_per_million
         ), alias
+
+
+def test_estimated_cost_labels_preserve_nonzero_sub_cent_values():
+    """Non-zero per-turn costs must not collapse to ``~$0.00`` (#79220)."""
+    reported = estimate_usage_cost(
+        "deepseek-v4-pro",
+        CanonicalUsage(
+            input_tokens=8000,
+            output_tokens=1200,
+            cache_read_tokens=32000,
+            reasoning_tokens=5000,
+        ),
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+    )
+    assert reported.amount_usd == Decimal("0.004640")
+    assert reported.label == "~$0.0046"
+
+    tiny = estimate_usage_cost(
+        "deepseek-v4-pro",
+        CanonicalUsage(cache_read_tokens=1),
+        provider="deepseek",
+    )
+    assert tiny.amount_usd is not None and tiny.amount_usd > 0
+    assert Decimal(tiny.label.removeprefix("~$")) > 0
+
+
+def test_estimated_cost_labels_keep_existing_zero_and_cent_precision():
+    zero = estimate_usage_cost(
+        "deepseek-v4-pro",
+        CanonicalUsage(),
+        provider="deepseek",
+    )
+    standard = estimate_usage_cost(
+        "deepseek-v4-pro",
+        CanonicalUsage(output_tokens=20000),
+        provider="deepseek",
+    )
+
+    assert zero.label == "~$0.00"
+    assert standard.amount_usd == Decimal("0.01740")
+    assert standard.label == "~$0.02"
 
 
 

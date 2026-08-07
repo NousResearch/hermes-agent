@@ -72,10 +72,14 @@ class TestRegistration:
         with pytest.raises(TypeError, match="RealtimeVoiceProvider"):
             realtime_voice_registry.register_provider(object())  # type: ignore[arg-type]
 
-    @pytest.mark.parametrize("name", ["", " ", "\t"])
+    @pytest.mark.parametrize("name", ["", " ", "\t", " padded", "padded "])
     def test_rejects_empty_name(self, name):
-        with pytest.raises(ValueError, match="non-empty"):
+        with pytest.raises(ValueError, match="trimmed identifier"):
             realtime_voice_registry.register_provider(_FakeProvider(name=name))
+
+    def test_rejects_oversized_name(self):
+        with pytest.raises(ValueError, match="provider name"):
+            realtime_voice_registry.register_provider(_FakeProvider(name="x" * 513))
 
     def test_rejects_incompatible_api_version(self, caplog):
         provider = _FakeProvider(name="future")
@@ -99,7 +103,7 @@ class TestRegistration:
     def test_builtin_replaces_plugin_and_cannot_be_shadowed(self, caplog):
         plugin = _FakeProvider(name="openai")
         built_in = _FakeProvider(name="openai")
-        shadow = _FakeProvider(name=" OPENAI ")
+        shadow = _FakeProvider(name="OPENAI")
 
         assert realtime_voice_registry.register_provider(plugin) is True
         assert realtime_voice_registry.register_provider(built_in, built_in=True) is True

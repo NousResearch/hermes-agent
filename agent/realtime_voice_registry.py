@@ -15,6 +15,7 @@ import threading
 from typing import Dict, List, Optional, Set
 
 from agent.realtime_voice_provider import (
+    MAX_IDENTIFIER_LENGTH,
     REALTIME_VOICE_PROVIDER_API_VERSION,
     RealtimeVoiceProvider,
 )
@@ -43,9 +44,17 @@ def register_provider(
         )
 
     name = provider.name
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("Realtime voice provider .name must be a non-empty string")
-    key = name.strip().lower()
+    if (
+        not isinstance(name, str)
+        or not name
+        or name != name.strip()
+        or len(name) > MAX_IDENTIFIER_LENGTH
+    ):
+        raise ValueError(
+            "Realtime voice provider name must be a nonblank, trimmed identifier "
+            f"no longer than {MAX_IDENTIFIER_LENGTH} characters"
+        )
+    key = name.lower()
 
     api_version = getattr(provider, "api_version", None)
     if api_version != REALTIME_VOICE_PROVIDER_API_VERSION:

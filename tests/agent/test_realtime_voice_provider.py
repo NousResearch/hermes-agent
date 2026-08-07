@@ -35,12 +35,24 @@ from agent.realtime_voice_provider import (
 
 
 def test_setup_copies_and_freezes_provider_options() -> None:
-    options = {"region": "local"}
+    tags = {"local"}
+    options = {"region": "local", "tags": tags}
 
     setup = RealtimeVoiceSetup(model="model", voice="voice", provider_options=options)
     options["region"] = "changed"
+    tags.add("mutated")
 
-    assert setup.provider_options == {"region": "local"}
+    assert setup.provider_options == {"region": "local", "tags": frozenset({"local"})}
+
+
+def test_opaque_mappings_reject_values_that_cannot_be_frozen() -> None:
+    class Mutable:
+        pass
+
+    with pytest.raises(TypeError, match="provider-neutral immutable value"):
+        RealtimeVoiceSetup(provider_options={"native": Mutable()})
+    with pytest.raises(TypeError, match="provider-neutral immutable value"):
+        SessionReady(session_id="session", provider_data={"native": Mutable()})
 
 
 def test_setup_rejects_provider_options_that_shadow_shared_fields() -> None:
@@ -96,7 +108,8 @@ def test_capabilities_are_explicit_and_immutable() -> None:
 
 
 def test_shared_event_vocabulary_is_typed_and_provider_data_is_opaque() -> None:
-    provider_data = {"native": {"values": ["value"]}}
+    tags = {"tag"}
+    provider_data = {"native": {"values": ["value"], "tags": tags}}
     events = [
         SessionReady(session_id="session", provider_data=provider_data),
         SessionClosed(reason="normal"),
@@ -131,10 +144,25 @@ def test_shared_event_vocabulary_is_typed_and_provider_data_is_opaque() -> None:
         Interruption(response_id="response", turn_id="turn"),
     ]
     provider_data["native"]["values"].append("changed")
+    tags.add("mutated")
 
     assert len(events) == 13
     assert events[0].session_id == "session"
-    assert events[0].provider_data == {"native": {"values": ("value",)}}
+    assert events[0].provider_data == {
+        "native": {"values": ("value",), "tags": frozenset({"tag"})}
+    }
+
+
+def test_output_audio_copies_mutable_buffers() -> None:
+    source = bytearray(b"abc")
+    event = OutputAudio(
+        data=source, item_id="item", turn_id="turn", response_id="response"
+    )
+
+    source[0] = ord("z")
+
+    assert event.data == b"abc"
+    assert isinstance(event.data, bytes)
 
 
 def test_provider_data_cannot_shadow_shared_event_fields() -> None:

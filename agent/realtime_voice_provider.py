@@ -97,12 +97,20 @@ def _validate_identifier(value: str, field_name: str) -> None:
 
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("provider-neutral mappings require string keys")
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})
-    if isinstance(value, bytearray):
+    if isinstance(value, (bytearray, memoryview)):
         return bytes(value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze(item) for item in value)
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         return tuple(_freeze(item) for item in value)
-    return value
+    if value is None or isinstance(value, (str, bytes, bool, int, float)):
+        return value
+    raise TypeError(
+        f"provider-neutral immutable value required, got {type(value).__name__}"
+    )
 
 
 def _freeze_provider_data(event: Any) -> None:
@@ -210,6 +218,9 @@ class OutputAudio(RealtimeVoiceEvent):
         _validate_identifier(self.item_id, "item_id")
         _validate_identifier(self.turn_id, "turn_id")
         _validate_identifier(self.response_id, "response_id")
+        if not isinstance(self.data, (bytes, bytearray, memoryview)):
+            raise TypeError("output audio data must be bytes-like")
+        object.__setattr__(self, "data", bytes(self.data))
         _freeze_provider_data(self)
 
 
@@ -343,7 +354,11 @@ class RealtimeTool:
 
 @dataclass(frozen=True, slots=True)
 class RealtimeVoiceSetup:
-    """Shared session setup; provider-specific options remain opaque."""
+    """Shared setup with opaque, immutable, non-authoritative provider options.
+
+    Providers may use ``provider_options`` to configure their own transport,
+    but hosts must never treat those values as identity or tool authority.
+    """
 
     model: str | None = None
     voice: str | None = None

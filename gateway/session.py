@@ -3460,6 +3460,11 @@ class SessionStore:
                             if not pending:
                                 self._dirty_transcripts.pop(queue_session_id, None)
                                 self._transcript_append_failures.pop(session_id, None)
+                                return
+                            # Refresh the snapshot before continuing: without
+                            # this the loop top re-writes the message we just
+                            # persisted, duplicating it in the transcript.
+                            msg = pending[0]
                         continue
                 with self._transcript_retry_lock:
                     failures = self._transcript_append_failures.get(session_id, 0) + 1

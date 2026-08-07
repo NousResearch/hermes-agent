@@ -1473,6 +1473,49 @@ class TestGatewaySessionDbRecovery:
         pending = store._dirty_transcripts.get("s1", [])
         assert len(pending) <= store._MAX_PENDING_PER_SESSION
 
+    def test_fts_rebuild_retry_does_not_duplicate_messages(self):
+        """After a successful FTS rebuild + retry, the loop must advance to
+        the next pending message — not re-write the one it just persisted.
+
+        Regression: the rebuild success path popped the retried message and
+        continued without refreshing the snapshot, so the loop top wrote the
+        same message a second time ([m1, m1, m2] for a two-message backlog,
+        and [m1, m1] even for a single message).
+        """
+        import threading
+
+        class FakeDb:
+            def __init__(self):
+                self.rows = []
+                self.fail_next = True
+
+            def append_message(self, session_id, role, content, **kwargs):
+                if self.fail_next:
+                    self.fail_next = False
+                    raise RuntimeError("no such table: messages_fts")
+                self.rows.append((session_id, role, content))
+
+            def rebuild_fts(self):
+                return 1
+
+        store = object.__new__(SessionStore)
+        store._db = FakeDb()
+        store._lock = threading.RLock()
+        store._entries = {}
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = False
+
+        store.append_to_transcript("s1", {"role": "user", "content": "m1"})
+        store.append_to_transcript("s1", {"role": "assistant", "content": "m2"})
+
+        contents = [content for _sid, _role, content in store._db.rows]
+        assert contents == ["m1", "m2"]
+        assert store._dirty_transcripts.get("s1") is None
+
 
 class TestGatewayRoutingTable:
     """state.db gateway_routing table is the primary routing index (#9006 follow-up)."""

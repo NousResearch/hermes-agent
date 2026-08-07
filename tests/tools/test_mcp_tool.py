@@ -497,6 +497,93 @@ class TestToolHandler:
             _servers.pop("test_srv", None)
 
 
+    def test_invalid_arguments_are_rejected_before_mcp_call(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("should not run", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        }
+
+        try:
+            handler = _make_tool_handler("test_srv", "read_file", 120, schema)
+            result = json.loads(handler({"file": "/tmp/a.txt"}))
+            assert "Invalid MCP tool arguments" in result["error"]
+            assert "arguments.path is required" in result["error"]
+            assert "arguments.file is not an allowed parameter" in result["error"]
+            mock_session.call_tool.assert_not_called()
+        finally:
+            _servers.pop("test_srv", None)
+
+
+    def test_wrong_argument_type_is_rejected_before_mcp_call(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("should not run", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer"},
+            },
+            "required": ["limit"],
+        }
+
+        try:
+            handler = _make_tool_handler("test_srv", "list_items", 120, schema)
+            result = json.loads(handler({"limit": "10"}))
+            assert "arguments.limit must be integer; got string" in result["error"]
+            mock_session.call_tool.assert_not_called()
+        finally:
+            _servers.pop("test_srv", None)
+
+
+    def test_integral_float_satisfies_integer_schema(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("ok", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer"},
+            },
+            "required": ["limit"],
+        }
+
+        try:
+            handler = _make_tool_handler("test_srv", "list_items", 120, schema)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"limit": 3.0}))
+            assert result["result"] == "ok"
+            mock_session.call_tool.assert_called_once_with(
+                "list_items", arguments={"limit": 3.0}
+            )
+        finally:
+            _servers.pop("test_srv", None)
+
+
     def test_recycled_stdio_server_reconnects_lazily_on_tool_call(self):
         from tools.mcp_tool import _make_tool_handler, _servers
 

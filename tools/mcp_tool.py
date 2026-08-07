@@ -4875,7 +4875,165 @@ def _mark_server_call_started(server: Any) -> None:
         mark_tool_call()
 
 
-def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
+_JSON_SCHEMA_TYPE_CHECKS: dict[str, tuple[type, ...]] = {
+    "object": (dict,),
+    "array": (list,),
+    "string": (str,),
+    "boolean": (bool,),
+    "integer": (int,),
+    "number": (int, float),
+    "null": (type(None),),
+}
+
+
+def _json_schema_type_name(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def _schema_accepts_type(value: Any, expected: str) -> bool:
+    if expected == "integer":
+        if isinstance(value, bool):
+            return False
+        return isinstance(value, int) or (
+            isinstance(value, float) and value.is_integer()
+        )
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    accepted = _JSON_SCHEMA_TYPE_CHECKS.get(expected)
+    return accepted is None or isinstance(value, accepted)
+
+
+def _validate_value_against_mcp_schema(value: Any, schema: Any, path: str) -> list[str]:
+    """Return human-readable validation errors for the common MCP schema subset.
+
+    This intentionally stays dependency-free and conservative: it validates
+    the JSON Schema constructs MCP tool input schemas commonly use for model
+    arguments, and ignores unsupported keywords rather than rejecting valid
+    calls because a server emitted a richer schema.
+    """
+    if not isinstance(schema, dict):
+        return []
+
+    if schema.get("nullable") is True and value is None:
+        return []
+
+    for union_key in ("anyOf", "oneOf"):
+        options = schema.get(union_key)
+        if isinstance(options, list) and options:
+            option_errors = [
+                _validate_value_against_mcp_schema(value, option, path)
+                for option in options
+            ]
+            if any(not errors for errors in option_errors):
+                return []
+            return option_errors[0][:1]
+
+    expected_types = schema.get("type")
+    if isinstance(expected_types, str):
+        expected_types = [expected_types]
+    elif not isinstance(expected_types, list):
+        expected_types = []
+    expected_types = [t for t in expected_types if isinstance(t, str)]
+
+    if expected_types and not any(
+        _schema_accepts_type(value, expected_type)
+        for expected_type in expected_types
+    ):
+        return [
+            f"{path} must be {', '.join(expected_types)}; got "
+            f"{_json_schema_type_name(value)}"
+        ]
+
+    errors: list[str] = []
+    schema_type = expected_types[0] if expected_types else None
+    if schema_type == "object" or (
+        isinstance(value, dict)
+        and ("properties" in schema or "required" in schema)
+    ):
+        if not isinstance(value, dict):
+            return errors
+        properties = schema.get("properties")
+        properties = properties if isinstance(properties, dict) else {}
+        required = schema.get("required")
+        if isinstance(required, list):
+            for name in required:
+                if isinstance(name, str) and name not in value:
+                    errors.append(f"{path}.{name} is required")
+                    if len(errors) >= 5:
+                        return errors
+        for key, item in value.items():
+            child_path = f"{path}.{key}"
+            child_schema = properties.get(key)
+            if child_schema is None:
+                additional = schema.get("additionalProperties", True)
+                if additional is False:
+                    errors.append(f"{child_path} is not an allowed parameter")
+                elif isinstance(additional, dict):
+                    errors.extend(
+                        _validate_value_against_mcp_schema(
+                            item, additional, child_path
+                        )
+                    )
+            else:
+                errors.extend(
+                    _validate_value_against_mcp_schema(
+                        item, child_schema, child_path
+                    )
+                )
+            if len(errors) >= 5:
+                return errors[:5]
+    elif schema_type == "array" and isinstance(value, list):
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for idx, item in enumerate(value):
+                errors.extend(
+                    _validate_value_against_mcp_schema(
+                        item, item_schema, f"{path}[{idx}]"
+                    )
+                )
+                if len(errors) >= 5:
+                    return errors[:5]
+
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and value not in enum_values:
+        allowed = json.dumps(enum_values, ensure_ascii=False)
+        errors.append(f"{path} must be one of {allowed}")
+
+    return errors[:5]
+
+
+def _validate_mcp_tool_arguments(args: Any, schema: dict | None) -> Optional[str]:
+    if not isinstance(schema, dict):
+        return None
+    errors = _validate_value_against_mcp_schema(args, schema, "arguments")
+    if not errors:
+        return None
+    return (
+        "Invalid MCP tool arguments; tool was not executed. "
+        + "; ".join(errors)
+    )
+
+
+def _make_tool_handler(
+    server_name: str,
+    tool_name: str,
+    tool_timeout: float,
+    input_schema: dict | None = None,
+):
     """Return a sync handler that calls an MCP tool via the background loop.
 
     The handler conforms to the registry's dispatch interface:
@@ -4883,6 +5041,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        validation_error = _validate_mcp_tool_arguments(args, input_schema)
+        if validation_error:
+            return tool_error(validation_error)
+
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
         # stops retrying and uses alternative approaches (#10447).
@@ -5871,7 +6033,10 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                 "origin": f"tool {mcp_tool.name!r}",
                 "schema": schema,
                 "handler": _make_tool_handler(
-                    name, mcp_tool.name, server.tool_timeout
+                    name,
+                    mcp_tool.name,
+                    server.tool_timeout,
+                    schema.get("parameters"),
                 ),
                 "check_fn": check_fn,
             }
@@ -6097,7 +6262,12 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             name=registry_name,
             toolset=toolset_name,
             schema=schema,
-            handler=_make_tool_handler(name, raw_name, tool_timeout),
+            handler=_make_tool_handler(
+                name,
+                raw_name,
+                tool_timeout,
+                schema.get("parameters"),
+            ),
             check_fn=check_fn,
             is_async=False,
             description=schema["description"],

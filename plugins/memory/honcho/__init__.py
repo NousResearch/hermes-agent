@@ -1399,6 +1399,14 @@ class HonchoMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("Honcho session-end flush failed: %s", e)
 
+        # Consolidate after the flush so the dream sees this session's messages.
+        # Opt-in (autoDream), throttled, dispatched on a daemon thread — it must
+        # never delay shutdown or surface an error into the user's session.
+        try:
+            self._manager.maybe_schedule_dream()
+        except Exception as e:
+            logger.debug("Honcho auto-dream skipped: %s", e)
+
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return tool schemas, respecting recall_mode.
 

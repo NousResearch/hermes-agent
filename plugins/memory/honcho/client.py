@@ -396,6 +396,14 @@ class HonchoClientConfig:
     # Dialectic (peer.chat) settings
     # reasoning_level: "minimal" | "low" | "medium" | "high" | "max"
     dialectic_reasoning_level: str = "low"
+    # When true, ask Honcho to consolidate memory (dream) at session end.
+    # Server-side auto-dream requires a stretch of idle time that an actively
+    # used install rarely reaches, so conclusions otherwise accumulate raw
+    # until someone remembers to run ``hermes honcho dream``.
+    auto_dream: bool = False
+    # Minimum seconds between auto-dreams. Dreaming is heavy server-side work;
+    # the default matches Honcho's own elapsed-time threshold.
+    auto_dream_min_interval_seconds: int = 28800  # 8h
     # When true, the model can override reasoning_level per-call via the
     # honcho_reasoning tool param (agentic). When false, always uses
     # dialecticReasoningLevel and ignores model-provided overrides.
@@ -630,6 +638,16 @@ class HonchoClientConfig:
                 host_block.get("dialecticReasoningLevel")
                 or raw.get("dialecticReasoningLevel")
                 or "low"
+            ),
+            auto_dream=_resolve_bool(
+                host_block.get("autoDream"),
+                raw.get("autoDream"),
+                default=False,
+            ),
+            auto_dream_min_interval_seconds=_parse_int_config(
+                host_block.get("autoDreamMinIntervalSeconds"),
+                raw.get("autoDreamMinIntervalSeconds"),
+                default=28800,
             ),
             dialectic_dynamic=_resolve_bool(
                 host_block.get("dialecticDynamic"),

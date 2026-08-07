@@ -7,6 +7,8 @@ import queue
 import re
 import logging
 import threading
+import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
@@ -544,6 +546,89 @@ class HonchoSessionManager:
                         self._flush_session(item)
                 except queue.Empty:
                     break
+
+    def maybe_schedule_dream(self) -> bool:
+        """Ask Honcho to consolidate memory, at most once per interval.
+
+        Dreaming is what turns raw conclusions into a deduplicated,
+        contradiction-resolved representation and refreshes the peer card.
+        Server-side auto-dream only fires when ALL of these hold: enough new
+        conclusions, enough elapsed time, AND a stretch of idle time. On an
+        actively used install the idle condition rarely holds, so conclusions
+        accumulate unconsolidated and the only remedy is remembering to run
+        ``hermes honcho dream`` by hand.
+
+        Best-effort and deliberately quiet: never raises, never blocks shutdown
+        (dispatched on a daemon thread), and throttled by a stamp file so a burst
+        of short sessions cannot queue a burst of dreams.
+
+        Returns:
+            True if a dream was dispatched, False if skipped (disabled,
+            throttled, or no client available).
+        """
+        cfg = self._config
+        if cfg is None or not getattr(cfg, "auto_dream", False):
+            return False
+
+        # Prefer the already-resolved client: this runs at shutdown, where
+        # re-resolving the singleton can fail on a missing key and is not worth
+        # raising over for a best-effort consolidation.
+        client = self._honcho
+        if client is None:
+            try:
+                client = self.honcho
+            except Exception as e:
+                logger.debug("Honcho auto-dream: client unavailable: %s", e)
+                return False
+        if client is None:
+            return False
+
+        interval = max(0, int(getattr(cfg, "auto_dream_min_interval_seconds", 28800)))
+        stamp = self._auto_dream_stamp_path()
+        now = time.time()
+        if interval > 0 and stamp is not None:
+            try:
+                if (now - float(stamp.read_text().strip())) < interval:
+                    return False
+            except (OSError, ValueError):
+                # No stamp yet, or unreadable: treat as due rather than never
+                # dreaming at all.
+                pass
+
+        observer = getattr(cfg, "peer_name", None) or "user"
+        observed = getattr(cfg, "ai_peer", None) or None
+
+        def _dream() -> None:
+            try:
+                client.schedule_dream(observer=observer)
+                if observed and observed != observer:
+                    client.schedule_dream(observer=observer, observed=observed)
+                logger.info(
+                    "Honcho auto-dream scheduled (observer=%s, observed=%s)",
+                    observer, observed,
+                )
+            except Exception as e:
+                logger.debug("Honcho auto-dream failed to schedule: %s", e)
+
+        # Stamp BEFORE dispatch: sessions ending in quick succession must not
+        # each queue a dream while the first request is still in flight.
+        if stamp is not None:
+            try:
+                stamp.parent.mkdir(parents=True, exist_ok=True)
+                stamp.write_text(str(now))
+            except OSError as e:
+                logger.debug("Honcho auto-dream stamp write failed: %s", e)
+
+        threading.Thread(target=_dream, name="honcho-auto-dream", daemon=True).start()
+        return True
+
+    def _auto_dream_stamp_path(self) -> Path | None:
+        try:
+            from hermes_constants import get_hermes_home
+
+            return Path(get_hermes_home()) / "honcho-auto-dream.stamp"
+        except Exception:
+            return None
 
     def _ensure_async_writer(self) -> None:
         """Start the async writer on first enqueue (idempotent, thread-safe)."""

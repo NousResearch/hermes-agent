@@ -1475,6 +1475,25 @@ class _CuaDriverSession:
             or isinstance(exc, (BrokenPipeError, EOFError))
         )
 
+    _SESSION_EXPIRED_PATTERNS = (
+        "has ended",
+        "session.*ended",
+        "session.*expired",
+        "session.*invalid",
+        "call start_session",
+    )
+
+    @classmethod
+    def _is_session_expired_error(cls, error_text: str) -> bool:
+        """Return True when the cua-driver daemon rejected the call because our
+        session id is no longer valid (daemon was restarted, session timed out,
+        or a concurrent caller ended it)."""
+        if not error_text:
+            return False
+        import re as _re
+        lower = error_text.lower()
+        return any(_re.search(pat, lower) for pat in cls._SESSION_EXPIRED_PATTERNS)
+
     @staticmethod
     def _is_transient_daemon_error(exc: Exception) -> bool:
         """Return True for the cua-driver daemon-proxy EAGAIN congestion error.
@@ -1654,6 +1673,34 @@ class _CuaDriverSession:
     # into start() when the session-start hasn't flipped _started yet.
     _LIFECYCLE_CALLS = frozenset({"start_session", "end_session"})
 
+    @classmethod
+    def _mcp_result_error_text(cls, mcp_result: Any) -> str:
+        """Extract the combined error text from an MCP CallToolResult.
+
+        Returns the concatenated text from all text-type content parts,
+        or an empty string when there is none.
+        """
+        parts: list = []
+        for part in getattr(mcp_result, "content", []) or []:
+            if getattr(part, "type", None) == "text":
+                t = getattr(part, "text", "")
+                if t:
+                    parts.append(str(t))
+        return " ".join(parts)
+
+    @classmethod
+    def _is_session_expired_mcp_result(cls, mcp_result: Any) -> bool:
+        """Return True when the daemon rejected the call because our session id
+        is no longer valid (daemon restart, session timeout, etc.).
+
+        This is NOT a transport error — the MCP bridge responded successfully —
+        so the normal transport-retry path never triggers.  We detect it by
+        inspecting the ``isError`` flag and the error text in content parts.
+        """
+        if getattr(mcp_result, "isError", False) is not True:
+            return False
+        return cls._is_session_expired_error(cls._mcp_result_error_text(mcp_result))
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         # A prior session may have died (MCP drop / driver crash): its
         # lifecycle coro reset _started to False in its finally (#55048).
@@ -1702,6 +1749,30 @@ class _CuaDriverSession:
             and args.get("session") == self._declared_session_id
         ):
             self._declared_session_id = None
+        return result
+
+        # No transport error — but the daemon may have rejected our session id
+        # (daemon restart, session timeout).  The MCP bridge responded normally,
+        # so the exception path above never saw it.  Detect the logical error
+        # and regenerate the session once.
+        if self._is_session_expired_mcp_result(result):
+            logger.warning(
+                "cua-driver session expired during %s; regenerating and retrying once",
+                name,
+            )
+            with self._lock:
+                self._restart_session_locked()
+            try:
+                return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+            except Exception as e:
+                if self._is_transient_daemon_error(e):
+                    logger.warning(
+                        "cua-driver MCP transport failed on %s after session restart (%s); "
+                        "falling back to CLI transport", name, e,
+                    )
+                    return self._call_tool_via_cli(name, args, timeout)
+                raise
+
         return result
 
 
@@ -1811,20 +1882,105 @@ def _positive_int(value: Any) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
+def _x11_window_pid(window_id: int) -> Optional[int]:
+    """Read the verified window-to-process mapping from the X server.
+
+    ``_NET_WM_PID`` is set by the window's owner and read back through
+    the server, so a value here is authoritative for *this* window — not
+    a guess from process-name matching.  Tries ``xprop`` first, then
+    ``xdotool`` as a fallback reader for the same property.
+
+    Returns ``None`` when the window carries no ``_NET_WM_PID`` (or when
+    no reader tool is available), never a made-up PID.
+    """
+    import subprocess as _sp
+
+    readers = [
+        ["xprop", "-id", str(window_id), "_NET_WM_PID"],
+        ["xdotool", "getwindowpid", str(window_id)],
+    ]
+    for cmd in readers:
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            result = _sp.run(
+                cmd,
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, _sp.TimeoutExpired):
+            continue
+        if result.returncode != 0:
+            continue
+        # xprop prints "  _NET_WM_PID(CARDINAL) = 12345"; xdotool prints
+        # just the PID.  Accept the trailing integer in either form.
+        numbers = re.findall(r"(\d+)\s*$", result.stdout.strip())
+        if numbers:
+            pid = int(numbers[-1])
+            if pid > 1:
+                return pid
+    return None
+
+
+def _proc_cmdline_matches(pid: int, app_name: str) -> bool:
+    """True when ``/proc/<pid>/cmdline`` mentions ``app_name``.
+
+    Used as a sanity cross-check on the PID the X server reported, so a
+    stale ``_NET_WM_PID`` (window owner already gone, PID reused by an
+    unrelated process) does not leak into PID-based actions.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return False
+    cmdline = raw.decode("utf-8", errors="replace").replace("\x00", " ")
+    return app_name.lower() in cmdline.lower()
+
+
+def _resolve_host_pid(window_id: int, app_name: str) -> Optional[int]:
+    """Find the host PID for a window cua-driver reported with ``pid: null``.
+
+    Flatpak, Snap, and some containerised apps run in a PID namespace
+    separate from the X11 server, so cua-driver reports ``pid: null``
+    for windows that actually own a real host process.
+
+    Unlike process-name scanning, this requires a *verified*
+    window-to-process mapping: the window's own ``_NET_WM_PID`` read
+    through the X server (``xprop``/``xdotool``), cross-checked against
+    ``/proc`` so a stale PID is rejected.  When no verified mapping is
+    available we return ``None`` — callers fall back to the ``pid=0``
+    sentinel and window_id-only transports rather than guessing a PID
+    that could target the wrong process.
+
+    Returns the resolved PID or ``None`` when no verified match exists.
+    """
+    if not window_id or window_id <= 0:
+        return None
+    if not app_name:
+        return None
+
+    pid = _x11_window_pid(window_id)
+    if pid is None:
+        return None
+    if not _proc_cmdline_matches(pid, app_name):
+        # _NET_WM_PID is stale or belongs to another namespace; do not
+        # guess from /proc name matching.
+        return None
+    return pid
+
+
 def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Normalise cua-driver ``list_windows`` entries, dropping unusable ones.
 
-    Every downstream operation needs both an integer ``pid`` (for
-    get_window_state / action tools) and ``window_id`` (for screenshot /
-    element clicks), so a window missing either is uncapturable.
-
-    Crucially, on X11 a window's PID comes from the *optional*
-    ``_NET_WM_PID`` property — the desktop root, panels, and
-    override-redirect popups routinely omit it, so the driver reports
-    ``pid: null`` for them. Coercing every entry unconditionally
-    (``int(w["pid"])``) let one such window abort enumeration of the real,
-    targetable windows. We skip the unusable entries instead so capture()
-    and focus_app() still find the windows that matter.
+    Every downstream operation needs a ``window_id`` (for screenshot /
+    element clicks).  ``pid`` is preferred for ``get_window_state`` and
+    action tools, but on X11 flatpak/snap windows routinely omit
+    ``_NET_WM_PID``, so the driver reports ``pid: null``.  We accept
+    those windows with a sentinel ``pid=0`` — they are still capturable
+    via the CLI fallback transport (which retries with backoff and
+    screenshot-to-file), and action tools that genuinely require a real
+    PID will fail with a clear error instead of silently hiding the
+    window from discovery.
 
     ``z_index`` follows CUA Driver semantics: higher = closer to front.
     Wayland may return ``z_index: null`` (undefined stacking order); we
@@ -1838,10 +1994,22 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # instead of raising AttributeError on one malformed record.
         if not isinstance(w, dict):
             continue
-        pid_int = _positive_int(w.get("pid"))
         window_id_int = _positive_int(w.get("window_id"))
-        if pid_int is None or window_id_int is None:
+        if window_id_int is None:
             continue
+        pid_int = _positive_int(w.get("pid"))
+        if pid_int is None:
+            # Flatpak / Snap / container window without _NET_WM_PID.
+            # Try to discover the real host PID so get_window_state and
+            # action tools can target this window.  If resolution fails
+            # we still include the window with pid=0 for discovery;
+            # callers that can work window_id-only (vision screenshot)
+            # will still succeed.
+            resolved = _resolve_host_pid(
+                _positive_int(w.get("window_id")) or 0,
+                w.get("app_name") or "",
+            )
+            pid_int = resolved if resolved else 0
         z_raw = w.get("z_index")
         z_index = z_raw if isinstance(z_raw, (int, float)) and not isinstance(z_raw, bool) else 0
         app_name = w.get("app_name", "")
@@ -2831,6 +2999,7 @@ class CuaDriverBackend(ComputerUseBackend):
     # ── Introspection ──────────────────────────────────────────────
     def list_apps(self) -> List[Dict[str, Any]]:
         out = self._session.call_tool("list_apps", {"session": self._session_id})
+
         structured = out.get("structuredContent")
         data = out.get("data")
 

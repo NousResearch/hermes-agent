@@ -36,7 +36,9 @@ _PNG_B64 = (
 # ---------------------------------------------------------------------------
 
 class TestIngestWindows:
-    def test_skips_window_with_null_pid(self):
+    def test_keeps_null_pid_window_with_window_id_as_sentinel(self):
+        from unittest.mock import patch
+
         from tools.computer_use.cua_backend import _ingest_windows
 
         raw = [
@@ -44,11 +46,16 @@ class TestIngestWindows:
             {"app_name": "Firefox", "pid": 4321, "window_id": 77, "z_index": 1},
         ]
 
-        out = _ingest_windows(raw)
+        # No X server / reader tools (headless CI): resolution fails and the
+        # window survives with the pid=0 sentinel for window_id-only flows.
+        with patch("tools.computer_use.cua_backend._x11_window_pid", return_value=None):
+            out = _ingest_windows(raw)
 
-        assert [w["app_name"] for w in out] == ["Firefox"]
-        assert out[0]["pid"] == 4321
-        assert out[0]["window_id"] == 77
+        assert [w["app_name"] for w in out] == ["Desktop", "Firefox"]
+        assert out[0]["pid"] == 0
+        assert out[0]["window_id"] == 1
+        assert out[1]["pid"] == 4321
+        assert out[1]["window_id"] == 77
 
 
     def test_preserves_fields_capture_relies_on(self):

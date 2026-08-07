@@ -58,6 +58,11 @@ jobs:
   # by both route matrices, so the two routes cover the same set.
   pick-releases:
     name: Pick release tags
+    # Only run on the upstream repository, not on forks. pick-release-tags.sh
+    # errors on zero release tags, which every fork has. update and installer
+    # both declare `needs: pick-releases`, so they skip automatically once
+    # this job is skipped.
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:

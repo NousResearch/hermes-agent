@@ -1919,9 +1919,42 @@ function Install-Repository {
                     # reset to the fetched remote so bootstrap/install can recover.
                     git -c windows.appendAtomically=false pull --ff-only origin $Branch
                     if ($LASTEXITCODE -ne 0) {
+                        # The autostash above only covers working-tree changes.
+                        # Committed local-only work is invisible to it, and the
+                        # reset below destroys it with no warning and no way
+                        # back. Preserve it to a backup ref first -- same
+                        # contract as ``hermes update``.
+                        $localOnly = (git rev-list --count "origin/$Branch..HEAD" 2>$null)
+                        if ($LASTEXITCODE -ne 0 -or -not $localOnly) { $localOnly = -1 }
+                        $localOnly = [int]$localOnly
+                        $backupRef = $null
+                        # -1 means the count itself failed. Treat "unknown" as
+                        # "there may be something": the reset is unrecoverable,
+                        # so the only safe direction to fail is toward a backup
+                        # we may not need.
+                        if ($localOnly -ne 0) {
+                            $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+                            $backupRef = "refs/hermes-update-backups/$Branch-$stamp"
+                            git -c windows.appendAtomically=false update-ref $backupRef HEAD
+                            if ($LASTEXITCODE -ne 0) {
+                                # Never claim a backup we do not have, and never
+                                # run the destructive reset without one.
+                                throw "Could not create backup ref $backupRef for local commits; refusing to reset --hard. Your local commits are still intact -- reconcile manually with: git rebase origin/$Branch"
+                            }
+                            if ($localOnly -gt 0) {
+                                Write-Warn "Preserving $localOnly local commit(s) not on origin/$Branch (backed up to $backupRef)..."
+                            } else {
+                                Write-Warn "Could not determine how many local commits are not on origin/$Branch; backing up HEAD to $backupRef to be safe..."
+                            }
+                        }
                         Write-Warn "Fast-forward not possible; resetting managed install to origin/$Branch..."
                         git -c windows.appendAtomically=false reset --hard "origin/$Branch"
                         if ($LASTEXITCODE -ne 0) { throw "git reset --hard origin/$Branch failed (exit $LASTEXITCODE)" }
+                        if ($backupRef) {
+                            Write-Warn "Your previous commits are saved at: $backupRef"
+                            Write-Warn "  Review with:  git log $backupRef"
+                            Write-Warn "  Reapply with: git cherry-pick HEAD..$backupRef"
+                        }
                     }
                 }
 

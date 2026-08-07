@@ -3970,8 +3970,63 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
+                # force-pushed or rebase, OR the local checkout has its own
+                # COMMITTED work ahead of origin). The stash above only covers
+                # uncommitted working-tree changes — a committed local fix
+                # shows up clean in `git status` and is NOT in that stash, so
+                # a bare `reset --hard origin/{branch}` here would silently
+                # destroy it with no warning and no way to recover it. Preserve
+                # any local-only commits to a backup ref before resetting, then
+                # try to replay them on top automatically.
+                local_only = _count_commits_between(
+                    git_cmd, _m().PROJECT_ROOT, f"origin/{branch}", "HEAD"
+                )
+                backup_ref = None
+                # local_only < 0 means the count itself failed (bad ref, git
+                # error). Treat "unknown" the same as "there is something" —
+                # the reset below is unrecoverable, so the only safe direction
+                # to fail is toward taking a backup we may not have needed.
+                if local_only != 0:
+                    candidate_ref = (
+                        f"refs/hermes-update-backups/{branch}-"
+                        f"{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                    )
+                    backup_result = subprocess.run(
+                        git_cmd + ["update-ref", candidate_ref, "HEAD"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                    if backup_result.returncode != 0:
+                        # Never claim a backup we do not have, and never run the
+                        # destructive reset without one.
+                        print(
+                            f"✗ Could not create backup ref {candidate_ref} for "
+                            f"local commits; refusing to reset --hard."
+                        )
+                        if (backup_result.stderr or "").strip():
+                            print(f"  {backup_result.stderr.strip()}")
+                        print(
+                            "  Your local commits are still intact. Resolve the ref "
+                            "error, or reconcile manually with:\n"
+                            f"    git rebase origin/{branch}"
+                        )
+                        sys.exit(1)
+                    backup_ref = candidate_ref
+                    if local_only > 0:
+                        print(
+                            f"  ℹ Preserving {local_only} local commit(s) not on "
+                            f"origin/{branch} before resetting (backed up to {backup_ref})..."
+                        )
+                    else:
+                        print(
+                            f"  ℹ Could not determine how many local commits are not on "
+                            f"origin/{branch}; backing up HEAD to {backup_ref} before "
+                            "resetting, to be safe..."
+                        )
+
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
@@ -3989,6 +4044,72 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
                     )
                     sys.exit(1)
+
+                if backup_ref:
+                    # HEAD now equals origin/{branch}; replay the preserved
+                    # commits on top. Best-effort — on any conflict, abort
+                    # cleanly and leave the backup ref in place rather than
+                    # leaving conflict markers in source files.
+                    cherry_result = subprocess.run(
+                        git_cmd + ["cherry-pick", f"HEAD..{backup_ref}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if cherry_result.returncode == 0:
+                        # local_only is -1 when the earlier count failed; don't
+                        # render "-1 commit(s)" at the user in that case.
+                        if local_only > 0:
+                            print(
+                                f"  ✓ Reapplied {local_only} local commit(s) on top of the update."
+                            )
+                        else:
+                            print(
+                                "  ✓ Reapplied your local commit(s) on top of the update."
+                            )
+                    else:
+                        # cherry-pick can fail for reasons other than a
+                        # conflict — a merge commit needing -m, an empty
+                        # commit, a bad ref. Don't assert a cause we did not
+                        # determine; surface git's own stderr instead.
+                        abort_result = subprocess.run(
+                            git_cmd + ["cherry-pick", "--abort"],
+                            cwd=_m().PROJECT_ROOT,
+                            capture_output=True,
+                            text=True, encoding="utf-8", errors="replace",
+                        )
+                        count = (
+                            f"your {local_only} local commit(s)"
+                            if local_only > 0
+                            else "your local commit(s)"
+                        )
+                        print(f"  ⚠ Could not automatically reapply {count}.")
+                        cherry_err = (cherry_result.stderr or "").strip()
+                        if cherry_err:
+                            for line in cherry_err.splitlines():
+                                print(f"    {line}")
+                        # A failed --abort leaves the working tree mid
+                        # cherry-pick. Saying nothing here would let the user
+                        # believe the tree is clean while it still carries
+                        # conflict markers and a CHERRY_PICK_HEAD.
+                        if abort_result.returncode != 0:
+                            print(
+                                "    ✗ 'git cherry-pick --abort' also failed — this "
+                                "checkout is still mid-cherry-pick."
+                            )
+                            abort_err = (abort_result.stderr or "").strip()
+                            if abort_err:
+                                for line in abort_err.splitlines():
+                                    print(f"      {line}")
+                            print(
+                                "      Clean it up before using the checkout:\n"
+                                "        git cherry-pick --abort   # or: git cherry-pick --quit"
+                            )
+                        print(f"    Nothing is lost — they're saved at: {backup_ref}")
+                        print(f"    Review them with: git log {backup_ref}")
+                        print(
+                            f"    Reapply manually with: git cherry-pick HEAD..{backup_ref}"
+                        )
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit

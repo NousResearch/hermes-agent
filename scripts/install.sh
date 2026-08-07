@@ -1280,8 +1280,38 @@ clone_repo() {
             # cannot succeed — mirror ``hermes update`` and reset to the
             # fetched remote so bootstrap/install can recover.
             if ! git pull --ff-only origin "$BRANCH"; then
+                # The autostash above only covers working-tree changes.
+                # Committed local-only work is invisible to it, and the reset
+                # below destroys it with no warning and no way back. Preserve
+                # it to a backup ref first — same contract as ``hermes update``.
+                local local_only
+                local_only="$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo -1)"
+                local backup_ref=""
+                # -1 means the count itself failed. Treat "unknown" as "there
+                # may be something": the reset is unrecoverable, so the only
+                # safe direction to fail is toward a backup we may not need.
+                if [ "$local_only" != "0" ]; then
+                    backup_ref="refs/hermes-update-backups/${BRANCH}-$(date +%Y%m%d-%H%M%S)"
+                    if ! git update-ref "$backup_ref" HEAD; then
+                        # Never claim a backup we do not have, and never run
+                        # the destructive reset without one.
+                        log_error "Could not create backup ref $backup_ref for local commits; refusing to reset --hard."
+                        log_error "Your local commits are still intact. Reconcile manually with: git rebase origin/$BRANCH"
+                        exit 1
+                    fi
+                    if [ "$local_only" -gt 0 ] 2>/dev/null; then
+                        log_warn "Preserving $local_only local commit(s) not on origin/$BRANCH (backed up to $backup_ref)..."
+                    else
+                        log_warn "Could not determine how many local commits are not on origin/$BRANCH; backing up HEAD to $backup_ref to be safe..."
+                    fi
+                fi
                 log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
                 git reset --hard "origin/$BRANCH"
+                if [ -n "$backup_ref" ]; then
+                    log_warn "Your previous commits are saved at: $backup_ref"
+                    log_warn "  Review with:  git log $backup_ref"
+                    log_warn "  Reapply with: git cherry-pick HEAD..$backup_ref"
+                fi
             fi
 
             if [ -n "$autostash_ref" ]; then

@@ -29,6 +29,7 @@ Session context:
 
 import atexit
 import copy
+import errno
 import io
 import logging
 import os
@@ -137,6 +138,28 @@ def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
         and isinstance(exc, RuntimeError)
         and _CONCURRENT_LOG_LOCK_TIMEOUT in str(exc)
     )
+
+
+def _is_transient_fd_error(exc: BaseException | None) -> bool:
+    """Return True for transient file descriptor errors.
+
+    These errors indicate a stale or temporarily unavailable fd (e.g., after
+    external rotation, filesystem transient failure).  They should not surface
+    as tracebacks in interactive output; the handler can recover by reopening
+    the stream.
+
+    We deliberately DO NOT suppress errors that indicate real problems:
+    - ENOSPC (disk full)
+    - EACCES/EPERM (permission problems)
+    - ENOENT (path problems)
+    - EINVAL/EBADF (configuration bugs)
+    """
+    if not isinstance(exc, OSError):
+        return False
+    err_num = getattr(exc, "errno", None)
+    # EIO: I/O error (stale fd, filesystem transient)
+    # ESTALE: stale file handle (NFS, external rotation)
+    return err_num in (errno.EIO, errno.ESTALE)
 
 
 # Third-party loggers that are noisy at DEBUG/INFO level.
@@ -519,18 +542,40 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         super().emit(record)
 
     def handleError(self, record: logging.LogRecord) -> None:
-        """Suppress the known Windows ``concurrent-log-handler`` lock timeout
-        instead of printing a traceback.
+        """Suppress known logging errors that should not appear in chat output.
 
-        CLH's own ``emit()`` wraps its body in ``try/except Exception:
-        self.handleError(record)``, so the ``"Cannot acquire lock after N
-        attempts"`` RuntimeError raised in ``_do_lock()`` is caught inside CLH
-        and routed here — it never propagates out of ``super().emit()``.  This
-        override is the single point where that timeout can be silenced before
-        the stdlib handler prints it to stderr (which, under the Desktop
-        slash-worker, is captured and surfaced into chat output)."""
+        Two error classes are suppressed:
+
+        1. Windows ``concurrent-log-handler`` lock timeout.  CLH's own ``emit()``
+           wraps its body in ``try/except Exception: self.handleError(record)``,
+           so the ``"Cannot acquire lock after N attempts"`` RuntimeError raised
+           in ``_do_lock()`` is caught inside CLH and routed here — it never
+           propagates out of ``super().emit()``.  This override is the single
+           point where that timeout can be silenced before the stdlib handler
+           prints it to stderr (which, under the Desktop slash-worker, is
+           captured and surfaced into chat output).
+
+        2. Transient file descriptor errors (EIO, ESTALE).  These occur when
+           a rotating file handler's stream becomes stale due to external
+           rotation, filesystem transient failures, or QueueListener lifecycle
+           races.  The handler can recover by reopening the stream on the next
+           emit, so these errors should not surface as user-visible tracebacks.
+           We deliberately do NOT suppress errors that indicate real problems
+           (disk full, permission denied, missing path, configuration bugs).
+        """
         exc = sys.exc_info()[1]
         if _is_windows_concurrent_log_lock_timeout(exc):
+            return
+        if _is_transient_fd_error(exc):
+            # Attempt recovery: close and reopen the stream.  If this fails,
+            # the next emit will bail via the existing stream=None check.
+            try:
+                if self.stream is not None:
+                    self.stream.close()
+            except Exception:
+                pass
+            self.stream = None  # type: ignore[assignment]
+            # Suppress the traceback to stderr (avoid cluttering chat output).
             return
         super().handleError(record)
 

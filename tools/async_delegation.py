@@ -354,18 +354,42 @@ def restore_undelivered_completions(target_queue) -> int:
     results seconds after boot (#64484).
     """
     recover_abandoned_delegations()
+    restored = 0
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
-            """SELECT delegation_id, event_json FROM async_delegations
+            """SELECT delegation_id, event_json, delivery_attempts FROM async_delegations
                WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
                ORDER BY completed_at, delegation_id"""
         ).fetchall()
-        for _delegation_id, payload in rows:
+        for _delegation_id, payload, _attempts in rows:
+            # Park a completion that has exhausted its delivery budget. Its
+            # origin session is permanently gone (dead owner pid), so every boot
+            # it re-enqueues here, fails the fail-closed ownership gate, is
+            # dropped un-acked, and cycles again — re-logging the "Dropping
+            # unowned" WARNING forever. release_completion_delivery() only caps
+            # rows a consumer managed to CLAIM; an unownable row is dropped
+            # before the claim, so this is the only place it can be retired.
+            # 'parked' (not 'delivered'): nothing was ever handed to a consumer,
+            # so claiming delivery would be dishonest. The row stays queryable.
+            if int(_attempts or 0) >= _MAX_DELIVERY_ATTEMPTS:
+                conn.execute(
+                    """UPDATE async_delegations SET delivery_state='parked', updated_at=?
+                       WHERE delegation_id=?""",
+                    (time.time(), _delegation_id),
+                )
+                logger.warning(
+                    "Async delegation %s exhausted its %d delivery attempts "
+                    "without a session that could own it; parking it instead of "
+                    "replaying on every restart (result remains queryable).",
+                    _delegation_id, _MAX_DELIVERY_ATTEMPTS,
+                )
+                continue
             evt = json.loads(payload)
             if isinstance(evt, dict):
                 evt["restored"] = True
             target_queue.put(evt)
-    return len(rows)
+            restored += 1
+    return restored
 
 
 def mark_completion_delivered(delegation_id: str) -> bool:

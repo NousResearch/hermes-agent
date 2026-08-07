@@ -6961,7 +6961,7 @@ def _gateway_command_inner(args):
     # Service management commands
     if subcmd == "install":
         if is_managed():
-            managed_error("install gateway service (managed by NixOS)")
+            managed_error("install gateway service")
             return
         force = getattr(args, "force", False)
         system = getattr(args, "system", False)
@@ -7073,7 +7073,7 @@ def _gateway_command_inner(args):
 
     elif subcmd == "uninstall":
         if is_managed():
-            managed_error("uninstall gateway service (managed by NixOS)")
+            managed_error("uninstall gateway service")
             return
         system = getattr(args, "system", False)
         if is_termux():

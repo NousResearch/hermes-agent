@@ -3487,8 +3487,33 @@ def _normalize_empty_agent_response(
         return response
 
     if agent_result.get("failed"):
-        error_detail = agent_result.get("error", "unknown error")
+        # None-safe: the gateway result dict is built with
+        # ``'error': holder.get('error')`` and can carry an EXPLICIT None,
+        # which bypasses dict.get's default and would render
+        # "The request failed: None".
+        error_detail = agent_result.get("error") or "unknown error"
         error_str = str(error_detail).lower()
+        # Session-persistence failures get a dedicated recovery message.
+        # Suggesting /reset here would be actively harmful: it destroys the
+        # user's conversation context and does nothing to fix the underlying
+        # storage problem (lock contention, disk exhaustion, ...).
+        failure_reason = str(agent_result.get("failure_reason") or "")
+        if failure_reason.startswith("session_persistence_failed") or (
+            "session storage" in error_str
+        ):
+            if failure_reason.endswith(":disk") or "disk" in error_str:
+                return (
+                    "⚠️ Session storage was temporarily unavailable, so this "
+                    "turn was stopped to protect your conversation history. "
+                    "Please check available disk space, then send your "
+                    "message again."
+                )
+            return (
+                "⚠️ Session storage was temporarily unavailable, so this "
+                "turn was stopped to protect your conversation history. "
+                "Your message was recorded — please send it again in a "
+                "moment."
+            )
         is_context_failure = any(
             p in error_str
             for p in ("context", "token", "too large", "too long", "exceed", "payload")

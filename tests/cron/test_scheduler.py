@@ -5,7 +5,7 @@ import itertools
 import json
 import logging
 import os
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import ANY, AsyncMock, patch, MagicMock
 
 import pytest
 
@@ -417,6 +417,229 @@ class TestDeliverResultWrapping:
         adapter.send_voice.assert_called_once()
         voice_call = adapter.send_voice.call_args
         assert voice_call[1]["audio_path"] == str(media_path)
+
+
+class TestDeliverResultDeadTargetWiring:
+    """cron's live-adapter send bypasses DeliveryRouter.deliver() (it calls the
+    private _deliver_to_platform() directly to skip deliver()'s reply-anchor
+    requirement, which cron sends have no inbound anchor to satisfy) — so it
+    never consulted gateway/dead_targets.py's DeadTargetRegistry. Without this
+    wiring, a job with a permanently-dead target (deleted group, blocked bot)
+    would retry the send every single tick forever.
+    """
+
+    @staticmethod
+    def _fake_run_coro(coro, _loop):
+        import asyncio as _asyncio
+        from concurrent.futures import Future
+        future = Future()
+        try:
+            future.set_result(_asyncio.run(coro))
+        except BaseException as _e:  # noqa: BLE001
+            future.set_exception(_e)
+        return future
+
+    def test_already_dead_target_is_skipped_without_calling_adapter(self):
+        """A target already marked dead must never reach adapter.send()."""
+        from gateway.config import Platform
+        from gateway.dead_targets import DeadTargetRegistry
+
+        DeadTargetRegistry().mark_dead("discord", "9876", reason="forbidden: test setup")
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {"id": "dead-job", "deliver": "origin", "origin": {"platform": "discord", "chat_id": "9876"}}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=self._fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as standalone_mock:
+            result = _deliver_result(
+                job, "Hello", adapters={Platform.DISCORD: adapter}, loop=loop,
+            )
+
+        adapter.send.assert_not_called()
+        standalone_mock.assert_not_called()
+        assert result is not None and "unreachable" in result
+
+    def test_forbidden_send_error_marks_target_dead(self):
+        """A 'forbidden'-classified send failure must mark the target dead."""
+        from gateway.config import Platform
+        from gateway.dead_targets import DeadTargetRegistry
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(
+            success=False, error="Forbidden: bot was blocked by the user",
+        )
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {"id": "blocked-job", "deliver": "origin", "origin": {"platform": "discord", "chat_id": "5555"}}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=self._fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as standalone_mock:
+            _deliver_result(job, "Hello", adapters={Platform.DISCORD: adapter}, loop=loop)
+
+        # Fresh registry instance proves the mark was actually PERSISTED, not
+        # just held on some in-memory object this test can't see.
+        assert DeadTargetRegistry().is_dead("discord", "5555") is True
+        # Confirmed-dead — must not also waste a second attempt via the
+        # standalone HTTP fallback path on this same tick.
+        standalone_mock.assert_not_called()
+
+    def test_transient_send_error_does_not_mark_target_dead(self):
+        """A generic/transient failure must NOT be classified as dead — only
+        forbidden/not_found whole-chat errors are permanent."""
+        from gateway.config import Platform
+        from gateway.dead_targets import DeadTargetRegistry
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(
+            success=False, error="Connection reset by peer",
+        )
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {"id": "flaky-job", "deliver": "origin", "origin": {"platform": "discord", "chat_id": "7777"}}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=self._fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as standalone_mock:
+            _deliver_result(job, "Hello", adapters={Platform.DISCORD: adapter}, loop=loop)
+
+        assert DeadTargetRegistry().is_dead("discord", "7777") is False
+        # Not a confirmed-dead target — the standalone fallback must still run.
+        standalone_mock.assert_called_once()
+
+    def test_successful_send_clears_dead_flag(self):
+        """A successful live-adapter send must self-heal a stale dead flag."""
+        from gateway.config import Platform
+        from gateway.dead_targets import DeadTargetRegistry
+
+        with patch.object(DeadTargetRegistry, "clear", autospec=True) as clear_spy:
+            adapter = AsyncMock()
+            adapter.send.return_value = MagicMock(success=True)
+
+            pconfig = MagicMock()
+            pconfig.enabled = True
+            mock_cfg = MagicMock()
+            mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+            loop = MagicMock()
+            loop.is_running.return_value = True
+
+            job = {"id": "ok-job", "deliver": "origin", "origin": {"platform": "discord", "chat_id": "3333"}}
+
+            with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+                 patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+                 patch("asyncio.run_coroutine_threadsafe", side_effect=self._fake_run_coro):
+                _deliver_result(job, "Hello", adapters={Platform.DISCORD: adapter}, loop=loop)
+
+        clear_spy.assert_called_once_with(ANY, "discord", "3333")
+
+    def test_media_only_forbidden_send_marks_target_dead(self, tmp_path):
+        """A media-only job (no text_to_send — adapter_ok stays vacuously
+        True since only the text-send branch flips it False) whose live
+        attachment send fails with a forbidden-class error must still get
+        marked dead (#64915). _send_media_via_adapter() previously swallowed
+        every failure internally with no way for the caller to classify it,
+        so a media-only job against a blocked/kicked bot retried forever."""
+        from gateway.config import Platform
+        from gateway.dead_targets import DeadTargetRegistry
+
+        image_path = tmp_path / "report.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        adapter = AsyncMock()
+        adapter.send_image_file.return_value = MagicMock(
+            success=False, error="Forbidden: bot was blocked by the user",
+        )
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {"id": "media-only-job", "deliver": "origin", "origin": {"platform": "discord", "chat_id": "6060"}}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=self._fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as standalone_mock:
+            _deliver_result(
+                job, f"MEDIA:{image_path}",
+                adapters={Platform.DISCORD: adapter}, loop=loop,
+            )
+
+        adapter.send_image_file.assert_called_once()
+        assert DeadTargetRegistry().is_dead("discord", "6060") is True
+        # Confirmed dead this same pass — the self-healing clear() right
+        # after (adapter_ok stayed True) must not immediately erase the
+        # mark, and the standalone fallback must not waste a second attempt.
+        standalone_mock.assert_not_called()
+
+    def test_media_only_transient_send_error_does_not_mark_target_dead(self, tmp_path):
+        """A transient (non-whole-chat) media send failure must not mark the
+        target dead — mirrors the text-send sibling
+        test_transient_send_error_does_not_mark_target_dead above."""
+        from gateway.config import Platform
+        from gateway.dead_targets import DeadTargetRegistry
+
+        image_path = tmp_path / "report2.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        adapter = AsyncMock()
+        adapter.send_image_file.return_value = MagicMock(
+            success=False, error="Connection reset by peer",
+        )
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {"id": "media-flaky-job", "deliver": "origin", "origin": {"platform": "discord", "chat_id": "6161"}}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=self._fake_run_coro):
+            _deliver_result(
+                job, f"MEDIA:{image_path}",
+                adapters={Platform.DISCORD: adapter}, loop=loop,
+            )
+
+        adapter.send_image_file.assert_called_once()
+        assert DeadTargetRegistry().is_dead("discord", "6161") is False
 
 
 class TestDeliverResultErrorReturns:

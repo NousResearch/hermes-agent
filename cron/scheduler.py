@@ -1477,18 +1477,25 @@ def _send_media_via_adapter(
     loop,
     job: dict,
     platform=None,
-) -> None:
+) -> list:
     """Send extracted MEDIA files as native platform attachments via a live adapter.
 
     Routes each file to the appropriate adapter method (send_voice, send_image_file,
     send_video, send_document) based on file extension — mirroring the routing logic
     in ``BasePlatformAdapter._process_message_background``.
+
+    Returns the list of per-file failure message strings (empty when every file
+    sent successfully) so the caller can feed a genuine send failure through the
+    same whole-chat dead-target classification the live text-send path already
+    uses (#64915) — a "gateway loop unavailable" bail-out is an infra condition,
+    not a per-chat signal, so it is logged but never added to this list.
     """
     from pathlib import Path
 
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    errors: list = []
 
     for media_path, _is_voice in media_files:
         try:
@@ -1510,19 +1517,24 @@ def _send_media_via_adapter(
                     "Job '%s': cannot send media %s, gateway loop unavailable",
                     job.get("id", "?"), media_path,
                 )
-                return
+                return errors
             try:
                 result = future.result(timeout=30)
             except TimeoutError:
                 future.cancel()
                 raise
             if result and not getattr(result, "success", True):
+                err = getattr(result, "error", "unknown")
                 logger.warning(
                     "Job '%s': media send failed for %s: %s",
-                    job.get("id", "?"), media_path, getattr(result, "error", "unknown"),
+                    job.get("id", "?"), media_path, err,
                 )
+                errors.append(str(err))
         except Exception as e:
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
+            errors.append(str(e))
+
+    return errors
 
 
 def _confirm_adapter_delivery(send_result) -> bool:
@@ -1689,6 +1701,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     delivery_errors = []
 
+    # Confirmed-dead delivery targets (deleted group, blocked/kicked bot,
+    # deactivated user) are tracked persistently so a job doesn't waste a send
+    # against the platform's flood control on every tick — see
+    # gateway/dead_targets.py. gateway/delivery.py's DeliveryRouter.deliver()
+    # already checks this, but cron's live-adapter path calls the private
+    # _deliver_to_platform() directly (bypassing deliver()'s reply-anchor
+    # requirement, which cron sends have no inbound anchor to satisfy — see
+    # below), so it never consulted the registry. One instance is shared for
+    # the whole delivery pass so a target marked dead by an earlier target's
+    # failure this same tick is honored immediately.
+    from gateway.dead_targets import DeadTargetRegistry
+    _dead_targets = DeadTargetRegistry()
+
     for target in targets:
         platform_name = target["platform"]
         chat_id = target["chat_id"]
@@ -1744,6 +1769,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         if not pconfig or not pconfig.enabled:
             msg = f"platform '{platform_name}' not configured/enabled"
             logger.warning("Job '%s': %s", job["id"], msg)
+            delivery_errors.append(msg)
+            continue
+
+        if chat_id and _dead_targets.is_dead(platform.value, str(chat_id)):
+            msg = (
+                f"delivery to {platform_name}:{chat_id} skipped — target "
+                "previously confirmed unreachable (send to it again to clear)"
+            )
+            logger.info("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue
 
@@ -1941,7 +1975,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
-                    router = DeliveryRouter(config, adapters)
+                    router = DeliveryRouter(config, adapters, dead_targets=_dead_targets)
                     route_target = DeliveryTarget(
                         platform=platform,
                         chat_id=str(chat_id),
@@ -2015,6 +2049,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             # through to the standalone path so the message is
                             # still delivered.
                             target_errors.append(f"live adapter send failed: {ex}")
+                            if chat_id:
+                                from gateway.delivery import _classify_dead_from_error_text
+
+                                _dead_kind = _classify_dead_from_error_text(str(ex))
+                                if _dead_kind:
+                                    _dead_targets.mark_dead(
+                                        platform.value, str(chat_id),
+                                        reason=f"{_dead_kind}: {str(ex)[:120]}",
+                                    )
                             raise
 
                         if timeout_handled:
@@ -2094,7 +2137,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 routed_media_metadata["user_id"] = logical_home.user_id
                             if logical_home.scope_id:
                                 routed_media_metadata["scope_id"] = logical_home.scope_id
-                    _send_media_via_adapter(
+                    media_errors = _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
                         media_files,
@@ -2103,6 +2146,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         job,
                         platform=platform,
                     )
+                    if media_errors and chat_id:
+                        # Same whole-chat classification the live text-send
+                        # failure path above already applies (#64915) — without
+                        # this, a media-only job (no text_to_send, so
+                        # adapter_ok never leaves its vacuous default True)
+                        # against a confirmed-dead target never got marked and
+                        # retried forever.
+                        from gateway.delivery import _classify_dead_from_error_text
+
+                        for _media_err in media_errors:
+                            _dead_kind = _classify_dead_from_error_text(_media_err)
+                            if _dead_kind:
+                                _dead_targets.mark_dead(
+                                    platform.value, str(chat_id),
+                                    reason=f"{_dead_kind}: {_media_err[:120]}",
+                                )
+                                break
                 elif timed_out and media_files:
                     msg = (
                         f"{len(media_files)} media attachment(s) not delivered to "
@@ -2114,6 +2174,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
+                    # Self-healing: a live send got through (or, in the
+                    # assume-delivered in-flight-timeout case, is presumed to
+                    # have), so clear any stale dead flag — the user re-added
+                    # the bot / the chat came back. Guarded on is_dead(): a
+                    # media-only job's failed attachment send just above may
+                    # have marked this SAME target dead this pass (adapter_ok
+                    # stays vacuously True when there's no text_to_send) — do
+                    # not immediately erase that mark.
+                    if chat_id and not _dead_targets.is_dead(platform.value, str(chat_id)):
+                        _dead_targets.clear(platform.value, str(chat_id))
                     # Seed the thread session only now that delivery into it
                     # succeeded (deferred from thread-open above).
                     if opened_thread_id and not thread_seeded:
@@ -2150,6 +2220,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         "Job '%s': %s, falling back to standalone",
                         job["id"], err_msg,
                     )
+
+        if not delivered and chat_id and _dead_targets.is_dead(platform.value, str(chat_id)):
+            # The live-adapter attempt above just classified this failure as a
+            # whole-chat death and marked it. Don't burn a second, guaranteed-
+            # to-fail attempt via the standalone HTTP path on this same tick —
+            # the next tick's pre-loop check would skip it anyway.
+            msg = (
+                f"delivery to {platform_name}:{chat_id} skipped standalone "
+                "fallback — target confirmed unreachable"
+            )
+            logger.info("Job '%s': %s", job["id"], msg)
+            delivery_errors.extend(target_errors)
+            continue
 
         if not delivered:
             if transport is not None and transport.is_relay:

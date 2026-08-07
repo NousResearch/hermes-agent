@@ -723,6 +723,16 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         return ""
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
+    # ``AIAgent._format_turn_completion_explanation`` is useful on local
+    # surfaces, but its empty-turn diagnostic exposes model/provider mechanics
+    # in ordinary chats. Keep the retry cue while dropping that implementation
+    # detail; the raw message remains available in local diagnostics and logs.
+    if re.match(
+        r"^\s*(?:⚠️\s*)?no reply:\s+the model returned empty content after retries",
+        redacted,
+        re.IGNORECASE,
+    ):
+        return "⚠️ I couldn’t finish that response. Please try again."
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted

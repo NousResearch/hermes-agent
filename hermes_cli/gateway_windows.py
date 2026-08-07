@@ -490,7 +490,7 @@ def _build_gateway_vbs_script(
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp, gateway_exit_code",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
@@ -506,10 +506,16 @@ def _build_gateway_vbs_script(
         f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async. The
-        # console python's one console is created hidden and inherited by all
-        # descendants, so nothing ever flashes.
-        f"sh.Run {_quote_vbs_string(command_line)}, 0, False",
+        # Window style 0 keeps the console python's one console hidden and
+        # inherited by descendants. Wait for it so the Scheduled Task action
+        # remains alive: an unexpected child exit can then be retried. A clean
+        # exit is intentional (for example ``gateway stop``) and must not be
+        # restarted.
+        "Do",
+        f"  gateway_exit_code = sh.Run({_quote_vbs_string(command_line)}, 0, True)",
+        "  If gateway_exit_code = 0 Then WScript.Quit 0",
+        "  WScript.Sleep 60000",
+        "Loop",
     ]
     return "\r\n".join(lines) + "\r\n"
 

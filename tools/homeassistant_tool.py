@@ -79,8 +79,16 @@ def _filter_and_summarize(
     states: list,
     domain: Optional[str] = None,
     area: Optional[str] = None,
+    search: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Filter raw HA states by domain/area and return a compact summary."""
+    """Filter raw HA states by domain/area/search and return a compact summary.
+
+    ``search`` is a case-insensitive substring matched against each entity's
+    ``entity_id`` and ``friendly_name``. It composes with ``domain``/``area``
+    (all supplied filters must match). This lets a caller pull, e.g., just the
+    ``ph_meter`` sensors instead of the entire ``sensor.`` domain, which keeps
+    the returned payload small on installs with hundreds of entities.
+    """
     if domain:
         states = [s for s in states if s.get("entity_id", "").startswith(f"{domain}.")]
 
@@ -90,6 +98,14 @@ def _filter_and_summarize(
             s for s in states
             if area_lower in (s.get("attributes", {}).get("friendly_name", "") or "").lower()
             or area_lower in (s.get("attributes", {}).get("area", "") or "").lower()
+        ]
+
+    if search:
+        search_lower = search.lower()
+        states = [
+            s for s in states
+            if search_lower in (s.get("entity_id", "") or "").lower()
+            or search_lower in (s.get("attributes", {}).get("friendly_name", "") or "").lower()
         ]
 
     entities = []
@@ -106,8 +122,9 @@ def _filter_and_summarize(
 async def _async_list_entities(
     domain: Optional[str] = None,
     area: Optional[str] = None,
+    search: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Fetch entity states from HA and optionally filter by domain/area."""
+    """Fetch entity states from HA and optionally filter by domain/area/search."""
     import aiohttp
 
     hass_url, hass_token = _get_config()
@@ -117,7 +134,7 @@ async def _async_list_entities(
             resp.raise_for_status()
             states = await resp.json()
 
-    return _filter_and_summarize(states, domain, area)
+    return _filter_and_summarize(states, domain, area, search)
 
 
 async def _async_get_state(entity_id: str) -> Dict[str, Any]:
@@ -226,8 +243,9 @@ def _handle_list_entities(args: dict, **kw) -> str:
     """Handler for ha_list_entities tool."""
     domain = args.get("domain")
     area = args.get("area")
+    search = args.get("search")
     try:
-        result = _run_async(_async_list_entities(domain=domain, area=area))
+        result = _run_async(_async_list_entities(domain=domain, area=area, search=search))
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_list_entities error: %s", e)
@@ -355,8 +373,11 @@ HA_LIST_ENTITIES_SCHEMA = {
     "name": "ha_list_entities",
     "description": (
         "List Home Assistant entities. Optionally filter by domain "
-        "(light, switch, climate, sensor, binary_sensor, cover, fan, etc.) "
-        "or by area name (living room, kitchen, bedroom, etc.)."
+        "(light, switch, climate, sensor, binary_sensor, cover, fan, etc.), "
+        "by area name (living room, kitchen, bedroom, etc.), or by a "
+        "case-insensitive substring search over entity_id and friendly name. "
+        "Prefer a search/domain filter over listing everything — it keeps the "
+        "returned payload small on large installs."
     ),
     "parameters": {
         "type": "object",
@@ -374,6 +395,17 @@ HA_LIST_ENTITIES_SCHEMA = {
                 "description": (
                     "Area/room name to filter by (e.g. 'living room', 'kitchen'). "
                     "Matches against entity friendly names. Omit to list all."
+                ),
+            },
+            "search": {
+                "type": "string",
+                "description": (
+                    "Case-insensitive substring to match against entity_id AND "
+                    "friendly name (e.g. 'ph_meter', 'temperature', 'reservoir'). "
+                    "Composes with domain/area — all supplied filters must match. "
+                    "Use this to fetch only the handful of entities you care about "
+                    "instead of an entire domain; on installs with hundreds of "
+                    "entities this sharply reduces the returned payload."
                 ),
             },
         },

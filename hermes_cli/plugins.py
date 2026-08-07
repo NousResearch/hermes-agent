@@ -213,9 +213,14 @@ VALID_HOOKS: Set[str] = {
     #   run_id: int | None, profile_name: str.
     # kanban_task_completed adds: summary: str | None.
     # kanban_task_blocked adds:   reason: str | None.
+    # kanban_failure_alert adds:  consecutive_failures: int,
+    #   fingerprint: str, error: str. It is a fleet-level alert surface for
+    #   repeated worker failures and is fired through invoke_hook_strict so
+    #   relay/plugin failures are observable instead of silently swallowed.
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    "kanban_failure_alert",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -2137,6 +2142,33 @@ class PluginManager:
                 )
         return results
 
+    def invoke_hook_strict(self, hook_name: str, **kwargs: Any) -> List[Any]:
+        """Call callbacks for *hook_name*, surfacing callback failures.
+
+        Most Hermes hooks are observers and intentionally isolate callback
+        failures. Operational fleet-alert hooks are different: swallowing a
+        failing relay would hide the incident the hook exists to expose. Use
+        this narrow strict path only when the caller wants plugin failure to be
+        logged and re-raised.
+        """
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        callbacks = self._hooks.get(hook_name, [])
+        results: List[Any] = []
+        for cb in callbacks:
+            try:
+                ret = cb(**kwargs)
+                if ret is not None:
+                    results.append(ret)
+            except Exception:
+                logger.warning(
+                    "Strict hook '%s' callback %s raised",
+                    hook_name,
+                    getattr(cb, "__name__", repr(cb)),
+                    exc_info=True,
+                )
+                raise
+        return results
+
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
@@ -2296,6 +2328,11 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+def invoke_hook_strict(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Invoke a lifecycle hook and re-raise the first callback failure."""
+    return get_plugin_manager().invoke_hook_strict(hook_name, **kwargs)
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

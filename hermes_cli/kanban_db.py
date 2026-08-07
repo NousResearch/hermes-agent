@@ -210,6 +210,91 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
 
 
+def _fire_failure_alert(task_id: str, **fields: Any) -> None:
+    """Fire an observable fleet-level kanban failure alert hook.
+
+    Unlike ordinary kanban lifecycle hooks, this path is intentionally strict:
+    if the relay/plugin raises, the caller sees the failure. That prevents a
+    broken alert channel from hiding worker-stall storms.
+    """
+    from hermes_cli.plugins import invoke_hook_strict
+    from hermes_cli.profiles import get_active_profile_name
+
+    try:
+        profile_name = get_active_profile_name()
+    except Exception:
+        profile_name = "default"
+    invoke_hook_strict(
+        "kanban_failure_alert",
+        task_id=task_id,
+        profile_name=profile_name,
+        **fields,
+    )
+
+
+def _is_dead_pid_fingerprint(fingerprint: str) -> bool:
+    """Return True for worker-death fingerprints normalized by _error_fingerprint."""
+    fp = (fingerprint or "").lower()
+    return (
+        "pid n not alive" in fp
+        or "pid n exited with code" in fp
+        or "pid n killed by signal" in fp
+    )
+
+
+def _maybe_fire_deadpid_fleet_alert(
+    conn: sqlite3.Connection,
+    task_id: str,
+    fingerprint: str,
+    error: str,
+    *,
+    protocol_violation: bool,
+) -> None:
+    """Emit kanban_failure_alert when a dead-PID task reaches cf>=3."""
+    if protocol_violation or not _is_dead_pid_fingerprint(fingerprint):
+        return
+    row = conn.execute(
+        "SELECT assignee, consecutive_failures, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return
+    failures = int(row["consecutive_failures"] or 0)
+    if failures < 3:
+        return
+
+    payload = {
+        "board": get_current_board(),
+        "assignee": row["assignee"],
+        "run_id": row["current_run_id"],
+        "consecutive_failures": failures,
+        "fingerprint": fingerprint,
+        "error": error[:500],
+    }
+    try:
+        _fire_failure_alert(task_id, **payload)
+    except Exception as exc:
+        # The alert hook is deliberately strict. Persist a dead-letter event so
+        # the failure is inspectable from the board, then re-raise so the
+        # dispatcher/gateway logs and supervisor see the relay breakage.
+        try:
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "kanban_failure_alert_failed",
+                    {**payload, "hook_error": str(exc)[:500]},
+                    run_id=row["current_run_id"],
+                )
+        except Exception:
+            _log.warning(
+                "failed to persist kanban_failure_alert dead-letter for %s",
+                task_id,
+                exc_info=True,
+            )
+        raise
+
+
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
 # call ``heartbeat_claim(task_id)`` periodically. In practice most kanban
@@ -7865,6 +7950,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
+            )
+            _maybe_fire_deadpid_fleet_alert(
+                conn,
+                tid,
+                fp,
+                error_text,
+                protocol_violation=protocol_violation,
             )
             if tripped:
                 auto_blocked.append(tid)

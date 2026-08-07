@@ -1,0 +1,7 @@
+name: deadpid-fleet-alert
+version: "0.1.0"
+description: "Relay deduplicated kanban dead-PID consecutive-failure alerts to a fleet messaging target."
+author: "Hermes Agent"
+kind: backend
+hooks:
+  - kanban_failure_alert

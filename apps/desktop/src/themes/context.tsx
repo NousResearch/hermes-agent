@@ -19,6 +19,7 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 import { $backendThemes, $pendingSkinApply } from './backend-sync'
 import { hexToRgb, mix, readableOn } from './color'
+import { $themePreview } from './custom-themes'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
@@ -118,6 +119,10 @@ function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
 export function getBaseColors(skinName: string, mode: 'light' | 'dark'): DesktopThemeColors {
   const seed = resolveTheme(skinName) ?? nousTheme
 
+  return colorsForTheme(seed, mode)
+}
+
+function colorsForTheme(seed: DesktopTheme, mode: 'light' | 'dark'): DesktopThemeColors {
   if (mode === 'dark') {
     return seed.darkColors ?? seed.colors
   }
@@ -125,16 +130,18 @@ export function getBaseColors(skinName: string, mode: 'light' | 'dark'): Desktop
   return seed.darkColors ? seed.colors : synthLightColors(seed)
 }
 
-function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
-  const seed = resolveTheme(skinName) ?? nousTheme
-
+function deriveThemeSeed(seed: DesktopTheme, mode: 'light' | 'dark'): DesktopTheme {
   return {
     ...seed,
-    name: `${skinName}-${mode}`,
+    name: `${seed.name}-${mode}`,
     label: `${seed.label} ${mode === 'light' ? 'Light' : 'Dark'}`,
     description: `${seed.label} ${mode} palette`,
-    colors: getBaseColors(skinName, mode)
+    colors: colorsForTheme(seed, mode)
   }
+}
+
+function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
+  return deriveThemeSeed(resolveTheme(skinName) ?? nousTheme, mode)
 }
 
 /**
@@ -173,7 +180,7 @@ const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-bubble': isDark ? '46%' : '0%'
 })
 
-function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
+function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', persistBootPaint = true) {
   if (typeof document === 'undefined') {
     return
   }
@@ -240,12 +247,14 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   // Raw (non-JSON) keys read by the inline pre-paint script in index.html —
   // they let a brand-new window paint the themed background on its very first
   // frame, before this module has even loaded.
-  try {
-    window.localStorage.setItem('hermes-boot-background', chromeBg)
-    window.localStorage.setItem('hermes-boot-color-scheme', rendered)
-  } catch {
-    // Storage may be unavailable (private mode / quota); the inline script
-    // falls back to prefers-color-scheme.
+  if (persistBootPaint) {
+    try {
+      window.localStorage.setItem('hermes-boot-background', chromeBg)
+      window.localStorage.setItem('hermes-boot-color-scheme', rendered)
+    } catch {
+      // Storage may be unavailable (private mode / quota); the inline script
+      // falls back to prefers-color-scheme.
+    }
   }
 
   if (typo.fontUrl && !INJECTED_FONT_URLS.has(typo.fontUrl)) {
@@ -322,6 +331,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const userThemes = useStore($userThemes)
   const backendThemes = useStore($backendThemes)
   const registryVersion = useStore($registryVersion)
+  const themePreview = useStore($themePreview)
 
   const availableThemes = useMemo(
     () =>
@@ -353,24 +363,28 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
   const resolvedMode = resolveMode(mode, systemDark)
+  const previewMode = themePreview?.mode ?? resolvedMode
 
   const activeTheme = useMemo(
-    () => deriveTheme(themeName, resolvedMode),
+    () => (themePreview ? deriveThemeSeed(themePreview.theme, previewMode) : deriveTheme(themeName, resolvedMode)),
     // deriveTheme resolves its seed through the merged registry, so the theme
     // stores are its reactivity too — an in-place palette edit of the ACTIVE
     // skin (live theme authoring) must repaint, not just a name switch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [themeName, resolvedMode, userThemes, backendThemes, registryVersion]
+    [themeName, resolvedMode, userThemes, backendThemes, registryVersion, themePreview, previewMode]
   )
 
   // What actually gets painted (matches the `.dark` class applyTheme toggles).
-  const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, resolvedMode), [activeTheme, resolvedMode])
+  const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, previewMode), [activeTheme, previewMode])
 
-  useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
+  useEffect(() => applyTheme(activeTheme, previewMode, !themePreview), [activeTheme, previewMode, themePreview])
 
   // Keep the native window appearance pinned to the app theme (vibrancy
   // material, titlebar, new-window pre-paint background).
-  useEffect(() => syncNativeTheme(mode, renderedMode), [mode, renderedMode])
+  useEffect(
+    () => syncNativeTheme(themePreview ? previewMode : mode, renderedMode),
+    [mode, previewMode, renderedMode, themePreview]
+  )
 
   // Assign to whichever profile is live right now (read fresh so the callbacks
   // stay stable across profile switches).

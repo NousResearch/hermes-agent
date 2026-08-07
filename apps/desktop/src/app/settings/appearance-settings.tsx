@@ -8,7 +8,7 @@ import { SegmentedControl } from '@/components/ui/segmented-control'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
+import { Check, Download, Loader2, Palette, Pencil, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -20,11 +20,13 @@ import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
+import { isCustomTheme, removeCustomTheme } from '@/themes/custom-themes'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
 
 import { MODE_OPTIONS } from './constants'
+import { CustomThemeEditor } from './custom-theme-editor'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
 import { TerminalFontSetting } from './terminal-font-setting'
@@ -260,6 +262,8 @@ export function AppearanceSettings() {
   const a = t.settings.appearance
 
   const [query, setQuery] = useState('')
+  const [themeEditorOpen, setThemeEditorOpen] = useState(false)
+  const [themeEditorSource, setThemeEditorSource] = useState(themeName)
 
   // One box does double duty: filter installed themes live (below), and run a
   // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
@@ -321,6 +325,20 @@ export function AppearanceSettings() {
               <>
                 {/* One search box: filters your installed themes (the grid)
                     and live-searches the VS Code Marketplace below. */}
+                <div className="mt-3 flex justify-end">
+                  <Button
+                    onClick={() => {
+                      setThemeEditorSource(themeName)
+                      setThemeEditorOpen(true)
+                    }}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {isCustomTheme(themeName) ? <Pencil /> : <Palette />}
+                    {isCustomTheme(themeName) ? a.editCustomTheme : a.createCustomTheme}
+                  </Button>
+                </div>
                 <div className="mt-3">
                   <input
                     className="w-full rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)"
@@ -345,6 +363,7 @@ export function AppearanceSettings() {
                       {filteredThemes.map(theme => {
                         const active = themeName === theme.name
                         const removable = isUserTheme(theme.name)
+                        const editable = isCustomTheme(theme.name)
 
                         return (
                           <div className="group relative" key={theme.name}>
@@ -366,24 +385,48 @@ export function AppearanceSettings() {
                                 </div>
                               </div>
                             </button>
-                            {removable && (
-                              <button
-                                aria-label={a.removeTheme}
-                                className="absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-md bg-(--ui-bg-elevated)/80 text-(--ui-text-tertiary) opacity-0 backdrop-blur-sm transition hover:text-(--ui-red) focus-visible:opacity-100 group-hover:opacity-100"
-                                onClick={() => {
-                                  triggerHaptic('crisp')
-                                  removeUserTheme(theme.name)
+                            {(editable || removable) && (
+                              <div className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
+                                {editable && (
+                                  <button
+                                    aria-label={a.editCustomTheme}
+                                    className="grid size-6 place-items-center rounded-md bg-(--ui-bg-elevated)/80 text-(--ui-text-tertiary) backdrop-blur-sm transition hover:text-foreground"
+                                    onClick={() => {
+                                      triggerHaptic('crisp')
+                                      setThemeEditorSource(theme.name)
+                                      setThemeEditorOpen(true)
+                                    }}
+                                    title={a.editCustomTheme}
+                                    type="button"
+                                  >
+                                    <Pencil className="size-3.5" />
+                                  </button>
+                                )}
+                                {removable && (
+                                  <button
+                                    aria-label={a.removeTheme}
+                                    className="grid size-6 place-items-center rounded-md bg-(--ui-bg-elevated)/80 text-(--ui-text-tertiary) backdrop-blur-sm transition hover:text-(--ui-red)"
+                                    onClick={() => {
+                                      triggerHaptic('crisp')
 
-                                  // Re-normalize off the now-missing skin → default.
-                                  if (active) {
-                                    setTheme(theme.name)
-                                  }
-                                }}
-                                title={a.removeTheme}
-                                type="button"
-                              >
-                                <Trash2 className="size-3.5" />
-                              </button>
+                                      if (editable) {
+                                        removeCustomTheme(theme.name)
+                                      } else {
+                                        removeUserTheme(theme.name)
+                                      }
+
+                                      // Re-normalize off the now-missing skin → default.
+                                      if (active) {
+                                        setTheme(theme.name)
+                                      }
+                                    }}
+                                    title={a.removeTheme}
+                                    type="button"
+                                  >
+                                    <Trash2 className="size-3.5" />
+                                  </button>
+                                )}
+                              </div>
                             )}
                           </div>
                         )
@@ -544,6 +587,13 @@ export function AppearanceSettings() {
       <div className="mt-6">
         <PetSettings />
       </div>
+      <CustomThemeEditor
+        mode={resolvedMode}
+        onOpenChange={setThemeEditorOpen}
+        onSaved={name => setTheme(name)}
+        open={themeEditorOpen}
+        sourceThemeName={themeEditorSource}
+      />
     </SettingsContent>
   )
 }

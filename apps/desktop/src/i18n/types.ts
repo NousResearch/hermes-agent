@@ -381,6 +381,19 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      createCustomTheme: string
+      editCustomTheme: string
+      customThemeDesc: string
+      customThemeName: string
+      customAccent: string
+      customBackground: string
+      customForeground: string
+      customUiFont: string
+      customCodeFont: string
+      customSidebar: string
+      customContrast: string
+      customInvalidColor: string
+      customReset: string
       pet: {
         title: string
         intro: string

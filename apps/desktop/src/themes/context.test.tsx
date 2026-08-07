@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { ThemeProvider } from './context'
+import { $themePreview, buildCustomTheme, createCustomThemeDefinition } from './custom-themes'
+import { nousTheme } from './presets'
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -19,7 +21,10 @@ describe('ThemeProvider ← backend skin sync', () => {
     __resetBackendSkinSync()
   })
 
-  afterEach(cleanup)
+  afterEach(() => {
+    $themePreview.set(null)
+    cleanup()
+  })
 
   it('applies an activated backend skin', () => {
     render(
@@ -66,5 +71,34 @@ describe('ThemeProvider ← backend skin sync', () => {
       ingestBackendSkin({ name: 'forest', colors: { background: '#001100', ui_text: '#66ff66' } }, { apply: false })
     )
     expect(cssVar('--theme-foreground')).toBe('#ff9f0a')
+  })
+
+  it('previews without persisting boot paint and restores immediately on cancel', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+
+    const originalBackground = cssVar('--theme-background-seed')
+    const storedBootBackground = window.localStorage.getItem('hermes-boot-background')
+
+    const draft = createCustomThemeDefinition({
+      source: nousTheme,
+      lightColors: nousTheme.colors,
+      darkColors: nousTheme.darkColors ?? nousTheme.colors
+    })
+
+    draft.light.background = '#fff1dc'
+    const preview = buildCustomTheme(draft)
+
+    act(() => $themePreview.set({ mode: 'light', theme: preview }))
+
+    expect(cssVar('--theme-background-seed')).toBe('#fff1dc')
+    expect(window.localStorage.getItem('hermes-boot-background')).toBe(storedBootBackground)
+
+    act(() => $themePreview.set(null))
+
+    expect(cssVar('--theme-background-seed')).toBe(originalBackground)
   })
 })

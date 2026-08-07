@@ -89,6 +89,8 @@ Configure in `~/.hermes/config.yaml`:
 ```yaml
 checkpoints:
   enabled: false              # master switch (default: false — opt-in)
+  scope: turn                 # "turn" (default): snapshot each agent iteration;
+                              # "task": one snapshot per user task (pre-task baseline)
   max_snapshots: 20           # max checkpoints per project (enforced via ref rewrite + gc)
   max_total_size_mb: 500      # hard cap on total store size; oldest commits dropped
   max_file_size_mb: 10        # skip any single file larger than this
@@ -210,8 +212,34 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 - **Per-file size cap** — files larger than `max_file_size_mb` (default 10 MB) are excluded from the snapshot. Prevents accidentally swallowing datasets, model weights, or generated media.
 - **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), the oldest commit per project is dropped round-robin until under the cap.
 - **Real pruning** — `max_snapshots` is enforced by rewriting the per-project ref and running `git gc --prune=now` afterwards, so loose objects don't accumulate.
+
 - **No-change snapshots** — if there are no changes since the last snapshot, the checkpoint is skipped.
 - **Non-fatal errors** — all errors inside the Checkpoint Manager are logged at debug level; your tools continue to run.
+
+## Snapshot scope: `turn` vs `task`
+
+`scope` controls how often a snapshot is taken:
+
+- **`turn`** (default) — a snapshot is taken before the first file mutation of
+  **every** agent iteration. Best for step-by-step auditing of what each turn
+  changed.
+- **`task`** — a single snapshot is taken before the first file mutation of the
+  **whole user task** and reused for the rest of it. `/rollback` then always
+  restores the *pre-task* baseline, even on long multi-turn autonomous runs
+  whose per-turn snapshots would otherwise evict that baseline past
+  `max_snapshots`.
+
+Under `task`, a fresh baseline is armed at every user-message boundary — both a
+new message and a mid-turn correction (a redirect steering the running turn).
+Otherwise a rollback after a correction would discard the very work the
+correction asked for.
+
+`scope` applies wherever checkpoints run: interactive `hermes chat`, gateway
+sessions, and the TUI. One-shot runs (`hermes -p …`) do not take checkpoints at
+all, so the setting has no effect there.
+
+`task` is backward-compatible: the default stays `turn`, so existing setups are
+unchanged.
 
 ## Where Checkpoints Live
 

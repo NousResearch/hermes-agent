@@ -421,7 +421,19 @@ def _run_agent(
         # gateway sessions.
         _fb = get_fallback_chain(cfg)
 
+        # checkpoints.scope reaches the interactive CLI (cli.py) and the
+        # gateway (gateway/run.py) but not this path, so `hermes -z` was
+        # pinned to turn scope whatever the profile said -- and a oneshot
+        # worker is exactly where task scope matters, since the whole run is
+        # one task. Read it the same way cli.py does, tolerating the legacy
+        # `checkpoints: true` boolean form.
+        _cp_cfg = cfg.get("checkpoints", {})
+        if isinstance(_cp_cfg, bool):
+            _cp_cfg = {"enabled": _cp_cfg}
+        _cp_scope = _cp_cfg.get("scope", "turn") if isinstance(_cp_cfg, dict) else "turn"
+
         agent = AIAgent(
+            checkpoint_scope=_cp_scope,
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),

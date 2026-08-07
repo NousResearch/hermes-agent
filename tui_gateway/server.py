@@ -6037,6 +6037,23 @@ def _load_fallback_model():
     return get_fallback_chain(_load_cfg())
 
 
+def _load_checkpoint_scope() -> str:
+    """Return the configured checkpoint scope for TUI-created agents.
+
+    ``HERMES_TUI_CHECKPOINTS`` only decides *whether* checkpoints run; the
+    cadence still comes from ``checkpoints.scope`` in config, so a TUI
+    session honours the same setting as the CLI and gateway paths (#68877).
+    Without this, enabling checkpoints in the TUI silently forced "turn"
+    even when the user had configured "task".
+    """
+    cp_cfg = (_load_cfg() or {}).get("checkpoints")
+    if isinstance(cp_cfg, dict):
+        scope = cp_cfg.get("scope")
+        if isinstance(scope, str) and scope.strip():
+            return scope.strip()
+    return "turn"
+
+
 def _agent_fallback_model(agent):
     """Return an agent's fallback chain without rehydrating deliberately empty chains."""
     if hasattr(agent, "_fallback_chain"):
@@ -6573,6 +6590,7 @@ def _make_agent(
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        checkpoint_scope=_load_checkpoint_scope(),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),

@@ -259,6 +259,15 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     agent._current_streamed_assistant_text = ""
     agent._stream_needs_break = True
 
+    # A redirect appends a real user message to the live turn, so it is a task
+    # boundary too. Re-arm the checkpoint baseline here — the reset belongs
+    # with the event rather than at the one call site — or a scope="task" run
+    # would keep rolling back to the state before the *original* instruction,
+    # discarding exactly the work the correction asked for (#68877).
+    checkpoint_mgr = getattr(agent, "_checkpoint_mgr", None)
+    if checkpoint_mgr is not None:
+        checkpoint_mgr.new_task()
+
 
 def _is_copilot_provider(agent: Any) -> bool:
     """Delegate to ``AIAgent._is_copilot_provider`` (single owner of the check).
@@ -1537,6 +1546,14 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Task-boundary checkpoint reset: clears the per-directory dedup once at
+    # the start of this user task so a fresh baseline can be captured. In
+    # scope="task" the per-iteration new_turn() below is a no-op, so this is
+    # the sole reset — the first file mutation snapshots the pre-task state and
+    # every later turn reuses it (issue #68877). In scope="turn" this is
+    # redundant with the per-iteration clear and harmless.
+    agent._checkpoint_mgr.new_task()
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
@@ -1549,6 +1566,7 @@ def run_conversation(
             agent._persist_session(messages, conversation_history)
 
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
+        # (no-op under scope="task"; see CheckpointManager.new_turn).
         agent._checkpoint_mgr.new_turn()
 
         # Check for interrupt request (e.g., user sent new message)

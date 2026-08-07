@@ -9,7 +9,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 from plugins.memory.honcho.client import get_honcho_client
 from plugins.memory.honcho.oauth import _redact_tokens
@@ -279,18 +279,58 @@ class HonchoSessionManager:
             logger.warning("Honcho post-401 token refresh failed", exc_info=True)
             return False
 
-    def _get_or_create_peer(self, peer_id: str) -> Any:
-        """
-        Get or create a Honcho peer.
+    def _authed_call(self, op_name: str, operation: Callable[[], Any]) -> Any:
+        """Run an authenticated SDK operation, forcing one token refresh on a 401.
 
-        Peers are lazy -- no API call until first use.
-        Observation settings are controlled per-session via SessionPeerConfig.
+        ``operation`` must re-resolve peer/session objects itself: a failed
+        in-place refresh rebuilds the client, orphaning objects captured earlier.
         """
+        if self._reauth_required():
+            exc = HonchoAuthError(_REAUTH_REQUIRED_MESSAGE)
+            self._record_auth_failure(exc)
+            raise exc
+        try:
+            result = operation()
+        except HonchoAuthError:
+            raise
+        except Exception as e:
+            if not _is_auth_error(e):
+                raise
+            logger.warning(
+                "Honcho %s hit an auth error; forcing token refresh and "
+                "retrying once: %s", op_name, _redact_tokens(str(e)),
+            )
+            if not self._force_reauth():
+                self._record_auth_failure(e)
+                raise HonchoAuthError(_auth_error_message(e)) from e
+            try:
+                result = operation()
+            except Exception as retry_exc:
+                if _is_auth_error(retry_exc):
+                    self._record_auth_failure(retry_exc)
+                    raise HonchoAuthError(_auth_error_message(retry_exc)) from retry_exc
+                raise
+        self._clear_auth_failure()
+        return result
+
+    def _sdk_session(self, session_id: str) -> Any:
+        """Get or create the SDK session; a client rebuild clears the cache, so re-fetch."""
+        with self._cache_lock:
+            cached = self._sessions_cache.get(session_id)
+        if cached is not None:
+            return cached
+        sdk_session = self.honcho.session(session_id)
+        with self._cache_lock:
+            self._sessions_cache[session_id] = sdk_session
+        return sdk_session
+
+    def _get_or_create_peer(self, peer_id: str) -> Any:
+        """Get or create a Honcho peer (one get-or-create API call, then cached)."""
         with self._cache_lock:
             if peer_id in self._peers_cache:
                 return self._peers_cache[peer_id]
 
-        peer = self.honcho.peer(peer_id)
+        peer = self._authed_call("peer setup", lambda: self.honcho.peer(peer_id))
         with self._cache_lock:
             self._peers_cache[peer_id] = peer
         return peer
@@ -309,10 +349,11 @@ class HonchoSessionManager:
                 logger.debug("Honcho session '%s' retrieved from cache", session_id)
                 return self._sessions_cache[session_id], []
 
-        session = self.honcho.session(session_id)
+        self._authed_call("session setup", lambda: self._sdk_session(session_id))
 
         # Configure per-peer observation from granular booleans.
         # These map 1:1 to Honcho's SessionPeerConfig toggles.
+        auth_dead = False
         try:
             from honcho.session import SessionPeerConfig
             user_config = SessionPeerConfig(
@@ -323,16 +364,28 @@ class HonchoSessionManager:
                 observe_me=self._ai_observe_me,
                 observe_others=self._ai_observe_others,
             )
+            peer_entries = [(user_peer, user_config), (assistant_peer, ai_config)]
 
-            session.add_peers([(user_peer, user_config), (assistant_peer, ai_config)])
+            self._authed_call(
+                "session peer setup",
+                lambda: self._sdk_session(session_id).add_peers(peer_entries),
+            )
 
             # Sync back: server-side config (set via Honcho UI) wins over
             # local defaults. Read the effective config after add_peers.
             # Note: observation booleans are manager-scoped, not per-session.
             # Last session init wins. Fine for CLI; gateway should scope per-session.
             try:
-                server_user = session.get_peer_configuration(user_peer)
-                server_ai = session.get_peer_configuration(assistant_peer)
+                def _read_server_configs() -> tuple[Any, Any]:
+                    sdk_session = self._sdk_session(session_id)
+                    return (
+                        sdk_session.get_peer_configuration(user_peer),
+                        sdk_session.get_peer_configuration(assistant_peer),
+                    )
+
+                server_user, server_ai = self._authed_call(
+                    "peer configuration read", _read_server_configs
+                )
                 if server_user.observe_me is not None:
                     self._user_observe_me = server_user.observe_me
                 if server_user.observe_others is not None:
@@ -346,8 +399,13 @@ class HonchoSessionManager:
                     self._user_observe_me, self._user_observe_others,
                     self._ai_observe_me, self._ai_observe_others,
                 )
+            except HonchoAuthError:
+                raise
             except Exception as e:
                 logger.debug("Honcho get_peer_configuration failed (using local config): %s", e)
+        except HonchoAuthError:
+            # Already recorded by _authed_call; skip the remaining init calls.
+            auth_dead = True
         except Exception as e:
             logger.warning(
                 "Honcho session '%s' add_peers failed (non-fatal): %s",
@@ -356,38 +414,55 @@ class HonchoSessionManager:
 
         # Load existing messages via context() - single call for messages + metadata
         existing_messages = []
-        try:
-            ctx = session.context(summary=True, tokens=self._context_tokens)
-            existing_messages = ctx.messages or []
-
-            # Verify chronological ordering
-            if existing_messages and len(existing_messages) > 1:
-                timestamps = [m.created_at for m in existing_messages if m.created_at]
-                if timestamps and timestamps != sorted(timestamps):
-                    logger.warning(
-                        "Honcho messages not chronologically ordered for session '%s', sorting",
-                        session_id,
-                    )
-                    existing_messages = sorted(
-                        existing_messages,
-                        key=lambda m: m.created_at or datetime.min,
-                    )
-
-            if existing_messages:
-                logger.info(
-                    "Honcho session '%s' retrieved (%d existing messages)",
-                    session_id, len(existing_messages),
+        if not auth_dead:
+            try:
+                ctx = self._authed_call(
+                    "session context load",
+                    lambda: self._sdk_session(session_id).context(
+                        summary=True, tokens=self._context_tokens
+                    ),
                 )
-            else:
-                logger.info("Honcho session '%s' created (new)", session_id)
-        except Exception as e:
-            logger.warning(
-                "Honcho session '%s' loaded (failed to fetch context: %s)",
-                session_id, e,
-            )
+                existing_messages = ctx.messages or []
 
-        self._sessions_cache[session_id] = session
-        return session, existing_messages
+                # Verify chronological ordering
+                if existing_messages and len(existing_messages) > 1:
+                    timestamps = [m.created_at for m in existing_messages if m.created_at]
+                    if timestamps and timestamps != sorted(timestamps):
+                        logger.warning(
+                            "Honcho messages not chronologically ordered for session '%s', sorting",
+                            session_id,
+                        )
+                        existing_messages = sorted(
+                            existing_messages,
+                            key=lambda m: m.created_at or datetime.min,
+                        )
+
+                if existing_messages:
+                    logger.info(
+                        "Honcho session '%s' retrieved (%d existing messages)",
+                        session_id, len(existing_messages),
+                    )
+                else:
+                    logger.info("Honcho session '%s' created (new)", session_id)
+            except HonchoAuthError:
+                logger.warning(
+                    "Honcho session '%s' loaded without server context: auth failed",
+                    session_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Honcho session '%s' loaded (failed to fetch context: %s)",
+                    session_id, e,
+                )
+
+        with self._cache_lock:
+            honcho_session = self._sessions_cache.get(session_id)
+        if honcho_session is None:
+            # A mid-init client rebuild dropped the cached session; resolve a fresh one.
+            honcho_session = self._authed_call(
+                "session setup", lambda: self._sdk_session(session_id)
+            )
+        return honcho_session, existing_messages
 
     def _sanitize_id(self, id_str: str) -> str:
         """Sanitize an ID to match Honcho's pattern: ^[a-zA-Z0-9_-]+"""
@@ -545,48 +620,31 @@ class HonchoSessionManager:
         if not new_messages:
             return True
 
-        # A dead grant cannot authenticate; skip the call until re-login.
-        if self._reauth_required():
-            self._record_auth_failure(HonchoAuthError(_REAUTH_REQUIRED_MESSAGE))
-            return False
-
-        user_peer = self._get_or_create_peer(session.user_peer_id)
-        assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
-        honcho_session = self._sessions_cache.get(session.honcho_session_id)
-
-        if not honcho_session:
-            honcho_session, _ = self._get_or_create_honcho_session(
-                session.honcho_session_id, user_peer, assistant_peer
-            )
-
-        honcho_messages = []
-        for msg in new_messages:
-            peer = user_peer if msg["role"] == "user" else assistant_peer
-            honcho_messages.append(peer.message(msg["content"]))
+        # Resolved inside the operation so a retry after a client rebuild gets fresh objects.
+        def _sync_messages() -> int:
+            user_peer = self._get_or_create_peer(session.user_peer_id)
+            assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
+            honcho_session = self._sessions_cache.get(session.honcho_session_id)
+            if honcho_session is None:
+                honcho_session, _ = self._get_or_create_honcho_session(
+                    session.honcho_session_id, user_peer, assistant_peer
+                )
+            honcho_messages = [
+                (user_peer if m["role"] == "user" else assistant_peer).message(m["content"])
+                for m in new_messages
+            ]
+            honcho_session.add_messages(honcho_messages)
+            return len(honcho_messages)
 
         try:
-            try:
-                honcho_session.add_messages(honcho_messages)
-            except Exception as e:
-                if not _is_auth_error(e):
-                    raise
-                logger.warning(
-                    "Honcho message sync hit an auth error; forcing token "
-                    "refresh and retrying once: %s", _redact_tokens(str(e)),
-                )
-                if not self._force_reauth():
-                    raise
-                honcho_session.add_messages(honcho_messages)
-            self._clear_auth_failure()
+            synced = self._authed_call("message sync", _sync_messages)
             for msg in new_messages:
                 msg["_synced"] = True
-            logger.debug("Synced %d messages to Honcho for %s", len(honcho_messages), session.key)
+            logger.debug("Synced %d messages to Honcho for %s", synced, session.key)
             with self._cache_lock:
                 self._cache[session.key] = session
             return True
         except Exception as e:
-            if _is_auth_error(e):
-                self._record_auth_failure(e)
             for msg in new_messages:
                 msg["_synced"] = False
             logger.error("Failed to sync messages to Honcho: %s", e)
@@ -784,12 +842,6 @@ class HonchoSessionManager:
         if not session:
             return ""
 
-        # A dead grant cannot authenticate; skip the call until re-login.
-        if self._reauth_required():
-            exc = HonchoAuthError(_REAUTH_REQUIRED_MESSAGE)
-            self._record_auth_failure(exc)
-            raise exc
-
         target_peer_id = self._resolve_peer_id(session, peer)
         if target_peer_id is None:
             return ""
@@ -819,27 +871,7 @@ class HonchoSessionManager:
             return target_peer.chat(query, reasoning_level=level) or ""
 
         try:
-            try:
-                result = _chat_once()
-            except Exception as e:
-                if not _is_auth_error(e):
-                    raise
-                logger.warning(
-                    "Honcho dialectic query hit an auth error; forcing token "
-                    "refresh and retrying once: %s", _redact_tokens(str(e)),
-                )
-                if not self._force_reauth():
-                    self._record_auth_failure(e)
-                    raise HonchoAuthError(_auth_error_message(e)) from e
-                try:
-                    result = _chat_once()
-                except Exception as retry_exc:
-                    if _is_auth_error(retry_exc):
-                        self._record_auth_failure(retry_exc)
-                        raise HonchoAuthError(_auth_error_message(retry_exc)) from retry_exc
-                    raise
-
-            self._clear_auth_failure()
+            result = self._authed_call("dialectic query", _chat_once)
             # Only automatic injection uses the Hermes-side character cap.
             if (
                 apply_injection_cap
@@ -916,11 +948,16 @@ class HonchoSessionManager:
         # return null summary — the guard below handles that gracefully.
         # Per-directory returning sessions get their accumulated summary.
         try:
-            honcho_session = self._sessions_cache.get(session.honcho_session_id)
-            if honcho_session:
-                ctx = honcho_session.context(summary=True)
+            if session.honcho_session_id in self._sessions_cache:
+                ctx = self._authed_call(
+                    "session summary fetch",
+                    lambda: self._sdk_session(session.honcho_session_id).context(summary=True),
+                )
                 if ctx.summary and getattr(ctx.summary, "content", None):
                     result["summary"] = ctx.summary.content
+        except HonchoAuthError:
+            # Auth is dead; the pop_auth_notice path tells the model why context is missing.
+            return result
         except Exception as e:
             logger.debug("Failed to fetch session summary from Honcho: %s", e)
 
@@ -929,6 +966,8 @@ class HonchoSessionManager:
             user_ctx = self._fetch_peer_context(observer_peer_id, search_query=user_message or None, target=target_peer_id or session.user_peer_id)
             result["representation"] = user_ctx["representation"]
             result["card"] = "\n".join(user_ctx["card"])
+        except HonchoAuthError:
+            return result
         except Exception as e:
             logger.warning("Failed to fetch user context from Honcho: %s", e)
 
@@ -937,6 +976,8 @@ class HonchoSessionManager:
             ai_ctx = self._fetch_peer_context(session.assistant_peer_id, target=session.assistant_peer_id)
             result["ai_representation"] = ai_ctx["representation"]
             result["ai_card"] = "\n".join(ai_ctx["card"])
+        except HonchoAuthError:
+            return result
         except Exception as e:
             logger.debug("Failed to fetch AI peer context from Honcho: %s", e)
 
@@ -960,23 +1001,24 @@ class HonchoSessionManager:
             logger.warning("No local session cached for '%s', skipping migration", session_key)
             return False
 
-        honcho_session = self._sessions_cache.get(session.honcho_session_id)
-        if not honcho_session:
+        if session.honcho_session_id not in self._sessions_cache:
             logger.warning("No Honcho session cached for '%s', skipping migration", session_key)
             return False
-
-        user_peer = self._get_or_create_peer(session.user_peer_id)
 
         content_bytes = self._format_migration_transcript(session_key, messages)
         first_ts = messages[0].get("timestamp") if messages else None
 
         try:
-            honcho_session.upload_file(
-                file=("prior_history.txt", content_bytes, "text/plain"),
-                peer=user_peer,
-                metadata={"source": "local_jsonl", "count": len(messages)},
-                created_at=first_ts,
-            )
+            def _upload() -> None:
+                user_peer = self._get_or_create_peer(session.user_peer_id)
+                self._sdk_session(session.honcho_session_id).upload_file(
+                    file=("prior_history.txt", content_bytes, "text/plain"),
+                    peer=user_peer,
+                    metadata={"source": "local_jsonl", "count": len(messages)},
+                    created_at=first_ts,
+                )
+
+            self._authed_call("history migration upload", _upload)
             logger.info("Migrated %d local messages to Honcho for %s", len(messages), session_key)
             return True
         except Exception as e:
@@ -1039,13 +1081,9 @@ class HonchoSessionManager:
             logger.warning("No local session cached for '%s', skipping memory migration", session_key)
             return False
 
-        honcho_session = self._sessions_cache.get(session.honcho_session_id)
-        if not honcho_session:
+        if session.honcho_session_id not in self._sessions_cache:
             logger.warning("No Honcho session cached for '%s', skipping memory migration", session_key)
             return False
-
-        user_peer = self._get_or_create_peer(session.user_peer_id)
-        assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
 
         uploaded = False
         files = [
@@ -1053,26 +1091,26 @@ class HonchoSessionManager:
                 "MEMORY.md",
                 "consolidated_memory.md",
                 "Long-term agent notes and preferences",
-                user_peer,
+                session.user_peer_id,
                 "user",
             ),
             (
                 "USER.md",
                 "user_profile.md",
                 "User profile and preferences",
-                user_peer,
+                session.user_peer_id,
                 "user",
             ),
             (
                 "SOUL.md",
                 "agent_soul.md",
                 "Agent persona and identity configuration",
-                assistant_peer,
+                session.assistant_peer_id,
                 "ai",
             ),
         ]
 
-        for filename, upload_name, description, target_peer, target_kind in files:
+        for filename, upload_name, description, target_peer_id, target_kind in files:
             filepath = memory_path / filename
             if not filepath.exists():
                 continue
@@ -1092,15 +1130,18 @@ class HonchoSessionManager:
             )
 
             try:
-                honcho_session.upload_file(
-                    file=(upload_name, wrapped.encode("utf-8"), "text/plain"),
-                    peer=target_peer,
-                    metadata={
-                        "source": "local_memory",
-                        "original_file": filename,
-                        "target_peer": target_kind,
-                    },
-                )
+                def _upload() -> None:
+                    self._sdk_session(session.honcho_session_id).upload_file(
+                        file=(upload_name, wrapped.encode("utf-8"), "text/plain"),
+                        peer=self._get_or_create_peer(target_peer_id),
+                        metadata={
+                            "source": "local_memory",
+                            "original_file": filename,
+                            "target_peer": target_kind,
+                        },
+                    )
+
+                self._authed_call("memory migration upload", _upload)
                 logger.info(
                     "Uploaded %s to Honcho for %s (%s peer)",
                     filename,
@@ -1108,6 +1149,9 @@ class HonchoSessionManager:
                     target_kind,
                 )
                 uploaded = True
+            except HonchoAuthError:
+                logger.error("Honcho memory migration stopped after %s: auth failed", filename)
+                break
             except Exception as e:
                 logger.error("Failed to upload %s to Honcho: %s", filename, e)
 
@@ -1129,16 +1173,17 @@ class HonchoSessionManager:
         peer_card for per-session messaging sessions even when the peer itself
         has a populated card.
         """
-        peer = self._get_or_create_peer(peer_id)
-        getter = getattr(peer, "get_card", None)
-        if callable(getter):
-            return self._normalize_card(getter(target=target) if target is not None else getter())
+        def _get_card() -> Any:
+            peer = self._get_or_create_peer(peer_id)
+            getter = getattr(peer, "get_card", None)
+            if callable(getter):
+                return getter(target=target) if target is not None else getter()
+            legacy_getter = getattr(peer, "card", None)
+            if callable(legacy_getter):
+                return legacy_getter(target=target) if target is not None else legacy_getter()
+            return None
 
-        legacy_getter = getattr(peer, "card", None)
-        if callable(legacy_getter):
-            return self._normalize_card(legacy_getter(target=target) if target is not None else legacy_getter())
-
-        return []
+        return self._normalize_card(self._authed_call("peer card fetch", _get_card))
 
     def _fetch_peer_context(
         self,
@@ -1147,8 +1192,11 @@ class HonchoSessionManager:
         *,
         target: str | None = None,
     ) -> dict[str, Any]:
-        """Fetch representation + peer card directly from a peer object."""
-        peer = self._get_or_create_peer(peer_id)
+        """Fetch representation + peer card directly from a peer object.
+
+        Raises HonchoAuthError when auth is dead or a 401 survives the forced
+        refresh; the non-auth fallback chain would just repeat the failure.
+        """
         representation = ""
         card: list[str] = []
 
@@ -1158,27 +1206,42 @@ class HonchoSessionManager:
                 context_kwargs["target"] = target
             if search_query is not None:
                 context_kwargs["search_query"] = search_query
-            ctx = peer.context(**context_kwargs) if context_kwargs else peer.context()
+
+            def _peer_context() -> Any:
+                peer = self._get_or_create_peer(peer_id)
+                return peer.context(**context_kwargs) if context_kwargs else peer.context()
+
+            ctx = self._authed_call("peer context fetch", _peer_context)
             representation = (
                 getattr(ctx, "representation", None)
                 or getattr(ctx, "peer_representation", None)
                 or ""
             )
             card = self._normalize_card(getattr(ctx, "peer_card", None))
+        except HonchoAuthError:
+            raise
         except Exception as e:
             logger.debug("Direct peer.context() failed for '%s': %s", peer_id, e)
 
         if not representation:
             try:
-                representation = (
-                    peer.representation(target=target) if target is not None else peer.representation()
+                def _peer_representation() -> Any:
+                    peer = self._get_or_create_peer(peer_id)
+                    return peer.representation(target=target) if target is not None else peer.representation()
+
+                representation = self._authed_call(
+                    "peer representation fetch", _peer_representation
                 ) or ""
+            except HonchoAuthError:
+                raise
             except Exception as e:
                 logger.debug("Direct peer.representation() failed for '%s': %s", peer_id, e)
 
         if not card:
             try:
                 card = self._fetch_peer_card(peer_id, target=target)
+            except HonchoAuthError:
+                raise
             except Exception as e:
                 logger.debug("Direct peer card fetch failed for '%s': %s", peer_id, e)
 
@@ -1189,13 +1252,13 @@ class HonchoSessionManager:
 
         Uses the session-level context() API which returns summary,
         peer_representation, peer_card, and messages.
+        Raises HonchoAuthError so callers can tell rejected credentials from no context.
         """
         session = self._cache.get(session_key)
         if not session:
             return {}
 
-        honcho_session = self._sessions_cache.get(session.honcho_session_id)
-        if not honcho_session:
+        if session.honcho_session_id not in self._sessions_cache:
             # Fall back to peer-level context, respecting the requested peer
             peer_id = self._resolve_peer_id(session, peer)
             if peer_id is None:
@@ -1204,10 +1267,13 @@ class HonchoSessionManager:
 
         try:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
-            ctx = honcho_session.context(
-                summary=True,
-                peer_target=target_peer_id or observer_peer_id,
-                peer_perspective=observer_peer_id,
+            ctx = self._authed_call(
+                "session context fetch",
+                lambda: self._sdk_session(session.honcho_session_id).context(
+                    summary=True,
+                    peer_target=target_peer_id or observer_peer_id,
+                    peer_perspective=observer_peer_id,
+                ),
             )
 
             result: dict[str, Any] = {}
@@ -1231,6 +1297,8 @@ class HonchoSessionManager:
                 ]
 
             return result
+        except HonchoAuthError:
+            raise
         except Exception as e:
             logger.debug("Session context fetch failed: %s", e)
             return {}
@@ -1275,7 +1343,7 @@ class HonchoSessionManager:
 
         Fast, no LLM reasoning. Returns raw structured facts Honcho has
         inferred about the target peer (name, role, preferences, patterns).
-        Empty list if unavailable.
+        Empty list if unavailable; raises HonchoAuthError on rejected credentials.
         """
         session = self._cache.get(session_key)
         if not session:
@@ -1291,6 +1359,8 @@ class HonchoSessionManager:
             if target_peer_id:
                 return self._fetch_peer_card(target_peer_id)
             return []
+        except HonchoAuthError:
+            raise
         except Exception as e:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []
@@ -1317,6 +1387,9 @@ class HonchoSessionManager:
         Returns:
             Ranked message excerpts as a formatted string, or empty string
             if none found.
+
+        Raises:
+            HonchoAuthError: rejected credentials, so no-results is not implied.
         """
         session = self._cache.get(session_key)
         if not session:
@@ -1337,18 +1410,27 @@ class HonchoSessionManager:
         limit = max(3, min(20, char_budget // 300))
 
         try:
-            messages = self.honcho.search(
-                q,
-                filters={"peer_perspective": peer_id},
-                limit=limit,
+            messages = self._authed_call(
+                "message search",
+                lambda: self.honcho.search(
+                    q,
+                    filters={"peer_perspective": peer_id},
+                    limit=limit,
+                ),
             )
+        except HonchoAuthError:
+            raise
         except Exception as e:
             logger.debug("Honcho message search failed (peer_perspective=%s): %s", peer_id, e)
             # Fall back to peer-authored search if the perspective filter is
             # unsupported by the running Honcho version.
             try:
-                peer_obj = self._get_or_create_peer(peer_id)
-                messages = peer_obj.search(q, limit=limit)
+                messages = self._authed_call(
+                    "peer search",
+                    lambda: self._get_or_create_peer(peer_id).search(q, limit=limit),
+                )
+            except HonchoAuthError:
+                raise
             except Exception as e2:
                 logger.debug("Honcho peer search fallback also failed: %s", e2)
                 return ""
@@ -1431,13 +1513,17 @@ class HonchoSessionManager:
                 logger.warning("Could not resolve conclusion peer '%s' for session '%s'", peer, session_key)
                 return False
 
-            conclusions_scope = self._conclusions_scope(session, target_peer_id)
-            conclusions_scope.create([{
-                "content": content.strip(),
-                "session_id": session.honcho_session_id,
-            }])
+            self._authed_call(
+                "conclusion create",
+                lambda: self._conclusions_scope(session, target_peer_id).create([{
+                    "content": content.strip(),
+                    "session_id": session.honcho_session_id,
+                }]),
+            )
             logger.info("Created conclusion about %s for %s: %s", target_peer_id, session_key, content[:80])
             return True
+        except HonchoAuthError:
+            raise
         except Exception as e:
             logger.error("Failed to create conclusion: %s", e)
             return False
@@ -1458,10 +1544,14 @@ class HonchoSessionManager:
             return False
         try:
             target_peer_id = self._resolve_peer_id(session, peer)
-            scope = self._conclusions_scope(session, target_peer_id)
-            scope.delete(conclusion_id)
+            self._authed_call(
+                "conclusion delete",
+                lambda: self._conclusions_scope(session, target_peer_id).delete(conclusion_id),
+            )
             logger.info("Deleted conclusion %s for %s", conclusion_id, session_key)
             return True
+        except HonchoAuthError:
+            raise
         except Exception as e:
             logger.error("Failed to delete conclusion %s: %s", conclusion_id, e)
             return False
@@ -1491,12 +1581,17 @@ class HonchoSessionManager:
             target_peer_id = self._resolve_peer_id(session, peer)
             if target_peer_id is None:
                 return []
-            scope = self._conclusions_scope(session, target_peer_id)
-            if query:
-                conclusions = scope.query(query, top_k=limit)
-            else:
-                conclusions = scope.list(size=limit).items
+
+            def _list() -> Any:
+                scope = self._conclusions_scope(session, target_peer_id)
+                if query:
+                    return scope.query(query, top_k=limit)
+                return scope.list(size=limit).items
+
+            conclusions = self._authed_call("conclusion list", _list)
             return [{"id": c.id, "content": c.content} for c in conclusions]
+        except HonchoAuthError:
+            raise
         except Exception as e:
             logger.debug("Honcho list_conclusions failed: %s", e)
             return []
@@ -1520,12 +1615,14 @@ class HonchoSessionManager:
             if observer_peer_id is None:
                 logger.warning("Could not resolve peer '%s' for set_peer_card in session '%s'", peer, session_key)
                 return None
-            peer_obj = self._get_or_create_peer(observer_peer_id)
-            result = (
-                peer_obj.set_card(card, target=target_peer_id)
-                if target_peer_id is not None
-                else peer_obj.set_card(card)
-            )
+
+            def _set_card() -> Any:
+                peer_obj = self._get_or_create_peer(observer_peer_id)
+                if target_peer_id is not None:
+                    return peer_obj.set_card(card, target=target_peer_id)
+                return peer_obj.set_card(card)
+
+            result = self._authed_call("peer card update", _set_card)
             logger.info(
                 "Updated peer card observer=%s target=%s (%d facts)",
                 observer_peer_id,
@@ -1533,6 +1630,8 @@ class HonchoSessionManager:
                 len(card),
             )
             return result
+        except HonchoAuthError:
+            raise
         except Exception as e:
             logger.error("Failed to set peer card: %s", e)
             return None
@@ -1561,9 +1660,7 @@ class HonchoSessionManager:
             logger.warning("No session cached for '%s', skipping AI seed", session_key)
             return False
 
-        assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
-        honcho_session = self._sessions_cache.get(session.honcho_session_id)
-        if not honcho_session:
+        if session.honcho_session_id not in self._sessions_cache:
             logger.warning("No Honcho session cached for '%s', skipping AI seed", session_key)
             return False
 
@@ -1575,7 +1672,14 @@ class HonchoSessionManager:
                 f"{content.strip()}\n"
                 f"</ai_identity_seed>"
             )
-            honcho_session.add_messages([assistant_peer.message(wrapped)])
+
+            def _seed() -> None:
+                assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
+                self._sdk_session(session.honcho_session_id).add_messages(
+                    [assistant_peer.message(wrapped)]
+                )
+
+            self._authed_call("identity seed", _seed)
             logger.info("Seeded AI identity from '%s' into %s", source, session_key)
             return True
         except Exception as e:
@@ -1599,6 +1703,8 @@ class HonchoSessionManager:
                 "representation": ctx["representation"] or "",
                 "card": "\n".join(ctx["card"]),
             }
+        except HonchoAuthError:
+            raise
         except Exception as e:
             logger.debug("Failed to fetch AI representation: %s", e)
             return {"representation": "", "card": ""}

@@ -572,3 +572,259 @@ class TestBackoffExemption:
         provider = HonchoMemoryProvider()
         provider._note_dialectic_failure(RuntimeError("timeout"))
         assert provider._dialectic_empty_streak == 1
+
+
+# ---------------------------------------------------------------------------
+# session: context/search 401 recovery through _authed_call
+# ---------------------------------------------------------------------------
+
+
+class _FlakyContextPeer:
+    """context() raises an auth error N times, then succeeds."""
+
+    def __init__(self, failures: int, representation: str = "knows Python"):
+        self.failures = failures
+        self.representation = representation
+        self.calls = 0
+
+    def context(self, **kw):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise Exception("Invalid or expired access token")
+        return SimpleNamespace(representation=self.representation, peer_card=["fact one"])
+
+
+class TestContextAuthRetry:
+    def test_401_forces_refresh_and_retries_once(self):
+        peer = _FlakyContextPeer(failures=1)
+        mgr = _make_manager(peer)
+        ctx = mgr.get_session_context("k")
+        assert ctx["representation"] == "knows Python"
+        assert peer.calls == 2  # original + one retry
+
+    def test_persistent_401_records_failure_and_notices_once(self):
+        peer = _FlakyContextPeer(failures=99)
+        mgr = _make_manager(peer)
+        with pytest.raises(HonchoAuthError):
+            mgr.get_session_context("k")
+        assert peer.calls == 2  # exactly one retry, no loop
+        assert mgr._auth_failure is not None
+        assert mgr.pop_auth_notice() is not None
+        assert mgr.pop_auth_notice() is None
+
+    def test_peer_card_401_raises_instead_of_reading_empty(self):
+        class _FlakyCardPeer:
+            calls = 0
+
+            def get_card(self, **kw):
+                type(self).calls += 1
+                raise Exception("Invalid or expired access token")
+
+        mgr = _make_manager(_FlakyCardPeer(), reauth_ok=False)
+        with pytest.raises(HonchoAuthError):
+            mgr.get_peer_card("k")
+        assert _FlakyCardPeer.calls == 1
+
+
+class TestDeadGrantSkipsContextAndSearch:
+    def test_dead_grant_issues_no_context_call(self, tmp_path, monkeypatch):
+        _kill_grant(tmp_path, monkeypatch)
+        peer = _FlakyContextPeer(failures=0)
+        mgr = _make_manager(peer)
+        with pytest.raises(HonchoAuthError):
+            mgr.get_session_context("k")
+        assert peer.calls == 0
+
+    def test_dead_grant_issues_no_search_call(self, tmp_path, monkeypatch):
+        from plugins.memory.honcho import session as session_mod
+
+        _kill_grant(tmp_path, monkeypatch)
+        client = MagicMock()
+        monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: client)
+        mgr = _make_manager(_FlakyContextPeer(failures=0))
+        with pytest.raises(HonchoAuthError):
+            mgr.search_context("k", "query")
+        client.search.assert_not_called()
+
+    def test_dead_grant_prefetch_returns_empty_and_arms_notice(self, tmp_path, monkeypatch):
+        _kill_grant(tmp_path, monkeypatch)
+        peer = _FlakyContextPeer(failures=0)
+        mgr = _make_manager(peer)
+        assert mgr.get_prefetch_context("k") == {}
+        assert peer.calls == 0
+        assert mgr.pop_auth_notice() is not None
+
+
+class TestNonAuthFailuresNotRetried:
+    def test_context_timeout_fails_open_without_refresh(self):
+        class _TimeoutPeer:
+            calls = 0
+
+            def _fail(self):
+                type(self).calls += 1
+                raise TimeoutError("request timed out")
+
+            def context(self, **kw):
+                self._fail()
+
+            def representation(self, **kw):
+                self._fail()
+
+            def get_card(self, **kw):
+                self._fail()
+
+        _TimeoutPeer.calls = 0
+        mgr = _make_manager(_TimeoutPeer())
+        reauths = []
+        mgr._force_reauth = lambda: reauths.append(1) or True
+
+        ctx = mgr.get_session_context("k")
+        assert ctx == {"representation": "", "card": []}
+        assert _TimeoutPeer.calls == 3  # context, representation, card — no retries
+        assert reauths == []
+
+    def test_search_timeout_fails_open_without_refresh(self, monkeypatch):
+        from plugins.memory.honcho import session as session_mod
+
+        class _TimeoutSearchPeer:
+            calls = 0
+
+            def search(self, *a, **kw):
+                type(self).calls += 1
+                raise TimeoutError("request timed out")
+
+        _TimeoutSearchPeer.calls = 0
+        client = MagicMock()
+        client.search.side_effect = TimeoutError("request timed out")
+        monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: client)
+        mgr = _make_manager(_TimeoutSearchPeer())
+        reauths = []
+        mgr._force_reauth = lambda: reauths.append(1) or True
+
+        assert mgr.search_context("k", "q") == ""
+        assert client.search.call_count == 1
+        assert _TimeoutSearchPeer.calls == 1
+        assert reauths == []
+
+
+# ---------------------------------------------------------------------------
+# client rebuild: the retry must use freshly resolved SDK objects
+# ---------------------------------------------------------------------------
+
+
+def _wire_rebuild(tmp_path, monkeypatch, fresh_client):
+    """Route _force_reauth down its client-rebuild path, swapping in fresh_client."""
+    from plugins.memory.honcho import client as client_mod
+    from plugins.memory.honcho import session as session_mod
+
+    clients = {"current": MagicMock()}
+    monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: clients["current"])
+    monkeypatch.setattr(client_mod, "resolve_config_path", lambda: tmp_path / "honcho.json")
+    monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: "hch-at-rotated")
+    monkeypatch.setattr(oauth, "apply_token_to_client", lambda c, t: False)
+    monkeypatch.setattr(
+        client_mod, "reset_honcho_client",
+        lambda: clients.__setitem__("current", fresh_client),
+    )
+    return clients
+
+
+class TestClientRebuildRetry:
+    def test_flush_retry_uses_rebuilt_session_not_stale(self, tmp_path, monkeypatch):
+        stale_session = MagicMock()
+        stale_session.add_messages.side_effect = Exception("Invalid or expired access token")
+        stale_peer = MagicMock()
+        stale_peer.message.side_effect = lambda content: content
+
+        fresh_session = MagicMock()
+        fresh_session.context.return_value = SimpleNamespace(summary=None, messages=[])
+        fresh_peer = MagicMock()
+        fresh_peer.message.side_effect = lambda content: content
+        fresh_client = MagicMock()
+        fresh_client.session.return_value = fresh_session
+        fresh_client.peer.return_value = fresh_peer
+
+        _wire_rebuild(tmp_path, monkeypatch, fresh_client)
+
+        cfg = HonchoClientConfig(host="hermes", api_key="hch-at-x", enabled=True)
+        mgr = HonchoSessionManager(config=cfg)
+        mgr._peers_cache.update({"u": stale_peer, "a": stale_peer})
+        mgr._sessions_cache["s"] = stale_session
+        session = HonchoSession(
+            key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s"
+        )
+        session.add_message("user", "hello")
+        session.add_message("assistant", "hi")
+
+        assert mgr._flush_session(session) is True
+        # The stale pre-rebuild session must not be retried.
+        assert stale_session.add_messages.call_count == 1
+        assert fresh_session.add_messages.call_count == 1
+        assert all(m["_synced"] for m in session.messages)
+        assert mgr._auth_failure is None
+
+    def test_context_retry_uses_rebuilt_peer_not_stale(self, tmp_path, monkeypatch):
+        stale_peer = MagicMock()
+        stale_peer.context.side_effect = Exception("Invalid or expired access token")
+
+        fresh_peer = MagicMock()
+        fresh_peer.context.return_value = SimpleNamespace(
+            representation="rep after rebuild", peer_card=["fact"]
+        )
+        fresh_client = MagicMock()
+        fresh_client.peer.return_value = fresh_peer
+
+        _wire_rebuild(tmp_path, monkeypatch, fresh_client)
+
+        cfg = HonchoClientConfig(host="hermes", api_key="hch-at-x", enabled=True)
+        mgr = HonchoSessionManager(config=cfg)
+        mgr._peers_cache["u"] = stale_peer
+        mgr._cache["k"] = HonchoSession(
+            key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s"
+        )
+
+        ctx = mgr.get_session_context("k")
+        assert ctx["representation"] == "rep after rebuild"
+        assert stale_peer.context.call_count == 1
+        assert fresh_peer.context.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# tools: auth failures must never read as "no context"
+# ---------------------------------------------------------------------------
+
+
+class TestToolAuthVisibility:
+    def _provider(self, manager):
+        provider = HonchoMemoryProvider()
+        provider._manager = manager
+        provider._session_key = "k"
+        provider._session_initialized = True
+        return provider
+
+    def test_context_tool_reports_auth_failure(self):
+        class _Mgr:
+            def get_session_context(self, key, peer="user"):
+                raise HonchoAuthError("Honcho rejected our credentials")
+
+        out = self._provider(_Mgr()).handle_tool_call("honcho_context", {})
+        assert "No context available" not in out
+        assert "authentication failed" in out
+
+    def test_search_tool_reports_auth_failure(self):
+        class _Mgr:
+            def search_context(self, key, query, max_tokens=800, peer="user"):
+                raise HonchoAuthError("Honcho rejected our credentials")
+
+        out = self._provider(_Mgr()).handle_tool_call("honcho_search", {"query": "schema"})
+        assert "No relevant context found" not in out
+        assert "authentication failed" in out
+
+    def test_profile_tool_reports_auth_failure_not_empty_profile(self):
+        class _Mgr:
+            def get_peer_card(self, key, peer="user"):
+                raise HonchoAuthError("Honcho rejected our credentials")
+
+        out = self._provider(_Mgr()).handle_tool_call("honcho_profile", {})
+        assert "No profile facts" not in out
+        assert "authentication failed" in out

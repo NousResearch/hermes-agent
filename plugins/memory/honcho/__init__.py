@@ -1451,6 +1451,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Handle a Honcho tool call, with lazy session init for tools-only mode."""
+        from plugins.memory.honcho.session import HonchoAuthError
+
         if self._cron_skipped:
             return tool_error("Honcho is not active (cron context).")
 
@@ -1560,6 +1562,10 @@ class HonchoMemoryProvider(MemoryProvider):
 
             return tool_error(f"Unknown tool: {tool_name}")
 
+        except HonchoAuthError as e:
+            # Never report an auth failure as an empty result; the model would read it as "no memory".
+            logger.error("Honcho tool %s failed: authentication rejected", tool_name)
+            return tool_error(f"Honcho memory authentication failed: {e}")
         except Exception as e:
             logger.error("Honcho tool %s failed: %s", tool_name, e)
             return tool_error(f"Honcho {tool_name} failed: {e}")

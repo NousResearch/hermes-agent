@@ -134,6 +134,36 @@ def test_refresh_uses_pre_rebuild_snapshot_when_provided(monkeypatch):
     assert restored == [["platform.telegram"]]
 
 
+def test_capture_active_tool_dependencies_uses_tools_status_probes(monkeypatch):
+    from hermes_cli import tools_config
+
+    monkeypatch.setattr(
+        tools_config,
+        "_module_installed",
+        lambda module: module in {"langfuse", "ddgs"},
+    )
+
+    assert m._capture_active_tool_dependencies() == ["ddgs", "langfuse"]
+
+
+def test_restore_active_tool_dependencies_uses_static_allowlist(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        m,
+        "_run_package_only_install",
+        lambda cmd, *, env=None: calls.append((cmd, env)),
+    )
+
+    env = {"VIRTUAL_ENV": "/tmp/venv"}
+    m._restore_active_tool_dependencies(
+        ["langfuse", "not-allowlisted"],
+        ["uv", "pip"],
+        env=env,
+    )
+
+    assert calls == [(["uv", "pip", "install", "langfuse", "--quiet"], env)]
+
+
 def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
     tmp_path, monkeypatch
 ):
@@ -142,9 +172,11 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
 
     (tmp_path / ".git").mkdir()
     snapshot = ["platform.telegram"]
+    tool_snapshot = ["langfuse"]
     refresh_calls = []
+    restore_calls = []
 
-    class RefreshReached(Exception):
+    class RestoreReached(Exception):
         pass
 
     def fake_run(cmd, **kwargs):
@@ -156,10 +188,17 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
 
     def fake_refresh(prefix, *, env=None, features=None):
         refresh_calls.append((prefix, env, features))
-        raise RefreshReached
+        return True
+
+    def fake_restore(dependencies, prefix, *, env=None):
+        restore_calls.append((dependencies, prefix, env))
+        raise RestoreReached
 
     monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(m, "_capture_active_lazy_features", lambda: snapshot.copy())
+    monkeypatch.setattr(
+        m, "_capture_active_tool_dependencies", lambda: tool_snapshot.copy()
+    )
     monkeypatch.setattr(m, "_is_windows", lambda: False)
     monkeypatch.setattr(m, "_run_pre_update_backup", lambda args: None)
     monkeypatch.setattr(m, "_pause_windows_gateways_for_update", lambda: None)
@@ -177,6 +216,7 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
         m, "_install_python_dependencies_with_optional_fallback", lambda *a, **k: None
     )
     monkeypatch.setattr(m, "_refresh_active_lazy_features", fake_refresh)
+    monkeypatch.setattr(m, "_restore_active_tool_dependencies", fake_restore)
     monkeypatch.setattr(m.subprocess, "run", fake_run)
     monkeypatch.setattr(managed_uv, "update_managed_uv", lambda **kwargs: None)
     monkeypatch.setattr(managed_uv, "ensure_uv", lambda **kwargs: "uv")
@@ -189,7 +229,7 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
         backup=False,
         branch=None,
     )
-    with pytest.raises(RefreshReached):
+    with pytest.raises(RestoreReached):
         m._cmd_update_impl(args, gateway_mode=False)
 
     assert refresh_calls == [
@@ -197,6 +237,13 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
             ["uv", "pip"],
             {**m.os.environ, "VIRTUAL_ENV": str(tmp_path / "venv")},
             snapshot,
+        )
+    ]
+    assert restore_calls == [
+        (
+            tool_snapshot,
+            ["uv", "pip"],
+            {**m.os.environ, "VIRTUAL_ENV": str(tmp_path / "venv")},
         )
     ]
 

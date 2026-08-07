@@ -282,6 +282,7 @@ def get_read_block_error(path: str) -> Optional[str]:
         # to avoid re-fetching across back-to-back CLI invocations. The file
         # was introduced by #31968 but not added to this guard.
         os.path.join("cache", "bws_cache.json"),
+        os.path.join("cache", "bws_cache.enc.json"),
     )
     for hd in hermes_dirs:
         for name in credential_file_names:

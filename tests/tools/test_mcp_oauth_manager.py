@@ -62,6 +62,74 @@ def test_manager_restore_entry_preserves_newer_concurrent_entry(tmp_path, monkey
     assert manager.get_or_build_provider("shared", "https://new.example", {}) is new_provider
     assert new_provider is not old_provider
 
+
+def test_evict_preserves_tokens_on_disk(tmp_path, monkeypatch):
+    """#76590: the soft evict() path drops the in-memory provider but must
+    NEVER delete the persisted OAuth tokens — only remove() touches disk.
+
+    The MCP runtime calls evict() when an OAuth server is parked after
+    transient connection failures; deleting the tokens there would take the
+    integration down on a headless gateway until a manual re-login.
+    """
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+
+    storage = HermesTokenStorage("shared")
+    storage._tokens_path().parent.mkdir(parents=True, exist_ok=True)
+    storage._tokens_path().write_text(
+        '{"access_token":"TOKEN_KEEP","token_type":"Bearer","expires_in":3600}'
+    )
+
+    manager = MCPOAuthManager()
+    provider = manager.get_or_build_provider("shared", "https://mcp.example/mcp", {})
+    assert provider is not None
+
+    manager.evict("shared")
+
+    # In-memory provider is dropped (a fresh one is built next time)…
+    assert (
+        manager.get_or_build_provider("shared", "https://mcp.example/mcp", {})
+        is not provider
+    )
+    # …but the persisted tokens are untouched.
+    assert storage.has_cached_tokens()
+    assert "TOKEN_KEEP" in storage._tokens_path().read_text()
+
+
+def test_remove_delete_tokens_false_keeps_disk_state(tmp_path, monkeypatch):
+    """#76590: remove(delete_tokens=False) gives the in-memory eviction plus
+    the returned entry WITHOUT the destructive disk step, so a caller that
+    restores the entry after a failed re-auth never loses the tokens."""
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+
+    storage = HermesTokenStorage("shared")
+    storage._tokens_path().parent.mkdir(parents=True, exist_ok=True)
+    storage._tokens_path().write_text(
+        '{"access_token":"TOKEN_KEEP","token_type":"Bearer","expires_in":3600}'
+    )
+
+    manager = MCPOAuthManager()
+    provider = manager.get_or_build_provider("shared", "https://mcp.example/mcp", {})
+    assert provider is not None
+
+    entry = manager.remove("shared", delete_tokens=False)
+
+    assert entry is not None
+    assert storage.has_cached_tokens()
+    assert "TOKEN_KEEP" in storage._tokens_path().read_text()
+    # Evicted from cache: a new provider is built on the next call.
+    assert (
+        manager.get_or_build_provider("shared", "https://mcp.example/mcp", {})
+        is not provider
+    )
+
 pytest.importorskip(
     "mcp.client.auth.oauth2",
     reason="MCP SDK 1.26.0+ required for OAuth support",

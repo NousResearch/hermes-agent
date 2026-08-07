@@ -1318,17 +1318,6 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
         max_summary_chars = 200
         truncation_marker = "...[truncated]"
 
-        # Idempotence: a later pressure-pruning pass may see the summary
-        # produced by an earlier pass. Preserve it instead of trying to parse
-        # the summary text as the original JSON result.
-        if content.startswith(response_prefix):
-            if len(content) <= max_summary_chars:
-                return content
-            return (
-                content[: max_summary_chars - len(truncation_marker)].rstrip()
-                + truncation_marker
-            )
-
         try:
             result = json.loads(content)
         except (json.JSONDecodeError, TypeError):

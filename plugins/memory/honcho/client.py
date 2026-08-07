@@ -18,7 +18,8 @@ import os
 import logging
 import hashlib
 import ipaddress
-from dataclasses import dataclass, field
+import threading
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -856,6 +857,11 @@ class HonchoClientConfig:
 
 
 _honcho_client_slot: SingletonSlot = SingletonSlot()
+# One extra slot per non-default workspace, used by per-channel project
+# routing (see get_honcho_client_for_workspace). Kept separate from the
+# singleton above so unrouted traffic keeps sharing exactly one client.
+_workspace_client_slots: dict[str, SingletonSlot] = {}
+_workspace_slots_lock = threading.Lock()
 _cached_timeout: float | None = None
 # Memo for the honcho.json-derived timeout, keyed on the file's mtime_ns so
 # the staleness check on every get_honcho_client() call costs one stat()
@@ -947,11 +953,18 @@ def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
         logger.warning("Honcho OAuth pre-build refresh failed", exc_info=True)
 
 
-def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -> None:
+def _refresh_cached_oauth(
+    client: "Honcho",
+    config: HonchoClientConfig | None,
+    slot: SingletonSlot | None = None,
+) -> None:
     """Rotate the cached client's Bearer in place when its OAuth token is stale.
 
     If the SDK shape changed and the in-place rotation can't apply, the slot is
-    reset so the next acquisition rebuilds with the fresh token.
+    reset so the next acquisition rebuilds with the fresh token.  ``slot``
+    selects which cache to reset; it defaults to the default-workspace
+    singleton and is passed explicitly by the per-workspace acquisition path
+    so both share one refresh implementation.
     """
     try:
         from plugins.memory.honcho import oauth
@@ -959,7 +972,7 @@ def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -
         host = config.host if config is not None else resolve_active_host()
         token, refreshed = oauth.ensure_fresh_token(resolve_config_path(), host)
         if refreshed and token and not oauth.apply_token_to_client(client, token):
-            _honcho_client_slot.reset()
+            (slot if slot is not None else _honcho_client_slot).reset()
     except Exception:
         logger.warning("Honcho OAuth cached refresh failed", exc_info=True)
 
@@ -983,6 +996,9 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         new_timeout = _resolve_timeout_from_sources(config)
         if new_timeout != _cached_timeout:
             _honcho_client_slot.reset()
+            # Per-workspace clients were built from the same timeout sources,
+            # so they are stale for the same reason.
+            _reset_workspace_clients()
             _cached_timeout = None
             cached = None
         else:
@@ -1006,108 +1022,199 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
     # Build inside the singleton factory so racing callers share one client.
     def _build() -> "Honcho":
-        # Lazy dependency failures fall through to the canonical import error.
-        try:
-            from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
-            _lazy_ensure("memory.honcho", prompt=False)
-        except ImportError:
-            # lazy_deps module missing — fall through to the raw import below.
-            pass
-        except Exception:
-            # FeatureUnavailable or unexpected error. Don't crash here; let the
-            # actual import attempt produce the canonical error message.
-            pass
-
-        try:
-            from honcho import Honcho
-        except ImportError:
-            raise ImportError(
-                "honcho-ai is required for Honcho integration. "
-                "Install it with: pip install honcho-ai  "
-                "(or run `hermes honcho setup` to configure)."
-            )
-
-        # Allow config.yaml honcho.base_url to override the SDK's environment
-        # mapping, enabling remote self-hosted Honcho deployments without
-        # requiring the server to live on localhost.
-        resolved_base_url = config.base_url
-        resolved_timeout = config.timeout
-        if not resolved_base_url or resolved_timeout is None:
-            try:
-                from hermes_cli.config import load_config
-                hermes_cfg = load_config()
-                honcho_cfg = hermes_cfg.get("honcho", {})
-                if isinstance(honcho_cfg, dict):
-                    if not resolved_base_url:
-                        resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
-                    if resolved_timeout is None:
-                        resolved_timeout = _resolve_optional_float(
-                            honcho_cfg.get("timeout"),
-                            honcho_cfg.get("request_timeout"),
-                        )
-            except Exception:
-                pass
-
-        # Fall back to the default so an unconfigured install cannot hang
-        # indefinitely on a stalled Honcho request.
-        if resolved_timeout is None:
-            resolved_timeout = _DEFAULT_HTTP_TIMEOUT
-
-        if resolved_base_url:
-            logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)
-        else:
-            logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
-
-        # Local Honcho instances don't require an API key, but the SDK
-        # expects a non-empty string.  Use a placeholder for local URLs.
-        # For local: only use config.api_key if the host block explicitly
-        # sets apiKey (meaning the user wants local auth). Otherwise skip
-        # the stored key -- it's likely a cloud key that would break local.
-        _is_local = _is_local_base_url(resolved_base_url)
-        if _is_local:
-            # Check if the host block has its own apiKey (explicit local auth).
-            # For local/LAN/VPN self-hosts, a stored root key is likely a cloud
-            # key that would break a no-auth local server, so we substitute the
-            # SDK's required-non-empty placeholder unless the host block opts in.
-            _raw = config.raw or {}
-            _host_block = (_raw.get("hosts") or {}).get(config.host, {})
-            _host_has_key = bool(_host_block.get("apiKey"))
-            effective_api_key = config.api_key if _host_has_key else "local"
-        else:
-            effective_api_key = config.api_key
-
-        # The Honcho SDK's route builders (e.g. routes.workspaces()) already
-        # include the version prefix (e.g. "/v3/workspaces").  When a user-supplied
-        # base_url already ends in a version segment (e.g.
-        # "http://localhost:38000/v3", "https://honcho.my.ts.net/v3"), concatenating
-        # the two produces "/v3/v3/workspaces" → 404 on every call.  This is a pure
-        # routing concern independent of host, so strip a trailing version segment
-        # from ANY base_url — loopback, LAN, custom domain, or cloud alike.  The
-        # SDK then appends its own versioned paths correctly.
-        if resolved_base_url:
-            import re as _re
-            resolved_base_url = _re.sub(r"/v\d+/*$", "", resolved_base_url).rstrip("/")
-
-        kwargs: dict = {
-            "workspace_id": config.workspace_id,
-            "api_key": effective_api_key,
-            "environment": config.environment,
-        }
-        if resolved_base_url:
-            kwargs["base_url"] = resolved_base_url
-        if resolved_timeout is not None:
-            kwargs["timeout"] = resolved_timeout
-
         global _cached_timeout
+        client, resolved_timeout = _build_client(config)
         _cached_timeout = resolved_timeout
-        return Honcho(**kwargs)
+        return client
 
     return _honcho_client_slot.get(_build)
+
+
+def _build_client(config: HonchoClientConfig) -> tuple["Honcho", float]:
+    """Construct a Honcho SDK client from a resolved config.
+
+    Shared by the default-workspace singleton and the per-workspace clients
+    used by project routing, so both resolve base_url, timeout and the
+    local-instance API-key placeholder identically.
+
+    Returns:
+        Tuple of (client, resolved_timeout_seconds).
+    """
+    # Lazy dependency failures fall through to the canonical import error.
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
+        _lazy_ensure("memory.honcho", prompt=False)
+    except ImportError:
+        # lazy_deps module missing — fall through to the raw import below.
+        pass
+    except Exception:
+        # FeatureUnavailable or unexpected error. Don't crash here; let the
+        # actual import attempt produce the canonical error message.
+        pass
+
+    try:
+        from honcho import Honcho
+    except ImportError:
+        raise ImportError(
+            "honcho-ai is required for Honcho integration. "
+            "Install it with: pip install honcho-ai  "
+            "(or run `hermes honcho setup` to configure)."
+        )
+
+    # Allow config.yaml honcho.base_url to override the SDK's environment
+    # mapping, enabling remote self-hosted Honcho deployments without
+    # requiring the server to live on localhost.
+    resolved_base_url = config.base_url
+    resolved_timeout = config.timeout
+    if not resolved_base_url or resolved_timeout is None:
+        try:
+            from hermes_cli.config import load_config
+            hermes_cfg = load_config()
+            honcho_cfg = hermes_cfg.get("honcho", {})
+            if isinstance(honcho_cfg, dict):
+                if not resolved_base_url:
+                    resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
+                if resolved_timeout is None:
+                    resolved_timeout = _resolve_optional_float(
+                        honcho_cfg.get("timeout"),
+                        honcho_cfg.get("request_timeout"),
+                    )
+        except Exception:
+            pass
+
+    # Fall back to the default so an unconfigured install cannot hang
+    # indefinitely on a stalled Honcho request.
+    if resolved_timeout is None:
+        resolved_timeout = _DEFAULT_HTTP_TIMEOUT
+
+    if resolved_base_url:
+        logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)
+    else:
+        logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
+
+    # Local Honcho instances don't require an API key, but the SDK
+    # expects a non-empty string.  Use a placeholder for local URLs.
+    # For local: only use config.api_key if the host block explicitly
+    # sets apiKey (meaning the user wants local auth). Otherwise skip
+    # the stored key -- it's likely a cloud key that would break local.
+    _is_local = _is_local_base_url(resolved_base_url)
+    if _is_local:
+        # Check if the host block has its own apiKey (explicit local auth).
+        # For local/LAN/VPN self-hosts, a stored root key is likely a cloud
+        # key that would break a no-auth local server, so we substitute the
+        # SDK's required-non-empty placeholder unless the host block opts in.
+        _raw = config.raw or {}
+        _host_block = (_raw.get("hosts") or {}).get(config.host, {})
+        _host_has_key = bool(_host_block.get("apiKey"))
+        effective_api_key = config.api_key if _host_has_key else "local"
+    else:
+        effective_api_key = config.api_key
+
+    # The Honcho SDK's route builders (e.g. routes.workspaces()) already
+    # include the version prefix (e.g. "/v3/workspaces").  When a user-supplied
+    # base_url already ends in a version segment (e.g.
+    # "http://localhost:38000/v3", "https://honcho.my.ts.net/v3"), concatenating
+    # the two produces "/v3/v3/workspaces" → 404 on every call.  This is a pure
+    # routing concern independent of host, so strip a trailing version segment
+    # from ANY base_url — loopback, LAN, custom domain, or cloud alike.  The
+    # SDK then appends its own versioned paths correctly.
+    if resolved_base_url:
+        import re as _re
+        resolved_base_url = _re.sub(r"/v\d+/*$", "", resolved_base_url).rstrip("/")
+
+    kwargs: dict = {
+        "workspace_id": config.workspace_id,
+        "api_key": effective_api_key,
+        "environment": config.environment,
+    }
+    if resolved_base_url:
+        kwargs["base_url"] = resolved_base_url
+    if resolved_timeout is not None:
+        kwargs["timeout"] = resolved_timeout
+
+    return Honcho(**kwargs), resolved_timeout
+
+
+def _workspace_client_slot(workspace_id: str) -> SingletonSlot:
+    """Get (or lazily create) the cache slot for one non-default workspace."""
+    with _workspace_slots_lock:
+        slot = _workspace_client_slots.get(workspace_id)
+        if slot is None:
+            slot = SingletonSlot()
+            _workspace_client_slots[workspace_id] = slot
+        return slot
+
+
+def _reset_workspace_clients() -> None:
+    """Drop every cached per-workspace client."""
+    with _workspace_slots_lock:
+        slots = list(_workspace_client_slots.values())
+        _workspace_client_slots.clear()
+    for slot in slots:
+        slot.reset()
+
+
+def get_honcho_client_for_workspace(
+    workspace_id: str,
+    config: HonchoClientConfig | None = None,
+) -> Honcho:
+    """Get or create the Honcho client bound to a specific workspace.
+
+    This is the workspace-aware sibling of :func:`get_honcho_client` and
+    exists for per-channel project routing, where writes must land in a
+    workspace other than the configured default.  It deliberately reuses the
+    same OAuth contract rather than defining a second one:
+
+    * ``_apply_fresh_oauth_token`` refreshes a near-expiry grant before the
+      first build, so the client starts with a live access token.
+    * ``_refresh_cached_oauth`` rotates the cached client's Bearer in place on
+      every subsequent acquisition, resetting *this workspace's* slot (not the
+      default singleton's) if the SDK shape prevents in-place rotation.
+
+    Callers must therefore re-acquire through this function on each use — the
+    same rule that makes ``HonchoSessionManager.honcho`` route every access
+    through ``get_honcho_client``.  Holding on to the returned client past its
+    token lifetime reintroduces the expiry bug this function exists to avoid.
+
+    Passing an empty ``workspace_id`` falls through to the default singleton,
+    so unrouted traffic keeps sharing exactly one client.
+    """
+    if not workspace_id:
+        return get_honcho_client(config)
+
+    slot = _workspace_client_slot(workspace_id)
+    cached = slot.peek()
+    if cached is not None:
+        _refresh_cached_oauth(cached, config, slot=slot)
+        # The rotation fallback may have reset the slot; only reuse the cached
+        # client when it survived, otherwise fall through and rebuild.
+        if slot.peek() is not None:
+            return cached
+
+    if config is None:
+        config = HonchoClientConfig.from_global_config()
+    # Never mutate the caller's config: the session manager hands us its own
+    # shared config object, whose workspace_id must stay the default.
+    config = replace(config, workspace_id=workspace_id)
+
+    # Same pre-build refresh as get_honcho_client.
+    _apply_fresh_oauth_token(config)
+
+    if not config.api_key and not config.base_url:
+        raise ValueError(
+            "Honcho API key not found. "
+            "Get your API key at https://app.honcho.dev, "
+            "then run 'hermes honcho setup' or set HONCHO_API_KEY. "
+            "For local instances, set HONCHO_BASE_URL instead."
+        )
+
+    return slot.get(lambda: _build_client(config)[0])
 
 
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
     global _cached_timeout, _honcho_json_timeout_memo
     _honcho_client_slot.reset()
+    _reset_workspace_clients()
     _cached_timeout = None
     _honcho_json_timeout_memo = (None, None)

@@ -250,6 +250,75 @@ If `sessionPeerPrefix` is `true`, the peer name is prepended: `alice-hermes-agen
 - **`per-session`** — Hermes session ID (timestamp + hex). Every `hermes` invocation starts a fresh Honcho session. Falls back to `per-directory` if no session ID is available.
 - **`global`** — workspace name. One session for everything. Memory accumulates across all directories and runs.
 
+### Per-Channel Project Workspaces (`honcho-projects.json`)
+
+Session resolution above decides the session *name* inside one workspace. An optional mapping file decides the *workspace* itself, per channel — so a group of channels can write into a project-specific Honcho workspace while everything else stays in the default `workspace`.
+
+The file is entirely optional. When it is absent, routing is disabled and every session uses the configured `workspace` exactly as before.
+
+**Path:** `$HERMES_HOME/honcho-projects.json` (profile-local; not part of `honcho.json`, and not written by `hermes memory setup`).
+
+**Schema:**
+
+```json
+{
+  "projects": {
+    "myproject": {
+      "sessions": {
+        "telegram-group--100123456789-42": "telegram",
+        "slack-group-C0EXAMPLE123": "slack"
+      }
+    },
+    "otherproject": {
+      "sessions": {
+        "discord-987654321": "discord"
+      }
+    }
+  }
+}
+```
+
+| Level | Meaning |
+|-------|---------|
+| `projects.<key>` | Honcho **workspace ID** to route into. Must already exist (or be creatable) on the server |
+| `sessions.<pattern>` | Pattern matched against the sanitized gateway session key |
+| `sessions.<pattern>` value | Short **session name** used inside the project workspace |
+
+Sanitization matches the rest of the plugin: every character outside `[A-Za-z0-9_-]` becomes `-`. So the gateway key `telegram:group:-100123456789:42` sanitizes to `telegram-group--100123456789-42`, which is what patterns are written against.
+
+#### Matching rule
+
+A pattern matches when it is a **terminal segment** of the sanitized key — either the key ends with the pattern, or the pattern is immediately followed by a `-` separator (Slack thread suffixes, for example). When several patterns match, the **longest** one wins, so a specific mapping shadows a broader one.
+
+```mermaid
+flowchart TD
+    A["gateway session key<br/>telegram:group:-100123456789:42"] --> B["sanitize<br/>telegram-group--100123456789-42"]
+    B --> C{"terminal-segment match<br/>in honcho-projects.json?"}
+    C -- "no match" --> D["default workspace<br/>full session key"]
+    C -- "one or more" --> E["longest pattern wins"]
+    E --> F["project workspace 'myproject'<br/>session 'telegram'"]
+```
+
+Plain substring matching is deliberately *not* used: it collides on numeric prefixes. A pattern ending in `-1` (topic 1) must not capture a key ending in `-1578` (topic 1578).
+
+| Sanitized key | Pattern | Match? |
+|---------------|---------|--------|
+| `telegram-group--100123456789-42` | `telegram-group--100123456789-42` | yes — key ends with pattern |
+| `slack-group-C0EXAMPLE123-thread-4567` | `slack-group-C0EXAMPLE123` | yes — pattern followed by `-` |
+| `slack-group-C0EXAMPLE123999` | `slack-group-C0EXAMPLE123` | no — no separator after the pattern |
+| `telegram-group--100123456789-1578` | `telegram-group--100123456789-1` | no — would be a prefix collision |
+
+#### Reload semantics
+
+The file is read on demand and cached against its **mtime**. A changed mtime reloads it, so projects can be added, edited or removed without restarting the gateway; an unchanged mtime costs one `stat()` per lookup. A malformed file logs one warning per change and routes nothing (all traffic falls back to the default workspace) rather than failing the turn.
+
+#### Behavior notes
+
+- Routing applies to reads and writes alike: session creation, per-turn flushes, dialectic queries, context prefetch, conclusions, and peer cards all follow the mapped session into the project workspace.
+- Each routed session is stamped with its workspace, so a flush issued by a different manager instance (the gateway runs several) still lands in the right workspace.
+- Routed workspaces get their own Honcho client from `get_honcho_client_for_workspace()`, which shares the default singleton's OAuth contract — a rotated access token is picked up by routed workspaces exactly as it is by the default one.
+- `flush_all()` and `shutdown()` fan out to every routed workspace before draining the default one.
+
 ### Multi-Profile Pattern
 
 Multiple Hermes profiles can share one workspace while maintaining separate AI identities. Config resolution is **host block > root > env var > default** — host blocks inherit from root, so shared settings only need to be declared once:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import json
 import queue
 import re
 import logging
@@ -11,7 +13,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
-from plugins.memory.honcho.client import get_honcho_client
+from hermes_constants import get_hermes_home
+from plugins.memory.honcho.client import (
+    get_honcho_client,
+    get_honcho_client_for_workspace,
+)
 
 if TYPE_CHECKING:
     from honcho import Honcho
@@ -22,6 +28,28 @@ logger = logging.getLogger(__name__)
 _ASYNC_SHUTDOWN = object()
 _PEER_ID_HASH_LEN = 8
 _PEER_ID_HASH_ESCALATION_LENGTHS = (_PEER_ID_HASH_LEN, 12, 16, 24, 32, 64)
+
+# Optional per-channel project workspace mapping (see _project_session_map).
+_PROJECT_MAP_FILENAME = "honcho-projects.json"
+
+
+def _project_routed(method):
+    """Route a session-key-first manager method through project mapping.
+
+    When the leading ``key`` argument matches an entry in
+    ``$HERMES_HOME/honcho-projects.json``, the call is delegated to the
+    per-workspace child manager under the mapped short session name (see
+    HonchoSessionManager._match_project_route). Unmapped keys — and
+    deployments without a mapping file — run the method unchanged.
+    """
+    @functools.wraps(method)
+    def routed(self, key, *args, **kwargs):
+        route = self._match_project_route(key)
+        if route is None:
+            return method(self, key, *args, **kwargs)
+        workspace, short_name = route
+        return method(self._project_manager(workspace), short_name, *args, **kwargs)
+    return routed
 
 
 @dataclass
@@ -41,6 +69,11 @@ class HonchoSession:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Project workspace this session was routed to via honcho-projects.json,
+    # or None for the manager's default workspace (the common case). The
+    # gateway runs several manager instances, so write paths (save /
+    # _flush_session) consult this stamp instead of instance-local state.
+    workspace: str | None = None
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the local cache."""
@@ -76,6 +109,12 @@ class HonchoSessionManager:
     adding persistent cross-session user modeling via Honcho's AI-native memory.
     """
 
+    # Project-routing defaults as class attributes so partially initialized
+    # instances (e.g. tests constructing bare managers via __new__) behave as
+    # plain unrouted managers. __init__ shadows these per instance.
+    _project_workspace: str | None = None
+    _project_map_cache: tuple[float, dict[str, tuple[str, str]]] | None = None
+
     def __init__(
         self,
         honcho: Honcho | None = None,
@@ -83,6 +122,7 @@ class HonchoSessionManager:
         config: Any | None = None,
         runtime_user_peer_name: str | None = None,
         runtime_user_peer_name_alt: str | None = None,
+        project_workspace: str | None = None,
     ):
         """
         Initialize the session manager.
@@ -94,8 +134,17 @@ class HonchoSessionManager:
                     write_frequency, observation, etc.).
             runtime_user_peer_name: Gateway user identity for per-user memory scoping.
             runtime_user_peer_name_alt: Optional stable alternate gateway identity.
+            project_workspace: When set, this manager is a per-workspace child
+                    created by project routing (honcho-projects.json). Its
+                    ``honcho`` property resolves through
+                    ``get_honcho_client_for_workspace`` instead of the default
+                    singleton, and it never routes further.
         """
         self._honcho = honcho
+        # Per-channel project workspace routing state (honcho-projects.json).
+        self._project_workspace = project_workspace
+        self._project_managers: dict[str, HonchoSessionManager] = {}
+        self._project_map_cache: tuple[float, dict[str, tuple[str, str]]] | None = None
         self._context_tokens = context_tokens
         self._config = config
         self._runtime_user_peer_name = runtime_user_peer_name
@@ -157,7 +206,20 @@ class HonchoSessionManager:
 
         Routes every access through ``get_honcho_client`` (which returns the same
         cached singleton) so a long session can't outlive its 1h access token.
+
+        Project-workspace child managers resolve through
+        ``get_honcho_client_for_workspace`` instead. That keeps both invariants
+        at once: the client stays bound to the child's own workspace (the
+        default singleton would snap its writes back to the default
+        workspace), *and* it still goes through the shared OAuth refresh, so a
+        routed workspace picks up a rotated Bearer exactly like the default
+        one does. Never cache the returned client past the current call.
         """
+        if self._project_workspace is not None:
+            self._honcho = get_honcho_client_for_workspace(
+                self._project_workspace, self._config
+            )
+            return self._honcho
         self._honcho = get_honcho_client()
         return self._honcho
 
@@ -359,6 +421,119 @@ class HonchoSessionManager:
 
         return self._session_key_fallback_peer_id(key)
 
+    # ------------------------------------------------------------------
+    # Per-channel project workspace routing (honcho-projects.json)
+    # ------------------------------------------------------------------
+
+    def _project_session_map(self) -> dict[str, tuple[str, str]]:
+        """Load the optional per-channel project workspace mapping.
+
+        ``$HERMES_HOME/honcho-projects.json`` maps session-key patterns to a
+        project workspace and a short session name:
+
+            {"projects": {"myproject": {"sessions": {
+                "telegram-group--100123456789-42": "telegram",
+                "slack-group-C0EXAMPLE123": "slack"}}}}
+
+        The file is reloaded whenever its mtime changes, so new projects can
+        be added without a gateway restart. A missing file disables routing
+        entirely; a malformed file logs a warning and routes nothing.
+
+        Returns:
+            Mapping of pattern -> (workspace, short_session_name).
+        """
+        path = get_hermes_home() / _PROJECT_MAP_FILENAME
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return {}
+
+        cached = self._project_map_cache
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+
+        mapping: dict[str, tuple[str, str]] = {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            for workspace, block in (raw.get("projects") or {}).items():
+                for pattern, short_name in ((block or {}).get("sessions") or {}).items():
+                    if workspace and pattern and short_name:
+                        mapping[str(pattern)] = (str(workspace), str(short_name))
+        except Exception as e:
+            logger.warning("Ignoring malformed %s: %s", path, e)
+            mapping = {}
+
+        # Cache keyed on mtime so a bad file warns once per change, not per call.
+        self._project_map_cache = (mtime, mapping)
+        return mapping
+
+    def _match_project_route(self, key: str) -> tuple[str, str] | None:
+        """Return (workspace, short_session_name) for a project-mapped key.
+
+        Patterns match the sanitized session key as a *terminal segment*: the
+        pattern either ends the key, or is followed by a ``-`` separator
+        (e.g. a Slack thread suffix). Plain substring matching would collide
+        on numeric prefixes — a pattern ending in ``-1`` (topic 1) must not
+        match a key ending in ``-1578`` (topic 1578). The longest matching
+        pattern wins so more specific mappings shadow broader ones.
+
+        Returns None (no routing) for unmapped keys, for managers without
+        config, and for project children themselves.
+        """
+        if self._project_workspace is not None or self._config is None:
+            return None
+        mapping = self._project_session_map()
+        if not mapping:
+            return None
+
+        sanitized = self._sanitize_id(str(key))
+        best: tuple[str, tuple[str, str]] | None = None
+        for pattern, target in mapping.items():
+            if not (sanitized.endswith(pattern) or (pattern + "-") in sanitized):
+                continue
+            if best is None or len(pattern) > len(best[0]):
+                best = (pattern, target)
+        return best[1] if best else None
+
+    def _project_manager(self, workspace: str) -> HonchoSessionManager:
+        """Get or lazily create this instance's child manager for a workspace.
+
+        Children are built from config alone, so *any* manager instance can
+        construct an equivalent child — routing never depends on which
+        instance first created a session (the gateway runs several managers).
+
+        No client is passed: the child resolves one per access through
+        ``get_honcho_client_for_workspace``, which owns both the per-workspace
+        cache and the OAuth refresh.
+        """
+        with self._cache_lock:
+            child = self._project_managers.get(workspace)
+            if child is None:
+                child = HonchoSessionManager(
+                    context_tokens=self._context_tokens,
+                    config=self._config,
+                    runtime_user_peer_name=self._runtime_user_peer_name,
+                    runtime_user_peer_name_alt=self._runtime_user_peer_name_alt,
+                    project_workspace=workspace,
+                )
+                self._project_managers[workspace] = child
+                logger.info("Honcho project workspace '%s' routing active", workspace)
+        return child
+
+    def _project_manager_for(self, session: HonchoSession) -> HonchoSessionManager:
+        """Resolve which manager owns a session object's writes.
+
+        Sessions created through project routing carry a ``workspace`` stamp,
+        so writes route correctly even when ``save``/``_flush_session`` is
+        invoked on a different manager instance than the one that created the
+        session. Unstamped sessions keep the current (default) behavior.
+        """
+        workspace = getattr(session, "workspace", None)
+        if not workspace or self._project_workspace is not None or self._config is None:
+            return self
+        return self._project_manager(workspace)
+
+    @_project_routed
     def get_or_create(self, key: str) -> HonchoSession:
         """
         Get an existing session or create a new one.
@@ -411,6 +586,7 @@ class HonchoSessionManager:
             assistant_peer_id=assistant_peer_id,
             honcho_session_id=honcho_session_id,
             messages=local_messages,
+            workspace=self._project_workspace,
         )
 
         # Write to cache under lock — only one writer wins
@@ -420,6 +596,13 @@ class HonchoSessionManager:
 
     def _flush_session(self, session: HonchoSession) -> bool:
         """Internal: write unsynced messages to Honcho synchronously."""
+        # This is the per-turn write path invoked directly by the plugin
+        # (see __init__.py), so it must honor the session's project
+        # workspace stamp just like save() does.
+        target = self._project_manager_for(session)
+        if target is not self:
+            return target._flush_session(session)
+
         if not session.messages:
             return True
 
@@ -505,6 +688,13 @@ class HonchoSessionManager:
           "session" — defer until flush_session() is called explicitly
           N (int)   — flush every N turns
         """
+        # Route project-workspace sessions to their owning child manager so
+        # writes never land in the default workspace (see _project_manager_for).
+        target = self._project_manager_for(session)
+        if target is not self:
+            target.save(session)
+            return
+
         self._turn_counter += 1
         wf = self._write_frequency
 
@@ -527,6 +717,12 @@ class HonchoSessionManager:
         Called at session end for "session" write_frequency, or to force
         a sync before process exit regardless of mode.
         """
+        for child in self._project_children():
+            try:
+                child.flush_all()
+            except Exception as e:
+                logger.error("Honcho flush_all error for project child: %s", e)
+
         with self._cache_lock:
             sessions = list(self._cache.values())
         for session in sessions:
@@ -560,12 +756,28 @@ class HonchoSessionManager:
 
     def shutdown(self) -> None:
         """Gracefully shut down the async writer thread."""
+        # Project children own their own lazily-started writer threads, so
+        # shut them down first: each child drains its own queue (or just
+        # flushes, if its writer never started) before this manager's own
+        # flush_all runs.
+        for child in self._project_children():
+            try:
+                child.shutdown()
+            except Exception as e:
+                logger.error("Honcho shutdown error for project child: %s", e)
+
         if self._async_queue is not None:
             self.flush_all()
             if self._async_thread is not None and self._async_thread.is_alive():
                 self._async_queue.put(_ASYNC_SHUTDOWN)
                 self._async_thread.join(timeout=10)
 
+    def _project_children(self) -> list[HonchoSessionManager]:
+        """Snapshot the per-workspace child managers created by routing."""
+        with self._cache_lock:
+            return list(self._project_managers.values())
+
+    @_project_routed
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""
         with self._cache_lock:
@@ -574,6 +786,7 @@ class HonchoSessionManager:
                 return True
         return False
 
+    @_project_routed
     def new_session(self, key: str) -> HonchoSession:
         """
         Create a new session, preserving the old one for user modeling.
@@ -612,6 +825,7 @@ class HonchoSessionManager:
         """Return the configured default reasoning level."""
         return self._dialectic_reasoning_level
 
+    @_project_routed
     def dialectic_query(
         self, session_key: str, query: str,
         reasoning_level: str | None = None,
@@ -686,6 +900,7 @@ class HonchoSessionManager:
             logger.warning("Honcho dialectic query failed: %s", e)
             return ""
 
+    @_project_routed
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
         """
         Fire get_prefetch_context in a background thread, caching the result.
@@ -701,6 +916,7 @@ class HonchoSessionManager:
         t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
         t.start()
 
+    @_project_routed
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:
         """Store a prefetched context result in a thread-safe way."""
         if not result:
@@ -708,6 +924,7 @@ class HonchoSessionManager:
         with self._prefetch_cache_lock:
             self._context_cache[session_key] = result
 
+    @_project_routed
     def pop_context_result(self, session_key: str) -> dict[str, str]:
         """
         Return and clear the cached context result for this session.
@@ -717,6 +934,7 @@ class HonchoSessionManager:
         with self._prefetch_cache_lock:
             return self._context_cache.pop(session_key, {})
 
+    @_project_routed
     def get_prefetch_context(self, session_key: str, user_message: str | None = None) -> dict[str, str]:
         """
         Pre-fetch user and AI peer context from Honcho.
@@ -773,6 +991,7 @@ class HonchoSessionManager:
 
         return result
 
+    @_project_routed
     def migrate_local_history(self, session_key: str, messages: list[dict[str, Any]]) -> bool:
         """
         Upload local session history to Honcho as a file.
@@ -845,6 +1064,7 @@ class HonchoSessionManager:
 
         return "\n".join(lines).encode("utf-8")
 
+    @_project_routed
     def migrate_memory_files(self, session_key: str, memory_dir: str) -> bool:
         """
         Upload MEMORY.md and USER.md to Honcho as files.
@@ -1015,6 +1235,7 @@ class HonchoSessionManager:
 
         return {"representation": representation, "card": card}
 
+    @_project_routed
     def get_session_context(self, session_key: str, peer: str = "user") -> dict[str, Any]:
         """Fetch full session context from Honcho including summary.
 
@@ -1100,6 +1321,7 @@ class HonchoSessionManager:
 
         return target_peer_id, None
 
+    @_project_routed
     def get_peer_card(self, session_key: str, peer: str = "user") -> list[str]:
         """
         Fetch a peer card — a curated list of key facts.
@@ -1126,6 +1348,7 @@ class HonchoSessionManager:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []
 
+    @_project_routed
     def search_context(
         self,
         session_key: str,
@@ -1233,6 +1456,7 @@ class HonchoSessionManager:
             target_peer = self._get_or_create_peer(target_peer_id)
             return target_peer.conclusions_of(target_peer_id)
 
+    @_project_routed
     def create_conclusion(self, session_key: str, content: str, peer: str = "user") -> bool:
         """Write a conclusion about a target peer back to Honcho.
 
@@ -1273,6 +1497,7 @@ class HonchoSessionManager:
             logger.error("Failed to create conclusion: %s", e)
             return False
 
+    @_project_routed
     def delete_conclusion(self, session_key: str, conclusion_id: str, peer: str = "user") -> bool:
         """Delete a conclusion by ID. Use only for PII removal.
 
@@ -1297,6 +1522,7 @@ class HonchoSessionManager:
             logger.error("Failed to delete conclusion %s: %s", conclusion_id, e)
             return False
 
+    @_project_routed
     def list_conclusions(
         self,
         session_key: str,
@@ -1332,6 +1558,7 @@ class HonchoSessionManager:
             logger.debug("Honcho list_conclusions failed: %s", e)
             return []
 
+    @_project_routed
     def set_peer_card(self, session_key: str, card: list[str], peer: str = "user") -> list[str] | None:
         """Update a peer's card.
 
@@ -1368,6 +1595,7 @@ class HonchoSessionManager:
             logger.error("Failed to set peer card: %s", e)
             return None
 
+    @_project_routed
     def seed_ai_identity(self, session_key: str, content: str, source: str = "manual") -> bool:
         """
         Seed the AI peer's Honcho representation from text content.
@@ -1413,6 +1641,7 @@ class HonchoSessionManager:
             logger.error("Failed to seed AI identity: %s", e)
             return False
 
+    @_project_routed
     def get_ai_representation(self, session_key: str) -> dict[str, str]:
         """
         Fetch the AI peer's current Honcho representation.

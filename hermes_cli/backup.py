@@ -1840,8 +1840,18 @@ def _prune_pre_migration_backups(backup_dir: Path, keep: int) -> int:
 
     Only touches files matching ``pre-migration-*.zip`` so other backups in
     the same directory are never touched.
+
+    ``keep`` is floored to 1 because this helper is only called immediately
+    after a fresh backup is written: ``keep=0`` would delete every
+    ``pre-migration-*.zip`` including the one just created (``backups[0:]``),
+    leaving the migrate path with nothing to restore. Same floor as
+    ``_prune_pre_update_backups``.
     """
-    keep = max(keep, 0)
+    try:
+        keep_n = int(keep)
+    except (TypeError, ValueError):
+        keep_n = _PRE_MIGRATION_DEFAULT_KEEP
+    keep_n = max(keep_n, 1)
     if not backup_dir.exists():
         return 0
 
@@ -1853,7 +1863,7 @@ def _prune_pre_migration_backups(backup_dir: Path, keep: int) -> int:
     )
 
     deleted = 0
-    for p in backups[keep:]:
+    for p in backups[keep_n:]:
         try:
             p.unlink()
             deleted += 1

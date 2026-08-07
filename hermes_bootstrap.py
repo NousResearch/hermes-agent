@@ -36,12 +36,21 @@ What this module does NOT do:
     an explicit ``encoding="utf-8"`` at the call site (lint rule
     ``PLW1514`` / ``PYI058``).  Ruff is the right tool for that sweep.
 
-What this module does on POSIX:
+What this module does on POSIX (for the UTF-8 shim specifically):
 
   - Nothing.  POSIX systems are already UTF-8 by default in 99% of cases,
     and we don't want to touch ``LANG``/``LC_*`` behavior that users may
     have configured intentionally.  If someone hits a C/POSIX locale on
     Linux, they can export ``PYTHONUTF8=1`` themselves — we won't override.
+
+This module also runs a platform-independent guard on import,
+``harden_user_site_version()``, which drops any ``pythonX.Y/site-packages``
+directory from ``sys.path`` that belongs to a *different* Python minor
+version than the running interpreter. A stray directory like that (typically
+a ``PYTHONPATH``/user-site leak from the launching environment) can only
+ever hold incompatible compiled extensions, and Python reports the failure
+as a confusing "cannot import name '_imaging' from 'PIL'" deep inside
+whatever backend touches it first rather than a clear version mismatch.
 
 Idempotent: safe to call multiple times.  ``_bootstrap_once`` guards
 against double-reconfigure.
@@ -50,10 +59,23 @@ against double-reconfigure.
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 _IS_WINDOWS = sys.platform == "win32"
 _bootstrap_applied = False
+
+# Matches a complete ".../pythonX.Y/site-packages" path — captures (major,
+# minor) so it can be compared against the running interpreter's own
+# version. The two path components must be adjacent: a "pythonX.Y" segment
+# immediately followed by a "site-packages" segment. Anchoring on the full
+# pair (rather than checking "pythonX.Y/" and "site-packages" as
+# independent substrings anywhere in the path) avoids misfiring on paths
+# where the two happen to appear separately, e.g.
+# ".../python3.12/config/site-packages-notes".
+_PYVER_DIR_RE = re.compile(
+    r"python(\d+)\.(\d+)[\\/]site-packages(?=[\\/]|$)", re.IGNORECASE
+)
 
 
 def apply_windows_utf8_bootstrap() -> bool:
@@ -214,6 +236,13 @@ def activate_durable_lazy_target() -> None:
     The activation appends to the END of ``sys.path`` so the core venv
     always wins name collisions (see ``tools.lazy_deps`` for the full
     security rationale). Never raises; a missing/empty target is a no-op.
+
+    Must run *after* :func:`harden_user_site_version` (see the module-level
+    call order below). A configured target is trusted, arbitrary path — it
+    can legitimately be named like a versioned site-packages dir (e.g.
+    ``/data/python3.12/site-packages``) even though it holds packages for
+    the *running* interpreter. Activating it before the version sanitizer
+    would let the sanitizer immediately strip it back off ``sys.path``.
     """
     if not os.environ.get("HERMES_LAZY_INSTALL_TARGET", "").strip():
         return
@@ -226,12 +255,62 @@ def activate_durable_lazy_target() -> None:
         pass
 
 
+def harden_user_site_version() -> None:
+    """Drop any ``pythonX.Y/site-packages`` dir for the *wrong* interpreter
+    version out of ``sys.path``.
+
+    A long-lived server process (the gateway, the dashboard's ``tui_gateway``
+    backend, ...) can end up with a stray site-packages directory belonging
+    to a different Python minor version on its ``sys.path`` — e.g. a
+    ``PYTHONPATH``/user-site leak from the launching environment (a systemd
+    unit that doesn't scrub the operator's shell env, a stale venv
+    activation). That directory can only ever contain compiled extension
+    modules the running interpreter cannot load (the ``.so`` ABI tag is
+    version-specific) — the import doesn't fail cleanly, it fails with a
+    confusing ``cannot import name '_imaging' from 'PIL'`` deep inside
+    whatever backend touched it first, because Python only reports the
+    missing submodule, not the version mismatch that caused it.
+
+    Removing any such directory up front means backend imports (PIL, etc.)
+    always resolve into the running interpreter's own, healthy
+    site-packages instead of silently shadowing into an incompatible one.
+    Never raises; a clean ``sys.path`` is a no-op.
+
+    Must run *before* :func:`activate_durable_lazy_target` — see that
+    function's docstring for why the ordering matters.
+    """
+    current = (sys.version_info.major, sys.version_info.minor)
+    try:
+        cleaned = []
+        changed = False
+        for entry in sys.path:
+            match = _PYVER_DIR_RE.search(entry)
+            if match and (int(match.group(1)), int(match.group(2))) != current:
+                changed = True
+                continue
+            cleaned.append(entry)
+        if changed:
+            sys.path[:] = cleaned
+    except Exception:
+        # Bootstrap must never crash an entry point.
+        pass
+
+
 # Apply on import — entry points just need ``import hermes_bootstrap``
 # (or ``from hermes_bootstrap import apply_windows_utf8_bootstrap``) at
 # the very top of their module, before importing anything else.  The
 # import side effect does the right thing.
 apply_windows_utf8_bootstrap()
 suppress_platform_ver_console()
+
+# Scrub any mismatched-Python-version site-packages dir off sys.path before
+# any backend module (PIL, etc.) can resolve an import into it. Must run
+# BEFORE activate_durable_lazy_target(): a configured durable target is a
+# trusted, arbitrary path that can legitimately be named like a versioned
+# site-packages dir (e.g. "/data/python3.12/site-packages") for a different
+# reason than an actual leaked interpreter version — activating it first
+# would let this sanitizer immediately strip it back off sys.path.
+harden_user_site_version()
 
 # Activate the durable lazy-install target (immutable Docker images) so
 # packages installed into the data volume on a previous run are importable

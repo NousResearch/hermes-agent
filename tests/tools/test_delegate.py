@@ -31,6 +31,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
 )
+from hermes_state import SessionDB
 
 
 def _make_mock_parent(depth=0):
@@ -286,6 +287,55 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+    def test_child_gets_dedicated_session_db_not_parents_handle(self):
+        """#81267: children must not share the parent's SessionDB object.
+
+        cron run_job closes its per-job SessionDB in its finally block while
+        a fire-and-forget background delegation subagent is still flushing on
+        a daemon thread. A SHARED handle then has ``_conn=None`` and every
+        child flush raises ``'NoneType' object has no attribute 'execute'`` —
+        the failure is downgraded to a WARNING and the child's transcript is
+        silently dropped. Each child must own a dedicated connection that no
+        parent teardown can close, released by the child's own close().
+        """
+        parent = _make_mock_parent(depth=0)
+        parent_db = SessionDB()
+        parent._session_db = parent_db
+        try:
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                MockAgent.return_value = mock_child
+
+                _build_child_agent(
+                    task_index=0,
+                    goal="test",
+                    context=None,
+                    toolsets=None,
+                    model="test-model",
+                    max_iterations=5,
+                    parent_agent=parent,
+                    task_count=1,
+                )
+
+                _, kwargs = MockAgent.call_args
+                self.assertEqual(mock_child._owns_session_db, True)
+
+            child_db = kwargs["session_db"]
+            self.assertIsInstance(child_db, SessionDB)
+            self.assertIsNot(child_db, parent_db)
+
+            # Parent teardown (cron run_job finally, gateway session end)
+            # must not break the child's handle — the #81267 crash mechanism.
+            parent_db.close()
+            self.assertIsNotNone(child_db._conn)
+            child_db.create_session(
+                session_id="child-session-81267",
+                source="subagent",
+                model="test-model",
+            )
+        finally:
+            parent_db.close()
 
     def test_nous_child_rederives_api_mode_from_model(self):
         """Portal is dual-wire — same provider + different model prefix must

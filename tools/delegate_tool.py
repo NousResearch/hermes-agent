@@ -1772,6 +1772,30 @@ def _build_child_agent(
     if isinstance(child_max_tokens, int):
         child_optional_kwargs["max_tokens"] = child_max_tokens
 
+    # Each child gets a DEDICATED SessionDB connection instead of the parent's
+    # live object. The parent's handle is owned by the parent's lifecycle:
+    # cron run_job closes its per-job SessionDB in its finally block while a
+    # fire-and-forget background delegation subagent is still flushing on a
+    # daemon thread, and every subsequent flush then hits the closed handle
+    # ('NoneType' object has no attribute 'execute') — the failure is
+    # downgraded to a WARNING and the child's entire transcript is silently
+    # dropped (#81267). The same teardown-while-child-alive shape exists for
+    # gateway session end and /new mid-delegation, so the child must never
+    # share the parent's handle. A dedicated handle is released by the
+    # child's own close() via the owned flag set below.
+    child_session_db = None
+    if getattr(parent_agent, "_session_db", None) is not None:
+        try:
+            from hermes_state import SessionDB
+
+            child_session_db = SessionDB()
+        except Exception:
+            logger.debug(
+                "subagent: failed to open dedicated SessionDB; child persistence disabled",
+                exc_info=True,
+            )
+            child_session_db = None
+
     from agent.delegation_context import delegated_child_context
 
     with delegated_child_context():
@@ -1798,7 +1822,7 @@ def _build_child_agent(
             skip_memory=True,
             clarify_callback=None,
             thinking_callback=child_thinking_cb,
-            session_db=getattr(parent_agent, "_session_db", None),
+            session_db=child_session_db,
             parent_session_id=getattr(parent_agent, "session_id", None),
             providers_allowed=child_providers_allowed,
             providers_ignored=child_providers_ignored,
@@ -1817,6 +1841,11 @@ def _build_child_agent(
             **child_optional_kwargs,
         )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    # Ownership transfer for the dedicated handle: the child's close() must
+    # release it (nothing else holds a reference), and no parent teardown can
+    # close it out from under a background child (#81267).
+    if child_session_db is not None:
+        child._owns_session_db = True
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""

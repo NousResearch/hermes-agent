@@ -105,9 +105,102 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert "RAM 92% on host" in doc
 
 
+def test_run_job_no_agent_exposes_resolved_delivery_target(hermes_env):
+    """Script-only jobs receive routing metadata without entering the LLM path."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "route.py"
+    script_path.write_text(
+        "import json, os\n"
+        "print(json.dumps({k: os.environ.get(k) for k in (\n"
+        "    'HERMES_CRON_AUTO_DELIVER_PLATFORM',\n"
+        "    'HERMES_CRON_AUTO_DELIVER_CHAT_ID',\n"
+        "    'HERMES_CRON_AUTO_DELIVER_THREAD_ID',\n"
+        ")}))\n"
+    )
+
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="route.py",
+        no_agent=True,
+        deliver="discord:123456789012345678:987654321098765432",
+    )
+    success, _doc, final_response, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert json.loads(final_response) == {
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM": "discord",
+        "HERMES_CRON_AUTO_DELIVER_CHAT_ID": "123456789012345678",
+        "HERMES_CRON_AUTO_DELIVER_THREAD_ID": "987654321098765432",
+    }
+
+
+def test_run_job_no_agent_clears_ambient_route_for_local_delivery(
+    hermes_env, monkeypatch
+):
+    """A local script must not inherit another session or job's destination."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    for key, value in {
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM": "discord",
+        "HERMES_CRON_AUTO_DELIVER_CHAT_ID": "ambient-chat",
+        "HERMES_CRON_AUTO_DELIVER_THREAD_ID": "ambient-thread",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    script_path = hermes_env / "scripts" / "local-route.py"
+    script_path.write_text(
+        "import json, os\n"
+        "print(json.dumps({k: os.environ.get(k) for k in (\n"
+        "    'HERMES_CRON_AUTO_DELIVER_PLATFORM',\n"
+        "    'HERMES_CRON_AUTO_DELIVER_CHAT_ID',\n"
+        "    'HERMES_CRON_AUTO_DELIVER_THREAD_ID',\n"
+        ")}))\n"
+    )
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="local-route.py",
+        no_agent=True,
+        deliver="local",
+    )
+    success, _doc, final_response, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert json.loads(final_response) == {
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM": "",
+        "HERMES_CRON_AUTO_DELIVER_CHAT_ID": "",
+        "HERMES_CRON_AUTO_DELIVER_THREAD_ID": "",
+    }
+
+
 # ---------------------------------------------------------------------------
-# _run_job_script: shell-script support
+# _run_job_script: shell-script support and environment boundaries
 # ---------------------------------------------------------------------------
+
+
+def test_run_job_script_rejects_non_routing_env_overrides(hermes_env):
+    """Post-sanitization overrides are limited to cron delivery metadata."""
+    from cron.scheduler import _run_job_script
+
+    script_path = hermes_env / "scripts" / "inspect-env.py"
+    script_path.write_text(
+        "import os\n"
+        "print(os.environ.get('UNRELATED_TEST_ONLY_ENV', '<absent>'))\n"
+    )
+
+    ok, output = _run_job_script(
+        "inspect-env.py",
+        env_overrides={"UNRELATED_TEST_ONLY_ENV": "must-not-pass"},
+    )
+
+    assert ok is True
+    assert output == "<absent>"
 
 
 def test_run_job_script_path_traversal_still_blocked(hermes_env):

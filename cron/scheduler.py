@@ -2345,9 +2345,19 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     return str(interpreter), env_overlay
 
 
+_CRON_SCRIPT_ENV_OVERRIDE_KEYS = frozenset(
+    {
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+        "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+        "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+    }
+)
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
+    env_overrides: Optional[dict[str, str]] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -2380,6 +2390,11 @@ def _run_job_script(
             mutated, avoiding the global-side-effect bug where a cron
             job's ``os.chdir()`` leaks into concurrent gateway sessions
             (#69396).
+        env_overrides: Job-scoped cron delivery-routing values applied after
+            the sanitized subprocess environment is built. Keys outside the
+            three ``HERMES_CRON_AUTO_DELIVER_*`` variables are ignored so this
+            parameter cannot reintroduce sanitized credentials or internal
+            environment state.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2459,6 +2474,14 @@ def _run_job_script(
             }
         env = build_subprocess_env()
         env.update(env_overlay)
+        if env_overrides:
+            env.update(
+                {
+                    key: value
+                    for key, value in env_overrides.items()
+                    if key in _CRON_SCRIPT_ENV_OVERRIDE_KEYS
+                }
+            )
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).
         # NEVER mutate the Python process cwd — that would leak into
@@ -2503,7 +2526,10 @@ def _run_job_script(
 
 
 def _run_job_script_with_claim_heartbeat(
-    job: dict, script_path: str, workdir: Optional[str] = None,
+    job: dict,
+    script_path: str,
+    workdir: Optional[str] = None,
+    env_overrides: Optional[dict[str, str]] = None,
 ) -> tuple[bool, str]:
     """Run a cron script while keeping its owned one-shot claim fresh.
 
@@ -2525,7 +2551,9 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path, workdir=workdir)
+        return _run_job_script(
+            script_path, workdir=workdir, env_overrides=env_overrides
+        )
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -2556,10 +2584,14 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path, workdir=workdir)
+        return _run_job_script(
+            script_path, workdir=workdir, env_overrides=env_overrides
+        )
 
     try:
-        return _run_job_script(script_path, workdir=workdir)
+        return _run_job_script(
+            script_path, workdir=workdir, env_overrides=env_overrides
+        )
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -3209,9 +3241,38 @@ def run_job(
             )
             _job_workdir = None
 
+        # no_agent returns before the LLM path initializes the cron delivery
+        # ContextVars below. Pass routing metadata directly to this script's
+        # sanitized subprocess environment instead. Empty defaults are
+        # intentional: they prevent an ambient gateway/cron context from
+        # leaking another job's destination into local or concurrent jobs.
+        _delivery_target = _resolve_delivery_target(job)
+        _script_env = {
+            "HERMES_CRON_AUTO_DELIVER_PLATFORM": "",
+            "HERMES_CRON_AUTO_DELIVER_CHAT_ID": "",
+            "HERMES_CRON_AUTO_DELIVER_THREAD_ID": "",
+        }
+        if _delivery_target:
+            _script_env.update(
+                {
+                    "HERMES_CRON_AUTO_DELIVER_PLATFORM": str(
+                        _delivery_target["platform"]
+                    ),
+                    "HERMES_CRON_AUTO_DELIVER_CHAT_ID": str(
+                        _delivery_target["chat_id"]
+                    ),
+                    "HERMES_CRON_AUTO_DELIVER_THREAD_ID": ""
+                    if _delivery_target.get("thread_id") is None
+                    else str(_delivery_target["thread_id"]),
+                }
+            )
+
         try:
             ok, output = _run_job_script_with_claim_heartbeat(
-                job, script_path, workdir=_job_workdir,
+                job,
+                script_path,
+                workdir=_job_workdir,
+                env_overrides=_script_env,
             )
         except Exception as exc:
             logger.exception(

@@ -134,8 +134,9 @@ const HERMES_DIRECTIVE_RE = referenceRe()
 // Unlike the composer's caret-anchored trigger, this scans finished text, so
 // it must reject a token that continues into a path: `/usr/local/bin` would
 // otherwise chip as `/usr`. `(?![\w-]*\/)` requires the token to end at
-// something other than another slash.
-const SLASH_SKILL_RE = /(?<=^|\s)\/([a-zA-Z][\w-]*)(?![\w-]*\/)/g
+// something other than another slash. A digit-prefixed name must contain a
+// letter so fractions such as `3 /4` remain plain text.
+const SLASH_SKILL_RE = /(?<=^|\s)\/((?:[a-zA-Z][\w-]*|[0-9][\w-]*[a-zA-Z][\w-]*))(?![\w-]*\/)/g
 
 const TRAILING_PUNCTUATION_RE = /[,.;!?]+$/
 

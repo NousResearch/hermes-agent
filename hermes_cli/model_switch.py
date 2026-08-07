@@ -1184,6 +1184,20 @@ def _configured_provider_matches(
             slug = f"custom:{name}"
             if slug in matches:
                 continue
+            # Dedup with user_providers entries: a custom_providers entry
+            # that has a ``provider_key`` (i.e. was converted from a new-style
+            # ``providers.<slug>`` block) duplicates its parent provider.
+            # Skip it when the parent slug already matched so the model name
+            # is not reported as declared by both ``foo`` and ``custom:foo``.
+            # Compare against a normalized (lowercased) key set so mixed-case
+            # provider slugs (e.g. ``providers: {OAI: ...}``) are caught.
+            provider_key = entry.get("provider_key")
+            if (
+                isinstance(provider_key, str)
+                and provider_key.strip()
+                and provider_key.strip().lower() in {k.lower() for k in matches}
+            ):
+                continue
             for key in ("models", "model", "default_model"):
                 hit = _match(entry.get(key))
                 if hit:

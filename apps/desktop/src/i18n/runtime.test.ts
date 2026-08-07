@@ -72,4 +72,46 @@ describe('desktop i18n runtime translator', () => {
 
     expect(translateNow('missing.path')).toBe('missing.path')
   })
+
+  it('keeps providerManager namespace parity across locales', () => {
+    const locales = ['en', 'ja', 'zh', 'zh-hant'] as const
+    const enKeys = Object.keys(TRANSLATIONS.en.providerManager).sort()
+
+    // Enhancement keys added for the provider/model manager must be present
+    // and parity-checked across every locale (the loop below enforces that).
+    for (const key of [
+      'activateAll',
+      'activeOfTotal',
+      'deactivateAll',
+      'disableProvider',
+      'filterFast',
+      'filterMultimodal',
+      'filterReasoning',
+      'filterVision',
+      'groupConfigured',
+      'groupLocal',
+      'groupUnconfigured',
+      'noProvidersMatch',
+      'searchProviders',
+      'sortActiveFirst',
+      'sortAz',
+      'sortZa',
+      'groupByLetter',
+      'testConnection',
+      'testFailed',
+      'testOk',
+      'unavailable'
+    ]) {
+      expect(enKeys).toContain(key)
+    }
+
+    for (const locale of locales) {
+      const keys = Object.keys(TRANSLATIONS[locale].providerManager).sort()
+      expect(keys).toEqual(enKeys)
+    }
+
+    for (const locale of locales) {
+      expect(TRANSLATIONS[locale].settings.nav).toHaveProperty('providersManager')
+    }
+  })
 })

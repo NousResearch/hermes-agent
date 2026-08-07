@@ -54,12 +54,29 @@ class CustomEndpointUpdate(BaseModel):
     id: str = ""
     name: str
     base_url: str
-    model: str
+    # Optional: a custom endpoint legitimately exists before its models are
+    # discovered (the desktop Provider Manager creates the endpoint, then probes
+    # /models). Empty means "no default model selected yet".
+    model: str = ""
     api_key: Optional[str] = None
+    # Wire protocol for the endpoint (chat_completions | anthropic_messages).
+    # Stored as the canonical ``transport`` key the runtime resolver reads.
+    api_mode: Optional[str] = None
     context_length: Optional[int] = None
     discover_models: bool = True
     make_default: bool = False
     models: Optional[List[str]] = None
+
+
+class CustomEndpointEnable(BaseModel):
+    """Toggle a custom endpoint's activation.
+
+    Maps to the canonical ``providers.<name>.enabled`` flag that the runtime
+    resolver and model picker honour (``is_provider_enabled``). ``enabled: true``
+    removes the key (absence == enabled, keeping config clean); ``false`` sets it.
+    """
+
+    enabled: bool = True
 
 
 class MessagingPlatformUpdate(BaseModel):

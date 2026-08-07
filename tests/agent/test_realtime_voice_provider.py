@@ -1,0 +1,358 @@
+"""Behavior tests for the typed, provider-neutral realtime voice contract."""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from agent.realtime_voice_provider import (
+    InputTranscript,
+    Interruption,
+    OutputAudio,
+    OutputTranscript,
+    RealtimeCapability,
+    RealtimeAudioFormat,
+    ResponseCompleted,
+    ResponseStarted,
+    SessionClosed,
+    SessionFailure,
+    SessionReady,
+    ToolCall,
+    ToolCallCancelled,
+    RealtimeTool,
+    RealtimeToolResult,
+    RealtimeVoiceEvent,
+    RealtimeVoiceSession,
+    RealtimeVoiceSetup,
+    TranscriptProvenance,
+    TranscriptRole,
+    TurnCompleted,
+    TurnStarted,
+    UnsupportedRealtimeCapability,
+    MAX_IDENTIFIER_LENGTH,
+)
+
+
+def test_setup_copies_and_freezes_provider_options() -> None:
+    options = {"region": "local"}
+
+    setup = RealtimeVoiceSetup(model="model", voice="voice", provider_options=options)
+    options["region"] = "changed"
+
+    assert setup.provider_options == {"region": "local"}
+
+
+def test_setup_rejects_provider_options_that_shadow_shared_fields() -> None:
+    with pytest.raises(ValueError, match="shared setup field"):
+        RealtimeVoiceSetup(model="model", provider_options={"model": "shadow"})
+
+
+@pytest.mark.parametrize("value", ["", " padded", "padded "])
+def test_setup_validates_declared_model_voice_and_tool_names(value: str) -> None:
+    with pytest.raises(ValueError, match="model"):
+        RealtimeVoiceSetup(model=value)
+    with pytest.raises(ValueError, match="voice"):
+        RealtimeVoiceSetup(voice=value)
+    with pytest.raises(ValueError, match="name"):
+        RealtimeTool(name=value, description="description", parameters={})
+
+
+def test_setup_declares_shared_audio_instructions_and_tools_immutably() -> None:
+    schema = {"type": "object"}
+    tools = [RealtimeTool(name="lookup", description="Look up", parameters=schema)]
+    audio = RealtimeAudioFormat(mime_type="audio/pcm", sample_rate_hz=24_000, channels=1)
+
+    setup = RealtimeVoiceSetup(
+        model="model",
+        voice="voice",
+        instructions="Be concise",
+        tools=tools,
+        audio=audio,
+    )
+    schema["type"] = "changed"
+    tools.clear()
+
+    assert setup.tools[0].parameters == {"type": "object"}
+    assert setup.audio is audio
+
+
+def test_capabilities_are_explicit_and_immutable() -> None:
+    capabilities = frozenset(RealtimeCapability)
+
+    assert {capability.value for capability in capabilities} == {
+        "tool_calling",
+        "explicit_interruption",
+        "output_truncation",
+        "input_commit_events",
+        "response_metadata_echo",
+        "tool_call_cancellation",
+        "dynamic_context",
+        "session_resumption",
+        "input_transcription",
+        "output_transcription",
+        "continuation",
+    }
+
+
+def test_shared_event_vocabulary_is_typed_and_provider_data_is_opaque() -> None:
+    provider_data = {"native": {"values": ["value"]}}
+    events = [
+        SessionReady(session_id="session", provider_data=provider_data),
+        SessionClosed(reason="normal"),
+        SessionFailure(code="transport", message="lost"),
+        InputTranscript(
+            item_id="input",
+            turn_id="turn",
+            text="hello",
+            final=True,
+            role=TranscriptRole.PARTICIPANT,
+            provenance=TranscriptProvenance.PARTICIPANT_INPUT_AUDIO,
+        ),
+        OutputTranscript(
+            item_id="output",
+            turn_id="turn",
+            response_id="response",
+            text="hi",
+            final=False,
+        ),
+        OutputAudio(
+            data=b"pcm",
+            item_id="output",
+            turn_id="turn",
+            response_id="response",
+        ),
+        ToolCall(call_id="call", batch_id="batch", turn_id="turn", response_id="response", name="lookup", arguments={"q": "x"}),
+        ToolCallCancelled(call_id="call", batch_id="batch"),
+        TurnStarted(turn_id="turn"),
+        TurnCompleted(turn_id="turn"),
+        ResponseStarted(response_id="response", turn_id="turn"),
+        ResponseCompleted(response_id="response", turn_id="turn"),
+        Interruption(response_id="response", turn_id="turn"),
+    ]
+    provider_data["native"]["values"].append("changed")
+
+    assert len(events) == 13
+    assert events[0].session_id == "session"
+    assert events[0].provider_data == {"native": {"values": ("value",)}}
+
+
+def test_provider_data_cannot_shadow_shared_event_fields() -> None:
+    with pytest.raises(ValueError, match="provider_data.*session_id"):
+        SessionReady(session_id="session", provider_data={"session_id": "spoof"})
+
+
+@pytest.mark.parametrize("session_id", ["", " padded", "padded "])
+def test_shared_events_reject_blank_or_malformed_identifiers(session_id: str) -> None:
+    with pytest.raises(ValueError, match="session_id"):
+        SessionReady(session_id=session_id)
+
+
+def test_shared_events_reject_oversized_identifiers() -> None:
+    with pytest.raises(ValueError, match="session_id"):
+        SessionReady(session_id="x" * (MAX_IDENTIFIER_LENGTH + 1))
+
+
+@pytest.mark.parametrize(
+    ("factory", "field_name"),
+    [
+        (
+            lambda value: InputTranscript(
+                value,
+                "turn",
+                "text",
+                True,
+                TranscriptRole.OPERATOR,
+                TranscriptProvenance.OPERATOR_INPUT,
+            ),
+            "item_id",
+        ),
+        (
+            lambda value: OutputTranscript(
+                value, "turn", "response", "text", True
+            ),
+            "item_id",
+        ),
+        (
+            lambda value: OutputAudio(b"pcm", value, "turn", "response"),
+            "item_id",
+        ),
+        (lambda value: ToolCall(value, "batch", "turn", "response", "lookup", {}), "call_id"),
+        (lambda value: ToolCall("call", "batch", "turn", "response", value, {}), "name"),
+        (lambda value: ToolCallCancelled(value, "batch"), "call_id"),
+        (lambda value: TurnStarted(value), "turn_id"),
+        (lambda value: TurnCompleted(value), "turn_id"),
+        (lambda value: ResponseStarted(value, "turn"), "response_id"),
+        (lambda value: ResponseCompleted(value, "turn"), "response_id"),
+        (lambda value: Interruption(value, "turn"), "response_id"),
+        (lambda value: SessionFailure(value, "message"), "code"),
+    ],
+)
+def test_all_required_shared_identifiers_and_names_are_validated(factory, field_name) -> None:
+    for invalid in ("", " padded", "padded ", "x" * (MAX_IDENTIFIER_LENGTH + 1)):
+        with pytest.raises(ValueError, match=field_name):
+            factory(invalid)
+
+
+def test_transcript_attribution_rejects_contradictory_provenance() -> None:
+    with pytest.raises(ValueError, match="role.*provenance"):
+        InputTranscript(
+            item_id="input",
+            turn_id="turn",
+            text="spoofed",
+            final=True,
+            role=TranscriptRole.ASSISTANT,
+            provenance=TranscriptProvenance.PARTICIPANT_INPUT_AUDIO,
+        )
+
+    with pytest.raises(ValueError, match="role.*provenance"):
+        OutputTranscript(
+            item_id="output",
+            turn_id="turn",
+            response_id="response",
+            text="spoofed",
+            final=True,
+            role=TranscriptRole.OPERATOR,
+            provenance=TranscriptProvenance.ASSISTANT_OUTPUT_AUDIO,
+        )
+
+
+def test_tool_work_has_stable_neutral_batch_and_response_identity() -> None:
+    arguments = {"nested": ["value"]}
+    output = {"items": [1]}
+
+    call = ToolCall(
+        call_id="call",
+        batch_id="batch",
+        turn_id="turn",
+        response_id="response",
+        name="lookup",
+        arguments=arguments,
+    )
+    cancelled = ToolCallCancelled(call_id="call", batch_id="batch")
+    result = RealtimeToolResult(
+        call_id="call", batch_id="batch", name="lookup", output=output
+    )
+    continuation = ResponseStarted(
+        response_id="next-response",
+        turn_id="turn",
+        continuation_of_batch_id="batch",
+    )
+    arguments["nested"].append("mutated")
+    output["items"].append(2)
+
+    assert call.arguments == {"nested": ("value",)}
+    assert cancelled.batch_id == result.batch_id == "batch"
+    assert result.output == {"items": (1,)}
+    assert continuation.continuation_of_batch_id == "batch"
+
+
+def test_transcript_audio_and_terminal_events_have_explicit_association() -> None:
+    input_event = InputTranscript(
+        item_id="input",
+        turn_id="turn",
+        text="hello",
+        final=True,
+        role=TranscriptRole.OPERATOR,
+        provenance=TranscriptProvenance.OPERATOR_INPUT,
+    )
+    transcript = OutputTranscript(
+        item_id="output", turn_id="turn", response_id="response", text="hi", final=True
+    )
+    audio = OutputAudio(
+        data=b"pcm", item_id="output", turn_id="turn", response_id="response"
+    )
+    completed = ResponseCompleted(
+        response_id="response", turn_id="turn", continuation_of_batch_id="batch"
+    )
+    interrupted = Interruption(response_id="response", turn_id="turn")
+
+    assert input_event.turn_id == transcript.turn_id == audio.turn_id == "turn"
+    assert transcript.response_id == audio.response_id == completed.response_id
+    assert completed.continuation_of_batch_id == "batch"
+    assert interrupted.turn_id == "turn"
+
+
+class _Session(RealtimeVoiceSession):
+    def __init__(self, capabilities=()) -> None:
+        super().__init__(capabilities)
+        self.closed_count = 0
+        self.submitted = []
+        self.continuations = []
+
+    async def send_audio(self, audio: bytes, *, mime_type: str | None = None) -> None:
+        return None
+
+    async def _submit_tool_results(self, batch_id, results) -> None:
+        self.submitted.append((batch_id, results))
+
+    def events(self):
+        async def stream():
+            if False:
+                yield RealtimeVoiceEvent()
+
+        return stream()
+
+    async def _continue_response(self, batch_id: str) -> None:
+        self.continuations.append(batch_id)
+
+    async def _close(self) -> None:
+        await asyncio.sleep(0)
+        self.closed_count += 1
+
+
+@pytest.mark.asyncio
+async def test_tool_results_require_tool_calling_and_continuation_is_separate() -> None:
+    result = RealtimeToolResult(
+        call_id="call", batch_id="batch", name="lookup", output="done"
+    )
+    unsupported = _Session()
+
+    with pytest.raises(UnsupportedRealtimeCapability) as exc:
+        await unsupported.submit_tool_results("batch", [result])
+    assert exc.value.capability is RealtimeCapability.TOOL_CALLING
+
+    session = _Session(
+        {RealtimeCapability.TOOL_CALLING, RealtimeCapability.CONTINUATION}
+    )
+    await session.submit_tool_results("batch", [result])
+    assert session.submitted == [("batch", (result,))]
+    assert session.continuations == []
+
+    await session.continue_response("batch")
+    assert session.continuations == ["batch"]
+
+
+@pytest.mark.asyncio
+async def test_optional_operations_fail_with_typed_capability_error() -> None:
+    session = _Session()
+    operations = [
+        (session.commit_audio(), RealtimeCapability.INPUT_COMMIT_EVENTS),
+        (session.interrupt(), RealtimeCapability.EXPLICIT_INTERRUPTION),
+        (
+            session.truncate_output("response", "item"),
+            RealtimeCapability.OUTPUT_TRUNCATION,
+        ),
+        (
+            session.cancel_tool_call("call", "batch"),
+            RealtimeCapability.TOOL_CALL_CANCELLATION,
+        ),
+        (session.resume_session("session"), RealtimeCapability.SESSION_RESUMPTION),
+        (session.update_context("instructions"), RealtimeCapability.DYNAMIC_CONTEXT),
+        (session.continue_response("batch"), RealtimeCapability.CONTINUATION),
+    ]
+
+    for operation, capability in operations:
+        with pytest.raises(UnsupportedRealtimeCapability) as exc:
+            await operation
+        assert exc.value.capability is capability
+
+
+@pytest.mark.asyncio
+async def test_close_is_idempotent_under_concurrent_callers_and_context_exit() -> None:
+    session = _Session()
+
+    async with session:
+        await asyncio.gather(session.close(), session.close(), session.close())
+
+    assert session.closed_count == 1

@@ -8,32 +8,39 @@ import pytest
 
 from agent import realtime_voice_registry
 from agent.realtime_voice_provider import (
+    RealtimeCapability,
+    RealtimeToolResult,
     RealtimeVoiceProvider,
     RealtimeVoiceSession,
+    SessionReady,
+    UnsupportedRealtimeCapability,
 )
 
 
 class _FakeSession(RealtimeVoiceSession):
-    def __init__(self):
-        self.closed = False
+    def __init__(self, capabilities=()):
+        super().__init__(capabilities)
+        self.close_calls = 0
+        self.result_batches = []
+        self.continuations = []
 
     async def send_audio(self, audio, *, mime_type=None):
         return None
 
-    async def send_text(self, text, *, end_of_turn=True):
-        return None
-
-    async def send_tool_result(self, call_id, output, *, name=None):
-        return None
+    async def _submit_tool_results(self, batch_id, results):
+        self.result_batches.append((batch_id, tuple(results)))
 
     def events(self):
         async def _stream():
-            yield {"type": "session.started"}
+            yield SessionReady(session_id="session")
 
         return _stream()
 
-    async def close(self):
-        self.closed = True
+    async def _close(self):
+        self.close_calls += 1
+
+    async def _continue_response(self, batch_id):
+        self.continuations.append(batch_id)
 
 
 class _FakeProvider(RealtimeVoiceProvider):
@@ -49,7 +56,7 @@ class _FakeProvider(RealtimeVoiceProvider):
     def display_name(self):
         return self._display or super().display_name
 
-    async def open_session(self, **kwargs):
+    async def open_session(self, setup):
         return _FakeSession()
 
 
@@ -133,7 +140,7 @@ class TestLookup:
 class TestProviderContract:
     def test_requires_name(self):
         class Incomplete(RealtimeVoiceProvider):
-            async def open_session(self, **kwargs):
+            async def open_session(self, setup):
                 return _FakeSession()
 
         with pytest.raises(TypeError, match="abstract"):
@@ -155,9 +162,9 @@ class TestProviderContract:
         assert provider.is_available() is True
         assert provider.default_model() is None
         assert provider.default_voice() is None
-        assert provider.get_capabilities()["tool_calling"] is False
-        assert provider.get_capabilities()["transports"] == []
-        assert provider.get_setup_schema()["env_vars"] == []
+        assert provider.capabilities == frozenset()
+        assert provider.list_models() == ()
+        assert provider.get_setup_schema()["env_vars"] == ()
 
     def test_defaults_follow_provider_catalog_order(self):
         class CatalogProvider(_FakeProvider):
@@ -187,18 +194,19 @@ class TestSessionContract:
         async with session as active:
             assert active is session
 
-        assert session.closed is True
+        assert session.close_calls == 1
 
     @pytest.mark.asyncio
-    async def test_optional_audio_commit_is_noop(self):
+    async def test_optional_audio_commit_is_capability_gated(self):
         session = _FakeSession()
-        assert await session.commit_audio() is None
+        with pytest.raises(UnsupportedRealtimeCapability):
+            await session.commit_audio()
 
     @pytest.mark.asyncio
     async def test_explicit_interruption_is_opt_in(self):
         session = _FakeSession()
 
-        with pytest.raises(NotImplementedError, match="explicit interruption"):
+        with pytest.raises(UnsupportedRealtimeCapability, match="explicit_interruption"):
             await session.interrupt()
 
     @pytest.mark.asyncio
@@ -206,4 +214,33 @@ class TestSessionContract:
         session = _FakeSession()
         events = [event async for event in session.events()]
 
-        assert events == [{"type": "session.started"}]
+        assert events == [SessionReady(session_id="session")]
+
+    @pytest.mark.asyncio
+    async def test_tool_results_and_continuation_are_explicit_separate_operations(self):
+        session = _FakeSession(
+            {RealtimeCapability.TOOL_CALLING, RealtimeCapability.CONTINUATION}
+        )
+        results = [
+            RealtimeToolResult("call-1", "batch", "first", {"n": 1}),
+            RealtimeToolResult("call-2", "batch", "second", {"n": 2}),
+        ]
+
+        await session.submit_tool_results("batch", results)
+        assert session.continuations == []
+
+        await session.continue_response("batch")
+        assert session.result_batches == [("batch", tuple(results))]
+        assert session.continuations == ["batch"]
+
+    @pytest.mark.asyncio
+    async def test_tool_result_batch_rejects_mixed_or_empty_identity(self):
+        session = _FakeSession()
+        mixed = [RealtimeToolResult("call", "other", "tool", "output")]
+
+        with pytest.raises(ValueError, match="batch_id"):
+            await session.submit_tool_results("batch", mixed)
+        with pytest.raises(ValueError, match="at least one"):
+            await session.submit_tool_results("batch", [])
+
+        assert session.result_batches == []

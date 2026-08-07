@@ -1,6 +1,7 @@
 """Tests for cron job context_from feature (issue #5439 Option C)."""
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -100,6 +101,50 @@ class TestBuildJobPromptContextFrom:
         assert "New output" in prompt
         assert "Old output" not in prompt
 
+    def test_structured_output_uses_exact_sidecar_response(self, cron_env):
+        from cron.jobs import create_job, save_job_output
+        from cron.scheduler import _build_job_prompt
+
+        source = create_job(prompt="Find news", schedule="every 1h")
+        exact = "lead\n## Response\nembedded heading stays data\n```\ntail"
+        save_job_output(source["id"], "human wrapper must not leak", response=exact)
+        consumer = create_job(
+            prompt="Summarize",
+            schedule="every 2h",
+            context_from=source["id"],
+        )
+
+        prompt = _build_job_prompt(consumer)
+        assert exact in prompt
+        assert "human wrapper must not leak" not in prompt
+
+    def test_corrupt_new_structured_run_falls_back_to_older_committed_run(
+        self, cron_env
+    ):
+        from cron.jobs import OUTPUT_DIR, create_job, save_job_output
+        from cron.scheduler import _build_job_prompt
+
+        source = create_job(prompt="Find news", schedule="every 1h")
+        save_job_output(source["id"], "older wrapper", response="older exact")
+        output_dir = OUTPUT_DIR / source["id"]
+        older = next(output_dir.glob("*.md"))
+        corrupt = output_dir / "newer.run.md"
+        corrupt.write_text("must never be parsed as legacy", encoding="utf-8")
+        corrupt.with_suffix(".response.json").write_text("{bad", encoding="utf-8")
+        older_mtime = 1_000_000_000
+        newer_mtime = older_mtime + 10
+        os.utime(older, (older_mtime, older_mtime))
+        os.utime(corrupt, (newer_mtime, newer_mtime))
+        consumer = create_job(
+            prompt="Summarize",
+            schedule="every 2h",
+            context_from=source["id"],
+        )
+
+        prompt = _build_job_prompt(consumer)
+        assert "older exact" in prompt
+        assert "must never be parsed as legacy" not in prompt
+
     def test_graceful_when_no_output_yet(self, cron_env):
         from cron.jobs import create_job
         from cron.scheduler import _build_job_prompt
@@ -166,7 +211,9 @@ class TestBuildJobPromptContextFrom:
         out_dir = OUTPUT_DIR / job_a["id"]
         out_dir.mkdir(parents=True, exist_ok=True)
         big_output = "x" * 10000
-        (out_dir / "2026-04-22_10-00-00.md").write_text(big_output, encoding="utf-8")
+        (out_dir / "2026-04-22_10-00-00.md").write_text(
+            "## Response\n" + big_output, encoding="utf-8"
+        )
 
         job_b = create_job(
             prompt="Process", schedule="every 2h", context_from=job_a["id"]

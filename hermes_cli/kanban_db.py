@@ -5674,7 +5674,34 @@ def block_task(
         # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
         # here (rather than ``blocked``) is what keeps a cron from ever seeing
         # a dependency-wait as something to "unblock".
+        #
+        # That self-resolution only exists while an OPEN parent link gates the
+        # card. WITHOUT one there is nothing for ``recompute_ready`` to gate
+        # on: the card is re-promoted immediately and the worker loops
+        # block → todo → ready → respawn with nobody ever notified. Count
+        # exactly those parentless dependency re-blocks through the same
+        # ``block_recurrences`` chain as every other kind (the counter
+        # survives promotion and resets on completion), and at
+        # ``BLOCK_RECURRENCE_LIMIT`` fall through to the loop breaker below,
+        # which routes to ``triage`` for a human decision. A parent-gated
+        # wait never increments, so a task may wait on any number of
+        # sequential parents without ever escalating.
         if kind == "dependency":
+            _dep_has_open_parent = conn.execute(
+                "SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+                "LIMIT 1",
+                (task_id,),
+            ).fetchone() is not None
+            if _dep_has_open_parent:
+                _dep_recurrences = 0
+            elif prev_kind == "dependency":
+                _dep_recurrences = prev_recurrences + 1
+            else:
+                _dep_recurrences = 1
+        if kind == "dependency" and (
+            _dep_has_open_parent or _dep_recurrences < BLOCK_RECURRENCE_LIMIT
+        ):
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -5682,12 +5709,13 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
-                       block_kind    = ?
+                       block_kind    = ?,
+                       block_recurrences = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, task_id) if expected_run_id is None
-                else (kind, task_id, int(expected_run_id)),
+                (kind, _dep_recurrences, task_id) if expected_run_id is None
+                else (kind, _dep_recurrences, task_id, int(expected_run_id)),
             )
             if cur.rowcount != 1:
                 return False

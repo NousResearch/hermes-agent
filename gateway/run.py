@@ -18637,14 +18637,104 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return self._format_session_info()
         return self._format_session_info()
 
+    def _probe_proxy_serving_identity(self) -> Optional[Dict[str, str]]:
+        """Ask the proxy host which model/provider it is currently serving.
+
+        Thin proxy gateways (``GATEWAY_PROXY_URL`` / ``gateway.proxy_url``)
+        often have no local ``model:`` block by design — the host runs
+        inference. The /new banner must report the *serving* identity, not
+        the container's empty config (#75238, same invariant as #59003).
+
+        Probes ``GET {proxy}/api/model/options`` (Bearer ``GATEWAY_PROXY_KEY``
+        when set). Prefers top-level ``model``/``provider``; falls back to the
+        ``providers[].is_current`` row. Returns ``None`` on any failure so the
+        caller can degrade honestly instead of guessing.
+        """
+        proxy_url = self._get_proxy_url()
+        if not proxy_url:
+            return None
+
+        import json
+        import urllib.request
+
+        url = f"{proxy_url.rstrip('/')}/api/model/options"
+        headers = {"Accept": "application/json"}
+        proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
+        if proxy_key:
+            headers["Authorization"] = f"Bearer {proxy_key}"
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+            payload = json.loads(raw)
+        except Exception:
+            logger.debug(
+                "proxy model-options probe failed for %s", proxy_url, exc_info=True,
+            )
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        model = str(payload.get("model") or "").strip()
+        provider = str(payload.get("provider") or "").strip()
+        if not model or not provider:
+            for row in payload.get("providers") or []:
+                if not isinstance(row, dict) or not row.get("is_current"):
+                    continue
+                if not provider:
+                    provider = str(row.get("slug") or row.get("name") or "").strip()
+                if not model:
+                    models = row.get("models") or []
+                    if models:
+                        model = str(models[0]).strip()
+                    current = row.get("current_model") or row.get("model")
+                    if current:
+                        model = str(current).strip()
+                break
+        if not model and not provider:
+            return None
+        return {
+            "model": model or "unknown",
+            "provider": provider or "unknown",
+        }
+
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
+
+        In proxy mode the serving model lives on the host; local config is
+        often intentionally empty, so we probe the host instead of
+        advertising empty backticks + a hardcoded openrouter fallback (#75238).
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+
+        # Proxy path first: never fall through to the local-config banner when
+        # GATEWAY_PROXY_URL is set — that path is known to be dishonest for
+        # thin containers (#75238).
+        try:
+            proxy_url = self._get_proxy_url()
+        except Exception:
+            proxy_url = None
+        if proxy_url:
+            host = None
+            try:
+                host = self._probe_proxy_serving_identity()
+            except Exception:
+                logger.debug("proxy serving-identity probe raised", exc_info=True)
+            if host:
+                return "\n".join([
+                    f"◆ Model: `{host['model']}`",
+                    f"◆ Provider: {host['provider']}",
+                    "◆ Context: managed by host",
+                ])
+            return "\n".join([
+                "◆ Model: `unknown`",
+                "◆ Provider: unknown (host unreachable — may be stale)",
+                "◆ Context: managed by host",
+            ])
 
         model = _resolve_gateway_model()
         config_context_length = None

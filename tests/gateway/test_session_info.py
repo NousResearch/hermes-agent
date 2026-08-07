@@ -154,3 +154,102 @@ class TestResetNoticeSessionInfo:
         assert "anthropic" in info
         assert "base-model" not in info
 
+
+class TestProxyModeSessionInfo:
+    """#75238: proxy-mode /new banner must report the host's serving model,
+    not the thin container's empty local config."""
+
+    def test_proxy_uses_host_identity(self, runner, tmp_path):
+        # Local config deliberately empty — the Matrix E2EE thin-container shape.
+        p1, p2, p3 = _patch_info(tmp_path, "gateway:\n  proxy_url: http://host.example:8642\n",
+                                  "",
+                                  {"provider": "", "base_url": "", "api_key": ""})
+        with p1, p2, p3, \
+             patch.object(GatewayRunner, "_get_proxy_url", return_value="http://host.example:8642"), \
+             patch.object(
+                 GatewayRunner,
+                 "_probe_proxy_serving_identity",
+                 return_value={"model": "gpt-5.6-sol", "provider": "openai-codex"},
+             ):
+            info = runner._format_session_info()
+        assert "gpt-5.6-sol" in info
+        assert "openai-codex" in info
+        assert "managed by host" in info
+        assert "openrouter" not in info.lower()
+        assert "model.context_length" not in info
+
+    def test_proxy_probe_failure_degrades_honestly(self, runner, tmp_path):
+        p1, p2, p3 = _patch_info(tmp_path, None, "", {"provider": "", "base_url": "", "api_key": ""})
+        with p1, p2, p3, \
+             patch.object(GatewayRunner, "_get_proxy_url", return_value="http://host.example:8642"), \
+             patch.object(GatewayRunner, "_probe_proxy_serving_identity", return_value=None):
+            info = runner._format_session_info()
+        assert "unknown" in info
+        assert "host unreachable" in info
+        assert "managed by host" in info
+        # Must not invent openrouter or a config-edit hint the host won't read.
+        assert "openrouter" not in info.lower()
+        assert "model.context_length" not in info
+
+    def test_probe_prefers_top_level_model_provider(self, runner, monkeypatch):
+        import io
+        import json
+
+        payload = {
+            "model": "host-model",
+            "provider": "host-provider",
+            "providers": [
+                {"slug": "other", "is_current": False, "models": ["x"]},
+                {"slug": "host-provider", "is_current": True, "models": ["host-model"]},
+            ],
+        }
+        body = json.dumps(payload).encode()
+
+        class _Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            assert req.full_url.endswith("/api/model/options")
+            assert req.get_header("Authorization") == "Bearer secret-key"
+            r = _Resp(body)
+            r.status = 200
+            return r
+
+        monkeypatch.setenv("GATEWAY_PROXY_KEY", "secret-key")
+        with patch.object(GatewayRunner, "_get_proxy_url", return_value="http://host.example:8642"), \
+             patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            identity = runner._probe_proxy_serving_identity()
+        assert identity == {"model": "host-model", "provider": "host-provider"}
+
+    def test_probe_falls_back_to_is_current_row(self, runner, monkeypatch):
+        import io
+        import json
+
+        payload = {
+            "model": "",
+            "provider": "",
+            "providers": [
+                {"slug": "openai-codex", "is_current": True, "models": ["gpt-5.6-sol"]},
+            ],
+        }
+        body = json.dumps(payload).encode()
+
+        class _Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            return _Resp(body)
+
+        with patch.object(GatewayRunner, "_get_proxy_url", return_value="http://host.example:8642"), \
+             patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            identity = runner._probe_proxy_serving_identity()
+        assert identity == {"model": "gpt-5.6-sol", "provider": "openai-codex"}
+

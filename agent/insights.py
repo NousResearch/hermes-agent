@@ -31,6 +31,23 @@ from agent.usage_pricing import (
 )
 
 
+_INSIGHTS_DEFAULT_DAYS = 30
+_INSIGHTS_MAX_DAYS = 365
+
+
+def _clamp_insights_days(days: int, default: int = _INSIGHTS_DEFAULT_DAYS) -> int:
+    """Clamp insights lookback window to a safe positive range.
+
+    CLI/gateway/TUI paths can forward unbounded ``days`` into full-history
+    SQL scans. Match the dashboard analytics bounds (1–365).
+    """
+    try:
+        parsed = int(days)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(_INSIGHTS_MAX_DAYS, parsed))
+
+
 
 
 def _estimate_cost(
@@ -136,6 +153,7 @@ class InsightsEngine:
         Returns:
             Dict with all computed insights
         """
+        days = _clamp_insights_days(days)
         cutoff = time.time() - (days * 86400)
 
         # Token/cost totals may still sit on the SessionDB's async
@@ -203,10 +221,12 @@ class InsightsEngine:
         that reference skill_view or skill_manage are loaded from SQLite, while
         still preserving the per-tool breakdown used by the dashboard route.
         """
+        days = _clamp_insights_days(days)
         cutoff = time.time() - (days * 86400)
         tool_usage = self._get_tool_usage(cutoff, source)
         skill_usage = self._get_skill_usage(cutoff, source)
         return {
+            "days": days,
             "tools": self._compute_tool_breakdown(tool_usage),
             "skills": self._compute_skill_breakdown(skill_usage),
         }

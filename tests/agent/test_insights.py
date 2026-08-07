@@ -241,6 +241,20 @@ class TestInsightsEmpty:
         text = engine.format_gateway(report)
         assert "No sessions found" in text
 
+    def test_generate_clamps_negative_days(self, db):
+        report = InsightsEngine(db).generate(days=-5)
+        assert report["days"] == 1
+
+    def test_generate_clamps_huge_days(self, db):
+        report = InsightsEngine(db).generate(days=100_000)
+        assert report["days"] == 365
+
+    def test_get_usage_breakdown_clamps_zero_days(self, db):
+        result = InsightsEngine(db).get_usage_breakdown(days=0)
+        assert result["days"] == 1
+        assert "tools" in result
+        assert "skills" in result
+
 
 # =========================================================================
 # InsightsEngine — populated DB

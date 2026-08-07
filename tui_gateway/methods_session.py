@@ -401,7 +401,13 @@ def _(rid, params: dict) -> dict:
         except SessionResumeTooLargeError as exc:
             return _err(rid, 4130, str(exc))
         except Exception as exc:
-            return _err(rid, 5000, f"resume safety check failed: {exc}")
+            # Fail OPEN: a transient guard failure (locked DB, schema skew on
+            # an adaptor store) must not turn the safety check into a new way
+            # to lose access to a session. Only a genuine over-limit blocks.
+            logger.warning(
+                "resume safety check failed for %s (proceeding without guard): %s",
+                target, exc,
+            )
 
         profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
             profile_home

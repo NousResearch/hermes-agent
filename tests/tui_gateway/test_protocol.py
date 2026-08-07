@@ -382,6 +382,49 @@ def test_session_resume_rejects_runaway_transcript_before_history_load(
     assert "safe resume limit is 20000" in response["error"]["message"]
 
 
+def test_session_resume_guard_failure_fails_open(server, monkeypatch):
+    """A transient guard error must not block resume (fail open, log only)."""
+    reopened = []
+
+    class _DB:
+        def get_session(self, sid):
+            return {"id": sid}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, sid):
+            return sid
+
+        def assert_resume_safe(self, _sid):
+            raise RuntimeError("database is locked")
+
+        def reopen_session(self, sid):
+            reopened.append(sid)
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    response = server.handle_request(
+        {
+            "id": "r-open",
+            "method": "session.resume",
+            "params": {
+                "session_id": "transient-guard-session",
+                "omit_messages": True,
+            },
+        }
+    )
+
+    # The guard must not block: no 4130, and any downstream failure must not
+    # be the guard's own "resume safety check failed" error. Reopen being
+    # attempted proves execution moved past the guard.
+    err = response.get("error") or {}
+    assert err.get("code") != 4130
+    assert "resume safety check failed" not in str(err.get("message", ""))
+    assert reopened == ["transient-guard-session"]
+
+
 def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
     """The LRU cap frees the least-recently-active DETACHED sessions when over
     the limit, and never a live-transport / running / mid-build one."""

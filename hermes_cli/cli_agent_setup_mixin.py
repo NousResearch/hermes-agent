@@ -407,7 +407,10 @@ class CLIAgentSetupMixin:
             prior_resume_error = getattr(self, "_resume_history_error", None)
             if prior_resume_error:
                 return False
-            resume_limit_error = self._resume_history_limit_error()
+            # This path loads only the TIP session's rows (no ancestors),
+            # so guard with a tip-only count — the full-lineage count would
+            # over-reject heavily-compressed sessions with a small tip.
+            resume_limit_error = self._resume_history_limit_error(tip_only=True)
             if resume_limit_error:
                 self._resume_history_error = resume_limit_error
                 if _quiet_mode:
@@ -586,22 +589,48 @@ class CLIAgentSetupMixin:
                 console.print(line)
             return False
 
-    def _resume_history_limit_error(self):
-        """Return a safe-resume error without materializing transcript rows."""
+    def _resume_history_limit_error(self, tip_only: bool = False):
+        """Return a safe-resume error without materializing transcript rows.
+
+        ``tip_only`` matches call sites that load only the tip session's rows
+        (``get_messages_as_conversation`` without ancestors) — counting the
+        full lineage there would over-reject heavily-compressed sessions
+        whose tip is small. Generic guard failures fail OPEN (resume
+        proceeds) — only a genuine over-limit result blocks.
+        """
         if not self._session_db:
             return None
-        safety_check = getattr(self._session_db, "assert_resume_safe", None)
-        if not callable(safety_check):
-            return None
-        try:
-            safety_check(self.session_id)
-        except Exception as exc:
-            from hermes_state import SessionResumeTooLargeError
+        from hermes_state import (
+            SessionExportTooLargeError,
+            SessionResumeTooLargeError,
+            resolved_max_resume_messages,
+        )
 
-            if isinstance(exc, SessionResumeTooLargeError):
-                return str(exc)
-            logger.warning("Resume safety check failed for %s: %s", self.session_id, exc)
-            return f"resume safety check failed: {exc}"
+        try:
+            if tip_only:
+                tip_check = getattr(self._session_db, "assert_export_safe", None)
+                if not callable(tip_check):
+                    return None
+                limit = resolved_max_resume_messages()
+                if limit <= 0:
+                    return None
+                try:
+                    tip_check(self.session_id, max_messages=limit)
+                except SessionExportTooLargeError as exc:
+                    raise SessionResumeTooLargeError(exc.message_count, limit) from exc
+            else:
+                safety_check = getattr(self._session_db, "assert_resume_safe", None)
+                if not callable(safety_check):
+                    return None
+                safety_check(self.session_id)
+        except SessionResumeTooLargeError as exc:
+            return str(exc)
+        except Exception as exc:
+            logger.warning(
+                "Resume safety check failed for %s (proceeding without guard): %s",
+                self.session_id, exc,
+            )
+            return None
         return None
 
     def _preload_resumed_session(self) -> bool:

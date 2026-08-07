@@ -15,6 +15,8 @@ import { getAggregateVotesInPollMessage } from '@whiskeysockets/baileys';
 import {
   buildPollPayload,
   buildTextSendPayload,
+  buildGroupRoster,
+  resolveAtNameMentions,
   createBoundedMessageStore,
   appendMediaFailureNote,
   extractBridgeEvent,
@@ -64,8 +66,7 @@ import {
     messageStore: store,
   });
 
-  // Group reply auto-tags the replied-to author (WhatsApp @ behavior).
-  assert.deepEqual(content, { text: 'reply text', mentions: ['15550001111@s.whatsapp.net'] });
+  assert.deepEqual(content, { text: 'reply text' });
   assert.equal(options.quoted.key.id, 'inbound-1');
   assert.equal(options.quoted.message.conversation, 'original text');
   console.log('  ✓ text replies include Baileys quoted message when resolvable');
@@ -86,65 +87,58 @@ import {
 
 // -- mentions (WhatsApp @ tagging) -------------------------------------
 {
-  // DM reply: no key.participant → no auto-mention
-  const store = createBoundedMessageStore(2);
-  store.remember({
-    key: { id: 'dm-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
-    message: { conversation: 'dm text' },
-  });
-  const { content } = buildTextSendPayload('dm reply', {
-    chatId: '15551234567@s.whatsapp.net',
-    replyTo: 'dm-1',
-    messageStore: store,
-  });
-  assert.deepEqual(content, { text: 'dm reply' });
-  console.log('  ✓ DM replies do not auto-mention (no participant)');
-}
-
-{
-  // Own message: fromMe → no auto-mention
-  const store = createBoundedMessageStore(2);
-  store.remember({
-    key: {
-      id: 'own-1',
-      remoteJid: '15551234567@s.whatsapp.net',
-      participant: '15550001111@s.whatsapp.net',
-      fromMe: true,
-    },
-    message: { conversation: 'own text' },
-  });
-  const { content } = buildTextSendPayload('reply', {
-    chatId: '15551234567@s.whatsapp.net',
-    replyTo: 'own-1',
-    messageStore: store,
-  });
-  assert.deepEqual(content, { text: 'reply' });
-  console.log('  ✓ replies to own messages do not auto-mention');
-}
-
-{
-  // Explicit mentions pass through and merge with auto-mention (dedup)
-  const store = createBoundedMessageStore(2);
-  store.remember({
-    key: {
-      id: 'grp-1',
-      remoteJid: '15551234567@g.us',
-      participant: '15550001111@s.whatsapp.net',
-      fromMe: false,
-    },
-    message: { conversation: 'grp text' },
-  });
+  // Explicit mentions pass through to Baileys content.mentions
   const { content } = buildTextSendPayload('@user reply', {
     chatId: '15551234567@g.us',
-    replyTo: 'grp-1',
-    messageStore: store,
     mentions: ['15550002222@s.whatsapp.net'],
   });
-  assert.deepEqual(content, {
-    text: '@user reply',
-    mentions: ['15550002222@s.whatsapp.net', '15550001111@s.whatsapp.net'],
+  assert.deepEqual(content, { text: '@user reply', mentions: ['15550002222@s.whatsapp.net'] });
+  console.log('  ✓ explicit mentions pass through to Baileys content');
+}
+
+{
+  // No mentions → no mentions key in content
+  const { content } = buildTextSendPayload('plain reply', {
+    chatId: '15551234567@g.us',
   });
-  console.log('  ✓ explicit mentions merge with auto-tagged reply author');
+  assert.deepEqual(content, { text: 'plain reply' });
+  console.log('  ✓ no mentions key when none requested');
+}
+
+// -- group roster + @Name resolution ------------------------------------
+{
+  const roster = buildGroupRoster(
+    [
+      { id: '15550001111@s.whatsapp.net' },
+      { id: '15550002222@s.whatsapp.net', username: 'ankit' },
+      { id: '15550003333@s.whatsapp.net' },
+    ],
+    new Map([
+      ['15550001111@s.whatsapp.net', 'Dhruv'],
+      ['15550003333@s.whatsapp.net', 'Ankit Kumar'],
+    ]),
+  );
+  assert.deepEqual(roster, [
+    { id: '15550001111@s.whatsapp.net', name: 'Dhruv' },
+    { id: '15550002222@s.whatsapp.net', name: 'ankit' },
+    { id: '15550003333@s.whatsapp.net', name: 'Ankit Kumar' },
+  ]);
+  console.log('  ✓ roster prefers pushName, falls back to username/number');
+}
+
+{
+  const roster = [
+    { id: '15550001111@s.whatsapp.net', name: 'Dhruv' },
+    { id: '15550003333@s.whatsapp.net', name: 'Ankit Kumar' },
+  ];
+  // Case-insensitive substring match on either side
+  assert.deepEqual(resolveAtNameMentions('@ankit kya haal', roster), ['15550003333@s.whatsapp.net']);
+  assert.deepEqual(resolveAtNameMentions('sun @ANKIT ko bata', roster), ['15550003333@s.whatsapp.net']);
+  // Unknown name → no mention
+  assert.deepEqual(resolveAtNameMentions('@nobody hi', roster), []);
+  // No @tokens → no mentions
+  assert.deepEqual(resolveAtNameMentions('just text', roster), []);
+  console.log('  ✓ @Name resolves to JID case-insensitively, unknown names ignored');
 }
 
 // -- inbound quote/media/native metadata --------------------------------

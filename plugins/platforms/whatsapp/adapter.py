@@ -22,6 +22,7 @@ import platform
 import re
 import signal
 import subprocess
+import time
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
@@ -419,6 +420,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
+        # chat_id -> (fetch_ts, roster) for the group-member roster injected
+        # into group message text so the model knows who is in the group.
+        self._roster_cache: Dict[str, tuple] = {}
+        self._roster_ttl = 10 * 60
         self._bridge_script: Optional[str] = config.extra.get(
             "bridge_script",
             str(self._DEFAULT_BRIDGE_DIR / "bridge.js"),
@@ -1445,6 +1450,32 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
 
+    async def _get_group_roster(self, chat_id: str) -> list:
+        """Return [{id, name}] for a group, cached for ``_roster_ttl`` seconds.
+
+        Falls back to the cached roster on fetch failure so a transient bridge
+        error never blanks out the member list the model has already seen.
+        """
+        now = time.monotonic()
+        cached = self._roster_cache.get(chat_id)
+        if cached and now - cached[0] < self._roster_ttl:
+            return cached[1]
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:{self._bridge_port}/chat/{chat_id}",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status != 200:
+                        return cached[1] if cached else []
+                    data = await resp.json()
+            roster = data.get("participants") or []
+            self._roster_cache[chat_id] = (now, roster)
+            return roster
+        except Exception:
+            return cached[1] if cached else []
+
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
@@ -1635,6 +1666,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             mentioned_ids = data.get("mentionedIds") or []
             if mentioned_ids:
                 metadata["whatsapp_mentioned_ids"] = list(mentioned_ids)
+
+            # Give the model the group roster so it knows who is in the group
+            # and can @tag a member by display name (the bridge resolves
+            # "@Name" -> JID at send time). Compact, cached, group-only.
+            if is_group:
+                roster = await self._get_group_roster(str(data.get("chatId", "")))
+                names = [r.get("name") for r in roster if r.get("name")]
+                if names:
+                    roster_line = "[Group members: " + ", ".join(names) + "]"
+                    if roster_line not in body:
+                        body = f"{roster_line}\n{body}"
 
             return MessageEvent(
                 text=body,

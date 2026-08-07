@@ -2,10 +2,9 @@ import type { ReactNode } from 'react'
 
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
+import { DESKTOP_COMMON_COMMANDS } from '@/lib/desktop-slash-commands'
 
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
-
-const COMMON_COMMAND_KEYS = ['/help', '/clear', '/resume', '/details', '/copy', '/quit']
 
 /** Stable ids → i18n `hotkeyDescs` keys. Combos resolve mod labels per OS. */
 const COMPOSER_HOTKEY_ROWS = [
@@ -26,8 +25,13 @@ export function HelpHint() {
   return (
     <div className={COMPLETION_DRAWER_CLASS} data-slot="composer-completion-drawer" data-state="open" role="dialog">
       <Section title={c.commonCommands}>
-        {COMMON_COMMAND_KEYS.map(key => (
-          <Row description={c.commandDescs[key] ?? ''} key={key} keyLabel={key} mono />
+        {DESKTOP_COMMON_COMMANDS.map(command => (
+          <Row
+            description={c.commandDescs[command.name] ?? command.description}
+            key={command.name}
+            keyLabel={command.name}
+            mono
+          />
         ))}
       </Section>
 

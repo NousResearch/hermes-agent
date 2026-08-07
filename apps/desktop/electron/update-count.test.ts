@@ -4,9 +4,14 @@ import { test } from 'vitest'
 
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 
-// FAIL-BEFORE: pre-fix the function did `Number.parseInt(countStr) || 0`
-// unconditionally, so a shallow checkout with no merge-base surfaced the bogus
-// rev-list count (e.g. 12104). This asserts the new shallow/no-merge-base branch.
+// FAIL-BEFORE: pre-fix `shouldCountCommits` returned `!(isShallow && !hasMergeBase)`,
+// so a SHALLOW checkout that happened to share a merge-base with the tip STILL ran
+// `rev-list --count` and surfaced the bogus thousands-of-commits number
+// (e.g. the real-world 4650 a shallow pin reported). The CLI's banner.py already
+// compares tip SHAs for ANY shallow clone — this aligns the desktop with that.
+// A shallow checkout must ALWAYS skip the count and fall back to a SHA compare,
+// regardless of whether a merge-base exists.
+
 test('shallow checkout with no merge-base does NOT trust the bogus rev-list count', () => {
   assert.equal(
     resolveBehindCount({
@@ -20,6 +25,33 @@ test('shallow checkout with no merge-base does NOT trust the bogus rev-list coun
   )
 })
 
+// The previously-missing case: shallow + merge-base was the live bug (4650).
+test('shallow checkout WITH a merge-base does NOT trust the bogus rev-list count', () => {
+  assert.equal(
+    resolveBehindCount({
+      countStr: '4650',
+      currentSha: 'aaa',
+      targetSha: 'bbb',
+      isShallow: true,
+      hasMergeBase: true
+    }),
+    1
+  )
+})
+
+test('shallow checkout behind by a bogus count but identical SHA reports up-to-date', () => {
+  assert.equal(
+    resolveBehindCount({
+      countStr: '4650',
+      currentSha: 'abc',
+      targetSha: 'abc',
+      isShallow: true,
+      hasMergeBase: true
+    }),
+    0
+  )
+})
+
 test('shallow checkout with no merge-base but identical SHA reports up-to-date', () => {
   assert.equal(
     resolveBehindCount({
@@ -30,19 +62,6 @@ test('shallow checkout with no merge-base but identical SHA reports up-to-date',
       hasMergeBase: false
     }),
     0
-  )
-})
-
-test('shallow checkout WITH a merge-base keeps the exact count (reliable)', () => {
-  assert.equal(
-    resolveBehindCount({
-      countStr: '3',
-      currentSha: 'aaa',
-      targetSha: 'bbb',
-      isShallow: true,
-      hasMergeBase: true
-    }),
-    3
   )
 })
 
@@ -86,15 +105,15 @@ test('non-numeric count falls back to 0 (defensive, unchanged behaviour)', () =>
 })
 
 // shouldCountCommits gates the expensive `rev-list --count` in checkUpdates().
-// FAIL-BEFORE: in the shallow + no-merge-base case the caller ran rev-list
-// unconditionally and discarded the bogus result; this predicate lets the
-// caller SKIP the whole-ancestry enumeration in exactly that case (#51922).
-test('shallow checkout with no merge-base SKIPS the rev-list count', () => {
+// Any shallow checkout (installer / binary / desktop pin) must skip it — the
+// local history is truncated, so the count is never meaningful. Only full
+// clones run it.
+test('shallow checkout SKIPS the rev-list count (no merge-base)', () => {
   assert.equal(shouldCountCommits({ isShallow: true, hasMergeBase: false }), false)
 })
 
-test('shallow checkout WITH a merge-base still runs the count', () => {
-  assert.equal(shouldCountCommits({ isShallow: true, hasMergeBase: true }), true)
+test('shallow checkout SKIPS the rev-list count (with merge-base — the live bug)', () => {
+  assert.equal(shouldCountCommits({ isShallow: true, hasMergeBase: true }), false)
 })
 
 test('full (non-shallow) clone always runs the count', () => {

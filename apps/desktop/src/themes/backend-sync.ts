@@ -56,24 +56,35 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
     return
   }
 
-  // `default` is "no opinion" on the PALETTE — the desktop keeps its own default
-  // (nous), so we never register a converted theme under `default`. It is still a
-  // valid apply TARGET though: a runtime switch back to `default` must repaint the
-  // desktop to its own default (setTheme normalizes `default` → nous). So we only
-  // skip the registry step here and let it flow through the apply logic below.
-  // Built-in names (mono/slate/…) already have a hand-tuned desktop palette — we
-  // never shadow it, but the name is still a valid apply target.
-  if (name !== 'default' && !BUILTIN_THEMES[name]) {
+  // Built-in names (mono/slate/…) already have a hand-tuned desktop palette —
+  // never shadow them, but they remain valid apply targets. The CLI `default`
+  // skin ("Classic Hermes — gold and kawaii") is *not* a desktop built-in, so
+  // we register the converted palette under `default` and let it appear in the
+  // Appearance grid / `/skin list` (#76579). Desktop's own boot default remains
+  // `nous` via DEFAULT_SKIN_NAME; selecting `default` paints the classic gold.
+  if (!BUILTIN_THEMES[name]) {
     const theme = skinToDesktopTheme(skin as HermesSkin)
 
     if (!theme) {
       return
     }
 
+    // Prefer the CLI description for the classic default skin so the grid
+    // shows "Classic Hermes — gold and kawaii" rather than a bare "Default".
+    const description =
+      name === 'default' && typeof (skin as HermesSkin).description === 'string'
+        ? String((skin as HermesSkin).description).trim() || theme.description
+        : theme.description
+    const label =
+      name === 'default'
+        ? 'Classic Hermes'
+        : theme.label
+    const registered = { ...theme, description, label }
+
     const current = $backendThemes.get()
 
-    if (JSON.stringify(current[name]) !== JSON.stringify(theme)) {
-      $backendThemes.set({ ...current, [name]: theme })
+    if (JSON.stringify(current[name]) !== JSON.stringify(registered)) {
+      $backendThemes.set({ ...current, [name]: registered })
     }
   }
 

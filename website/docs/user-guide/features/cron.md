@@ -601,7 +601,12 @@ Semantics:
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
 
-`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). New script jobs created through `cronjob` or `hermes cron create` run on the profile terminal **backend** by default: backend paths **must be absolute** and backend-visible, such as `/workspace/scripts/memory-watchdog.sh`. The backend verifies the script is a regular file before the job is saved and again when it runs. Use `target="scheduler"` explicitly for scheduler-host maintenance; those scripts must be regular files under `$HERMES_HOME/scripts/`. Persisted jobs from before targets existed retain scheduler-host behavior. Backend-run scripts receive the configured terminal environment; scheduler-run scripts use the sanitized host subprocess environment (`_sanitize_subprocess_env`) and do not inherit Hermes-managed provider credentials.
+Interpreter selection is deliberately target-aware:
+
+- Scheduler-target scripts — including backend-target jobs whose effective backend is `local` — run on the Hermes host. `.sh` / `.bash` uses `bash` from `PATH` (or `/bin/bash` on Windows Git Bash); other files use Hermes' current Python interpreter (`sys.executable`).
+- Non-local backend-target scripts run inside the configured Docker/SSH/remote backend. `.sh` / `.bash` still uses `bash`, while other files use that backend's `python3` from `PATH`. Hermes cannot safely pass its host `sys.executable` path across this filesystem/runtime boundary.
+
+New script jobs created through `cronjob` or `hermes cron create` default to `target="backend"`. With a non-local terminal backend, script paths **must be absolute** and backend-visible, such as `/workspace/scripts/memory-watchdog.sh`; Hermes verifies the script is a regular file before saving and again when it runs. With the effective `local` backend, backend-target jobs instead use the same confined scheduler-script rules: a relative regular file under `$HERMES_HOME/scripts/`, checked again at execution time. Use `target="scheduler"` explicitly for scheduler-host maintenance; it always uses those confined rules. Persisted jobs from before targets existed retain scheduler-host behavior. Backend-run scripts receive the configured terminal environment; scheduler-run scripts use the sanitized host subprocess environment (`_sanitize_subprocess_env`) and do not inherit Hermes-managed provider credentials.
 
 ### The agent sets these up for you
 

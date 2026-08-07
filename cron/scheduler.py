@@ -61,7 +61,10 @@ from agent.delegation_context import (
     enter_non_dispatcher_owned_context,
     exit_non_dispatcher_owned_context,
 )
-from tools.terminal_tool import FOREGROUND_MAX_TIMEOUT, terminal_tool
+from tools.terminal_tool import (
+    get_effective_terminal_backend,
+    terminal_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -4119,9 +4122,115 @@ def _run_job_script(
         return False, f"Script execution failed: {exc}"
 
 
+def _redact_backend_script_output(value: object, command: str) -> str:
+    """Apply terminal-equivalent redaction to scheduler-consumed backend output."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    from agent.redact import redact_terminal_output
+    return redact_terminal_output(text, command)
+
+
+def _kill_backend_process(
+    process_registry: object,
+    session_id: str,
+    source: str,
+    command: str,
+) -> str | None:
+    """Terminate a tracked process and report cleanup failure without hiding it."""
+    try:
+        result = process_registry.kill_process(session_id, source=source)
+    except Exception as exc:
+        return _redact_backend_script_output(exc, command)
+    if not isinstance(result, dict):
+        return "process registry returned no termination result"
+    if result.get("status") not in {"killed", "already_exited"}:
+        return _redact_backend_script_output(
+            result.get("error") or result.get("status") or "unknown termination error",
+            command,
+        )
+    return None
+
+
+def _wait_for_backend_process(
+    session_id: str,
+    script_timeout: int,
+    command: str = "",
+    cancel_event: Optional[_CancelEventLike] = None,
+) -> tuple[bool, str]:
+    """Collect a tracked backend script process without relaxing terminal foreground limits."""
+    from tools.process_registry import process_registry
+
+    deadline = time.monotonic() + script_timeout
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            cleanup_error = _kill_backend_process(
+                process_registry,
+                session_id,
+                "cron.script_cancelled",
+                command,
+            )
+            suffix = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+            return False, f"Backend script was cancelled{suffix}"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+
+        # ProcessRegistry applies its own configured per-wait limit. Repeating
+        # bounded waits lets cron own the documented script deadline without
+        # extending a normal terminal foreground call.
+        try:
+            result = process_registry.wait(
+                session_id,
+                timeout=max(1, min(int(remaining), 1 if cancel_event is not None else 180)),
+            )
+        except Exception as exc:
+            cleanup_error = _kill_backend_process(
+                process_registry,
+                session_id,
+                "cron.script_wait_error",
+                command,
+            )
+            suffix = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+            return False, f"Backend script wait failed: {_redact_backend_script_output(exc, command)}{suffix}"
+        status = result.get("status")
+        if status == "exited":
+            exit_code = result.get("exit_code", 1)
+            log = process_registry.read_log(session_id, offset=0, limit=1_000_000)
+            output = _redact_backend_script_output(
+                log.get("output") or result.get("output") or "",
+                command,
+            )
+            if exit_code != 0:
+                details = output or f"exit code {exit_code}"
+                return False, f"Script exited with code {exit_code}: {details}"
+            return True, output
+        if status == "not_found":
+            return False, f"Backend script process disappeared: {session_id}"
+        if status == "interrupted":
+            cleanup_error = _kill_backend_process(
+                process_registry,
+                session_id,
+                "cron.script_interrupted",
+                command,
+            )
+            suffix = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+            return False, f"Backend script wait was interrupted{suffix}"
+
+    cleanup_error = _kill_backend_process(
+        process_registry,
+        session_id,
+        "cron.script_timeout",
+        command,
+    )
+    suffix = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+    return False, f"Script timed out after {script_timeout}s{suffix}"
+
+
 def _run_job_script_in_backend(
     script_path: str,
     workdir: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[bool, str]:
     """Run a cron script through the active profile terminal backend.
 
@@ -4151,34 +4260,55 @@ def _run_job_script_in_backend(
         if not isinstance(preflight, dict) or preflight.get("exit_code") != 0:
             return False, f"Script not found in terminal backend: {backend_path}"
 
-        raw_result = terminal_tool(
+        started_raw = terminal_tool(
             command=command,
-            timeout=min(_get_script_timeout(), FOREGROUND_MAX_TIMEOUT),
+            background=True,
             workdir=backend_cwd,
         )
-        result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
-        output = str((result or {}).get("output") or "").strip()
-        error = str((result or {}).get("error") or "").strip()
-        exit_code = (result or {}).get("exit_code", 1)
-        if exit_code != 0:
-            details = error or output or f"exit code {exit_code}"
-            if "No such file or directory" in details:
-                return False, f"Script not found in terminal backend: {backend_path}"
-            return False, f"Script exited with code {exit_code}: {details}"
-        return True, output
+        started = json.loads(started_raw) if isinstance(started_raw, str) else started_raw
+        session_id = str((started or {}).get("session_id") or "").strip()
+        if not session_id:
+            details = _redact_backend_script_output(
+                (started or {}).get("error") or (started or {}).get("output") or "unknown error",
+                command,
+            )
+            return False, f"Backend script failed to start: {details}"
+        return _wait_for_backend_process(
+            session_id,
+            _get_script_timeout(),
+            command,
+            cancel_event,
+        )
     except Exception as exc:
-        return False, f"Script execution through terminal backend failed: {exc}"
+        details = _redact_backend_script_output(exc, command)
+        return False, f"Script execution through terminal backend failed: {details}"
 
 
 def _run_job_script_for_target(
-    job: dict, script_path: str, workdir: Optional[str] = None,
+    job: dict,
+    script_path: str,
+    workdir: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[bool, str]:
     """Run a script in its declared target; missing target preserves host behavior."""
     target = str(job.get("target") or "scheduler").strip().lower()
     if target == "scheduler":
-        return _run_job_script(script_path, workdir=workdir)
+        if cancel_event is None:
+            return _run_job_script(script_path, workdir=workdir)
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
     if target == "backend":
-        return _run_job_script_in_backend(script_path, workdir=workdir)
+        # A local terminal backend shares the scheduler host and has no sandbox
+        # boundary. Reuse the scheduler runner so its path containment is
+        # enforced again at execution time.
+        if get_effective_terminal_backend() == "local":
+            if cancel_event is None:
+                return _run_job_script(script_path, workdir=workdir)
+            return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        if cancel_event is None:
+            return _run_job_script_in_backend(script_path, workdir=workdir)
+        return _run_job_script_in_backend(
+            script_path, workdir=workdir, cancel_event=cancel_event,
+        )
     return False, f"Unsupported cron script target: {target!r}"
 
 
@@ -4208,11 +4338,9 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        if str(job.get("target") or "scheduler").strip().lower() == "scheduler":
-            return _run_job_script(
-                script_path, workdir=workdir, cancel_event=cancel_event
-            )
-        return _run_job_script_for_target(job, script_path, workdir=workdir)
+        return _run_job_script_for_target(
+            job, script_path, workdir=workdir, cancel_event=cancel_event,
+        )
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -4243,18 +4371,14 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        if str(job.get("target") or "scheduler").strip().lower() == "scheduler":
-            return _run_job_script(
-                script_path, workdir=workdir, cancel_event=cancel_event
-            )
-        return _run_job_script_for_target(job, script_path, workdir=workdir)
+        return _run_job_script_for_target(
+            job, script_path, workdir=workdir, cancel_event=cancel_event,
+        )
 
     try:
-        if str(job.get("target") or "scheduler").strip().lower() == "scheduler":
-            return _run_job_script(
-                script_path, workdir=workdir, cancel_event=cancel_event
-            )
-        return _run_job_script_for_target(job, script_path, workdir=workdir)
+        return _run_job_script_for_target(
+            job, script_path, workdir=workdir, cancel_event=cancel_event,
+        )
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the

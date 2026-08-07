@@ -1569,6 +1569,21 @@ def _ensure_terminal_env_bridged() -> None:
         logger.debug("terminal config → env fallback bridge failed", exc_info=True)
 
 
+def get_effective_terminal_backend() -> str:
+    """Return the backend the terminal tool will actually use.
+
+    This intentionally resolves through ``_get_env_config`` so config-to-env
+    bridging and runtime overrides stay aligned with ``terminal_tool`` itself.
+    Fall back to ``local`` on a resolution error: that is terminal_tool's
+    historical default and is the safe choice for cron path containment.
+    """
+    try:
+        return str(_get_env_config().get("env_type") or "local").strip().lower()
+    except Exception:
+        logger.debug("Could not resolve effective terminal backend; treating it as local", exc_info=True)
+        return "local"
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility

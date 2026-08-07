@@ -153,16 +153,16 @@ The "silent when empty" behavior is the key to the classic watchdog pattern: the
 
 ## Script Rules
 
-New script jobs created through `cronjob` or `hermes cron create` run on the profile terminal backend by default. Backend script paths **must be absolute** and backend-visible, such as `/workspace/scripts/disk-alert.sh`; Hermes checks that it is a regular file in that backend before saving the job. Use `target="scheduler"` explicitly for scheduler-host maintenance jobs; those scripts must be regular files under `~/.hermes/scripts/`, with absolute paths, `~/` expansion, and traversal patterns rejected. Existing jobs without a stored target retain scheduler-host execution.
+New script jobs created through `cronjob` or `hermes cron create` default to `target="backend"`. With a non-local terminal backend, script paths **must be absolute** and backend-visible, such as `/workspace/scripts/disk-alert.sh`; Hermes checks that it is a regular file in that backend before saving the job. With the effective `local` backend, backend-target jobs use the confined scheduler-script rules instead: a relative regular file under `~/.hermes/scripts/`, with absolute paths, `~/` expansion, and traversal patterns rejected at creation and execution. Use `target="scheduler"` explicitly for scheduler-host maintenance jobs; it always uses those confined rules. Existing jobs without a stored target retain scheduler-host execution.
 
-Interpreter choice is by file extension:
+Interpreter choice is target-aware because a non-local backend has its own filesystem and runtime:
 
-| Extension | Interpreter |
-|-----------|-------------|
-| `.sh`, `.bash` | `bash` from `PATH` (fallback `/bin/bash`) |
-| anything else | `sys.executable` (current Python) |
+| Execution target | `.sh`, `.bash` | Any other extension |
+|------------------|----------------|---------------------|
+| Scheduler target or effective `local` backend | `bash` from the host `PATH` (fallback `/bin/bash`) | Hermes' current Python interpreter (`sys.executable`) |
+| Non-local backend target | `bash` from the backend `PATH` | Backend `python3` from `PATH` |
 
-We intentionally do NOT honour `#!/...` shebangs — keeping the interpreter set explicit and small reduces the surface the scheduler trusts.
+Hermes cannot safely pass its host `sys.executable` path into Docker, SSH, or another remote backend. We intentionally do NOT honour `#!/...` shebangs — keeping the interpreter set explicit and small reduces the surface the scheduler trusts.
 
 ## Schedule Syntax
 

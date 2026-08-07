@@ -669,8 +669,13 @@ def _validate_cron_script_path(
     raw = script.strip()
 
     if target == "backend":
-        return _validate_backend_script(raw, workdir=workdir)
+        from tools.terminal_tool import get_effective_terminal_backend
 
+        if get_effective_terminal_backend() != "local":
+            return _validate_backend_script(raw, workdir=workdir)
+
+    # Scheduler scripts — including backend-targeted jobs on an effective local
+    # terminal — are confined to the profile scripts directory.
     if raw.startswith("~"):
         return (
             f"Scheduler script path must be relative to ~/.hermes/scripts/: {raw!r}."

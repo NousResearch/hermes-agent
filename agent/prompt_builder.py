@@ -14,7 +14,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
-from typing import Optional
+from typing import List, Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
@@ -2059,23 +2059,86 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
         return ""
 
 
+def _agents_md_directory_chain(cwd_path: Path) -> List[Path]:
+    """Directories to check for AGENTS.md: git root first, cwd last.
+
+    Ported from superagent-ai/grok-cli ``src/utils/instructions.ts``
+    (``directoryChain``): the chain runs from the git repository root down
+    through every intermediate directory to *cwd*, so deeper directories can
+    add more specific guidance that appears later (and therefore takes
+    precedence) in the merged prompt.  Without a git root — or when *cwd*
+    sits outside it — only *cwd* itself is checked, matching the historical
+    single-directory behavior.
+    """
+    current = cwd_path.resolve()
+    root = _find_git_root(current)
+    if root is None or root == current:
+        return [current]
+    try:
+        rel = current.relative_to(root)
+    except ValueError:
+        return [current]
+    chain = [root]
+    acc = root
+    for part in rel.parts:
+        acc = acc / part
+        chain.append(acc)
+    return chain
+
+
 def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
-    for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
+    """AGENTS.md — merged directory chain from git root down to cwd.
+
+    Each directory on the chain (see ``_agents_md_directory_chain``)
+    contributes its ``AGENTS.md`` / ``agents.md`` (first name wins per
+    directory) as its own provenance-labelled section.  Identical content
+    encountered again further down the chain (copied or symlinked files) is
+    deduplicated.  With a single match — the common case, and always the
+    case outside a git repo — output is identical to the historical
+    single-file behavior.
+    """
+    cwd_resolved = cwd_path.resolve()
+    sections: List[str] = []
+    seen_content: set = set()
+    for directory in _agents_md_directory_chain(cwd_resolved):
+        for name in ["AGENTS.md", "agents.md"]:
+            candidate = directory / name
+            if not candidate.exists():
+                continue
             try:
                 content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(
-                        result, "AGENTS.md", context_length=context_length,
-                        read_path=str(candidate),
-                    )
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+                continue
+            if not content:
+                continue
+            if content in seen_content:
+                break  # identical copy along the chain — skip duplicate
+            seen_content.add(content)
+            if directory == cwd_resolved:
+                label = name
+            else:
+                label = os.path.relpath(candidate, cwd_resolved)
+            scanned = _scan_context_content(content, label)
+            section = f"## {label}\n\n{scanned}"
+            section = _truncate_content(
+                section, label, context_length=context_length,
+                read_path=str(candidate),
+            )
+            sections.append(section)
+            break  # first name match wins per directory
+    if not sections:
+        return ""
+    if len(sections) == 1:
+        return sections[0]
+    # Per-file budgets were already applied above; also cap the merged chain
+    # so a deep monorepo cannot multiply the context-file budget unbounded.
+    merged = "\n\n".join(sections)
+    return _truncate_content(
+        merged, "AGENTS.md (directory chain)",
+        context_length=context_length,
+        read_path=str(cwd_resolved / "AGENTS.md"),
+    )
 
 
 def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
@@ -2140,7 +2203,7 @@ def build_context_files_prompt(
 
     Priority (first found wins — only ONE project context type is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
-      2. AGENTS.md / agents.md   (cwd only)
+      2. AGENTS.md / agents.md   (merged chain: git root → cwd)
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 

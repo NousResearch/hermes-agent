@@ -2246,6 +2246,21 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     )
     depth_args = ["--depth", "1"] if is_shallow else []
 
+    # Remove stale .git/shallow.lock left by interrupted updates (#75133).
+    # A previous git fetch that was killed mid-flight (network timeout,
+    # app force-close, system sleep) leaves this lock file behind.  The
+    # next fetch then fails with "Unable to create '.git/shallow.lock':
+    # File exists", which the GUI misinterprets as a concurrent process
+    # and traps the user in an unrecoverable update loop.
+    if is_shallow:
+        _shallow_lock = os.path.join(_m().PROJECT_ROOT, ".git", "shallow.lock")
+        if os.path.exists(_shallow_lock):
+            try:
+                os.remove(_shallow_lock)
+                logger.debug("Removed stale .git/shallow.lock")
+            except OSError as exc:
+                logger.debug("Could not remove .git/shallow.lock: %s", exc)
+
     if branch == "main":
         # Probe locally (~6 ms) whether an 'upstream' remote exists at all
         # before spending a network fetch on it. Non-fork installs have no

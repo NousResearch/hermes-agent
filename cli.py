@@ -1614,7 +1614,8 @@ def _resolve_worktree_base(
     return "HEAD", "HEAD (local — could not reach remote)"
 
 
-def _setup_worktree(repo_root: str = None, sync_base: bool = True) -> Optional[Dict[str, str]]:
+def _setup_worktree(repo_root: str = None, sync_base: bool = True,
+                    name: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Create an isolated git worktree for this CLI session.
 
     Returns a dict with worktree metadata on success, None on failure.
@@ -1624,6 +1625,11 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True) -> Optional[D
     freshly-fetched remote tip rather than the (possibly stale) local ``HEAD``
     — see ``_resolve_worktree_base``. Set ``worktree_sync: false`` in config to
     branch from local ``HEAD`` (the pre-#10760-followup behavior).
+
+    When *name* is given (``/worktree new <name>``), the worktree directory
+    and branch use the sanitized name instead of a random ``hermes-<id>``.
+    Named trees intentionally skip the ``hermes-`` prefix so the startup
+    pruner ages them on its slower named-tree schedule.
     """
     import subprocess
 
@@ -1633,14 +1639,25 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True) -> Optional[D
         print("  cd into your project repo first, then run hermes -w")
         return None
 
-    short_id = uuid.uuid4().hex[:8]
-    wt_name = f"hermes-{short_id}"
+    if name:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")[:40]
+        if safe:
+            wt_name = safe
+        else:
+            wt_name = f"hermes-{uuid.uuid4().hex[:8]}"
+    else:
+        wt_name = f"hermes-{uuid.uuid4().hex[:8]}"
     branch_name = f"hermes/{wt_name}"
 
     worktrees_dir = Path(repo_root) / ".worktrees"
     worktrees_dir.mkdir(parents=True, exist_ok=True)
 
     wt_path = worktrees_dir / wt_name
+    if name and wt_path.exists():
+        print(f"\033[31m✗ Worktree already exists: {wt_path}\033[0m")
+        print("  Pick a different name, or remove it with: "
+              f"git worktree remove {wt_path}")
+        return None
 
     # Ensure .worktrees/ is in .gitignore
     gitignore = Path(repo_root) / ".gitignore"
@@ -11357,6 +11374,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.undo_last(_undo_n)
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
+        elif canonical == "worktree":
+            self._handle_worktree_command(cmd_original)
         elif canonical == "save":
             self.save_conversation(cmd_original)
         elif canonical == "cron":

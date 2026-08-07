@@ -102,7 +102,7 @@ hermes chat -q "Hello"
 
 ```bash
 mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+ln -sf "$HOME/.hermes/venvs/hermes-dev/bin/hermes" ~/.local/bin/hermes
 ```
 
 ### 运行测试

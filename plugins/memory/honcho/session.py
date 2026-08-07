@@ -2,16 +2,33 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import json
+import logging
 import queue
 import re
-import logging
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from plugins.memory.honcho.client import get_honcho_client
+from hermes_constants import get_hermes_home
+from plugins.memory.honcho.client import get_honcho_client, resolve_effective_base_url
+from utils import atomic_json_write
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    msvcrt = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from honcho import Honcho
@@ -22,6 +39,100 @@ logger = logging.getLogger(__name__)
 _ASYNC_SHUTDOWN = object()
 _PEER_ID_HASH_LEN = 8
 _PEER_ID_HASH_ESCALATION_LENGTHS = (_PEER_ID_HASH_LEN, 12, 16, 24, 32, 64)
+_MIGRATION_LOCK_TIMEOUT_SECONDS = 5.0
+_MIGRATION_THREAD_LOCK = threading.Lock()
+
+
+def _acquire_migration_file_lock(lock_path: Path):
+    """Acquire a portable non-blocking file lock before the deadline."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = open(lock_path, "a+", encoding="utf-8")
+    if msvcrt is not None:
+        lock_file.seek(0, 2)
+        if lock_file.tell() == 0:
+            lock_file.write(" ")
+            lock_file.flush()
+
+    deadline = time.monotonic() + _MIGRATION_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elif msvcrt is not None:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:  # pragma: no cover - supported platforms provide one primitive
+                logger.warning("Honcho migration skipped: no file-lock primitive available")
+                lock_file.close()
+                return None
+            return lock_file
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                logger.warning("Honcho migration lock failed: %s", exc)
+                lock_file.close()
+                return None
+            if time.monotonic() >= deadline:
+                logger.warning("Honcho migration skipped: timed out acquiring %s", lock_path)
+                lock_file.close()
+                return None
+            time.sleep(0.05)
+
+
+def _release_migration_file_lock(lock_file) -> None:
+    """Release a lock acquired by :func:`_acquire_migration_file_lock`."""
+    try:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError as exc:
+        logger.warning("Failed to release Honcho migration lock: %s", exc)
+    finally:
+        lock_file.close()
+
+
+@contextmanager
+def _migration_lock(lock_path: Path):
+    """Bound concurrent migration attempts across threads and processes."""
+    if not _MIGRATION_THREAD_LOCK.acquire(timeout=_MIGRATION_LOCK_TIMEOUT_SECONDS):
+        logger.warning("Honcho migration skipped: timed out acquiring thread lock")
+        yield False
+        return
+
+    lock_file = None
+    try:
+        try:
+            lock_file = _acquire_migration_file_lock(lock_path)
+        except OSError as exc:
+            logger.warning("Honcho migration lock failed: %s", exc)
+        if lock_file is None:
+            yield False
+            return
+        yield True
+    finally:
+        if lock_file is not None:
+            _release_migration_file_lock(lock_file)
+        _MIGRATION_THREAD_LOCK.release()
+
+
+def _load_migration_state(state_path: Path) -> dict[str, Any] | None:
+    """Load valid migration state, failing closed on unreadable state."""
+    if not state_path.exists():
+        return {"version": 1, "targets": {}}
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Honcho migration state is unreadable: %s", exc)
+        return None
+    if (
+        not isinstance(state, dict)
+        or state.get("version") != 1
+        or not isinstance(state.get("targets"), dict)
+    ):
+        logger.warning("Honcho migration state has an unsupported format: %s", state_path)
+        return None
+    return state
 
 
 @dataclass
@@ -859,8 +970,7 @@ class HonchoSessionManager:
         Returns:
             True if at least one file was uploaded, False otherwise.
         """
-        from pathlib import Path
-        memory_path = Path(memory_dir)
+        memory_path = Path(memory_dir).expanduser().resolve()
 
         if not memory_path.exists():
             return False
@@ -875,74 +985,183 @@ class HonchoSessionManager:
             logger.warning("No Honcho session cached for '%s', skipping memory migration", session_key)
             return False
 
-        user_peer = self._get_or_create_peer(session.user_peer_id)
-        assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
+        config = self._config
+        endpoint = resolve_effective_base_url(config) if config is not None else None
+        endpoint_key = endpoint or f"environment:{config.environment if config else 'production'}"
+        workspace_id = config.workspace_id if config is not None else "hermes"
+        target = {
+            "endpoint": endpoint_key,
+            "workspace_id": workspace_id,
+            "user_peer_id": session.user_peer_id,
+            "ai_peer_id": session.assistant_peer_id,
+        }
+        target_key = hashlib.sha256(
+            json.dumps(target, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        state_path = get_hermes_home() / "state" / "honcho_migration.json"
+        lock_path = state_path.with_suffix(".json.lock")
 
-        uploaded = False
-        files = [
-            (
-                "MEMORY.md",
-                "consolidated_memory.md",
-                "Long-term agent notes and preferences",
-                user_peer,
-                "user",
-            ),
-            (
-                "USER.md",
-                "user_profile.md",
-                "User profile and preferences",
-                user_peer,
-                "user",
-            ),
-            (
-                "SOUL.md",
-                "agent_soul.md",
-                "Agent persona and identity configuration",
-                assistant_peer,
-                "ai",
-            ),
-        ]
+        with _migration_lock(lock_path) as acquired:
+            if not acquired:
+                return False
+            state = _load_migration_state(state_path)
+            if state is None:
+                return False
 
-        for filename, upload_name, description, target_peer, target_kind in files:
-            filepath = memory_path / filename
-            if not filepath.exists():
-                continue
-            content = filepath.read_text(encoding="utf-8").strip()
-            if not content:
-                continue
-
-            wrapped = (
-                f"<prior_memory_file>\n"
-                f"<context>\n"
-                f"This file was consolidated from local conversations BEFORE Honcho was activated.\n"
-                f"{description}. Treat as foundational context for this user.\n"
-                f"</context>\n"
-                f"\n"
-                f"{content}\n"
-                f"</prior_memory_file>\n"
+            targets = state["targets"]
+            target_state = targets.setdefault(
+                target_key,
+                {**target, "sources": {}},
             )
+            if not isinstance(target_state, dict):
+                logger.warning("Honcho migration target state is invalid: %s", target_key)
+                return False
+            sources = target_state.setdefault("sources", {})
+            if not isinstance(sources, dict):
+                logger.warning("Honcho migration target state is invalid: %s", target_key)
+                return False
+            source_path = str(memory_path)
+            source_key = hashlib.sha256(source_path.encode("utf-8")).hexdigest()
+            source_state = sources.setdefault(
+                source_key,
+                {"path": source_path, "files": {}},
+            )
+            if not isinstance(source_state, dict):
+                logger.warning("Honcho migration source state is invalid: %s", source_path)
+                return False
+            completed_files = source_state.get("files")
+            if not isinstance(completed_files, dict):
+                logger.warning("Honcho migration source state is invalid: %s", source_path)
+                return False
 
-            try:
-                honcho_session.upload_file(
-                    file=(upload_name, wrapped.encode("utf-8"), "text/plain"),
-                    peer=target_peer,
-                    metadata={
-                        "source": "local_memory",
-                        "original_file": filename,
-                        "target_peer": target_kind,
-                    },
+            user_peer = self._get_or_create_peer(session.user_peer_id)
+            assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
+            uploaded = False
+            files = [
+                (
+                    "MEMORY.md",
+                    "consolidated_memory.md",
+                    "Long-term agent notes and preferences",
+                    user_peer,
+                    "user",
+                ),
+                (
+                    "USER.md",
+                    "user_profile.md",
+                    "User profile and preferences",
+                    user_peer,
+                    "user",
+                ),
+                (
+                    "SOUL.md",
+                    "agent_soul.md",
+                    "Agent persona and identity configuration",
+                    assistant_peer,
+                    "ai",
+                ),
+            ]
+
+            for filename, upload_name, description, target_peer, target_kind in files:
+                if completed_files.get(filename) is True:
+                    continue
+                filepath = memory_path / filename
+                if not filepath.exists():
+                    continue
+                content = filepath.read_text(encoding="utf-8").strip()
+                if not content:
+                    continue
+
+                migration_id = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "target": target_key,
+                            "source": source_key,
+                            "filename": filename,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                try:
+                    remote_messages = honcho_session.messages(
+                        filters={
+                            "metadata": {
+                                "source": "local_memory",
+                                "migration_id": migration_id,
+                            }
+                        },
+                        page=1,
+                        size=1,
+                    )
+                    already_uploaded = len(remote_messages) > 0
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to reconcile Honcho migration for %s; skipping upload: %s",
+                        filename,
+                        exc,
+                    )
+                    continue
+
+                if already_uploaded:
+                    completed_files[filename] = True
+                    try:
+                        atomic_json_write(state_path, state, mode=0o600, sort_keys=True)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to record reconciled Honcho migration for %s: %s",
+                            filename,
+                            exc,
+                        )
+                        break
+                    logger.info("Reconciled prior Honcho migration for %s", filename)
+                    continue
+
+                wrapped = (
+                    f"<prior_memory_file>\n"
+                    f"<context>\n"
+                    f"This file was consolidated from local conversations BEFORE Honcho was activated.\n"
+                    f"{description}. Treat as foundational context for this user.\n"
+                    f"</context>\n"
+                    f"\n"
+                    f"{content}\n"
+                    f"</prior_memory_file>\n"
                 )
+
+                try:
+                    honcho_session.upload_file(
+                        file=(upload_name, wrapped.encode("utf-8"), "text/plain"),
+                        peer=target_peer,
+                        metadata={
+                            "source": "local_memory",
+                            "original_file": filename,
+                            "target_peer": target_kind,
+                            "migration_id": migration_id,
+                        },
+                    )
+                except Exception as exc:
+                    logger.error("Failed to upload %s to Honcho: %s", filename, exc)
+                    continue
+
+                uploaded = True
+                completed_files[filename] = True
+                try:
+                    atomic_json_write(state_path, state, mode=0o600, sort_keys=True)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to record Honcho migration for %s: %s",
+                        filename,
+                        exc,
+                    )
+                    break
                 logger.info(
                     "Uploaded %s to Honcho for %s (%s peer)",
                     filename,
                     session_key,
                     target_kind,
                 )
-                uploaded = True
-            except Exception as e:
-                logger.error("Failed to upload %s to Honcho: %s", filename, e)
 
-        return uploaded
+            return uploaded
 
     @staticmethod
     def _normalize_card(card: Any) -> list[str]:

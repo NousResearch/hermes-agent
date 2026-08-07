@@ -2966,6 +2966,34 @@ class AIAgent:
         tags).  The truncation guard ("don't overwrite a larger log with
         fewer messages") is preserved so resume + branch don't clobber a
         fuller existing snapshot.
+
+        Scope and message-count caveats -- this snapshot's count is
+        noncanonical, not a reliable proxy for "how much history exists":
+
+        - Compression defaults to ``compression.in_place: true``
+          (``agent/conversation_compression.py``), which REWRITES the live
+          message list to a smaller compacted set under the SAME
+          session_id. Because this writer re-derives ``session_{sid}.json``
+          from ``self.session_id`` on every call, and the truncation guard
+          above refuses to overwrite an existing larger snapshot with
+          fewer messages, the file typically just stops being updated at
+          its pre-compaction size rather than "keeping up" with the live
+          (now-smaller) history -- the opposite of continuing to grow.
+          Only the opt-out rotation mode (``compression.in_place: false``)
+          forks a new child session_id, starting a fresh snapshot file.
+        - ``/branch`` (``gateway/slash_commands.py::_handle_branch_command``)
+          always creates a new child session_id and copies the parent's
+          loaded transcript into it before the branch continues, so a
+          branched snapshot starts as a copy, not empty.
+        - Don't use ``SessionDB.get_compression_lineage`` /
+          ``export_session_lineage`` to explain a branch child's snapshot:
+          those only traverse ROTATION-MODE COMPRESSION ancestors --
+          ``get_compression_lineage()`` returns just the requested ID
+          for a branch-child row (``hermes_state.py``) rather than
+          walking into the branch's parent chain. There is no single API
+          that reconstructs a full branch+compression lineage; state.db
+          per-session_id reads and this snapshot are both scoped to one
+          session_id's own rows either way (issue #2229).
         """
         if not getattr(self, "_session_json_enabled", False):
             return

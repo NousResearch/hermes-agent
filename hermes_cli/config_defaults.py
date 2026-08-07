@@ -2750,6 +2750,19 @@ DEFAULT_CONFIG = {
         # no consumer outside their own overwrite guard and accumulated
         # GBs of disk on heavy users.  Opt in only if you have an external
         # tool that consumes the JSON files directly.
+        # Note: this snapshot's message count is noncanonical. Default
+        # in-place compression (compression.in_place: true) rewrites the
+        # live history to fewer messages under the SAME session_id, but
+        # the writer's own truncation guard then refuses to overwrite the
+        # existing (larger) snapshot -- so the file typically freezes at
+        # its pre-compaction size rather than staying in sync. Only
+        # rotation mode (in_place: false) or /branch forks a new
+        # session_id (and /branch copies the parent's loaded transcript
+        # into it, so that file isn't empty either). There is no single
+        # API that reconstructs a full branch+compression lineage --
+        # SessionDB.get_compression_lineage/export_session_lineage only
+        # traverse rotation-mode compression ancestors, not branch parents
+        # (issue #2229).
         "write_json_snapshots": False,
         # Search-index (FTS) storage optimization — the compact v23 layout
         # that drops duplicate content copies and stops trigram-indexing tool

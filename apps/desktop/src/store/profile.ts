@@ -299,6 +299,15 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   try {
     await gatewaySwitch
+  } catch (error) {
+    // Switching to the target profile failed (e.g. its backend socket could
+    // not be opened — see openSecondary). Do NOT fall back to the primary
+    // socket silently: that would route the user's messages to the wrong
+    // profile's backend and cause cross-profile session writes.
+    // https://github.com/NousResearch/hermes-agent/issues/81094
+    const detail = error instanceof Error ? error.message : String(error)
+    console.error(`[gateway] profile switch to "${target}" failed: ${detail}`)
+    throw error
   } finally {
     gatewaySwitch = null
     $gatewaySwapTarget.set(null)

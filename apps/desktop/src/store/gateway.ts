@@ -176,7 +176,22 @@ async function openSecondary(entry: Secondary): Promise<void> {
 
   const conn = await desktop.getConnection(entry.profile)
   const wsUrl = await resolveGatewayWsUrl(desktop, conn)
-  await entry.gateway.connect(wsUrl)
+
+  try {
+    await entry.gateway.connect(wsUrl)
+  } catch (error) {
+    // Surface the failure instead of letting the caller's catch path fall
+    // through to the primary socket. A silent fallback routes the user's
+    // messages to the wrong profile's backend (cross-profile session writes).
+    // See https://github.com/NousResearch/hermes-agent/issues/81094
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `Failed to connect to profile "${entry.profile}" backend (${detail}). ` +
+        'If a manually started gateway process is holding this profile, stop it ' +
+        'or restart the desktop app before switching again.'
+    )
+  }
+
   void desktop.touchBackend?.(entry.profile).catch(() => undefined)
 }
 

@@ -158,6 +158,18 @@ class TestDetectProviderForModel:
         assert detect_provider_for_model("gpt-5.4", "custom:foo") is None
 
 
+    def test_current_provider_wins_when_static_catalogs_overlap(self):
+        """Static overlap must not route a model away from its current provider."""
+        with patch.dict(
+            _models_mod._PROVIDER_MODELS,
+            {
+                "nous": ["example/shared-model"],
+                "vertex": ["example/shared-model"],
+            },
+        ):
+            assert detect_provider_for_model("example/shared-model", "nous") is None
+
+
 
 
 class TestIsNousFreeTier:

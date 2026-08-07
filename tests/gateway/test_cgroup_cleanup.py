@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,10 @@ class TestOwnCgroupPath:
         assert cgroup_cleanup._own_cgroup_path() == "/user.slice/user-1000.slice/hermes-gateway.service"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: reap_cgroup uses os.kill(pid, signal.SIGKILL) and reads /sys/fs/cgroup which Windows lacks",
+)
 class TestReapCgroup:
 
 

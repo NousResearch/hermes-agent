@@ -32,6 +32,26 @@ def _clear_cpr_env(monkeypatch):
 
 class TestClassicCliOutputSelection:
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="prompt_toolkit imports termios at module load which doesn't exist on Windows",
+    )
+    def test_application_receives_cpr_not_supported_without_ssh(self, monkeypatch):
+        """Classic-CLI Application construction must get CPR-disabled output."""
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.layout import FormattedTextControl, Layout, Window
+        from prompt_toolkit.renderer import CPR_Support
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        out = _select_classic_cli_pt_output(sys.stdout)
+        assert out is not None
+
+        app = Application(
+            layout=Layout(Window(FormattedTextControl("x"))),
+            output=out,
+            full_screen=False,
+        )
+        assert app.renderer.cpr_support == CPR_Support.NOT_SUPPORTED
 
     def test_windows_preserves_default_output_selection(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "win32")

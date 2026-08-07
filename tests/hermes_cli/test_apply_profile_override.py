@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def _run_apply_profile_override(
     tmp_path, monkeypatch, *, hermes_home: str | None, active_profile: str | None,
@@ -85,7 +87,53 @@ class TestApplyProfileOverrideHermesHomeGuard:
             f"Expected HERMES_HOME to end with 'coder', got: {result!r}"
         )
 
+    def test_hermes_home_already_profile_dir_is_trusted(self, tmp_path, monkeypatch):
+        """HERMES_HOME=.../profiles/coder must not be overridden even when
+        active_profile says something different.
 
+        Preserves the child-process inheritance contract: a subprocess spawned
+        with HERMES_HOME already set to a specific profile must stay in that
+        profile.
+        """
+        hermes_root = tmp_path / ".hermes"
+        profile_dir = hermes_root / "profiles" / "coder"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        (hermes_root / "active_profile").write_text("other")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "start"])
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") == str(profile_dir), (
+            "HERMES_HOME must remain unchanged when already pointing to a profile dir"
+        )
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows: get_default_hermes_root() uses LOCALAPPDATA, not Path.home(), so the test mock doesn't drive the production path",
+    )
+    def test_hermes_home_unset_reads_active_profile(self, tmp_path, monkeypatch):
+        """Classic case: HERMES_HOME unset + active_profile=coder must set
+        HERMES_HOME to the profile directory (existing behaviour must not regress).
+        """
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="coder",
+        )
+
+        assert result is not None
+        assert "coder" in result
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX-only: uses `import pwd` which doesn't exist on Windows; production code path _resolve_sudo_user_profile_env is also POSIX-only",
+    )
     def test_sudo_explicit_profile_resolves_invoking_users_profile(self, tmp_path, monkeypatch):
         """sudo elias ... should resolve `-p elias` under SUDO_USER, not root."""
         root_home = tmp_path / "root"
@@ -126,6 +174,10 @@ class TestSupervisedChildIgnoresStickyProfile:
     """
 
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows: get_default_hermes_root() uses LOCALAPPDATA, not Path.home(), so the test mock doesn't drive the production path",
+    )
     def test_non_supervised_run_still_follows_active_profile(
         self, tmp_path, monkeypatch
     ):

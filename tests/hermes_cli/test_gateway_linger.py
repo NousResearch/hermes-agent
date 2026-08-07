@@ -1,8 +1,19 @@
 """Tests for gateway linger auto-enable behavior on headless Linux installs."""
 
+import sys
 from types import SimpleNamespace
 
+import pytest
+
 import hermes_cli.gateway as gateway
+
+# These tests exercise the systemd-only /loginctl user-linger codepath
+# and the install.sh script that creates /etc/systemd/system/...
+# service units. None of that exists on Windows (or macOS).
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: exercises /loginctl user-linger + /etc/systemd/system; Windows uses a different install path",
+)
 
 
 class TestEnsureLingerEnabled:

@@ -9,6 +9,7 @@ volume when a runtime install is unavoidable.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,24 @@ def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
     assert (mirror / "node_modules" / "installed.txt").exists()
 
 
+def test_mirror_failure_falls_back_to_source(tmp_path, monkeypatch) -> None:
+    """If HERMES_HOME is unusable too, return the source dir (fail-open)."""
+    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
+    # Point HERMES_HOME at a path under a file so mkdir fails.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(blocker / "home"))
+    source = tmp_path / "src"
+    _seed_source(source)
+    _freeze_writability(monkeypatch, writable=False)
+
+    assert sidecar_paths.resolve_sidecar_dir(source) == source
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: uses os.geteuid() and chmod 0o555 which Windows doesn't honor",
+)
 def test_dir_writable_probe(tmp_path) -> None:
     assert sidecar_paths.dir_writable(tmp_path) is True
     ro = tmp_path / "ro"

@@ -8,6 +8,7 @@ launcher from ``scripts/install.sh``; existing installs get it from
 
 import os
 import stat
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,14 @@ import pytest
 
 from hermes_cli.main import _ensure_acp_launcher
 
+# All tests in this module exercise the POSIX launcher convention
+# (.local/bin on $PATH via login shell). Windows installs the launcher
+# via a different code path (scripts/install.ps1 + PATH registration),
+# and os.geteuid() doesn't exist on Windows. Skip the whole module.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: .local/bin launcher convention + os.geteuid; Windows uses a different install path",
+)
 
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):

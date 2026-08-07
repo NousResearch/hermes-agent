@@ -216,6 +216,84 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert captured["prompt"] == "recall this"
 
 
+def _run_oneshot_with_checkpoint_config(monkeypatch, tmp_path, checkpoint_config):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        textwrap.dedent(checkpoint_config),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import hermes_cli.oneshot as oneshot_mod
+    from run_agent import AIAgent
+
+    captured = {}
+
+    def fake_run_conversation(agent, _prompt, **_kwargs):
+        captured["manager"] = agent._checkpoint_mgr
+        return {"final_response": "ok"}
+
+    monkeypatch.setattr(AIAgent, "run_conversation", fake_run_conversation)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "key",
+            "base_url": "https://example.invalid",
+            "provider": "openai",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: None)
+
+    text, _result = oneshot_mod._run_agent(
+        "hello",
+        model="gpt-test",
+        provider="openai",
+        toolsets=[],
+        use_config_toolsets=False,
+    )
+
+    return text, captured["manager"]
+
+
+def test_oneshot_honors_checkpoint_config(monkeypatch, tmp_path):
+    text, manager = _run_oneshot_with_checkpoint_config(
+        monkeypatch,
+        tmp_path,
+        """
+        checkpoints:
+          enabled: true
+          max_snapshots: 7
+          max_total_size_mb: 321
+          max_file_size_mb: 4
+        """,
+    )
+
+    assert text == "ok"
+    assert manager.enabled is True
+    assert manager.max_snapshots == 7
+    assert manager.max_total_size_mb == 321
+    assert manager.max_file_size_mb == 4
+
+
+def test_oneshot_tolerates_legacy_boolean_checkpoint_config(monkeypatch, tmp_path):
+    text, manager = _run_oneshot_with_checkpoint_config(
+        monkeypatch,
+        tmp_path,
+        """
+        checkpoints: true
+        """,
+    )
+
+    assert text == "ok"
+    assert manager.enabled is True
+    assert manager.max_snapshots == 20
+    assert manager.max_total_size_mb == 500
+    assert manager.max_file_size_mb == 10
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None

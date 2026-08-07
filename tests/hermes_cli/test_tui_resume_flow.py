@@ -146,6 +146,229 @@ def _stub_plugin_discovery(monkeypatch):
     )
 
 
+def test_oneshot_rejects_invalid_only_toolsets(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    from hermes_cli.oneshot import run_oneshot
+
+    assert run_oneshot("hello", toolsets="nope") == 2
+    err = capsys.readouterr().err
+    assert "nope" in err
+    assert "did not contain any valid toolsets" in err
+
+
+def test_oneshot_passes_runtime_default_headers_to_aiagent(monkeypatch):
+    captured = {}
+
+    class _FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_conversation(self, prompt):
+            return {"final_response": "ok"}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "m", "provider": "custom"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://example.test/v1",
+            "api_key": "test-key",
+            "default_headers": {"X-Test": "value"},
+        },
+    )
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *a, **k: set())
+    monkeypatch.setattr("run_agent.AIAgent", _FakeAgent)
+
+    from hermes_cli.oneshot import _run_agent
+
+    result = _run_agent("hello", model="m", provider="custom", use_config_toolsets=False)
+
+    assert result[0] == "ok"
+    assert captured["provider"] == "custom"
+    assert captured["base_url"] == "https://example.test/v1"
+    assert captured["default_headers"] == {"X-Test": "value"}
+
+
+def test_oneshot_fails_closed_on_empty_final_response(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: ("", {}))
+
+    assert oneshot_mod.run_oneshot("hello") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no final response" in captured.err
+
+
+def test_oneshot_prints_nonempty_final_response(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: ("done", {}))
+
+    assert oneshot_mod.run_oneshot("hello") == 0
+    captured = capsys.readouterr()
+    assert captured.out == "done\n"
+    assert captured.err == ""
+
+
+def test_oneshot_fails_closed_on_agent_exception(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("not a TTY")
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _boom)
+
+    assert oneshot_mod.run_oneshot("hello") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "agent failed" in captured.err
+    assert "not a TTY" in captured.err
+
+
+def test_oneshot_exit_code_when_failed_without_response(monkeypatch):
+    from hermes_cli.oneshot import run_oneshot
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._run_agent",
+        lambda *_a, **_k: ("", {"failed": True, "partial": False}),
+    )
+    assert run_oneshot("hi") == 2
+
+
+def test_oneshot_exit_code_zero_when_failed_with_error_text(monkeypatch, capsys):
+    from hermes_cli.oneshot import run_oneshot
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._run_agent",
+        lambda *_a, **_k: (
+            "API call failed after 3 retries: HTTP 404: model not found",
+            {"failed": True, "partial": False},
+        ),
+    )
+    assert run_oneshot("hi") == 0
+    assert "HTTP 404" in capsys.readouterr().out
+
+
+def test_oneshot_reraises_keyboard_interrupt(monkeypatch):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+    import pytest as _pytest
+
+    def _interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _interrupt)
+
+    with _pytest.raises(KeyboardInterrupt):
+        oneshot_mod.run_oneshot("hello")
+
+
+def test_oneshot_filters_invalid_toolsets_before_redirect(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    valid, error = _validate_explicit_toolsets("web,nope")
+
+    assert valid == ["web"]
+    assert error is None
+    assert "nope" in capsys.readouterr().err
+
+
+def test_oneshot_all_toolsets_means_all_not_configured_cli():
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    valid, error = _validate_explicit_toolsets("all")
+
+    assert valid is None
+    assert error is None
+
+
+def test_oneshot_all_toolsets_warns_about_ignored_extra_entries(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    valid, error = _validate_explicit_toolsets("all,nope")
+
+    assert valid is None
+    assert error is None
+    assert "ignoring additional entries: nope" in capsys.readouterr().err
+
+
+def test_oneshot_accepts_plugin_toolset_after_discovery(monkeypatch):
+    import toolsets
+
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    discovered = {"ready": False}
+    original_validate = toolsets.validate_toolset
+
+    def fake_validate(name):
+        return name == "plugin_demo" and discovered["ready"] or original_validate(name)
+
+    monkeypatch.setattr(toolsets, "validate_toolset", fake_validate)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(
+            discover_plugins=lambda: discovered.update({"ready": True})
+        ),
+    )
+
+    valid, error = _validate_explicit_toolsets("plugin_demo")
+
+    assert valid == ["plugin_demo"]
+    assert error is None
+
+
+def test_oneshot_rejects_disabled_mcp_toolset(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.config as config_mod
+
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+
+    valid, error = _validate_explicit_toolsets("mcp-off")
+
+    assert valid is None
+    assert error == "hermes -z: --toolsets did not contain any valid toolsets.\n"
+    err = capsys.readouterr().err
+    assert "ignoring disabled MCP servers" in err
+    assert "mcp-off" in err
+
+
+def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.config as config_mod
+
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+
+    valid, error = _validate_explicit_toolsets("web,mcp-off,nope")
+
+    assert valid == ["web"]
+    assert error is None
+    err = capsys.readouterr().err
+    assert "ignoring unknown --toolsets entries: nope" in err
+    assert "ignoring disabled MCP servers" in err
+    assert "mcp-off" in err
 
 
 def test_oneshot_wires_session_db_for_recall(monkeypatch):
@@ -282,7 +505,3 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir
     assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
-
-
-
-

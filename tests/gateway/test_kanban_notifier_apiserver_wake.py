@@ -51,13 +51,17 @@ class ApiServerLikeAdapter:
         self.handle_message_calls.append(event)
 
 
-async def _run_one_notifier_tick(monkeypatch, runner):
+async def _run_notifier_ticks(monkeypatch, runner, *, ticks=1):
     real_sleep = asyncio.sleep
+    completed_ticks = 0
 
     async def fake_sleep(delay):
+        nonlocal completed_ticks
         if delay == 5:
             return None
-        runner._running = False
+        completed_ticks += 1
+        if completed_ticks >= ticks:
+            runner._running = False
         await real_sleep(0)
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
@@ -114,25 +118,70 @@ def test_apiserver_sub_wakes_real_session_via_self_post(tmp_path, monkeypatch):
 
     posts = []
 
-    async def fake_self_post(adapter, *, text, session_id):
-        posts.append({"text": text, "session_id": session_id})
+    async def fake_deliver_wake(
+        adapter, *, text, session_id, source=None, producer_identity=None,
+    ):
+        assert source is None
+        posts.append({
+            "text": text,
+            "session_id": session_id,
+            "producer_identity": producer_identity,
+        })
 
     import gateway.wake as wake_mod
 
-    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+    monkeypatch.setattr(wake_mod, "deliver_wake", fake_deliver_wake)
 
     adapter = ApiServerLikeAdapter()
     runner = _make_runner({Platform.API_SERVER: adapter})
-    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    asyncio.run(_run_notifier_ticks(monkeypatch, runner))
 
     assert adapter.handle_message_calls == [], (
         "api_server wake must not go through handle_message (wrong-session bug)"
     )
     assert len(posts) == 1
     assert posts[0]["session_id"] == "raw-sid-123"
+    assert posts[0]["producer_identity"]
     assert tid in posts[0]["text"]
     # The wake self-post IS the delivery on this path (no separate text-ping
     # fallback is attempted for stateless api_server subs) — cursor advances
     # once the wake succeeds.
     assert _unseen_terminal_events(tid, "api_server", "raw-sid-123") == []
 
+
+def test_apiserver_rewind_replay_reuses_kanban_producer_identity(
+    tmp_path, monkeypatch,
+):
+    """A failed wake is replayed with the same producer identity."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver-replay.db"))
+    kb.init_db()
+    tid = _create_completed_subscription(
+        "api_server",
+        "raw-sid-replay",
+        session_id="raw-sid-replay",
+    )
+    producer_identities = []
+
+    async def flaky_deliver_wake(
+        adapter, *, text, session_id, source=None, producer_identity=None,
+    ):
+        assert session_id == "raw-sid-replay"
+        assert source is None
+        producer_identities.append(producer_identity)
+        if len(producer_identities) == 1:
+            raise asyncio.TimeoutError("ambiguous first delivery")
+
+    import gateway.wake as wake_mod
+
+    monkeypatch.setattr(wake_mod, "deliver_wake", flaky_deliver_wake)
+
+    adapter = ApiServerLikeAdapter()
+    runner = _make_runner({Platform.API_SERVER: adapter})
+    asyncio.run(_run_notifier_ticks(monkeypatch, runner, ticks=2))
+
+    assert len(producer_identities) == 2
+    assert producer_identities[0]
+    assert producer_identities[0] == producer_identities[1]
+    assert adapter.handle_message_calls == []
+    assert adapter.send_calls == 0
+    assert _unseen_terminal_events(tid, "api_server", "raw-sid-replay") == []

@@ -186,6 +186,74 @@ def test_failed_async_injection_is_retried_and_only_success_is_acked(
     assert acknowledgements == ["deleg_duplicate"]
 
 
+@pytest.mark.parametrize(
+    ("event", "expected_identity"),
+    [
+        (
+            {
+                **_async_event("deleg_api_stable"),
+                "session_key": "raw-api-target",
+                "origin_session_id": "raw-api-target",
+            },
+            ("async_delegation", "deleg_api_stable", ""),
+        ),
+        (
+            {
+                **_completion_event(
+                    started_at=1234.5,
+                    session_id="proc_api_stable",
+                ),
+                "session_key": "raw-api-target",
+                "origin_session_id": "raw-api-target",
+                "platform": "",
+                "chat_id": "",
+            },
+            ("completion", "proc_api_stable", 1234.5),
+        ),
+    ],
+)
+def test_apiserver_durable_completion_passes_stable_producer_identity(
+    monkeypatch, event, expected_identity,
+):
+    """Replayable delegation/process events retain identity at self-post."""
+    adapter = SimpleNamespace(supports_async_delivery=False)
+    runner = _runner(adapter)
+    runner.adapters = {Platform.API_SERVER: adapter}
+    deliveries = []
+
+    async def fake_deliver_wake(
+        _adapter,
+        *,
+        text,
+        session_id,
+        producer_identity=None,
+    ):
+        deliveries.append({
+            "text": text,
+            "session_id": session_id,
+            "producer_identity": producer_identity,
+        })
+
+    import gateway.wake as wake_mod
+
+    monkeypatch.setattr(wake_mod, "deliver_wake", fake_deliver_wake)
+
+    async def exercise():
+        assert await runner._inject_watch_notification("done", dict(event)) is True
+        assert await runner._inject_watch_notification("done", dict(event)) is True
+
+    asyncio.run(exercise())
+
+    assert [d["session_id"] for d in deliveries] == [
+        "raw-api-target",
+        "raw-api-target",
+    ]
+    assert [d["producer_identity"] for d in deliveries] == [
+        expected_identity,
+        expected_identity,
+    ]
+
+
 def _persist_pending_completion(event):
     from tools import async_delegation
 
@@ -193,6 +261,7 @@ def _persist_pending_completion(event):
         "delegation_id": event["delegation_id"],
         "session_key": event["session_key"],
         "origin_ui_session_id": "",
+        "origin_session_id": event.get("origin_session_id", ""),
         "parent_session_id": event.get("parent_session_id"),
         "dispatched_at": event["dispatched_at"],
     })
@@ -200,6 +269,126 @@ def _persist_pending_completion(event):
         "status": "completed",
         "summary": event["summary"],
     })
+
+
+def test_apiserver_durable_completion_recomputes_after_failed_agent_result(
+    monkeypatch,
+):
+    """An outer durable replay must not inherit a cached failed agent run."""
+    from aiohttp import web
+
+    import gateway.platforms.api_server as api_server_mod
+    import gateway.wake as wake_mod
+    from tools import async_delegation
+
+    monkeypatch.setattr(wake_mod, "_RETRY_DELAYS_SECONDS", ())
+    monkeypatch.setattr(
+        api_server_mod,
+        "_idem_cache",
+        api_server_mod._IdempotencyCache(),
+    )
+
+    event = {
+        **_async_event("deleg_apiserver_retry"),
+        "session_key": "raw-api-retry-session",
+        "origin_session_id": "raw-api-retry-session",
+    }
+    _persist_pending_completion(event)
+
+    response_statuses = []
+    request_keys = []
+    run_agent_calls = 0
+
+    @web.middleware
+    async def observe_status(request, handler):
+        request_keys.append(request.headers.get("Idempotency-Key"))
+        response = await handler(request)
+        response_statuses.append(response.status)
+        return response
+
+    async def run_agent(**_kwargs):
+        nonlocal run_agent_calls
+        run_agent_calls += 1
+        usage = {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        if run_agent_calls == 1:
+            return (
+                {
+                    "final_response": "",
+                    "messages": [],
+                    "api_calls": 1,
+                    "completed": False,
+                    "failed": True,
+                    "error": "transient agent failure",
+                },
+                usage,
+            )
+        return (
+            {
+                "final_response": "completion accepted",
+                "messages": [],
+                "api_calls": 1,
+                "completed": True,
+            },
+            usage,
+        )
+
+    async def exercise():
+        adapter = api_server_mod.APIServerAdapter(
+            api_server_mod.PlatformConfig(
+                enabled=True,
+                extra={"key": "test-key"},
+            )
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_ensure_session_db_async",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(adapter, "_run_agent", run_agent)
+
+        app = web.Application(middlewares=[observe_status])
+        app.router.add_post(
+            "/v1/chat/completions",
+            adapter._handle_chat_completions,
+        )
+        web_runner = web.AppRunner(app)
+        await web_runner.setup()
+        site = web.TCPSite(web_runner, "127.0.0.1", 0)
+        await site.start()
+        adapter._host = "127.0.0.1"
+        adapter._port = site._server.sockets[0].getsockname()[1]
+
+        delivery_runner = _runner(adapter)
+        delivery_runner.adapters = {Platform.API_SERVER: adapter}
+        try:
+            first = await delivery_runner._deliver_completion_notification(
+                "delegation complete",
+                dict(event),
+            )
+            first_state = async_delegation.get_durable_delegation(
+                event["delegation_id"]
+            )
+            second = await delivery_runner._deliver_completion_notification(
+                "delegation complete",
+                dict(event),
+            )
+            return first, first_state, second
+        finally:
+            await web_runner.cleanup()
+
+    first, first_state, second = asyncio.run(exercise())
+
+    assert first is False
+    assert first_state["delivery_state"] == "pending"
+    assert response_statuses[0] >= 500
+    assert second is True
+    assert response_statuses == [502, 200]
+    assert request_keys[0]
+    assert request_keys[0] == request_keys[1]
+    assert run_agent_calls == 2
+    final_state = async_delegation.get_durable_delegation(event["delegation_id"])
+    assert final_state["delivery_state"] == "delivered"
+    assert final_state["delivery_attempts"] == 2
 
 
 def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch):

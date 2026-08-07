@@ -1224,7 +1224,9 @@ class _IdempotencyCache:
         while len(self._store) > self._max:
             self._store.popitem(last=False)
 
-    async def get_or_set(self, key: str, fingerprint: str, compute_coro):
+    async def get_or_set(
+        self, key: str, fingerprint: str, compute_coro, *, should_cache=None
+    ):
         self._purge()
         item = self._store.get(key)
         if item and item["fp"] == fingerprint:
@@ -1235,9 +1237,10 @@ class _IdempotencyCache:
         if task is None:
             async def _compute_and_store():
                 resp = await compute_coro()
-                import time as _t
-                self._store[key] = {"resp": resp, "fp": fingerprint, "ts": _t.time()}
-                self._purge()
+                if should_cache is None or should_cache(resp):
+                    import time as _t
+                    self._store[key] = {"resp": resp, "fp": fingerprint, "ts": _t.time()}
+                    self._purge()
                 return resp
 
             task = asyncio.create_task(_compute_and_store())
@@ -4228,8 +4231,23 @@ class APIServerAdapter(BasePlatformAdapter):
                 body,
                 keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
             )
+
+            def _should_cache_completion(response) -> bool:
+                response_result, _response_usage = response
+                response_text = _resolve_media_to_data_urls(
+                    response_result.get("final_response") or ""
+                )
+                return bool(response_text) or not (
+                    response_result.get("failed") or response_result.get("partial")
+                )
+
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
+                result, usage = await _idem_cache.get_or_set(
+                    idempotency_key,
+                    fp,
+                    _compute_completion,
+                    should_cache=_should_cache_completion,
+                )
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(

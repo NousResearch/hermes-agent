@@ -672,6 +672,13 @@ class GatewayKanbanWatchersMixin:
                                     adapter,
                                     text=_synth,
                                     session_id=_session_key,
+                                    producer_identity=(
+                                        "kanban",
+                                        board_slug or _kb.DEFAULT_BOARD,
+                                        sub["task_id"],
+                                        d.get("old_cursor", 0),
+                                        d["cursor"],
+                                    ),
                                 )
                                 logger.info(
                                     "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",

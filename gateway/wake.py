@@ -26,8 +26,11 @@ rewind cursors / retry instead of silently losing the event.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
-from typing import Any, Optional
+import secrets
+from typing import Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,7 @@ async def deliver_wake(
     text: str,
     session_id: str = "",
     source: Any = None,
+    producer_identity: Optional[Sequence[Any]] = None,
 ) -> None:
     """Deliver a wake turn to the session behind ``adapter``.
 
@@ -91,11 +95,27 @@ async def deliver_wake(
             "deliver_wake: non-push adapter (supports_async_delivery=False) "
             "requires the raw session id to self-post the wake turn"
         )
-    await _self_post_chat_completion(adapter, text=text, session_id=session_id)
+    if producer_identity is None:
+        await _self_post_chat_completion(
+            adapter,
+            text=text,
+            session_id=session_id,
+        )
+    else:
+        await _self_post_chat_completion(
+            adapter,
+            text=text,
+            session_id=session_id,
+            producer_identity=producer_identity,
+        )
 
 
 async def _self_post_chat_completion(
-    adapter: Any, *, text: str, session_id: str
+    adapter: Any,
+    *,
+    text: str,
+    session_id: str,
+    producer_identity: Optional[Sequence[Any]] = None,
 ) -> None:
     """POST the wake text to the in-pod API server as a normal session turn.
 
@@ -123,8 +143,25 @@ async def _self_post_chat_completion(
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"  # bare IPv6 literal
     url = f"http://{host}:{port}/v1/chat/completions"
+    if producer_identity is None:
+        producer_identity = ("nonce", secrets.token_hex(32))
+    canonical_identity = json.dumps(
+        {
+            "producer": list(producer_identity),
+            "session_id": session_id,
+            "version": 1,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    idempotency_key = (
+        "wake-v1:"
+        + hashlib.sha256(canonical_identity.encode("utf-8")).hexdigest()
+    )
     headers = {
         "Authorization": f"Bearer {api_key}",
+        "Idempotency-Key": idempotency_key,
         "X-Hermes-Session-Id": session_id,
     }
     payload = {

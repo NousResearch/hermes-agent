@@ -281,6 +281,43 @@ class TestConfig:
         assert p._observation_scopes == "per_tag"
 
 
+    @pytest.mark.parametrize(
+        ("configured_tags", "expected_tags"),
+        [
+            ("project:hermes, kind:note, project:hermes", ["project:hermes", "kind:note"]),
+            ('["project:hermes", "kind:note", "project:hermes"]', ["project:hermes", "kind:note"]),
+            ([" project:hermes ", "kind:note", "project:hermes"], ["project:hermes", "kind:note"]),
+            (" , ", None),
+            ([], None),
+        ],
+        ids=["csv", "json-list-string", "python-list", "empty-string", "empty-list"],
+    )
+    def test_recall_tags_config_is_normalized(
+        self, provider_with_config, configured_tags, expected_tags
+    ):
+        p = provider_with_config(recall_tags=configured_tags)
+
+        assert p._recall_tags == expected_tags
+
+
+    def test_recall_tags_normalization_does_not_mutate_loaded_config(self, monkeypatch):
+        configured_tags = [" project:hermes ", "kind:note", "project:hermes"]
+        config = {
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "recall_tags": configured_tags,
+        }
+        monkeypatch.setattr("plugins.memory.hindsight._load_config", lambda: config)
+
+        p = HindsightMemoryProvider()
+        p.initialize(session_id="test-session", platform="cli")
+
+        assert config["recall_tags"] is configured_tags
+        assert configured_tags == [" project:hermes ", "kind:note", "project:hermes"]
+        assert p._recall_tags == ["project:hermes", "kind:note"]
+        assert p._recall_tags is not configured_tags
+
+
     def test_custom_config_values(self, provider_with_config):
         p = provider_with_config(
             retain_tags=["tag1", "tag2"],
@@ -704,6 +741,26 @@ class TestPrefetchServerRetainVisibility:
         provider._client = client
 
         assert provider._is_retain_op_complete("bank", "op-1") is False
+
+
+    def test_prefetch_and_tool_recall_pass_same_normalized_tags(self, provider_with_config):
+        p = provider_with_config(
+            recall_tags="project:hermes, kind:note, project:hermes",
+            recall_tags_match="all",
+        )
+
+        p.queue_prefetch("automatic recall")
+        p._prefetch_thread.join(timeout=5)
+        assert not p._prefetch_thread.is_alive()
+        prefetch_kwargs = p._client.arecall.call_args.kwargs
+
+        p._client.arecall.reset_mock()
+        p.handle_tool_call("hindsight_recall", {"query": "explicit recall"})
+        tool_kwargs = p._client.arecall.call_args.kwargs
+
+        assert prefetch_kwargs["tags"] == ["project:hermes", "kind:note"]
+        assert tool_kwargs["tags"] == prefetch_kwargs["tags"]
+        assert tool_kwargs["tags_match"] == prefetch_kwargs["tags_match"] == "all"
 
 
 # ---------------------------------------------------------------------------

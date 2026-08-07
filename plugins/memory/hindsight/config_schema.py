@@ -72,5 +72,13 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             ),
             inline=True,
         ),
+        ProviderField(
+            key="recall_tags",
+            label="Recall tags",
+            kind=KIND_TEXT,
+            description="Comma-separated tags to filter when searching memories.",
+            placeholder="project:hermes, kind:note",
+            inline=True,
+        ),
     ),
 )

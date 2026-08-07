@@ -3,6 +3,7 @@
 from plugins.memory.config_schema import (
     KIND_SECRET,
     KIND_SELECT,
+    KIND_TEXT,
     get_provider_config_schema,
 )
 
@@ -18,6 +19,7 @@ def test_hindsight_is_declared():
         "api_url",
         "bank_id",
         "recall_budget",
+        "recall_tags",
     }
 
 
@@ -49,3 +51,12 @@ def test_api_key_is_a_secret_bound_to_env():
     assert api_key.kind == KIND_SECRET
     assert api_key.is_secret is True
     assert api_key.env_key == "HINDSIGHT_API_KEY"
+
+
+def test_recall_tags_is_declared_as_comma_separated_text():
+    provider = get_provider_config_schema("hindsight")
+    assert provider is not None
+
+    recall_tags = next(field for field in provider.fields if field.key == "recall_tags")
+    assert recall_tags.kind == KIND_TEXT
+    assert "comma-separated" in recall_tags.description.lower()

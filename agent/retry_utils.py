@@ -206,3 +206,60 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     value for Z.AI Coding overload 429s so the 30/60/90/120s waits run.
     """
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
+
+
+# ── Local endpoint idle/sleep handling (Fixes #76597) ──────────────────────
+# Local LLM servers (LM Studio with ``--sleep-idle-seconds``, Ollama, llama.cpp,
+# oMLX) close the TCP socket while in intentional idle/sleep mode.  At the
+# socket level a sleeping endpoint is indistinguishable from a crashed one
+# (``ECONNRESET`` / ``WinError 10053``).  ``should_eagerly_fallback`` keeps the
+# turn loop from treating a sleeping local endpoint as a hard failure and
+# eagerly switching to remote fallback providers, and
+# ``local_endpoint_wakeup_retry_ceiling`` extends the retry budget so the
+# endpoint gets a real wake-up window before the terminal branch declares it
+# down.
+_LOCAL_WAKEUP_RETRY_CEILING = 6
+
+
+def local_endpoint_wakeup_retry_ceiling() -> int:
+    """Retry-loop ceiling for local endpoints on transport failures.
+
+    The default ``agent.api_max_retries`` (3) exhausts in seconds — far too
+    fast for a sleeping LM Studio/Ollama instance to wake up.  Raise the
+    ceiling so the backoff schedule (``jittered_backoff`` grows toward its 60s
+    max) gives the endpoint a ~2-3 minute wake-up window.  After the window
+    elapses with the endpoint still refusing connections, the terminal branch
+    treats it as a hard failure and surfaces dedicated guidance.
+    """
+    return _LOCAL_WAKEUP_RETRY_CEILING
+
+
+def should_eagerly_fallback(
+    *,
+    is_rate_limited: bool,
+    is_transport_failure: bool,
+    retry_count: int,
+    is_local_endpoint: bool,
+) -> bool:
+    """Whether the turn loop should eagerly switch to a fallback provider.
+
+    Rate limits and billing switch immediately (the primary provider won't
+    recover within the retry window).  Transport failures allow one retry
+    (transient hiccups recover), then fall back if the provider is truly
+    unreachable — UNLESS the provider is a local endpoint.
+
+    Local endpoints (LM Studio, Ollama, llama.cpp) drop the TCP socket while
+    intentionally idle/sleeping; a connection reset there is a "wake me up"
+    signal, not a crash.  Eagerly failing over to remote fallback providers
+    (often rate-limited or dead, exhausting in seconds) is exactly wrong: the
+    sleeping endpoint would recover if Hermes simply waited and retried.  For
+    local endpoints, transport failures fall through to the retry/backoff path
+    instead (with the ceiling raised by
+    ``local_endpoint_wakeup_retry_ceiling``), and the terminal branch reports
+    a distinct "endpoint may be sleeping or crashed" message.  Fixes #76597.
+    """
+    if is_rate_limited:
+        return True
+    if is_transport_failure and retry_count >= 2 and not is_local_endpoint:
+        return True
+    return False

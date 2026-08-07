@@ -69,6 +69,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
+    is_local_endpoint,
     is_output_cap_error,
     parse_available_output_tokens_from_error,
     save_context_length,
@@ -83,6 +84,8 @@ from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
     jittered_backoff,
+    local_endpoint_wakeup_retry_ceiling,
+    should_eagerly_fallback,
     zai_coding_overload_retry_ceiling,
 )
 from agent.trajectory import has_incomplete_scratchpad
@@ -4608,9 +4611,34 @@ def run_conversation(
                 )
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
-                _should_fallback = (
-                    is_rate_limited
-                    or (_is_transport_failure and retry_count >= 2)
+                # ── Local endpoint idle/sleep handling (Fixes #76597) ────
+                # LM Studio (``--sleep-idle-seconds``), Ollama, and other local
+                # servers close the TCP socket while intentionally idle.  A
+                # connection reset on a local endpoint is indistinguishable
+                # from a crash at the socket level (``ECONNRESET`` /
+                # ``WinError 10053``), so do NOT eagerly fail over to remote
+                # fallback providers — which are typically rate-limited or dead
+                # and exhaust in seconds.  Instead give the endpoint a
+                # wake-up window: raise the retry ceiling so the backoff
+                # schedule has room to run (see
+                # ``local_endpoint_wakeup_retry_ceiling``), and surface a
+                # distinct "may be sleeping" status once.  Only after the
+                # window elapses (terminal branch below) is the endpoint
+                # treated as a hard failure, with dedicated guidance.
+                _is_local_endpoint = bool(agent.base_url) and is_local_endpoint(agent.base_url)
+                if _is_local_endpoint and _is_transport_failure:
+                    max_retries = max(max_retries, local_endpoint_wakeup_retry_ceiling())
+                    if not _retry.local_idle_hint_shown:
+                        _retry.local_idle_hint_shown = True
+                        agent._buffer_status(
+                            "💤 Local endpoint appears to be idle/sleeping — "
+                            "retrying to wake it before considering fallback..."
+                        )
+                _should_fallback = should_eagerly_fallback(
+                    is_rate_limited=is_rate_limited,
+                    is_transport_failure=_is_transport_failure,
+                    retry_count=retry_count,
+                    is_local_endpoint=_is_local_endpoint,
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
@@ -5538,6 +5566,23 @@ def run_conversation(
                         )
                     elif is_rate_limited:
                         agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
+                    elif _is_local_endpoint and _is_transport_failure:
+                        # Local endpoint gave its wake-up window and stayed
+                        # down — this is now a hard failure, but the user needs
+                        # to know the endpoint may simply be asleep (and that
+                        # fallback providers were intentionally NOT burned on a
+                        # sleeping server).  Fixes #76597.
+                        agent._emit_status(
+                            f"❌ Local endpoint connection lost after {max_retries} retries — "
+                            f"{_final_summary}"
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}   💡 The local endpoint (LM Studio / Ollama / "
+                            f"llama.cpp) may be sleeping or crashed. Wake it (or restart it) "
+                            f"and retry — a sleeping endpoint recovers, a crashed one needs "
+                            f"attention.",
+                            force=True,
+                        )
                     else:
                         agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
                     agent._vprint(f"{agent.log_prefix}   💀 Final error: {_final_summary}", force=True)

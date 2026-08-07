@@ -66,6 +66,12 @@ class TurnRetryState:
     # ── Transport / rate-limit recovery ──────────────────────────────────
     primary_recovery_attempted: bool = False
     has_retried_429: bool = False
+    # Local endpoints (LM Studio, Ollama, llama.cpp) drop the TCP socket
+    # while intentionally idle/sleeping; a connection reset there is a
+    # "wake me up" signal, not a crash.  Fires the one-shot "local endpoint
+    # may be sleeping" status hint so the user sees WHY Hermes is retrying
+    # instead of failing over (Fixes #76597).
+    local_idle_hint_shown: bool = False
 
     # ── Auth-failure provider failover ───────────────────────────────────
     # Set once we've escalated a persistent 401/403 (after the per-provider

@@ -1431,6 +1431,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._stopping_run_ids: set[str] = set()
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        # Idempotent /v1/runs submissions: key -> (canonical request hash, run_id).
+        # This closes the accepted-run/lost-response window for mobile clients.
+        self._run_idempotency: Dict[str, tuple[str, str]] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -3105,6 +3108,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "responses_api": True,
                 "responses_streaming": True,
                 "run_submission": True,
+                "run_submission_idempotency": True,
                 "run_status": True,
                 "run_events_sse": True,
                 "run_stop": True,
@@ -6398,16 +6402,43 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
-        # Enforce concurrency limit (shared across all agent-serving
-        # endpoints; configurable via gateway.api_server.max_concurrent_runs).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
-
         try:
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        idempotency_key = (request.headers.get("Idempotency-Key") or "").strip()
+        if len(idempotency_key) > 256:
+            return web.json_response(
+                _openai_error("Idempotency-Key exceeds 256 characters"), status=400
+            )
+        request_fingerprint = hashlib.sha256(
+            json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if idempotency_key:
+            previous = self._run_idempotency.get(idempotency_key)
+            if previous is not None:
+                previous_fingerprint, previous_run_id = previous
+                if previous_fingerprint != request_fingerprint:
+                    return web.json_response(
+                        _openai_error(
+                            "Idempotency-Key was already used with a different /v1/runs request",
+                            code="idempotency_conflict",
+                        ),
+                        status=409,
+                    )
+                status = self._run_statuses.get(previous_run_id, {}).get(
+                    "status", "started"
+                )
+                return web.json_response(
+                    {"run_id": previous_run_id, "status": status}, status=202
+                )
+
+        # Matching idempotent replays above do not consume new capacity and
+        # must succeed even while the original run fills the final slot.
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
 
         raw_input = body.get("input")
         if not raw_input:
@@ -6478,6 +6509,8 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error(selection_error), status=400)
 
         run_id = f"run_{uuid.uuid4().hex}"
+        if idempotency_key:
+            self._run_idempotency[idempotency_key] = (request_fingerprint, run_id)
         session_id = session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
@@ -7032,6 +7065,13 @@ class APIServerAdapter(BasePlatformAdapter):
         ]
         for run_id in stale_statuses:
             self._run_statuses.pop(run_id, None)
+            stale_keys = [
+                key
+                for key, (_, keyed_run_id) in self._run_idempotency.items()
+                if keyed_run_id == run_id
+            ]
+            for key in stale_keys:
+                self._run_idempotency.pop(key, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

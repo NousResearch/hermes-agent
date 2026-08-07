@@ -146,6 +146,58 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
+    async def test_idempotency_key_returns_same_run_and_rejects_mismatched_reuse(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "mobile-turn-1"}
+
+                first = await cli.post("/v1/runs", json={"input": "hello"}, headers=headers)
+                replay = await cli.post("/v1/runs", json={"input": "hello"}, headers=headers)
+                conflict = await cli.post("/v1/runs", json={"input": "different"}, headers=headers)
+
+                assert first.status == 202
+                assert replay.status == 202
+                assert (await first.json())["run_id"] == (await replay.json())["run_id"]
+                assert conflict.status == 409
+                assert len(adapter._run_idempotency) == 1
+
+    @pytest.mark.asyncio
+    async def test_idempotent_replay_bypasses_saturated_concurrency_slot(self, adapter):
+        app = _create_runs_app(adapter)
+        adapter._max_concurrent_runs = 1
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "saturated-mobile-turn"}
+                first = await cli.post("/v1/runs", json={"input": "hello"}, headers=headers)
+                first_data = await first.json()
+                assert agent_ready.wait(timeout=3.0)
+                replay = await cli.post("/v1/runs", json={"input": "hello"}, headers=headers)
+                assert replay.status == 202
+                assert (await replay.json())["run_id"] == first_data["run_id"]
+                interrupted.set()
+
+    def test_terminal_status_sweep_prunes_run_idempotency_key(self, adapter):
+        run_id = "run_expired"
+        adapter._run_statuses[run_id] = {
+            "run_id": run_id,
+            "status": "completed",
+            "updated_at": 1,
+        }
+        adapter._run_idempotency["expired-key"] = ("fingerprint", run_id)
+        adapter._sweep_orphaned_runs_once(now=adapter._RUN_STATUS_TTL + 2)
+        assert run_id not in adapter._run_statuses
+        assert "expired-key" not in adapter._run_idempotency
+
+    @pytest.mark.asyncio
     async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):
         """/v1/runs must bind the raw session id as the api_server chat_id
         (like every other agent-entry route does via _run_agent): the async

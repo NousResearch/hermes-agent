@@ -1947,6 +1947,7 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_at": None,
             "paused_reason": None,
             "next_run_at": _hermes_now().isoformat(),
+            "triggered_manually": True,
         },
     )
 
@@ -2050,6 +2051,10 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # is claimable again. No-op if the job never carried a claim.
                 if job.get("run_claim") is not None:
                     job["run_claim"] = None
+                # Clear manual-trigger flag so TZ migration repair can fire
+                # again on subsequent scheduler ticks (#78516).
+                if job.get("triggered_manually"):
+                    job["triggered_manually"] = False
                 
                 # Increment completed count.  Finite one-shot jobs are
                 # pre-claimed by claim_dispatch() BEFORE the side effect runs
@@ -2722,6 +2727,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             if (
                 kind == "cron"
                 and next_run_dt <= now
+                and not job.get("triggered_manually")
                 and _timezone_offset_mismatch(raw_next_run_dt, now)
                 and _stored_wall_clock_is_future(raw_next_run_dt, now)
             ):

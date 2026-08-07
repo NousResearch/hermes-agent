@@ -601,6 +601,21 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
 
+    p_submit_review = sub.add_parser(
+        "submit-review", help="Submit a running implementation to the Review lane"
+    )
+    p_submit_review.add_argument("task_id")
+    p_submit_review.add_argument("reviewer")
+    p_submit_review.add_argument("summary", nargs="+", help="Review handoff summary")
+    p_submit_review.add_argument("--metadata", default=None, help="JSON evidence object")
+
+    p_review_changes = sub.add_parser(
+        "review-changes", help="Complete a review and create implementer remediation"
+    )
+    p_review_changes.add_argument("task_id")
+    p_review_changes.add_argument("summary", nargs="+", help="Requested changes")
+    p_review_changes.add_argument("--metadata", default=None, help="JSON findings object")
+
     p_edit = sub.add_parser(
         "edit",
         help="Edit recovery fields on an already-completed task",
@@ -1062,6 +1077,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "attachments": _cmd_attachments,
             "attach-rm": _cmd_attach_rm,
             "complete": _cmd_complete,
+            "submit-review": _cmd_submit_review,
+            "review-changes": _cmd_review_changes,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
@@ -2136,6 +2153,46 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return int(raw)
     except ValueError:
         return None
+
+
+def _cmd_submit_review(args: argparse.Namespace) -> int:
+    metadata = None
+    if args.metadata:
+        metadata = json.loads(args.metadata)
+        if not isinstance(metadata, dict):
+            raise ValueError("--metadata must be a JSON object")
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, args.task_id)
+        run_id = task.current_run_id if task else None
+        if not kb.submit_for_review(
+            conn, args.task_id, reviewer=args.reviewer,
+            summary=" ".join(args.summary), metadata=metadata,
+            expected_run_id=run_id,
+        ):
+            print(f"cannot submit {args.task_id} for review", file=sys.stderr)
+            return 1
+    print(f"Submitted {args.task_id} for review")
+    return 0
+
+
+def _cmd_review_changes(args: argparse.Namespace) -> int:
+    metadata = None
+    if args.metadata:
+        metadata = json.loads(args.metadata)
+        if not isinstance(metadata, dict):
+            raise ValueError("--metadata must be a JSON object")
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, args.task_id)
+        run_id = task.current_run_id if task else None
+        remediation = kb.request_review_changes(
+            conn, args.task_id, summary=" ".join(args.summary), metadata=metadata,
+            expected_run_id=run_id,
+        )
+    if not remediation:
+        print(f"cannot request changes for {args.task_id}", file=sys.stderr)
+        return 1
+    print(f"Review changes recorded; remediation task: {remediation}")
+    return 0
 
 
 def _cmd_complete(args: argparse.Namespace) -> int:

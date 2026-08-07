@@ -359,10 +359,209 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kb.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_keeps_ordinary_pr_retry_protected(kanban_home):
+    """A normal implementation retry still cannot duplicate its open PR."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="implementation", assignee="dev")
+        kb.add_comment(conn, tid, "dev", "PR: https://github.com/acme/repo/pull/42")
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_respawn_guard_does_not_trap_native_review_card(kanban_home):
+    """The canonical PR must not prevent a native review card from running."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="review", assignee="reviewer", initial_status="review")
+        kb.add_comment(conn, tid, "dev", "PR: https://github.com/acme/repo/pull/42")
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_dispatch_requeues_review_worker_into_review_lane(kanban_home, monkeypatch):
+    """A crashed reviewer keeps review routing when ready is dispatched."""
+    import json
+    import hermes_cli.kanban_db as _kb
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    spawned: list[tuple[str, list[str]]] = []
+
+    def spawn(task, _workspace):
+        spawned.append((task.id, list(task.skills or [])))
+        return None
+
+    with kb.connect() as conn:
+        review_id = kb.create_task(
+            conn, title="review", assignee="reviewer", initial_status="review",
+        )
+        kb.add_comment(conn, review_id, "dev", "PR: https://github.com/acme/repo/pull/42")
+        host = _kb._claimer_id().split(":", 1)[0]
+        assert kb.claim_review_task(conn, review_id, claimer=f"{host}:reviewer")
+        _kb._set_worker_pid(conn, review_id, 98765)
+        implementation_id = kb.create_task(
+            conn, title="implementation", assignee="dev",
+        )
+        kb.add_comment(
+            conn, implementation_id, "dev",
+            "PR: https://github.com/acme/repo/pull/43",
+        )
+
+        assert kb.detect_crashed_workers(conn) == [review_id]
+        result = kb.dispatch_once(conn, spawn_fn=spawn)
+
+        assert len(result.spawned) == 1
+        assert result.spawned[0][0] == review_id
+        assert spawned == [(review_id, ["sdlc-review"])]
+        assert (implementation_id, "active_pr") in result.respawn_guarded
+        claim = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='claimed' "
+            "ORDER BY id DESC LIMIT 1",
+            (review_id,),
+        ).fetchone()
+        assert claim is not None
+        assert json.loads(claim["payload"])["source_status"] == "review"
+
+
+def test_respawn_guard_allows_requeued_review_worker_after_pr(kanban_home, monkeypatch):
+    """A crashed reviewer requeued to ready retains reviewer execution intent."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="review", assignee="reviewer", initial_status="review")
+        kb.add_comment(conn, tid, "dev", "PR: https://github.com/acme/repo/pull/42")
+        host = _kb._claimer_id().split(":", 1)[0]
+        claimed = kb.claim_review_task(conn, tid, claimer=f"{host}:reviewer")
+        assert claimed is not None
+        _kb._set_worker_pid(conn, tid, 98765)
+        monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        assert kb.detect_crashed_workers(conn) == [tid]
+        requeued = kb.get_task(conn, tid)
+        assert requeued is not None
+        assert requeued.status == "review"
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_reviewer_crash_breaker_blocks_native_review_lane(kanban_home):
+    """Repeated reviewer crashes must trip the breaker instead of respawning."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="review", assignee="reviewer", initial_status="review",
+        )
+
+        assert kb._record_task_failure(
+            conn, tid, "reviewer crashed once", outcome="crashed",
+            failure_limit=2,
+        ) is False
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "review"
+        assert task.consecutive_failures == 1
+
+        assert kb._record_task_failure(
+            conn, tid, "reviewer crashed twice", outcome="crashed",
+            failure_limit=2,
+        ) is True
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 2
+
+
+def test_review_respawn_guard_honors_rate_limit_cooldown(kanban_home, monkeypatch):
+    """A rate-limited reviewer must be deferred while its quota cools down."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="review", assignee="reviewer", initial_status="review",
+        )
+        claimed = kb.claim_review_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='review', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall) — requeued", tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kb.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kb.check_respawn_guard(conn, tid) is None
 
 
 
 
+
+
+
+
+def test_dispatch_review_lane_honors_rate_limit_cooldown(kanban_home, monkeypatch):
+    """The native review dispatcher must defer quota-wall reviewers."""
+    import json
+    import hermes_cli.kanban_db as _kb
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+    now = 5_000_000
+    spawned: list[tuple[str, list[str]]] = []
+
+    def spawn(task, _workspace):
+        spawned.append((task.id, list(task.skills or [])))
+        return None
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="review", assignee="reviewer", initial_status="review",
+        )
+        claimed = kb.claim_review_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='review', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall) — requeued", tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        result = kb.dispatch_once(conn, spawn_fn=spawn)
+        assert result.spawned == []
+        assert (tid, "rate_limit_cooldown") in result.respawn_guarded
+        assert spawned == []
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? "
+            "AND kind='respawn_guarded' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert event is not None
+        assert json.loads(event["payload"]) == {
+            "reason": "rate_limit_cooldown", "lane": "review",
+        }
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        result = kb.dispatch_once(conn, spawn_fn=spawn)
+        assert len(result.spawned) == 1
+        assert result.spawned[0][0] == tid
+        assert spawned == [(tid, ["sdlc-review"])]
 
 
 # ---------------------------------------------------------------------------

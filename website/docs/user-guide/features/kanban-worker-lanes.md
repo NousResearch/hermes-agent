@@ -56,15 +56,36 @@ Every claim must end in exactly one of:
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.
 
-## Outputs and the review-required convention
+## Outputs and the Review lane
 
-For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a human reviewer. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
+For code-changing tasks, implementation is handed to an independent reviewer rather than masquerading as a human blocker. Native submission is the SoLo compatibility boundary: `kanban_submit_review` validates the reviewer profile before mutation, requires canonical `pr_url`, `repo`, `number`, `head_sha`, and `verification_evidence`, and stores the kernel-owned implementer provenance.
 
-- **Block instead of complete**, with `reason` prefixed `review-required: ` so the dashboard / `hermes kanban show` surfaces the row as awaiting review.
-- **Drop structured metadata into a `kanban_comment` first** since `kanban_block` only carries the human-readable `reason`. Comments are the durable annotation channel — every audit-relevant field (changed_files, tests_run, diff_path or PR url, decisions) belongs there.
-- **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
+- The task moves from `running` to `review`, preserving the implementation run and assigning the reviewer. The dispatcher claims review cards separately, so the implementer is not respawned.
+- Active submissions with the same repository, PR number, and head SHA are rejected without creating a second review card. A new head is a new immutable review identity.
+- A reviewer approves with `kanban_complete(summary=..., metadata={"approved": true, ...})`.
+- A reviewer requesting changes calls `kanban_review_changes(summary=..., metadata=...)`; the review card completes with findings and one remediation task is created for the original implementer.
+- Use `kanban_block(reason=...)` only for genuine human input, credentials, capability, dependency, or transient failures. Scheduled tasks remain time-gated and distinct from blocked work.
 
-The injected `KANBAN_GUIDANCE` covers both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
+The injected `KANBAN_GUIDANCE` covers both `kanban_complete` (truly terminal tasks) and the explicit Review-lane handoff.
+
+### Upstream boundary and upgrade checklist
+
+The native Review lane is intentionally a thin SoLoVision boundary over the upstream Kanban lifecycle:
+
+| Contract | Upstream behavior | Boundary behavior | Upgrade check |
+| --- | --- | --- | --- |
+| Completion | `kanban_complete` ends a run as `done` | unchanged | Run completion and goal-mode tests |
+| Genuine blockers | `kanban_block` routes dependency/input/capability/transient failures | unchanged; never use it as a review queue | Run blocked-task and requeue tests |
+| Review handoff | not an upstream terminal status | `kanban_submit_review` moves the same card to `review` with immutable PR proof | Run lifecycle, duplicate-head, and SHA validation tests |
+| Review outcome | normal completion semantics | approval completes the review; changes requested create one remediation card | Run approval/remediation tests |
+
+Before upgrading the upstream Kanban implementation:
+
+1. Rebase this boundary onto the current upstream default branch, not a stale fork branch.
+2. Confirm one definition, schema, and registry entry exists for each native Review tool.
+3. Run `tests/hermes_cli/test_kanban_review_lifecycle.py` and the Kanban database/tool suites.
+4. Verify the handoff still requires the open PR URL, matching repository/number, exact 40-character head SHA, verification evidence, deployment implications, and original implementer provenance.
+5. Inspect the diff for restored `review-required` guidance or abbreviated SHA acceptance before opening the next PR.
 
 ## Logs and audit trail
 

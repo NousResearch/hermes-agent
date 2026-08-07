@@ -669,9 +669,15 @@ def _build_apikey_providers_list() -> list:
             )
             if not _key_vars:
                 continue
+            # ``models_url`` is the explicit models endpoint; ``base_url`` only
+            # provides the ``{base_url}/models`` fallback (providers/base.py).
+            # The ``if _pp.base_url else None`` guard must wrap only the
+            # fallback, not the whole expression — otherwise a profile that
+            # sets ``models_url`` without a ``base_url`` loses its endpoint and
+            # doctor probes ``None`` (spurious "couldn't verify").
             _models_url = (
-                (_pp.models_url or (_pp.base_url.rstrip("/") + "/models"))
-                if _pp.base_url else None
+                _pp.models_url
+                or (_pp.base_url.rstrip("/") + "/models" if _pp.base_url else None)
             )
             _hc = getattr(_pp, "supports_health_check", True)
             _static.append((_label, _key_vars, _models_url, _base_var, _hc))

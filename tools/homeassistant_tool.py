@@ -1,10 +1,11 @@
 """Home Assistant tool for controlling smart home devices via REST API.
 
-Registers four LLM-callable tools:
+Registers five LLM-callable tools:
 - ``ha_list_entities`` -- list/filter entities by domain or area
 - ``ha_get_state`` -- get detailed state of a single entity
 - ``ha_list_services`` -- list available services (actions) per domain
 - ``ha_call_service`` -- call a HA service (turn_on, turn_off, set_temperature, etc.)
+- ``ha_get_camera_image`` -- snapshot a camera entity to a file for viewing
 
 Authentication uses a Long-Lived Access Token via ``HASS_TOKEN`` env var.
 The HA instance URL is read from ``HASS_URL`` (default: http://homeassistant.local:8123).
@@ -14,6 +15,7 @@ import asyncio
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agent.secret_scope import get_secret
@@ -137,6 +139,68 @@ async def _async_get_state(entity_id: str) -> Dict[str, Any]:
         "attributes": data.get("attributes", {}),
         "last_changed": data.get("last_changed"),
         "last_updated": data.get("last_updated"),
+    }
+
+
+# Camera entity_id must be a well-formed camera.* id. This value is
+# interpolated into /api/camera_proxy/{entity_id}, so the strict pattern also
+# blocks path traversal (e.g. "camera.../../etc/passwd") and URL injection.
+_CAMERA_ENTITY_RE = re.compile(r"^camera\.[a-z0-9_]+$")
+
+_MIME_TO_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+
+def _camera_image_dir() -> Path:
+    """Return (and create) the directory for camera snapshots."""
+    from hermes_constants import get_hermes_home
+
+    d = get_hermes_home() / "tmp" / "camera"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+async def _async_get_camera_image(entity_id: str) -> Dict[str, Any]:
+    """Fetch a camera snapshot via /api/camera_proxy and save it to disk.
+
+    Returns the saved file path plus mime type and size. Callers can hand the
+    path to a vision tool to see what the camera is showing.
+    """
+    import aiohttp
+
+    hass_url, hass_token = _get_config()
+    url = f"{hass_url}/api/camera_proxy/{entity_id}"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url,
+            headers=_get_headers(hass_token),
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            resp.raise_for_status()
+            image_bytes = await resp.read()
+            content_type = resp.headers.get("Content-Type", "image/jpeg")
+
+    # Normalize the MIME type (strip charset etc.); default to jpeg.
+    mime_type = content_type.split(";")[0].strip()
+    if mime_type not in _MIME_TO_EXT:
+        mime_type = "image/jpeg"
+
+    ext = _MIME_TO_EXT[mime_type]
+    # File name: the entity id without the "camera." prefix, e.g. "front_door.jpg".
+    name = entity_id.split(".", 1)[1]
+    dest = _camera_image_dir() / f"{name}{ext}"
+    dest.write_bytes(image_bytes)
+
+    return {
+        "entity_id": entity_id,
+        "mime_type": mime_type,
+        "size_bytes": len(image_bytes),
+        "image_path": str(dest),
     }
 
 
@@ -338,6 +402,24 @@ def _handle_list_services(args: dict, **kw) -> str:
         return tool_error(f"Failed to list services: {e}")
 
 
+def _handle_get_camera_image(args: dict, **kw) -> str:
+    """Handler for ha_get_camera_image tool."""
+    entity_id = args.get("entity_id", "")
+    if not entity_id:
+        return tool_error("Missing required parameter: entity_id")
+    if not _CAMERA_ENTITY_RE.match(entity_id):
+        return tool_error(
+            f"Invalid camera entity_id: {entity_id}. "
+            "Must be a camera entity (e.g. 'camera.front_door')."
+        )
+    try:
+        result = _run_async(_async_get_camera_image(entity_id))
+        return json.dumps({"result": result})
+    except Exception as e:
+        logger.error("ha_get_camera_image error: %s", e)
+        return tool_error(f"Failed to get camera image for {entity_id}: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Availability check
 # ---------------------------------------------------------------------------
@@ -470,6 +552,29 @@ HA_CALL_SERVICE_SCHEMA = {
     },
 }
 
+HA_GET_CAMERA_IMAGE_SCHEMA = {
+    "name": "ha_get_camera_image",
+    "description": (
+        "Snapshot a Home Assistant camera entity. Saves the current frame to a "
+        "file and returns its path (plus mime type and size). Use this to see "
+        "what a camera is showing (front door, backyard, etc.); hand the "
+        "returned image_path to a vision tool to analyze it."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "entity_id": {
+                "type": "string",
+                "description": (
+                    "The camera entity ID (e.g. 'camera.front_door', "
+                    "'camera.backyard'). Must start with 'camera.'."
+                ),
+            },
+        },
+        "required": ["entity_id"],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -500,6 +605,15 @@ registry.register(
     toolset="homeassistant",
     schema=HA_LIST_SERVICES_SCHEMA,
     handler=_handle_list_services,
+    check_fn=_check_ha_available,
+    emoji="🏠",
+)
+
+registry.register(
+    name="ha_get_camera_image",
+    toolset="homeassistant",
+    schema=HA_GET_CAMERA_IMAGE_SCHEMA,
+    handler=_handle_get_camera_image,
     check_fn=_check_ha_available,
     emoji="🏠",
 )

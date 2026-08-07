@@ -16,9 +16,11 @@ from tools.homeassistant_tool import (
     _parse_service_response,
     _get_headers,
     _handle_get_state,
+    _handle_get_camera_image,
     _handle_call_service,
     _BLOCKED_DOMAINS,
     _ENTITY_ID_RE,
+    _CAMERA_ENTITY_RE,
     _SERVICE_NAME_RE,
 )
 
@@ -361,6 +363,135 @@ class TestGetHeaders:
 # ---------------------------------------------------------------------------
 
 
+class TestCameraEntityValidation:
+    """_CAMERA_ENTITY_RE guards the entity_id interpolated into camera_proxy URL."""
+
+    def test_valid_camera_ids_accepted(self):
+        assert _CAMERA_ENTITY_RE.match("camera.front_door")
+        assert _CAMERA_ENTITY_RE.match("camera.backyard")
+        assert _CAMERA_ENTITY_RE.match("camera.cam1")
+
+    def test_non_camera_domain_rejected(self):
+        assert _CAMERA_ENTITY_RE.match("light.bedroom") is None
+        assert _CAMERA_ENTITY_RE.match("sensor.temperature") is None
+        assert _CAMERA_ENTITY_RE.match("switch.fan") is None
+
+    def test_path_traversal_rejected(self):
+        assert _CAMERA_ENTITY_RE.match("camera.../../etc/passwd") is None
+        assert _CAMERA_ENTITY_RE.match("../../api/config") is None
+        assert _CAMERA_ENTITY_RE.match("camera./../secrets") is None
+
+    def test_case_and_whitespace_rejected(self):
+        assert _CAMERA_ENTITY_RE.match("camera.FrontDoor") is None
+        assert _CAMERA_ENTITY_RE.match("CAMERA.front_door") is None
+        assert _CAMERA_ENTITY_RE.match("camera.front door") is None
+        assert _CAMERA_ENTITY_RE.match("camera.front;rm") is None
+
+
+class TestHandleGetCameraImage:
+    """ha_get_camera_image handler: validation + save path."""
+
+    def test_missing_entity_id(self):
+        result = json.loads(_handle_get_camera_image({}))
+        assert "error" in result
+        assert "entity_id" in result["error"]
+
+    def test_non_camera_entity_rejected(self):
+        result = json.loads(_handle_get_camera_image({"entity_id": "light.bedroom"}))
+        assert "error" in result
+        assert "Invalid camera entity_id" in result["error"]
+
+    def test_traversal_entity_rejected(self):
+        result = json.loads(_handle_get_camera_image({"entity_id": "camera.../../etc"}))
+        assert "error" in result
+        assert "Invalid camera entity_id" in result["error"]
+
+    def test_valid_request_saves_and_returns_path(self, tmp_path, monkeypatch):
+        # Stub the network read and the save directory.
+        from tools import homeassistant_tool as ha
+
+        class _FakeResp:
+            headers = {"Content-Type": "image/jpeg"}
+
+            def raise_for_status(self):
+                pass
+
+            async def read(self):
+                return b"\xff\xd8\xff\xe0FAKEJPEGDATA"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _FakeSession:
+            def get(self, *a, **k):
+                return _FakeResp()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        import aiohttp
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: _FakeSession())
+        monkeypatch.setattr(ha, "_camera_image_dir", lambda: tmp_path)
+
+        result = json.loads(_handle_get_camera_image({"entity_id": "camera.front_door"}))
+        r = result["result"]
+        assert r["entity_id"] == "camera.front_door"
+        assert r["mime_type"] == "image/jpeg"
+        assert r["size_bytes"] == len(b"\xff\xd8\xff\xe0FAKEJPEGDATA")
+        # File written with the camera name (minus prefix) + extension
+        assert r["image_path"].endswith("front_door.jpg")
+        from pathlib import Path
+        assert Path(r["image_path"]).read_bytes() == b"\xff\xd8\xff\xe0FAKEJPEGDATA"
+
+    def test_unknown_content_type_defaults_to_jpeg(self, tmp_path, monkeypatch):
+        from tools import homeassistant_tool as ha
+
+        class _FakeResp:
+            headers = {"Content-Type": "application/octet-stream"}
+
+            def raise_for_status(self):
+                pass
+
+            async def read(self):
+                return b"DATA"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _FakeSession:
+            def get(self, *a, **k):
+                return _FakeResp()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        import aiohttp
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: _FakeSession())
+        monkeypatch.setattr(ha, "_camera_image_dir", lambda: tmp_path)
+
+        result = json.loads(_handle_get_camera_image({"entity_id": "camera.cam1"}))
+        r = result["result"]
+        assert r["mime_type"] == "image/jpeg"
+        assert r["image_path"].endswith("cam1.jpg")
+
+
+# ---------------------------------------------------------------------------
+# Registry integration
+# ---------------------------------------------------------------------------
+
+
 class TestRegistration:
     def test_tools_registered_in_registry(self):
         from tools.registry import registry
@@ -368,6 +499,7 @@ class TestRegistration:
         names = registry.get_all_tool_names()
         assert "ha_list_entities" in names
         assert "ha_get_state" in names
+        assert "ha_get_camera_image" in names
         assert "ha_call_service" in names
 
 

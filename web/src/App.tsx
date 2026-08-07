@@ -189,7 +189,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
-  { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/files", labelKey: "files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -213,7 +213,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/system", label: "System", icon: Wrench },
+  { path: "/system", labelKey: "system", label: "System", icon: Wrench },
   {
     path: "/docs",
     labelKey: "documentation",

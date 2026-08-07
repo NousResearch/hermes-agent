@@ -117,6 +117,7 @@ from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from tools.registry import tool_error
+from tools.ansi_strip import strip_unicode_tags
 
 logger = logging.getLogger(__name__)
 
@@ -1066,7 +1067,7 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
 
     text = getattr(resource, "text", None)
     if text is not None:
-        return str(text)
+        return strip_unicode_tags(str(text))
 
     blob = getattr(resource, "blob", None)
     if blob is None:
@@ -5469,7 +5470,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             parts: List[str] = []
             for block in (result.content or []):
                 if hasattr(block, "text") and block.text:
-                    parts.append(block.text)
+                    parts.append(strip_unicode_tags(block.text))
                     continue
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
@@ -5645,7 +5646,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             contents = result.contents if hasattr(result, "contents") else []
             for block in contents:
                 if getattr(block, "text", None) is not None:
-                    parts.append(block.text)
+                    parts.append(strip_unicode_tags(block.text))
                 elif getattr(block, "blob", None) is not None:
                     # Materialize binary resource contents into the document
                     # cache instead of discarding them (same contract as
@@ -5772,11 +5773,11 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
                 if hasattr(msg, "content"):
                     content = msg.content
                     if hasattr(content, "text"):
-                        entry["content"] = content.text
+                        entry["content"] = strip_unicode_tags(content.text)
                     elif isinstance(content, str):
-                        entry["content"] = content
+                        entry["content"] = strip_unicode_tags(content)
                     else:
-                        entry["content"] = str(content)
+                        entry["content"] = strip_unicode_tags(str(content))
                 messages.append(entry)
             resp = {"messages": messages}
             if hasattr(result, "description") and result.description:
@@ -6032,7 +6033,9 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     prefixed_name = mcp_prefixed_tool_name(server_name, mcp_tool.name)
     return {
         "name": prefixed_name,
-        "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
+        "description": strip_unicode_tags(
+            mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"
+        ),
         "parameters": _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None)),
     }
 

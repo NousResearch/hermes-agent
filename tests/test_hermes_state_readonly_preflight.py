@@ -144,6 +144,31 @@ class TestRefusalOutsideScope:
             os.chmod(wal, 0o644)
 
 
+class TestEphemeralSidecars:
+    @pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+    def test_sidecar_vanishing_after_is_file_probe_is_ignored(
+        self, hermes_home, monkeypatch, suffix
+    ):
+        db = hermes_home / "state.db"
+        _make_db(db)
+        sidecar = db.with_name(db.name + suffix)
+        sidecar.touch()
+        real_is_file = Path.is_file
+
+        def is_file_then_unlink(path):
+            result = real_is_file(path)
+            if path == sidecar and result:
+                path.unlink()
+            return result
+
+        monkeypatch.setattr(Path, "is_file", is_file_then_unlink)
+
+        # SQLite legitimately removes WAL/SHM files when the last connection
+        # closes. A vanished sidecar is not a read-only file and must not make
+        # startup fail with a misleading chmod instruction.
+        preflight_db_writability(db, db_label="state.db")
+
+
 class TestSkips:
 
 

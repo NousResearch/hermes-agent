@@ -41,6 +41,12 @@ class DeepSeekWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
+    def supports_auto_detection(self) -> bool:
+        # This provider is a selection marker for an in-turn server-side tool,
+        # not a local search implementation. A DEEPSEEK_API_KEY alone must not
+        # replace the user's normal client-side web backend.
+        return False
+
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         del query, limit
         return {

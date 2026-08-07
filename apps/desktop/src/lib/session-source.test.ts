@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
-import { isMessagingSource, MESSAGING_SESSION_SOURCE_IDS, sessionSourceSearchTerms } from './session-source'
+import {
+  isMessagingSource,
+  MESSAGING_SESSION_SOURCE_IDS,
+  sessionSourceLabel,
+  sessionSourceSearchTerms
+} from './session-source'
+
+describe('LINE messaging source registration', () => {
+  it('treats LINE as a messaging source with its platform label', () => {
+    expect(isMessagingSource('line')).toBe(true)
+    expect(sessionSourceLabel('line')).toBe('LINE')
+    expect(MESSAGING_SESSION_SOURCE_IDS).toContain('line')
+  })
+})
 
 // Regression guard for #46761 / PR #47395: Photon (iMessage) must keep its own
 // sidebar section. refreshMessagingSessions() filters rows through

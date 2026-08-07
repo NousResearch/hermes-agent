@@ -139,6 +139,8 @@ DEFAULT_EXCLUDES = [
     "Thumbs.db",
     # Logs
     "*.log",
+    # Hermes' own scratch caches
+    "node-compile-cache/",
 ]
 
 # Git subprocess timeout (seconds).
@@ -305,12 +307,18 @@ def _run_git(
     timeout: int = _GIT_TIMEOUT,
     allowed_returncodes: Optional[Set[int]] = None,
     index_file: Optional[Path] = None,
+    success_returncodes: Optional[Set[int]] = None,
 ) -> Tuple[bool, str, str]:
     """Run a git command against the shared store.  Returns (ok, stdout, stderr).
 
     ``allowed_returncodes`` suppresses error logging for known/expected non-zero
     exits while preserving the normal ``ok = (returncode == 0)`` contract.
     Example: ``git diff --cached --quiet`` returns 1 when changes exist.
+
+    ``success_returncodes`` goes further and reports those exits as ``ok``, for
+    commands whose partial success is the outcome we want.  Example:
+    ``git add --ignore-errors`` returns 1 when it skipped an unreadable path but
+    staged everything else.
     """
     normalized_working_dir = _normalize_path(working_dir)
     if not normalized_working_dir.exists():
@@ -324,7 +332,8 @@ def _run_git(
 
     env = _git_env(store, str(normalized_working_dir), index_file=index_file)
     cmd = ["git"] + list(args)
-    allowed_returncodes = allowed_returncodes or set()
+    success_returncodes = success_returncodes or set()
+    allowed_returncodes = (allowed_returncodes or set()) | success_returncodes
 
     try:
         result = subprocess.run(
@@ -340,9 +349,17 @@ def _run_git(
             # conhost flash on Windows (no-op on POSIX).
             creationflags=windows_hide_flags(),
         )
-        ok = result.returncode == 0
+        partial = result.returncode != 0 and result.returncode in success_returncodes
+        ok = result.returncode == 0 or partial
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
+        if partial:
+            # Tolerated, but the command did not do everything it was asked —
+            # don't let that shrink a snapshot silently.
+            logger.warning(
+                "Git command partially succeeded: %s (rc=%d) stderr=%s",
+                " ".join(cmd), result.returncode, stderr,
+            )
         if not ok and result.returncode not in allowed_returncodes:
             logger.error(
                 "Git command failed: %s (rc=%d) stderr=%s",
@@ -418,6 +435,27 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
     return legacy_root
 
 
+def _write_excludes(store: Path) -> None:
+    """(Re)write the store's shared exclude file from ``DEFAULT_EXCLUDES``.
+
+    The list grows between releases, so a store created by an older version
+    has to pick up the new patterns — otherwise the exclude is only ever
+    honoured on machines that had no checkpoints when it landed.  The file is
+    Hermes-owned (see the module docstring), and the write is skipped when the
+    contents already match so this stays cheap on the per-checkpoint path.
+    """
+    body = "\n".join(DEFAULT_EXCLUDES) + "\n"
+    path = store / "info" / "exclude"
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == body:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    except OSError as exc:
+        # Never fatal — a stale exclude file costs snapshot size, not safety.
+        logger.warning("Could not refresh checkpoint excludes: %s", exc)
+
+
 def _init_store(store: Path, working_dir: str) -> Optional[str]:
     """Initialise the shared shadow store if needed.  Returns error or None.
 
@@ -436,6 +474,8 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         _migrate_legacy_store(base)
 
     if (store / "HEAD").exists():
+        # Existing store: refresh the excludes, which grow between releases.
+        _write_excludes(store)
         return None
 
     store.mkdir(parents=True, exist_ok=True)
@@ -477,11 +517,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     _run_git(["config", "tag.gpgSign", "false"], store, cfg_wd)
     _run_git(["config", "gc.auto", "0"], store, cfg_wd)
 
-    info_dir = store / "info"
-    info_dir.mkdir(exist_ok=True)
-    (info_dir / "exclude").write_text(
-        "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
-    )
+    _write_excludes(store)
 
     logger.debug("Initialised checkpoint store at %s", store)
     return None
@@ -855,9 +891,13 @@ class CheckpointManager:
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
 
-        # Stage current state into the per-project index to compare.
-        _run_git(["add", "-A"], store, abs_dir,
-                 timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+        # Stage current state into the per-project index to compare.  Same
+        # ``--ignore-errors`` rationale as _take: an unreadable path must not
+        # abort staging, or the diff is computed against a stale index.  The
+        # result is advisory here, so rc=1 only needs its error log suppressed.
+        _run_git(["add", "-A", "--ignore-errors"], store, abs_dir,
+                 timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+                 allowed_returncodes={1})
 
         ok_stat, stat_out, _ = _run_git(
             ["diff", "--stat", commit_hash, "--cached"],
@@ -1045,9 +1085,15 @@ class CheckpointManager:
         # via ``core.bigFileThreshold`` is not what we want — instead, we
         # rely on the exclude file for broad patterns and post-stage prune
         # any path whose size exceeds max_file_size_mb.
+        # ``--ignore-errors`` keeps one unreadable path (a root-owned cache, a
+        # socket, a file being rewritten) from costing the entire snapshot:
+        # without it ``git add -A`` exits 128 having staged *nothing*, so the
+        # directory silently accumulates zero checkpoints.  It stages the rest
+        # and exits 1 instead, which is the outcome we want.
         ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
+            ["add", "-A", "--ignore-errors"], store, working_dir,
             timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+            success_returncodes={1},
         )
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)

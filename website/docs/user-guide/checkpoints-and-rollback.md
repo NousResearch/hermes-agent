@@ -211,7 +211,8 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 - **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), the oldest commit per project is dropped round-robin until under the cap.
 - **Real pruning** — `max_snapshots` is enforced by rewriting the per-project ref and running `git gc --prune=now` afterwards, so loose objects don't accumulate.
 - **No-change snapshots** — if there are no changes since the last snapshot, the checkpoint is skipped.
-- **Non-fatal errors** — all errors inside the Checkpoint Manager are logged at debug level; your tools continue to run.
+- **Unreadable paths** — a file Hermes cannot open (a root-owned cache, a socket, a file mid-write) is skipped rather than failing the whole snapshot, and the skip is logged at warning level. Restoring never deletes a skipped path, so it stays exactly as it is on disk.
+- **Non-fatal errors** — all other errors inside the Checkpoint Manager are logged at debug level; your tools continue to run.
 
 ## Where Checkpoints Live
 

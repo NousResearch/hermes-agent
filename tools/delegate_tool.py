@@ -1572,6 +1572,10 @@ def _build_child_agent(
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    if override_base_url or override_provider:
+        # Explicit child routing must stay authoritative. A parent fallback
+        # entry can replace the child's backend during failover/retry handling.
+        parent_fallback = None
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing

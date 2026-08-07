@@ -1726,6 +1726,89 @@ class TestFallbackModelInheritance(unittest.TestCase):
         _, kwargs = MockAgent.call_args
         self.assertEqual(kwargs["fallback_model"], [fallback_entry])
 
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_raw_direct_endpoint_does_not_inherit_fallback_chain(self, _mock_cfg):
+        parent = _make_mock_parent(depth=0)
+        parent._credential_pool = None
+        parent._fallback_chain = [
+            {
+                "provider": "openrouter",
+                "model": "parent-fallback-model",
+                "base_url": "https://parent.example/v1",
+            }
+        ]
+        mock_child = types.SimpleNamespace()
+
+        with (
+            patch("agent.credential_pool.get_custom_provider_pool_key", return_value=None),
+            patch("run_agent.AIAgent", return_value=mock_child) as MockAgent,
+        ):
+            _build_child_agent(
+                task_index=0,
+                goal="use raw direct endpoint",
+                context=None,
+                toolsets=None,
+                model="worker-model",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="custom",
+                override_base_url="https://worker.example/v1",
+                override_api_key="worker-key",
+                override_api_mode="chat_completions",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["base_url"], "https://worker.example/v1")
+        self.assertIsNone(kwargs["fallback_model"])
+        self.assertFalse(hasattr(mock_child, "_credential_pool"))
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_registered_direct_endpoint_does_not_inherit_fallback_chain(self, _mock_cfg):
+        parent = _make_mock_parent(depth=0)
+        parent._credential_pool = None
+        parent._fallback_chain = [
+            {
+                "provider": "openrouter",
+                "model": "parent-fallback-model",
+                "base_url": "https://parent.example/v1",
+            }
+        ]
+        registered_pool = MagicMock()
+        registered_pool.has_credentials.return_value = True
+        mock_child = types.SimpleNamespace()
+
+        def pool_key(base_url, provider_name=None):
+            if base_url == "https://worker.example/v1":
+                return "custom:worker"
+            return None
+
+        with (
+            patch("agent.credential_pool.get_custom_provider_pool_key", side_effect=pool_key),
+            patch("agent.credential_pool.load_pool", return_value=registered_pool) as load_pool,
+            patch("run_agent.AIAgent", return_value=mock_child) as MockAgent,
+        ):
+            _build_child_agent(
+                task_index=0,
+                goal="use registered direct endpoint",
+                context=None,
+                toolsets=None,
+                model="worker-model",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="custom",
+                override_base_url="https://worker.example/v1",
+                override_api_key="worker-key",
+                override_api_mode="chat_completions",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["base_url"], "https://worker.example/v1")
+        self.assertIsNone(kwargs["fallback_model"])
+        load_pool.assert_called_once_with("custom:worker")
+        self.assertIs(mock_child._credential_pool, registered_pool)
+
     def test_child_gets_no_fallback_when_parent_chain_empty(self):
         """When parent._fallback_chain is empty, fallback_model is None."""
         parent = _make_mock_parent(depth=0)

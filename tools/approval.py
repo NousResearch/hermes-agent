@@ -4007,6 +4007,104 @@ def _transport_denied_result(
     }
 
 
+def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
+                            *, surface: str = "gateway"):
+    """Wait on an already-pending identical approval instead of re-prompting.
+
+    Called by ``_await_gateway_decision`` when an identical approval (same
+    command text + same pattern-key set) is already awaiting the user's
+    answer in this session. Blocks until the leader entry resolves, then
+    adopts its decision:
+
+    * ``session`` / ``always`` → adopted approval (same dict shape as a
+      direct resolution; persistence stays the caller's responsibility and
+      is idempotent across the leader and followers).
+    * ``deny`` → adopted denial, carrying the leader's deny reason.
+    * leader timeout (event set by queue teardown, or our own deadline
+      expiring first) → unresolved, identical to a direct timeout.
+    * ``once`` → returns ``None``: single-use consent covers only the
+      leader's execution, so the caller must issue a fresh prompt.
+
+    Fires the pre/post approval hooks with ``coalesced=True`` so observers
+    see the follower's lifecycle without a duplicate user-facing prompt.
+    """
+    command = approval_data.get("command", "")
+    description = approval_data.get("description", "")
+    primary_key = approval_data.get("pattern_key", "")
+    all_keys = approval_data.get("pattern_keys", [primary_key])
+
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=command,
+        description=description,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface=surface,
+        coalesced=True,
+    )
+
+    timeout = _get_approval_timeout()
+    try:
+        from tools.environments.base import touch_activity_if_due
+    except Exception:  # pragma: no cover
+        touch_activity_if_due = None
+
+    _now = time.monotonic()
+    _deadline = _now + max(timeout, 0)
+    _activity_state = {"last_touch": _now, "start": _now}
+    resolved = False
+    with human_wait_window(session_key):
+        while True:
+            if is_interrupted():
+                logger.info(
+                    "Coalesced approval wait interrupted by user signal — "
+                    "returning deny for session %s",
+                    session_key,
+                )
+                # Deny only OUR follower; the leader thread handles its own
+                # interrupt signal.
+                choice = "deny"
+                resolved = True
+                break
+            _remaining = _deadline - time.monotonic()
+            if _remaining <= 0:
+                choice = None
+                break
+            if leader.event.wait(timeout=min(1.0, _remaining)):
+                choice = leader.result
+                resolved = choice is not None
+                break
+            if touch_activity_if_due is not None:
+                touch_activity_if_due(
+                    _activity_state, "waiting for user approval"
+                )
+
+    if choice == "once":
+        # Single-use consent — the caller re-prompts. The post hook fires
+        # for the fresh prompt's own lifecycle, not here.
+        return None
+
+    _outcome = "timeout" if not resolved else (choice if choice else "timeout")
+    _fire_approval_hook(
+        "post_approval_response",
+        command=command,
+        description=description,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface=surface,
+        choice=_outcome,
+        coalesced=True,
+    )
+    return {
+        "resolved": resolved,
+        "choice": choice,
+        "reason": getattr(leader, "reason", None),
+        "coalesced": True,
+    }
+
+
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                             *, surface: str = "gateway") -> dict:
     """Enqueue *approval_data*, notify the user, and block the calling agent
@@ -4026,6 +4124,41 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     description = approval_data.get("description", "")
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
+
+    # ── Coalesce identical concurrent approvals (one prompt, one answer) ──
+    # Parallel tool calls (a parallel terminal batch, execute_code RPC
+    # handlers) can hit the same dangerous-command gate at the same time.
+    # Without coalescing, every thread enqueues its own entry and fires its
+    # own notify_cb — the user gets N identical prompts and must /approve N
+    # times while the agent sits wedged. Follow anomalyco/opencode#40869's
+    # shape: followers wait on the leader's decision and re-check after it
+    # lands instead of prompting again.
+    #
+    # Adoption rules keep the consent contract strict:
+    #   session / always → adopt approved (the persistence layer would
+    #     auto-pass an identical re-check anyway once the leader persisted).
+    #   deny / timeout   → adopt the refusal (immediately re-asking the exact
+    #     command the user just declined is prompt spam and an evasion path).
+    #   once             → single-use consent; it covers ONLY the leader's
+    #     execution, so the follower falls through to a fresh prompt.
+    leader = None
+    with _lock:
+        for existing in _gateway_queues.get(session_key, []):
+            data = existing.data
+            if (
+                data.get("command") == approval_data.get("command")
+                and list(data.get("pattern_keys") or [])
+                == list(approval_data.get("pattern_keys") or [])
+            ):
+                leader = existing
+                break
+    if leader is not None:
+        adopted = _await_coalesced_leader(
+            session_key, leader, approval_data, surface=surface
+        )
+        if adopted is not None:
+            return adopted
+        # Leader resolved "once" — fall through to a fresh prompt below.
 
     entry = _ApprovalEntry(approval_data)
     with _lock:

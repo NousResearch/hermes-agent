@@ -385,6 +385,33 @@ def test_prefers_fresh_final_streaming_stays_disabled_when_rich_enabled():
 
 
 # ----------------------------------------------------------------------
+# supports_draft_streaming: rich_messages without rich_drafts must NOT use
+# MDV2 sendMessageDraft previews that later snap to sendRichMessage (wiki)
+# finals — that is the "first bubble crooked, second bubble beautiful" bug.
+# ----------------------------------------------------------------------
+
+
+def test_supports_draft_streaming_disabled_when_rich_without_rich_drafts():
+    adapter = _make_adapter()  # rich_messages True, rich_drafts default False
+    assert adapter.supports_draft_streaming(chat_type="dm") is False
+    assert adapter.supports_draft_streaming(chat_type="private") is False
+
+
+def test_supports_draft_streaming_enabled_when_rich_drafts_opt_in():
+    adapter = _make_adapter(extra={"rich_drafts": True})
+    assert adapter.supports_draft_streaming(chat_type="dm") is True
+    assert adapter.supports_draft_streaming(chat_type="group") is False
+
+
+def test_supports_draft_streaming_legacy_when_rich_messages_off():
+    adapter = _make_adapter(extra={"rich_messages": False})
+    # _make_adapter always injects rich_messages True via default; force off.
+    adapter._rich_messages_enabled = False
+    adapter._rich_drafts_enabled = False
+    assert adapter.supports_draft_streaming(chat_type="dm") is True
+
+
+# ----------------------------------------------------------------------
 # streaming_overflow_limit: with rich on, the stream consumer may accumulate up
 # to the 32,768-char rich cap before splitting, so a reply that fits one
 # sendRichMessage / sendRichMessageDraft isn't fragmented at the 4,096 limit.

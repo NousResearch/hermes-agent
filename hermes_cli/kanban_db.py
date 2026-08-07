@@ -8103,6 +8103,72 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+# Event kinds that mark a card LEAVING the ready/guarded hold. When one
+# of these is recorded after the last ``respawn_guarded`` row, the card
+# is no longer in the same hold — a later same-reason guard is a NEW
+# hold and deserves its own event row. (Observability only; the spawn
+# skip in ``check_respawn_guard`` is never throttled.)
+_RESPAWN_GUARD_EXIT_KINDS = frozenset(
+    {"claimed", "spawned", "status", "promoted", "reclaimed", "blocked"}
+)
+
+
+def _should_log_respawn_guard(
+    conn: sqlite3.Connection, task_id: str, reason: str
+) -> bool:
+    """Return True when a ``respawn_guarded`` event should be appended.
+
+    State-delta dedup for the dispatcher's per-tick guard telemetry.
+    ``check_respawn_guard`` still runs every tick and still suppresses
+    the spawn — this helper only throttles the *diagnostic event row*,
+    so a card held by the same reason for hours stops accumulating one
+    identical event per dispatcher tick (~1440/day).
+
+    Source of truth is the last ``task_events`` row with
+    ``kind='respawn_guarded'`` for the task (no wall-clock gating, so a
+    dispatcher restart mid-hold keeps suppressing). Emit when:
+
+    * there is no prior guard row (first guard), or
+    * the last guard reason differs from the current one (a material
+      state change — reason flips always record), or
+    * a lifecycle event (``claimed``/``spawned``/``status``/
+      ``promoted``/``reclaimed``/``blocked``) was recorded after the
+      last guard row — the card left ready and is being held again,
+      which is a new hold worth a row.
+
+    Suppress when the last guard row has the same reason and no
+    lifecycle event has occurred since (the card is still in the same
+    hold).
+    """
+    last = conn.execute(
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'respawn_guarded' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if last is None:
+        return True  # first guard for this task
+    last_reason = None
+    if last["payload"]:
+        try:
+            last_reason = json.loads(last["payload"]).get("reason")
+        except Exception:
+            last_reason = None
+    if last_reason != reason:
+        return True  # material reason change
+    # Same reason: emit only if the card left the ready hold since the
+    # last guard row (a lifecycle event marks the exit).
+    exited = conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND id > ? "
+        "AND kind IN ('claimed','spawned','status','promoted',"
+        "             'reclaimed','blocked') "
+        "LIMIT 1",
+        (task_id, last["id"]),
+    ).fetchone()
+    return exited is not None
+
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -8613,7 +8679,14 @@ def _dispatch_once_locked(
             # Emit an event so operators can see why the task was
             # skipped when reading `hermes kanban tail` — without
             # this the task appears stuck in ready with no diagnosis.
-            if not dry_run:
+            # State-delta dedup: log the first guard, a reason change,
+            # or a new hold after a lifecycle exit — repeated same-
+            # reason guards while the card stays in the same ready hold
+            # are suppressed (observability only; the spawn skip above
+            # still fires every tick).
+            if not dry_run and _should_log_respawn_guard(
+                conn, row["id"], guard_reason
+            ):
                 with write_txn(conn):
                     _append_event(
                         conn, row["id"], "respawn_guarded",

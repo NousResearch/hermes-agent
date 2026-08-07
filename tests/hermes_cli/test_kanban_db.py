@@ -502,6 +502,199 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def _respawn_guarded_events(conn, tid):
+    return [e for e in kb.list_events(conn, tid) if e.kind == "respawn_guarded"]
+
+
+def test_should_log_respawn_guard_first_same_reason_change_unit(kanban_home):
+    """State-delta dedup unit behaviour: first guard always logs, same
+    reason while the card stays in the same hold is suppressed, and a
+    reason change logs immediately."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="guarded", assignee="worker")
+        # No prior guard row → first guard always emits.
+        assert kb._should_log_respawn_guard(conn, tid, "active_pr") is True
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn, tid, "respawn_guarded", {"reason": "active_pr"},
+            )
+        # Same reason, no lifecycle exit → suppressed.
+        assert kb._should_log_respawn_guard(conn, tid, "active_pr") is False
+        # Reason change → emit immediately.
+        assert kb._should_log_respawn_guard(conn, tid, "blocker_auth") is True
+
+
+def test_should_log_respawn_guard_lifecycle_exit_re_emits(kanban_home):
+    """A lifecycle event (claimed/spawned/status/promoted/reclaimed/
+    blocked) after the last guard row marks the end of the hold — a later
+    same-reason guard is a NEW hold and logs again. Non-lifecycle rows
+    (comments) do NOT end the hold."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="guarded", assignee="worker")
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn, tid, "respawn_guarded", {"reason": "active_pr"},
+            )
+        # Same hold → suppressed.
+        assert kb._should_log_respawn_guard(conn, tid, "active_pr") is False
+        # Card leaves ready (claimed) → the same reason is a new hold.
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, "claimed", None)
+        assert kb._should_log_respawn_guard(conn, tid, "active_pr") is True
+
+    # Separate task: a comment after the guard row does NOT end the hold.
+    with kb.connect() as conn:
+        tid2 = kb.create_task(conn, title="commented-only", assignee="worker")
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn, tid2, "respawn_guarded", {"reason": "active_pr"},
+            )
+            kb._append_event(
+                conn, tid2, "commented", {"author": "x", "len": 1},
+            )
+        assert kb._should_log_respawn_guard(conn, tid2, "active_pr") is False
+
+
+def test_dispatch_once_respawn_guard_first_then_same_state_suppressed(
+    kanban_home, all_assignees_spawnable,
+):
+    """Acceptance fixture: the first active_pr guard records exactly one
+    event; five subsequent per-minute passes record none; the no-spawn
+    guard still fires every tick; dry_run writes nothing."""
+    import hermes_cli.kanban_db as _kb
+
+    spawn_calls: list = []
+
+    def spy_spawn(task, workspace_path, board=None):
+        spawn_calls.append(getattr(task, "id", task))
+        return 999999
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="pr-held", assignee="worker")
+        kb.add_comment(
+            conn, tid, "worker",
+            "PR: https://github.com/NousResearch/hermes-agent/pull/123",
+        )
+        # Sanity: the guard really does defer this task.
+        assert _kb.check_respawn_guard(conn, tid) == "active_pr"
+
+    # First pass: exactly one respawn_guarded event row.
+    with kb.connect() as conn:
+        r1 = kb.dispatch_once(conn, spawn_fn=spy_spawn)
+    assert (tid, "active_pr") in r1.respawn_guarded
+    assert spawn_calls == [], "guarded task must never spawn"
+    with kb.connect() as conn:
+        events = _respawn_guarded_events(conn, tid)
+    assert len(events) == 1
+    assert events[0].payload == {"reason": "active_pr"}
+
+    # 5 subsequent per-minute passes: guard fires every tick, but no
+    # more event rows accumulate while the card stays in the same hold.
+    for _ in range(5):
+        with kb.connect() as conn:
+            r = kb.dispatch_once(conn, spawn_fn=spy_spawn)
+        assert (tid, "active_pr") in r.respawn_guarded, (
+            "no-spawn guard must still fire every tick"
+        )
+    assert spawn_calls == []
+    with kb.connect() as conn:
+        events = _respawn_guarded_events(conn, tid)
+    assert len(events) == 1, "same-reason ready hold must not spam events"
+
+    # dry_run: guard telemetry reported, but no durable event row.
+    with kb.connect() as conn:
+        r = kb.dispatch_once(conn, spawn_fn=spy_spawn, dry_run=True)
+    assert (tid, "active_pr") in r.respawn_guarded
+    with kb.connect() as conn:
+        events = _respawn_guarded_events(conn, tid)
+    assert len(events) == 1, "dry_run must not append respawn_guarded rows"
+
+
+def test_dispatch_once_respawn_guard_reason_change_recorded(
+    kanban_home, all_assignees_spawnable,
+):
+    """A material guard-reason change (active_pr → blocker_auth) is
+    recorded immediately, even inside the suppression window."""
+    import hermes_cli.kanban_db as _kb
+
+    def spy_spawn(task, workspace_path, board=None):
+        return 999999
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="reason-flip", assignee="worker")
+        kb.add_comment(
+            conn, tid, "worker",
+            "PR: https://github.com/NousResearch/hermes-agent/pull/123",
+        )
+        assert _kb.check_respawn_guard(conn, tid) == "active_pr"
+
+    with kb.connect() as conn:
+        kb.dispatch_once(conn, spawn_fn=spy_spawn)
+    with kb.connect() as conn:
+        assert len(_respawn_guarded_events(conn, tid)) == 1
+
+    # Flip the guard reason: an auth-blocker failure takes priority over
+    # active_pr inside check_respawn_guard.
+    with kb.connect() as conn:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                ("worker exited 401 unauthorized — provider auth", tid),
+            )
+        assert _kb.check_respawn_guard(conn, tid) == "blocker_auth"
+        kb.dispatch_once(conn, spawn_fn=spy_spawn)
+
+    with kb.connect() as conn:
+        events = _respawn_guarded_events(conn, tid)
+    assert [e.payload for e in events] == [
+        {"reason": "active_pr"},
+        {"reason": "blocker_auth"},
+    ]
+
+
+def test_dispatch_once_respawn_guard_re_emits_after_lifecycle_exit(
+    kanban_home, all_assignees_spawnable,
+):
+    """After a lifecycle event marks the card leaving the hold, a same-
+    reason guard is a new hold and records again."""
+    import hermes_cli.kanban_db as _kb
+
+    def spy_spawn(task, workspace_path, board=None):
+        return 999999
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="re-hold", assignee="worker")
+        kb.add_comment(
+            conn, tid, "worker",
+            "PR: https://github.com/NousResearch/hermes-agent/pull/123",
+        )
+
+    with kb.connect() as conn:
+        kb.dispatch_once(conn, spawn_fn=spy_spawn)
+    with kb.connect() as conn:
+        assert len(_respawn_guarded_events(conn, tid)) == 1
+
+    # Card leaves ready (status change), then is ready+guarded again.
+    with kb.connect() as conn:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'running' WHERE id = ?", (tid,),
+            )
+            kb._append_event(conn, tid, "status", {"to": "running"})
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,),
+            )
+            kb._append_event(conn, tid, "status", {"to": "ready"})
+        kb.dispatch_once(conn, spawn_fn=spy_spawn)
+
+    with kb.connect() as conn:
+        events = _respawn_guarded_events(conn, tid)
+    assert len(events) == 2, (
+        "re-hold after lifecycle exit must record a new event"
+    )
+
+
 
 
 

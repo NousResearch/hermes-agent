@@ -46,14 +46,23 @@ export function readLegacyActiveProfile(
   isValid: MigrationDeps['isValidProfileName']
 ): string | null | undefined {
   let raw: string
+
   try {
     raw = readFile(legacyActivePath, 'utf8')
   } catch {
     return null
   }
+
   const name = raw.trim()
-  if (!name) return null
-  if (name === 'default') return undefined
+
+  if (!name) {
+    return null
+  }
+
+  if (name === 'default') {
+    return undefined
+  }
+
   return isValid(name) ? name : undefined
 }
 
@@ -68,21 +77,33 @@ export function findRunningGatewayProfiles(
   deps: Pick<MigrationDeps, 'existsSync' | 'readFileSync' | 'isHermesProcess'>
 ): string[] {
   const running: string[] = []
+
   for (const name of allProfiles) {
     const pidFile = `${profilesRoot}/${name}/gateway.pid`
-    if (!deps.existsSync(pidFile)) continue
+
+    if (!deps.existsSync(pidFile)) {
+      continue
+    }
+
     let parsed: { pid?: unknown } | null = null
+
     try {
       parsed = JSON.parse(deps.readFileSync(pidFile, 'utf8'))
     } catch {
       continue
     }
+
     const pid = Number(parsed?.pid)
-    if (!Number.isInteger(pid) || pid < 1) continue
+
+    if (!Number.isInteger(pid) || pid < 1) {
+      continue
+    }
+
     if (deps.isHermesProcess(pid)) {
       running.push(name)
     }
   }
+
   return running
 }
 
@@ -93,20 +114,19 @@ export function findRunningGatewayProfiles(
  * slightly newer mtime. Floors the recency weight at 0.1 so a profile touched
  * years ago but never deleted still scores > 0 if its DB is large.
  */
-export function scoreStateDb(
-  dbPath: string,
-  now: number,
-  stat: MigrationDeps['statSync']
-): number | null {
+export function scoreStateDb(dbPath: string, now: number, stat: MigrationDeps['statSync']): number | null {
   let s: { size: number; mtimeMs: number }
+
   try {
     s = stat(dbPath)
   } catch {
     return null
   }
+
   const daysSinceModified = Math.max(0, (now - s.mtimeMs) / (1000 * 60 * 60 * 24))
   const recencyWeight = Math.max(0.1, 30 - daysSinceModified)
   const sizeWeight = Math.log10(Math.max(PROFILE_SCORE_MIN_SIZE_BYTES, s.size))
+
   return recencyWeight * sizeWeight
 }
 
@@ -124,20 +144,34 @@ export function decideMigration(
   deps: MigrationDeps,
   score: (dbPath: string) => number | null
 ): MigrationDecision | null {
-  if (legacyActive) return { profile: legacyActive }
-  if (running.length === 1) return { profile: running[0] }
+  if (legacyActive) {
+    return { profile: legacyActive }
+  }
+
+  if (running.length === 1) {
+    return { profile: running[0] }
+  }
 
   let best: string | null = null
   let maxScore = -Infinity
+
   for (const name of candidates) {
     const s = score(`${deps.profilesRoot}/${name}/state.db`)
-    if (s == null) continue
+
+    if (s == null) {
+      continue
+    }
+
     if (s > maxScore) {
       maxScore = s
       best = name
     }
   }
-  if (!best || best === 'default') return null
+
+  if (!best || best === 'default') {
+    return null
+  }
+
   return { profile: best, _migrated: true }
 }
 
@@ -147,11 +181,13 @@ export function decideMigration(
  */
 export function listProfileDirs(deps: MigrationDeps): string[] {
   let entries: Dirent[]
+
   try {
     entries = deps.readdirSync(deps.profilesRoot, { withFileTypes: true })
   } catch {
     return []
   }
+
   return entries
     .filter(e => e.isDirectory() && (e.name === 'default' || deps.isValidProfileName(e.name)))
     .map(e => e.name)
@@ -163,32 +199,31 @@ export function listProfileDirs(deps: MigrationDeps): string[] {
  * `decideMigration` + the individual rung helpers, this function just glues them
  * to the deps bag.
  */
-export function migrateActiveProfileIfMissing(
-  desktopProfileConfigPath: string,
-  deps: MigrationDeps
-): boolean {
-  if (deps.existsSync(desktopProfileConfigPath)) return false
+export function migrateActiveProfileIfMissing(desktopProfileConfigPath: string, deps: MigrationDeps): boolean {
+  if (deps.existsSync(desktopProfileConfigPath)) {
+    return false
+  }
 
-  const legacyActive = readLegacyActiveProfile(
-    deps.legacyActivePath,
-    deps.readFileSync,
-    deps.isValidProfileName
-  )
+  const legacyActive = readLegacyActiveProfile(deps.legacyActivePath, deps.readFileSync, deps.isValidProfileName)
 
   const allProfiles = listProfileDirs(deps)
-  if (allProfiles.length === 0) return false
+
+  if (allProfiles.length === 0) {
+    return false
+  }
 
   const running = findRunningGatewayProfiles(deps.profilesRoot, allProfiles, deps)
   const candidates = running.length > 1 ? running : allProfiles
-  const decision = decideMigration(
-    legacyActive,
-    running,
-    candidates,
-    deps,
-    dbPath => scoreStateDb(dbPath, deps.now(), deps.statSync)
+
+  const decision = decideMigration(legacyActive, running, candidates, deps, dbPath =>
+    scoreStateDb(dbPath, deps.now(), deps.statSync)
   )
-  if (!decision) return false
+
+  if (!decision) {
+    return false
+  }
 
   deps.writeJson(desktopProfileConfigPath, decision)
+
   return true
 }

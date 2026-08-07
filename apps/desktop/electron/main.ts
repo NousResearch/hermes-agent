@@ -9426,9 +9426,11 @@ function isHermesProcess(pid) {
   } catch {
     return false
   }
+
   // On macOS / Linux, check the command line to avoid PID recycling false positives.
   try {
     const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+
     return cmdline.includes('hermes')
   } catch {
     // /proc not available (macOS) — fall back to ps. Use -o args= to inspect
@@ -9437,6 +9439,7 @@ function isHermesProcess(pid) {
     try {
       const { execSync } = require('child_process')
       const out = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 2000 })
+
       return out.includes('hermes')
     } catch {
       return false

@@ -793,6 +793,62 @@ def load_cli_config() -> Dict[str, Any]:
 CLI_CONFIG = load_cli_config()
 
 
+def resolve_idle_refresh_interval() -> float:
+    """Idle wall-clock status-bar cadence (seconds) for the classic CLI.
+
+    Returns the configured ``display.cli_refresh_interval`` clamped to
+    ``[0.0, 30.0]``.  A value of 0.0 disables the periodic idle redraw.
+
+    This cadence drives the *background* ``spinner_loop`` repaint while the
+    agent is IDLE only.  It must NOT be handed to prompt_toolkit's own
+    ``Application.refresh_interval``: that timer fires regardless of agent
+    state, so while a turn is running it repaints the bottom chrome (spinner
+    + status bar) every N seconds.  In non-fullscreen mode each such redraw
+    can scroll the previous chrome copy up into scrollback — stacking repeated
+    kawaii spinner frames / status columns instead of overwriting them in
+    place.  That is the root cause of the "status lines repeat mid-turn"
+    artifact (#70031).  Mid-turn chrome still updates live because every
+    agent event (_on_thinking, tool start/complete, notices) explicitly calls
+    ``_invalidate`` — we only suppress the *periodic* redraw while busy.
+    See #48309 / #70031.
+    """
+    try:
+        raw = float(CLI_CONFIG.get("display", {}).get("cli_refresh_interval", 0) or 0)
+    except (TypeError, ValueError):
+        raw = 0.0
+    return max(0.0, min(raw, 30.0))
+
+
+def spinner_loop_branch(command_running: bool, agent_running: bool, idle_refresh: float) -> str:
+    """Pure decision for the classic-CLI background ``spinner_loop``.
+
+    Maps the three loop inputs to a single action token the loop performs:
+
+    * ``"repaint_fast"`` — a child command is running; repaint on a fast
+      cadence so its progress is visible.
+    * ``"stable"`` — the agent itself is running (no child command). Do NOT
+      background-repaint (#70031): the bottom chrome is refreshed live by the
+      agent-event callbacks (``_on_thinking``, ``_on_tool_start/_complete``,
+      notices), each of which calls ``_invalidate()``. A periodic redraw here
+      would scroll the prior chrome copy into scrollback and stack repeated
+      frames mid-turn.
+    * ``"idle_tick"`` — idle and a positive idle cadence is configured; tick
+      the wall-clock status-bar read-outs.
+    * ``"idle_stable"`` — idle with no periodic cadence; just sleep.
+
+    Kept as a pure, DI-testable function (no ``self``/thread state) so the
+    #70031 invariant survives a real unit test without reimplementing the
+    branch inline.
+    """
+    if command_running:
+        return "repaint_fast"
+    if agent_running:
+        return "stable"
+    if idle_refresh > 0:
+        return "idle_tick"
+    return "idle_stable"
+
+
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
 # This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
 try:
@@ -5489,17 +5545,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
 
     def _spinner_widget_height(self, width: Optional[int] = None) -> int:
-        """Return the visible height for the spinner/status text line above the status bar."""
-        spinner_line = self._render_spinner_text()
-        if not spinner_line:
-            return 0
+        """Return the visible height for the spinner/status text line above the status bar.
+
+        The height is RESERVED at 1 (when not in minimal-chrome mode) even when
+        there is no spinner text yet.  This keeps the bottom-chrome canvas a
+        constant height between idle and active states.  If the height were to
+        grow from 0 (idle) to 1 (turn started, "_spinner_text" set) the new
+        canvas would be taller than the previous one, and in prompt_toolkit's
+        non-fullscreen renderer that forces a vertical scroll ("reserve
+        vertical space") which pushes the prior chrome copy up into scrollback
+        and stacks repeated status frames mid-turn (#70031, reproduced on
+        Windows PowerShell).  Reserving the line eliminates the height change,
+        so prompt_toolkit redraws the chrome in place instead of scrolling.
+        The actual spinner glyph is still only painted when text is present;
+        the blank reserved row simply holds the layout slot open.  The
+        refresh_interval=0.0 change and the _patched_output_screen_diff hack
+        are belt-and-suspenders, but this constant-height reserve is the
+        platform-independent root-cause fix.
+        """
         if self._use_minimal_tui_chrome(width=width):
+            # Minimal chrome drops the spinner line entirely to save rows.
             return 0
-        width = width or self._get_tui_terminal_width()
-        if width and width > 10:
-            import math
-            text_width = self._status_bar_display_width(spinner_line)
-            return max(1, math.ceil(text_width / width))
+        # Reserve the slot even when empty so the canvas height never changes
+        # between idle and active (see docstring / #70031).
         return 1
 
     def _render_spinner_text(self) -> str:
@@ -16666,7 +16734,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         spinner_widget = Window(
             content=FormattedTextControl(get_spinner_text),
             height=get_spinner_height,
-            wrap_lines=True,
+            # Mirror the status bar's wrap_lines=False: the spinner line is a
+            # reserved single row (_spinner_widget_height is always 1 in
+            # non-minimal-chrome mode), so wide text must not wrap onto a
+            # second row — that would defeat the constant-height invariant that
+            # prevents the mid-turn chrome stack (#70031). Long spinner text is
+            # clipped to one row instead.
+            wrap_lines=False,
         )
 
         # Petdex mascot — right-aligned half-block sprite above the prompt,
@@ -17289,12 +17363,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             mouse_support=False,
             **({"output": _cpr_disabled_output} if _cpr_disabled_output is not None else {}),
             # Read from display.cli_refresh_interval (default 0 = disabled).
-            # When non-zero, prompt_toolkit redraws the UI on this cadence
-            # during idle, keeping wall-clock status-bar read-outs ticking.
-            # Set to 0 to suppress background redraws entirely — avoids
-            # fighting terminal auto-scroll in non-fullscreen mode (Xshell,
-            # iTerm2, Windows Terminal). See #48309.
-            refresh_interval=float(CLI_CONFIG.get("display", {}).get("cli_refresh_interval", 0)),
+            # When non-zero, the background spinner_loop (below) triggers an
+            # invalidate on this cadence while the agent is IDLE, keeping
+            # wall-clock status-bar read-outs ticking.  We deliberately do
+            # NOT hand this to prompt_toolkit's own Application.refresh_interval
+            # here: that timer fires regardless of agent state, so while a turn
+            # is running it repaints the bottom chrome (spinner + status bar)
+            # every N seconds.  In non-fullscreen mode each such redraw can
+            # scroll the previous chrome copy up into scrollback — stacking
+            # repeated kawaii spinner frames / status columns instead of
+            # overwriting them in place.  This is the root cause of the
+            # "status lines repeat mid-turn" artifact (#70031), reproduced on
+            # Windows with display.cli_refresh_interval set.  Mid-turn chrome
+            # still updates live because every agent event (_on_thinking,
+            # tool start/complete, notices) explicitly calls _invalidate — we
+            # only suppress the *periodic* redraw while busy.  See #48309 /
+            # #70031.
+            refresh_interval=0.0,
             # Erase the live bottom chrome (status bar, input box, separator
             # rules) on exit instead of freezing a final copy into scrollback.
             # Without this, prompt_toolkit's render_as_done teardown repaints
@@ -17387,20 +17472,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         app._on_resize = _resize_clear_ghosts
 
+        # Idle wall-clock status-bar cadence (seconds). 0 = never background
+        # repaint idle. Mirrors display.cli_refresh_interval from config via
+        # resolve_idle_refresh_interval(); we read it here (not via
+        # Application.refresh_interval) so the periodic redraw only happens
+        # while IDLE — never mid-turn. See #70031. The clock still ticks while
+        # waiting for input; during a running turn the chrome is updated only
+        # by explicit _invalidate() calls from agent events, which keeps the
+        # status bar live without stacking scrollback.
+        _idle_refresh = resolve_idle_refresh_interval()
+
         def spinner_loop():
             while not self._should_exit:
                 if not self._app:
                     time.sleep(0.1)
                     continue
-                if self._command_running:
+                action = spinner_loop_branch(
+                    self._command_running, self._agent_running, _idle_refresh
+                )
+                if action == "repaint_fast":
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
+                elif action == "stable":
+                    # Agent is working but not waiting on a child command: do NOT
+                    # background-repaint. The bottom chrome (spinner + status
+                    # bar) is still refreshed live by the agent-event callbacks
+                    # (_on_thinking, _on_tool_start/_complete, notifications),
+                    # each of which calls _invalidate(). A periodic redraw here
+                    # would scroll the prior chrome copy into scrollback and
+                    # stack repeated frames — the #70031 artifact. Keep stable.
+                    time.sleep(0.2)
+                elif action == "idle_tick":
+                    # Idle: tick the wall-clock status-bar read-outs on the
+                    # configured cadence. Input/agent events still invalidate
+                    # explicitly when the UI actually changes.
+                    self._invalidate(min_interval=_idle_refresh)
+                    time.sleep(_idle_refresh)
                 else:
-                    # Do not repaint the idle prompt every second. In non-full-screen
-                    # prompt_toolkit mode, background redraws can fight tmux/Ghostty/cmux
-                    # viewport restoration after focus changes and visually move the
-                    # command input area. Keep idle stable; input/agent events still
-                    # invalidate explicitly when the UI actually changes.
                     time.sleep(0.2)
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)

@@ -3,7 +3,7 @@
 import asyncio
 import json
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp import web
@@ -16,6 +16,9 @@ from plugins.platforms.raft.adapter import (
     ActivityQueue,
     BRIDGE_TOKEN_HEADER,
     DEFAULT_PATH,
+    RAFT_ADAPTER_INSTANCE,
+    RAFT_ADAPTER_VERSION,
+    RUNTIME_INTEGRATION_SCHEMA,
     RaftAdapter,
     _ACTIVE_ADAPTERS,
     _ACTIVE_ADAPTERS_LOCK,
@@ -58,13 +61,7 @@ def _make_adapter(**extra):
 
 
 def _create_app(adapter: RaftAdapter) -> web.Application:
-    # Mirror connect(): client_max_size enforces the cap on chunked bodies.
-    app = web.Application(client_max_size=adapter._max_body_bytes)
-    app.router.add_get("/health", adapter._handle_health)
-    app.router.add_post(adapter._path, adapter._handle_wake)
-    app.router.add_post("/activity", adapter._handle_activity)
-    app.router.add_get("/activity/drain", adapter._handle_activity_drain)
-    return app
+    return adapter._create_http_app()
 
 
 def _activity_event(event_id: str, **overrides):
@@ -98,6 +95,30 @@ class TestRaftWakeHttp:
         assert result.success is True
         assert result.message_id is None
 
+
+    @pytest.mark.asyncio
+    async def test_runtime_manifest_is_authenticated_and_adapter_owned(self):
+        adapter = _make_adapter()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as client:
+            unauthorized = await client.get(DEFAULT_PATH)
+            assert unauthorized.status == 401
+
+            response = await client.get(
+                DEFAULT_PATH,
+                headers={BRIDGE_TOKEN_HEADER: "bridge-secret"},
+            )
+            assert response.status == 200
+            body = await response.json()
+
+        assert body["schema"] == RUNTIME_INTEGRATION_SCHEMA
+        assert body["runtimeId"] == "hermes"
+        assert body["adapterVersion"] == RAFT_ADAPTER_VERSION
+        assert body["wakeAdapter"]["kind"] == "raft-channel"
+        assert body["bridgeLifecycle"]["requiresBridgeFailureCodes"] == [
+            "BRIDGE_NOT_RUNNING",
+            "NO_CORE_SESSION",
+        ]
 
     @pytest.mark.asyncio
     async def test_rejects_content_bearing_payload(self):
@@ -194,6 +215,21 @@ class TestBodySize:
 
 
 class TestRaftConfig:
+    def test_spawned_bridge_binds_stable_hermes_adapter_instance(self, monkeypatch):
+        adapter = _make_adapter()
+        process = Mock(pid=123)
+        monkeypatch.setenv("RAFT_PROFILE", "hermes-profile")
+        monkeypatch.setattr("shutil.which", lambda _name: "/usr/local/bin/raft")
+
+        with patch("plugins.platforms.raft.adapter.subprocess.Popen", return_value=process) as popen:
+            adapter._spawn_bridge(49152)
+
+        command = popen.call_args.args[0]
+        assert command[-2:] == ["--adapter-instance", RAFT_ADAPTER_INSTANCE]
+        assert command[command.index("--wake-channel-endpoint") + 1] == (
+            "http://127.0.0.1:49152/wake"
+        )
+
     def test_env_enablement_auto_enables_with_raft_profile(self, monkeypatch):
         monkeypatch.setenv("RAFT_PROFILE", "my-agent")
 

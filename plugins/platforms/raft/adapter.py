@@ -59,6 +59,9 @@ DEFAULT_ACTIVITY_QUEUE_CAP = 500
 ACTIVITY_CONTENT_CAP = 4096
 ACTIVITY_EVENT_SCHEMA = "raft-activity.v1"
 ACTIVITY_DRAIN_SCHEMA = "raft-activity-drain.v1"
+RUNTIME_INTEGRATION_SCHEMA = "slock-external-runtime-integration.v1"
+RAFT_ADAPTER_VERSION = "1.0.0"
+RAFT_ADAPTER_INSTANCE = "hermes-gateway"
 BRIDGE_TOKEN_HEADER = "x-raft-bridge-token"
 
 _CONTENT_FIELD_NAMES = {
@@ -95,6 +98,35 @@ _RAFT_CONTEXT_LOCK = threading.Lock()
 _RAFT_SESSION_IDS: set[str] = set()
 _RAFT_TURN_IDS: set[str] = set()
 _RAFT_PROMPT_TURN_IDS: set[str] = set()
+
+_RUNTIME_INTEGRATION_MANIFEST = {
+    "schema": RUNTIME_INTEGRATION_SCHEMA,
+    "runtimeId": "hermes",
+    "adapterVersion": RAFT_ADAPTER_VERSION,
+    "integrationPattern": "external-harness-plugin",
+    "commsMode": "spawn-core",
+    "commsProtocolVersion": "agent-comms-core.v1",
+    "proofSchemaVersion": "agent-proof.v1",
+    "minSlockCliVersion": "0.0.3",
+    "multiplex": False,
+    "agentIsolation": "session-scoped",
+    "bridgeLifecycle": {
+        "explicitStartOnly": True,
+        "oneShotCommandsBridgeIndependent": True,
+        "requiresBridgeFailureCodes": ["BRIDGE_NOT_RUNNING", "NO_CORE_SESSION"],
+        "autoStartDefault": False,
+    },
+    "serverApi": {
+        "mode": "interim-agent-api-events",
+        "deliveryOnly": True,
+        "cursorAuthority": "model_seen_only",
+    },
+    "wakeAdapter": {
+        "kind": "raft-channel",
+        "protocol": "raft-channel.v0",
+        "requiresInteractiveSession": True,
+    },
+}
 
 
 def check_raft_requirements() -> bool:
@@ -468,6 +500,15 @@ class RaftAdapter(BasePlatformAdapter):
     def runtime_session(self) -> str:
         return self._runtime_session
 
+    def _create_http_app(self) -> "web.Application":
+        app = web.Application(client_max_size=self._max_body_bytes)
+        app.router.add_get("/health", self._handle_health)
+        app.router.add_get(self._path, self._handle_runtime_manifest)
+        app.router.add_post(self._path, self._handle_wake)
+        app.router.add_post("/activity", self._handle_activity)
+        app.router.add_get("/activity/drain", self._handle_activity_drain)
+        return app
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not self._bridge_token:
             self._bridge_token = secrets.token_hex(32)
@@ -477,11 +518,7 @@ class RaftAdapter(BasePlatformAdapter):
         # including Transfer-Encoding: chunked bodies that carry no
         # Content-Length and would otherwise bypass the header checks below
         # (mirrors gateway/platforms/webhook.py's connect()).
-        app = web.Application(client_max_size=self._max_body_bytes)
-        app.router.add_get("/health", self._handle_health)
-        app.router.add_post(self._path, self._handle_wake)
-        app.router.add_post("/activity", self._handle_activity)
-        app.router.add_get("/activity/drain", self._handle_activity_drain)
+        app = self._create_http_app()
 
         if self._port != 0:
             import socket as _socket
@@ -542,6 +579,7 @@ class RaftAdapter(BasePlatformAdapter):
             "agent", "bridge",
             "--wake-adapter", "wake-channel",
             "--wake-channel-endpoint", endpoint,
+            "--adapter-instance", RAFT_ADAPTER_INSTANCE,
         ]
         env = {**os.environ, "RAFT_CHANNEL_TOKEN": self._bridge_token}
         try:
@@ -593,6 +631,11 @@ class RaftAdapter(BasePlatformAdapter):
                 },
             }
         )
+
+    async def _handle_runtime_manifest(self, request: "web.Request") -> "web.Response":
+        if not self._validate_bridge_token(request.headers.get(BRIDGE_TOKEN_HEADER, "")):
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        return web.json_response(_RUNTIME_INTEGRATION_MANIFEST)
 
     async def _handle_wake(self, request: "web.Request") -> "web.Response":
         if not self._validate_bridge_token(request.headers.get(BRIDGE_TOKEN_HEADER, "")):

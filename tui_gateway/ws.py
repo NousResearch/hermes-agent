@@ -330,6 +330,28 @@ async def handle_ws(ws: Any) -> None:
             # Track this peer for session-less global broadcasts (skin.changed
             # from the background watcher) — write_json can't route those.
             server.register_live_transport(transport)
+
+            # Replay any live prompts that were emitted to the PREVIOUS
+            # (now dead) transport and silently lost on reconnect.  Without
+            # this, the agent thread stays blocked in _block() while the
+            # renderer never sees the clarify/sudo/secret request, the
+            # session looks frozen, and new messages queue behind the busy
+            # flag.  All frames are full JSON-RPC event dicts; write them
+            # inline via write_async so they land before the dispatch loop
+            # starts handling inbound requests.
+            try:
+                replay_frames = server.snapshot_pending_prompt_frames()
+            except Exception:
+                _log.exception("ws pending-prompt snapshot failed peer=%s", peer)
+                replay_frames = []
+            for frame in replay_frames:
+                await transport.write_async(frame)
+            if replay_frames:
+                _log.info(
+                    "ws replayed %d pending prompt(s) peer=%s",
+                    len(replay_frames),
+                    peer,
+                )
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1

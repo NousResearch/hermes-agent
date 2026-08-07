@@ -3255,6 +3255,41 @@ def _clear_pending(sid: str | None = None) -> None:
                 ev.set()
 
 
+def snapshot_pending_prompt_frames() -> list[dict]:
+    """Snapshot all live pending prompts as JSON-RPC event frames.
+
+    On WS reconnect / desktop restart the original ``clarify.request`` /
+    ``sudo.request`` / ``secret.request`` / ``input.request`` frames were
+    emitted to the now-dead transport and silently lost.  The agent thread
+    is still blocked inside :func:`_block` waiting for an answer (with
+    ``clarify_timeout=0`` it waits forever); without a replay the renderer
+    never sees the prompt, the session appears frozen, and new messages
+    queue behind the busy flag.
+
+    The desktop multiplexes every session over a single WS connection and
+    keys clarify state by ``session_id``, so replaying all live prompts to
+    the new connection is correct regardless of which tab is visible.
+
+    Returns a list of complete event frames (``dict``) ready to write.
+    Payloads are deep-copied so the caller cannot mutate the server's
+    ``_pending_prompt_payloads`` entries.
+    """
+    import copy
+
+    frames: list[dict] = []
+    with _prompt_lock:
+        for rid, (owner_sid, _ev) in list(_pending.items()):
+            entry = _pending_prompt_payloads.get(rid)
+            if not entry:
+                continue
+            event, payload = entry
+            params: dict = {"type": event, "session_id": owner_sid}
+            if payload is not None:
+                params["payload"] = copy.deepcopy(payload)
+            frames.append({"jsonrpc": "2.0", "method": "event", "params": params})
+    return frames
+
+
 # ── Agent factory ────────────────────────────────────────────────────
 
 
@@ -4947,6 +4982,8 @@ def _get_usage(agent) -> dict:
         "completion": g("session_completion_tokens"),
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
+        "cache_read_tokens": g("session_cache_read_tokens"),
+        "cache_write_tokens": g("session_cache_write_tokens"),
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:

@@ -284,6 +284,85 @@ def test_clear_pending(server):
     assert server._answers["r1"] == ""
 
 
+# ── WS-reconnect pending prompt replay ───────────────────────────────
+
+
+def test_snapshot_pending_prompts_empty(server):
+    """No live prompts → empty list, not None."""
+    assert server.snapshot_pending_prompt_frames() == []
+
+
+def test_snapshot_pending_prompts_returns_full_event_frames(server):
+    """Live clarify/sudo/secret prompts are rebuilt as complete JSON-RPC
+    event frames so the WS reconnect path can write them verbatim.
+
+    This is the regression test for the desktop "clarify stuck" bug: the
+    original frames were emitted to the dead transport and lost; the
+    snapshot must return re-sendable frames keyed with the correct
+    session_id, event type, and request_id, otherwise the renderer never
+    sees the prompt and the session freezes.
+    """
+    clar_ev = threading.Event()
+    sudo_ev = threading.Event()
+    server._pending["cl1"] = ("sess-A", clar_ev)
+    server._pending["sd1"] = ("sess-B", sudo_ev)
+    server._pending_prompt_payloads["cl1"] = (
+        "clarify.request",
+        {"request_id": "cl1", "question": "pick one", "choices": ["a", "b"]},
+    )
+    server._pending_prompt_payloads["sd1"] = (
+        "sudo.request",
+        {"request_id": "sd1", "command": "rm -rf"},
+    )
+
+    frames = server.snapshot_pending_prompt_frames()
+    assert len(frames) == 2
+
+    by_type = {f["params"]["type"]: f for f in frames}
+
+    clar = by_type["clarify.request"]
+    assert clar["jsonrpc"] == "2.0"
+    assert clar["method"] == "event"
+    assert clar["params"]["session_id"] == "sess-A"
+    assert clar["params"]["payload"]["request_id"] == "cl1"
+    assert clar["params"]["payload"]["choices"] == ["a", "b"]
+
+    sudo = by_type["sudo.request"]
+    assert sudo["params"]["session_id"] == "sess-B"
+    assert sudo["params"]["payload"]["command"] == "rm -rf"
+
+    # Snapshot must not mutate / clear server state — _block still owns the Event.
+    assert "cl1" in server._pending
+    assert clar_ev.is_set() is False
+
+
+def test_snapshot_pending_prompts_skips_resolved(server):
+    """If a rid was already popped from _pending_prompt_payloads (resolved
+    mid-snapshot race) the entry is skipped rather than crashing."""
+    ev = threading.Event()
+    server._pending["ghost"] = ("sess-X", ev)
+    # _pending_prompt_payloads has NO entry for "ghost"
+    assert server.snapshot_pending_prompt_frames() == []
+
+
+def test_snapshot_pending_prompts_payload_is_deep_copied(server):
+    """Caller cannot mutate the server's stored payload via the returned frame."""
+    ev = threading.Event()
+    server._pending["p1"] = ("sess-A", ev)
+    server._pending_prompt_payloads["p1"] = (
+        "clarify.request",
+        {"request_id": "p1", "choices": ["x", "y"]},
+    )
+
+    frames = server.snapshot_pending_prompt_frames()
+    # Mutate the returned frame's payload
+    frames[0]["params"]["payload"]["choices"].append("ZAPPED")
+
+    # Server store must be untouched
+    stored = server._pending_prompt_payloads["p1"][1]
+    assert stored["choices"] == ["x", "y"]
+
+
 # ── Session lookup ───────────────────────────────────────────────────
 
 

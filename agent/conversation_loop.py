@@ -1781,6 +1781,16 @@ def run_conversation(
             # This ensures multi-turn reasoning context is preserved
             agent._copy_reasoning_content_for_api(msg, api_msg)
 
+            # Before reasoning markers are stripped below, detect
+            # thinking-only turns on the SOURCE message (which still has
+            # reasoning intact) and stamp a marker on the API copy.
+            # Without this, _drop_thinking_only_and_merge_users (which
+            # runs after stripping) cannot see the reasoning and lets
+            # the empty assistant turn survive — Gemini then 400s on
+            # "Requests ending with a model turn are not supported."
+            if agent._is_thinking_only_assistant(msg):
+                api_msg["_was_thinking_only"] = True
+
             # Remove 'reasoning' field - it's for trajectory storage only
             # We've copied it to 'reasoning_content' for the API above
             if "reasoning" in api_msg:

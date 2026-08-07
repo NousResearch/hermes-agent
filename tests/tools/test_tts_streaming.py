@@ -44,6 +44,22 @@ class TestSentenceChunker:
         ]
 
 
+    def test_cjk_terminators_split_without_trailing_whitespace(self):
+        # 。！？ come with no trailing space, so the English "terminator +
+        # whitespace" rule never fired and a whole Chinese reply synthesized
+        # as one block (#78477). The terminator stays attached to its sentence.
+        c = ts.SentenceChunker(min_len=4)
+        assert c.feed("你好世界。再见朋友！") == ["你好世界。", "再见朋友！"]
+        assert c.flush() == []
+
+
+    def test_cjk_ellipsis_run_is_a_single_boundary(self):
+        # A run of ellipsis chars (……) is one boundary, kept with the sentence.
+        c = ts.SentenceChunker(min_len=3)
+        assert c.feed("怎么办……好的？") == ["怎么办……", "好的？"]
+        assert c.flush() == []
+
+
 # ── Interruption latch ───────────────────────────────────────────────────
 
 

@@ -230,6 +230,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
   constructor() {
     super({
       closedErrorMessage: 'Hermes gateway connection closed',
+      // A Desktop dial can race a local or remote backend that is still doing
+      // synchronous startup work. Prefer slower dead-endpoint detection over a
+      // false boot/reconnect failure; shared/web callers keep the 15s default.
+      connectTimeoutMs: 60_000,
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,
       notConnectedErrorMessage: 'Hermes gateway is not connected',

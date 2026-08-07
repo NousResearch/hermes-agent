@@ -1,0 +1,103 @@
+name: blooio-platform
+label: iMessage via Blooio
+kind: platform
+version: 1.0.0
+description: >
+  Blooio iMessage gateway adapter for Hermes Agent. Blooio is a hosted iMessage
+  API — send and receive real iMessages (with SMS/RCS fallback) through a REST
+  API and inbound webhooks, no Mac required. Connect it in one click with the
+  official "Blooio for Hermes" OAuth app (`hermes blooio login`); an API key is
+  supported as a headless/CI fallback. The adapter runs an aiohttp webhook
+  server that receives HMAC-SHA256 signature-verified Blooio events
+  (Stripe-style `X-Blooio-Signature`) and relays messages to/from the agent
+  over the Blooio v4 REST API. It supports text, attachments, typing
+  indicators, read receipts, and tapback/emoji reactions, plus group-chat
+  mention gating with parity to the built-in BlueBubbles iMessage channel.
+
+  Because Blooio delivers inbound messages via webhooks (and fetches outbound
+  local-file attachments from a public URL), Hermes must be reachable at a
+  public HTTPS hostname — expose it via Cloudflare Tunnel, Tailscale Funnel, or
+  ngrok and set `BLOOIO_PUBLIC_URL`.
+author: Hermes Agent contributors
+# OAuth stores its tokens in ~/.hermes/auth.json (via `hermes blooio login`),
+# so there is no hard-required env var. Set BLOOIO_API_KEY only for headless
+# use where an interactive browser login isn't possible.
+optional_env:
+  - name: BLOOIO_API_KEY
+    description: "Blooio API key (bearer token) — headless/CI alternative to OAuth login. Create one in the Blooio dashboard."
+    prompt: "Blooio API key (leave blank to use OAuth)"
+    url: "https://app.blooio.com/"
+    password: true
+  - name: BLOOIO_ORG_ID
+    description: "Organization id (org_…) to scope requests to. Required only when your OAuth token is installed on more than one organization."
+    prompt: "Organization id (org_…)"
+    password: false
+  - name: BLOOIO_CLIENT_ID
+    description: "Override the OAuth client id (defaults to the official Blooio for Hermes app). For staging/self-hosted only."
+    prompt: "OAuth client id"
+    password: false
+  - name: BLOOIO_WEBHOOK_SECRET
+    description: "Webhook signing secret (whsec_…) shown once when you create the webhook. Used to verify inbound X-Blooio-Signature HMAC-SHA256 headers. Strongly recommended."
+    prompt: "Webhook signing secret"
+    url: "https://app.blooio.com/"
+    password: true
+  - name: BLOOIO_PUBLIC_URL
+    description: "Public HTTPS base URL where Blooio can reach this Hermes instance (e.g. https://my-tunnel.example.com). Required for inbound webhooks and local-file attachment sending."
+    prompt: "Public HTTPS base URL"
+    password: false
+  - name: BLOOIO_CHANNEL
+    description: "Channel id (ch_…) or E.164 phone number to send from for routed (non-reply) sends, e.g. cron / home-channel delivery. Replies infer the sender from the chat."
+    prompt: "Default send-from channel (ch_… or E.164)"
+    password: false
+  - name: BLOOIO_HOST
+    description: "Webhook bind host (default: 0.0.0.0)"
+    prompt: "Webhook host"
+    password: false
+  - name: BLOOIO_PORT
+    description: "Webhook listen port (default: 8647)"
+    prompt: "Webhook port"
+    password: false
+  - name: BLOOIO_AUTO_REGISTER_WEBHOOK
+    description: "Auto-register BLOOIO_PUBLIC_URL/blooio/webhook with Blooio on connect and capture its signing secret (true/false, default false)"
+    prompt: "Auto-register webhook? (true/false)"
+    password: false
+  - name: BLOOIO_ALLOWED_USERS
+    description: "Comma-separated sender phone numbers/emails allowed to DM the bot"
+    prompt: "Allowed senders (comma-separated)"
+    password: false
+  - name: BLOOIO_ALLOWED_GROUPS
+    description: "Comma-separated Blooio group IDs (grp_…) the bot will respond in"
+    prompt: "Allowed group IDs (comma-separated)"
+    password: false
+  - name: BLOOIO_ALLOW_ALL_USERS
+    description: "Allow any sender to talk to the bot (dev only — disables the allowlist)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: BLOOIO_REQUIRE_MENTION
+    description: "Ignore group-chat messages unless they match a mention wake word (true/false, default false)"
+    prompt: "Require a mention in group chats? (true/false)"
+    password: false
+  - name: BLOOIO_MENTION_PATTERNS
+    description: "Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Hermes wake words)"
+    prompt: "Group mention patterns"
+    password: false
+  - name: BLOOIO_SEND_READ_RECEIPTS
+    description: "Send iMessage read receipts for inbound messages the agent processes (true/false, default false)"
+    prompt: "Send read receipts? (true/false)"
+    password: false
+  - name: BLOOIO_REACTIONS
+    description: "Tapback 👀/👍/👎 on messages as processing status, and route reactions on the bot's own messages back to the agent (true/false, default false)"
+    prompt: "Enable reaction tapbacks? (true/false)"
+    password: false
+  - name: BLOOIO_HOME_CHANNEL
+    description: "Default target (chat_ id, phone number, or email) for cron / notification delivery"
+    prompt: "Home channel target"
+    password: false
+  - name: BLOOIO_HOME_CHANNEL_NAME
+    description: "Human label for the home channel"
+    prompt: "Home channel display name"
+    password: false
+  - name: BLOOIO_API_BASE_URL
+    description: "Override the Blooio API base URL (default: https://api.blooio.com/v4)"
+    prompt: "Blooio API base URL"
+    password: false

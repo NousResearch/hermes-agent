@@ -4516,6 +4516,19 @@ def _apply_model_switch(
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
 
+    # A typed "provider/model" prefix is a provider switch — give it the
+    # same session-only default as --provider (resolve_persist_behavior
+    # rule 4) now that the typed prefix has been resolved, unless the
+    # caller explicitly overrode persistence. --global still forces it.
+    if getattr(result, "typed_provider_hop", False) and persist_override is None:
+        persist_global = resolve_persist_behavior(
+            is_global_flag,
+            is_session,
+            is_once=one_turn,
+            explicit_provider=explicit_provider,
+            typed_provider_hop=True,
+        )
+
     restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
 
     if agent:

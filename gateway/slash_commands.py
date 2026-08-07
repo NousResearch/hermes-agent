@@ -2144,6 +2144,19 @@ class GatewaySlashCommandsMixin:
         if not result.success:
             return t("gateway.model.error_prefix", error=result.error_message)
 
+        # A typed "provider/model" prefix is a provider switch — give it the
+        # same session-only default as --provider (resolve_persist_behavior
+        # rule 4) now that the typed prefix has been resolved. --global still
+        # forces persistence.
+        if result.typed_provider_hop:
+            persist_global = resolve_persist_behavior(
+                is_global_flag,
+                is_session,
+                is_once=one_turn,
+                explicit_provider=explicit_provider,
+                typed_provider_hop=True,
+            )
+
         try:
             from hermes_cli.context_switch_guard import (
                 enrich_model_switch_warnings_for_gateway,

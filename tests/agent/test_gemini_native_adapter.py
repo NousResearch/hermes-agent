@@ -290,6 +290,44 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[-1].choices[0].finish_reason == "tool_calls"
 
 
+@pytest.mark.parametrize(
+    ("gemini_finish_reason", "openai_finish_reason"),
+    [
+        ("STOP", "tool_calls"),
+        ("MAX_TOKENS", "length"),
+        ("SAFETY", "content_filter"),
+    ],
+)
+def test_stream_event_translation_preserves_terminal_finish_reason_after_tool_call(
+    gemini_finish_reason,
+    openai_finish_reason,
+):
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    event = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "abc"}}}
+                    ]
+                },
+                "finishReason": gemini_finish_reason,
+            }
+        ]
+    }
+
+    chunks = translate_stream_event(
+        event,
+        model="gemini-2.5-flash",
+        tool_call_indices=tool_call_indices,
+    )
+
+    assert chunks[0].choices[0].delta.tool_calls[0].function.name == "search"
+    assert chunks[-1].choices[0].finish_reason == openai_finish_reason
+
+
 
 
 
@@ -301,7 +339,6 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
 # ---------------------------------------------------------------------------
 # X-Goog-Api-Client header tests
 # ---------------------------------------------------------------------------
-
 
 
 

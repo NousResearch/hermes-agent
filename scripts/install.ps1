@@ -3021,19 +3021,15 @@ function Install-NodeDeps {
                 try {
                     # Playwright Chromium is ~170MB compressed and the
                     # download regularly takes 3-10 minutes on a fresh
-                    # VM.  Tee the output to console + log so the user
-                    # sees download progress in real time instead of
-                    # staring at a silent prompt that looks hung.  See
-                    # _Run-NpmInstall above for the same pattern and
-                    # the rationale behind 2>&1 before the pipe.
+                    # VM.  Output is captured to $pwLog so the user can
+                    # inspect it on failure or timeout.
                     Write-Info "(this can take several minutes -- streaming progress below)"
                     # --yes auto-accepts npx's "Need to install playwright@X.Y.Z"
                     # confirmation prompt.  Without it, npx 7+ blocks on stdin
                     # waiting for a y/N answer that never comes when this is
-                    # invoked through a pipeline (Tee-Object disconnects stdin
-                    # from the user's TTY), and the install hangs indefinitely
-                    # after printing "Need to install the following packages:
-                    # playwright@X.Y.Z".
+                    # invoked through a pipeline (the background job disconnects
+                    # stdin from the user's TTY), and the install hangs
+                    # indefinitely.
                     #
                     # Relax EAP around the playwright invocation: playwright
                     # emits a "Chromium downloaded to ..." success banner to
@@ -3044,20 +3040,63 @@ function Install-NodeDeps {
                     # the install actually succeeded.  Check $LASTEXITCODE
                     # instead, which is the reliable signal.
                     #
-                    # The ForEach-Object { "$_" } coercion BEFORE Tee-Object
-                    # is a cosmetic polish: with bare 2>&1, PowerShell still
-                    # renders stderr lines through its NativeCommandError
-                    # formatter (the red "npx.cmd : ..." block).  Coercing
-                    # each pipeline item to a string strips that wrapper so
-                    # the user sees clean playwright output instead of the
-                    # alarming-looking error formatting.
+                    # Run inside a Start-Job so we can enforce a hard wall-clock
+                    # timeout.  Without this, a stalled download or extraction
+                    # hangs the installer indefinitely (see #76222).  The bash
+                    # installer already has a 600s timeout via
+                    # run_playwright_install; this mirrors that guard for
+                    # Windows.  Output is redirected to $pwLog; on failure or
+                    # timeout the log is displayed so the user can diagnose.
                     $ErrorActionPreference = "Continue"
-                    & $npxExe --yes playwright install chromium 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $pwLog
-                    $pwCode = $LASTEXITCODE
+                    $pwTimeoutSec = 600
+                    Write-Info "(timeout: $([math]::Round($pwTimeoutSec / 60)) min)"
+                    $pwJob = Start-Job -ScriptBlock {
+                        param($npx, $log)
+                        & $npx --yes playwright install chromium *> $log
+                        $LASTEXITCODE
+                    } -ArgumentList $npxExe, $pwLog
+                    $pwFinished = Wait-Job $pwJob -Timeout $pwTimeoutSec
+                    if ($null -eq $pwFinished) {
+                        # Timeout: kill the hanging process
+                        Stop-Job $pwJob -Force -ErrorAction SilentlyContinue
+                        Remove-Job $pwJob -Force -ErrorAction SilentlyContinue
+                        $pwCode = -1
+                    } elseif ($pwFinished.State -eq 'Failed') {
+                        # Job itself failed (e.g. npx not found)
+                        Remove-Job $pwJob -ErrorAction SilentlyContinue
+                        $pwCode = -2
+                    } else {
+                        $pwResult = Receive-Job $pwJob -ErrorAction SilentlyContinue
+                        Remove-Job $pwJob -ErrorAction SilentlyContinue
+                        # Receive-Job may return an array if the job produced
+                        # other output; take the last value which is $LASTEXITCODE.
+                        $pwCode = if ($pwResult -is [array]) { $pwResult[-1] } else { $pwResult }
+                        if ($null -eq $pwCode) { $pwCode = 0 }
+                    }
                     $ErrorActionPreference = $prevEAP
                     if ($pwCode -eq 0) {
                         Write-Success "Playwright Chromium installed (browser tools ready)"
                         Remove-Item -Force $pwLog -ErrorAction SilentlyContinue
+                    } elseif ($pwCode -lt 0) {
+                        if ($pwCode -eq -1) {
+                            Write-Warn "Playwright Chromium install timed out after $([math]::Round($pwTimeoutSec / 60)) minutes."
+                            Write-Warn "This can happen when a previous browser version is locked by another process."
+                        } else {
+                            Write-Warn "Playwright Chromium install failed to start."
+                        }
+                        Write-Warn "Browser tools will not work until Chromium is installed."
+                        if (Test-Path $pwLog) {
+                            $pwErr = Get-Content $pwLog -Raw -ErrorAction SilentlyContinue
+                            if ($pwErr) {
+                                $snippet = if ($pwErr.Length -gt 1200) { $pwErr.Substring(0, 1200) + "..." } else { $pwErr }
+                                Write-Info "  playwright output:"
+                                foreach ($line in $snippet -split "`n") {
+                                    Write-Host "    $line" -ForegroundColor DarkGray
+                                }
+                                Write-Info "  Full log: $pwLog"
+                            }
+                        }
+                        Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
                     } else {
                         Write-Warn "Playwright Chromium install failed -- exit code $pwCode"
                         Write-Warn "Browser tools will not work until Chromium is installed."

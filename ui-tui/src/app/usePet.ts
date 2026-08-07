@@ -80,6 +80,13 @@ type CacheEntry =
 
 const FRAME_MS = 160
 const POLL_MS = 2500
+// When the pet is disabled, poll at 1/4 the frequency to detect a future
+// config change (e.g. `/pet`, desktop picker, `hermes pets select`) without
+// flooding the gateway thread pool with pet.cells RPCs that will just return
+// {enabled: false}. Under thread-pool contention those requests can queue
+// past the 120s RPC timeout and produce `error: timeout: pet.cells` spam.
+// See issue #69039.
+const POLL_MS_DISABLED = 10_000
 
 // Only the standalone TUI owns a real terminal it can splat image escapes into;
 // when piped (or running under the dashboard PTY the gateway resolves to
@@ -250,9 +257,28 @@ export function usePet(): PetRender {
     [rpc, releaseKitty]
   )
 
-  // Pull frames whenever the state changes (if not already cached for the
-  // active pet), plus a steady poll that catches adopt/switch/disable.
+  // Disabled-pet poll: detect a future config change (enable / adopt / switch)
+  // without responding to petState changes (they're invisible while disabled).
+  // Slow interval avoids flooding the gateway with pet.cells RPCs that just
+  // return {enabled: false}. See issue #69039.
   useEffect(() => {
+    if (enabled) {
+      return
+    }
+
+    void sync(stateRef.current)
+    const timer = setInterval(() => void sync(stateRef.current), POLL_MS_DISABLED)
+
+    return () => clearInterval(timer)
+  }, [enabled, sync])
+
+  // Enabled-pet poll: pull frames on state change (if not cached) plus a
+  // steady poll that catches adopt/switch/scale changes.
+  useEffect(() => {
+    if (!enabled) {
+      return
+    }
+
     if (!cache.current.has(`${slugRef.current}:${petState}`)) {
       void sync(petState)
     }
@@ -260,7 +286,7 @@ export function usePet(): PetRender {
     const timer = setInterval(() => void sync(stateRef.current), POLL_MS)
 
     return () => clearInterval(timer)
-  }, [petState, sync])
+  }, [enabled, petState, sync])
 
   useEffect(() => releaseKitty, [releaseKitty])
 

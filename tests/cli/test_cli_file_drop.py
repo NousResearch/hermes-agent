@@ -3,6 +3,8 @@ dragged/pasted absolute paths from being mistaken for slash commands."""
 
 import os
 
+import os
+
 import pytest
 
 from cli import _detect_file_drop
@@ -151,6 +153,16 @@ class TestEscapedSpaces:
         assert result["is_image"] is True
         assert result["remainder"] == ""
 
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows drive-letter file URI regression")
+    def test_windows_drive_file_uri_resolves_to_absolute_path(self, tmp_image):
+        uri = tmp_image.resolve().as_uri()
+        result = _detect_file_drop(uri)
+
+        assert result is not None
+        assert result["path"] == tmp_image.resolve()
+        assert result["path"].is_absolute()
+        assert result["is_image"] is True
 
     def test_tilde_prefixed_path(self, tmp_path, monkeypatch):
         home = tmp_path / "home"

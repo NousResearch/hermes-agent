@@ -3747,16 +3747,21 @@ def delegate_task(
         if dispatch.get("status") == "dispatched":
             n = len(_goals)
             note = (
-                "Subagent is running in the background. You and the user can "
-                "keep working; its full result re-enters the conversation as a "
-                "new message when it finishes. Do not wait or poll — just "
-                "continue."
+                "Subagent is running in the background. Continue only work that "
+                "does not depend on its result. If its result is BLOCKING for the "
+                "current answer, do not give the final conclusion, claim completion, "
+                "or imply integration until it re-enters and is checked. If it is "
+                "ADVISORY, you may finish first only by explicitly saying it is still "
+                "pending and not incorporated. Do not poll."
                 if n == 1 else
-                f"{n} subagents are running in parallel in the background. You "
-                f"and the user can keep working; they wait on each other and "
-                f"their consolidated results re-enter the conversation as a "
-                f"single message once ALL of them finish. Do not wait or poll "
-                f"— just continue."
+                f"{n} subagents are running in parallel in the background and "
+                f"will return one consolidated result after ALL have finished. "
+                f"Continue only work that does not depend on those results. If they "
+                f"are BLOCKING for the current answer, do not give the final "
+                f"conclusion, claim completion, or imply integration until the "
+                f"consolidated result re-enters and is checked. If they are ADVISORY, "
+                f"you may finish first only by explicitly saying they are still "
+                f"pending and not incorporated. Do not poll."
             )
             payload = {
                 "status": "dispatched",
@@ -4076,6 +4081,10 @@ def _build_top_level_description() -> str:
         "transcript paths, and the completed result (one consolidated message "
         "for a batch) re-enters the conversation on its own. Do NOT wait or "
         "poll; continue other work.\n\n"
+        "COMPLETION GATE: before dispatch, classify work as BLOCKING or ADVISORY "
+        "for this answer. For BLOCKING, do not conclude or claim completion until "
+        "the result returns and is checked. For ADVISORY, finishing first requires "
+        "explicitly saying the result is pending and unincorporated.\n\n"
         "USE FOR: reasoning-heavy subtasks, work that would flood your context "
         "with intermediate data, or independent parallel workstreams.\n"
         "DO NOT USE FOR (use these instead):\n"

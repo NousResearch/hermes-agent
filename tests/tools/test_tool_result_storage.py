@@ -1,5 +1,10 @@
 """Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
+import os
+import stat
+import sys
+import time
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +17,7 @@ from tools.tool_result_storage import (
     HEREDOC_MARKER,
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
+    RESULT_TTL_DAYS,
     STORAGE_DIR,
     _build_persisted_message,
     _heredoc_marker,
@@ -68,6 +74,12 @@ class TestWriteToSandbox:
         env.execute.assert_called_once()
         cmd = env.execute.call_args[0][0]
         assert "mkdir -p" in cmd
+        assert "umask 077" in cmd
+        assert "[ ! -L" in cmd
+        assert "[ -O" in cmd
+        assert "chmod 700" in cmd
+        assert f"-mtime +{RESULT_TTL_DAYS}" in cmd
+        assert "rm -f" in cmd
         # Content travels through stdin, NOT inside the command string —
         # otherwise large content would hit Linux's 128 KB MAX_ARG_STRLEN
         # ceiling on `bash -c <cmd>` (#22906).
@@ -114,6 +126,59 @@ class TestWriteToSandbox:
         cmd = env.execute.call_args[0][0]
         # The semicolons must be inside quotes, not acting as command separators
         assert "'/tmp/x; rm -rf /; echo .txt'" in cmd
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    def test_real_write_is_private_and_cleans_expired_results(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        storage_dir = tmp_path / "hermes-results"
+        storage_dir.mkdir(mode=0o755)
+        expired = storage_dir / "expired.txt"
+        expired.write_text("old", encoding="utf-8")
+        expired_at = time.time() - ((RESULT_TTL_DAYS + 1) * 24 * 60 * 60)
+        os.utime(expired, (expired_at, expired_at))
+
+        target = storage_dir / "fresh.txt"
+        assert _write_to_sandbox("private content", str(target), env) is True
+
+        assert target.read_text(encoding="utf-8") == "private content"
+        assert stat.S_IMODE(storage_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert not expired.exists()
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    def test_real_retry_replaces_permissive_target_mode(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        storage_dir = tmp_path / "hermes-results"
+        storage_dir.mkdir(mode=0o700)
+        target = storage_dir / "retry.txt"
+        target.write_text("stale", encoding="utf-8")
+        target.chmod(0o644)
+
+        assert _write_to_sandbox("replacement", str(target), env) is True
+
+        assert target.read_text(encoding="utf-8") == "replacement"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("win") or not hasattr(os, "symlink"),
+        reason="requires POSIX symlink semantics",
+    )
+    def test_real_write_rejects_symlinked_storage_dir(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), env={"TMPDIR": str(tmp_path)})
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        storage_dir = tmp_path / "hermes-results"
+        storage_dir.symlink_to(outside, target_is_directory=True)
+
+        target = storage_dir / "escaped.txt"
+        assert _write_to_sandbox("private content", str(target), env) is False
+        assert not (outside / "escaped.txt").exists()
 
 
 class TestResolveStorageDir:

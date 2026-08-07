@@ -63,6 +63,7 @@ PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
 SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
+RESULT_TTL_DAYS = 7
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -260,7 +261,23 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     the exec-arg ceiling.
     """
     storage_dir = os.path.dirname(remote_path)
-    cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
+    quoted_dir = shlex.quote(storage_dir)
+    quoted_path = shlex.quote(remote_path)
+    # Persisted results can contain credentials or private session history.
+    # Create them under a private directory with a restrictive umask, and
+    # remove the target before a retry so an older permissive mode cannot
+    # survive shell redirection. Reject a symlinked or foreign-owned leaf
+    # directory before writing beneath a shared temp root. Cleanup is
+    # deliberately best-effort: a backend without a compatible `find` must
+    # still be able to persist.
+    cmd = (
+        "umask 077 && "
+        f"[ ! -L {quoted_dir} ] && mkdir -p {quoted_dir} && "
+        f"[ -O {quoted_dir} ] && chmod 700 {quoted_dir} && "
+        f"(find {quoted_dir} -type f -name '*.txt' -mtime +{RESULT_TTL_DAYS} "
+        "-exec rm -f {} + 2>/dev/null || true) && "
+        f"rm -f {quoted_path} && cat > {quoted_path}"
+    )
     result = env.execute(cmd, timeout=30, stdin_data=content)
     return result.get("returncode", 1) == 0
 

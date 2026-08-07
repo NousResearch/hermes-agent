@@ -412,6 +412,20 @@ class TestMessageStorage:
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
 
+    def test_get_last_activity(self, db):
+        db.create_session(session_id="s1", source="cli")
+        assert db.get_last_activity("s1") is None
+
+        db.append_message("s1", role="user", content="Hello")
+        db.append_message("s1", role="assistant", content="Hi there!")
+
+        last_activity = db.get_last_activity("s1")
+        messages = db.get_messages("s1")
+        assert last_activity == max(m["timestamp"] for m in messages)
+
+        assert db.get_last_activity("") is None
+        assert db.get_last_activity("missing") is None
+
 
 
     def test_startup_heals_null_active_rows(self, tmp_path):

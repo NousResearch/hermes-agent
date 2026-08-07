@@ -128,6 +128,75 @@ class TestPruneStaleSessionsLocked:
 
 
 # ---------------------------------------------------------------------------
+# Startup recovery honours the reset policy
+# ---------------------------------------------------------------------------
+
+class TestStartupRecoveryResetPolicy:
+    """Startup repoint must not resurrect an overdue session as fresh.
+
+    The startup pruner repoints a stale entry to the recovered row via
+    ``_recover_session_from_db``. The rebuilt entry used to be stamped
+    ``updated_at=now``, so an opt-in idle/daily ``session_reset`` policy was
+    silently skipped across every gateway restart. Recovery now evaluates
+    ``_should_reset`` against the durable last message timestamp and promotes
+    an overdue session to a durable reset boundary instead of reopening it.
+    """
+
+    def test_overdue_recovered_session_promoted_to_reset_and_pruned(self, tmp_path):
+        key = "agent:main:telegram:dm:5140768830"
+        db = _db_returning(
+            {"sid_parent": {"end_reason": "agent_close", "id": "sid_parent"}}
+        )
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_child",
+            "started_at": (datetime.now() - timedelta(hours=5)).timestamp(),
+        }
+        db.get_last_activity.return_value = (
+            datetime.now() - timedelta(hours=4)
+        ).timestamp()
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=60),
+        )
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+        store._entries[key] = _make_entry_with_origin(key, "sid_parent")
+
+        with patch.object(store, "_save"):
+            store._prune_stale_sessions_locked()
+
+        assert key not in store._entries
+        db.promote_to_session_reset.assert_called_once_with("sid_child", "idle")
+        db.reopen_session.assert_not_called()
+
+    def test_none_policy_startup_repoint_unchanged(self, tmp_path):
+        """mode="none" (the default) still repoints to the recovered row."""
+        key = "agent:main:telegram:dm:5140768830"
+        db = _db_returning(
+            {"sid_parent": {"end_reason": "compression", "id": "sid_parent"}}
+        )
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_child",
+            "started_at": (datetime.now() - timedelta(hours=5)).timestamp(),
+        }
+        last_activity = (datetime.now() - timedelta(hours=4)).timestamp()
+        db.get_last_activity.return_value = last_activity
+        store = _make_store_with_db(tmp_path, db)  # default mode="none"
+        store._entries[key] = _make_entry_with_origin(key, "sid_parent")
+
+        with patch.object(store, "_save"):
+            store._prune_stale_sessions_locked()
+
+        assert store._entries[key].session_id == "sid_child"
+        assert store._entries[key].updated_at == datetime.fromtimestamp(
+            last_activity
+        )
+        db.reopen_session.assert_called_once_with("sid_child")
+        db.promote_to_session_reset.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Integration: _ensure_loaded_locked calls _prune_stale_sessions_locked
 # ---------------------------------------------------------------------------
 

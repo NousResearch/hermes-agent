@@ -5569,6 +5569,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             row = cursor.fetchone()
         return self._session_row_dict(row) if row else None
 
+    def get_last_activity(self, session_id: str) -> Optional[float]:
+        """Return the last stored message timestamp for one session."""
+        if not session_id:
+            return None
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT MAX(timestamp) AS last_activity "
+                "FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        value = row["last_activity"] if row is not None else None
+        return float(value) if value is not None else None
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 

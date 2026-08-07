@@ -1903,18 +1903,39 @@ class SessionStore:
     ) -> SessionEntry:
         started_at = row.get("started_at")
         try:
-            created_at = datetime.fromtimestamp(float(started_at)) if started_at else now
+            created_at = datetime.fromtimestamp(float(started_at))
         except (TypeError, ValueError, OSError):
-            created_at = now
+            # An invalid durable timestamp must look old, never freshly active.
+            created_at = datetime.fromtimestamp(0)
+        last_activity = None
+        getter = getattr(self._db, "get_last_activity", None)
+        if callable(getter):
+            try:
+                last_activity = getter(str(row["id"]))
+            except Exception:
+                logger.debug(
+                    "Gateway session last-activity lookup failed for %s",
+                    row.get("id"),
+                    exc_info=True,
+                )
+        try:
+            updated_at = (
+                datetime.fromtimestamp(float(last_activity))
+                if last_activity is not None
+                else created_at
+            )
+        except (TypeError, ValueError, OSError):
+            updated_at = created_at
         return SessionEntry(
             session_key=session_key,
             session_id=str(row["id"]),
             created_at=created_at,
-            updated_at=now,
+            updated_at=updated_at,
             origin=source,
             display_name=source.chat_name,
             platform=source.platform,
             chat_type=source.chat_type,
+            reset_had_activity=last_activity is not None,
         )
 
     def _find_gateway_session_row(
@@ -1964,7 +1985,13 @@ class SessionStore:
         now: datetime,
         raise_on_lookup_error: bool = False,
     ) -> Optional[SessionEntry]:
-        """Rebuild a missing session-key mapping from durable state.db data."""
+        """Rebuild a missing session-key mapping from durable state.db data.
+
+        Returns ``None`` when no row is recoverable, or when the recovered
+        session is already overdue under the configured reset policy — the
+        row is then durably promoted to a reset boundary instead of being
+        resurrected as freshly active.
+        """
         legacy_key = self._legacy_slack_session_key(source)
         recovered = self._find_gateway_session_row(
             session_key=session_key,
@@ -2001,16 +2028,31 @@ class SessionStore:
                 session_key,
             )
             return None
-        try:
-            self._db.reopen_session(str(recovered["id"]))
-        except Exception as exc:
-            logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
         entry = self._create_entry_from_recovered_row(
             row=recovered,
             session_key=session_key,
             source=source,
             now=now,
         )
+        reset_reason = self._should_reset(entry, source)
+        if reset_reason:
+            try:
+                promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(promote):
+                    promote(entry.session_id, reset_reason)
+                else:
+                    self._db.end_session(entry.session_id, reset_reason)
+            except Exception as exc:
+                logger.debug(
+                    "Gateway recovered-session reset promotion failed for %s: %s",
+                    session_key,
+                    exc,
+                )
+            return None
+        try:
+            self._db.reopen_session(entry.session_id)
+        except Exception as exc:
+            logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
         if migrated_legacy:
             self._record_gateway_session_peer(
                 entry.session_id,
@@ -2026,6 +2068,8 @@ class SessionStore:
         """DB-only half of _recover_session_from_db (no lock needed).
 
         Returns a SessionEntry or None.  Caller assigns _entries[key] under lock.
+        The returned entry's session row is NOT reopened here: the caller
+        evaluates the reset policy first and decides reset vs resume.
         """
         legacy_key = self._legacy_slack_session_key(source)
         recovered = self._find_gateway_session_row(
@@ -2061,11 +2105,9 @@ class SessionStore:
                 session_key,
             )
             return None
-        try:
-            self._db.reopen_session(str(recovered["id"]))
-        except Exception as exc:
-            logger.debug("Gateway session DB reopen failed for %s: %s",
-                         session_key, exc)
+        # Reopen only after the caller evaluates reset policy against durable
+        # last activity.  An agent_close/ws_orphan row may need promotion to a
+        # real reset boundary instead.
         entry = self._create_entry_from_recovered_row(
             row=recovered, session_key=session_key, source=source, now=now,
         )
@@ -2638,13 +2680,29 @@ class SessionStore:
                 session_key=session_key, source=source, now=now,
             )
             if recovered is not None:
-                with self._lock:
-                    published = self._entries.get(session_key)
-                    if published is None:
-                        self._entries[session_key] = recovered
-                        published = recovered
-                entry = published
-                _needs_save = True
+                recovered_reset_reason = self._should_reset(recovered, source)
+                if recovered_reset_reason:
+                    was_auto_reset = True
+                    auto_reset_reason = recovered_reset_reason
+                    reset_had_activity = recovered.reset_had_activity
+                    db_end_session_id = recovered.session_id
+                    prev_session_id = recovered.session_id
+                else:
+                    try:
+                        self._db.reopen_session(recovered.session_id)
+                    except Exception as exc:
+                        logger.debug(
+                            "Gateway session DB reopen failed for %s: %s",
+                            session_key,
+                            exc,
+                        )
+                    with self._lock:
+                        published = self._entries.get(session_key)
+                        if published is None:
+                            self._entries[session_key] = recovered
+                            published = recovered
+                    entry = published
+                    _needs_save = True
 
         if entry is None:
             # Create a candidate outside the lock, then publish only if another

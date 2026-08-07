@@ -70,6 +70,7 @@ DETECTED_BROWSER_EXECUTABLE=""
 USE_VENV=true
 RUN_SETUP=true
 SKIP_BROWSER=false
+SKIP_SYSTEM_PACKAGES=false
 NO_SKILLS=false
 BRANCH="main"
 INSTALL_COMMIT=""
@@ -104,6 +105,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-browser|--no-playwright)
             SKIP_BROWSER=true
+            shift
+            ;;
+        --skip-system-packages)
+            SKIP_SYSTEM_PACKAGES=true
             shift
             ;;
         --no-skills)
@@ -165,6 +170,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --skip-browser Skip Playwright/Chromium install (browser tools won't work)"
+            echo "  --skip-system-packages  Don't install optional OS packages (ripgrep/ffmpeg)"
             echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
             echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
             echo "                   'hermes update' runs never inject bundled skills either"
@@ -1097,9 +1103,19 @@ install_system_packages() {
     local description
     description=$(IFS=" and "; echo "${desc_parts[*]}")
 
+    if [ "$SKIP_SYSTEM_PACKAGES" = true ]; then
+        log_warn "Skipping automatic installation of optional system packages: ${pkgs[*]}"
+        [ "$need_ripgrep" = true ] && show_manual_install_hint "ripgrep"
+        [ "$need_ffmpeg" = true ] && show_manual_install_hint "ffmpeg"
+        return 0
+    fi
+
     # ── macOS: brew ──
     if [ "$OS" = "macos" ]; then
         if command -v brew &> /dev/null; then
+            log_warn "Homebrew is about to install missing optional packages: ${pkgs[*]}"
+            log_info "Homebrew may also install or update transitive dependencies."
+            log_info "Re-run with --skip-system-packages to manage these packages yourself."
             log_info "Installing ${pkgs[*]} via Homebrew..."
             if brew install "${pkgs[@]}"; then
                 [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"

@@ -98,6 +98,22 @@ That logs you in, sets Nous as your provider, and turns on the Tool Gateway in o
 You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually. The installer detects what's missing and installs it for you. Just make sure `git` is available (`git --version`). On Linux, ensure `curl` and `xz-utils` are installed (`sudo apt install curl xz-utils` on Debian/Ubuntu). For the desktop app, also install `build-essential` (`sudo apt install build-essential`).
 :::
 
+:::tip Managing macOS packages yourself
+On macOS, the installer prints the missing optional packages before running
+Homebrew because `brew install` may also install or update transitive
+dependencies. To keep `ripgrep` and `ffmpeg` under your own package manager's
+control, skip those optional changes:
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-system-packages
+```
+
+The installer will continue and print manual install commands. This option only
+skips the optional OS packages; Git remains a prerequisite. Existing compatible
+Python and Node.js installations (including pyenv/fnm-managed versions available
+on `PATH`) are reused instead of replaced.
+:::
+
 :::tip Nix users
 Nix is **no longer an explicitly supported install path** (best-effort only). If you already use Nix (on NixOS, macOS, or Linux), there's a dedicated setup path with a Nix flake, declarative NixOS module, and optional container mode. See the **[Nix & NixOS Setup](./nix-setup.md)** guide.
 :::

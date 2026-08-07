@@ -40,3 +40,14 @@ def test_does_not_clip_longer_numeric_identifier():
     text = "id 1234567890123456 is a 16 digit card"
     result = redact_sensitive_text(text)
     assert "1234567890123456" in result
+
+
+def test_preserves_bare_numeric_code_examples():
+    text = "epoch 1234567890, id 5551234567, line 1274"
+    assert redact_sensitive_text(text, code_file=True) == text
+
+
+def test_redacts_bare_wa_id_in_file_content():
+    text = "sender_id=15551234567"
+    result = redact_sensitive_text(text, force=True, file_read=True)
+    assert "15551234567" not in result

@@ -159,7 +159,12 @@ export function FindBar() {
   return (
     <div
       className={cn(
-        'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-height,0px)+0.5rem)] z-50',
+        // The FindBar mounts OUTSIDE the app-shell subtree that defines
+        // --titlebar-height, so the fallback is what actually positions it —
+        // keep it at TITLEBAR_HEIGHT (34px) like floating-hud/notifications,
+        // or the bar lands on the titlebar strip and covers the window
+        // controls (min/max/close) at the top-right.
+        'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-height,34px)+0.5rem)] z-50',
         'flex items-center gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-surface-background) px-2 py-1 shadow-md'
       )}
       role="search"

@@ -24,13 +24,13 @@ from cron.jobs import (
     pause_job,
     resume_job,
     trigger_job,
-    JOBS_FILE,
+    _get_jobs_file,
 )
 from cron.scheduler import tick
 
 __all__ = [
     "create_job",
-    "get_job", 
+    "get_job",
     "list_jobs",
     "remove_job",
     "update_job",
@@ -38,5 +38,5 @@ __all__ = [
     "resume_job",
     "trigger_job",
     "tick",
-    "JOBS_FILE",
+    "_get_jobs_file",
 ]

@@ -1920,12 +1920,30 @@ class AIAgent:
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._save_session_log(messages)
-            self._flush_messages_to_session_db(messages, conversation_history)
+            flush_ok = self._flush_messages_to_session_db(messages, conversation_history)
             # Drain async token-accounting deltas at every persist point (turn
             # finalize + error exits) so a crash after this line loses at most
             # the in-flight API call's delta. Cheap no-op when nothing queued.
             if self._session_db is not None:
                 self._session_db.flush_token_counts()
+            # Clear the in-flight turn marker unconditionally.  The marker is a
+            # concurrency tripwire (see note_turn_start / note_turn_persisted in
+            # agent/agent_runtime_helpers.py), not a persist-acknowledgment
+            # signal.  Gating the clear on flush success would let a transient
+            # SQLite failure leave the marker behind, causing the next *serial*
+            # turn (a perfectly valid single-threaded follow-up) to be flagged
+            # as a false overlap.
+            #
+            # Surface a failed flush through a separate diagnostic path instead.
+            if flush_ok is False:
+                logger.warning(
+                    "Session DB flush failed for turn %s (session=%s) — "
+                    "transcript row may be incomplete. "
+                    "In-flight turn marker cleared unconditionally; "
+                    "the next serial turn will not be falsely flagged.",
+                    getattr(self, "turn_id", "?"),
+                    getattr(self, "session_id", "?"),
+                )
             note_turn_persisted(self)
 
         if persist_lock is None:

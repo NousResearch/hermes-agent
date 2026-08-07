@@ -155,6 +155,12 @@ CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
+
+# Cap on messages auto-loaded from the session store by /v1/runs when the
+# client supplies only a session_id. Prevents an arbitrarily long transcript
+# from blowing the model context on replay; compaction summaries survive the
+# window (see _auto_truncate_response_history).
+RUNS_SESSION_HISTORY_LIMIT = 100
 _COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
 
 
@@ -3310,12 +3316,18 @@ class APIServerAdapter(BasePlatformAdapter):
             return None, web.json_response(_openai_error(f"Session not found: {session_id}", code="session_not_found"), status=404)
         return session, None
 
-    async def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
+    async def _conversation_history_for_session(
+        self, session_id: str, repair_alternation: bool = False
+    ) -> List[Dict[str, Any]]:
         db = await self._ensure_session_db_async()
         if db is None:
             return []
         try:
-            return await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+            return await asyncio.to_thread(
+                db.get_messages_as_conversation,
+                session_id,
+                repair_alternation=repair_alternation,
+            )
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
@@ -6465,6 +6477,46 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         session_id = body.get("session_id") or stored_session_id
+
+        # Auto-load persisted session history only when the client supplied NO
+        # history mechanism at all (mirrors /chat, which always loads history
+        # from the session store). A supplied-but-empty source must win: an
+        # explicit conversation_history: [] means "fresh run", an unknown
+        # previous_response_id stays authoritative, and a multi-message input
+        # array is itself the history. Tracking source presence (not resolved
+        # list truthiness) keeps the documented precedence exact at its
+        # boundary cases. repair_alternation=True because this feed is LIVE
+        # REPLAY: a durable user;user wedge would otherwise re-trigger the
+        # pre-request repair on every request (see
+        # SessionDB.get_messages_as_conversation docstring). A missing session
+        # degrades to empty history, never an error — the run still starts.
+        # Callers that use session_id purely as a tracking/telemetry token
+        # (and want each run stateless) can opt out with
+        # load_session_history=false. Loaded history is tail-windowed to
+        # RUNS_SESSION_HISTORY_LIMIT so an arbitrarily long transcript cannot
+        # blow the model context (compaction summaries are preserved).
+        history_source_supplied = ("conversation_history" in body) or bool(
+            previous_response_id
+        ) or (isinstance(raw_input, list) and len(raw_input) > 1)
+        if (
+            not history_source_supplied
+            and session_id
+            and body.get("load_session_history", True)
+        ):
+            conversation_history = await self._conversation_history_for_session(
+                session_id, repair_alternation=True
+            )
+            if len(conversation_history) > RUNS_SESSION_HISTORY_LIMIT:
+                logger.info(
+                    "runs_history_load session_id=%s rows=%d windowed_to=%d",
+                    session_id,
+                    len(conversation_history),
+                    RUNS_SESSION_HISTORY_LIMIT,
+                )
+                conversation_history = _auto_truncate_response_history(
+                    conversation_history, limit=RUNS_SESSION_HISTORY_LIMIT
+                )
+
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
         selection_error = self._request_route_conflict_error(

@@ -129,6 +129,8 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret as encryptDesktopSecretStrict,
   readFileDataUrlForIpc,
+  rejectSensitiveFilePath,
+  resolveExistingPathForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
@@ -11149,14 +11151,30 @@ ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => {
 // base name; the destination is resolved in the SAME parent dir so a rename can
 // never move the item elsewhere or traverse out. Rejects on a name collision.
 ipcMain.handle('hermes:fs:rename', async (_event, targetPath, newName) => {
-  const src = String(targetPath || '').trim()
   const name = String(newName || '').trim()
 
-  if (!src || !name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+  if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
     throw new Error('Invalid rename')
   }
 
+  // Validate the source path through the same IPC hardening pipeline every
+  // other FS handler uses (syntax reject, ~ expansion, device-path block,
+  // sensitive-file block on both lexical and resolved realpath, existence
+  // check) so a bridged renderer can't rename or move files out of
+  // protected locations like ~/.ssh or follow a symlink into them.
+  // Use resolvedPath (not realPath) for the actual operation: realPath
+  // resolves symlinks, which would rename/trash the target instead of the
+  // link itself and could move the destination into a different directory.
+  const { resolvedPath: src } = await resolveExistingPathForIpc(
+    expandUserPath(String(targetPath || '').trim()),
+    { purpose: 'Rename file' }
+  )
+
   const dst = path.join(path.dirname(src), name)
+
+  // Also reject if the destination would become a sensitive file (e.g.
+  // renaming an innocent file to `.env`).
+  rejectSensitiveFilePath(dst, 'Rename file')
 
   if (dst === src) {
     return { path: dst }
@@ -11202,11 +11220,18 @@ ipcMain.handle('hermes:fs:writeText', async (_event, filePath, content) => {
 // Move a file/folder to the OS trash (recoverable) — the VS Code "Delete"
 // default. `shell.trashItem` routes to Finder/Explorer/Files trash per platform.
 ipcMain.handle('hermes:fs:trash', async (_event, targetPath) => {
-  const target = String(targetPath || '').trim()
-
-  if (!target) {
-    throw new Error('Invalid delete')
-  }
+  // Validate the target through the same IPC hardening pipeline every other
+  // FS handler uses (syntax reject, ~ expansion, device-path block,
+  // sensitive-file block on both lexical and resolved realpath, existence
+  // check) so a bridged renderer can't trash files in protected locations
+  // like ~/.ssh or follow a symlink into them.
+  // Use resolvedPath (not realPath) for the actual operation: realPath
+  // resolves symlinks, which would trash the target file instead of the
+  // link itself.
+  const { resolvedPath: target } = await resolveExistingPathForIpc(
+    expandUserPath(String(targetPath || '').trim()),
+    { purpose: 'Delete file' }
+  )
 
   await shell.trashItem(target)
 

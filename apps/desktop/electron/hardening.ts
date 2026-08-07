@@ -230,6 +230,34 @@ async function statForIpc(fsImpl: { promises: { stat: typeof fs.promises.stat } 
   }
 }
 
+/**
+ * Like ``statForIpc`` but uses ``lstat`` so the check succeeds for symlinks
+ * (including dangling ones whose target no longer exists). Used by
+ * destructive-source validation (trash/rename) where the filesystem entry —
+ * the symlink itself — is the thing being operated on, not its target.
+ */
+async function lstatForIpc(
+  fsImpl: { promises: { lstat: typeof fs.promises.lstat } },
+  resolvedPath,
+  purpose,
+  typeLabel
+) {
+  try {
+    return await fsImpl.promises.lstat(resolvedPath)
+  } catch (error) {
+    const code = error && typeof error === 'object' ? error.code : ''
+
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw ipcPathError(code || 'ENOENT', `${purpose} failed: ${typeLabel} does not exist.`)
+    }
+
+    throw ipcPathError(
+      code || 'read-error',
+      `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+}
+
 async function realpathForIpc(fsImpl, resolvedPath, purpose) {
   if (typeof fsImpl.promises.realpath !== 'function') {
     return resolvedPath
@@ -346,6 +374,65 @@ async function readFileDataUrlForIpc(
   return `data:${options.mimeType};base64,${data.toString('base64')}`
 }
 
+/**
+ * Validate a path that will be deleted (trash) or renamed. Unlike the read
+ * helpers this does NOT enforce isFile/isDirectory — `shell.trashItem` and
+ * `fs.rename` both work on files and directories. It DOES enforce:
+ * syntax/device-path rejection, existence, and the sensitive-file block on
+ * both the lexical path and the resolved realpath (symlink trap).
+ *
+ * Uses `lstat` (not `stat`) for the existence check so that dangling symlinks
+ * — whose target no longer exists but whose link entry is still a valid
+ * rename/trash target — pass the check. The realpath sensitive-target guard
+ * runs when the link resolves; when it fails (dangling link) we skip it and
+ * allow the operation on the link entry itself.
+ */
+async function resolveExistingPathForIpc(
+  filePath,
+  options: {
+    purpose?: string
+    baseDir?: fs.PathOrFileDescriptor
+    fs?: typeof fs
+    blockSensitive?: boolean
+  } = {}
+) {
+  const purpose = String(options.purpose || 'File delete')
+  const fsImpl = options.fs || fs
+  const resolvedPath = resolveRequestedPathForIpc(filePath, { baseDir: options.baseDir, purpose })
+
+  if (options.blockSensitive !== false) {
+    rejectSensitiveFilePath(resolvedPath, purpose)
+  }
+
+  // lstat (not stat) so a dangling symlink — whose target is gone but whose
+  // link entry is still a valid rename/trash target — passes the check.
+  const stat = await lstatForIpc(fsImpl, resolvedPath, purpose, 'file or directory')
+
+  // Try to resolve the realpath for the sensitive-target check. If the link
+  // is dangling, realpath will fail — that's fine: the link itself isn't a
+  // sensitive file (we already checked the lexical path above), and the
+  // operation targets the link entry, not the (gone) target.
+  let realPath = resolvedPath
+
+  if (options.blockSensitive !== false) {
+    try {
+      realPath = await realpathForIpc(fsImpl, resolvedPath, purpose)
+      rejectSensitiveFilePath(realPath, purpose)
+    } catch (error: any) {
+      // Only skip if it's an ENOENT from the dangling link — propagate
+      // anything that looks like a real filesystem error.
+      const code = error && typeof error === 'object' ? error.code : ''
+
+      if (code !== 'ENOENT') {
+        throw error
+      }
+      // Dangling link: realPath stays as resolvedPath (the link entry).
+    }
+  }
+
+  return { realPath, resolvedPath, stat }
+}
+
 export {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
@@ -356,8 +443,10 @@ export {
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
   readFileDataUrlForIpc,
+  rejectSensitiveFilePath,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
+  resolveExistingPathForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,

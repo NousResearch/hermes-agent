@@ -2878,6 +2878,7 @@ export const en: Translations = {
     secretSendFailed: 'Could not send secret',
     sudoTitle: 'Administrator password',
     sudoDesc: 'Hermes needs your sudo password to run a privileged command. It is sent only to your local agent.',
+    sudoDescCommand: 'Hermes needs your sudo password to run:',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',

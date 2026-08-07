@@ -1735,18 +1735,38 @@ def _ensure_ssl_certs() -> None:
     """
     configured_cert = os.environ.get("SSL_CERT_FILE")
     if configured_cert:
-        if os.path.exists(configured_cert):
+        if os.path.isfile(configured_cert):
             return  # user already configured it to a real file
         logging.getLogger(__name__).warning(
-            "Ignoring stale SSL_CERT_FILE=%r because the path does not exist",
+            "Ignoring SSL_CERT_FILE=%r because it is not a file",
             configured_cert,
         )
         os.environ.pop("SSL_CERT_FILE", None)
 
     import ssl
+    import sys
+
+    paths = ssl.get_default_verify_paths()
+
+    # Some macOS venvs report this default while the usable trust store is in
+    # Homebrew's OpenSSL bundle. Keep the override limited to that case.
+    problematic_darwin_defaults = {"/private/etc/ssl/cert.pem", "/etc/ssl/cert.pem"}
+    is_problematic_darwin_default = (
+        paths.cafile in problematic_darwin_defaults
+        or paths.openssl_cafile in problematic_darwin_defaults
+    )
+    if sys.platform == "darwin" and is_problematic_darwin_default:
+        for candidate in (
+            "/opt/homebrew/etc/openssl@3/cert.pem",               # macOS Homebrew ARM
+            "/usr/local/etc/openssl@3/cert.pem",                 # macOS Homebrew Intel
+            "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM (older)
+            "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel (older)
+        ):
+            if os.path.exists(candidate):
+                os.environ["SSL_CERT_FILE"] = candidate
+                return
 
     # 1. Python's compiled-in defaults
-    paths = ssl.get_default_verify_paths()
     for candidate in (paths.cafile, paths.openssl_cafile):
         if candidate and os.path.exists(candidate):
             os.environ["SSL_CERT_FILE"] = candidate
@@ -1768,8 +1788,6 @@ def _ensure_ssl_certs() -> None:
         "/etc/ssl/ca-bundle.pem",                            # SUSE/OpenSUSE
         "/etc/ssl/cert.pem",                                 # Alpine / macOS
         "/etc/pki/tls/cert.pem",                             # Fedora
-        "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel
-        "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM
     ):
         if os.path.exists(candidate):
             os.environ["SSL_CERT_FILE"] = candidate

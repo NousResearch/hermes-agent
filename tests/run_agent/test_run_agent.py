@@ -2454,6 +2454,13 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    def test_summary_notice_uses_safe_print(self, agent):
+        agent._print_fn = lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("closed"))
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        assert agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60) == "Summary"
+
     def test_returns_summary(self, agent):
         resp = _mock_response(content="Here is a summary of what I did.")
         agent.client.chat.completions.create.return_value = resp

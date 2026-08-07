@@ -221,27 +221,27 @@ class AgentNotice:
 def is_free_tier_model(model: str, base_url: str = "") -> bool:
     """Return True when *model* is a Nous free-tier model, using ONLY local data.
 
-    Two signals, both zero-network:
+    Signal precedence (both zero-network):
 
-    1. The ``:free`` suffix — the canonical Nous free SKU marker (e.g.
-       ``nvidia/nemotron-3-ultra:free``). Free by construction on the API side
-       (spend is forced to 0 for ``:free`` ids).
-    2. A peek into the in-process pricing cache in ``hermes_cli.models``
-       (populated when the model picker fetched ``/v1/models`` pricing for
-       *base_url*). PEEK ONLY — a cache miss never triggers a fetch. This is
-       CLI/TUI-session best-effort: gateway sessions never run the picker's
-       pricing fetch, so suppression there rests entirely on the ``:free``
-       suffix (which all Nous free SKUs carry).
+    1. If the in-process pricing cache in ``hermes_cli.models`` has a *concrete*
+       price entry for *model* (populated when the model picker fetched
+       ``/v1/models`` pricing for *base_url*), that entry is AUTHORITATIVE. PEEK
+       ONLY — a cache miss never triggers a fetch. When pricing data exists we
+       REQUIRE the model to be truly $0 prompt AND completion; a ``:free`` slug
+       that the provider actually prices > 0 is treated as billable. This closes
+       the bug where a ``:free`` suffix (OpenRouter syntax) was trusted blindly
+       and could force spend to $0 + suppress the depleted notice even though
+       the provider billed the call as paid.
+    2. Fallback to the ``:free`` suffix when no concrete pricing entry exists
+       (gateway sessions never run the picker's pricing fetch, so the cache is
+       empty). All genuine Nous free SKUs carry the ``:free`` suffix, so this
+       preserves the existing zero-network free-model gate for the gateway path.
 
     Fail-open to False (the depleted notice still shows) on any error: wrongly
     showing the warning is recoverable noise; wrongly hiding it on a paid model
     would mask a real billing block.
     """
     if not model:
-        return False
-    if model.endswith(":free"):
-        return True
-    if not base_url:
         return False
     try:
         from hermes_cli.models import _is_model_free, _pricing_cache
@@ -253,11 +253,16 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
         if key.endswith("/v1"):
             key = key[:-3].rstrip("/")
         pricing = _pricing_cache.get(key)
-        if not pricing:
-            return False
-        return _is_model_free(model, pricing)
+        # Only trust a pricing entry when it actually names THIS model — an
+        # empty cache (gateway) or a cache that lacks the model falls through
+        # to the suffix heuristic below.
+        if pricing and model in pricing:
+            return _is_model_free(model, pricing)
     except Exception:
         return False
+    # No authoritative pricing for this model locally → rely on the ``:free``
+    # suffix as the known Nous free-SKU marker (zero-network, gateway-safe).
+    return model.endswith(":free")
 
 
 # ── evaluate_credits_notices (pure reconciliation function) ──────────────────

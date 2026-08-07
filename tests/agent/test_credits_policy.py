@@ -351,6 +351,51 @@ class TestIsFreeTierModel:
         monkeypatch.setattr(models_mod, "_pricing_cache", _Exploding())
         assert is_free_tier_model("some/model", "https://inference-api.nousresearch.com") is False
 
+    def test_free_suffix_priced_over_zero_is_billable(self, monkeypatch):
+        """A ``:free`` slug the provider actually prices > 0 must NOT be treated
+        as free. ``:free`` is OpenRouter syntax; if Nous/another provider serves
+        that slug as a paid model, blindly trusting the suffix would force spend
+        to $0 and suppress the depleted notice while the call is actually billed.
+        The authoritative pricing entry wins over the suffix heuristic.
+        """
+        from agent.credits_tracker import is_free_tier_model
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(
+            models_mod,
+            "_pricing_cache",
+            {
+                "https://inference-api.nousresearch.com": {
+                    # A :free slug that the provider prices as a paid model.
+                    "tencent/hy3:free": {"prompt": "0.0000001056", "completion": "0.0000004224"},
+                    # A genuine free SKU (matches live Nous /v1/models).
+                    "nvidia/nemotron-3-ultra:free": {"prompt": "0", "completion": "0"},
+                }
+            },
+        )
+        base = "https://inference-api.nousresearch.com/v1"
+        # Priced > 0 → billable, even with the :free suffix.
+        assert is_free_tier_model("tencent/hy3:free", base) is False
+        # Truly $0 → free.
+        assert is_free_tier_model("nvidia/nemotron-3-ultra:free", base) is True
+
+    def test_suffixed_model_absent_from_cache_falls_back_to_suffix(self, monkeypatch):
+        """When the pricing cache has NO entry for the model (gateway sessions
+        never fetch picker pricing), fall back to the ``:free`` suffix so known
+        Nous free SKUs still gate correctly without a network call.
+        """
+        from agent.credits_tracker import is_free_tier_model
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(
+            models_mod,
+            "_pricing_cache",
+            {"https://inference-api.nousresearch.com": {"unrelated/paid": {"prompt": "1", "completion": "1"}}},
+        )
+        # Cache populated but lacks THIS model → suffix heuristic applies.
+        assert is_free_tier_model("nvidia/nemotron-3-ultra:free", "https://inference-api.nousresearch.com/v1") is True
+        assert is_free_tier_model("Hermes-4-405B", "https://inference-api.nousresearch.com/v1") is False
+
 
 # ── Scenario 6: denominator none (uf is None) ────────────────────────────────
 

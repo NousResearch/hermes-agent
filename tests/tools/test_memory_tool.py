@@ -183,6 +183,34 @@ class TestMemoryStoreRemove:
         assert store.remove("memory", "  ")["success"] is False
 
 
+class TestMemoryStoreList:
+    def test_list_entries_empty(self, store):
+        result = store.list_entries("memory")
+        assert result["success"] is True
+        assert result["entries"] == []
+        assert result["entry_count"] == 0
+        assert "usage" in result
+
+    def test_list_entries_returns_live_state(self, store):
+        store.add("memory", "fact A")
+        store.add("memory", "fact B")
+        result = store.list_entries("memory")
+        assert result["entries"] == ["fact A", "fact B"]
+        assert result["entry_count"] == 2
+
+    def test_list_entries_does_not_mutate(self, store):
+        store.add("memory", "fact A")
+        before = list(store.memory_entries)
+        store.list_entries("memory")
+        assert store.memory_entries == before
+
+    def test_list_entries_user_target(self, store):
+        store.add("user", "Name: Alice")
+        result = store.list_entries("user")
+        assert result["entries"] == ["Name: Alice"]
+        assert result["target"] == "user"
+
+
 class TestMemoryConsolidationGracefulDegrade:
     """Fix #3 for #42405: a failed at-capacity consolidation must never loop the
     turn to budget exhaustion — after a per-turn cap of failures, memory ops

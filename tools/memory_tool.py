@@ -559,6 +559,27 @@ class MemoryStore:
 
         return self._success_response(target, "Entry removed.")
 
+    def list_entries(self, target: str) -> Dict[str, Any]:
+        """Return the live entries for target without mutating anything.
+
+        Read-only counterpart to add/replace/remove -- previously the only
+        way to see current entries was the `current_entries` echoed on
+        error responses (issue: no clean way to inspect memory on a normal
+        call). Never touches disk or the write gate.
+        """
+        entries = self._entries_for(target)
+        current = self._char_count(target)
+        limit = self._char_limit(target)
+        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+        return {
+            "success": True,
+            "done": True,
+            "target": target,
+            "entries": entries,
+            "entry_count": len(entries),
+            "usage": f"{pct}% — {current:,}/{limit:,} chars",
+        }
+
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply a sequence of add/replace/remove ops to one target atomically.
 

@@ -3336,7 +3336,7 @@ class OptionalSkillSource(SkillSource):
                 and "__pycache__" not in f.parts
                 and f.suffix != ".pyc"
             ):
-                rel_path = str(f.relative_to(skill_dir))
+                rel_path = f.relative_to(skill_dir).as_posix()
                 try:
                     files[rel_path] = f.read_bytes()
                 except OSError:
@@ -3885,7 +3885,12 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     for rel_path in sorted(bundle.files):
         # Include the path so swapping file contents between two paths
         # changes the hash (avoids filename-swap evading update detection).
-        h.update(rel_path.encode("utf-8"))
+        # Normalize backslashes to forward slashes so the hash matches the
+        # disk-based ``content_hash`` (which uses ``Path.as_posix()``) on all
+        # platforms. Without this, Windows bundles produce a different digest
+        # than the installed files, causing a perpetual "update_available".
+        norm_path = rel_path.replace("\\", "/")
+        h.update(norm_path.encode("utf-8"))
         h.update(b"\x00")
         content = bundle.files[rel_path]
         if isinstance(content, bytes):

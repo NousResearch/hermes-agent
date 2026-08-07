@@ -223,8 +223,15 @@ export function useStatusbarItems({
       ? focusedRowStartedAt * 1000
       : null
 
-  const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
-  const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+  const contextUsage = useMemo(
+    () => (busy ? copy.contextUsage : usageContextLabel(currentUsage)),
+    [busy, copy.contextUsage, currentUsage]
+  )
+
+  const contextBar = useMemo(
+    () => (busy ? copy.unknown : contextBarLabel(currentUsage)),
+    [busy, copy.unknown, currentUsage]
+  )
 
   const publishContextUsage = useCallback(
     (snapshot: Pick<UsageStats, 'context_max' | 'context_percent' | 'context_used'>) => {

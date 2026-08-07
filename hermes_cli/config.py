@@ -4647,6 +4647,78 @@ def _default_value_for_key(dotted_key: str):
     return node if not isinstance(node, dict) else None
 
 
+def _is_mapping_section_key(dotted_key: str) -> bool:
+    """True when *dotted_key* names a mapping section in DEFAULT_CONFIG.
+
+    ``_default_value_for_key`` returns None for dict nodes (the leaf check
+    requires a non-dict), so top-level mapping sections like ``terminal`` or
+    ``agent`` are invisible to it.  A key is mapping-typed when its first
+    segment's default is a dict (e.g. ``terminal``, ``agent.compression``) or
+    the existing config holds a dict at that path.
+    """
+    segments = dotted_key.split(".")
+    node = DEFAULT_CONFIG
+    for part in segments:
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return isinstance(node, dict)
+
+
+def _decode_json_value(text: str):
+    """Decode a JSON literal (array or object) for ``config set``, or None.
+
+    ``hermes config set <key> '[...]'`` / ``'{...}'`` has no native CLI syntax
+    for structured values, so users pass JSON.  Returns the parsed value when
+    *text* is a JSON array or object; None for scalars (plain strings, ``123``,
+    ``true``) which keep their historical stringification.
+    """
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, (list, dict)) else None
+
+
+def _looks_like_allowlist_field(field: str) -> bool:
+    """True when *field* is an allowlist-shaped platform key.
+
+    Allowlist fields are consumed as sets by ``_coerce_allow_set`` (and the
+    telegram env bridge) and are the list-typed platform settings users set
+    with a JSON array.  Matching is by shape (``*_allowed_*`` / ``*_allow_from``)
+    plus the known allowlist names, so it stays in sync with the readers even
+    as platform configs gain fields.
+    """
+    return (
+        "_allow_from" in field
+        or "_allowed_" in field
+        or field in ("allow_from", "allowed_chats", "allowed_topics", "allowed_rooms", "allowed_channels")
+    )
+
+
+def _is_allowlist_platform_field(dotted_key: str) -> bool:
+    """True when *dotted_key* names an allowlist field of a platform config.
+
+    Covers both documented forms:
+    - nested: ``gateway.platforms.<name>.<field>`` / ``platforms.<name>.<field>``
+      (open-dict platform configs; ``gateway.platforms.telegram`` alone is the
+      platform mapping, not a field)
+    - top-level: ``telegram.<field>``, ``discord.<field>``, etc. (bridged into
+      platform extras by ``gateway/config.py``)
+
+    Only allowlist-shaped fields decode; other platform fields (``reactions``,
+    ``streaming``) keep their historical stringification.
+    """
+    segments = dotted_key.split(".")
+    if any(seg in _PLATFORM_CONTAINER_KEYS and idx + 2 < len(segments) for idx, seg in enumerate(segments)):
+        # ``...platforms.<name>.<field>`` — at least one field below name.
+        return _looks_like_allowlist_field(segments[-1])
+    if segments[0] in _SCHEMA_DEFINED_DICT_KEYS and len(segments) > 1:
+        # ``telegram.<field>`` — top-level platform block field.
+        return _looks_like_allowlist_field(segments[1])
+    return False
+
+
 # Known top-level config keys that intentionally accept arbitrary user-supplied
 # child keys ("dictionary-shaped" config: the schema declares the dict but the
 # user populates its keys). Schema validation accepts ANY path below these
@@ -4902,7 +4974,9 @@ def set_config_value(key: str, value: str, force: bool = False):
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
     coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
+    default_value = _default_value_for_key(key)
+    existing_value = _get_nested(user_config, key)
+    if not isinstance(default_value, str):
         if value.lower() in {'true', 'yes', 'on'}:
             coerced_value = True
         elif value.lower() in {'false', 'no', 'off'}:
@@ -4911,6 +4985,35 @@ def set_config_value(key: str, value: str, force: bool = False):
             coerced_value = int(value)
         elif value.replace('.', '', 1).isdigit():
             coerced_value = float(value)
+        # List-typed settings (allowlists like
+        # ``gateway.platforms.telegram.group_allowed_chats``, ``allow_from``,
+        # ``allowed_topics``) have no native CLI syntax, so users pass a JSON
+        # array literal.  Decode it into a real YAML sequence instead of
+        # writing the stringified literal — the readers (_coerce_allow_set and
+        # the telegram env bridge) split scalars on commas, so a quoted
+        # '["-5488240624"]' silently matches nothing (#76457).
+        #
+        # A key is list-typed when its schema default is a list, the existing
+        # user config holds a list at that path, or the key names an allowlist
+        # platform field (``gateway.platforms.<name>.group_allowed_chats`` /
+        # ``telegram.group_allowed_chats`` — open-dict extras with no
+        # DEFAULT_CONFIG entry).  Unknown keys never match and keep their
+        # historical stringification.
+        elif isinstance(default_value, list) or isinstance(existing_value, list) or _is_allowlist_platform_field(key):
+            # List-typed keys accept only JSON arrays — a JSON object is not a
+            # valid list value.
+            decoded = _decode_json_value(value)
+            if isinstance(decoded, list):
+                coerced_value = decoded
+        else:
+            # JSON object literal → YAML mapping, per the spec's ``{`` trigger.
+            # Only for mapping-typed keys (schema default is a mapping section,
+            # or the existing config holds a dict at that path) AND only when
+            # the decoded value is actually a dict — a JSON array on a
+            # mapping-only key stays a string (GottZ triage, PR #76470).
+            _mapping_decoded = _decode_json_value(value)
+            if isinstance(_mapping_decoded, dict) and (_is_mapping_section_key(key) or isinstance(existing_value, dict)):
+                coerced_value = _mapping_decoded
 
     value = coerced_value
     # Normalize a scalar ``model`` key before writing sub-keys so that

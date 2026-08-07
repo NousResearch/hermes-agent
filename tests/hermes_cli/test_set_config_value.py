@@ -723,3 +723,135 @@ class TestMalformedYAMLConfigPreservation:
         assert "Cannot parse" in captured.out or "Cannot parse" in captured.err
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG
+
+
+class TestJsonListValues:
+    """hermes config set must decode JSON array literals into real YAML lists.
+
+    Allowlist keys (``group_allowed_chats``, ``allow_from``, ``allowed_topics``)
+    have no native CLI list syntax, so users pass a JSON array.  Before #76457
+    the literal was written as a quoted scalar string; readers that split
+    scalars on commas then matched nothing, silently breaking authorization
+    allowlists.  Decode only when the key is list-typed (schema default is a
+    list, the existing config holds a list, or the key names an allowlist
+    platform field); all other values keep their historical stringification.
+    """
+
+    def test_json_array_written_as_yaml_list(self, _isolated_hermes_home):
+        set_config_value("gateway.platforms.telegram.group_allowed_chats", '["-5488240624"]')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        value = reloaded["gateway"]["platforms"]["telegram"]["group_allowed_chats"]
+        assert isinstance(value, list)
+        assert value == ["-5488240624"]
+
+    def test_plain_scalar_stays_a_string(self, _isolated_hermes_home):
+        set_config_value("gateway.platforms.telegram.group_allowed_chats", "-5488240624")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["gateway"]["platforms"]["telegram"]["group_allowed_chats"] == "-5488240624"
+
+    def test_comma_string_stays_a_string(self, _isolated_hermes_home):
+        set_config_value("gateway.platforms.telegram.group_allowed_chats", "123,456")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["gateway"]["platforms"]["telegram"]["group_allowed_chats"] == "123,456"
+
+    def test_json_object_is_not_decoded(self, _isolated_hermes_home):
+        # A JSON object on a LIST-typed key is not a valid list value — it
+        # stays a string (the section-write guard governs mapping keys).
+        set_config_value("gateway.platforms.telegram.group_allowed_chats", '{"not": "an array"}')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["gateway"]["platforms"]["telegram"]["group_allowed_chats"] == '{"not": "an array"}'
+
+    def test_json_object_on_mapping_key_written_as_mapping(self, _isolated_hermes_home):
+        # The spec's ``{`` trigger: a JSON object literal on a mapping-typed
+        # key becomes a YAML mapping, not a quoted scalar.
+        set_config_value("terminal", '{"backend": "local", "cwd": "/repo"}')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["terminal"] == {"backend": "local", "cwd": "/repo"}
+
+    def test_json_array_on_mapping_key_stays_a_string(self, _isolated_hermes_home):
+        # A JSON array on a mapping-typed key must NOT be decoded — only JSON
+        # objects should become YAML mappings.  Without this guard, the mapping
+        # branch would accept any structured _decode_json_value result and turn
+        # an array into a YAML sequence (GottZ triage, PR #76470).
+        set_config_value("terminal", '["a", "b"]')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["terminal"] == '["a", "b"]'
+
+    def test_string_default_key_keeps_json_array_as_string(self, _isolated_hermes_home):
+        # String-typed defaults must not be decoded — the user asked for the
+        # literal text (e.g. a JSON document stored as a string).
+        set_config_value("telegram.allowed_chats", '["a", "b"]')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["telegram"]["allowed_chats"] == '["a", "b"]'
+
+    def test_unknown_key_with_json_array_stays_a_string(self, _isolated_hermes_home):
+        # Unknown keys (schema default None) are intentionally supported as
+        # arbitrary string configuration for skills/external apps.  A JSON
+        # array must stay a string, not become a YAML sequence.
+        set_config_value("custom.payload", '["a", "b"]')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["custom"]["payload"] == '["a", "b"]'
+
+    def test_non_list_default_with_json_array_stays_a_string(self, _isolated_hermes_home):
+        # A known key whose default is NOT a list (bool/int/float) must not be
+        # decoded either — only list-typed allowlist keys are.
+        set_config_value("telegram.reactions", '["a", "b"]')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["telegram"]["reactions"] == '["a", "b"]'
+
+    def test_top_level_platform_field_written_as_list(self, _isolated_hermes_home):
+        # The documented top-level form (telegram.group_allowed_chats, not
+        # nested under gateway.platforms) is bridged into platform extras by
+        # gateway/config.py and must decode JSON arrays too.
+        set_config_value("telegram.group_allowed_chats", '["-5488240624"]')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        value = reloaded["telegram"]["group_allowed_chats"]
+        assert isinstance(value, list)
+        assert value == ["-5488240624"]
+
+    def test_platform_mapping_alone_is_not_decoded(self, _isolated_hermes_home):
+        # ``gateway.platforms.telegram`` is the platform mapping itself (no
+        # field below it) — a JSON array there is not an allowlist write.
+        set_config_value("gateway.platforms.telegram", '["a", "b"]')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["gateway"]["platforms"]["telegram"] == '["a", "b"]'
+
+    def test_loaded_through_gateway_config_is_a_list(self, _isolated_hermes_home):
+        # End-to-end: the written YAML list must survive load_gateway_config
+        # as a real list (the sweeper's suggested regression).  No fallback —
+        # a failure here must surface, not silently skip.
+        set_config_value("telegram.group_allowed_chats", '["-5488240624"]')
+
+        import gateway.config as gc
+
+        cfg = gc.load_gateway_config()
+        telegram_cfg = cfg.platforms.get(gc.Platform.TELEGRAM)
+        assert telegram_cfg is not None
+        # group_allowed_chats lands in PlatformConfig.extra (bridged from the
+        # top-level telegram block by gateway/config.py).
+        value = (telegram_cfg.extra or {}).get("group_allowed_chats")
+        assert isinstance(value, list), f"expected list, got {type(value)}: {value!r}"
+        assert value == ["-5488240624"]
+

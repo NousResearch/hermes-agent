@@ -140,6 +140,10 @@ declare global {
       saveImageFromUrl: (url: string) => Promise<boolean>
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
+      downloadBackup: (
+        archivePath: string,
+        profile: null | string
+      ) => Promise<{ error?: string; ok: boolean; path?: string }>
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>

@@ -69,7 +69,7 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs())
     }
 
     function onData(chunk) {
-      buf += chunk.toString()
+      buf += chunk.toString('utf8')
       let nl
 
       while ((nl = buf.indexOf('\n')) !== -1) {

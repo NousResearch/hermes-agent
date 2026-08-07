@@ -621,8 +621,95 @@ class TestWebServerEndpoints:
         resp = self.client.post("/api/gateway/drain", json={"action": "explode"})
         assert resp.status_code == 400
 
+    def test_gateway_drain_profile_scopes_marker_path(self):
+        """?profile=<name> must write/clear the marker under that profile's own
+        home — desktop's global-remote mode shares one dashboard across
+        profiles, each with its own gateway process watching its own home.
+        Writing to the dashboard's own home would drain the WRONG gateway.
+        """
+        from hermes_constants import get_hermes_home
+        from hermes_cli import profiles as profiles_mod
 
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+        dashboard_home = get_hermes_home()
 
+        resp = self.client.post("/api/gateway/drain?profile=worker", json={"action": "drain"})
+        assert resp.status_code == 200
+        assert resp.json()["draining"] is True
+        assert (worker_home / ".drain_request.json").is_file()
+        assert not (dashboard_home / ".drain_request.json").exists()
+
+        resp = self.client.post("/api/gateway/drain?profile=worker", json={"action": "cancel"})
+        assert resp.status_code == 200
+        assert resp.json()["was_draining"] is True
+        assert not (worker_home / ".drain_request.json").exists()
+
+    def test_list_backups_profile_scoped(self):
+        """?profile=<name> must list the archives under that profile's own
+        backups directory, not the dashboard's own (issue class: a shared
+        global-remote dashboard listing another profile's private backups, or
+        missing the profile's own).
+        """
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_backups = worker_home / "backups"
+        worker_backups.mkdir(parents=True)
+        (worker_backups / "hermes-backup-worker.zip").write_bytes(b"zip")
+
+        resp = self.client.get("/api/ops/backup/list?profile=worker")
+        assert resp.status_code == 200
+        names = [entry["name"] for entry in resp.json()["backups"]]
+        assert names == ["hermes-backup-worker.zip"]
+
+        resp = self.client.get("/api/ops/backup/list")
+        assert resp.json()["backups"] == []
+
+    def test_run_backup_profile_scoped(self, monkeypatch):
+        """?profile=<name> must both spawn `hermes -p <name> backup` (so the
+        CLI child actually backs up that profile's data, not the dashboard's
+        own) and write the output archive into that profile's own backups dir.
+        """
+        import hermes_cli.web_server as web_server
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        seen = {}
+
+        def fake_spawn(subcommand, name):
+            seen["subcommand"] = subcommand
+            return SimpleNamespace(pid=4321)
+
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
+
+        resp = self.client.post("/api/ops/backup?profile=worker", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert seen["subcommand"][:3] == ["-p", "worker", "backup"]
+        assert Path(data["archive"]).parent == worker_home / "backups"
+
+    def test_download_backup_profile_scoped(self):
+        """A worker-profile archive must download under ?profile=worker, and
+        must NOT be reachable through the dashboard's own (unscoped) request —
+        otherwise one profile's backups are exposed to another.
+        """
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_backups = worker_home / "backups"
+        worker_backups.mkdir(parents=True)
+        archive = worker_backups / "hermes-backup-worker.zip"
+        archive.write_bytes(b"zip-bytes")
+
+        resp = self.client.get(f"/api/ops/backup/download?archive={archive}&profile=worker")
+        assert resp.status_code == 200
+        assert resp.content == b"zip-bytes"
+
+        resp = self.client.get(f"/api/ops/backup/download?archive={archive}")
+        assert resp.status_code == 403
 
     @staticmethod
     def _provider_field_map(payload):

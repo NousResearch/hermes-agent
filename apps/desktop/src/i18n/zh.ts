@@ -1426,8 +1426,9 @@ export const zh: Translations = {
     settingsFields: '设置字段',
     mcpServers: 'MCP 服务器',
     archivedChats: '已归档对话',
-    sections: { maintenance: '维护', sessions: '会话', system: '系统', usage: '用量' },
+    sections: { backups: '备份', maintenance: '维护', sessions: '会话', system: '系统', usage: '用量' },
     sectionDescriptions: {
+      backups: '创建并下载 Hermes 备份',
       maintenance: '诊断、备份、维护器与记忆数据',
       sessions: '搜索与管理会话',
       system: '状态、日志与系统操作',
@@ -1531,7 +1532,25 @@ export const zh: Translations = {
       actionStarted: name => `${name} 已启动 — 正在跟踪日志…`,
       actionFailed: name => `${name} 启动失败`,
       running: '运行中…',
-      viewLog: '操作日志'
+      viewLog: '操作日志',
+      gatewayControl: '网关控制',
+      drainGateway: '开始排空',
+      cancelDrain: '取消排空',
+      gatewayDraining: '网关正在排空 — 不再接受新对话。',
+      drainActive: '排空进行中',
+      drainInactive: '排空未启用',
+      drainStarted: '排空已开始 — 网关将停止接受新对话。',
+      drainCancelled: '排空已取消 — 网关正在接受新对话。'
+    },
+    backups: {
+      description: '创建完整的 Hermes 备份存档或下载现有备份。',
+      directory: '备份目录',
+      download: '下载',
+      empty: '暂无备份。',
+      failed: '备份失败',
+      running: '备份进行中…',
+      done: '备份完成',
+      run: '运行备份'
     }
   },
 

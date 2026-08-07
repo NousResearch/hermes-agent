@@ -1086,8 +1086,8 @@ export interface Translations {
     settingsFields: string
     mcpServers: string
     archivedChats: string
-    sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
-    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
+    sections: Record<'backups' | 'maintenance' | 'sessions' | 'system' | 'usage', string>
+    sectionDescriptions: Record<'backups' | 'maintenance' | 'sessions' | 'system' | 'usage', string>
     nav: Record<'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts', { title: string; detail: string }>
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
@@ -1177,6 +1177,24 @@ export interface Translations {
       actionFailed: (name: string) => string
       running: string
       viewLog: string
+      gatewayControl: string
+      drainGateway: string
+      cancelDrain: string
+      gatewayDraining: string
+      drainActive: string
+      drainInactive: string
+      drainStarted: string
+      drainCancelled: string
+    }
+    backups: {
+      description: string
+      directory: string
+      download: string
+      empty: string
+      failed: string
+      running: string
+      done: string
+      run: string
     }
   }
 

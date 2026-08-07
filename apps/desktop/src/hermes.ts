@@ -10,6 +10,7 @@ import type {
   AutomationBlueprint,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  BackupListResponse,
   ComputerUseStatus,
   ConfigSchemaResponse,
   CronDeliveryTarget,
@@ -21,6 +22,7 @@ import type {
   CustomEndpointUpdate,
   CustomEndpointValidationResponse,
   DebugShareResponse,
+  DrainResponse,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
   HermesConfig,
@@ -140,6 +142,8 @@ export type {
   AutomationBlueprintField,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  BackupArchive,
+  BackupListResponse,
   ComputerUseCheck,
   ComputerUsePermissionSource,
   ComputerUseStatus,
@@ -156,6 +160,7 @@ export type {
   CustomEndpointUpdate,
   CustomEndpointValidationResponse,
   DebugShareResponse,
+  DrainResponse,
   ElevenLabsVoice,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
@@ -1591,6 +1596,15 @@ export function restartGateway(): Promise<ActionResponse> {
   })
 }
 
+export function gatewayDrain(action: 'drain' | 'cancel'): Promise<DrainResponse> {
+  return window.hermesDesktop.api<DrainResponse>({
+    ...profileScoped(),
+    path: '/api/gateway/drain',
+    method: 'POST',
+    body: { action }
+  })
+}
+
 export function updateHermes(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
     ...profileScoped(),
@@ -1825,10 +1839,28 @@ export function runSecurityAudit(): Promise<ActionResponse> {
 
 export function runBackup(): Promise<ActionResponse & { archive?: string }> {
   return window.hermesDesktop.api<ActionResponse & { archive?: string }>({
+    ...profileScoped(),
     path: '/api/ops/backup',
     method: 'POST',
     body: {}
   })
+}
+
+export function listBackups(): Promise<BackupListResponse> {
+  return window.hermesDesktop.api<BackupListResponse>({
+    ...profileScoped(),
+    path: '/api/ops/backup/list'
+  })
+}
+
+// Packaged Desktop loads the renderer from file://, so a plain <a href> to a
+// relative /api path can't reach the backend — and unlike window.hermesDesktop.api,
+// a download needs the raw response bytes, not JSON. Route it through a
+// dedicated IPC bridge call so main can resolve the same profile-aware backend
+// connection + auth (token or OAuth bearer) the generic api() bridge uses, then
+// hand the bytes to a native "Save As" dialog.
+export function downloadBackup(archivePath: string): Promise<{ error?: string; ok: boolean; path?: string }> {
+  return window.hermesDesktop.downloadBackup(archivePath, _apiProfile)
 }
 
 export function runDebugShare(): Promise<DebugShareResponse> {

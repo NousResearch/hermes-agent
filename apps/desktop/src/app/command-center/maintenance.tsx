@@ -7,6 +7,8 @@ import {
   type ActionResponse,
   type CuratorStatusResponse,
   type DebugShareResponse,
+  type DrainResponse,
+  gatewayDrain,
   getActionStatus,
   getCuratorStatus,
   getMemoryStatus,
@@ -62,6 +64,9 @@ export function MaintenancePanel() {
   const [share, setShare] = useState<DebugShareResponse | null>(null)
   const [sharing, setSharing] = useState(false)
   const [error, setError] = useState('')
+  const [drainLoading, setDrainLoading] = useState(false)
+  const [drainActive, setDrainActive] = useState(false)
+  const [drainMessage, setDrainMessage] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -149,6 +154,26 @@ export function MaintenancePanel() {
     }
   }, [mm])
 
+  const runDrainAction = useCallback(
+    async (action: 'drain' | 'cancel') => {
+      setDrainLoading(true)
+      setError('')
+      setDrainMessage('')
+
+      try {
+        const response: DrainResponse = await gatewayDrain(action)
+        setDrainActive(response.draining ?? action === 'drain')
+        setDrainMessage(action === 'drain' ? mm.drainStarted : mm.drainCancelled)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+        notifyError(err, mm.actionFailed(mm.gatewayControl))
+      } finally {
+        setDrainLoading(false)
+      }
+    },
+    [mm]
+  )
+
   const toggleCurator = useCallback(async () => {
     if (!curator) {
       return
@@ -196,6 +221,40 @@ export function MaintenancePanel() {
           {error}
         </span>
       )}
+
+      <section>
+        <SectionLabel>{mm.gatewayControl}</SectionLabel>
+        <div className="flex items-center justify-between gap-3 py-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className={cn('size-2 rounded-full', drainActive ? 'bg-amber-500' : 'bg-emerald-500')} />
+              <span className="text-[length:var(--conversation-text-font-size)] font-medium">
+                {drainActive ? mm.drainActive : mm.drainInactive}
+              </span>
+            </div>
+            {drainMessage && (
+              <div className="mt-0.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                {drainMessage}
+              </div>
+            )}
+          </div>
+          {drainActive ? (
+            <Button disabled={drainLoading} onClick={() => void runDrainAction('cancel')} size="xs" variant="textStrong">
+              {mm.cancelDrain}
+            </Button>
+          ) : (
+            <Button disabled={drainLoading} onClick={() => void runDrainAction('drain')} size="xs" variant="textStrong">
+              {mm.drainGateway}
+            </Button>
+          )}
+        </div>
+        {drainActive && (
+          <div className="mt-1 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+            <AlertCircle className="size-4 shrink-0 text-amber-500" />
+            <span className="text-[length:var(--conversation-caption-font-size)]">{mm.gatewayDraining}</span>
+          </div>
+        )}
+      </section>
 
       <section>
         <SectionLabel>{mm.runOps}</SectionLabel>

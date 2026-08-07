@@ -1230,8 +1230,15 @@ export const en: Translations = {
     settingsFields: 'Settings fields',
     mcpServers: 'MCP servers',
     archivedChats: 'Archived chats',
-    sections: { maintenance: 'Maintenance', sessions: 'Sessions', system: 'System', usage: 'Usage' },
+    sections: {
+      backups: 'Backups',
+      maintenance: 'Maintenance',
+      sessions: 'Sessions',
+      system: 'System',
+      usage: 'Usage'
+    },
     sectionDescriptions: {
+      backups: 'Create and download Hermes backups',
       maintenance: 'Diagnostics, backups, curator, and memory data',
       sessions: 'Search and manage sessions',
       system: 'Status, logs, and system actions',
@@ -1335,7 +1342,25 @@ export const en: Translations = {
       actionStarted: name => `${name} started — tailing log...`,
       actionFailed: name => `${name} failed to start`,
       running: 'Running...',
-      viewLog: 'Action log'
+      viewLog: 'Action log',
+      gatewayControl: 'Gateway control',
+      drainGateway: 'Begin drain',
+      cancelDrain: 'Cancel drain',
+      gatewayDraining: 'Gateway is draining — not accepting new turns.',
+      drainActive: 'Drain active',
+      drainInactive: 'Drain inactive',
+      drainStarted: 'Drain started — gateway will stop accepting new turns.',
+      drainCancelled: 'Drain cancelled — gateway is accepting new turns.'
+    },
+    backups: {
+      description: 'Create a full Hermes backup archive or download existing ones.',
+      directory: 'Backup directory',
+      download: 'Download',
+      empty: 'No backups yet.',
+      failed: 'Backup failed',
+      running: 'Backup in progress…',
+      done: 'Backup complete',
+      run: 'Run backup'
     }
   },
 

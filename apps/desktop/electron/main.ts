@@ -46,6 +46,7 @@ import {
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
+import { backupDownloadPath } from './backup-download'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
@@ -4329,6 +4330,65 @@ function fetchJson(url, token, options: any = {}) {
       req.write(body)
     }
 
+    req.end()
+  })
+}
+
+// Like fetchJson, but for endpoints whose response is raw bytes (a backup
+// archive), not JSON — used by hermes:downloadBackup. Same auth headers, no
+// JSON parsing.
+function fetchBinary(url, token, options: any = {}): Promise<{ buffer: Buffer; contentType: string }> {
+  return new Promise((resolve, reject) => {
+    let parsed
+
+    try {
+      parsed = new URL(url)
+    } catch (error) {
+      reject(new Error(`Invalid URL: ${error.message}`))
+
+      return
+    }
+
+    const client = parsed.protocol === 'https:' ? https : http
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+
+      return
+    }
+
+    const req = client.request(
+      parsed,
+      {
+        method: 'GET',
+        headers: {
+          'X-Hermes-Session-Token': token,
+          ...(options.bearer ? { Authorization: `Bearer ${options.bearer}` } : {})
+        }
+      },
+      res => {
+        const chunks = []
+        res.on('error', reject)
+        res.on('data', chunk => chunks.push(chunk))
+        res.on('end', () => {
+          const buffer = Buffer.concat(chunks)
+
+          if ((res.statusCode || 500) >= 400) {
+            reject(new Error(`${res.statusCode}: ${buffer.toString('utf8').slice(0, 300) || res.statusMessage}`))
+
+            return
+          }
+
+          resolve({ buffer, contentType: String(res.headers['content-type'] || '') })
+        })
+      }
+    )
+
+    req.on('error', reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    })
     req.end()
   })
 }
@@ -10316,6 +10376,53 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     upload: request?.upload,
     timeoutMs
   })
+})
+
+// Downloading a backup needs the same profile-aware backend + auth resolution
+// as hermes:api, but the response is raw zip bytes, not JSON, and the result
+// belongs on disk (native "Save As"), not in the renderer — the renderer runs
+// from file://, so a plain <a href="/api/..."> can't reach the backend at all.
+ipcMain.handle('hermes:downloadBackup', async (_event, request) => {
+  const profile = request?.profile
+  const archivePath = String(request?.archivePath || '')
+  const routeProfile = resolveRouteProfile(null, profile)
+  const connection = await ensureBackend(routeProfile)
+  const requestPath = backupDownloadPath(archivePath, profile, profileRouteOptions(profile))
+  const url = `${connection.baseUrl}${requestPath}`
+
+  let buffer: Buffer
+
+  try {
+    if (connection.authMode === 'oauth') {
+      const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
+      const restAuth = resolveOauthRestAuth(nativeAt)
+
+      if (restAuth.kind !== 'bearer') {
+        throw new Error('Backup download is not supported against cookie-session OAuth-gated remote backends yet.')
+      }
+
+      ;({ buffer } = await fetchBinary(url, null, { bearer: restAuth.token }))
+    } else {
+      ;({ buffer } = await fetchBinary(url, connection.token))
+    }
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) }
+  }
+
+  const fallbackName = path.basename(archivePath) || 'hermes-backup.zip'
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save Backup',
+    defaultPath: fallbackName
+  })
+
+  if (result.canceled || !result.filePath) {
+    return { ok: false }
+  }
+
+  await fs.promises.writeFile(result.filePath, buffer)
+
+  return { ok: true, path: result.filePath }
 })
 
 // One deduper per cross-window cue — the choke point every window shares. Main

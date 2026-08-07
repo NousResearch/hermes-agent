@@ -15,6 +15,7 @@ import { compactNumber } from '@/lib/format'
 import {
   Activity,
   AlertCircle,
+  Archive,
   BarChart3,
   Bookmark,
   BookmarkFilled,
@@ -36,11 +37,18 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
+import { BackupsPanel } from './backups'
 import { MaintenancePanel } from './maintenance'
 
-export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
+export type CommandCenterSection = 'backups' | 'maintenance' | 'sessions' | 'system' | 'usage'
 
-const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
+const SECTIONS = [
+  'sessions',
+  'system',
+  'usage',
+  'maintenance',
+  'backups'
+] as const satisfies readonly CommandCenterSection[]
 
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
 const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
@@ -313,7 +321,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
               ? Activity
               : value === 'maintenance'
                 ? Wrench
-                : BarChart3,
+                : value === 'backups'
+                  ? Archive
+                  : BarChart3,
         id: value,
         label: cc.sections[value],
         onSelect: () => setSection(value)
@@ -417,6 +427,8 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
             />
           ) : section === 'maintenance' ? (
             <MaintenancePanel />
+          ) : section === 'backups' ? (
+            <BackupsPanel />
           ) : (
             <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4">
               <div>

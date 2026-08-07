@@ -17,6 +17,17 @@ describe('virtual height estimates', () => {
     expect(estimatedMsgHeight(msg, 35, { compact: false, details: false })).toBeGreaterThan(5)
   })
 
+  it('counts full-width (CJK) characters as 2 columns when estimating wrap rows', () => {
+    // 40 zenkaku (full-width) characters at 2 cols each = 80 columns, which
+    // needs 4 rows at width 20 — a code-unit count would (wrongly) treat
+    // this as 40 "cells" needing only 2 rows, undercounting by ~2x and
+    // under-reserving space in the virtualized transcript (clipped text /
+    // a scrollHeight short of the real rendered bottom).
+    const text = 'あ'.repeat(40)
+
+    expect(wrappedLines(text, 20)).toBe(4)
+  })
+
   it('uses compound user prompt width when estimating user message wrapping', () => {
     // cols must clear the 20-col body-width floor for both prompts (gutter +
     // horizontalReserve=4) so the wider 'Ψ >' prompt actually narrows the
@@ -88,6 +99,25 @@ describe('virtual height estimates', () => {
     const withSep = estimatedMsgHeight(msg, 80, { compact: false, details: false, withSeparator: true })
 
     expect(withSep).toBe(base + 2)
+  })
+
+  it('counts U+FE10 (Vertical Forms) as 2-column wide, matching Ink isEastAsianWide', () => {
+    // U+FE10 is in the Vertical Forms block (U+FE10–U+FE1F). Ink's
+    // isEastAsianWide classifies it as wide (2 columns). The prior
+    // isWideCodePoint predicate was missing this range, so 40 chars at width 20
+    // would be counted as 40 cells → 2 rows instead of 4.
+    const text = '\uFE10'.repeat(40)
+
+    expect(wrappedLines(text, 20)).toBe(4)
+  })
+
+  it('still finalizes rows when the bounded walk stops inside a surrogate pair', () => {
+    // maxLines=2 and width=2 set a six-code-unit walk budget. The high
+    // surrogate of U+20000 lands at the last visited code unit, so the
+    // estimator must not skip the i===budget row-finalization step.
+    const text = `${'x'.repeat(5)}\u{20000}suffix`
+
+    expect(wrappedLines(text, 2, 2)).toBe(2)
   })
 
   it('caps wrapped-line counting so giant assistant turns do not block offset rebuilds', () => {

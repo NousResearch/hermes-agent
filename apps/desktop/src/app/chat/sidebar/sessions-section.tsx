@@ -313,7 +313,11 @@ export function SidebarSessionsSection({
   // wasn't looking at — the drag that landed a row in the wrong slot.
   const sortableRowIds = useMemo(() => reorderableRowIds(flatRows), [flatRows])
 
+  // Pinned never virtualizes. Virtualization needs a bounded viewport to
+  // measure against, and Pinned deliberately has none — however many chats you
+  // pin, all of them render and the sidebar's own scroll carries the length.
   const flatVirtualized =
+    !pinned &&
     !showEmptyState &&
     !groups?.length &&
     !projectOverview?.length &&

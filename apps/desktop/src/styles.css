@@ -807,6 +807,37 @@
   }
 }
 
+/* Reusable enter fade for "appeared in place of nothing" surfaces —
+   EmptyState, ErrorState, panels that swap from populated to empty, etc.
+   160ms is below the threshold where the eye registers the surface as
+   "late" (DESIGN.md Motion L231 caps controls at ~100ms; surfaces that
+   replace nothing can take a beat more without feeling sluggish).
+
+   Animate opacity + a 0.25rem upward settle so the surface reads as
+   arriving rather than teleporting. Scoped to opacity/transform only
+   (DESIGN.md L238: "Do not animate layout geometry with `transition-all`
+   on a hot interaction").
+
+   The blanket `prefers-reduced-motion` override at the top of this file
+   (animation-duration: 0.01ms !important) neutralizes the settle for users
+   who ask for stillness — the surface pops to its final state instantly,
+   which for a freshly-empty pane is exactly what stillness should look
+   like (no decorative transition, just honest state). */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.25rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@utility fade-in {
+  animation: fade-in 160ms ease-out;
+}
+
 @keyframes arc-border {
   0% {
     background-position: 15% 15%;

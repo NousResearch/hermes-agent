@@ -120,7 +120,8 @@ class TestCronCreateLifecycleBlock:
         args = Namespace(
             cron_command="create",
             schedule="30m",
-            prompt="Upgrade hermes then run hermes gateway restart",
+            prompt_positional="Upgrade hermes then run hermes gateway restart",
+            prompt_flag=None,
             name=None,
             deliver=None,
             repeat=None,
@@ -137,6 +138,26 @@ class TestCronCreateLifecycleBlock:
         assert "Blocked" in out
         assert "#30719" in out
 
+    def test_block_launchctl_kickstart(self, capsys):
+        args = Namespace(
+            cron_command="create",
+            schedule="0 9 * * *",
+            prompt_positional="Run launchctl kickstart -k gui/501/ai.hermes.gateway",
+            prompt_flag=None,
+            name=None,
+            deliver=None,
+            repeat=None,
+            skill=None,
+            skills=None,
+            script=None,
+            workdir=None,
+            profile=None,
+            no_agent=False,
+        )
+        rc = cron_command(args)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Blocked" in out
 
     def test_block_script_with_lifecycle_command(self, tmp_path, capsys, monkeypatch):
         # A no_agent job whose script IS the job (the issue's real abuse path:
@@ -149,7 +170,8 @@ class TestCronCreateLifecycleBlock:
         args = Namespace(
             cron_command="create",
             schedule="1h",
-            prompt=None,
+            prompt_positional=None,
+            prompt_flag=None,
             name=None,
             deliver=None,
             repeat=None,
@@ -165,6 +187,26 @@ class TestCronCreateLifecycleBlock:
         out = capsys.readouterr().out
         assert "Blocked" in out
 
+    def test_allow_safe_prompt(self, capsys):
+        args = Namespace(
+            cron_command="create",
+            schedule="30m",
+            prompt_positional="Check server health and report status",
+            prompt_flag=None,
+            name=None,
+            deliver=None,
+            repeat=None,
+            skill=None,
+            skills=None,
+            script=None,
+            workdir=None,
+            profile=None,
+            no_agent=False,
+        )
+        rc = cron_command(args)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Created job" in out
 
     def test_allow_empty_prompt(self, capsys):
         """Empty prompt (no lifecycle content) should pass the filter — the
@@ -173,7 +215,8 @@ class TestCronCreateLifecycleBlock:
         args = Namespace(
             cron_command="create",
             schedule="30m",
-            prompt=None,
+            prompt_positional=None,
+            prompt_flag=None,
             name=None,
             deliver=None,
             repeat=None,

@@ -344,10 +344,18 @@ def cron_create(args):
     # raises GatewayLifecycleBlocked, the `cronjob` tool wrapper catches it and
     # returns it as result["error"], and the `if not result.get("success")`
     # branch below prints it in red and exits 1 — same UX as before.
+    #
+    # prompt can arrive via the positional (only reliable when it's the
+    # very next token after schedule, with no --flags before it — argparse
+    # can't fill an optional positional from a token after an interspersed
+    # flag) or via --prompt (always reliable, any argument order). --prompt
+    # wins if both happen to be set.
+    prompt_flag = getattr(args, "prompt_flag", None)
+    prompt = prompt_flag if prompt_flag is not None else getattr(args, "prompt_positional", None)
     result = _cron_api(
         action="create",
         schedule=args.schedule,
-        prompt=args.prompt,
+        prompt=prompt,
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),

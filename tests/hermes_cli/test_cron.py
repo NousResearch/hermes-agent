@@ -83,7 +83,8 @@ class TestCronCommandLifecycle:
             Namespace(
                 cron_command="create",
                 schedule="every 1h",
-                prompt="Use both skills",
+                prompt_positional="Use both skills",
+                prompt_flag=None,
                 name="Skill combo",
                 deliver=None,
                 repeat=None,
@@ -101,6 +102,7 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
+        assert jobs[0]["prompt"] == "Use both skills"
 
 
 
@@ -111,6 +113,49 @@ class TestGatewayNotRunningWarning:
     report was simply a gateway that was never started.
     """
 
+    def test_create_warns_when_gateway_absent(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="0 11 * * *",
+                prompt_positional="Daily report",
+                prompt_flag=None,
+                name="Daily 1130",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                no_agent=False,
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Created job" in out
+        assert "Gateway is not running" in out
+
+    def test_create_silent_when_gateway_running(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4242])
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="0 11 * * *",
+                prompt_positional="Daily report",
+                prompt_flag=None,
+                name="Daily 1130",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                no_agent=False,
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Created job" in out
+        assert "Gateway is not running" not in out
 
     def test_list_warns_when_gateway_absent(self, tmp_cron_dir, capsys, monkeypatch):
         create_job(prompt="Daily report", schedule="0 11 * * *")
@@ -163,7 +208,8 @@ class TestExternalCronProviderStatus:
             Namespace(
                 cron_command="create",
                 schedule="every 2m",
-                prompt="Ping",
+                prompt_positional="Ping",
+                prompt_flag=None,
                 name="Ping",
                 deliver=None,
                 repeat=None,
@@ -213,12 +259,105 @@ def test_cron_tick_invokes_scheduler_tick_with_verbose(monkeypatch):
     assert calls == [True]
 
 
+def test_cron_create_success_prints_job_details(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cron_cli,
+        "_cron_api",
+        lambda **kwargs: {
+            "success": True,
+            "job_id": "job-1",
+            "name": "Nightly docs",
+            "schedule": "every day",
+            "skills": ["docs"],
+            "next_run_at": "2026-06-01T00:00:00Z",
+            "job": {
+                "script": "scripts/build_docs.py",
+                "no_agent": True,
+                "workdir": "/tmp/repo",
+            },
+        },
+    )
+    monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+    args = SimpleNamespace(
+        schedule="every day",
+        prompt_positional="refresh docs",
+        prompt_flag=None,
+        name="Nightly docs",
+        deliver=None,
+        repeat=None,
+        skill="docs",
+        skills=None,
+        script="scripts/build_docs.py",
+        workdir="/tmp/repo",
+        no_agent=True,
+    )
+
+    rc = cron_cli.cron_create(args)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Created job: job-1" in out
+    assert "Skills: docs" in out
+    assert "Script: scripts/build_docs.py" in out
+    assert "Mode: no-agent" in out
+    assert "Workdir: /tmp/repo" in out
+    assert "Next run: 2026-06-01T00:00:00Z" in out
+
+
+def test_cron_create_resolves_prompt_flag_over_positional(monkeypatch, capsys):
+    # Regression test for the argparse ordering bug fixed 2026-07-29: when
+    # both are set, --prompt (prompt_flag) must win over the positional.
+    captured = {}
+
+    def fake_cron_api(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True, "job_id": "job-2", "name": "x", "schedule": "1h",
+            "skills": [], "next_run_at": None, "job": {},
+        }
+
+    monkeypatch.setattr(cron_cli, "_cron_api", fake_cron_api)
+    monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+    args = SimpleNamespace(
+        schedule="1h", prompt_positional="stale positional", prompt_flag="real prompt",
+        name=None, deliver=None, repeat=None, skill=None, skills=None,
+        script=None, workdir=None, no_agent=False,
+    )
+    cron_cli.cron_create(args)
+    assert captured["prompt"] == "real prompt"
+
+
+def test_cron_create_falls_back_to_positional_when_no_flag(monkeypatch, capsys):
+    captured = {}
+
+    def fake_cron_api(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True, "job_id": "job-3", "name": "x", "schedule": "1h",
+            "skills": [], "next_run_at": None, "job": {},
+        }
+
+    monkeypatch.setattr(cron_cli, "_cron_api", fake_cron_api)
+    monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+    args = SimpleNamespace(
+        schedule="1h", prompt_positional="the positional prompt", prompt_flag=None,
+        name=None, deliver=None, repeat=None, skill=None, skills=None,
+        script=None, workdir=None, no_agent=False,
+    )
+    cron_cli.cron_create(args)
+    assert captured["prompt"] == "the positional prompt"
+
+
 def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     monkeypatch.setattr(cron_cli, "_cron_api", lambda **kwargs: {"success": False, "error": "boom"})
 
     args = SimpleNamespace(
         schedule="every day",
-        prompt="refresh docs",
+        prompt_positional="refresh docs",
+        prompt_flag=None,
         name=None,
         deliver=None,
         repeat=None,

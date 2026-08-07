@@ -820,8 +820,14 @@ export function usePromptActions({
   // response interrupts + retries through the shared busy gate.
   const submitRewindPrompt = useCallback(
     (sessionId: string, text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) =>
-      runRewindSubmit(requestGateway, sessionId, text, truncateOrdinal, interruptFirst),
-    [requestGateway]
+      runRewindSubmit(requestGateway, sessionId, text, truncateOrdinal, interruptFirst, {
+        storedSessionId: selectedStoredSessionIdRef.current,
+        onSessionRecovered: recoveredId => {
+          activeSessionIdRef.current = recoveredId
+          setActiveSessionId(recoveredId)
+        }
+      }),
+    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
 
   const restoreToMessage = useCallback(

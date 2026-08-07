@@ -65,6 +65,18 @@ def _same_endpoint(a: str, b: str) -> bool:
     )
 
 
+def _running_loop_or_none() -> Optional[asyncio.AbstractEventLoop]:
+    """Return the running loop, or None when called from sync code.
+
+    Providers are built from both the MCP event loop and synchronous CLI
+    paths; the latter have no loop to record.
+    """
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Per-server entry
 # ---------------------------------------------------------------------------
@@ -85,6 +97,10 @@ class _ProviderEntry:
             to detect external refreshes.
         lock: Serialises concurrent access to this entry's state. Bound to
             whichever asyncio loop first awaits it (the MCP event loop).
+        loop: The event loop ``lock`` (and the SDK provider's own
+            ``context.lock``) got bound to. Recorded so the entry can be
+            discarded when that loop is gone — see
+            :meth:`MCPOAuthManager._is_entry_loop_usable`.
         pending_401: In-flight 401-handler futures keyed by the failed
             access_token, for deduplicating thundering-herd 401s. Mirrors
             Claude Code's ``pending401Handlers`` map.
@@ -95,6 +111,7 @@ class _ProviderEntry:
     provider: Optional[Any] = None
     last_mtime_ns: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    loop: Optional[asyncio.AbstractEventLoop] = None
     pending_401: dict[str, "asyncio.Future[bool]"] = field(default_factory=dict)
 
 
@@ -485,6 +502,24 @@ class MCPOAuthManager:
                 )
                 entry = None
 
+            # A cached provider carries two asyncio primitives bound to the
+            # loop that first awaited them: this entry's ``lock`` and the SDK's
+            # own ``context.lock`` (mcp/client/auth/oauth2.py). MCP runs on a
+            # dedicated loop from ``mcp_tool._ensure_mcp_loop()``, which
+            # ``shutdown_mcp_servers()`` stops and replaces on every MCP reload
+            # without touching this cache. Reusing a provider whose lock is
+            # still *held* by a task stranded on the dead loop blocks forever:
+            # ``session.initialize()`` never issues a request and the caller
+            # only sees a bare ``TimeoutError`` from its own ``wait_for``.
+            # Rebuild instead — tokens live on disk, so this costs one reload.
+            if entry is not None and not self._is_entry_loop_usable(entry):
+                logger.info(
+                    "MCP OAuth '%s': cached provider was bound to a stopped "
+                    "event loop, rebuilding to avoid a stranded lock",
+                    server_name,
+                )
+                entry = None
+
             if entry is None:
                 entry = _ProviderEntry(
                     server_url=server_url,
@@ -496,8 +531,27 @@ class MCPOAuthManager:
                 entry.provider = self._build_provider(server_name, entry)
                 if entry.provider is not None:
                     entry.provider._hermes_home = key[0]
+                    entry.loop = _running_loop_or_none()
 
             return entry.provider
+
+    @staticmethod
+    def _is_entry_loop_usable(entry: _ProviderEntry) -> bool:
+        """True when ``entry``'s locks can still be awaited safely.
+
+        Only a *stopped or closed* loop is fatal: its waiters can never be
+        woken, so a lock left held there strands every future acquirer. A
+        different-but-live loop is fine — an uncontended asyncio/anyio lock
+        rebinds on next acquire.
+
+        Fail-open: when the binding loop was never recorded (built from a
+        sync CLI path with no running loop), keep the cache. Dropping a
+        healthy provider would force an avoidable re-auth.
+        """
+        loop = entry.loop
+        if loop is None:
+            return True
+        return not loop.is_closed() and loop.is_running()
 
     @staticmethod
     def _key(

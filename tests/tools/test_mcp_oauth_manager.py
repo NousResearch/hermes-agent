@@ -4,6 +4,7 @@ The manager consolidates the eight scattered MCP-OAuth call sites into a
 single object with disk-mtime watch, dedup'd 401 handling, and a provider
 cache. See `tools/mcp_oauth_manager.py` for design rationale.
 """
+import asyncio
 import json
 import os
 import time
@@ -61,6 +62,77 @@ def test_manager_restore_entry_preserves_newer_concurrent_entry(tmp_path, monkey
 
     assert manager.get_or_build_provider("shared", "https://new.example", {}) is new_provider
     assert new_provider is not old_provider
+
+
+def test_manager_rebuilds_provider_bound_to_stopped_loop(tmp_path, monkeypatch):
+    """A provider cached against a dead MCP loop must not be reused.
+
+    ``shutdown_mcp_servers()`` stops the MCP event loop on every MCP reload
+    but leaves this cache intact. The cached provider holds asyncio/anyio
+    locks bound to that loop; if one was still held by a stranded task, every
+    later ``session.initialize()`` blocks until its ``wait_for`` fires, so the
+    server parks with a bare ``TimeoutError`` and never recovers in-process.
+    """
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    manager = MCPOAuthManager()
+
+    loop = asyncio.new_event_loop()
+    try:
+        stale = loop.run_until_complete(
+            _build_on_loop(manager, "shared", "https://mcp.example")
+        )
+    finally:
+        loop.close()
+
+    fresh = manager.get_or_build_provider("shared", "https://mcp.example", {})
+    assert fresh is not stale
+
+
+def test_manager_keeps_provider_while_binding_loop_alive(tmp_path, monkeypatch):
+    """The guard must not churn providers while the MCP loop is healthy.
+
+    Rebuilding on every call would discard live OAuth state and, in the worst
+    case, force an interactive re-auth on a server that was working fine.
+    """
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    manager = MCPOAuthManager()
+
+    async def _build_twice():
+        first = manager.get_or_build_provider("shared", "https://mcp.example", {})
+        second = manager.get_or_build_provider("shared", "https://mcp.example", {})
+        return first, second
+
+    loop = asyncio.new_event_loop()
+    try:
+        first, second = loop.run_until_complete(_build_twice())
+    finally:
+        loop.close()
+
+    assert first is second
+
+
+def test_manager_keeps_provider_built_without_running_loop(tmp_path, monkeypatch):
+    """Providers built from sync CLI paths record no loop and stay cached."""
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    manager = MCPOAuthManager()
+
+    provider = manager.get_or_build_provider("shared", "https://mcp.example", {})
+    assert manager.get_or_build_provider("shared", "https://mcp.example", {}) is provider
+
+
+async def _build_on_loop(manager, name, url):
+    """Build a provider from inside a running loop so its binding is recorded."""
+    return manager.get_or_build_provider(name, url, {})
+
 
 pytest.importorskip(
     "mcp.client.auth.oauth2",

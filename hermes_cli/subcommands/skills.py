@@ -139,6 +139,11 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         nargs="?",
         help="Specific skill to update (default: all outdated skills)",
     )
+    skills_update.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite skills you have edited locally (they are skipped by default)",
+    )
 
     skills_audit = skills_subparsers.add_parser(
         "audit", help="Re-scan installed hub skills"

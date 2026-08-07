@@ -49,6 +49,7 @@ from cron.jobs import (
     resolve_job_ref,
     resume_job,
     update_job,
+    _normalize_repeat_value,
 )
 
 
@@ -1411,8 +1412,9 @@ def cronjob(
                         )
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                # Normalize: handle string synonyms ("forever"/"inf") and ints.
+                # Delegated to _normalize_repeat_value so create/update share one path.
+                normalized_repeat = _normalize_repeat_value(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state

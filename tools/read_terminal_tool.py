@@ -6,10 +6,12 @@ tool round-trips through the gateway's blocking-prompt bridge — the same one
 `clarify` uses: tui_gateway emits ``terminal.read.request``, the renderer answers
 with ``terminal.read.respond``. This module is just schema + a thin dispatcher
 over the platform-injected callback.
+
+Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
+desktop-sourced sessions.
 """
 
 import json
-import os
 from typing import Callable, Optional
 
 from tools.registry import registry, tool_error
@@ -48,11 +50,6 @@ def read_terminal_tool(
         return json.dumps({"text": str(raw)}, ensure_ascii=False)
 
 
-def check_read_terminal_requirements() -> bool:
-    """Desktop GUI only — HERMES_DESKTOP is set on the gateway the app spawns."""
-    return (os.getenv("HERMES_DESKTOP") or "").strip().lower() in ("1", "true", "yes")
-
-
 READ_TERMINAL_SCHEMA = {
     "name": "read_terminal",
     "description": (
@@ -81,13 +78,12 @@ READ_TERMINAL_SCHEMA = {
 
 registry.register(
     name="read_terminal",
-    toolset="terminal",
+    toolset="desktop_ui",
     schema=READ_TERMINAL_SCHEMA,
     handler=lambda args, **kw: read_terminal_tool(
         start_line=args.get("start_line"),
         count=args.get("count"),
         callback=kw.get("callback"),
     ),
-    check_fn=check_read_terminal_requirements,
     emoji="🖥️",
 )

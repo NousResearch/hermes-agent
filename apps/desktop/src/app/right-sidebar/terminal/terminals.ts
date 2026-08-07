@@ -17,8 +17,13 @@ export interface TerminalEntry {
   /** Working directory, snapshotted once at creation. Terminals live outside
    *  session/project state — the only thing they inherit is this initial cwd
    *  (the project root if opened in one, else the backend's default). Switching
-   *  sessions never moves or recreates a terminal. */
+   *  sessions never moves or recreates a terminal; at most it re-SELECTS a tab
+   *  already pointed at the session's cwd (see the $currentCwd listener). */
   cwd: string
+  /** Last observed working directory of the live shell (tracked via the PTY
+   *  cwd probe / OSC 7). Used to reopen the tab where the user last `cd`'d
+   *  rather than the original launch dir. User tabs only. */
+  restoreCwd?: string
   /** Serialized xterm scrollback from the last session, replayed on relaunch so
    *  the tab reopens with its recent history (VS Code parity). Processes are NOT
    *  revived — a fresh shell starts beneath the restored buffer. Captured live
@@ -34,6 +39,7 @@ interface PersistedTerminalEntry {
   auto: boolean
   cwd: string
   id: string
+  restoreCwd?: string
   reviveBuffer?: string
   title: string
 }
@@ -59,6 +65,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
   const id = typeof record.id === 'string' ? record.id.trim() : ''
   const title = typeof record.title === 'string' ? record.title.trim() : ''
   const cwd = typeof record.cwd === 'string' ? record.cwd : ''
+  const restoreCwd = typeof record.restoreCwd === 'string' && record.restoreCwd ? record.restoreCwd : undefined
   const reviveBuffer = typeof record.reviveBuffer === 'string' ? record.reviveBuffer : undefined
 
   if (!id) {
@@ -69,6 +76,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
     auto: typeof record.auto === 'boolean' ? record.auto : true,
     cwd,
     id,
+    ...(restoreCwd ? { restoreCwd } : {}),
     ...(reviveBuffer ? { reviveBuffer } : {}),
     title: title || 'Terminal'
   }
@@ -116,6 +124,7 @@ function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null
       auto: term.auto,
       cwd: term.cwd,
       id: term.id,
+      ...(term.restoreCwd ? { restoreCwd: term.restoreCwd } : {}),
       ...(term.reviveBuffer ? { reviveBuffer: term.reviveBuffer } : {}),
       title: term.title
     }))
@@ -215,6 +224,45 @@ export function selectTerminal(id: string): void {
   }
 }
 
+// Compare-ready form of a directory path: trimmed, trailing separators dropped
+// (keeping a bare root intact) so `/repo/` and `/repo` are the same place.
+const normalizePath = (value: string) => {
+  const trimmed = value.trim()
+
+  return trimmed.length > 1 ? trimmed.replace(/[\\/]+$/, '') || trimmed : trimmed
+}
+
+/** The directory a tab points at right now — the live shell cwd once observed
+ *  (survives a `cd`), else the launch dir. */
+const terminalCwd = (term: TerminalEntry) => normalizePath(term.restoreCwd || term.cwd)
+
+// Session ↔ terminal linking. Entering a session whose cwd already has a user
+// terminal pointed at it re-selects that tab, so the terminal pane follows the
+// workspace you're in. Selection ONLY — it never creates a shell, never closes
+// one, and never reveals the pane; a detached session (empty cwd) or a cwd no
+// tab lives in leaves the tabs exactly where they were. `listen` (not
+// `subscribe`) so boot keeps the persisted active tab.
+$currentCwd.listen(cwd => {
+  const target = normalizePath(cwd)
+
+  if (!target) {
+    return
+  }
+
+  const list = $terminals.get()
+  const active = list.find(term => term.id === $activeTerminalId.get())
+
+  if (active?.kind === 'user' && terminalCwd(active) === target) {
+    return
+  }
+
+  const match = list.find(term => term.kind === 'user' && terminalCwd(term) === target)
+
+  if (match) {
+    $activeTerminalId.set(match.id)
+  }
+})
+
 /** Move the active tab by `direction` (+1 next / -1 prev), wrapping around. */
 export function cycleTerminal(direction: 1 | -1): void {
   const list = $terminals.get()
@@ -306,6 +354,27 @@ export function updateTerminalReviveBuffer(id: string, reviveBuffer: string): vo
 
   $terminals.set(
     $terminals.get().map(term => (term.id === id && term.kind === 'user' ? { ...term, reviveBuffer: capped } : term))
+  )
+}
+
+/** Record the shell's latest working directory for a tab so the next launch can
+ *  restart the PTY there instead of the original launch dir. User tabs only;
+ *  no-ops when the value is empty or unchanged to avoid redundant persistence. */
+export function updateTerminalRestoreCwd(id: string, restoreCwd: string): void {
+  const next = restoreCwd.trim()
+
+  if (!next) {
+    return
+  }
+
+  $terminals.set(
+    $terminals.get().map(term => {
+      if (term.id !== id || term.kind !== 'user' || term.restoreCwd === next) {
+        return term
+      }
+
+      return { ...term, restoreCwd: next }
+    })
   )
 }
 

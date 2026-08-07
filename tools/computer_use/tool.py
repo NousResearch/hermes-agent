@@ -38,6 +38,7 @@ For captures / actions with `capture_after=True`:
 
 from __future__ import annotations
 
+import atexit
 import base64
 import json
 import logging
@@ -77,12 +78,17 @@ def set_approval_callback(cb) -> None:
 
 
 # Actions that read, not mutate. Always allowed.
-_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
+_SAFE_ACTIONS = frozenset({
+    "capture", "wait", "list_apps", "list_windows", "cua_browser_state",
+})
 
 # Actions that mutate user-visible state. Go through approval.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
     "drag", "scroll", "type", "key", "set_value", "focus_app",
+    "cua_browser_prepare", "cua_browser_navigate", "cua_browser_click",
+    "cua_browser_type", "cua_browser_pointer", "cua_browser_dialog",
+    "cua_browser_set_input_files", "cua_browser_download",
 })
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
@@ -109,7 +115,11 @@ _KEY_ALIASES = {
 
 
 def _canon_key_combo(keys: str) -> frozenset:
-    parts = [p.strip().lower() for p in re.split(r"\s*\+\s*", keys) if p.strip()]
+    # Split on both "+" and "-": the cua-driver backend's _parse_key_combo
+    # accepts hyphen-separated combos too, so "ctrl-alt-delete" executes as
+    # the real destructive shortcut. Mirror its separators here, otherwise the
+    # _BLOCKED_KEY_COMBOS gate is trivially bypassed with hyphen notation.
+    parts = [p.strip().lower() for p in re.split(r"\s*[+\-]\s*", keys) if p.strip()]
     parts = [_KEY_ALIASES.get(p, p) for p in parts]
     return frozenset(parts)
 
@@ -136,50 +146,229 @@ def _is_blocked_type(text: str) -> Optional[str]:
 # Backend selection — env-swappable for tests
 # ---------------------------------------------------------------------------
 
-# Per-process cached backend; lazily instantiated on first call.
+# Per-Hermes-session cached backends. Each backend owns its own cua-driver
+# session, native target, typed-browser binding, refs, and grant namespace.
 _backend_lock = threading.Lock()
+# Backward-compatible empty-session injection hook used by older tests.
+# Process-scoped aux-vision routing cache: (provider, model) → bool.
+_AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}
 _backend: Optional[ComputerUseBackend] = None
-# Session-scoped approval state.
-_session_auto_approve = False
-_always_allow: set = set()  # action names the user unlocked for the session
+_backends: Dict[str, ComputerUseBackend] = {}
+_backend_call_locks: Dict[str, threading.RLock] = {}
+_backend_permission_modes: Dict[str, str] = {}
+# Approval state, scoped per conversation/run (keyed by session_id) so a
+# gateway serving concurrent sessions can't leak one run's "always approve"
+# unlock into another. Falls back to a shared "" bucket for callers that
+# don't pass a session_id (e.g. the classic single-run CLI). Values:
+#   _session_auto_approve[sid] -> bool   ("always_approve everything")
+#   _always_allow[sid]         -> set of (action, delivery_mode) scope keys
+# See NousResearch/hermes-agent#67052 gap 4.
+_approval_lock = threading.Lock()
+_session_auto_approve: Dict[str, bool] = {}
+_always_allow: Dict[str, set] = {}
 
 
-def _get_backend() -> ComputerUseBackend:
+def _cua_permission_mode(session_id: str) -> str:
+    """Map Hermes's explicit approval bypass onto Cua's immutable mode.
+
+    Hermes has TWO session-identity namespaces: the tool-dispatch path passes
+    the DB ``session_id`` (``agent.session_id``), while gateway ``/yolo``
+    keys approval state off the gateway ``session_key`` (set per turn via the
+    ``set_current_session_key`` contextvar in tools/approval.py). CLI and TUI
+    use the DB id for both. Checking ONLY ``session_id`` here would make a
+    gateway ``/yolo`` toggle silently invisible to computer_use (works in
+    CLI, dead on messaging platforms), so we consult both namespaces —
+    bypass in either means the user explicitly opted out of approvals for
+    this run. Fails closed on any resolution error.
+    """
+    try:
+        from tools.approval import (
+            get_current_session_key,
+            is_approval_bypass_active_for_session,
+        )
+
+        if is_approval_bypass_active_for_session(session_id):
+            return "unrestricted"
+        current_key = get_current_session_key(default="")
+        if current_key and is_approval_bypass_active_for_session(current_key):
+            return "unrestricted"
+    except Exception:
+        # Approval state must fail closed if it cannot be resolved.
+        pass
+    return "standard"
+
+
+def _get_backend(session_id: str = "") -> ComputerUseBackend:
     global _backend
-    with _backend_lock:
-        if _backend is None:
-            backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-            if backend_name in {"cua", "cua-driver", ""}:
-                from tools.computer_use.cua_backend import CuaDriverBackend
-                _backend = CuaDriverBackend()
-            elif backend_name == "noop":  # pragma: no cover
-                _backend = _NoopBackend()
+    sid = str(session_id or "")
+    while True:
+        stale_backend: Optional[ComputerUseBackend] = None
+        stale_lock: Optional[threading.RLock] = None
+        with _backend_lock:
+            # Resolve the mode while holding the cache lock. Session YOLO
+            # mutation never holds the approval lock while releasing this
+            # cache, so the lock order cannot cycle.
+            permission_mode = _cua_permission_mode(sid)
+            if sid == "" and _backend is not None and sid not in _backends:
+                # Preserve the long-standing empty-session injection hook used
+                # by integrations and tests while normalizing it into the
+                # session-owned cache/lifecycle path.
+                _backends[sid] = _backend
+                _backend_call_locks[sid] = threading.RLock()
+                _backend_permission_modes[sid] = permission_mode
+            cached = _backends.get(sid)
+            if cached is not None:
+                if _backend_permission_modes.get(sid, "standard") == permission_mode:
+                    return cached
+                # Cua's permission mode cannot change after daemon startup. A
+                # /yolo toggle replaces only this session's backend.
+                stale_backend = _backends.pop(sid)
+                stale_lock = _backend_call_locks.pop(sid, None)
+                _backend_permission_modes.pop(sid, None)
+                if sid == "":
+                    _backend = None
             else:
-                raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-            try:
-                _backend.start()
-            except Exception:
-                # Don't cache a backend whose start() failed (e.g. a lazy
-                # dependency install was declined / failed). The next call
-                # retries cleanly instead of returning a half-initialised
-                # backend.
-                _backend = None
-                raise
-        return _backend
+                backend_name = os.environ.get(
+                    "HERMES_COMPUTER_USE_BACKEND", "cua"
+                ).lower()
+                if backend_name in {"cua", "cua-driver", ""}:
+                    from tools.computer_use.cua_backend import CuaDriverBackend
+
+                    backend = CuaDriverBackend(permission_mode=permission_mode)
+                elif backend_name == "noop":  # pragma: no cover
+                    backend = _NoopBackend()
+                else:
+                    raise RuntimeError(
+                        f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}"
+                    )
+                # Starting under the cache lock preserves the existing
+                # one-backend-per-session invariant. A concurrent mode toggle
+                # releases this backend before returning to its caller.
+                backend.start()
+                _backends[sid] = backend
+                _backend_call_locks[sid] = threading.RLock()
+                _backend_permission_modes[sid] = permission_mode
+                if sid == "":
+                    _backend = backend
+                return backend
+
+        # Stop a mismatched backend outside the global cache lock. Another
+        # session can continue creating or releasing its own backend, and the
+        # loop re-reads the authoritative mode before installing a replacement.
+        try:
+            if stale_lock is not None:
+                with stale_lock:
+                    stale_backend.stop()
+            elif stale_backend is not None:
+                stale_backend.stop()
+        except Exception:
+            pass
+
+
+def release_computer_use_session(session_id: str) -> bool:
+    """Release one session-owned computer-use backend.
+
+    This is the production lifecycle seam for hosts and policy plugins. It
+    removes the exact session backend, its call lock, and its recorded
+    permission mode before stopping the backend, so new lookups cannot retain
+    the stale target/ref namespace — and stops a private embedded daemon when
+    Hermes YOLO selected unrestricted mode. Approval state is cleared even
+    when no backend was started.
+
+    Returns ``True`` when a backend was found and released, ``False`` when the
+    session was already absent. Safe to call repeatedly.
+    """
+    global _backend
+    sid = str(session_id or "")
+    with _backend_lock:
+        backend = _backends.pop(sid, None)
+        call_lock = _backend_call_locks.pop(sid, None)
+        _backend_permission_modes.pop(sid, None)
+        # Preserve the backward-compatible empty-session injection hook:
+        # older callers/tests may populate only `_backend`.
+        if sid == "" and backend is None:
+            backend = _backend
+        if sid == "" and _backend is backend:
+            _backend = None
+
+    with _approval_lock:
+        _session_auto_approve.pop(sid, None)
+        _always_allow.pop(sid, None)
+
+    if backend is None:
+        return False
+    try:
+        # Let an in-flight action finish before ending the driver session and
+        # dropping its target/ref state. Do not hold the global cache lock
+        # while waiting: unrelated Hermes sessions remain independent.
+        if call_lock is not None:
+            with call_lock:
+                backend.stop()
+        else:
+            backend.stop()
+    except Exception:
+        logger.debug(
+            "computer_use backend release failed for session %s",
+            sid,
+            exc_info=True,
+        )
+    return True
+
+
+def _shutdown_backend_atexit() -> None:
+    """Stop all cached backends so cua-driver children don't outlive us.
+
+    Each session backend holds a long-lived ``cua-driver`` subprocess, so
+    without this a driver can survive the Hermes process that spawned it
+    (#28152 item 3). #69903 kept the orphan from burning a core by disabling
+    the cursor overlay; the process itself still lingered.
+
+    Mirrors ``browser_tool``'s ``atexit.register(_emergency_cleanup_all_sessions)``
+    — same spawn-and-drive-a-subprocess shape. atexit only, no signal handlers:
+    a ``SystemExit`` raised from a prompt_toolkit key binding corrupts its
+    coroutine state and makes the process unkillable. Never raises, since an
+    exception escaping atexit prints a traceback on every exit.
+    """
+    global _backend
+    # Drop the global lock before stop() — teardown budgets 5s and shouldn't
+    # block an unrelated caller waiting to spawn.
+    with _backend_lock:
+        unique = {
+            id(backend): (backend, _backend_call_locks.get(sid))
+            for sid, backend in _backends.items()
+        }
+        if _backend is not None:
+            unique.setdefault(
+                id(_backend),
+                (_backend, _backend_call_locks.get("")),
+            )
+        _backend = None
+        _backends.clear()
+        _backend_call_locks.clear()
+        _backend_permission_modes.clear()
+
+    with _approval_lock:
+        _session_auto_approve.clear()
+        _always_allow.clear()
+
+    for backend, call_lock in unique.values():
+        try:
+            if call_lock is not None:
+                with call_lock:
+                    backend.stop()
+            else:
+                backend.stop()
+        except Exception as e:
+            logger.debug("cua-driver atexit teardown failed: %s", e)
+
+
+atexit.register(_shutdown_backend_atexit)
 
 
 def reset_backend_for_tests() -> None:  # pragma: no cover
-    """Test helper — tear down the cached backend."""
-    global _backend, _session_auto_approve, _always_allow
-    with _backend_lock:
-        if _backend is not None:
-            try:
-                _backend.stop()
-            except Exception:
-                pass
-        _backend = None
-    _session_auto_approve = False
-    _always_allow = set()
+    """Test helper — tear down the cached backend and per-session state."""
+    _shutdown_backend_atexit()
+    _AUX_VISION_ROUTE_CACHE.clear()
 
 
 class _NoopBackend(ComputerUseBackend):  # pragma: no cover
@@ -193,8 +382,17 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def stop(self) -> None: self._started = False
     def is_available(self) -> bool: return True
 
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        self.calls.append(("capture", {"mode": mode, "app": app}))
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
+        self.calls.append((
+            "capture",
+            {"mode": mode, "app": app, "pid": pid, "window_id": window_id},
+        ))
         return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
                              elements=[], app=app or "", window_title="")
 
@@ -210,16 +408,20 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("scroll", kw))
         return ActionResult(ok=True, action="scroll")
 
-    def type_text(self, text: str) -> ActionResult:
-        self.calls.append(("type", {"text": text}))
+    def type_text(self, text: str, **kw) -> ActionResult:
+        self.calls.append(("type", {"text": text, **kw}))
         return ActionResult(ok=True, action="type")
 
-    def key(self, keys: str) -> ActionResult:
-        self.calls.append(("key", {"keys": keys}))
+    def key(self, keys: str, **kw) -> ActionResult:
+        self.calls.append(("key", {"keys": keys, **kw}))
         return ActionResult(ok=True, action="key")
 
     def list_apps(self) -> List[Dict[str, Any]]:
         self.calls.append(("list_apps", {}))
+        return []
+
+    def list_windows(self) -> List[Dict[str, Any]]:
+        self.calls.append(("list_windows", {}))
         return []
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
@@ -244,9 +446,12 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
+    # Per-run key for approval-state and daemon-mode isolation across
+    # concurrent sessions.
+    session_id = str(kwargs.get("session_id") or "")
 
     # Safety: validate actions before approval prompt.
-    if action == "type":
+    if action in {"type", "cua_browser_type"}:
         text = args.get("text", "")
         pat = _is_blocked_type(text)
         if pat:
@@ -265,15 +470,30 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                     "hint": "Destructive system shortcuts are hard-blocked.",
                 })
 
+    if args.get("bring_to_front") and args.get("delivery_mode") != "foreground":
+        return json.dumps({
+            "error": "bring_to_front requires delivery_mode='foreground'",
+            "code": "bring_to_front_requires_foreground",
+        })
+
     # Approval gate (destructive actions only).
     if action in _DESTRUCTIVE_ACTIONS:
-        err = _request_approval(action, args)
+        err = _request_approval(action, args, session_id)
+        if err is not None:
+            return err
+    # Persistent focus is a separate, visible side effect from the input
+    # itself. Keep its approval scope distinct even when the input rung has
+    # already been approved for this session.
+    if args.get("bring_to_front") or (
+        action == "focus_app" and args.get("raise_window")
+    ):
+        err = _request_approval("bring_to_front", args, session_id)
         if err is not None:
             return err
 
     # Dispatch to backend.
     try:
-        backend = _get_backend()
+        backend = _get_backend(session_id=session_id)
     except Exception as e:
         return json.dumps({
             "error": f"computer_use backend unavailable: {e}",
@@ -282,19 +502,35 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         })
 
     try:
-        return _dispatch(backend, action, args)
+        with _backend_lock:
+            call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
+        with call_lock:
+            return _dispatch(backend, action, args)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
 
 
-def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
-    """Return None if approved, or a JSON error string if denied."""
-    global _session_auto_approve, _always_allow
-    if _session_auto_approve:
-        return None
-    if action in _always_allow:
-        return None
+def _request_approval(action: str, args: Dict[str, Any],
+                      session_id: str = "") -> Optional[str]:
+    """Return None if approved, or a JSON error string if denied.
+
+    Approval is scoped by (action, delivery_mode) AND by session_id.
+    Foreground delivery is a visible focus change, so a prior background
+    approval — even ``approve_session`` on the same action — must NOT
+    silently authorize it (NousResearch/hermes-agent#67052).
+    ``always_approve`` (the blanket "auto-approve everything" unlock) still
+    covers foreground, since the user explicitly opted into unattended
+    operation. State is keyed on session_id so concurrent runs don't leak
+    unlocks into one another.
+    """
+    is_foreground = args.get("delivery_mode") == "foreground"
+    scope_key = (action, "foreground" if is_foreground else "background")
+    with _approval_lock:
+        if _session_auto_approve.get(session_id):
+            return None
+        if scope_key in _always_allow.get(session_id, set()):
+            return None
     cb = _approval_callback
     if cb is None:
         # No CLI approval wired — default allow. Gateway approval is handled
@@ -309,35 +545,46 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     if verdict == "approve_once":
         return None
     if verdict == "approve_session" or verdict == "always_approve":
-        _always_allow.add(action)
-        if verdict == "always_approve":
-            _session_auto_approve = True
+        with _approval_lock:
+            _always_allow.setdefault(session_id, set()).add(scope_key)
+            if verdict == "always_approve":
+                _session_auto_approve[session_id] = True
         return None
+    if verdict == "timeout":
+        return json.dumps({
+            "error": (
+                "approval prompt timed out — the user did not respond. "
+                "Silence is not consent; do not retry without the user."
+            ),
+            "action": action,
+        })
     return json.dumps({"error": "denied by user", "action": action})
 
 
 def _summarize_action(action: str, args: Dict[str, Any]) -> str:
+    fg = " [FOREGROUND — briefly raises the window / changes focus]" \
+        if args.get("delivery_mode") == "foreground" else ""
     if action in {"click", "double_click", "right_click", "middle_click"}:
         if args.get("element") is not None:
-            return f"{action} element #{args['element']}"
+            return f"{action} element #{args['element']}{fg}"
         coord = args.get("coordinate")
         if coord:
-            return f"{action} at {tuple(coord)}"
-        return action
+            return f"{action} at {tuple(coord)}{fg}"
+        return action + fg
     if action == "drag":
         src = args.get("from_element") or args.get("from_coordinate")
         dst = args.get("to_element") or args.get("to_coordinate")
-        return f"drag {src} → {dst}"
+        return f"drag {src} → {dst}{fg}"
     if action == "scroll":
-        return f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}"
+        return f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}{fg}"
     if action == "type":
         text = args.get("text", "")
-        return f"type {text[:60]!r}" + ("..." if len(text) > 60 else "")
+        return f"type {text[:60]!r}" + ("..." if len(text) > 60 else "") + fg
     if action == "key":
-        return f"key {args.get('keys', '')!r}"
+        return f"key {args.get('keys', '')!r}{fg}"
     if action == "focus_app":
         return f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")
-    return action
+    return action + fg
 
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
@@ -347,7 +594,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-        cap = backend.capture(mode=mode, app=args.get("app"))
+        capture_kwargs: Dict[str, Any] = {"mode": mode, "app": args.get("app")}
+        if args.get("pid") is not None or args.get("window_id") is not None:
+            capture_kwargs.update({
+                "pid": args.get("pid"),
+                "window_id": args.get("window_id"),
+            })
+        cap = backend.capture(**capture_kwargs)
         return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
     if action == "wait":
@@ -359,12 +612,108 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         apps = backend.list_apps()
         return json.dumps({"apps": apps, "count": len(apps)})
 
+    if action == "list_windows":
+        windows = backend.list_windows()
+        return json.dumps({"windows": windows, "count": len(windows)})
+
     if action == "focus_app":
         app = args.get("app")
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
         return _maybe_follow_capture(backend, res, capture_after)
+
+    # cua-driver's typed browser surface is namespaced inside the existing
+    # computer_use tool so it cannot collide with native browser/MCP tools.
+    # The backend owns the opaque driver session, target, tab and ref state;
+    # none of those capabilities can be supplied across Hermes sessions.
+    if action == "cua_browser_state":
+        state_args: Dict[str, Any] = {}
+        for public, internal in (
+            ("pid", "pid"),
+            ("window_id", "window_id"),
+            ("tab_id", "tab_id"),
+            ("snapshot_format", "snapshot_format"),
+            ("query", "query"),
+            ("scope_ref", "scope_ref"),
+            ("continuation", "continuation"),
+        ):
+            if args.get(public) is not None:
+                state_args[internal] = args[public]
+        return json.dumps(backend.typed_browser_state(**state_args))
+
+    if action == "cua_browser_prepare":
+        return json.dumps(backend.typed_browser_prepare(
+            pid=args.get("pid"),
+            window_id=args.get("window_id"),
+            profile_mode=args.get("profile_mode", "isolated_new"),
+            profile_name=args.get("profile_name"),
+            allow_launch=bool(args.get("allow_launch")),
+        ))
+
+    browser_tools = {
+        "cua_browser_navigate": "browser_navigate",
+        "cua_browser_click": "browser_click",
+        "cua_browser_type": "browser_type",
+        "cua_browser_pointer": "browser_pointer",
+        "cua_browser_dialog": "browser_dialog",
+        "cua_browser_set_input_files": "browser_set_input_files",
+        "cua_browser_download": "browser_download",
+    }
+    driver_tool = browser_tools.get(action)
+    if driver_tool is not None:
+        call_args: Dict[str, Any] = {}
+        allowed_fields = {
+            "browser_navigate": ("url",),
+            "browser_click": ("ref", "input_route", "x", "y"),
+            "browser_type": ("ref", "text"),
+            "browser_pointer": (
+                "ref", "destination_ref", "input_route", "x", "y",
+                "to_x", "to_y", "delta_x", "delta_y",
+            ),
+            "browser_dialog": (
+                "dialog_id", "prompt_text", "delivery_mode",
+            ),
+            "browser_set_input_files": ("ref", "files"),
+            "browser_download": ("ref", "destination_root"),
+        }
+        for field in allowed_fields[driver_tool]:
+            if args.get(field) is not None:
+                call_args[field] = args[field]
+        if (
+            driver_tool in {"browser_click", "browser_pointer"}
+            and args.get("coordinate") is not None
+        ):
+            coordinate = args["coordinate"]
+            if isinstance(coordinate, (list, tuple)) and len(coordinate) == 2:
+                call_args["x"], call_args["y"] = coordinate
+        pointer_action = args.get("browser_pointer_action")
+        dialog_action = args.get("browser_dialog_action")
+        # Direct adapter callers may omit the public discriminator from args;
+        # retain this narrow compatibility path without making it usable to
+        # override the namespaced action selected by handle_computer_use.
+        nested_action = args.get("action")
+        if nested_action not in browser_tools:
+            if driver_tool == "browser_pointer" and pointer_action is None:
+                pointer_action = nested_action
+            if driver_tool == "browser_dialog" and dialog_action is None:
+                dialog_action = nested_action
+        if pointer_action is not None:
+            call_args["action"] = pointer_action
+        if dialog_action is not None:
+            call_args["action"] = dialog_action
+        if args.get("browser_type_mode") is not None:
+            call_args["mode"] = args["browser_type_mode"]
+        return json.dumps(backend.typed_browser_action(
+            driver_tool,
+            tab_id=args.get("tab_id"),
+            args=call_args,
+        ))
+
+    # delivery_mode / bring_to_front thread through every input action so the
+    # model can escalate background → foreground per cua-driver's ladder.
+    delivery_mode = args.get("delivery_mode")
+    bring_to_front = bool(args.get("bring_to_front"))
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
@@ -384,6 +733,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             element=element if element is not None else None,
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
+            delivery_mode=delivery_mode, bring_to_front=bring_to_front,
         )
         return _maybe_follow_capture(backend, res, capture_after)
 
@@ -401,6 +751,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             to_xy=tuple(args["to_coordinate"]) if args.get("to_coordinate") else None,
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
+            delivery_mode=delivery_mode, bring_to_front=bring_to_front,
         )
         return _maybe_follow_capture(backend, res, capture_after)
 
@@ -413,15 +764,18 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=coord[0] if coord and coord[0] is not None else None,
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
+            delivery_mode=delivery_mode, bring_to_front=bring_to_front,
         )
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "type":
-        res = backend.type_text(args.get("text", ""))
+        res = backend.type_text(args.get("text", ""),
+                                delivery_mode=delivery_mode, bring_to_front=bring_to_front)
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "key":
-        res = backend.key(args.get("keys", ""))
+        res = backend.key(args.get("keys", ""),
+                          delivery_mode=delivery_mode, bring_to_front=bring_to_front)
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "set_value":
@@ -438,13 +792,56 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 # Response shaping
 # ---------------------------------------------------------------------------
 
-def _text_response(res: ActionResult) -> str:
+def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
+    """Choose the next ladder step from semantic evidence, in precedence order.
+
+    An escalation recommendation is advisory. It never overrides a confirmed
+    effect and it never turns an unverifiable action into permission to repeat
+    input. The model must first obtain fresh evidence.
+    """
+    if res.effect == "confirmed" or res.verified is True:
+        return {"decision": "done"}
+    if res.effect == "unverifiable":
+        return {"decision": "verify_fresh_state"}
+    if res.effect == "suspected_noop" or not res.ok or res.code is not None:
+        decision: Dict[str, Any] = {"decision": "escalate"}
+        if isinstance(res.escalation, dict):
+            decision["recommended"] = res.escalation.get("recommended")
+        return decision
+    # Transport success without semantic proof is not proof of effect.
+    return {"decision": "verify_fresh_state"}
+
+
+def _action_payload(res: ActionResult) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"ok": res.ok, "action": res.action}
     if res.message:
         payload["message"] = res.message
+    # Surface cua-driver's structured verdict additively so the model can
+    # follow the verify → escalate ladder. Only include fields the driver
+    # actually returned (None = old driver / not carried). ok is transport
+    # success; effect/escalation are the semantic verdict.
+    if res.verified is not None:
+        payload["verified"] = res.verified
+    if res.effect is not None:
+        payload["effect"] = res.effect
+    if res.escalation is not None:
+        payload["escalation"] = res.escalation
+    if res.path is not None:
+        payload["path"] = res.path
+    if res.degraded is not None:
+        payload["degraded"] = res.degraded
+    if res.delivery_mode is not None:
+        payload["delivery_mode"] = res.delivery_mode
+    if res.code is not None:
+        payload["code"] = res.code
     if res.meta:
         payload["meta"] = res.meta
-    return json.dumps(payload)
+    payload["verdict"] = _classify_action_result(res)
+    return payload
+
+
+def _text_response(res: ActionResult) -> str:
+    return json.dumps(_action_payload(res))
 
 
 # Default cap for the AX `elements` array returned by capture. Dense UIs
@@ -715,17 +1112,37 @@ def _should_route_through_aux_vision() -> bool:
         logger.debug("computer_use: aux-vision routing import failed: %s", exc)
         return False
     try:
-        provider = _read_main_provider()
-        model = _read_main_model()
-        cfg = load_config()
+        provider = _read_main_provider() or ""
+        model = _read_main_model() or ""
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing config read failed: %s", exc)
         return False
+    cache_key = (str(provider), str(model))
+    cached = _AUX_VISION_ROUTE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     try:
-        return bool(should_route_capture_to_aux_vision(provider, model, cfg))
+        cfg = load_config()
+        decision = bool(should_route_capture_to_aux_vision(provider, model, cfg))
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing decision failed: %s", exc)
         return False
+    _AUX_VISION_ROUTE_CACHE[cache_key] = decision
+    return decision
+
+
+def _capture_after_mode() -> str:
+    """Mode for ``capture_after`` follow-ups. Default ``som`` (screenshot)."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = ((load_config() or {}).get("computer_use") or {}).get(
+            "capture_after_mode", "som"
+        )
+    except Exception:
+        return "som"
+    mode = str(raw or "som").strip().lower()
+    return mode if mode in {"som", "vision", "ax"} else "som"
 
 
 def _route_capture_through_aux_vision(
@@ -844,30 +1261,37 @@ def _maybe_follow_capture(
     if not res.ok:
         return _text_response(res)
     try:
-        # Preserve the app context established by the preceding capture/focus_app so
-        # that capture_after=True re-captures the same app rather than the frontmost
-        # window (which may have changed if the action caused a focus shift).
-        last_app = getattr(backend, "_last_app", None)
-        cap = backend.capture(mode="som", app=last_app)
+        # Preserve the exact selected window when possible. Linux may expose a
+        # generic app name for several unrelated windows, so app-only recapture
+        # can silently switch targets after a successful action.
+        target = getattr(backend, "_last_target", None) or {}
+        pid = target.get("pid")
+        window_id = target.get("window_id")
+        mode = _capture_after_mode()
+        if pid is not None and window_id is not None:
+            cap = backend.capture(mode=mode, pid=pid, window_id=window_id)
+        else:
+            cap = backend.capture(mode=mode, app=getattr(backend, "_last_app", None))
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
     # Combine action summary with the capture.
     resp = _capture_response(cap)
     if isinstance(resp, dict) and resp.get("_multimodal"):
-        prefix = f"[{res.action}] ok={res.ok}" + (f" — {res.message}" if res.message else "")
+        # Keep the complete evidence/verdict contract visible when an image is
+        # attached; otherwise capture_after would accidentally discard the
+        # very signal that governs whether repeating input is allowed.
+        prefix = json.dumps(_action_payload(res))
         resp["content"][0]["text"] = prefix + "\n\n" + resp["content"][0]["text"]
         resp["text_summary"] = prefix + "\n\n" + resp["text_summary"]
+        resp["action_result"] = _action_payload(res)
         return resp
     # Fallback: action + text capture merged.
     try:
         data = json.loads(resp)
     except (TypeError, json.JSONDecodeError):
         data = {"capture": resp}
-    data["action"] = res.action
-    data["ok"] = res.ok
-    if res.message:
-        data["message"] = res.message
+    data.update(_action_payload(res))
     return json.dumps(data)
 
 

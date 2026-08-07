@@ -104,3 +104,62 @@ def test_camofox_short_circuits_before_guard(monkeypatch):
     out = json.loads(browser_tool.browser_click("@e1", task_id="task-1"))
 
     assert out == {"success": True, "camofox": True}
+
+
+# ---------------------------------------------------------------------------
+# browser_back — unlike click/type/press (check current page BEFORE acting),
+# going back IS the navigation: the guard must fire AFTER _run_browser_command
+# reports success, checking the page it just landed on, not the page it left.
+# ---------------------------------------------------------------------------
+
+
+def test_browser_back_blocks_when_landed_page_is_private(monkeypatch):
+    """Browser history can land on a private/internal address the initial
+    browser_navigate preflight never saw — the same class of gap already
+    closed for browser_snapshot/vision/console/eval and click/type/press."""
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(browser_tool, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+    monkeypatch.setattr(
+        browser_tool, "_run_browser_command",
+        lambda task_id, command, args: {"success": True, "data": {"url": PRIVATE_URL}},
+    )
+
+    out = json.loads(browser_tool.browser_back(task_id="task-1"))
+
+    assert out["success"] is False
+    assert PRIVATE_URL in out["error"]
+    assert "private or internal address" in out["error"]
+    # The blocked payload must not itself leak the raw URL as a "url" field
+    # the way the success payload does.
+    assert "url" not in out
+
+
+def test_browser_back_returns_url_when_landed_page_is_public(monkeypatch):
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(browser_tool, "_current_page_private_url", lambda task_id: None)
+    monkeypatch.setattr(
+        browser_tool, "_run_browser_command",
+        lambda task_id, command, args: {"success": True, "data": {"url": "https://example.com/"}},
+    )
+
+    out = json.loads(browser_tool.browser_back(task_id="task-1"))
+
+    assert out == {"success": True, "url": "https://example.com/"}
+
+
+def test_browser_back_camofox_short_circuits_before_guard(monkeypatch):
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
+
+    def fail_guard(task_id):
+        raise AssertionError("guard must not run in camofox mode")
+
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", fail_guard)
+    monkeypatch.setattr(browser_tool, "_current_page_private_url", fail_guard)
+
+    import tools.browser_camofox as camofox
+
+    monkeypatch.setattr(camofox, "camofox_back", lambda task_id: '{"success": true, "camofox": true}')
+
+    out = json.loads(browser_tool.browser_back(task_id="task-1"))
+
+    assert out == {"success": True, "camofox": True}

@@ -73,7 +73,9 @@ def _get_sync_client() -> Any:
     if cached is not None:
         return cached
 
-    api_key = os.getenv("PARALLEL_API_KEY")
+    from agent.web_search_provider import get_provider_env
+
+    api_key = get_provider_env("PARALLEL_API_KEY")
     if not api_key:
         raise ValueError(
             "PARALLEL_API_KEY environment variable not set. "
@@ -99,7 +101,9 @@ def _get_async_client() -> Any:
     if cached is not None:
         return cached
 
-    api_key = os.getenv("PARALLEL_API_KEY")
+    from agent.web_search_provider import get_provider_env
+
+    api_key = get_provider_env("PARALLEL_API_KEY")
     if not api_key:
         raise ValueError(
             "PARALLEL_API_KEY environment variable not set. "
@@ -153,7 +157,9 @@ class ParallelWebSearchProvider(WebSearchProvider):
 
     def is_available(self) -> bool:
         """Return True when ``PARALLEL_API_KEY`` is set to a non-empty value."""
-        return bool(os.getenv("PARALLEL_API_KEY", "").strip())
+        from agent.web_search_provider import get_provider_env
+
+        return bool(get_provider_env("PARALLEL_API_KEY"))
 
     def supports_search(self) -> bool:
         return True

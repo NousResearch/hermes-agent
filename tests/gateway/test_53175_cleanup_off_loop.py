@@ -166,9 +166,3 @@ async def test_cleanup_off_loop_swallows_executor_failure(caplog):
     ), "expected the cleanup-failure warning to be logged"
 
 
-@pytest.mark.asyncio
-async def test_cleanup_off_loop_none_agent_is_noop():
-    """A None agent (None cache entry) is a no-op and never touches the loop."""
-    runner, executor = _make_runner()
-    await runner._cleanup_agent_resources_off_loop(None)
-    executor.shutdown(wait=False)

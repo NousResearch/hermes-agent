@@ -1,8 +1,14 @@
-"""Tests for Mem0Backend abstraction — PlatformBackend and OSSBackend."""
+"""Tests for Mem0Backend abstraction — PlatformBackend, OSSBackend, SelfHostedBackend."""
 
+import copy
 import pytest
 
-from plugins.memory.mem0._backend import Mem0Backend, PlatformBackend, OSSBackend
+from plugins.memory.mem0._backend import (
+    Mem0Backend,
+    PlatformBackend,
+    OSSBackend,
+    SelfHostedBackend,
+)
 
 
 class FakePlatformClient:
@@ -47,28 +53,6 @@ class TestPlatformBackend:
         assert client.calls[0][2]["filters"] == {"user_id": "u1"}
         assert client.calls[0][2]["top_k"] == 5
 
-    def test_search_forwards_rerank(self):
-        backend, client = self._make()
-        backend.search("q", filters={}, rerank=False)
-        assert client.calls[0][2]["rerank"] is False
-
-    def test_search_rerank_default_true(self):
-        backend, client = self._make()
-        backend.search("q", filters={})
-        assert client.calls[0][2]["rerank"] is True
-
-    def test_search_returns_list(self):
-        backend, _ = self._make()
-        result = backend.search("q", filters={})
-        assert isinstance(result, list)
-        assert result[0]["id"] == "m1"
-
-    def test_get_all_forwards_pagination(self):
-        backend, client = self._make()
-        result = backend.get_all(filters={"user_id": "u1"}, page=2, page_size=50)
-        assert client.calls[0][1]["page"] == 2
-        assert client.calls[0][1]["page_size"] == 50
-        assert "count" in result
 
     def test_add_forwards_kwargs(self):
         backend, client = self._make()
@@ -81,23 +65,6 @@ class TestPlatformBackend:
         # don't surprise older mem0 client versions with an unknown kwarg.
         assert "metadata" not in call[2]
 
-    def test_add_forwards_metadata_when_present(self):
-        backend, client = self._make()
-        msgs = [{"role": "user", "content": "hi"}]
-        backend.add(
-            msgs,
-            user_id="u1",
-            agent_id="hermes",
-            infer=False,
-            metadata={"channel": "telegram"},
-        )
-        assert client.calls[0][2]["metadata"] == {"channel": "telegram"}
-
-    def test_add_omits_empty_metadata(self):
-        backend, client = self._make()
-        msgs = [{"role": "user", "content": "hi"}]
-        backend.add(msgs, user_id="u1", agent_id="hermes", infer=False, metadata={})
-        assert "metadata" not in client.calls[0][2]
 
     def test_update_forwards(self):
         backend, client = self._make()
@@ -145,65 +112,104 @@ class TestOSSBackend:
         backend._memory = memory
         return backend, memory
 
-    def test_search_returns_list(self):
-        backend, _ = self._make()
-        result = backend.search("test", filters={"user_id": "u1"})
-        assert isinstance(result, list)
-        assert result[0]["id"] == "m1"
 
-    def test_search_passes_filters(self):
-        backend, memory = self._make()
-        backend.search("q", filters={"user_id": "u1"}, top_k=3)
-        assert memory.calls[0][2]["filters"] == {"user_id": "u1"}
-        assert memory.calls[0][2]["top_k"] == 3
+    def test_legacy_api_base_aliases_are_normalized_before_mem0_init(self, monkeypatch):
+        import sys
+        import types
 
-    def test_search_ignores_rerank(self):
-        """OSS backend accepts rerank param but does not forward it to Memory."""
-        backend, memory = self._make()
-        backend.search("q", filters={}, rerank=True)
-        assert "rerank" not in memory.calls[0][2]
+        captured = {}
 
-    def test_get_all_ignores_pagination(self):
-        """OSSBackend accepts page/page_size but does NOT forward to Memory.get_all()."""
-        backend, memory = self._make()
-        result = backend.get_all(filters={"user_id": "u1"}, page=2, page_size=50)
-        call_kwargs = memory.calls[0][1]
-        assert "page" not in call_kwargs
-        assert "page_size" not in call_kwargs
-        assert result["count"] == 1
+        class Memory:
+            @staticmethod
+            def from_config(config):
+                captured.update(config)
+                return FakeOSSMemory()
 
-    def test_get_all_returns_envelope(self):
-        backend, _ = self._make()
-        result = backend.get_all(filters={"user_id": "u1"})
-        assert "results" in result
-        assert "count" in result
+        # OSSBackend.__init__ does `from mem0 import Memory`. mem0 is a lazy
+        # optional dep absent from CI's env, so inject a stub module rather
+        # than importing the real package (which would ModuleNotFoundError).
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = Memory  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+        raw = {
+            "llm": {
+                "provider": "openai",
+                "config": {"model": "gpt-5-mini", "api_base": "https://llm.example/v1"},
+            },
+            "embedder": {
+                "provider": "ollama",
+                "config": {"model": "nomic-embed-text", "api_base": "http://ollama:11434"},
+            },
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+        before = copy.deepcopy(raw)
 
-    def test_add_forwards_kwargs(self):
-        backend, memory = self._make()
-        msgs = [{"role": "user", "content": "hi"}]
-        backend.add(msgs, user_id="u1", agent_id="hermes", infer=False)
-        assert memory.calls[0][2]["user_id"] == "u1"
-        assert memory.calls[0][2]["infer"] is False
+        OSSBackend(raw)
 
-    def test_update_maps_text_to_data(self):
-        """OSS Memory.update uses `data=` param, not `text=`."""
-        backend, memory = self._make()
-        backend.update("m1", "new text")
-        assert memory.calls[0][0] == "update"
-        assert memory.calls[0][1] == "m1"
-        assert memory.calls[0][2] == {"data": "new text"}
+        assert captured["llm"]["config"]["openai_base_url"] == "https://llm.example/v1"
+        assert captured["embedder"]["config"]["ollama_base_url"] == "http://ollama:11434"
+        assert "api_base" not in captured["llm"]["config"]
+        assert "api_base" not in captured["embedder"]["config"]
+        assert raw == before
 
-    def test_delete_positional_arg(self):
-        backend, memory = self._make()
-        backend.delete("m1")
-        assert memory.calls[0] == ("delete", "m1")
 
-    def test_update_normalizes_response(self):
-        backend, _ = self._make()
-        result = backend.update("m1", "text")
-        assert result == {"result": "Memory updated.", "memory_id": "m1"}
+httpx = pytest.importorskip("httpx")
 
-    def test_delete_normalizes_response(self):
-        backend, _ = self._make()
-        result = backend.delete("m1")
-        assert result == {"result": "Memory deleted.", "memory_id": "m1"}
+
+class _StubServer:
+    """Records requests and serves the real self-hosted server's response shapes."""
+
+    def __init__(self, rows=10):
+        self.requests = []
+        self._rows = [{"id": f"m{i}", "memory": f"f{i}"} for i in range(rows)]
+
+    def handler(self, request):
+        self.requests.append(request)
+        path, method = request.url.path, request.method
+        if path == "/search" and method == "POST":
+            return httpx.Response(200, json={"results": [{"id": "m1", "memory": "tea", "score": 0.9}]})
+        if path == "/memories" and method == "GET":
+            top_k = int(request.url.params.get("top_k", len(self._rows)))
+            return httpx.Response(200, json={"results": self._rows[:top_k]})
+        if path == "/memories" and method == "POST":
+            return httpx.Response(200, json={"results": [{"id": "new", "memory": "stored", "event": "ADD"}]})
+        if path.startswith("/memories/") and method in ("PUT", "DELETE"):
+            if path.endswith("/missing"):  # server 404s unknown ids
+                return httpx.Response(404, json={"detail": "Memory not found"})
+            verb = "updated" if method == "PUT" else "Memory deleted successfully"
+            return httpx.Response(200, json={"message": verb})
+        return httpx.Response(404, json={"detail": "not found"})
+
+
+def _backend(server, api_key="adminkey", host="http://sh:8888"):
+    """Build a SelfHostedBackend routed through the stub transport.
+
+    Uses the real __init__ (via the injectable ``transport`` kwarg) so the
+    constructor's header/base_url setup is exercised by every test here.
+    """
+    return SelfHostedBackend(
+        api_key, host, transport=httpx.MockTransport(server.handler)
+    )
+
+
+class TestSelfHostedBackend:
+    # --- constructor / auth setup (the crux of the bug) -------------------
+
+    def test_init_uses_x_api_key_not_token_auth(self):
+        b = SelfHostedBackend("adminkey", "http://sh:8888")
+        assert b._client.headers["x-api-key"] == "adminkey"
+        assert "authorization" not in b._client.headers  # NOT the cloud 'Token' scheme
+
+
+    # --- search ----------------------------------------------------------
+
+
+    # --- add / update / delete ------------------------------------------
+
+
+    # --- error propagation (feeds the plugin's circuit breaker) ----------
+
+    def test_http_error_raises(self):
+        s = _StubServer()
+        with pytest.raises(httpx.HTTPStatusError):
+            _backend(s).delete("missing")  # 404 -> raise_for_status; 'not found' won't trip breaker

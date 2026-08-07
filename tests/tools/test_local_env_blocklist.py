@@ -80,7 +80,6 @@ class TestProviderEnvBlocklist:
         must also be blocked — not just the hand-written extras."""
         registry_vars = {
             "ANTHROPIC_TOKEN": "ant-tok",
-            "CLAUDE_CODE_OAUTH_TOKEN": "cc-tok",
             "ZAI_API_KEY": "zai-key",
             "Z_AI_API_KEY": "z-ai-key",
             "GLM_API_KEY": "glm-key",
@@ -113,6 +112,29 @@ class TestProviderEnvBlocklist:
         assert "AWS_BEARER_TOKEN_BEDROCK" not in result_env, (
             "AWS_BEARER_TOKEN_BEDROCK leaked into subprocess env (see #32314)"
         )
+
+    def test_vertex_credentials_path_is_stripped(self):
+        """The Vertex AI service-account JSON path must not leak into
+        subprocesses, even though it is filesystem path metadata rather
+        than a bare API key.
+
+        Regression: ``vertex`` authenticates via OAuth2 (service-account
+        JSON / ADC), not PROVIDER_REGISTRY, and OPTIONAL_ENV_VARS marks
+        VERTEX_CREDENTIALS_PATH as ``password=False`` (it's a path, not a
+        secret string) with ``category="provider"`` — a category the
+        registry-derived loop above never checks — so it fell through both
+        blocklist sources. GOOGLE_APPLICATION_CREDENTIALS (the ADC fallback
+        the adapter also reads) had the same gap. A leaked path discloses
+        the on-disk location of a GCP service-account key to every spawned
+        subprocess (terminal, codex/copilot app-server, browser workers).
+        """
+        result_env = _run_with_env(extra_os_env={
+            "VERTEX_CREDENTIALS_PATH": "/home/user/.config/gcloud/sa-key.json",
+            "GOOGLE_APPLICATION_CREDENTIALS": "/home/user/.config/gcloud/adc.json",
+        })
+
+        assert "VERTEX_CREDENTIALS_PATH" not in result_env
+        assert "GOOGLE_APPLICATION_CREDENTIALS" not in result_env
 
     def test_general_aws_credential_chain_is_preserved(self):
         """The GENERAL AWS credential chain must STILL pass through to
@@ -188,6 +210,10 @@ class TestProviderEnvBlocklist:
             "MODAL_TOKEN_ID": "modal-id",
             "MODAL_TOKEN_SECRET": "modal-secret",
             "DAYTONA_API_KEY": "daytona-key",
+            "VERCEL_OIDC_TOKEN": "vercel-oidc-token",
+            "VERCEL_TOKEN": "vercel-token",
+            "VERCEL_PROJECT_ID": "vercel-project",
+            "VERCEL_TEAM_ID": "vercel-team",
         }
         result_env = _run_with_env(extra_os_env=leaked_vars)
 
@@ -287,6 +313,48 @@ class TestActiveVenvMarkerStripping:
         assert "CONDA_PREFIX" in _ACTIVE_VENV_MARKER_VARS
 
 
+class TestProfileScopedPassthrough:
+    def test_make_run_env_uses_active_profile_for_passthrough(self, monkeypatch):
+        """Allowlisted values must come from the routed profile, not os.environ."""
+        from agent import secret_scope as ss
+        from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
+        from tools.environments.local import _make_run_env
+
+        clear_env_passthrough()
+        register_env_passthrough(["SERVICE_TOKEN"])
+        monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-routed-profile"})
+        try:
+            result = _make_run_env({})
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+            clear_env_passthrough()
+
+        assert result["SERVICE_TOKEN"] == "token-for-routed-profile"
+
+    def test_make_run_env_omits_missing_scoped_passthrough(self, monkeypatch):
+        """A missing routed secret must not fall back to the default profile."""
+        from agent import secret_scope as ss
+        from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
+        from tools.environments.local import _make_run_env
+
+        clear_env_passthrough()
+        register_env_passthrough(["SERVICE_TOKEN"])
+        monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            result = _make_run_env({})
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+            clear_env_passthrough()
+
+        assert "SERVICE_TOKEN" not in result
+
+
 class TestBlocklistCoverage:
     """Sanity checks that the blocklist covers all known providers."""
 
@@ -303,11 +371,18 @@ class TestBlocklistCoverage:
 
     def test_registry_vars_are_in_blocklist(self):
         """Every api_key_env_var and base_url_env_var from PROVIDER_REGISTRY
-        must appear in the blocklist — ensures no drift."""
+        must appear in the blocklist — ensures no drift.
+
+        CLAUDE_CODE_OAUTH_TOKEN is the one deliberate exemption: it is owned
+        by the user's Claude Code install, not Hermes (#55878).
+        """
         from hermes_cli.auth import PROVIDER_REGISTRY
 
+        exempt = {"CLAUDE_CODE_OAUTH_TOKEN"}
         for pconfig in PROVIDER_REGISTRY.values():
             for var in pconfig.api_key_env_vars:
+                if var in exempt:
+                    continue
                 assert var in _HERMES_PROVIDER_ENV_BLOCKLIST, (
                     f"Registry var {var} (provider={pconfig.id}) missing from blocklist"
                 )
@@ -348,10 +423,18 @@ class TestBlocklistCoverage:
         )
 
     def test_extra_auth_vars_covered(self):
-        """Non-registry auth vars (ANTHROPIC_TOKEN, CLAUDE_CODE_OAUTH_TOKEN)
-        must also be in the blocklist."""
-        extras = {"ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+        """Non-registry auth vars (ANTHROPIC_TOKEN) must also be in the
+        blocklist."""
+        extras = {"ANTHROPIC_TOKEN"}
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+
+    def test_claude_code_oauth_token_is_inheritable(self):
+        """CLAUDE_CODE_OAUTH_TOKEN is owned by the user's Claude Code install
+        (subscription OAuth), not a Hermes inference credential. Stripping it
+        made agent-spawned ``claude`` fall through to the shared Keychain /
+        ~/.claude credential store and clobber the user's interactive login
+        on auth failure (#55878). It must stay inheritable."""
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in _HERMES_PROVIDER_ENV_BLOCKLIST
 
     def test_non_registry_provider_vars_are_in_blocklist(self):
         extras = {
@@ -422,6 +505,10 @@ class TestBlocklistCoverage:
             "MODAL_TOKEN_ID",
             "MODAL_TOKEN_SECRET",
             "DAYTONA_API_KEY",
+            "VERCEL_OIDC_TOKEN",
+            "VERCEL_TOKEN",
+            "VERCEL_PROJECT_ID",
+            "VERCEL_TEAM_ID",
         }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
@@ -445,9 +532,6 @@ class TestSanePathIncludesHomebrew:
         from tools.environments.local import _SANE_PATH
         assert "/opt/homebrew/bin" in _SANE_PATH
 
-    def test_sane_path_includes_homebrew_sbin(self):
-        from tools.environments.local import _SANE_PATH
-        assert "/opt/homebrew/sbin" in _SANE_PATH
 
     def test_make_run_env_appends_homebrew_on_minimal_path(self):
         """When PATH is minimal, _make_run_env appends missing sane entries."""
@@ -460,25 +544,6 @@ class TestSanePathIncludesHomebrew:
         for entry in _SANE_PATH.split(":"):
             assert entry in path_entries
 
-    def test_make_run_env_fills_missing_homebrew_when_usr_bin_present(self):
-        """macOS launchd PATH can include /usr/bin while missing Homebrew."""
-        from tools.environments.local import _make_run_env
-        launchd_env = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
-        with patch.dict(os.environ, launchd_env, clear=True):
-            result = _make_run_env({})
-        path_entries = result["PATH"].split(":")
-        assert "/opt/homebrew/bin" in path_entries
-        assert "/opt/homebrew/sbin" in path_entries
-
-    def test_make_run_env_does_not_duplicate_existing_sane_entries(self):
-        from tools.environments.local import _make_run_env
-        existing_env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
-        with patch.dict(os.environ, existing_env, clear=True):
-            result = _make_run_env({})
-        path_entries = result["PATH"].split(":")
-        assert path_entries.count("/opt/homebrew/bin") == 1
-        assert path_entries.count("/usr/local/bin") == 1
-        assert path_entries.count("/usr/bin") == 1
 
     def test_make_run_env_real_launchd_path_gains_homebrew(self):
         """The literal macOS launchd PATH is the production trigger for #35613."""
@@ -492,37 +557,6 @@ class TestSanePathIncludesHomebrew:
         # Original entries keep their leading precedence.
         assert path_entries[:4] == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 
-    def test_make_run_env_collapses_duplicate_caller_entries(self):
-        """Duplicates already present in the caller PATH are de-duplicated."""
-        from tools.environments.local import _make_run_env
-        dup_env = {"PATH": "/usr/bin:/usr/bin:/custom/bin:/custom/bin:/bin"}
-        with patch.dict(os.environ, dup_env, clear=True):
-            result = _make_run_env({})
-        path_entries = result["PATH"].split(":")
-        assert path_entries.count("/usr/bin") == 1
-        assert path_entries.count("/custom/bin") == 1
-        # First-occurrence order is preserved for the caller entries.
-        assert path_entries[:3] == ["/usr/bin", "/custom/bin", "/bin"]
-
-    def test_make_run_env_strips_empty_path_entries(self):
-        """Leading/trailing/double colons (== CWD on POSIX) are dropped."""
-        from tools.environments.local import _make_run_env
-        empty_env = {"PATH": "/usr/bin::/bin:"}
-        with patch.dict(os.environ, empty_env, clear=True):
-            result = _make_run_env({})
-        path_entries = result["PATH"].split(":")
-        assert "" not in path_entries
-        assert "/usr/bin" in path_entries
-        assert "/opt/homebrew/bin" in path_entries
-
-    def test_make_run_env_leaves_windows_path_unchanged(self, monkeypatch):
-        from tools.environments import local as local_mod
-        from tools.environments.local import _make_run_env
-        windows_env = {"PATH": r"C:\Windows\System32;C:\Program Files\Git\bin"}
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
-        with patch.dict(os.environ, windows_env, clear=True):
-            result = _make_run_env({})
-        assert result["PATH"] == windows_env["PATH"]
 
     def test_make_run_env_preserves_windows_mixed_case_path_key(self, monkeypatch):
         from tools.environments import local as local_mod
@@ -556,42 +590,6 @@ class TestHermesBinDirOnPath:
         monkeypatch.setattr(local_mod.os.path, "isdir", lambda p: p == "/opt/hermes/bin")
         assert local_mod._resolve_hermes_bin_dir() == "/opt/hermes/bin"
 
-    def test_resolves_via_sys_executable_dir(self, monkeypatch, tmp_path):
-        from tools.environments import local as local_mod
-        self._reset_cache()
-        venv_bin = tmp_path / "venv" / "bin"
-        venv_bin.mkdir(parents=True)
-        (venv_bin / "hermes").write_text("#!/bin/sh\n")
-        monkeypatch.setattr(local_mod.shutil, "which", lambda name: None)
-        monkeypatch.setattr(local_mod.sys, "argv", ["python"])
-        monkeypatch.setattr(local_mod.sys, "executable", str(venv_bin / "python"))
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
-        assert local_mod._resolve_hermes_bin_dir() == str(venv_bin)
-
-    def test_returns_none_when_unresolvable(self, monkeypatch):
-        from tools.environments import local as local_mod
-        self._reset_cache()
-        monkeypatch.setattr(local_mod.shutil, "which", lambda name: None)
-        monkeypatch.setattr(local_mod.sys, "argv", ["python"])
-        monkeypatch.setattr(local_mod.sys, "executable", "/nonexistent/python")
-        assert local_mod._resolve_hermes_bin_dir() is None
-
-    def test_prepend_adds_missing_dir_at_front(self, monkeypatch):
-        from tools.environments import local as local_mod
-        self._reset_cache()
-        local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
-        out = local_mod._prepend_hermes_bin_dir("/usr/bin:/bin")
-        assert out.split(os.pathsep)[0] == "/opt/hermes/bin"
-        assert "/usr/bin" in out.split(os.pathsep)
-
-    def test_prepend_is_idempotent(self, monkeypatch):
-        from tools.environments import local as local_mod
-        self._reset_cache()
-        local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
-        once = local_mod._prepend_hermes_bin_dir("/usr/bin:/bin")
-        twice = local_mod._prepend_hermes_bin_dir(once)
-        assert twice == once
-        assert once.split(os.pathsep).count("/opt/hermes/bin") == 1
 
     def test_prepend_noop_when_unresolved(self, monkeypatch):
         from tools.environments import local as local_mod

@@ -73,7 +73,8 @@ def format_date(ts: Optional[float]) -> str:
     if not ts:
         return "unknown"
     try:
-        return datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%-d %b %Y")
+        dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+        return f"{dt.day} {dt.strftime('%b %Y')}"
     except (ValueError, OSError, OverflowError):
         return "unknown"
 
@@ -255,7 +256,7 @@ def _period_key(ts: float, granularity: str) -> tuple[int, ...]:
 def _period_label(ts: float, granularity: str) -> str:
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     if granularity == "day":
-        return dt.strftime("%-d %b")
+        return f"{dt.day} {dt.strftime('%b')}"
     if granularity == "month":
         return dt.strftime("%b %Y")
     return dt.strftime("%Y")
@@ -402,7 +403,6 @@ def _category_counts(payload: dict[str, Any]) -> list[tuple[str, int]]:
 def category_color_map(payload: dict[str, Any]) -> dict[str, str]:
     """Deterministic, evenly-spread hue per skill category (theme-independent)."""
     clusters = _category_counts(payload)
-    n = max(1, len(clusters))
     # Golden-angle hue spacing so adjacent categories never collide in color.
     return {cat: rgb_to_hex(_hsl_to_rgb((i * 137.508) % 360, 0.55, 0.62)) for i, (cat, _c) in enumerate(clusters)}
 

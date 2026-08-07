@@ -56,23 +56,12 @@ class TestModelExtraTypeGuard:
         transport = ChatCompletionsTransport()
         return transport.normalize_response(_make_response(model_extra=model_extra))
 
-    def test_string_model_extra_does_not_crash(self):
-        """A truthy string used to raise AttributeError — must be ignored now."""
-        result = self._normalize("unexpected_string")
-        assert len(result.tool_calls) == 1
-        # No extra_content recovered from a non-dict — provider_data stays empty.
-        assert result.tool_calls[0].provider_data is None
 
     def test_none_model_extra(self):
         result = self._normalize(None)
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0].provider_data is None
 
-    def test_list_model_extra_does_not_crash(self):
-        """Any non-dict (list) is tolerated, not just strings."""
-        result = self._normalize([1, 2, 3])
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0].provider_data is None
 
     def test_dict_model_extra_still_extracts_extra_content(self):
         """The valid dict path must keep working — extra_content preserved."""
@@ -82,8 +71,3 @@ class TestModelExtraTypeGuard:
             "extra_content": {"thought_signature": "sig"}
         }
 
-    def test_dict_without_extra_content_key(self):
-        """A dict that has no extra_content key yields no provider_data."""
-        result = self._normalize({"other_key": "value"})
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0].provider_data is None

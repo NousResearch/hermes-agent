@@ -95,6 +95,22 @@ def _tc_resp(name: str, args: str = "{}") -> dict:
     }
 
 
+def _batch_tc_resp(calls: list[tuple[str, str]]) -> dict:
+    """Multi-call batch response: calls = [(name, arguments), ...]."""
+    return {
+        "id": "m",
+        "choices": [{"index": 0, "message": {
+            "role": "assistant", "content": "",
+            "tool_calls": [
+                {"id": f"call_{i}", "type": "function",
+                 "function": {"name": name, "arguments": args}}
+                for i, (name, args) in enumerate(calls)
+            ]},
+            "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10},
+    }
+
+
 def _text_resp(text: str) -> dict:
     return {
         "id": "m",
@@ -169,15 +185,65 @@ def test_empty_tool_name_gets_terse_error_no_catalog(agent_env, blank):
     assert "Available tools:" not in joined
 
 
-def test_unknown_nonempty_name_keeps_catalog(agent_env):
-    """A genuinely-wrong NONempty name still gets the catalog for self-correction."""
+
+
+# ── Mixed batches: valid calls execute, invalid calls get error results ──
+#
+# Degrading models (observed with gpt-5.6 past ~350K input; jonny's July 2026
+# report) emit batches like 6 named calls + 1 blank-name call. Before the fix,
+# the whole turn was voided ("Skipped: another tool call in this turn used an
+# invalid name") and three such batches halted the session as partial even
+# though most of the model's work was coherent.
+
+
+
+
+def test_mixed_batch_preserves_tool_call_result_pairing(agent_env):
+    """Every emitted tool_call keeps a matching tool result (provider invariant)."""
     agent, handler = agent_env
-    handler.response_queue.append(_tc_resp("frobnicate_xyz", "{}"))
-    handler.response_queue.append(_text_resp("ok plain text"))
+    agent.valid_tool_names = agent.valid_tool_names | {"todo"}
+    handler.response_queue.append(_batch_tc_resp([("todo", "{}"), ("", "{}")]))
+    handler.response_queue.append(_text_resp("done"))
 
-    agent.run_conversation("do a thing", conversation_history=[], task_id="t")
+    result = agent.run_conversation("track work", conversation_history=[], task_id="t")
 
-    joined = " ".join(_tool_results(handler))
-    assert "frobnicate_xyz" in joined
-    assert "Available tools:" in joined
-    assert "tool name was empty" not in joined
+    msgs = result["messages"]
+    tc_ids = []
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls"):
+            tc_ids.extend(tc["id"] for tc in m["tool_calls"])
+    result_ids = [
+        m.get("tool_call_id") or "" for m in msgs
+        if isinstance(m, dict) and m.get("role") == "tool"
+    ]
+    # Both the valid and blank call must appear in the assistant message,
+    # and each must have exactly one matching tool result.
+    assert set(tc_ids) == {"call_0", "call_1"}
+    assert sorted(result_ids) == sorted(tc_ids)
+
+
+
+
+
+
+def test_invalid_tool_exhaustion_closes_tool_tail(agent_env):
+    """Invalid-tool 3-strike partial must not leave a durable tool→user tail (#48879 class).
+
+    Retries <3 append assistant+error tool rows, so the transcript already ends
+    on ``tool`` before the exhaustion early-return. That return must close the
+    sequence (same contract as interrupt aborts) so the next user turn is not
+    ``tool → user`` for strict providers.
+    """
+    agent, handler = agent_env
+    for _ in range(3):
+        handler.response_queue.append(_tc_resp("frobnicate_xyz", "{}"))
+
+    result = agent.run_conversation("degenerate", conversation_history=[], task_id="t")
+
+    assert result.get("partial", False)
+    msgs = result.get("messages") or []
+    assert msgs, "expected persisted conversation messages"
+    assert msgs[-1].get("role") == "assistant"
+    assert "invalid tool call" in (msgs[-1].get("content") or "").lower()
+
+

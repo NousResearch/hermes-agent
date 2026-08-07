@@ -51,6 +51,8 @@ JSON object. Source of truth: `gateway/relay/descriptor.py`.
 | `emoji` | string | no | Display emoji (default 🔌). |
 | `platform_hint` | string | no | System-prompt platform hint. |
 | `pii_safe` | bool | no | Redact PII in session descriptions. |
+| `supports_context` | bool | no | Whether the connector can supply surrounding channel/group **context** for an addressed turn on this platform (Model A on-demand history fetch — Discord/Slack/Matrix; Model B passive buffer — Telegram/Signal/WhatsApp). Default false ⇒ no `context` is attached to inbound events. See §3. |
+| `supported_ops` | string[] | no | Op-level capability discovery: the outbound op names the connector's sender for this platform actually implements (e.g. `["send", "edit", "typing", "follow_up", "get_chat_info"]`). Absent/empty ⇒ the connector predates the field and the gateway assumes the legacy op set (`send`/`edit`/`typing`/`follow_up`); a NEW op is used only when explicitly advertised. |
 
 Most fields are a projection of the gateway's existing `PlatformEntry`; the
 runtime-only fields (`len_unit`, `supports_*`, `markdown_dialect`) come from the
@@ -94,6 +96,24 @@ Frames (connector → gateway, over the WS):
 - `{"type":"inbound", "event": <MessageEvent>, "bufferId"?}`
 - `{"type":"interrupt_inbound", "session_key", "chat_id"}` (§5)
 - `{"type":"passthrough_forward", "forward": <PassthroughForward>, "bufferId"?}` (§5.1)
+
+**Channel context on inbound (design relay-channel-context).** When the source
+platform's descriptor advertised `supports_context` (§2) and the chat is
+multi-party (`chat_type` ∈ group/channel/thread/forum, never `dm`), the
+connector MAY attach two optional, additive fields to the inbound `MessageEvent`:
+
+- `context`: an array of read-only surrounding messages (same channel, oldest→
+  newest) — nearby non-addressed chatter the connector fetched (Model A) or
+  buffered (Model B). REFERENCE ONLY: it never triggers the agent (the trigger
+  decision was already made connector-side on the addressed event alone). The
+  gateway renders it into `MessageEvent.channel_context` (the same read-only
+  injection path history-backfill uses).
+- `context_error`: bool, true when the platform is context-capable but the
+  fetch/buffer failed and the connector fail-opened to an empty `context`
+  (observability marker; surfaced connector-side via the delivery span).
+
+Both absent ⇒ byte-identical to today. A connector that never sends them, or a
+`dm`, or a no-context platform, yields no `channel_context`.
 
 `PassthroughForward` is the wire form of a forwarded passthrough-plane request
 (Class-2/3 webhooks — Discord interactions, Twilio): `{platform, botId, method,
@@ -372,12 +392,145 @@ The gateway calls the transport with action dicts. Source of truth:
 | --- | --- | --- |
 | `send` | `chat_id`, `content`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
 | `edit` | `chat_id`, `message_id`, `content`, `metadata?` | `{success: bool, error?}` |
-| `typing` | `chat_id` | `{success: bool}` |
+| `typing` | `chat_id`, `content?`, `metadata?` | `{success: bool}` |
 | `follow_up` | `session_key`, `kind`, `content`, `metadata?` | `{success: bool, message_id?, error?}` |
+| `send_media` | `chat_id`, `media_kind`, `source_url`, `content?` (caption), `filename?`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
+| `prompt` | `chat_id`, `prompt_kind`, `prompt_id`, `content` (the question), `options[]{id,label,style?}`, `timeout_s?`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
+| `react` | `chat_id`, `message_id`, `emoji`, `remove?`, `metadata?` | `{success: bool, error?}` |
+| `thread_create` | `chat_id` (parent), `thread_name`, `message_id?` (anchor), `metadata?` | `{success: bool, thread_id?, error?}` |
+| `thread_rename` | `chat_id` (parent), `message_id` (the THREAD id), `thread_name`, `only_if_current_name?`, `metadata?` | `{success: bool, error?}` |
 
 `get_chat_info(chat_id)` is a separate proxied call returning at least
-`{name, type}`. Media actions follow the same envelope shape (deferred to a
-later contract revision; additive).
+`{name, type}`.
+
+**`send_media` (Phase 2 media egress).** Media crosses the wire BY REFERENCE:
+`source_url` is either (a) a **connector re-host** the gateway previously
+uploaded via `POST {connector}/relay/media` (raw bytes body, `Content-Type` +
+optional `X-Media-Filename` headers, per-gateway HMAC bearer — the same token
+scheme as the WS upgrade; response `{id, size}` → reference
+`{connector}/relay/media/{id}`), or (b) a **public http(s) URL** (e.g. a
+fal.media generation) the connector downloads directly. `media_kind` is one of
+`image` / `voice` / `audio` / `video` / `document` and selects the
+platform-native upload lane (Telegram `sendPhoto`/`sendVoice`/…, Discord
+multipart attachment, Slack external upload, WhatsApp media upload + media
+message). The caption rides `content` and renders through the platform's
+normal markdown lane; platforms without native captions get a follow-up text
+send (connector-side). Both routes and the op are gated on `supported_ops`
+advertising `send_media` — a legacy connector never sees the op (the gateway's
+media sends degrade to their pre-media text fallbacks). Size cap 25 MB
+(connector `mediaStore.ts` MEDIA_MAX_BYTES; uploads over it are rejected 413).
+
+**Inbound media (Phase 2 media ingress).** An inbound event's `media_urls`
+carry fetchable references: platform-public URLs pass through (Discord CDN);
+auth-gated/expiring platform URLs (Telegram file API, Slack `url_private`,
+WhatsApp Graph media) are downloaded connector-side with the PLATFORM
+credential and re-hosted as `{connector}/relay/media/{id}` — the platform
+credential never crosses the wire. Re-host references are readable by any
+authenticated gateway (capability-URL semantics: the id is 128-bit random and
+was already delivered to every admitted recipient); the gateway downloads each
+reference with its per-gateway bearer and presents LOCAL file paths to the
+agent, mirroring native adapters. Re-hosts expire (TTL ~1h) — download on
+receipt, not lazily. A parallel `media` array (same order) adds `kind`, `mime`,
+`size`, `filename`, `caption` metadata; `message_type` reflects the first
+attachment's kind (`image`/`audio`/`document`).
+
+**`prompt` (Phase 3 interactive).** One platform-abstract op renders the
+gateway's highest-stakes interactions (exec approvals, slash confirms,
+clarify pickers) with NATIVE controls: Discord button components, Telegram
+inline keyboards, Slack Block Kit actions, WhatsApp button messages (≤3
+options) / list messages (4–10; >10 degrades to the numbered-text fallback).
+`prompt_kind` (`approval`/`clarify`/`choice`) is a styling hint only.
+`prompt_id` is gateway-minted (8 hex) and opaque to the connector; each
+option's callback payload carries the token `hp1:<prompt_id>:<option_id>`
+(≤64 bytes — Telegram's `callback_data` cap binds every lane; option ids are
+`[A-Za-z0-9_.-]`, ≤32 chars). `style` maps per-platform
+(primary/success/danger/secondary). `timeout_s` is advisory on the wire —
+expiry is enforced GATEWAY-side (the pending-prompt registry drops expired
+entries; a stale press falls through as typed text, mirroring the native
+adapters' "approval expired" edit).
+
+**`prompt_response` (Phase 3 inbound).** The user's press crosses back as a
+normal inbound MessageEvent carrying
+`prompt_response: {prompt_id, option_id, label?, prompt_message_id?}` — never
+a bare platform `custom_id`. The event's `text` mirrors `/{option_id}` with
+`message_type: "command"` so a gateway predating the field routes the press
+as a typed reply instead of dropping it. The SOURCE is the authentic
+CLICKING user (connector-observed: Telegram `callback_query.from`, Slack
+`block_actions.user`, WhatsApp `messages[].from`, Discord interaction
+member/user), so gateway-side authorization gates apply to a button press
+exactly as to a typed `/approve`. Ingest lanes: Telegram `callback_query`
+(polled, `allowed_updates` widened; best-effort `answerCallbackQuery`
+spinner-stop), Slack `POST /slack/interactions` (raw-bytes HMAC + replay
+window, same posture as `/slack/commands`), WhatsApp interactive
+`button_reply`/`list_reply` (webhook normalize arm), Discord type-3
+component interactions (passthrough §5.1 sanitized forward; the type-3 edge
+ack is `DEFERRED_UPDATE` so no visible "thinking…" reply). Foreign
+callback payloads (another integration's buttons) never become prompt
+events: Telegram/Slack/WhatsApp drop them at the connector; Discord type-3
+forwards keep the legacy custom_id-as-text shape.
+
+**`react` (Phase 3 ack lifecycle).** Adds/removes the bot's own `emoji`
+reaction on `message_id` — restoring the native adapters' 👀→✅/❌
+processing-lifecycle acks over the relay. Unicode emoji on the wire; the
+Slack sender maps to Slack's name vocabulary (`eyes`, `white_check_mark`, …)
+and treats `already_reacted`/`no_reaction` as success (idempotent). Telegram
+uses `setMessageReaction` (empty set = remove; Telegram's curated-emoji
+restriction can reject glyphs — the failure is structured and the gateway
+treats reactions as cosmetic). WhatsApp sends a reaction message (empty
+emoji = remove). Reactions are best-effort by contract: a `react` failure
+must never fail a turn.
+
+**`thread_create` / `thread_rename` (Phase 4 thread lifecycle).** One
+platform-abstract pair covers handoff threads, Telegram DM/forum topics, and
+LLM-title semantic renames. `thread_create`: Discord posts a channel thread
+(type 11) or a message-anchored thread when `message_id` is set; Telegram
+`createForumTopic` (topic id returned); Slack posts a NAMED seed root
+message and returns its `ts` (threads there are message-anchored — an
+explicit `message_id` anchor is echoed back verbatim). The created id rides
+`SendResult.thread_id`. `thread_rename`: Discord PATCHes the thread channel;
+Telegram `editForumTopic`. The **`only_if_current_name` no-clobber guard**
+is the native adapters' human-rename-wins semantics, enforced
+CONNECTOR-side: Discord reads the current name first and no-ops (structured
+`success:false`) on mismatch; Telegram has no topic-name read, so a GUARDED
+rename is unsatisfiable and fails safe (unguarded renames proceed). Slack
+does not advertise `thread_rename` (a root message's text is content, not a
+name). WhatsApp advertises neither (no threads).
+
+**Auto-thread markers + gateway-declared command manifest (Phase 4
+inbound/handshake).** When the connector's auto-thread egress policy creates
+a Discord thread, later inbound events from that thread carry
+`source.auto_thread_created: true` + `source.auto_thread_initial_name` — the
+connector-observed evidence that lights the gateway's semantic-rename lane
+(the LLM session title renames the thread via a GUARDED `thread_rename`;
+per-instance memory, so in an N>1 fleet a miss simply never lights the
+lane). The gateway may also declare its slash-command set on the Discord
+`hello` frame (`command_manifest: [{name, description, options?}]`); the
+connector reconciles Discord's GLOBAL application-command registration
+against it (GET → diff → bulk PUT overwrite; idempotent, debounced,
+best-effort — a registration failure never affects the handshake). Commands
+still dispatch through the passthrough plane as before; the manifest only
+keeps Discord's registry in sync with what the gateway's dispatcher handles.
+
+**Inbound `reply_to` enrichment (Phase 4).** A platform reply may carry
+`reply_to: {text?, author?, is_own?}` alongside `reply_to_message_id` — what
+the user QUOTED, populated only from data the connector already had in hand
+(Discord's inline `referenced_message`, Telegram's inline
+`reply_to_message`, WhatsApp `context.from` + a bounded per-instance
+inbound-text cache for the text leg). Absent fields mean the platform didn't
+carry the data — never triggers an extra platform API call. `is_own` = the
+quoted message was authored by the fronted bot (same evidence as the
+`is_reply_to_bot` relevance marker). The gateway maps these onto the same
+MessageEvent reply-context fields native adapters populate.
+
+**`typing` `content?` (Slack status clear).** A `typing` frame normally omits
+`content` — the connector renders its platform's active indicator ("is
+typing…" Assistant status on Slack, one-shot typing elsewhere). An **empty
+string** `content` is an explicit *clear* request: on Slack the connector sets
+the Assistant thread status to `""`, dismissing it. The gateway emits the
+clear only for Slack (persistent status); one-shot platforms never receive it.
+Additive within `contract_version` 1, but note the deploy order: a connector
+predating gateway-gateway #154 ignores `content` and would *set* "is typing…"
+on a clear frame — deploy the connector first.
 
 **`follow_up` (A2 capability action).** Some inbound payloads carry a credential
 that acts on the **shared** bot identity (e.g. a Discord interaction follow-up
@@ -558,7 +711,56 @@ per-gateway secret and the same host as `/relay/provision`.
 
 ---
 
-## 8. Versioning policy
+## 8. Gateway-side platform behavior controls (enterprise)
+
+Enterprise deployments configure fronted-platform behavior on the GATEWAY
+side, under `platforms.relay.extra.<platform>` — a supported subset of that
+platform's native options. The native platform block (e.g. `platforms.slack`)
+is not read on the relay lane; the connector receives the *outcome* of these
+controls as frame metadata (§4) and executes mechanically — it holds no
+platform behavior policy of its own.
+
+```yaml
+platforms:
+  relay:
+    extra:
+      slack:
+        reply_in_thread: true   # default
+```
+
+Resolution: nested `extra.<platform>` object wins → legacy flat key on
+`extra` honored as fallback → default. Source of truth:
+`RelayAdapter._effective_reply_in_thread` (`gateway/relay/adapter.py`).
+Values coerce exactly as the native Slack adapter's do — `1/true/yes/on`
+(case-insensitive, whitespace-trimmed) are ON, anything else is OFF — so a
+YAML-quoted `"false"` turns a knob off rather than being read as a truthy
+string.
+
+Current controls (Slack):
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `reply_in_thread` | `true` | `true`: thread-per-message — each top-level DM message anchors its own thread (status, progress, prompts, final reply all carry that `metadata.thread_id`). `false`: flat rolling DM — send-lane frames carry NO thread anchor (stripped, not omitted), one shared session per DM. |
+| `dm_top_level_threads_as_sessions` | `true` | Native-parity escape hatch (mirrors `platforms.slack.extra.dm_top_level_threads_as_sessions`). `true`: in thread-per-message mode each top-level DM message keys its own session, so concurrent messages run in parallel. `false`: threaded reply placement is kept but the session stamp is skipped — one rolling DM session (legacy steer/queue posture). No effect in flat mode, which always keeps the single rolling session. |
+
+Typing/status frames always carry the triggering-ts anchor when one is known
+(liveliness is unconditional, both modes): Slack's status line is
+thread-scoped, and in flat mode the send-side anchor strip guarantees the
+status anchor can never leak into reply placement. Semantics of the native
+key: see `website/docs/user-guide/messaging/slack.md`.
+
+Thread-anchor resolution applies to EVERY send lane — text (`send`) and media
+(`send_media`) alike — through one choke point
+(`RelayAdapter._apply_slack_thread_anchor`). Media frames egress via the same
+connector-side Slack sender, which threads on `metadata.thread_id` only, so an
+attachment resolves its anchor identically to a text reply: promoted into
+metadata in thread-per-message mode, stripped in flat mode.
+
+Changes take effect on gateway restart; no connector involvement.
+
+---
+
+## 9. Versioning policy
 
 - `contract_version` is an int; bump **only** for additive changes during the
   experimental phase (new optional fields, new `op`s).

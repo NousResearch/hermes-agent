@@ -16,9 +16,40 @@ function sampleGraph(): StarmapGraph {
       { body: 'Uses a worktree.', source: 'memory', timestamp: null, title: 'Env' }
     ],
     nodes: [
-      { category: 'devops', createdBy: 'agent', id: 'skill-a', kind: 'skill', label: 'skill-a', pinned: true, state: 'active', timestamp: 1_699_900_000, useCount: 7 },
-      { category: 'devops', createdBy: null, id: 'skill-b', kind: 'skill', label: 'skill-b', pinned: false, state: 'draft', timestamp: 1_699_950_000, useCount: 0 },
-      { category: 'memory', createdBy: null, id: 'memory:profile:0', kind: 'memory', label: 'A fact', memorySource: 'profile', pinned: false, state: 'active', timestamp: 1_700_000_000, useCount: 0 }
+      {
+        category: 'devops',
+        createdBy: 'agent',
+        id: 'skill-a',
+        kind: 'skill',
+        label: 'skill-a',
+        pinned: true,
+        state: 'active',
+        timestamp: 1_699_900_000,
+        useCount: 7
+      },
+      {
+        category: 'devops',
+        createdBy: null,
+        id: 'skill-b',
+        kind: 'skill',
+        label: 'skill-b',
+        pinned: false,
+        state: 'draft',
+        timestamp: 1_699_950_000,
+        useCount: 0
+      },
+      {
+        category: 'memory',
+        createdBy: null,
+        id: 'memory:profile:0',
+        kind: 'memory',
+        label: 'A fact',
+        memorySource: 'profile',
+        pinned: false,
+        state: 'active',
+        timestamp: 1_700_000_000,
+        useCount: 0
+      }
     ],
     stats: {}
   }

@@ -3,10 +3,12 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { type Translations, useI18n } from '@/i18n'
+import { compactNumber } from '@/lib/format'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -114,14 +116,11 @@ const fmtDuration = (seconds: number | undefined, a: Translations['agents']) => 
   return a.durationMinutes(m, s)
 }
 
-const fmtTokens = (value: number | undefined, a: Translations['agents']) => {
-  if (!value) {
-    return ''
-  }
+const fmtTokens = (value: number | undefined, a: Translations['agents']) =>
+  value ? a.tokens(compactNumber(value)) : ''
 
-  return value >= 1000 ? a.tokensK((value / 1000).toFixed(1)) : a.tokens(value)
-}
-
+// Distinct contract from coarseElapsed: rounds to the second (this ticks live),
+// and hours are unbounded ("25h", never "1d"). Kept local on purpose.
 const fmtAge = (updatedAt: number, nowMs: number, a: Translations['agents']) => {
   const s = Math.max(0, Math.round((nowMs - updatedAt) / 1000))
 
@@ -135,11 +134,7 @@ const fmtAge = (updatedAt: number, nowMs: number, a: Translations['agents']) => 
 
   const m = Math.floor(s / 60)
 
-  if (m < 60) {
-    return a.ageMinutes(m)
-  }
-
-  return a.ageHours(Math.floor(m / 60))
+  return m < 60 ? a.ageMinutes(m) : a.ageHours(Math.floor(m / 60))
 }
 
 const flatten = (nodes: readonly SubagentNode[]): SubagentNode[] =>
@@ -195,15 +190,17 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   const tokens = flat.reduce((sum, n) => sum + (n.inputTokens ?? 0) + (n.outputTokens ?? 0), 0)
   const cost = flat.reduce((sum, n) => sum + (n.costUsd ?? 0), 0)
 
+  const visible = usePaneVisible()
+
   useEffect(() => {
-    if (active <= 0 || typeof window === 'undefined') {
+    if (active <= 0 || !visible || typeof window === 'undefined') {
       return
     }
 
     const id = window.setInterval(() => setNowMs(Date.now()), 500)
 
     return () => window.clearInterval(id)
-  }, [active])
+  }, [active, visible])
 
   if (tree.length === 0) {
     return (

@@ -33,13 +33,14 @@ DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-
 
 def _cmd_status(args) -> int:
     """Show Portal auth + Tool Gateway routing summary."""
-    from hermes_cli.auth import get_nous_auth_status
+    from hermes_cli.auth import get_nous_auth_status_local
     from hermes_cli.nous_subscription import get_nous_subscription_features
 
     config = load_config() or {}
 
     try:
-        auth = get_nous_auth_status() or {}
+        # Read-only status display: refresh-free snapshot (no OAuth refresh).
+        auth = get_nous_auth_status_local() or {}
     except Exception:
         auth = {}
 
@@ -58,7 +59,7 @@ def _cmd_status(args) -> int:
     else:
         print(f"  Auth:    {color('not logged in', Colors.YELLOW)}")
         print(f"  Sign up: {SUBSCRIPTION_URL}")
-        print(f"  Login:   hermes portal")
+        print("  Login:   hermes portal")
 
     # Provider selection (independent of auth)
     model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}

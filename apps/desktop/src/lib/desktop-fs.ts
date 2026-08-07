@@ -21,11 +21,16 @@ function connectionCacheKey(connection: HermesConnection | null) {
     return 'local:'
   }
 
-  return `${connection.mode || 'local'}:${connection.profile || ''}:${connection.baseUrl || ''}`
+  const target =
+    connection.remoteKind === 'ssh'
+      ? connection.remoteIdentity || connection.remoteHost || ''
+      : connection.baseUrl || ''
+
+  return `${connection.mode || 'local'}:${connection.remoteKind || ''}:${connection.profile || ''}:${target}`
 }
 
-export function desktopFsCacheKey() {
-  return connectionCacheKey($connection.get())
+export function desktopFsCacheKey(connection: HermesConnection | null = $connection.get()) {
+  return connectionCacheKey(connection)
 }
 
 export function isDesktopFsRemoteMode() {
@@ -179,7 +184,7 @@ export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Pr
   }
 
   if (!options?.directories) {
-    return []
+    return desktop.selectPaths(options)
   }
 
   return remotePicker ? remotePicker.selectPaths({ ...options, multiple: false }) : []

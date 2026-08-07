@@ -97,6 +97,10 @@ def _to_image_url_part(ref: str) -> Optional[str]:
     if ref.startswith(("http://", "https://", "data:")):
         return ref
     path = Path(ref)
+    # Enforce the shared credential-read guard before inlining local bytes.
+    from agent.file_safety import raise_if_read_blocked
+
+    raise_if_read_blocked(ref)
     try:
         raw = path.read_bytes()
     except OSError as exc:

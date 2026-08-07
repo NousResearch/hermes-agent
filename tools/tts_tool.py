@@ -53,7 +53,7 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Any, Iterator, Optional
+from typing import Callable, Dict, Any, Iterator, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -2779,68 +2779,122 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 # ===========================================================================
 # Main tool function
 # ===========================================================================
-def text_to_speech_tool(
-    text: str,
-    output_path: Optional[str] = None,
-    speed: Optional[float] = None,
-    instructions: Optional[str] = None,
-    provider: Optional[str] = None,
-) -> str:
-    """
-    Convert text to speech audio.
 
-    Reads provider/voice config from ~/.hermes/config.yaml (tts: section).
-    The model sends text; the user configures voice and provider.
+# ===========================================================================
+# Provider fallback chain (#65752)
+# ===========================================================================
+#
+# ``tts.fallback`` is an optional ordered list tried after ``tts.provider``:
+#
+#     tts:
+#       provider: my-gpu-server
+#       fallback: [neutts, edge]
+#
+# The chain is ``[provider] + fallback``. With no ``fallback`` key the chain
+# has one entry and behaviour is byte-identical to a single-provider install.
+#
+# An unknown fallback name is a CONFIG ERROR, not a skipped entry (#65752:
+# "Unknown names are a config error - they do not silently fall into the Edge
+# catch-all"). Skipping looks friendlier but hides the failure the user needs
+# to see: a typo'd ``elevnlabs`` would quietly leave the chain shorter than
+# written, so a primary outage falls through to the Edge default and the user
+# never learns their fallback was never wired. Failing loudly at resolve time
+# names the bad entry while the primary still works.
 
-    On messaging platforms, the returned MEDIA:<path> tag is intercepted
-    by the send pipeline and delivered as a native voice message.
-    In CLI mode, the file is saved to ~/voice-memos/.
 
-    Args:
-        text: The text to convert to speech.
-        output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
-        speed: Optional playback speed multiplier (0.25-4.0). Overrides config.yaml.
-        instructions: Optional voice-design guidance (tone, emotion, pacing,
-            accent, whispering). Forwarded to the OpenAI backend
-            (gpt-4o-mini-tts and OpenAI-compatible servers). Silently
-            ignored by backends that don't support it.
-        provider: Optional TTS provider override. When set, bypasses the
-            configured ``tts.provider`` and uses this provider instead.
-            Accepts built-in names (``edge``, ``openai``, ``elevenlabs``,
-            ``minimax``, ``xai``, ``mistral``, ``gemini``, ``neutts``,
-            ``kittentts``, ``piper``), user-declared command provider names
-            from ``tts.providers.<name>``, or plugin-registered provider
-            names.  When ``None`` (the default), the configured provider
-            from ``tts.provider`` in config.yaml is used.
-
-    Returns:
-        str: JSON result with success, file_path, and optionally MEDIA tag.
-    """
-    if not text or not text.strip():
-        return tool_error("Text is required", success=False)
-
+def _is_known_tts_provider(name: str, tts_config: Dict[str, Any]) -> bool:
+    """Whether ``name`` resolves to a built-in, command, or plugin provider."""
+    if name in BUILTIN_TTS_PROVIDERS:
+        return True
+    if _resolve_command_provider_config(name, tts_config) is not None:
+        return True
     try:
-        from tools.tts_text_normalize import prepare_spoken_text
-        text = prepare_spoken_text(text, max_chars=None)
+        from agent.tts_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        return get_provider(name) is not None
     except Exception:
-        text = text.strip()
-    if not text:
-        return tool_error("Text is empty after TTS cleanup", success=False)
+        logger.debug("TTS plugin probe failed for %r", name, exc_info=True)
+        return False
 
-    tts_config = _load_tts_config()
 
-    # When the model supplies a speed parameter, inject it into the config
-    # so all downstream provider functions pick it up uniformly.
-    if speed is not None:
-        clamped = max(0.25, min(4.0, float(speed)))
-        tts_config = dict(tts_config)  # shallow copy to avoid mutating the cache
-        tts_config["speed"] = clamped
+class TTSFallbackConfigError(ValueError):
+    """``tts.fallback`` names a provider that cannot be resolved."""
 
-    # Allow per-call provider override; fall back to the configured default.
-    if provider:
-        provider = provider.lower().strip()
-    else:
-        provider = _get_provider(tts_config)
+
+def _resolve_provider_chain(provider: str, tts_config: Dict[str, Any]) -> List[str]:
+    """Return the ordered provider chain: the primary, then ``tts.fallback``.
+
+    Entries are normalized like ``_get_provider()`` and de-duplicated with
+    order preserved. An entry that resolves to no built-in, command, or plugin
+    provider raises :class:`TTSFallbackConfigError` naming it -- a typo must
+    not silently shorten the chain (#65752).
+
+    The primary is always kept even if it looks unknown, so an unresolvable
+    ``tts.provider`` still produces today's error from the dispatcher rather
+    than a different one from here; only ``fallback`` entries are validated,
+    because only they are new surface.
+    """
+    chain = [provider]
+    raw = tts_config.get("fallback") if isinstance(tts_config, dict) else None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return chain
+    unknown: List[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        name = entry.lower().strip()
+        if not name or name in chain:
+            continue
+        if not _is_known_tts_provider(name, tts_config):
+            unknown.append(name)
+            continue
+        chain.append(name)
+    if unknown:
+        known = ", ".join(sorted(BUILTIN_TTS_PROVIDERS))
+        raise TTSFallbackConfigError(
+            f"tts.fallback names {len(unknown)} unknown provider(s): "
+            f"{', '.join(repr(u) for u in unknown)}. Each entry must be a "
+            f"built-in ({known}), a provider declared under tts.commands, or "
+            f"an installed TTS plugin."
+        )
+    return chain
+
+
+def _attempt_error_text(payload: Any, raw_result: str) -> str:
+    """Best-effort failure reason from one provider attempt."""
+    if isinstance(payload, dict):
+        for key in ("error", "message"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return (raw_result or "").strip()[:300] or "unknown error"
+
+
+def _attempt_tts_provider(
+    text: str,
+    output_path: Optional[str],
+    instructions: Optional[str],
+    provider: str,
+    tts_config: Dict[str, Any],
+) -> str:
+    """Run one provider attempt and return the tool's JSON result string.
+
+    This is the historical body of :func:`text_to_speech_tool`, unchanged
+    except for being parameterized by ``provider``. Everything that varies
+    per provider therefore stays per provider: the command-provider lookup,
+    the text-length cap, the output path and extension, the dispatch itself,
+    Ogg container repair, and Opus voice routing. ``speed`` is already folded
+    into ``tts_config`` by the caller.
+
+    Keeping this as the real dispatcher — rather than a reimplementation —
+    is deliberate: an earlier cut of the fallback chain drifted from it and
+    silently lost argument forwarding, multi-platform Opus routing, and
+    container repair.
+    """
 
     # User-declared command provider (type: command under tts.providers.<name>)
     # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
@@ -3157,18 +3211,134 @@ def text_to_speech_tool(
         return tool_error(error_msg, success=False)
 
 
+def text_to_speech_tool(
+    text: str,
+    output_path: Optional[str] = None,
+    speed: Optional[float] = None,
+    instructions: Optional[str] = None,
+    provider: Optional[str] = None,
+) -> str:
+    """
+    Convert text to speech audio.
+
+    Reads provider/voice config from ~/.hermes/config.yaml (tts: section).
+    The model sends text; the user configures voice and provider.
+
+    On messaging platforms, the returned MEDIA:<path> tag is intercepted
+    by the send pipeline and delivered as a native voice message.
+    In CLI mode, the file is saved to ~/voice-memos/.
+
+    Args:
+        text: The text to convert to speech.
+        output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        speed: Optional playback speed multiplier (0.25-4.0). Overrides config.yaml.
+        instructions: Optional voice-design guidance (tone, emotion, pacing,
+            accent, whispering). Forwarded to the OpenAI backend
+            (gpt-4o-mini-tts and OpenAI-compatible servers). Silently
+            ignored by backends that don't support it.
+        provider: Optional TTS provider override. When set, bypasses the
+            configured ``tts.provider`` and uses this provider instead.
+            Accepts built-in names (``edge``, ``openai``, ``elevenlabs``,
+            ``minimax``, ``xai``, ``mistral``, ``gemini``, ``neutts``,
+            ``kittentts``, ``piper``), user-declared command provider names
+            from ``tts.providers.<name>``, or plugin-registered provider
+            names.  When ``None`` (the default), the configured provider
+            from ``tts.provider`` in config.yaml is used.
+
+    Returns:
+        str: JSON result with success, file_path, and optionally MEDIA tag.
+    """
+    if not text or not text.strip():
+        return tool_error("Text is required", success=False)
+
+    try:
+        from tools.tts_text_normalize import prepare_spoken_text
+        text = prepare_spoken_text(text, max_chars=None)
+    except Exception:
+        text = text.strip()
+    if not text:
+        return tool_error("Text is empty after TTS cleanup", success=False)
+
+    tts_config = _load_tts_config()
+
+    # When the model supplies a speed parameter, inject it into the config
+    # so all downstream provider functions pick it up uniformly.
+    if speed is not None:
+        clamped = max(0.25, min(4.0, float(speed)))
+        tts_config = dict(tts_config)  # shallow copy to avoid mutating the cache
+        tts_config["speed"] = clamped
+
+    # Allow per-call provider override; fall back to the configured default.
+    if provider:
+        provider = provider.lower().strip()
+    else:
+        provider = _get_provider(tts_config)
+
+    try:
+        chain = _resolve_provider_chain(provider, tts_config)
+    except TTSFallbackConfigError as exc:
+        # Config error, not a synthesis failure: report it instead of falling
+        # through to the primary, or the user never learns the chain is wrong.
+        return tool_error(str(exc), success=False)
+
+    attempts: List[Tuple[str, str]] = []
+    last_result = ""
+    for candidate in chain:
+        try:
+            last_result = _attempt_tts_provider(
+                text, output_path, instructions, candidate, tts_config,
+            )
+        except Exception as exc:
+            # A programmatic error (a crashing plugin, a TypeError in a
+            # provider function) must not abort the chain, but it also must
+            # not vanish - log the traceback so it is debuggable.
+            logger.error(
+                "TTS provider %s raised during synthesis", candidate, exc_info=True,
+            )
+            attempts.append((candidate, f"{type(exc).__name__}: {exc}"))
+            continue
+
+        try:
+            payload = json.loads(last_result)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict) and payload.get("success"):
+            if attempts:
+                logger.info(
+                    "TTS succeeded with fallback provider %s after %d failed "
+                    "attempt(s)", candidate, len(attempts),
+                )
+            return last_result
+
+        reason = _attempt_error_text(payload, last_result)
+        attempts.append((candidate, reason))
+        if len(chain) > 1:
+            logger.warning("TTS provider %s failed (%s)", candidate, reason)
+
+    # Single-provider config: return the dispatcher's own result untouched so
+    # the error shape existing callers and tests rely on is preserved.
+    if len(chain) == 1:
+        return last_result
+
+    detail = "; ".join(f"{name}: {reason}" for name, reason in attempts)
+    return tool_error(
+        f"All {len(attempts)} TTS providers in the chain failed - {detail}",
+        success=False,
+    )
+
+
+
 # ===========================================================================
 # Requirements check
 # ===========================================================================
-def check_tts_requirements() -> bool:
-    """Return whether the explicitly resolved TTS provider can run.
 
-    Availability must mirror :func:`text_to_speech_tool` dispatch. Unrelated
-    cloud credentials do not make the default Edge backend usable, and an
-    explicitly selected backend is checked on its own requirements.
+def _provider_is_available(provider: str, tts_config: Dict[str, Any]) -> bool:
+    """Whether one provider can run right now.
+
+    Extracted verbatim from :func:`check_tts_requirements` so the chain check
+    reuses the real credential and config resolvers instead of re-deriving
+    availability from raw environment keys.
     """
-    tts_config = _load_tts_config()
-    provider = _get_provider(tts_config)
     command_config = _resolve_command_provider_config(provider, tts_config)
     if command_config is not None:
         return True
@@ -3237,6 +3407,30 @@ def check_tts_requirements() -> bool:
         return bool(plugin and plugin.is_available())
     except Exception:
         return False
+
+
+def check_tts_requirements() -> bool:
+    """Return whether the explicitly resolved TTS provider can run.
+
+    Availability must mirror :func:`text_to_speech_tool` dispatch. Unrelated
+    cloud credentials do not make the default Edge backend usable, and an
+    explicitly selected backend is checked on its own requirements.
+    """
+    tts_config = _load_tts_config()
+    provider = _get_provider(tts_config)
+    # Any entry in the chain being usable means the tool can run, so the
+    # schema stays exposed when the primary is dead but a fallback is alive.
+    try:
+        chain = _resolve_provider_chain(provider, tts_config)
+    except TTSFallbackConfigError as exc:
+        # This runs from the tool registry, where raising would take down
+        # schema assembly for every tool. Fall back to the primary alone and
+        # log why -- text_to_speech_tool() reports the misconfiguration when
+        # the user actually calls it.
+        logger.warning("TTS fallback chain is misconfigured: %s", exc)
+        chain = [provider]
+    return any(_provider_is_available(name, tts_config) for name in chain)
+
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:

@@ -45,6 +45,7 @@ Convert text to speech with eleven providers:
 # In ~/.hermes/config.yaml
 tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper"
+  # fallback: [neutts, edge]    # Optional ordered fallback chain (see below)
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -146,6 +147,46 @@ The rewrite uses `auxiliary.tts_audio_tags` and defaults to your main chat model
 
 **Language (OpenAI-compatible endpoints)**: `tts.openai.language` is forwarded to the endpoint as a `lang_code` request parameter. It is intended for OpenAI-compatible TTS servers that support `lang_code` — for example [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), where `language: "es"` selects the Spanish phonemizer instead of the English default. Leave it unset when using the official OpenAI API, which does not accept this parameter. When unset, nothing extra is sent.
 
+
+### Fallback chain
+
+`tts.fallback` is an optional ordered list of providers tried when the
+configured one fails — a local GPU server that is down, an exhausted API
+quota, a transient network error:
+
+```yaml
+tts:
+  provider: my-gpu-server       # tried first
+  fallback: [neutts, edge]      # then these, in order
+```
+
+The chain is `provider` followed by `fallback`. With no `fallback` key the
+chain has a single entry and behaviour is unchanged, so existing configs are
+unaffected.
+
+- **Entries** may be built-ins, [custom command providers](#custom-command-providers),
+  or [plugin providers](#python-plugin-providers). Names are normalized the
+  same way as `provider`, and duplicates are dropped.
+- **A failed entry moves to the next**: an exception, a timeout, or an
+  unsuccessful result. The first success wins.
+- **Each attempt is independent.** The text-length cap, output path and
+  extension, Opus voice routing, and Ogg container repair are all resolved
+  per provider, so a provider with a 4096-char cap doesn't shrink the text
+  handed to one that allows more, and a native-Opus provider's `.ogg` path
+  isn't inherited by a provider that writes MP3.
+- **If every entry fails**, one aggregated error names each provider and why
+  it failed. With no fallback configured the single provider's original error
+  is returned unchanged.
+- **An unknown name in `fallback` is a configuration error.** `text_to_speech`
+  reports it and does not synthesise, naming every unresolvable entry at once.
+  Skipping would look friendlier but hide the failure that matters: a typo'd
+  entry leaves the chain shorter than written, so a primary outage falls
+  through to the Edge default and you never learn the fallback was never
+  wired. `tts.provider` itself is not validated here — an unusable primary
+  still produces the dispatcher's existing error.
+
+Tool availability follows the chain too: the `text_to_speech` tool stays
+exposed when the primary is unavailable but any fallback entry is usable.
 
 ### Input length limits
 

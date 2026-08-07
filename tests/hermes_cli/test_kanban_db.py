@@ -163,6 +163,117 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_create_task_idempotency_is_atomic_across_connections(kanban_home):
+    """Two independent concurrent creators produce one task."""
+    barrier = __import__("threading").Barrier(2)
+
+    def create_from_independent_connection():
+        with kb.connect() as connection:
+            barrier.wait(timeout=5)
+            return kb.create_task(
+                connection,
+                title="same Sentry incident",
+                idempotency_key="sentry:org:issue-1",
+            )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(create_from_independent_connection) for _ in range(2)
+        ]
+        task_ids = [future.result(timeout=10) for future in futures]
+
+    assert task_ids[0] == task_ids[1]
+    with kb.connect() as check:
+        rows = check.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived'",
+            ("sentry:org:issue-1",),
+        ).fetchall()
+    assert len(rows) == 1
+
+
+def test_create_task_idempotency_is_atomic_across_processes(kanban_home, tmp_path):
+    """Two creator processes released together return one task."""
+    db_path = kb.kanban_db_path()
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+    child_code = """
+import os
+import sys
+import time
+from pathlib import Path
+from hermes_cli import kanban_db as kb
+
+db_path = Path(sys.argv[1])
+sync_dir = Path(sys.argv[2])
+(sync_dir / f"ready-{os.getpid()}").write_text("ready")
+deadline = time.monotonic() + 10
+while not (sync_dir / "release").exists():
+    if time.monotonic() > deadline:
+        raise TimeoutError("parent did not release idempotency race")
+    time.sleep(0.01)
+with kb.connect(db_path) as connection:
+    print(kb.create_task(connection, title="same process race", idempotency_key="sentry:org:issue-2"))
+"""
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2])}
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", child_code, str(db_path), str(sync_dir)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        for _ in range(2)
+    ]
+    try:
+        deadline = time.monotonic() + 10
+        while len(list(sync_dir.glob("ready-*"))) < 2:
+            if time.monotonic() > deadline:
+                raise TimeoutError("creator processes did not reach the race barrier")
+            time.sleep(0.01)
+        (sync_dir / "release").write_text("go")
+        outputs = [process.communicate(timeout=15) for process in processes]
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+
+    assert [process.returncode for process in processes] == [0, 0], outputs
+    task_ids = [stdout.strip() for stdout, _stderr in outputs]
+    assert task_ids[0] == task_ids[1], outputs
+    with kb.connect() as check:
+        rows = check.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived'",
+            ("sentry:org:issue-2",),
+        ).fetchall()
+    assert len(rows) == 1
+
+
+def test_create_task_idempotent_replay_does_not_wait_for_writer_lock(
+    kanban_home, monkeypatch
+):
+    """An existing-key replay stays on the WAL read path under write contention."""
+    monkeypatch.setenv("HERMES_KANBAN_BUSY_TIMEOUT_MS", "50")
+    with kb.connect() as replay_connection, kb.connect() as lock_holder:
+        task_id = kb.create_task(
+            replay_connection,
+            title="original webhook",
+            idempotency_key="sentry:org:existing-issue",
+        )
+        lock_holder.execute("BEGIN IMMEDIATE")
+        started = time.monotonic()
+        try:
+            replayed_id = kb.create_task(
+                replay_connection,
+                title="retried webhook",
+                idempotency_key="sentry:org:existing-issue",
+            )
+        finally:
+            lock_holder.rollback()
+
+    assert replayed_id == task_id
+    assert time.monotonic() - started < 0.5
+
 
 # ---------------------------------------------------------------------------
 # Links + dependency resolution

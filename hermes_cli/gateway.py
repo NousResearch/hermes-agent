@@ -252,6 +252,65 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
+def _request_owned_systemd_gateway_restart(pid: int) -> bool:
+    """Request a restart from a same-user systemd sibling without root.
+
+    The dashboard backend is a sibling of the gateway, not its ancestor, so it
+    cannot use ``_request_gateway_self_restart``.  Permit this narrow path only
+    when systemd identifies ``pid`` as this service's MainPID, the unit and the
+    live process both belong to the current user, and systemd is configured to
+    restart the process after its planned SIGUSR1 exit.
+    """
+    if pid <= 0 or not hasattr(signal, "SIGUSR1"):
+        return False
+    try:
+        result = _run_systemctl(
+            [
+                "show",
+                get_service_name(),
+                "--property=MainPID",
+                "--property=User",
+                "--property=Restart",
+            ],
+            system=True,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+
+    properties = {}
+    for line in (result.stdout or "").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            properties[key] = value
+    if properties.get("MainPID") != str(pid) or properties.get("Restart") != "always":
+        return False
+
+    try:
+        import pwd
+
+        current_uid = os.geteuid()
+        if pwd.getpwnam(properties["User"]).pw_uid != current_uid:
+            return False
+        if os.stat(f"/proc/{pid}").st_uid != current_uid:
+            return False
+    except (KeyError, OSError):
+        return False
+
+    try:
+        os.kill(pid, signal.SIGUSR1)  # POSIX-only, guarded by hasattr(signal, "SIGUSR1") above
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
+
+
 def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     """Send SIGUSR1 to a gateway PID and wait for it to exit gracefully.
 
@@ -3481,6 +3540,16 @@ def systemd_stop(system: bool = False):
 def systemd_restart(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
+        if os.geteuid() != 0:
+            from gateway.status import get_running_pid
+
+            pid = get_running_pid() or _systemd_main_pid(system=True)
+            if pid is not None and _request_owned_systemd_gateway_restart(pid):
+                print(
+                    f"✓ System gateway graceful restart requested (PID {pid}); "
+                    "systemd will relaunch it after drain"
+                )
+                return
         _require_root_for_system_service("restart")
     else:
         _preflight_user_systemd()

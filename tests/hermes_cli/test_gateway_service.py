@@ -680,6 +680,78 @@ class TestGatewayServiceDetection:
 
 
 class TestGatewaySystemServiceRouting:
+    def test_owned_systemd_gateway_restart_signals_only_matching_service(self, monkeypatch):
+        systemctl_calls = []
+        signals = []
+
+        def fake_systemctl(args, **kwargs):
+            systemctl_calls.append((args, kwargs))
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=654\nUser=aliops\nRestart=always\n",
+            )
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_systemctl)
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway.service")
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1001)
+        monkeypatch.setattr(gateway_cli.os, "stat", lambda path: SimpleNamespace(st_uid=1001))
+        monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=1001))
+        monkeypatch.setattr(gateway_cli.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+
+        assert gateway_cli._request_owned_systemd_gateway_restart(654) is True
+        assert systemctl_calls[0][0] == [
+            "show",
+            "hermes-gateway.service",
+            "--property=MainPID",
+            "--property=User",
+            "--property=Restart",
+        ]
+        assert systemctl_calls[0][1]["system"] is True
+        assert signals == [(654, gateway_cli.signal.SIGUSR1)]
+
+    def test_owned_systemd_gateway_restart_refuses_mismatched_main_pid(self, monkeypatch):
+        signals = []
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=655\nUser=aliops\nRestart=always\n",
+            ),
+        )
+        monkeypatch.setattr(gateway_cli.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+
+        assert gateway_cli._request_owned_systemd_gateway_restart(654) is False
+        assert signals == []
+
+    def test_systemd_restart_allows_owned_service_without_root(self, monkeypatch, capsys):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: True)
+        monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1001)
+        monkeypatch.setattr(status, "get_running_pid", lambda: 654)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_owned_systemd_gateway_restart",
+            lambda pid: calls.append(pid) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_require_root_for_system_service",
+            lambda action: (_ for _ in ()).throw(AssertionError("should not require root")),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "refresh_systemd_unit_if_needed",
+            lambda system=False: (_ for _ in ()).throw(AssertionError("should not refresh")),
+        )
+
+        gateway_cli.systemd_restart()
+
+        assert calls == [654]
+        assert "graceful restart requested" in capsys.readouterr().out
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 

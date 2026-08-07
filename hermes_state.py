@@ -3196,6 +3196,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
+                       user_id = COALESCE(sessions.user_id, excluded.user_id),
+                       -- Only backfill a placeholder source ('unknown', e.g.
+                       -- from the update_token_counts self-heal row); never
+                       -- overwrite a real one.
+                       source = COALESCE(NULLIF(sessions.source, 'unknown'), excluded.source),
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
                        system_prompt_hash = COALESCE(

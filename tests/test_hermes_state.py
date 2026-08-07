@@ -301,7 +301,41 @@ class TestSessionLifecycle:
             peer.close()
 
 
+class TestUpsertUserIdSourceBackfill:
+    """The _insert_session_row ON CONFLICT clause must backfill user_id and a
+    placeholder source ('unknown') left by the update_token_counts self-heal
+    row, without ever overwriting real values."""
 
+    def test_backfills_user_id_and_source_after_self_heal_row(self, db):
+        # Lock-contention self-heal: bare row (source='unknown', user_id=NULL)
+        db.update_token_counts("s1", input_tokens=5, model="gpt-x")
+        row = db.get_session("s1")
+        assert row["source"] == "unknown"
+        assert row["user_id"] is None
+
+        # Retried real create_session must enrich both columns
+        db.create_session(
+            session_id="s1", source="gateway", user_id="tg:12345",
+            model="gpt-x", session_key="gw:tg:12345",
+        )
+        row = db.get_session("s1")
+        assert row["source"] == "gateway"
+        assert row["user_id"] == "tg:12345"
+        assert row["session_key"] == "gw:tg:12345"
+
+    def test_never_clobbers_real_source_or_user_id(self, db):
+        db.create_session(session_id="s1", source="gateway", user_id="tg:12345")
+
+        db.create_session(session_id="s1", source="unknown", user_id=None)
+        row = db.get_session("s1")
+        assert row["source"] == "gateway"
+        assert row["user_id"] == "tg:12345"
+
+        # A later call with a *different* real user_id must not overwrite either
+        db.create_session(session_id="s1", source="cron", user_id="other")
+        row = db.get_session("s1")
+        assert row["source"] == "gateway"
+        assert row["user_id"] == "tg:12345"
 
 
 

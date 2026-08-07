@@ -1748,9 +1748,18 @@ async def _standalone_send(
         if not webhook_url:
             return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
         async with httpx.AsyncClient(timeout=30.0) as client:
+            # A static robot webhook accepts DingTalk Markdown too.  Cron uses
+            # this fallback whenever no per-message session webhook is cached;
+            # sending plain text here would expose Markdown markers literally.
+            normalized = DingTalkAdapter._normalize_markdown(
+                message[: DingTalkAdapter.MAX_MESSAGE_LENGTH]
+            )
             resp = await client.post(
                 webhook_url,
-                json={"msgtype": "text", "text": {"content": message}},
+                json={
+                    "msgtype": "markdown",
+                    "markdown": {"title": "Hermes", "text": normalized},
+                },
             )
             resp.raise_for_status()
             data = resp.json()

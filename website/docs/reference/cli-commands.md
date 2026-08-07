@@ -1305,6 +1305,12 @@ Subcommands:
 | `setup` | Interactive provider selection and configuration. |
 | `status` | Show current memory provider config. |
 | `off` | Disable external provider (built-in only). |
+| `add <content> [--target memory\|user]` | Add an entry to built-in `MEMORY.md` / `USER.md` via the same `MemoryStore` path as the memory tool. |
+| `replace <old_text> <content> [--target memory\|user]` | Replace one built-in entry matched by a unique substring. |
+| `remove <old_text> [--target memory\|user]` | Remove one built-in entry matched by a unique substring. |
+| `reset [--target all\|memory\|user] [-y]` | Erase built-in memory files. |
+
+Built-in CRUD (`add` / `replace` / `remove`) reuses `tools.memory_tool.memory_tool`, so profile scoping, injection checks, char limits, and the write-approval gate apply. When the gate **stages** a write, the CLI prints a staged confirmation instead of claiming an immediate disk write.
 
 :::info Provider-specific subcommands
 When an external memory provider is active, it may register its own top-level `hermes <provider>` command for provider-specific management (e.g. `hermes honcho` when Honcho is active). Inactive providers do not expose their subcommands. Run `hermes --help` to see what's currently wired in.

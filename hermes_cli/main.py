@@ -11004,6 +11004,25 @@ def cmd_memory(args):
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
         print("  Saved to config.yaml\n")
+    elif sub in {"add", "replace", "remove"}:
+        from tools.memory_tool import load_on_disk_store, memory_tool
+
+        result = json.loads(memory_tool(
+            action=sub,
+            target=getattr(args, "target", "memory"),
+            content=getattr(args, "content", None),
+            old_text=getattr(args, "old_text", None),
+            store=load_on_disk_store(),
+        ))
+        if result.get("success"):
+            if result.get("staged"):
+                print(f"\n  ✓ Memory {sub} staged: {result['message']}\n")
+            else:
+                usage = result.get("usage")
+                suffix = f" ({usage})" if usage else ""
+                print(f"\n  ✓ Memory {sub} complete{suffix}\n")
+        else:
+            print(f"\n  ✗ Memory {sub} failed: {result.get('error', 'Unknown error')}\n")
     elif sub == "reset":
         from hermes_constants import get_hermes_home, display_hermes_home
 

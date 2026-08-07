@@ -2297,6 +2297,109 @@ class TestNewEndpoints:
         assert ssh["status"] == "ready"
         assert "hermes@devbox.example.com" in ssh["detail"]
 
+    def test_terminal_tenki_probe_reports_auth_readiness(self, monkeypatch):
+        """Tenki readiness is a local SDK/auth check and never creates a sandbox."""
+        import hermes_cli.web_server as web_server
+        import tools.tenki_config as tenki_config
+
+        monkeypatch.setitem(sys.modules, "tenki", SimpleNamespace())
+        monkeypatch.setattr(tenki_config, "has_tenki_auth", lambda: False)
+        assert web_server._probe_tenki_backend()[0] == "needs_setup"
+
+        monkeypatch.setattr(tenki_config, "has_tenki_auth", lambda: True)
+        assert web_server._probe_tenki_backend() == ("ready", "")
+
+    def test_terminal_tenki_probe_isolates_named_profile_secrets(self, monkeypatch):
+        """A target profile must see its own token and never borrow the
+        dashboard process token or another profile's machine-wide login."""
+        import hermes_cli.web_server as web_server
+        from hermes_cli.profiles import get_profile_dir
+
+        monkeypatch.setitem(sys.modules, "tenki", SimpleNamespace())
+        monkeypatch.setenv("TENKI_API_KEY", "process-token-must-not-leak")
+
+        with_token = get_profile_dir("tenki-ready")
+        with_token.mkdir(parents=True)
+        (with_token / ".env").write_text(
+            "TENKI_AUTH_TOKEN=profile-token\n",
+            encoding="utf-8",
+        )
+
+        without_token = get_profile_dir("tenki-missing")
+        without_token.mkdir(parents=True)
+        (without_token / ".env").write_text("OTHER_SECRET=x\n", encoding="utf-8")
+
+        ready = self.client.get(
+            "/api/tools/terminal/backends?profile=tenki-ready"
+        ).json()
+        missing = self.client.get(
+            "/api/tools/terminal/backends?profile=tenki-missing"
+        ).json()
+
+        ready_tenki = next(row for row in ready["backends"] if row["name"] == "tenki")
+        missing_tenki = next(
+            row for row in missing["backends"] if row["name"] == "tenki"
+        )
+        assert ready_tenki["status"] == "ready"
+        assert missing_tenki["status"] == "needs_setup"
+
+    def test_select_terminal_backend_accepts_and_preserves_tenki(self, monkeypatch):
+        """Dashboard GET/PUT must not rewrite a configured Tenki backend to local."""
+        import hermes_cli.web_server as web_server
+        from hermes_cli.config import load_config, save_config
+
+        monkeypatch.setattr(
+            web_server,
+            "_probe_tenki_backend",
+            lambda _profile_secrets=None: ("ready", ""),
+        )
+        config = load_config()
+        config.setdefault("terminal", {}).update({
+            "backend": "docker",
+            "container_persistent": True,
+            "cwd": "/workspace",
+        })
+        save_config(config)
+
+        resp = self.client.put(
+            "/api/tools/terminal/backend", json={"backend": "tenki"}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "backend": "tenki"}
+
+        body = self.client.get("/api/tools/terminal/backends").json()
+        assert body["active"] == "tenki"
+        tenki = next(r for r in body["backends"] if r["name"] == "tenki")
+        assert tenki["active"] is True
+        assert tenki["status"] == "ready"
+        terminal = load_config()["terminal"]
+        assert terminal["container_persistent"] is False
+        assert terminal["cwd"] == "/home/tenki"
+
+        resp = self.client.put(
+            "/api/tools/terminal/backend",
+            json={"backend": "docker"},
+        )
+        assert resp.status_code == 200
+        terminal = load_config()["terminal"]
+        assert terminal["backend"] == "docker"
+        assert terminal["container_persistent"] is True
+        assert terminal["cwd"] == "/workspace"
+        assert "_pre_tenki_backend_settings" not in terminal
+
+    def test_terminal_backend_unknown_config_falls_back_to_known_active(self):
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        config.setdefault("terminal", {})["backend"] = "not-a-backend"
+        save_config(config)
+
+        body = self.client.get("/api/tools/terminal/backends").json()
+        names = {row["name"] for row in body["backends"]}
+        assert body["active"] in names
+        assert [row["name"] for row in body["backends"] if row["active"]] == [
+            body["active"]
+        ]
 
 
 

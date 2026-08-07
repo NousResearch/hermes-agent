@@ -3,7 +3,8 @@
 File Operations Module
 
 Provides file manipulation capabilities (read, write, patch, search) that work
-across all terminal backends (local, docker, ssh, singularity, modal, daytona, vercel_sandbox).
+across all terminal backends (local, docker, ssh, singularity, modal, daytona,
+vercel_sandbox, tenki).
 
 The key insight is that all file operations can be expressed as shell commands,
 so we wrap the terminal backend's execute() interface to provide a unified file API.
@@ -805,7 +806,7 @@ class ShellFileOperations(FileOperations):
     File operations implemented via shell commands.
     
     Works with ANY terminal backend that has execute(command, cwd) method.
-    This includes local, docker, singularity, ssh, modal, and daytona environments.
+    This includes local, docker, singularity, ssh, modal, daytona, and tenki environments.
     """
     
     def __init__(self, terminal_env, cwd: str = None):
@@ -2009,7 +2010,7 @@ class ShellFileOperations(FileOperations):
 
         LSP servers run on the host process — they need access to the
         files they're linting.  Remote/sandboxed backends (Docker,
-        Modal, SSH, Daytona) keep files inside the sandbox where the
+        Modal, SSH, Daytona, Tenki) keep files inside the sandbox where the
         host-side LSP server can't reach them, so we skip the LSP
         path for those entirely.
         """

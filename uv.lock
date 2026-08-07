@@ -1735,6 +1735,9 @@ teams = [
     { name = "aiohttp" },
     { name = "microsoft-teams-apps" },
 ]
+tenki = [
+    { name = "tenki" },
+]
 termux = [
     { name = "agent-client-protocol" },
     { name = "honcho-ai" },
@@ -1927,6 +1930,7 @@ requires-dist = [
     { name = "starlette", marker = "extra == 'web'", specifier = "==1.3.1" },
     { name = "supermemory", marker = "extra == 'supermemory'", specifier = "==3.50.0" },
     { name = "tenacity", specifier = "==9.1.4" },
+    { name = "tenki", marker = "extra == 'tenki'", specifier = ">=0.5.1,<0.7" },
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.21" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2025.3" },
     { name = "urllib3", specifier = ">=2.7.0,<3" },
@@ -1936,7 +1940,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "tenki", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -4343,6 +4347,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697ee8a44d3d69222b344920433d3b6666ccd9b374630c/tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a", size = 49413, upload-time = "2026-02-07T10:45:33.841Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2026-02-07T10:45:32.24Z" },
+]
+
+[[package]]
+name = "tenki"
+version = "0.5.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "grpcio" },
+    { name = "protobuf" },
+    { name = "websocket-client" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/30/85/9f311f784b92639de2d0aaae7c6d67c76c5ebfd60543d56739724c07683a/tenki-0.5.4.tar.gz", hash = "sha256:3d900ca3eedf98aea0ace315246a3f2bbdc19149d966a320cdb99fd406b681fa", size = 186073, upload-time = "2026-07-29T11:08:41.791Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e9/de/244e8d8bffe6673ae3a58423016b8c03465214ab9101a3e61234b5d4c076/tenki-0.5.4-py3-none-any.whl", hash = "sha256:d5df29fa5f7f93fc6c420d3a0b50e68e0b35fda63e17ed57c0f302a522cbf9ef", size = 158916, upload-time = "2026-07-29T11:08:40.023Z" },
 ]
 
 [[package]]

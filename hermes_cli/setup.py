@@ -137,6 +137,7 @@ def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
 
 # Import config helpers
 from hermes_cli.config import (
+    apply_terminal_backend_transition,
     cfg_get,
     DEFAULT_CONFIG,
     get_hermes_home,
@@ -723,7 +724,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
 
 def _prompt_container_resources(config: dict):
-    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona)."""
+    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona, Tenki)."""
     terminal = config.setdefault("terminal", {})
 
     print()
@@ -1340,11 +1341,12 @@ def setup_terminal_backend(config: dict):
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
         "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
+        "Tenki Agent - Tenki cloud sandbox",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox", 6: "tenki"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5, "tenki": 6}
 
-    next_idx = 6
+    next_idx = 7
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1366,7 +1368,8 @@ def setup_terminal_backend(config: dict):
         print_info(f"Keeping current backend: {current_backend}")
         return
 
-    config.setdefault("terminal", {})["backend"] = selected_backend
+    terminal_config = config.setdefault("terminal", {})
+    apply_terminal_backend_transition(terminal_config, selected_backend)
 
     if selected_backend == "local":
         print_success("Terminal backend: Local")
@@ -1591,6 +1594,77 @@ def setup_terminal_backend(config: dict):
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         _prompt_vercel_sandbox_settings(config)
+
+    elif selected_backend == "tenki":
+        print_success("Terminal backend: Tenki Agent")
+        print_info("Cloud sandboxes are created on demand and terminated by default.")
+        print_info("Requires Tenki CLI login or TENKI_AUTH_TOKEN/TENKI_API_KEY.")
+
+        try:
+            __import__("tenki")
+        except ImportError:
+            print_info("Installing Tenki SDK...")
+            import subprocess
+
+            uv_bin = shutil.which("uv")
+            package = "tenki>=0.5.1,<0.7"
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, package],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", package],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("Tenki SDK installed")
+            else:
+                print_warning("Install failed — run manually: pip install 'tenki>=0.5.1,<0.7'")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        from tools.tenki_config import (
+            has_tenki_auth,
+            resolve_tenki_api_endpoint,
+            resolve_tenki_workspace_id,
+        )
+
+        terminal = config.setdefault("terminal", {})
+        # Keep fallback-derived values dynamic. Persisting the currently
+        # resolved endpoint/workspace would turn a Tenki CLI or environment
+        # fallback into an explicit config override, so later CLI/profile
+        # changes could never take effect.
+        for key in ("tenki_api_endpoint", "tenki_workspace_id"):
+            value = terminal.get(key)
+            terminal[key] = value.strip() if isinstance(value, str) else ""
+        endpoint = resolve_tenki_api_endpoint(terminal["tenki_api_endpoint"])
+        workspace_id = resolve_tenki_workspace_id(terminal["tenki_workspace_id"])
+
+        terminal.setdefault("tenki_image", "")
+        terminal.setdefault("tenki_name_prefix", "hermes")
+        terminal.setdefault("tenki_allow_inbound", False)
+        terminal.setdefault("tenki_allow_outbound", True)
+        terminal.setdefault("tenki_max_duration", 3600)
+        terminal.setdefault("tenki_idle_timeout", 0)
+        terminal.setdefault("tenki_pause_retention", 0)
+        terminal.setdefault("tenki_sync_hermes_home", False)
+        terminal.setdefault("container_persistent", False)
+        terminal.setdefault("cwd", "/home/tenki")
+
+        print_info(f"  Endpoint:  {endpoint}")
+        print_info(f"  Workspace: {workspace_id or '(not found; run tenki login)'}")
+        if has_tenki_auth():
+            print_info("  Tenki auth: already configured")
+        else:
+            print_warning("  Tenki auth not found")
+            token = prompt("    Tenki token/API key (optional; leave blank to run tenki login)", password=True)
+            if token:
+                save_env_value("TENKI_API_KEY", token)
+                print_success("    Configured")
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

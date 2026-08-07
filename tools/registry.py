@@ -247,20 +247,26 @@ def check_fn_cache_scope() -> Optional[str]:
     """Return the active profile key when availability is profile-scoped.
 
     Single-profile processes intentionally keep the historical process-wide
-    cache. A multiplex gateway installs a Hermes-home override for every
-    profile turn, so the canonical profile key is the stable isolation
-    boundary across repeated turns for that profile.
+    cache unless an explicit secret scope is bound. A multiplex gateway
+    installs a Hermes-home override for every profile turn, so the canonical
+    profile key is the stable isolation boundary across repeated turns for
+    that profile.
     """
     try:
-        from agent.secret_scope import is_multiplex_active
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
 
-        if not is_multiplex_active():
+        multiplex_active = is_multiplex_active()
+        if not multiplex_active and current_secret_scope() is None:
             return None
         from hermes_constants import get_hermes_home_override
 
         override = get_hermes_home_override()
         if not override:
-            return CHECK_FN_CACHE_BYPASS
+            if multiplex_active:
+                return CHECK_FN_CACHE_BYPASS
+            from hermes_constants import get_hermes_home
+
+            return str(Path(get_hermes_home()).expanduser().resolve())
         return str(Path(override).expanduser().resolve())
     except Exception:
         # Fail closed: bypass both cache layers rather than aliasing requests

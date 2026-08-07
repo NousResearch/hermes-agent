@@ -214,6 +214,8 @@ class TestProviderEnvBlocklist:
             "VERCEL_TOKEN": "vercel-token",
             "VERCEL_PROJECT_ID": "vercel-project",
             "VERCEL_TEAM_ID": "vercel-team",
+            "TENKI_AUTH_TOKEN": "tenki-token",
+            "TENKI_API_KEY": "tenki-key",
         }
         result_env = _run_with_env(extra_os_env=leaked_vars)
 
@@ -509,6 +511,8 @@ class TestBlocklistCoverage:
             "VERCEL_TOKEN",
             "VERCEL_PROJECT_ID",
             "VERCEL_TEAM_ID",
+            "TENKI_AUTH_TOKEN",
+            "TENKI_API_KEY",
         }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 

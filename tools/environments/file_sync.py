@@ -10,6 +10,7 @@ import hashlib
 import logging
 import os
 import posixpath
+import re
 import shlex
 import shutil
 import signal
@@ -42,12 +43,49 @@ _monotonic = time.monotonic
 _SYNC_INTERVAL_SECONDS = 5.0
 _FORCE_SYNC_ENV = "HERMES_FORCE_FILE_SYNC"
 
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def normalize_forward_env_names(
+    forward_env: list[str] | None,
+    *,
+    setting_name: str,
+) -> list[str]:
+    """Return a deduplicated list of valid environment variable names.
+
+    *setting_name* names the backend setting being validated (e.g.
+    ``docker_forward_env``) and only appears in the warning text.
+    """
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for item in forward_env or []:
+        if not isinstance(item, str):
+            logger.warning("Ignoring non-string %s entry: %r", setting_name, item)
+            continue
+
+        key = item.strip()
+        if not key:
+            continue
+        if not _ENV_VAR_NAME_RE.match(key):
+            logger.warning("Ignoring invalid %s entry: %r", setting_name, item)
+            continue
+        if key in seen:
+            continue
+
+        seen.add(key)
+        normalized.append(key)
+
+    return normalized
+
+
 # Transport callbacks provided by each backend
 UploadFn = Callable[[str, str], None]  # (host_path, remote_path) -> raises on failure
 BulkUploadFn = Callable[[list[tuple[str, str]]], None]  # [(host_path, remote_path), ...] -> raises on failure
 BulkDownloadFn = Callable[[Path], None]  # (dest_tar_path) -> writes tar archive, raises on failure
 DeleteFn = Callable[[list[str]], None]  # (remote_paths) -> raises on failure
 GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_path), ...]
+GetUploadOnlyHostPathsFn = Callable[[], set[str]]
 
 
 def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
@@ -150,20 +188,30 @@ class FileSyncManager:
         sync_interval: float = _SYNC_INTERVAL_SECONDS,
         bulk_upload_fn: BulkUploadFn | None = None,
         bulk_download_fn: BulkDownloadFn | None = None,
+        get_upload_only_host_paths_fn: GetUploadOnlyHostPathsFn | None = None,
     ):
         self._get_files_fn = get_files_fn
         self._upload_fn = upload_fn
         self._bulk_upload_fn = bulk_upload_fn
         self._bulk_download_fn = bulk_download_fn
         self._delete_fn = delete_fn
+        self._get_upload_only_host_paths_fn = (
+            get_upload_only_host_paths_fn or _credential_host_paths
+        )
         self._transaction_lock = threading.Lock()
         self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
         self._upload_only_host_paths: set[str] = set()
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
         self._sync_interval = sync_interval
+        self._sync_lock = threading.RLock()
 
     def sync(self, *, force: bool = False) -> None:
+        """Serialize one upload transaction against sync-back and peer syncs."""
+        with self._sync_lock:
+            self._sync_once(force=force)
+
+    def _sync_once(self, *, force: bool = False) -> None:
         """Run a sync cycle: upload changed files, delete removed files.
 
         Rate-limited to once per ``sync_interval`` unless *force* is True
@@ -183,7 +231,9 @@ class FileSyncManager:
                 return
 
         current_files = self._get_files_fn()
-        self._upload_only_host_paths.update(_credential_host_paths())
+        self._upload_only_host_paths.update(
+            self._get_upload_only_host_paths_fn()
+        )
         current_remote_paths = {remote for _, remote in current_files}
 
         # --- Uploads: new or changed files ---
@@ -254,6 +304,11 @@ class FileSyncManager:
     # ------------------------------------------------------------------
 
     def sync_back(self, hermes_home: Path | None = None) -> None:
+        """Serialize teardown sync-back against every upload transaction."""
+        with self._sync_lock:
+            self._sync_back_serialized(hermes_home)
+
+    def _sync_back_serialized(self, hermes_home: Path | None = None) -> None:
         """Pull remote changes back to the host filesystem.
 
         Downloads the remote ``.hermes/`` directory as a tar archive,
@@ -383,7 +438,8 @@ class FileSyncManager:
 
                 applied = 0
                 upload_only_host_paths = (
-                    self._upload_only_host_paths | _credential_host_paths()
+                    self._upload_only_host_paths
+                    | self._get_upload_only_host_paths_fn()
                 )
                 for dirpath, _dirnames, filenames in os.walk(staging):
                     for fname in filenames:

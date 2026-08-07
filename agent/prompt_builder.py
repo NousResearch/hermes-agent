@@ -999,7 +999,7 @@ WSL_ENVIRONMENT_HINT = (
 # misleading — the agent should only see the machine it can actually touch.
 _REMOTE_TERMINAL_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh",
-    "vercel_sandbox", "managed_modal",
+    "vercel_sandbox", "tenki", "managed_modal",
 })
 
 
@@ -1014,6 +1014,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "managed_modal": "a managed Modal sandbox (Linux)",
     "daytona": "a Daytona workspace (Linux)",
     "vercel_sandbox": "a Vercel sandbox (Linux)",
+    "tenki": "a Tenki sandbox (Linux)",
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
@@ -1023,7 +1024,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 # a mid-process backend switch rebuilds the string. Kept in-module (not on
 # disk) because the probe captures live backend state that may change
 # across Hermes restarts.
-_BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
+_BACKEND_PROBE_CACHE: dict[tuple[str, str, str], str] = {}
 
 
 _WINDOWS_BASH_SHELL_HINT = (
@@ -1046,15 +1047,36 @@ def _probe_remote_backend(env_type: str) -> str | None:
     operate on a different machine than the host Hermes runs on.
     """
     cwd_hint = os.getenv("TERMINAL_CWD", "")
-    cache_key = (env_type, cwd_hint)
+    try:
+        from hermes_constants import get_hermes_home
+
+        profile_key = str(get_hermes_home())
+    except Exception:
+        profile_key = ""
+    cache_key = (env_type, cwd_hint, profile_key)
     cached = _BACKEND_PROBE_CACHE.get(cache_key)
     if cached is not None:
         return cached or None
 
+    # Tenki environments are billable cloud resources and the prompt builder
+    # has no registry ownership or side-effect-free teardown seam for them.
+    # Creating a one-off sandbox here could forward configured credentials,
+    # sync profile files, or persist resources before the first tool call.
+    # Use the existing static fallback; the agent can probe its real sandbox
+    # with a terminal call once it actually needs one.
+    if env_type == "tenki":
+        _BACKEND_PROBE_CACHE[cache_key] = ""
+        return None
+
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
         # non-local backend is actually configured.
-        from tools.terminal_tool import _create_environment, _get_env_config  # type: ignore
+        from tools.terminal_tool import (  # type: ignore
+            _CONTAINER_BACKENDS,
+            _container_config_from_env_config,
+            _create_environment,
+            _get_env_config,
+        )
     except Exception as e:
         logger.debug("Backend probe unavailable (import failed): %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
@@ -1088,23 +1110,8 @@ def _probe_remote_backend(env_type: str) -> str | None:
             }
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
-            container_config = {
-                "container_cpu": config.get("container_cpu", 1),
-                "container_memory": config.get("container_memory", 5120),
-                "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
-                "modal_mode": config.get("modal_mode", "auto"),
-                "docker_volumes": config.get("docker_volumes", []),
-                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                "docker_forward_env": config.get("docker_forward_env", []),
-                "docker_env": config.get("docker_env", {}),
-                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                "docker_extra_args": config.get("docker_extra_args", []),
-                "docker_shm_size": config.get("docker_shm_size", "1g"),
-                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
-                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
-            }
+        if env_type in _CONTAINER_BACKENDS:
+            container_config = _container_config_from_env_config(config)
 
         env = _create_environment(
             env_type=env_type,
@@ -1179,10 +1186,11 @@ def build_environment_hints() -> str:
       and a Windows-only note that `terminal` shells out to bash, not
       PowerShell).
     - For **remote / sandbox** terminal backends (docker, singularity,
-      modal, daytona, ssh, vercel_sandbox): host info is **suppressed**
+      modal, daytona, ssh, vercel_sandbox, tenki): host info is **suppressed**
       because the agent's tools can't touch the host — only the backend
-      matters. A live probe inside the backend reports its OS, user, $HOME,
-      and cwd. Falls back to a static summary if the probe fails.
+      matters. A live probe inside most backends reports its OS, user, $HOME,
+      and cwd, with a static fallback if the probe fails. Tenki always uses
+      the static summary so prompt construction never creates a cloud sandbox.
 
     The WSL environment hint is appended unchanged when running under WSL.
     """
@@ -1192,6 +1200,15 @@ def build_environment_hints() -> str:
     hints: list[str] = []
 
     backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        if is_multiplex_active() and current_secret_scope() is not None:
+            from tools.terminal_tool import _get_env_config
+
+            backend = str(_get_env_config().get("env_type") or backend).strip().lower()
+    except Exception:
+        logger.debug("Could not resolve profile-scoped terminal backend", exc_info=True)
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS
 
     if not is_remote_backend:
@@ -1237,6 +1254,17 @@ def build_environment_hints() -> str:
                 f"where Hermes itself is running. The host OS, home, and cwd "
                 f"of the Hermes process are irrelevant; only the following "
                 f"backend state matters:\n{probe}"
+            )
+        elif backend == "tenki":
+            hints.append(
+                "Terminal backend: tenki. Your `terminal`, `read_file`, "
+                "`write_file`, `patch`, and `search_files` tools all operate "
+                "inside a Tenki sandbox (Linux) — NOT on the machine where "
+                "Hermes itself runs. Prompt construction intentionally "
+                "defers sandbox creation until the first tool call that needs "
+                "the backend, "
+                "so the sandbox's current user, $HOME, and working directory "
+                "are not known yet."
             )
         else:
             description = _BACKEND_FALLBACK_DESCRIPTIONS.get(

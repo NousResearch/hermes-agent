@@ -50,8 +50,8 @@ def _get_registered() -> Dict[str, str]:
         return val
 
 
-# Cache for config-based file list (loaded once per process).
-_config_files: List[Dict[str, str]] | None = None
+# Cache for config-based file lists, isolated by profile/Hermes home.
+_config_files: Dict[str, List[Dict[str, str]]] = {}
 
 
 def _resolve_hermes_home() -> Path:
@@ -174,15 +174,24 @@ def register_credential_files(
 
 
 def _load_config_files() -> List[Dict[str, str]]:
-    """Load ``terminal.credential_files`` from config.yaml (cached)."""
+    """Load ``terminal.credential_files`` from config.yaml (profile-cached)."""
     global _config_files
-    if _config_files is not None:
-        return _config_files
+    if not isinstance(_config_files, dict):
+        # Backward-compatible with tests/extensions that cleared the former
+        # singleton cache by assigning None.
+        _config_files = {}
+    hermes_home = _resolve_hermes_home()
+    try:
+        cache_key = str(hermes_home.resolve())
+    except OSError:
+        cache_key = str(hermes_home)
+    cached = _config_files.get(cache_key)
+    if cached is not None:
+        return cached
 
     result: List[Dict[str, str]] = []
     try:
         from hermes_cli.config import read_raw_config
-        hermes_home = _resolve_hermes_home()
         cfg = read_raw_config()
         cred_files = cfg_get(cfg, "terminal", "credential_files")
         if isinstance(cred_files, list):
@@ -214,8 +223,8 @@ def _load_config_files() -> List[Dict[str, str]]:
     except Exception as e:
         logger.warning("Could not read terminal.credential_files from config: %s", e)
 
-    _config_files = result
-    return _config_files
+    _config_files[cache_key] = result
+    return result
 
 
 def get_credential_file_mounts() -> List[Dict[str, str]]:
@@ -526,5 +535,4 @@ def iter_cache_files(
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
-
 

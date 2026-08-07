@@ -14,6 +14,7 @@ import re
 import select
 import shlex
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -339,6 +340,121 @@ def _save_json_store(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def _windows_replace_file_write_through(source: str, destination: Path) -> None:
+    """Atomically replace *destination* with Windows write-through semantics."""
+    import ctypes
+    from ctypes import wintypes
+
+    move_file_ex = ctypes.WinDLL(
+        "kernel32",
+        use_last_error=True,
+    ).MoveFileExW
+    move_file_ex.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+    )
+    move_file_ex.restype = wintypes.BOOL
+    flags = 0x1 | 0x8  # MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+    if move_file_ex(
+        os.path.abspath(source),
+        os.path.abspath(destination),
+        flags,
+    ):
+        return
+    error_code = ctypes.get_last_error()
+    raise OSError(
+        error_code,
+        ctypes.FormatError(error_code),
+        str(destination),
+    )
+
+
+def _atomic_save_json_durable(
+    path: Path,
+    data: dict,
+    *,
+    subject: str,
+    store_label: str,
+    commit_uncertain_error: Callable[[str], BaseException],
+    platform: str,
+    replace_write_through: Callable[[str, Path], None],
+) -> None:
+    """Write *data* to *path* as JSON with a crash-durable atomic commit.
+
+    Mechanism only; the caller supplies the policy. Contents are fsynced before
+    the replace, and on POSIX the containing directory is fsynced afterwards so
+    the rename itself survives a host crash. A failure of either durability
+    step is an *uncertain commit*: the visible file is already the new one, but
+    a crash may roll the directory entry back. That case raises
+    *commit_uncertain_error* so a caller with recovery state can keep both the
+    old and the new referents alive.
+
+    Every policy input is required rather than defaulted: a caller that reaches
+    for this primitive is one with recovery state to protect, and silently
+    inheriting a generic uncertain-commit error or this module's own platform
+    detection would hide exactly the substitutions such a caller depends on.
+    *platform* and *replace_write_through* in particular let it supply its own
+    (testable) platform detection and Windows replace implementation.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            json.dump(data, tmp, indent=2)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            temp_path = tmp.name
+        if platform == "nt":
+            try:
+                replace_write_through(temp_path, path)
+            except OSError as exc:
+                raise commit_uncertain_error(
+                    f"could not durably replace {subject} file {path}"
+                ) from exc
+            return
+        if platform != "posix":
+            raise RuntimeError(
+                f"{store_label} cannot prove rename durability on "
+                f"platform {platform!r}"
+            )
+
+        os.replace(temp_path, path)
+        # The file contents were fsynced before replace; fsync the containing
+        # directory too so the pointer rename itself survives a host crash.
+        # A POSIX failure is an *uncertain commit*: the visible file is new,
+        # but a crash may roll the directory entry back. The caller must keep
+        # every referent of both the old and the new state in that case.
+        dir_fd: int | None = None
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            dir_fd = os.open(path.parent, flags)
+            os.fsync(dir_fd)
+        except OSError as exc:
+            raise commit_uncertain_error(
+                f"could not fsync {subject} directory {path.parent}"
+            ) from exc
+        finally:
+            if dir_fd is not None:
+                try:
+                    os.close(dir_fd)
+                except OSError:
+                    pass
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+
 def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
     """Return ``(mtime, size)`` for cache comparison, or ``None`` if unreadable."""
     try:
@@ -356,7 +472,7 @@ def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
 class ProcessHandle(Protocol):
     """Duck type that every backend's _run_bash() must return.
 
-    subprocess.Popen satisfies this natively.  SDK backends (Modal, Daytona)
+    subprocess.Popen satisfies this natively.  SDK backends (Modal, Daytona, Tenki)
     return _ThreadedProcessHandle which adapts their blocking calls.
     """
 
@@ -372,7 +488,7 @@ class ProcessHandle(Protocol):
 
 
 class _ThreadedProcessHandle:
-    """Adapter for SDK backends (Modal, Daytona) that have no real subprocess.
+    """Adapter for SDK backends (Modal, Daytona, Tenki) that have no real subprocess.
 
     Wraps a blocking ``exec_fn() -> (output_str, exit_code)`` in a background
     thread and exposes a ProcessHandle-compatible interface.  An optional
@@ -1239,7 +1355,7 @@ class BaseEnvironment(ABC):
         """Parse the __HERMES_CWD_{session}__ marker from stdout output.
 
         Updates self.cwd and strips the marker from result["output"].
-        Used by remote backends (Docker, SSH, Modal, Daytona, Singularity).
+        Used by remote backends (Docker, SSH, Modal, Daytona, Tenki, Singularity).
         """
         output = result.get("output", "")
         marker = self._cwd_marker
@@ -1276,7 +1392,7 @@ class BaseEnvironment(ABC):
     def _before_execute(self) -> None:
         """Hook called before each command execution.
 
-        Remote backends (SSH, Modal, Daytona) override this to trigger
+        Remote backends (SSH, Modal, Daytona, Tenki) override this to trigger
         their FileSyncManager.  Bind-mount backends (Docker, Singularity)
         and Local don't need file sync — the host filesystem is directly
         visible inside the container/process.

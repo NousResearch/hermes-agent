@@ -16,7 +16,7 @@ Architecture (two transports):
   **Remote backends (file-based RPC):**
   1. Parent generates `hermes_tools.py` with file-based RPC stubs
   2. Parent ships both files to the remote environment
-  3. Script runs inside the terminal backend (Docker/SSH/Modal/Daytona/etc.)
+  3. Script runs inside the terminal backend (Docker/SSH/Modal/Daytona/Tenki/etc.)
   4. Tool calls are written as request files; a polling thread on the parent
      reads them via env.execute(), dispatches, and writes response files
   5. The script polls for response files and continues
@@ -793,35 +793,34 @@ def _get_or_create_env(task_id: str):
     Returns ``(env, env_type)`` tuple.
     """
     from tools.terminal_tool import (
-        _active_environments, _env_lock, _create_environment,
-        _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id,
+        _create_environment,
+        _get_env_config, _start_cleanup_thread,
+        _environment_creation_lock,
+        _register_active_environment,
+        _resolve_environment_cache_key,
+        _resolve_environment_cwd,
+        _select_active_environment,
+        resolve_task_overrides,
+        _CONTAINER_BACKENDS,
+        _container_config_from_env_config,
     )
 
-    effective_task_id = _resolve_container_task_id(task_id)
+    config = _get_env_config()
+    env_type = config["env_type"]
+    effective_task_id = _resolve_environment_cache_key(task_id, env_type)
 
     # Fast path: environment already exists
-    with _env_lock:
-        if effective_task_id in _active_environments:
-            _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+    _selected_key, env = _select_active_environment(effective_task_id)
+    if env is not None:
+        return env, env_type
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
-    with _creation_locks_lock:
-        if effective_task_id not in _creation_locks:
-            _creation_locks[effective_task_id] = threading.Lock()
-        task_lock = _creation_locks[effective_task_id]
+    with _environment_creation_lock(effective_task_id):
+        _selected_key, env = _select_active_environment(effective_task_id)
+        if env is not None:
+            return env, env_type
 
-    with task_lock:
-        with _env_lock:
-            if effective_task_id in _active_environments:
-                _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
-
-        config = _get_env_config()
-        env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
+        overrides = resolve_task_overrides(task_id)
 
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]
@@ -831,23 +830,21 @@ def _get_or_create_env(task_id: str):
             image = overrides.get("modal_image") or config["modal_image"]
         elif env_type == "daytona":
             image = overrides.get("daytona_image") or config["daytona_image"]
+        elif env_type == "tenki":
+            image = overrides.get("tenki_image") or config["tenki_image"]
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or config["cwd"]
+        cwd = _resolve_environment_cwd(
+            task_id,
+            env_type,
+            config,
+            overrides,
+        )
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
-            container_config = {
-                "container_cpu": config.get("container_cpu", 1),
-                "container_memory": config.get("container_memory", 5120),
-                "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
-                "vercel_runtime": config.get("vercel_runtime", ""),
-                "docker_volumes": config.get("docker_volumes", []),
-                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                "docker_network": config.get("docker_network", True),
-            }
+        if env_type in _CONTAINER_BACKENDS:
+            container_config = _container_config_from_env_config(config)
 
         ssh_config = None
         if env_type == "ssh":
@@ -879,9 +876,7 @@ def _get_or_create_env(task_id: str):
             host_cwd=config.get("host_cwd"),
         )
 
-        with _env_lock:
-            _active_environments[effective_task_id] = env
-            _last_activity[effective_task_id] = time.time()
+        env = _register_active_environment(effective_task_id, env)
 
         _start_cleanup_thread()
         logger.info("%s environment ready for execute_code task %s",

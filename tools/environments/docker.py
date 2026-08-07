@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment, _popen_bash
+from tools.environments.file_sync import normalize_forward_env_names
 from tools.environments.local import (
     _HERMES_PROVIDER_ENV_BLOCKLIST,
     _is_hermes_internal_secret,
@@ -39,31 +40,6 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EGRESS_LABEL_KEY = "hermes-egress"
-
-
-def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
-    """Return a deduplicated list of valid environment variable names."""
-    normalized: list[str] = []
-    seen: set[str] = set()
-
-    for item in forward_env or []:
-        if not isinstance(item, str):
-            logger.warning("Ignoring non-string docker_forward_env entry: %r", item)
-            continue
-
-        key = item.strip()
-        if not key:
-            continue
-        if not _ENV_VAR_NAME_RE.match(key):
-            logger.warning("Ignoring invalid docker_forward_env entry: %r", item)
-            continue
-        if key in seen:
-            continue
-
-        seen.add(key)
-        normalized.append(key)
-
-    return normalized
 
 
 def _normalize_env_dict(env: dict | None) -> dict[str, str]:
@@ -877,7 +853,10 @@ class DockerEnvironment(BaseEnvironment):
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
         self._task_id = task_id
-        self._forward_env = _normalize_forward_env_names(forward_env)
+        self._forward_env = normalize_forward_env_names(
+            forward_env,
+            setting_name="docker_forward_env",
+        )
         self._env = _normalize_env_dict(env)
         self._init_unset_passthrough_names: tuple[str, ...] = ()
         self._container_id: Optional[str] = None

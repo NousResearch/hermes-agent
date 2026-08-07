@@ -12,6 +12,7 @@ stays authoritative.
 
 import logging
 import sys  # noqa: F401 — used by handlers
+from pathlib import Path
 from typing import Any, Dict, List, Optional  # noqa: F401
 
 from fastapi import APIRouter, HTTPException  # noqa: F401
@@ -639,26 +640,45 @@ async def get_terminal_backends(profile: Optional[str] = None):
     Probes are fast (<~2s each) and defensive — a probe failure surfaces as a
     status, never an error response.
     """
-    with _profile_scope(profile):
-        config = load_config()
-        terminal_cfg = config.get("terminal")
-        if not isinstance(terminal_cfg, dict):
-            terminal_cfg = {}
-        active = str(terminal_cfg.get("backend") or "local").strip().lower()
-        if active not in _TERMINAL_BACKEND_NAMES:
-            active = "local"
+    with _profile_scope(profile) as profile_dir:
+        secret_token = None
+        profile_secrets = None
+        if profile_dir is not None:
+            from agent.secret_scope import (
+                build_profile_secret_scope,
+                reset_secret_scope,
+                set_secret_scope,
+            )
 
-        backends = []
-        for row in _TERMINAL_BACKENDS:
-            status, detail = _probe_terminal_backend(row["name"], terminal_cfg)
-            backends.append({
-                "name": row["name"],
-                "label": row["label"],
-                "description": row["description"],
-                "active": row["name"] == active,
-                "status": status,
-                "detail": detail,
-            })
+            profile_secrets = build_profile_secret_scope(Path(profile_dir))
+            secret_token = set_secret_scope(profile_secrets)
+        try:
+            config = load_config()
+            terminal_cfg = config.get("terminal")
+            if not isinstance(terminal_cfg, dict):
+                terminal_cfg = {}
+            active = str(terminal_cfg.get("backend") or "local").strip().lower()
+            if active not in _TERMINAL_BACKEND_NAMES:
+                active = "local"
+
+            backends = []
+            for row in _TERMINAL_BACKENDS:
+                status, detail = _probe_terminal_backend(
+                    row["name"],
+                    terminal_cfg,
+                    profile_secrets=profile_secrets,
+                )
+                backends.append({
+                    "name": row["name"],
+                    "label": row["label"],
+                    "description": row["description"],
+                    "active": row["name"] == active,
+                    "status": status,
+                    "detail": detail,
+                })
+        finally:
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
     return {"active": active, "backends": backends}
 
 
@@ -686,7 +706,9 @@ async def select_terminal_backend(
         if not isinstance(terminal_cfg, dict):
             terminal_cfg = {}
             config["terminal"] = terminal_cfg
-        terminal_cfg["backend"] = backend
+        from hermes_cli.config import apply_terminal_backend_transition
+
+        apply_terminal_backend_transition(terminal_cfg, backend)
         save_config(config)
     return {"ok": True, "backend": backend}
 

@@ -318,7 +318,22 @@ DEFAULT_CONFIG = {
         # Vercel Sandbox runtime (vercel_sandbox backend only).
         # Supported: node24, node22, python3.13.
         "vercel_runtime": "node24",
-        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
+        "tenki_image": "",
+        # Blank so the documented TENKI_API_ENDPOINT / TENKI_API_URL and Tenki
+        # CLI-config fallbacks in resolve_tenki_api_endpoint() are reachable. A
+        # non-blank default here is bridged as an explicit value and would mask
+        # them. Blank resolves to https://api.tenki.cloud downstream.
+        "tenki_api_endpoint": "",
+        "tenki_workspace_id": "",
+        "tenki_name_prefix": "hermes",
+        "tenki_allow_inbound": False,
+        "tenki_allow_outbound": True,
+        "tenki_max_duration": 3600,
+        "tenki_idle_timeout": 0,
+        "tenki_pause_retention": 0,
+        "tenki_sync_hermes_home": False,
+        "tenki_forward_env": [],
+        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox, tenki — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)

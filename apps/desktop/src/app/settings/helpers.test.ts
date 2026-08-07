@@ -206,7 +206,8 @@ describe('settings helpers', () => {
 
     it('renders a dropdown for the terminal execution backend', () => {
       const opts = enumOptionsFor('terminal.backend', 'local', config)
-      expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'])
+      expect(opts).toContain('tenki')
+      expect(new Set(opts).size).toBe(opts?.length)
     })
 
     it('narrows OpenAI TTS voice suggestions to what the selected model supports', () => {

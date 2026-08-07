@@ -3,7 +3,7 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH,
-Singularity, Daytona, and Vercel Sandbox environments. Supports local
+Singularity, Daytona, Vercel Sandbox, and Tenki environments. Supports local
 execution, containerized backends, and cloud sandboxes, including managed
 Modal mode.
 
@@ -12,9 +12,10 @@ Environment Selection (via TERMINAL_ENV environment variable):
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 - "vercel_sandbox": Execute in Vercel Sandbox cloud sandboxes
+- "tenki": Execute in Tenki cloud sandboxes
 
 Features:
-- Multiple execution backends (local, docker, modal, vercel_sandbox)
+- Multiple execution backends (local, docker, modal, vercel_sandbox, tenki, etc.)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -46,8 +47,9 @@ import threading
 import atexit
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable
 
 from utils import env_var_enabled
 
@@ -655,10 +657,12 @@ def _read_shell_token(command: str, start: int) -> tuple[str, int]:
     return command[start:i], i
 
 
-def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
-    """Rewrite only real unquoted sudo command words, not plain text mentions.
+def _rewrite_sudo_command_words(command: str, replacement: str) -> tuple[str, int]:
+    """Replace real unquoted sudo command words with *replacement*.
 
-    Returns the rewritten command and the number of sudo invocations rewritten.
+    Only command words are rewritten, so plain text mentions of sudo (arguments,
+    quoted strings, comments) are left alone. Returns the rewritten command and
+    the number of sudo command words replaced.
     """
     out: list[str] = []
     i = 0
@@ -705,7 +709,7 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
 
         token, next_i = _read_shell_token(command, i)
         if command_start and token == "sudo":
-            out.append("sudo -S -p ''")
+            out.append(replacement)
             sudo_count += 1
         else:
             out.append(token)
@@ -719,60 +723,17 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
     return "".join(out), sudo_count
 
 
-def _count_real_sudo_invocations(command: str) -> int:
-    """Return how many real sudo command words appear in *command*.
+def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
+    """Rewrite only real unquoted sudo command words, not plain text mentions.
 
-    Lightweight scan that reuses the same tokeniser as
-    ``_rewrite_real_sudo_invocations`` but skips the string-building, so it
-    is cheap to call from the result-processing path.
+    Returns the rewritten command and the number of sudo invocations rewritten.
     """
-    count = 0
-    i = 0
-    n = len(command)
-    command_start = True
+    return _rewrite_sudo_command_words(command, "sudo -S -p ''")
 
-    while i < n:
-        ch = command[i]
 
-        if ch.isspace():
-            if ch == "\n":
-                command_start = True
-            i += 1
-            continue
-
-        if ch == "#" and command_start:
-            comment_end = command.find("\n", i)
-            if comment_end == -1:
-                break
-            i = comment_end
-            continue
-
-        if command.startswith("&&", i) or command.startswith("||", i) or command.startswith(";;", i):
-            i += 2
-            command_start = True
-            continue
-
-        if ch in ";|&(":
-            i += 1
-            command_start = True
-            continue
-
-        if ch == ")":
-            i += 1
-            command_start = False
-            continue
-
-        token, next_i = _read_shell_token(command, i)
-        if command_start and token == "sudo":
-            count += 1
-
-        if command_start and _looks_like_env_assignment(token):
-            command_start = True
-        else:
-            command_start = False
-        i = next_i
-
-    return count
+def _count_real_sudo_invocations(command: str) -> int:
+    """Return how many real sudo command words appear in *command*."""
+    return _rewrite_real_sudo_invocations(command)[1]
 
 
 def _sudo_nopasswd_works() -> bool:
@@ -1081,7 +1042,18 @@ PTY: set pty=true for interactive CLIs (they hang without it). Pipe git output t
 _active_environments: Dict[str, Any] = {}
 _last_activity: Dict[str, float] = {}
 _env_lock = threading.Lock()
-_creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
+_retiring_environments: Dict[str, threading.Event] = {}
+class _EnvironmentCreationSlot:
+    """One generation-safe per-task creation lock with waiter accounting."""
+
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.users = 0
+
+
+_creation_locks: Dict[str, _EnvironmentCreationSlot] = {}
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
 _cleanup_thread = None
 _cleanup_running = False
@@ -1091,6 +1063,213 @@ _cleanup_running = False
 # calls for parallel subagents won't re-trigger the sweep.
 _docker_orphan_reaper_ran = False
 _docker_orphan_reaper_lock = threading.Lock()
+
+
+def _select_active_environment(
+    task_id: str,
+    fallback_task_id: Optional[str] = None,
+    *,
+    touch: bool = True,
+) -> tuple[Optional[str], Any]:
+    """Atomically wait past retirement and select a live registry entry.
+
+    The tombstone check and environment read happen under the same lock. A
+    caller therefore cannot finish waiting, race with retirement installation,
+    and then select an entry that was already marked for teardown.
+    """
+    keys = tuple(
+        dict.fromkeys(
+            key for key in (task_id, fallback_task_id) if key
+        )
+    )
+    while True:
+        with _env_lock:
+            retired = next(
+                (
+                    _retiring_environments[key]
+                    for key in keys
+                    if key in _retiring_environments
+                ),
+                None,
+            )
+            if retired is None:
+                for key in keys:
+                    env = _active_environments.get(key)
+                    if env is not None:
+                        if touch:
+                            _last_activity[key] = time.time()
+                        return key, env
+                return None, None
+        retired.wait()
+
+
+@contextmanager
+def _environment_creation_lock(task_id: str):
+    """Serialize creators without allowing keyed-lock ABA.
+
+    A slot remains in the registry while any holder or waiter retains its
+    generation. It is removed only after the final user releases it, so
+    retirement cannot delete a lock out from under an already-waiting creator
+    and let a newcomer enter through a second lock.
+    """
+    with _creation_locks_lock:
+        slot = _creation_locks.get(task_id)
+        if slot is None:
+            slot = _EnvironmentCreationSlot()
+            _creation_locks[task_id] = slot
+        slot.users += 1
+    slot.lock.acquire()
+    try:
+        yield
+    finally:
+        slot.lock.release()
+        with _creation_locks_lock:
+            slot.users -= 1
+            if slot.users == 0 and _creation_locks.get(task_id) is slot:
+                _creation_locks.pop(task_id, None)
+
+
+def _discard_unregistered_environment(
+    env: Any,
+    existing: Any,
+    task_id: str,
+) -> None:
+    """Best-effort disposal for a candidate that lost registry publication."""
+    shares_remote = getattr(env, "shares_remote_resource_with", None)
+    release_wrapper = getattr(env, "release_duplicate_wrapper", None)
+    try:
+        if (
+            callable(shares_remote)
+            and shares_remote(existing)
+            and callable(release_wrapper)
+        ):
+            # Persistent wrappers can independently reattach to the same
+            # remote Tenki sandbox. Terminating the losing wrapper's remote
+            # would also terminate the registered winner; close only the
+            # losing client/wrapper in that case.
+            release_wrapper(existing)
+            return
+    except Exception:
+        logger.exception(
+            "Failed to compare/release duplicate environment wrapper for "
+            "task %s",
+            task_id,
+        )
+        return
+
+    discard = getattr(env, "discard", None)
+    cleanup = getattr(env, "cleanup", None)
+    action = discard if callable(discard) else cleanup
+    if not callable(action):
+        logger.error(
+            "Environment candidate for task %s lost registration and has no "
+            "discard/cleanup method",
+            task_id,
+        )
+        return
+    try:
+        action()
+    except Exception:
+        logger.exception(
+            "Failed to dispose unregistered environment candidate for task %s",
+            task_id,
+        )
+
+
+def _register_active_environment(task_id: str, env: Any) -> Any:
+    """Publish a newly created environment under the registry protocol."""
+    with _env_lock:
+        if task_id in _retiring_environments:
+            raise RuntimeError(
+                f"Cannot register environment while {task_id!r} is retiring"
+            )
+        existing = _active_environments.get(task_id)
+        if existing is None:
+            _active_environments[task_id] = env
+            _last_activity[task_id] = time.time()
+            return env
+        if existing is env:
+            return env
+    # This is unreachable for callers using _environment_creation_lock, but
+    # do not leak a billable remote resource if a future/third-party path
+    # violates that protocol.
+    _discard_unregistered_environment(env, existing, task_id)
+    return existing
+
+
+def _commit_active_environment_use(
+    task_id: str,
+    env: Any,
+    callback: Callable[[], None],
+) -> bool:
+    """Run a small registry-adjacent commit only if *env* is still selectable."""
+    with _env_lock:
+        if (
+            task_id in _retiring_environments
+            or _active_environments.get(task_id) is not env
+        ):
+            return False
+        _last_activity[task_id] = time.time()
+        callback()
+        return True
+
+
+def _begin_environment_retirement(
+    task_id: str,
+    env: Any,
+) -> tuple[threading.Event, bool]:
+    """Install a tombstone without removing the live registry entry."""
+    with _env_lock:
+        existing = _retiring_environments.get(task_id)
+        if existing is not None:
+            return existing, False
+        if _active_environments.get(task_id) is not env:
+            completed = threading.Event()
+            completed.set()
+            return completed, False
+        completed = threading.Event()
+        _retiring_environments[task_id] = completed
+        _last_activity.pop(task_id, None)
+        return completed, True
+
+
+def _finish_environment_retirement(
+    task_id: str,
+    env: Any,
+    completed: threading.Event,
+) -> None:
+    """Remove a successfully cleaned environment, then release waiters."""
+    with _env_lock:
+        if _active_environments.get(task_id) is env:
+            _active_environments.pop(task_id, None)
+        _last_activity.pop(task_id, None)
+        # Keep the tombstone installed until the creation/file caches have
+        # been invalidated. Otherwise a waiter can observe "not retiring" and
+        # reuse a ShellFileOperations object that still points at the dead env.
+    try:
+        from tools.file_tools import clear_file_ops_cache
+
+        clear_file_ops_cache(task_id)
+    except ImportError:
+        pass
+    with _env_lock:
+        if _retiring_environments.get(task_id) is completed:
+            _retiring_environments.pop(task_id, None)
+    completed.set()
+
+
+def _abort_environment_retirement(
+    task_id: str,
+    env: Any,
+    completed: threading.Event,
+) -> None:
+    """Keep a failed cleanup registered and retryable on a later reap."""
+    with _env_lock:
+        if _active_environments.get(task_id) is env:
+            _last_activity[task_id] = time.time()
+        if _retiring_environments.get(task_id) is completed:
+            _retiring_environments.pop(task_id, None)
+    completed.set()
 
 
 def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
@@ -1159,7 +1338,7 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 
 
 # Per-task environment overrides registry.
-# Allows environments (e.g., TerminalBench2Env) to specify a custom Docker/Modal
+# Allows environments (e.g., TerminalBench2Env) to specify a custom Docker/Modal/Tenki
 # image for a specific task_id BEFORE the agent loop starts. When the terminal or
 # file tools create a new sandbox for that task_id, they check this registry first
 # and fall back to the TERMINAL_MODAL_IMAGE (etc.) env var if no override is set.
@@ -1230,6 +1409,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
 
     Supported override keys:
         - modal_image: str -- Path to Dockerfile or Docker Hub image name
+        - tenki_image: str -- Tenki registry image reference
         - docker_image: str -- Docker image name
         - cwd: str -- Working directory inside the sandbox
 
@@ -1254,11 +1434,23 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         # isolation-keyed rollouts. Try the raw id first, then the container id,
         # so a CWD-only override (which collapses to "default") still finds and
         # updates the originating session's env.
-        container_id = _resolve_container_task_id(task_id)
-        with _env_lock:
-            env = _active_environments.get(task_id) or _active_environments.get(container_id)
+        config = _get_env_config()
+        env_type = config["env_type"]
+        container_id = _resolve_environment_cache_key(task_id, env_type)
+        fallback_task_id = (
+            task_id if not container_id.startswith("tenki:") else None
+        )
+        _selected_key, env = _select_active_environment(
+            container_id,
+            fallback_task_id,
+        )
         if env is not None and getattr(env, "cwd", None) is not None:
-            env.cwd = new_cwd
+            env.cwd = _resolve_environment_cwd(
+                task_id,
+                env_type,
+                config,
+                overrides,
+            )
 
 
 def clear_task_env_overrides(task_id: str):
@@ -1297,13 +1489,34 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     _ISOLATION_KEYS = frozenset({
         "docker_image", "modal_image", "singularity_image",
-        "daytona_image", "env_type",
+        "daytona_image", "tenki_image", "env_type",
     })
     if task_id and task_id in _task_env_overrides:
         overrides = _task_env_overrides[task_id]
         if set(overrides.keys()) & _ISOLATION_KEYS:
             return task_id
     return "default"
+
+
+def _resolve_environment_cache_key(task_id: Optional[str], env_type: str) -> str:
+    """Return the registry key for one backend environment.
+
+    Most backends intentionally share ``default`` across sessions/subagents.
+    Tenki is the exception: credentials, workspace, synced files, and billing
+    are profile-owned, so multiplexed profiles must never share one cached
+    sandbox. Subagents within the same profile still collapse to the same base
+    key and therefore keep the shared-sandbox contract.
+    """
+    raw = str(task_id or "default")
+    base = _resolve_container_task_id(task_id)
+    if str(env_type or "").strip().lower() != "tenki":
+        return base
+    from tools.environments.tenki import _profile_token
+
+    prefix = f"tenki:{_profile_token()}:"
+    if raw.startswith(prefix):
+        return raw
+    return f"{prefix}{base}"
 
 
 def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
@@ -1328,13 +1541,20 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
 
 # Configuration from environment variables
 
-def _parse_env_var(name: str, default: str, converter: Any = int, type_label: str = "integer"):
+def _parse_env_var(
+    name: str,
+    default: str,
+    converter: Any = int,
+    type_label: str = "integer",
+    *,
+    env: Optional[Dict[str, str]] = None,
+):
     """Parse an environment variable with *converter*, raising a clear error on bad values.
 
     Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
     causes an unhandled ValueError that kills every terminal command.
     """
-    raw = os.getenv(name, default)
+    raw = (os.environ if env is None else env).get(name, default)
     try:
         return converter(raw)
     except (ValueError, json.JSONDecodeError):
@@ -1364,7 +1584,22 @@ def _safe_getcwd() -> str:
 # cwd looks when it leaks toward a Linux container's ``-w`` flag.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_BACKENDS = frozenset(
+    {"docker", "singularity", "modal", "daytona", "vercel_sandbox", "tenki"}
+)
+
+# Guest-home roots whose subtree is a valid container cwd even though the root
+# shares a host-looking prefix. Tenki's guest home is /home/tenki, so
+# /home/tenki/project is a real sandbox path, not a host path to discard.
+_CONTAINER_GUEST_HOME_ROOTS = {"tenki": "/home/tenki"}
+
+
+def _is_backend_guest_subpath(env_type: str, cwd: str) -> bool:
+    """True when *cwd* is the backend's guest-home root or a path beneath it."""
+    root = _CONTAINER_GUEST_HOME_ROOTS.get(env_type)
+    if not root or not cwd:
+        return False
+    return cwd == root or cwd.startswith(root.rstrip("/") + "/")
 
 
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
@@ -1402,6 +1637,32 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     if not os.path.isabs(cwd):
         return True
     return False
+
+
+def _resolve_environment_cwd(
+    task_id: Optional[str],
+    env_type: str,
+    config: Dict[str, Any],
+    overrides: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Resolve one session cwd and sanitize host paths for guest backends."""
+    overrides = overrides if overrides is not None else resolve_task_overrides(task_id)
+    cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
+    if (
+        env_type in _CONTAINER_BACKENDS
+        and _is_unusable_container_cwd(cwd)
+        and not _is_backend_guest_subpath(env_type, cwd)
+    ):
+        if cwd != config["cwd"]:
+            logger.info(
+                "Ignoring host/relative cwd override %r for %s backend "
+                "(won't exist in sandbox). Using %r instead.",
+                cwd,
+                env_type,
+                config["cwd"],
+            )
+        cwd = config["cwd"]
+    return cwd
 
 
 # One-shot guard for the config-fallback bridge below.  Purely an
@@ -1458,15 +1719,45 @@ def _ensure_terminal_env_bridged() -> None:
         logger.debug("terminal config → env fallback bridge failed", exc_info=True)
 
 
+def _runtime_terminal_env() -> Dict[str, str]:
+    """Return terminal env values for the active runtime/profile context.
+
+    Single-profile processes keep the historical process environment. A
+    multiplexed turn instead overlays the active profile's config into a
+    private mapping, avoiding cross-profile mutation of ``os.environ`` while
+    preserving exported values for settings that profile did not configure.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        if is_multiplex_active() and current_secret_scope() is not None:
+            from hermes_cli.config import (
+                apply_terminal_config_to_env,
+                load_config_readonly,
+            )
+
+            target = dict(os.environ)
+            return apply_terminal_config_to_env(
+                env=target,
+                config=load_config_readonly(),
+                override=None,
+            )
+    except Exception:
+        logger.debug("profile terminal config resolution failed", exc_info=True)
+    _ensure_terminal_env_bridged()
+    return dict(os.environ)
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
-    _ensure_terminal_env_bridged()
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    runtime_env = _runtime_terminal_env()
+    getenv = runtime_env.get
+    env_type = getenv("TERMINAL_ENV", "local")
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+    mount_docker_cwd = getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    container_backend = env_type in _CONTAINER_BACKENDS
     docker_backend = env_type == "docker"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
@@ -1474,26 +1765,42 @@ def _get_env_config() -> Dict[str, Any]:
     # until a backend that can consume them is selected; a stale or invalid
     # Docker value should not make local terminal/execute_code unusable.
     if container_backend:
-        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number")
-        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120")
-        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200")
+        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number", env=runtime_env)
+        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120", env=runtime_env)
+        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200", env=runtime_env)
     else:
         container_cpu = 1.0
         container_memory = 5120
         container_disk = 51200
 
     if docker_backend:
-        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
-        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
-        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
-        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
-        docker_shm_size = os.getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
+        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON", env=runtime_env)
+        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON", env=runtime_env)
+        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON", env=runtime_env)
+        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON", env=runtime_env)
+        docker_shm_size = getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
     else:
         docker_forward_env = []
         docker_volumes = []
         docker_env = {}
         docker_extra_args = []
         docker_shm_size = "1g"
+
+    # Tenki settings may be bridged from config.yaml even when the active
+    # backend is local/ssh. Do not parse their numeric/JSON payloads until the
+    # tenki backend is selected; a stale or invalid value must not make the
+    # local terminal unusable (mirrors the container_/docker_ guards above).
+    tenki_backend = env_type == "tenki"
+    if tenki_backend:
+        tenki_forward_env = _parse_env_var("TERMINAL_TENKI_FORWARD_ENV", "[]", json.loads, "valid JSON", env=runtime_env)
+        tenki_max_duration = _parse_env_var("TERMINAL_TENKI_MAX_DURATION", "3600", env=runtime_env)
+        tenki_idle_timeout = _parse_env_var("TERMINAL_TENKI_IDLE_TIMEOUT", "0", env=runtime_env)
+        tenki_pause_retention = _parse_env_var("TERMINAL_TENKI_PAUSE_RETENTION", "0", env=runtime_env)
+    else:
+        tenki_forward_env = []
+        tenki_max_duration = 3600
+        tenki_idle_timeout = 0
+        tenki_pause_retention = 0
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
@@ -1504,6 +1811,8 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = "~"
     elif env_type == "vercel_sandbox":
         default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
+    elif env_type == "tenki":
+        default_cwd = "/home/tenki"
     else:
         default_cwd = "/root"
 
@@ -1511,12 +1820,12 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    cwd = getenv("TERMINAL_CWD", default_cwd)
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        docker_cwd_source = getenv("TERMINAL_CWD") or _safe_getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
@@ -1525,8 +1834,10 @@ def _get_env_config() -> Dict[str, Any]:
             host_cwd = candidate
             cwd = "/workspace"
     elif env_type in _CONTAINER_BACKENDS and cwd:
-        # Host paths and relative paths that won't work inside containers
-        if _is_unusable_container_cwd(cwd) and cwd != default_cwd:
+        # Host paths and relative paths that won't work inside containers. A
+        # path inside the backend's own guest-home subtree is valid even though
+        # it may share a host-looking prefix (see _is_backend_guest_subpath).
+        if _is_unusable_container_cwd(cwd) and not _is_backend_guest_subpath(env_type, cwd):
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host/relative path won't work in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
@@ -1534,41 +1845,55 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
-        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "modal_mode": coerce_modal_mode(getenv("TERMINAL_MODAL_MODE", "auto")),
+        "docker_image": getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": docker_forward_env,
-        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
-        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
-        "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "singularity_image": getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
+        "modal_image": getenv("TERMINAL_MODAL_IMAGE", default_image),
+        "daytona_image": getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "vercel_runtime": getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "tenki_image": getenv("TERMINAL_TENKI_IMAGE", ""),
+        "tenki_api_endpoint": getenv("TERMINAL_TENKI_API_ENDPOINT", ""),
+        "tenki_workspace_id": getenv("TERMINAL_TENKI_WORKSPACE_ID", ""),
+        "tenki_name_prefix": getenv("TERMINAL_TENKI_NAME_PREFIX", "hermes"),
+        "tenki_allow_inbound": getenv("TERMINAL_TENKI_ALLOW_INBOUND", "false").lower() in {"true", "1", "yes"},
+        "tenki_allow_outbound": getenv("TERMINAL_TENKI_ALLOW_OUTBOUND", "true").lower() in {"true", "1", "yes"},
+        "tenki_max_duration": tenki_max_duration,
+        "tenki_idle_timeout": tenki_idle_timeout,
+        "tenki_pause_retention": tenki_pause_retention,
+        "tenki_sync_hermes_home": getenv("TERMINAL_TENKI_SYNC_HERMES_HOME", "false").lower() in {"true", "1", "yes"},
+        "tenki_forward_env": tenki_forward_env,
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
-        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
-        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180", env=runtime_env),
+        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300", env=runtime_env),
         # SSH-specific config
-        "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
-        "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
-        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
-        "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "ssh_host": getenv("TERMINAL_SSH_HOST", ""),
+        "ssh_user": getenv("TERMINAL_SSH_USER", ""),
+        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22", env=runtime_env),
+        "ssh_key": getenv("TERMINAL_SSH_KEY", ""),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
-        "ssh_persistent": os.getenv(
+        "ssh_persistent": getenv(
             "TERMINAL_SSH_PERSISTENT",
-            os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
+            getenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ).lower() in {"true", "1", "yes"},
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
+        "local_persistent": getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
-        # daytona, and vercel_sandbox -- ignored for local/ssh)
+        # daytona, vercel_sandbox, and tenki -- ignored for local/ssh)
         "container_cpu": container_cpu,
         "container_memory": container_memory,     # MB (default 5GB)
         "container_disk": container_disk,        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
+        "container_persistent": getenv(
+            "TERMINAL_CONTAINER_PERSISTENT",
+            "false" if env_type == "tenki" else "true",
+        ).lower() in {"true", "1", "yes"},
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
-        "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
+        "docker_run_as_host_user": getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "docker_network": getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
         # Cross-process container reuse (issue #20561).  The docs claim
@@ -1577,14 +1902,14 @@ def _get_env_config() -> Dict[str, Any]:
         # attaching to it instead of always starting a fresh one.  Set to
         # ``false`` for hard per-process isolation (no reuse, container is
         # removed on exit).
-        "docker_persist_across_processes": os.getenv(
+        "docker_persist_across_processes": getenv(
             "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
         ).lower() in {"true", "1", "yes"},
         # Startup orphan reaper for hermes-tagged containers left behind by
         # crashed / SIGKILL'd previous processes that bypassed atexit.
         # Conservative: only sweeps Exited containers older than 2× the
         # idle-reap window AND scoped to the current profile. Issue #20561.
-        "docker_orphan_reaper": os.getenv(
+        "docker_orphan_reaper": getenv(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
     }
@@ -1599,6 +1924,38 @@ def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     )
 
 
+def _container_config_from_env_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the shared container-backend config passed to _create_environment."""
+    return {
+        "container_cpu": config.get("container_cpu", 1),
+        "container_memory": config.get("container_memory", 5120),
+        "container_disk": config.get("container_disk", 51200),
+        "container_persistent": config.get("container_persistent", True),
+        "modal_mode": config.get("modal_mode", "auto"),
+        "vercel_runtime": config.get("vercel_runtime", ""),
+        "docker_volumes": config.get("docker_volumes", []),
+        "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+        "docker_forward_env": config.get("docker_forward_env", []),
+        "docker_env": config.get("docker_env", {}),
+        "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+        "docker_extra_args": config.get("docker_extra_args", []),
+        "docker_shm_size": config.get("docker_shm_size", "1g"),
+        "docker_network": config.get("docker_network", True),
+        "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+        "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+        "tenki_api_endpoint": config.get("tenki_api_endpoint", ""),
+        "tenki_workspace_id": config.get("tenki_workspace_id", ""),
+        "tenki_name_prefix": config.get("tenki_name_prefix", "hermes"),
+        "tenki_allow_inbound": config.get("tenki_allow_inbound", False),
+        "tenki_allow_outbound": config.get("tenki_allow_outbound", True),
+        "tenki_max_duration": config.get("tenki_max_duration", 3600),
+        "tenki_idle_timeout": config.get("tenki_idle_timeout", 0),
+        "tenki_pause_retention": config.get("tenki_pause_retention", 0),
+        "tenki_sync_hermes_home": config.get("tenki_sync_hermes_home", False),
+        "tenki_forward_env": config.get("tenki_forward_env", []),
+    }
+
+
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
@@ -1609,7 +1966,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
+            "daytona", "vercel_sandbox", "tenki", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
         cwd: Working directory
         timeout: Default command timeout
@@ -1748,6 +2105,30 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             task_id=task_id,
         )
 
+    elif env_type == "tenki":
+        from tools.environments.tenki import TenkiEnvironment as _TenkiEnvironment
+
+        return _TenkiEnvironment(
+            image=image,
+            cwd=cwd,
+            timeout=timeout,
+            cpu=cpu,
+            memory=memory,
+            disk=disk,
+            persistent_filesystem=persistent,
+            task_id=task_id,
+            api_endpoint=cc.get("tenki_api_endpoint", ""),
+            workspace_id=cc.get("tenki_workspace_id", ""),
+            name_prefix=cc.get("tenki_name_prefix", "hermes"),
+            allow_inbound=cc.get("tenki_allow_inbound", False),
+            allow_outbound=cc.get("tenki_allow_outbound", True),
+            max_duration=cc.get("tenki_max_duration", 3600),
+            idle_timeout=cc.get("tenki_idle_timeout", 0),
+            pause_retention=cc.get("tenki_pause_retention", 0),
+            sync_hermes_home=cc.get("tenki_sync_hermes_home", False),
+            forward_env=cc.get("tenki_forward_env", []),
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1763,7 +2144,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', 'tenki', or 'ssh'"
         )
 
 
@@ -1781,36 +2162,25 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     except ImportError:
         pass
 
-    # Phase 1: collect stale entries and remove them from tracking dicts while
-    # holding the lock.  Do NOT call env.cleanup() inside the lock -- Modal and
-    # Docker teardown can block for 10-15s, which would stall every concurrent
-    # terminal/file tool call waiting on _env_lock.
-    envs_to_stop = []  # list of (task_id, env) pairs
+    # Phase 1: tombstone stale entries while retaining their registry slots.
+    # Creators wait on the tombstone, so they cannot build a second wrapper
+    # while cleanup is waiting for an in-flight operation to finish.
+    envs_to_stop = []  # list of (task_id, env, completion-event) tuples
 
     with _env_lock:
         for task_id, last_time in list(_last_activity.items()):
             if current_time - last_time > lifetime_seconds:
-                env = _active_environments.pop(task_id, None)
+                env = _active_environments.get(task_id)
+                if env is None or task_id in _retiring_environments:
+                    continue
+                completed = threading.Event()
+                _retiring_environments[task_id] = completed
                 _last_activity.pop(task_id, None)
-                if env is not None:
-                    envs_to_stop.append((task_id, env))
-
-        # Also purge per-task creation locks for cleaned-up tasks
-        with _creation_locks_lock:
-            for task_id, _ in envs_to_stop:
-                _creation_locks.pop(task_id, None)
+                envs_to_stop.append((task_id, env, completed))
 
     # Phase 2: stop the actual sandboxes OUTSIDE the lock so other tool calls
     # are not blocked while Modal/Docker sandboxes shut down.
-    for task_id, env in envs_to_stop:
-        # Invalidate stale file_ops cache entry (Bug fix: prevents
-        # ShellFileOperations from referencing a dead sandbox)
-        try:
-            from tools.file_tools import clear_file_ops_cache
-            clear_file_ops_cache(task_id)
-        except ImportError:
-            pass
-
+    for task_id, env, completed in envs_to_stop:
         try:
             if hasattr(env, 'cleanup'):
                 env.cleanup()
@@ -1820,12 +2190,15 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
                 env.terminate()
 
             logger.info("Cleaned up inactive environment for task: %s", task_id)
+            _finish_environment_retirement(task_id, env, completed)
 
         except Exception as e:
             error_str = str(e)
             if "404" in error_str or "not found" in error_str.lower():
+                _finish_environment_retirement(task_id, env, completed)
                 logger.info("Environment for task %s already cleaned up", task_id)
             else:
+                _abort_environment_retirement(task_id, env, completed)
                 logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
@@ -1868,9 +2241,15 @@ def _stop_cleanup_thread():
 
 def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
-    lookup = _resolve_container_task_id(task_id)
-    with _env_lock:
-        return _active_environments.get(lookup) or _active_environments.get(task_id)
+    env_type = _get_env_config()["env_type"]
+    lookup = _resolve_environment_cache_key(task_id, env_type)
+    fallback = task_id if env_type != "tenki" else None
+    _selected_key, env = _select_active_environment(
+        lookup,
+        fallback,
+        touch=False,
+    )
+    return env
 
 
 def is_persistent_env(task_id: str) -> bool:
@@ -1899,7 +2278,15 @@ def cleanup_all_environments():
     
     for task_id in task_ids:
         try:
-            cleanup_vm(task_id)
+            # These are already canonical registry keys. Re-resolving a
+            # profile-prefixed Tenki key under the process's current profile
+            # would deliberately reject it as foreign and leak that sandbox
+            # during gateway/atexit cleanup.
+            _cleanup_environment_by_key(
+                task_id,
+                display_task_id=task_id,
+                force_remove=False,
+            )
             cleaned += 1
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
@@ -1940,26 +2327,38 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     via this function), so persist-mode idle envs are similarly no-op'd —
     only the orphan reaper at next startup reclaims them.
     """
-    # Remove from tracking dicts while holding the lock, but defer the
-    # actual (potentially slow) env.cleanup() call to outside the lock
-    # so other tool calls aren't blocked.
-    env = None
+    env_type = _get_env_config()["env_type"]
+    lookup = _resolve_environment_cache_key(task_id, env_type)
+    raw_lookup = task_id if env_type != "tenki" else None
     with _env_lock:
-        env = _active_environments.pop(task_id, None)
-        _last_activity.pop(task_id, None)
+        actual_lookup = lookup
+        env = _active_environments.get(actual_lookup)
+        if env is None and raw_lookup is not None:
+            actual_lookup = raw_lookup
+    _cleanup_environment_by_key(
+        actual_lookup,
+        display_task_id=task_id,
+        force_remove=force_remove,
+    )
 
-    # Clean up per-task creation lock
-    with _creation_locks_lock:
-        _creation_locks.pop(task_id, None)
 
-    # Invalidate stale file_ops cache entry
-    try:
-        from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(task_id)
-    except ImportError:
-        pass
-
+def _cleanup_environment_by_key(
+    actual_lookup: str,
+    *,
+    display_task_id: str,
+    force_remove: bool,
+) -> None:
+    """Clean one exact registry key without re-resolving profile identity."""
+    with _env_lock:
+        env = _active_environments.get(actual_lookup)
     if env is None:
+        return
+    completed, owns_retirement = _begin_environment_retirement(
+        actual_lookup,
+        env,
+    )
+    if not owns_retirement:
+        completed.wait()
         return
 
     try:
@@ -1977,14 +2376,39 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
         elif hasattr(env, 'terminate'):
             env.terminate()
 
-        logger.info("Manually cleaned up environment for task: %s", task_id)
+        logger.info(
+            "Manually cleaned up environment for task: %s",
+            display_task_id,
+        )
+        _finish_environment_retirement(
+            actual_lookup,
+            env,
+            completed,
+        )
 
     except Exception as e:
         error_str = str(e)
         if "404" in error_str or "not found" in error_str.lower():
-            logger.info("Environment for task %s already cleaned up", task_id)
+            _finish_environment_retirement(
+                actual_lookup,
+                env,
+                completed,
+            )
+            logger.info(
+                "Environment for task %s already cleaned up",
+                display_task_id,
+            )
         else:
-            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+            _abort_environment_retirement(
+                actual_lookup,
+                env,
+                completed,
+            )
+            logger.warning(
+                "Error cleaning up environment for task %s: %s",
+                display_task_id,
+                e,
+            )
 
 
 def _atexit_cleanup():
@@ -2297,7 +2721,7 @@ def terminal_tool(
         # task_ids collapse back to "default" so the top-level agent and
         # every delegate_task child share one container; only task_ids with
         # a registered env override (RL benchmarks) get isolated sandboxes.
-        effective_task_id = _resolve_container_task_id(task_id)
+        effective_task_id = _resolve_environment_cache_key(task_id, env_type)
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config. ``resolve_task_overrides``
@@ -2316,29 +2740,17 @@ def terminal_tool(
             image = overrides.get("modal_image") or config["modal_image"]
         elif env_type == "daytona":
             image = overrides.get("daytona_image") or config["daytona_image"]
+        elif env_type == "tenki":
+            image = overrides.get("tenki_image") or config["tenki_image"]
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
-        # A per-task cwd override (registered by the gateway/TUI for workspace
-        # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
-        # config["cwd"] was already sanitized for container backends in
-        # _get_env_config() while the override is raw. On a container backend a
-        # raw host path (e.g. a Windows desktop session's C:\Users\<user>, or a
-        # POSIX /home/<user>) reaches `docker run -w <host-path>` and the
-        # container fails to start (exit 125). Re-apply the same host/relative
-        # path guard to the *resolved* cwd so the override can't bypass it.
-        # Valid in-container override paths (RL/benchmark sandboxes that set
-        # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
-        # through untouched.
-        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-            if cwd != config["cwd"]:
-                logger.info(
-                    "Ignoring host/relative cwd override %r for %s backend "
-                    "(won't exist in sandbox). Using %r instead.",
-                    cwd, env_type, config["cwd"],
-                )
-            cwd = config["cwd"]
+        cwd = _resolve_environment_cwd(
+            task_id,
+            env_type,
+            config,
+            overrides,
+        )
         default_timeout = config["timeout"]
 
         # Validate an explicit timeout before it flows into deadline math.
@@ -2380,42 +2792,25 @@ def terminal_tool(
         # Use a per-task creation lock so concurrent tool calls for the same
         # task_id wait for the first one to finish creating the sandbox,
         # instead of each creating their own (wasting Modal resources).
-        env: Any = None
-        with _env_lock:
-            # Prefer the collapsed container id, but fall back to an env cached
-            # under the raw task_id. Per-session surfaces (ACP/gateway/dashboard)
-            # with a CWD-only override collapse to "default" for container
-            # sharing, yet an env may already be cached under the originating
-            # task_id; honor it instead of spawning a duplicate.
-            _existing_key = (
-                effective_task_id if effective_task_id in _active_environments
-                else (task_id if task_id and task_id in _active_environments else None)
-            )
-            if _existing_key is not None:
-                _last_activity[_existing_key] = time.time()
-                env = _active_environments[_existing_key]
-                needs_creation = False
-            else:
-                needs_creation = True
+        fallback_task_id = (
+            task_id if env_type != "tenki" and task_id else None
+        )
+        _existing_key, env = _select_active_environment(
+            effective_task_id,
+            fallback_task_id,
+        )
+        needs_creation = env is None
 
         if needs_creation:
-            # Per-task lock: only one thread creates the sandbox, others wait
-            with _creation_locks_lock:
-                if effective_task_id not in _creation_locks:
-                    _creation_locks[effective_task_id] = threading.Lock()
-                task_lock = _creation_locks[effective_task_id]
-
-            with task_lock:
+            # Per-task slot: only one thread creates the sandbox, and the slot
+            # generation stays stable across retirement for all waiters.
+            with _environment_creation_lock(effective_task_id):
                 # Double-check after acquiring the per-task lock
-                with _env_lock:
-                    _existing_key = (
-                        effective_task_id if effective_task_id in _active_environments
-                        else (task_id if task_id and task_id in _active_environments else None)
-                    )
-                    if _existing_key is not None:
-                        _last_activity[_existing_key] = time.time()
-                        env = _active_environments[_existing_key]
-                        needs_creation = False
+                _existing_key, env = _select_active_environment(
+                    effective_task_id,
+                    fallback_task_id,
+                )
+                needs_creation = env is None
 
                 if needs_creation:
                     if env_type == "singularity":
@@ -2433,25 +2828,8 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
-                            container_config = {
-                                "container_cpu": config.get("container_cpu", 1),
-                                "container_memory": config.get("container_memory", 5120),
-                                "container_disk": config.get("container_disk", 51200),
-                                "container_persistent": config.get("container_persistent", True),
-                                "modal_mode": config.get("modal_mode", "auto"),
-                                "vercel_runtime": config.get("vercel_runtime", ""),
-                                "docker_volumes": config.get("docker_volumes", []),
-                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                                "docker_forward_env": config.get("docker_forward_env", []),
-                                "docker_env": config.get("docker_env", {}),
-                                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                                "docker_extra_args": config.get("docker_extra_args", []),
-                                "docker_shm_size": config.get("docker_shm_size", "1g"),
-                                "docker_network": config.get("docker_network", True),
-                                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
-                                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
-                            }
+                        if env_type in _CONTAINER_BACKENDS:
+                            container_config = _container_config_from_env_config(config)
 
                         local_config = None
                         if env_type == "local":
@@ -2478,10 +2856,10 @@ def terminal_tool(
                             "status": "disabled"
                         }, ensure_ascii=False)
 
-                    with _env_lock:
-                        _active_environments[effective_task_id] = new_env
-                        _last_activity[effective_task_id] = time.time()
-                        env = new_env
+                    env = _register_active_environment(
+                        effective_task_id,
+                        new_env,
+                    )
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
         assert env is not None  # all creation failure paths return above
@@ -3298,10 +3676,42 @@ def check_terminal_requirements() -> bool:
             from agent.secret_scope import get_secret
             return get_secret("DAYTONA_API_KEY") is not None
 
+        elif env_type == "tenki":
+            if importlib.util.find_spec("tenki") is None:
+                try:
+                    from tools.lazy_deps import ensure as _lazy_ensure
+
+                    _lazy_ensure("terminal.tenki", prompt=False)
+                    importlib.invalidate_caches()
+                except Exception as exc:
+                    logger.error(
+                        "tenki is required for Tenki terminal backend: "
+                        "pip install 'tenki>=0.5.1,<0.7' (%s)",
+                        exc,
+                    )
+                    return False
+                if importlib.util.find_spec("tenki") is None:
+                    logger.error(
+                        "tenki is required for Tenki terminal backend: "
+                        "pip install 'tenki>=0.5.1,<0.7'"
+                    )
+                    return False
+            try:
+                from tools.tenki_config import has_tenki_auth
+            except Exception:
+                has_tenki_auth = lambda: False  # noqa: E731
+            if not has_tenki_auth():
+                logger.error(
+                    "Tenki backend selected but no Tenki auth was found. Run `tenki login` "
+                    "or set TENKI_AUTH_TOKEN/TENKI_API_KEY."
+                )
+                return False
+            return True
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, vercel_sandbox, tenki, ssh.",
                 env_type,
             )
             return False
@@ -3320,6 +3730,7 @@ if __name__ == "__main__":
     print(f"  Environment type: {config['env_type']}")
     print(f"  Docker image: {config['docker_image']}")
     print(f"  Modal image: {config['modal_image']}")
+    print(f"  Tenki image: {config['tenki_image'] or '(Tenki default)'}")
     print(f"  Working directory: {config['cwd']}")
     print(f"  Default timeout: {config['timeout']}s")
     print(f"  Lifetime: {config['lifetime_seconds']}s")
@@ -3344,12 +3755,13 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/vercel_sandbox/ssh)"
+        "(local/docker/singularity/modal/daytona/vercel_sandbox/tenki/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
+    print(f"  TERMINAL_TENKI_IMAGE: {os.getenv('TERMINAL_TENKI_IMAGE', '(Tenki default)')}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', _safe_getcwd())}")
     from hermes_constants import display_hermes_home as _dhh
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")

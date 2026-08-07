@@ -1884,6 +1884,53 @@ def run_doctor(args):
         else:
             check_info("Vercel persistence: ephemeral filesystem")
 
+    # Tenki (if using tenki backend)
+    if terminal_env == "tenki":
+        try:
+            from hermes_cli.config import load_config_readonly
+            from tools.tenki_config import (
+                has_tenki_auth,
+                resolve_tenki_workspace_id,
+            )
+        except Exception:
+            load_config_readonly = lambda: {}  # noqa: E731
+            has_tenki_auth = lambda: False  # noqa: E731
+            resolve_tenki_workspace_id = lambda _explicit="": ""  # noqa: E731
+        terminal_cfg = load_config_readonly().get("terminal", {})
+        if not isinstance(terminal_cfg, dict):
+            terminal_cfg = {}
+
+        if has_tenki_auth():
+            check_ok("Tenki auth", "(configured)")
+        else:
+            _fail_and_issue(
+                "Tenki auth not found",
+                "(required for TERMINAL_ENV=tenki)",
+                "Run tenki login or set TENKI_AUTH_TOKEN/TENKI_API_KEY",
+                issues,
+            )
+
+        workspace_id = resolve_tenki_workspace_id(
+            os.getenv("TERMINAL_TENKI_WORKSPACE_ID") or terminal_cfg.get("tenki_workspace_id", "")
+        )
+        if workspace_id:
+            check_ok("Tenki workspace", "(configured)")
+        else:
+            check_warn(
+                "Tenki workspace not configured",
+                "(optional for sessions; required for volume-backed workflows)",
+            )
+
+        if importlib.util.find_spec("tenki") is not None:
+            check_ok("tenki SDK", "(installed)")
+        else:
+            _fail_and_issue(
+                "tenki SDK not installed",
+                "(pip install 'tenki>=0.5.1,<0.7')",
+                "Install Tenki SDK: pip install 'tenki>=0.5.1,<0.7'",
+                issues,
+            )
+
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")

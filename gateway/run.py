@@ -2040,6 +2040,7 @@ if _config_path.exists():
         from hermes_cli.config import _expand_env_vars, read_user_config_raw
         _cfg = read_user_config_raw(_config_path)
         # Expand ${ENV_VAR} references before bridging to env vars.
+        from hermes_cli.config import _normalize_terminal_backend_defaults
         _cfg = _expand_env_vars(_cfg)
         if not isinstance(_cfg, dict):
             _cfg = {}
@@ -2054,6 +2055,7 @@ if _config_path.exists():
             _cfg = managed_scope.apply_managed_overlay(_cfg)
         except Exception:
             pass
+        _cfg = _normalize_terminal_backend_defaults(_cfg, _cfg)
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
@@ -2077,6 +2079,17 @@ if _config_path.exists():
                 "modal_image": "TERMINAL_MODAL_IMAGE",
                 "daytona_image": "TERMINAL_DAYTONA_IMAGE",
                 "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
+                "tenki_image": "TERMINAL_TENKI_IMAGE",
+                "tenki_api_endpoint": "TERMINAL_TENKI_API_ENDPOINT",
+                "tenki_workspace_id": "TERMINAL_TENKI_WORKSPACE_ID",
+                "tenki_name_prefix": "TERMINAL_TENKI_NAME_PREFIX",
+                "tenki_allow_inbound": "TERMINAL_TENKI_ALLOW_INBOUND",
+                "tenki_allow_outbound": "TERMINAL_TENKI_ALLOW_OUTBOUND",
+                "tenki_max_duration": "TERMINAL_TENKI_MAX_DURATION",
+                "tenki_idle_timeout": "TERMINAL_TENKI_IDLE_TIMEOUT",
+                "tenki_pause_retention": "TERMINAL_TENKI_PAUSE_RETENTION",
+                "tenki_sync_hermes_home": "TERMINAL_TENKI_SYNC_HERMES_HOME",
+                "tenki_forward_env": "TERMINAL_TENKI_FORWARD_ENV",
                 "ssh_host": "TERMINAL_SSH_HOST",
                 "ssh_user": "TERMINAL_SSH_USER",
                 "ssh_port": "TERMINAL_SSH_PORT",

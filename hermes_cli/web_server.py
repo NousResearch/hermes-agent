@@ -877,7 +877,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
+        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "tenki", "singularity"],
     },
     "terminal.vercel_runtime": {
         "type": "select",
@@ -13823,6 +13823,16 @@ _TERMINAL_BACKENDS: List[Dict[str, str]] = [
         "description": "Run commands in a Daytona cloud sandbox.",
     },
     {
+        "name": "vercel_sandbox",
+        "label": "Vercel Sandbox",
+        "description": "Run commands in a Vercel Sandbox cloud microVM.",
+    },
+    {
+        "name": "tenki",
+        "label": "Tenki",
+        "description": "Run commands in a Tenki cloud sandbox.",
+    },
+    {
         "name": "ssh",
         "label": "SSH",
         "description": "Run commands on a remote host over SSH.",
@@ -13929,7 +13939,66 @@ def _probe_daytona_backend() -> tuple:
     return ("needs_setup", "Set DAYTONA_API_KEY to use the Daytona backend.")
 
 
-def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
+def _probe_vercel_sandbox_backend() -> tuple:
+    try:
+        __import__("vercel")
+    except ImportError:
+        return (
+            "needs_setup",
+            "Vercel SDK not found — install with `pip install 'hermes-agent[vercel]'`.",
+        )
+    try:
+        from hermes_cli.vercel_auth import describe_vercel_auth
+
+        status = describe_vercel_auth()
+    except Exception:
+        return ("needs_setup", "Vercel Sandbox auth could not be determined.")
+    if status.ok:
+        return ("ready", "")
+    return (
+        "needs_setup",
+        "Vercel credentials not found — set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID.",
+    )
+
+
+def _probe_tenki_backend(profile_secrets: Optional[Dict[str, str]] = None) -> tuple:
+    try:
+        __import__("tenki")
+    except ImportError:
+        return (
+            "needs_setup",
+            "Tenki SDK not found — install `tenki>=0.5.1,<0.7` or run `hermes setup terminal`.",
+        )
+
+    if profile_secrets is not None:
+        # A named profile is an isolation boundary. Its .env/external-secret
+        # mapping is authoritative; never fall through to the dashboard
+        # process environment or the machine-wide `tenki login` credential.
+        has_auth = any(
+            str(profile_secrets.get(key) or "").strip()
+            for key in ("TENKI_AUTH_TOKEN", "TENKI_API_KEY")
+        )
+    else:
+        try:
+            from tools.tenki_config import has_tenki_auth
+
+            has_auth = has_tenki_auth()
+        except Exception:
+            has_auth = False
+    if has_auth:
+        return ("ready", "")
+    return (
+        "needs_setup",
+        "Tenki credentials not found — run `tenki login` or configure TENKI_AUTH_TOKEN/TENKI_API_KEY.",
+    )
+
+
+def _probe_terminal_backend(
+    name: str,
+    terminal_cfg: dict,
+    *,
+    profile_secrets: Optional[Dict[str, str]] = None,
+) -> tuple:
     """Return ``(status, detail)`` for one backend. Never raises."""
     try:
         if name == "local":
@@ -13944,13 +14013,13 @@ def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
             return _probe_modal_backend()
         if name == "daytona":
             return _probe_daytona_backend()
+        if name == "vercel_sandbox":
+            return _probe_vercel_sandbox_backend()
+        if name == "tenki":
+            return _probe_tenki_backend(profile_secrets)
         return ("unavailable", f"Unknown backend: {name}")
     except Exception as exc:  # pragma: no cover — belt-and-braces guard
         return ("unavailable", f"Probe failed: {exc}")
-
-
-
-
 
 
 # ---------------------------------------------------------------------------

@@ -229,6 +229,27 @@ class TestBackup:
             assert "skills/outside-link.txt" not in names
             assert all(zf.read(name) != b"outside secret\n" for name in names)
 
+    def test_backup_uses_active_profile_home(self, tmp_path, monkeypatch):
+        """Backup should archive the active profile, not the default Hermes root."""
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        (default_home / "config.yaml").write_text("default: true\n")
+        (profile_home / "config.yaml").write_text("profile: coder\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "profile-backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            assert zf.read("config.yaml").decode("utf-8").strip() == "profile: coder"
+            assert "profiles/coder/config.yaml" not in zf.namelist()
+
 
 # ---------------------------------------------------------------------------
 # _validate_backup_zip tests
@@ -361,6 +382,27 @@ class TestImport:
         for rel in (".env", "auth.json", "state.db", "profiles/coder/.env"):
             mode = (hermes_home / rel).stat().st_mode & 0o777
             assert mode == 0o600, f"{rel} restored with mode {oct(mode)}, expected 0o600"
+
+    def test_import_uses_active_profile_home(self, tmp_path, monkeypatch):
+        """Import should restore into the active profile, not the default Hermes root."""
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "profile.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "profile: restored\n",
+        })
+
+        args = Namespace(zipfile=str(zip_path), force=True)
+
+        from hermes_cli.backup import run_import
+        run_import(args)
+
+        assert (profile_home / "config.yaml").read_text().strip() == "profile: restored"
+        assert not (default_home / "config.yaml").exists()
 
 
 # ---------------------------------------------------------------------------

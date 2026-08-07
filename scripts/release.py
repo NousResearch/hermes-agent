@@ -1120,6 +1120,7 @@ LEGACY_AUTHOR_MAP = {
     "eri@plasticlabs.ai": "Erosika",
     "hjcpuro@gmail.com": "hjc-puro",
     "xaydinoktay@gmail.com": "aydnOktay",
+    "xowiekk@gmail.com": "Xowiek",
     "abdullahfarukozden@gmail.com": "Farukest",
     "lovre.pesut@gmail.com": "rovle",
     "xjtumj@gmail.com": "mengjian-github",

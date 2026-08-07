@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -833,6 +833,18 @@ def _decode_forward_msg(data: bytes) -> dict:
     }
 
 
+def _coerce_int_or_none(value: Any) -> int | None:
+    """Best-effort int conversion for protobuf numeric fields.
+
+    These encode helpers may be fed malformed dicts when used for mock/test
+    data. Avoid raising during encoding by skipping fields we can't coerce.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def decode_forward_msg_data(data: bytes) -> Optional[dict]:
     """Parse ForwardMsgData protobuf bytes (the base64-decoded ext_map value).
 
@@ -867,13 +879,15 @@ def _encode_forward_multimedia(media: dict) -> bytes:
             buf += _encode_field(fn, WT_LEN, _encode_string(str(v)))
     for fn, key in [(5, "file_size"), (6, "width"), (7, "height")]:
         v = media.get(key, 0)
-        if v:
-            buf += _encode_field(fn, WT_VARINT, _encode_varint(int(v)))
+        coerced = _coerce_int_or_none(v)
+        if coerced:
+            buf += _encode_field(fn, WT_VARINT, _encode_varint(coerced))
     return buf
 
 
 def _encode_forward_msg_content(content: dict) -> bytes:
-    buf = _encode_field(1, WT_VARINT, _encode_varint(int(content.get("type", 0))))
+    coerced_type = _coerce_int_or_none(content.get("type", 0)) or 0
+    buf = _encode_field(1, WT_VARINT, _encode_varint(coerced_type))
     text = content.get("text", "")
     if text:
         buf += _encode_field(2, WT_LEN, _encode_string(str(text)))
@@ -888,8 +902,9 @@ def _encode_forward_msg(msg: dict) -> bytes:
     if sender:
         buf += _encode_field(1, WT_LEN, _encode_string(str(sender)))
     time_val = msg.get("time", 0)
-    if time_val:
-        buf += _encode_field(2, WT_VARINT, _encode_varint(int(time_val)))
+    coerced_time = _coerce_int_or_none(time_val)
+    if coerced_time:
+        buf += _encode_field(2, WT_VARINT, _encode_varint(coerced_time))
     plain = msg.get("plainText", "")
     if plain:
         buf += _encode_field(3, WT_LEN, _encode_string(str(plain)))
@@ -903,11 +918,13 @@ def encode_forward_msg_data(data: dict) -> bytes:
 
     Mainly used to build mock / test data; production code never needs to encode this.
     """
-    buf = _encode_field(1, WT_VARINT, _encode_varint(int(data.get("sub_type", 0))))
+    coerced_sub_type = _coerce_int_or_none(data.get("sub_type", 0)) or 0
+    buf = _encode_field(1, WT_VARINT, _encode_varint(coerced_sub_type))
     for fn, key in [(2, "begin_time"), (3, "end_time")]:
         v = data.get(key, 0)
-        if v:
-            buf += _encode_field(fn, WT_VARINT, _encode_varint(int(v)))
+        coerced = _coerce_int_or_none(v)
+        if coerced:
+            buf += _encode_field(fn, WT_VARINT, _encode_varint(coerced))
     nick = data.get("nick_name", "")
     if nick:
         buf += _encode_field(4, WT_LEN, _encode_string(str(nick)))

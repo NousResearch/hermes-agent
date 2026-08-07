@@ -42,6 +42,9 @@ from gateway.platforms.yuanbao_proto import (
     encode_auth_bind,
     encode_ping,
     encode_push_ack,
+    # ForwardMsgData helpers (mock/test encoding)
+    encode_forward_msg_data,
+    decode_forward_msg_data,
     # 常量
     PB_MSG_TYPES,
     BIZ_SERVICES,
@@ -466,6 +469,40 @@ class TestEndToEnd:
         assert el_dec["msg_type"] == "TIMTextElem"
         assert el_dec["msg_content"]["text"] == "端到端测试"
 
+
+class TestEncodeForwardMsgDataGuards:
+    def test_malformed_numeric_fields_fall_back_to_zero(self):
+        # These helpers are used to build mock ForwardMsgData protobuf bytes.
+        # Malformed numeric fields should not crash encoding.
+        encoded = encode_forward_msg_data(
+            {
+                "sub_type": "not-an-int",
+                "begin_time": "also-bad",
+                "end_time": 0,
+                "nick_name": "nick",
+                "msg": [
+                    {
+                        "sender": "sender",
+                        "time": "bad-time",
+                        "plainText": "",
+                        "msgContent": [
+                            {"type": "bad-content-type", "text": "hello"}
+                        ],
+                    }
+                ],
+            }
+        )
+        decoded = decode_forward_msg_data(encoded)
+        assert decoded is not None
+        assert decoded["sub_type"] == 0
+        assert decoded["begin_time"] == 0
+        assert decoded["end_time"] == 0
+        assert decoded["nick_name"] == "nick"
+        assert len(decoded["msg"]) == 1
+        assert decoded["msg"][0]["sender"] == "sender"
+        assert decoded["msg"][0]["time"] == 0
+        assert decoded["msg"][0]["msgContent"][0]["type"] == 0
+        assert decoded["msg"][0]["msgContent"][0]["text"] == "hello"
 
 
 if __name__ == "__main__":

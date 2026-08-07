@@ -181,7 +181,9 @@ def test_slot_runtime_cache_expires_after_ttl(monkeypatch):
     assert calls["n"] == 1
 
     # Age the entry past the TTL and confirm re-resolution.
-    key = ("openai", "gpt-5")
+    from hermes_constants import get_hermes_home
+
+    key = (str(get_hermes_home()), "openai", "gpt-5")
     stamped_at, cached = moa._runtime_cache[key]
     moa._runtime_cache[key] = (
         stamped_at - moa._RUNTIME_CACHE_TTL_SECONDS - 1, cached

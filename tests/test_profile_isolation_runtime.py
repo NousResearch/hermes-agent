@@ -157,3 +157,52 @@ class TestThreadContextPropagation:
 
         seen = _under_override(prof_b, lambda: asyncio.run(driver()))
         assert seen == str(prof_b)
+
+
+# ---------------------------------------------------------------------------
+# M3 — module-level caches keyed without the profile boundary
+# ---------------------------------------------------------------------------
+
+class TestMoASlotRuntimeCacheIsolation:
+    """agent/moa_loop.py's per-slot runtime cache must not leak credentials
+    resolved for one profile to a MoA call running under a different one.
+
+    The cache used to key on (provider, model) only. A multiplex gateway
+    resolves multiple profiles' agents in the same process, so a MoA slot
+    referencing the same (provider, model) pair in two profiles with
+    different actual credentials for that provider name would have the
+    second profile silently receive the first profile's resolved
+    api_key/base_url for up to _RUNTIME_CACHE_TTL_SECONDS.
+    """
+
+    def test_slot_runtime_does_not_leak_credentials_across_profiles(
+        self, two_profiles, monkeypatch
+    ):
+        prof_a, prof_b = two_profiles
+        import agent.moa_loop as moa
+
+        moa._runtime_cache.clear()
+
+        def fake_resolve(*, requested=None, target_model=None, **_kw):
+            # A realistic resolver reads the active profile's own config for
+            # credentials -- simulated here by keying off the live override.
+            home = str(get_hermes_home())
+            return {
+                "base_url": f"https://{Path(home).name}.example.com/v1",
+                "api_key": f"secret-for-{Path(home).name}",
+                "api_mode": None,
+            }
+
+        import hermes_cli.runtime_provider as rt_mod
+        monkeypatch.setattr(rt_mod, "resolve_runtime_provider", fake_resolve)
+
+        slot = {"provider": "openai", "model": "gpt-4o"}
+        resolved_a = _under_override(prof_a, lambda: moa._slot_runtime(dict(slot)))
+        resolved_b = _under_override(prof_b, lambda: moa._slot_runtime(dict(slot)))
+
+        assert resolved_a["api_key"] == f"secret-for-{prof_a.name}"
+        assert resolved_b["api_key"] == f"secret-for-{prof_b.name}", (
+            "profile B's MoA slot must not receive profile A's cached "
+            "credentials for the same (provider, model) pair"
+        )
+        assert resolved_a["base_url"] != resolved_b["base_url"]

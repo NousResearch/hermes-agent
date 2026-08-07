@@ -152,5 +152,37 @@ def test_redirect_falls_back_when_sleep_missing(
     assert "`sleep` is unavailable" in err
 
 
+@pytest.mark.parametrize("raw", ["1", "true", "yes", "on", "TRUE", " On "])
+def test_no_supervise_truthy_env_skips_s6_redirect(
+    monkeypatch: pytest.MonkeyPatch, raw: str,
+) -> None:
+    """HERMES_GATEWAY_NO_SUPERVISE must honor shared truthy aliases (incl. on)."""
+    from hermes_cli import gateway as gw
+
+    rec = _stub_s6(monkeypatch, on_s6=True)
+    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.setenv("HERMES_GATEWAY_NO_SUPERVISE", raw)
+
+    assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is False
+    assert rec.calls == []
+
+
+def test_no_supervise_falsy_env_still_redirects_on_s6(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from hermes_cli import gateway as gw
+
+    rec = _stub_s6(monkeypatch, on_s6=True)
+    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+    monkeypatch.setattr(
+        "hermes_cli.gateway.os.execvp",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.setenv("HERMES_GATEWAY_NO_SUPERVISE", "off")
+
+    assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is True
+    assert rec.calls == [("start", "gateway-default")]
 
 

@@ -6855,8 +6855,11 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
 
     Returns True iff dispatched (caller should ``return``).
     """
-    no_supervise = getattr(args, "no_supervise", False) or \
-        os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes")
+    from utils import env_var_enabled
+
+    no_supervise = getattr(args, "no_supervise", False) or env_var_enabled(
+        "HERMES_GATEWAY_NO_SUPERVISE"
+    )
     if no_supervise:
         return False
     if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):

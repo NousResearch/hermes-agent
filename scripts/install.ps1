@@ -566,6 +566,49 @@ function Resolve-NpmCmd {
     return $npmExe
 }
 
+function Resolve-PlaywrightInvocation {
+    param(
+        [string]$InstallDir,
+        [string]$NpxExe
+    )
+
+    # npm workspaces may install Playwright only inside apps/desktop. A bare
+    # `npx playwright ...` can select that nested package without exposing its
+    # nested .bin directory to the child PATH (#70787), producing
+    # "playwright is not recognized".
+    # Prefer an installed binary, then make the fallback package explicit so
+    # npm exec always injects Playwright's bin directory.
+    $binDirs = @(
+        (Join-Path $InstallDir "node_modules/.bin"),
+        (Join-Path $InstallDir "apps/desktop/node_modules/.bin")
+    )
+    foreach ($binDir in $binDirs) {
+        foreach ($name in @("playwright.cmd", "playwright.exe", "playwright")) {
+            $candidate = Join-Path $binDir $name
+            if (Test-Path -LiteralPath $candidate) {
+                return [pscustomobject]@{
+                    Command = $candidate
+                    Arguments = @("install", "chromium")
+                }
+            }
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($NpxExe)) {
+        return [pscustomobject]@{
+            Command = $NpxExe
+            Arguments = @(
+                "--yes",
+                "--package=playwright",
+                "playwright",
+                "install",
+                "chromium"
+            )
+        }
+    }
+    return $null
+}
+
 function Find-SystemBrowser {
     # Honor ONLY an explicit, user-set AGENT_BROWSER_EXECUTABLE_PATH override.
     #
@@ -3008,10 +3051,13 @@ function Install-NodeDeps {
                 $npxCmd = Get-Command npx -ErrorAction SilentlyContinue
                 if ($npxCmd) { $npxExe = $npxCmd.Source }
             }
-            if (-not $npxExe) {
-                Write-Warn "npx not found -- cannot install Playwright Chromium."
-                Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
+            $playwrightInvocation = Resolve-PlaywrightInvocation -InstallDir $InstallDir -NpxExe $npxExe
+            if (-not $playwrightInvocation) {
+                Write-Warn "Playwright command not found and npx is unavailable -- cannot install Chromium."
+                Write-Info "Run manually later: cd `"$InstallDir`"; npx --yes --package=playwright playwright install chromium"
             } else {
+                $pwCommand = $playwrightInvocation.Command
+                $pwArgs = @($playwrightInvocation.Arguments)
                 $pwLog = "$env:TEMP\hermes-playwright-install-$(Get-Random).log"
                 Push-Location $InstallDir
                 # Capture EAP outside the try block so the catch's restore call
@@ -3027,13 +3073,11 @@ function Install-NodeDeps {
                     # _Run-NpmInstall above for the same pattern and
                     # the rationale behind 2>&1 before the pipe.
                     Write-Info "(this can take several minutes -- streaming progress below)"
-                    # --yes auto-accepts npx's "Need to install playwright@X.Y.Z"
-                    # confirmation prompt.  Without it, npx 7+ blocks on stdin
-                    # waiting for a y/N answer that never comes when this is
-                    # invoked through a pipeline (Tee-Object disconnects stdin
-                    # from the user's TTY), and the install hangs indefinitely
-                    # after printing "Need to install the following packages:
-                    # playwright@X.Y.Z".
+                    # The resolver prefers the workspace-local Playwright
+                    # binary. Its npx fallback uses --package=playwright explicitly,
+                    # which both auto-injects the binary into PATH and avoids the
+                    # workspace inference failure from #70787. --yes suppresses
+                    # the package-install confirmation in the non-interactive pipeline.
                     #
                     # Relax EAP around the playwright invocation: playwright
                     # emits a "Chromium downloaded to ..." success banner to
@@ -3052,7 +3096,7 @@ function Install-NodeDeps {
                     # the user sees clean playwright output instead of the
                     # alarming-looking error formatting.
                     $ErrorActionPreference = "Continue"
-                    & $npxExe --yes playwright install chromium 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $pwLog
+                    & $pwCommand @pwArgs 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $pwLog
                     $pwCode = $LASTEXITCODE
                     $ErrorActionPreference = $prevEAP
                     if ($pwCode -eq 0) {
@@ -3072,12 +3116,12 @@ function Install-NodeDeps {
                                 Write-Info "  Full log: $pwLog"
                             }
                         }
-                        Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
+                        Write-Info "Run manually later: cd `"$InstallDir`"; npx --yes --package=playwright playwright install chromium"
                     }
                 } catch {
                     if ($prevEAP) { $ErrorActionPreference = $prevEAP }
                     Write-Warn "Playwright Chromium install could not be launched: $_"
-                    Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
+                    Write-Info "Run manually later: cd `"$InstallDir`"; npx --yes --package=playwright playwright install chromium"
                 } finally {
                     Pop-Location
                 }

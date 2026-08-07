@@ -250,6 +250,18 @@ def scan_approval_history(
 # Normalize -> aggregate -> rank -> exclude
 # ---------------------------------------------------------------------------
 
+def _strip_comment_lines(command: str) -> str:
+    """Drop full-line shell comments (lines whose first non-space char is ``#``).
+
+    Comment lines carry no executable content, but a leading one used to
+    become the glob anchor — producing meaningless allowlist proposals like
+    ``# Patch *`` for commands that were really ``python3 -c ...``.
+    """
+    return "\n".join(
+        line for line in command.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def normalize_command(command: str) -> str:
     """Fold user/hermes home prefixes and collapse whitespace.
 
@@ -261,7 +273,8 @@ def normalize_command(command: str) -> str:
         _rewrite_resolved_user_home,
     )
 
-    folded = _rewrite_resolved_user_home(_rewrite_resolved_hermes_home(command))
+    executable = _strip_comment_lines(command)
+    folded = _rewrite_resolved_user_home(_rewrite_resolved_hermes_home(executable))
     return " ".join(folded.split())
 
 

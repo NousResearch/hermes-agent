@@ -161,6 +161,21 @@ class TestNormalizeAndGlob:
         assert derive_glob("git push --force origin main") == "git push *"
         assert derive_glob("docker restart web") == "docker restart *"
 
+    def test_derive_glob_skips_leading_comment_lines(self):
+        cmd = "# Patch the binary at 0xA026E0\npython3 -c \"import struct\""
+        assert derive_glob(normalize_command(cmd)) == "python3 *"
+
+    def test_derive_glob_comment_only_command_has_no_anchor(self):
+        assert derive_glob(normalize_command("# nothing but a comment")) is None
+
+    def test_derive_glob_indented_comment_line_also_skipped(self):
+        cmd = "   # indented comment\n\ngit status"
+        assert derive_glob(normalize_command(cmd)) == "git status *"
+
+    def test_normalize_keeps_inline_hash_tokens(self):
+        normalized = normalize_command("echo a#b")
+        assert normalized == "echo a#b"
+
 
     def test_derive_glob_never_anchors_unsafe_binaries(self):
         assert derive_glob("rm -rf ./build") is None

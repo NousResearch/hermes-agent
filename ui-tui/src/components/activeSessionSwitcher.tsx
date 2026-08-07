@@ -706,7 +706,7 @@ export function ActiveSessionSwitcher({
       <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
 
       <Box flexDirection="row">
-        <Text color={t.color.muted}>Resume: </Text>
+        <Text color={t.color.muted}>Filters: </Text>
         <Box
           onClick={(event: { stopImmediatePropagation?: () => void }) => {
             event.stopImmediatePropagation?.()
@@ -717,8 +717,11 @@ export function ActiveSessionSwitcher({
             {includeCron ? '[x]' : '[ ]'} Include cron sessions
           </Text>
         </Box>
+        <Text color={t.color.muted} dimColor>
+          {' (Alt+C)'}
+        </Text>
       </Box>
-      <Text color={t.color.muted}>Alt+C toggle</Text>
+      <Text color={t.color.muted}>Resume:</Text>
 
       {err && <Text color={t.color.label}>error: {err}</Text>}
 

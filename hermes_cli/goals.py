@@ -2073,7 +2073,8 @@ def run_kanban_goal_loop(
                 try:
                     block_fn(
                         f"Goal-mode worker's output looked complete but it never "
-                        f"called kanban_complete after a finalize nudge ({reason})."
+                        f"called kanban_complete after a finalize nudge ({reason}).",
+                        kind="transient",
                     )
                 except Exception as exc:
                     _log(f"kanban goal loop: block_fn failed ({exc})")
@@ -2090,7 +2091,8 @@ def run_kanban_goal_loop(
                 block_fn(
                     f"Goal-mode worker exhausted its turn budget "
                     f"({turns_used}/{max_turns}) without completing the task. "
-                    f"Last judge verdict: {_truncate(reason, 300)}"
+                    f"Last judge verdict: {_truncate(reason, 300)}",
+                    kind="transient",
                 )
             except Exception as exc:
                 _log(f"kanban goal loop: block_fn failed ({exc})")

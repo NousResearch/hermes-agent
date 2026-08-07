@@ -547,7 +547,7 @@ hermes kanban dispatch [--dry-run] [--max N]           # 单次扫描
         [--failure-limit N] [--json]
 hermes kanban daemon --force                           # 已弃用 —— 独立调度器（改用 `hermes gateway start`）
         [--failure-limit N] [--pidfile PATH] [-v]
-hermes kanban stats [--json]                           # 每状态 + 每受让人计数
+hermes kanban stats [--all] [--json]                   # 当前看板，或每个未归档看板（--all 忽略 --board）的每状态 + 每受让人计数
 hermes kanban log <id> [--tail BYTES]                  # 来自 ~/.hermes/kanban/logs/ 的 worker 日志
 hermes kanban notify-subscribe <id>                    # gateway 桥接钩子（由 gateway 中的 /kanban 使用）
         --platform <name> --chat-id <id> [--thread-id <id>] [--user-id <id>]

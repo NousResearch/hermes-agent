@@ -104,12 +104,41 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# Integration with the COMMAND_REGISTRY
+# stats across boards
 # ---------------------------------------------------------------------------
 
 
+def test_run_slash_stats_all_reports_each_board(kanban_home):
+    """`/kanban stats --all` reports isolated per-board stats."""
+    kb.create_board("alpha")
+    kb.create_board("beta")
 
+    with kb.connect_closing(board="alpha") as conn:
+        first = kb.create_task(conn, title="alpha done", assignee="alice")
+        kb.complete_task(conn, first, result="done")
+    with kb.connect_closing(board="beta") as conn:
+        kb.create_task(conn, title="beta ready", assignee="bob")
 
+    raw = kc.run_slash("stats --all --json")
+    payload = json.loads(raw)
+    assert set(payload) == {"boards"}
+    by_slug = {board["slug"]: board for board in payload["boards"]}
+    assert set(by_slug["alpha"]) == {"slug", "name", "archived", "stats"}
+
+    assert by_slug["alpha"]["stats"]["by_status"]["done"] == 1
+    assert by_slug["alpha"]["stats"]["by_assignee"]["alice"]["done"] == 1
+    assert by_slug["beta"]["stats"]["by_status"]["ready"] == 1
+    assert by_slug["beta"]["stats"]["by_status"].get("done", 0) == 0
+
+    single_board = json.loads(kc.run_slash("stats --json"))
+    assert "boards" not in single_board
+    assert single_board["by_status"] == {}
+
+    all_from_alpha = json.loads(kc.run_slash("--board alpha stats --all --json"))
+    assert {board["slug"] for board in all_from_alpha["boards"]} == {"default", "alpha", "beta"}
+
+    assert "Board: alpha" in kc.run_slash("stats --all")
+    assert "Board: beta" in kc.run_slash("stats --all")
 
 
 # ---------------------------------------------------------------------------

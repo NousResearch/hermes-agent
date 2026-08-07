@@ -759,6 +759,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_stats = sub.add_parser(
         "stats", help="Per-status + per-assignee counts + oldest-ready age",
     )
+    p_stats.add_argument(
+        "--all",
+        action="store_true",
+        help="Show every non-archived board regardless of --board",
+    )
     p_stats.add_argument("--json", action="store_true")
 
     # --- notify subscribe / list / remove ---
@@ -2730,12 +2735,8 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         return 0
 
 
-def _cmd_stats(args: argparse.Namespace) -> int:
-    with kb.connect_closing() as conn:
-        stats = kb.board_stats(conn)
-    if getattr(args, "json", False):
-        print(json.dumps(stats, indent=2, ensure_ascii=False))
-        return 0
+def _print_stats(stats: dict[str, Any]) -> None:
+    """Print one board's stats in the established human-readable layout."""
     print("By status:")
     for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
@@ -2747,6 +2748,38 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     age = stats["oldest_ready_age_seconds"]
     if age is not None:
         print(f"\nOldest ready task age: {int(age)}s")
+
+
+def _cmd_stats(args: argparse.Namespace) -> int:
+    if getattr(args, "all", False):
+        boards: list[dict[str, Any]] = []
+        for board in kb.list_boards(include_archived=False):
+            slug = board["slug"]
+            with kb.connect_closing(board=slug) as conn:
+                stats = kb.board_stats(conn)
+            boards.append({
+                "slug": slug,
+                "name": board.get("name"),
+                "archived": bool(board.get("archived")),
+                "stats": stats,
+            })
+        if getattr(args, "json", False):
+            print(json.dumps({"boards": boards}, indent=2, ensure_ascii=False))
+            return 0
+        for index, board in enumerate(boards):
+            if index:
+                print()
+            name = f" ({board['name']})" if board["name"] else ""
+            print(f"Board: {board['slug']}{name}")
+            _print_stats(board["stats"])
+        return 0
+
+    with kb.connect_closing() as conn:
+        stats = kb.board_stats(conn)
+    if getattr(args, "json", False):
+        print(json.dumps(stats, indent=2, ensure_ascii=False))
+        return 0
+    _print_stats(stats)
     return 0
 
 

@@ -64,6 +64,7 @@ def _load_auxiliary_client() -> None:
 
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
+from tools.image_source import _file_uri_to_path
 from tools.website_policy import check_website_access
 import sys
 
@@ -1844,10 +1845,10 @@ async def video_analyze_tool(
         logger.info("User prompt: %s", user_prompt[:100])
 
         # Resolve local path vs remote URL
-        resolved_url = video_url
-        if resolved_url.startswith("file://"):
-            resolved_url = resolved_url[len("file://"):]
-        local_path = Path(os.path.expanduser(resolved_url))
+        if video_url.lower().startswith("file://"):
+            local_path = Path(_file_uri_to_path(video_url))
+        else:
+            local_path = Path(os.path.expanduser(video_url))
 
         if local_path.is_file():
             from agent.file_safety import raise_if_read_blocked

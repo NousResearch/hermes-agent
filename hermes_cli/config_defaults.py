@@ -2354,6 +2354,12 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Orphaned-card reconciliation: each dispatcher tick, requeue
+        # 'running' cards whose claim bookkeeping is broken (claim_lock or
+        # claim_expires NULL with a dead/gone worker) — zombies invisible
+        # to the TTL/crash/stale recovery paths. Set false to keep orphans
+        # frozen for manual forensics.
+        "reconcile_orphans": True,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

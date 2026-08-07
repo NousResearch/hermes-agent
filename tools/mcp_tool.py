@@ -37,6 +37,11 @@ Example config::
         url: "https://my-mcp-server.example.com/mcp"
         headers:
           Authorization: "Bearer sk-..."
+        identity_header:       # optional per-user identity header attached
+          name: "X-User-Id"    # to this server's HTTP/SSE requests
+          value_from: "static" # "static" (default) or "profile"
+          value: "alice"       # required for static; profile mode uses the
+                               # active Hermes profile name
         timeout: 180
         skip_preflight: true  # bypass the content-type probe for a valid
                               # Streamable HTTP endpoint that answers HEAD/GET
@@ -1179,6 +1184,81 @@ def _resolve_client_cert(server_name: str, config: dict):
         return (cert_path, key_path)
     # Single combined PEM file (cert + key in one file).
     return cert_path
+
+
+def _resolve_identity_header(server_name: str, config: dict):
+    """Resolve the optional per-server ``identity_header`` config.
+
+    Config shape (in the server's ``mcp_servers`` entry)::
+
+        identity_header:
+          name: "X-User-Id"
+          value_from: "static"   # or "profile"; default: static
+          value: "alice"         # required when value_from is static
+
+    Returns a ``(header_name, header_value)`` tuple, or ``None`` when the
+    key is unset or invalid. Invalid configs warn and are ignored — an
+    identity header must never break the server connection. ``profile``
+    mode resolves the value to the active Hermes profile name once at
+    connect time; there is no per-call mutation.
+    """
+    raw = config.get("identity_header")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        logger.warning(
+            "MCP server '%s': identity_header must be a mapping with "
+            "'name' and 'value'/'value_from' keys (got %s) — ignoring",
+            server_name, type(raw).__name__,
+        )
+        return None
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip():
+        logger.warning(
+            "MCP server '%s': identity_header requires a non-empty "
+            "'name' — ignoring", server_name,
+        )
+        return None
+    value_from = (raw.get("value_from") or "static").strip().lower()
+    if value_from == "static":
+        value = raw.get("value")
+        if not isinstance(value, str) or not value.strip():
+            logger.warning(
+                "MCP server '%s': identity_header with value_from: static "
+                "requires a non-empty string 'value' — ignoring",
+                server_name,
+            )
+            return None
+        return (name.strip(), value)
+    if value_from == "profile":
+        from hermes_cli.profiles import get_active_profile_name
+        return (name.strip(), get_active_profile_name())
+    logger.warning(
+        "MCP server '%s': identity_header value_from must be 'static' or "
+        "'profile' (got %r) — ignoring", server_name, value_from,
+    )
+    return None
+
+
+def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dict:
+    """Merge the resolved identity header into ``headers`` (in place).
+
+    An explicit per-server ``headers`` entry with the same name (any
+    casing) wins — the identity header never silently overrides user
+    config.
+    """
+    resolved = _resolve_identity_header(server_name, config)
+    if resolved is None:
+        return headers
+    name, value = resolved
+    if any(key.lower() == name.lower() for key in headers):
+        logger.debug(
+            "MCP server '%s': identity_header '%s' already set via explicit "
+            "headers config — keeping the explicit value", server_name, name,
+        )
+        return headers
+    headers[name] = value
+    return headers
 
 
 def _format_connect_error(exc: BaseException) -> str:
@@ -2376,6 +2456,13 @@ class MCPServerTask:
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
+        if config.get("identity_header") is not None:
+            # Headers don't exist on stdio transports — warn and ignore so a
+            # copy-pasted HTTP config block doesn't silently mislead.
+            logger.warning(
+                "MCP server '%s': identity_header is only supported on "
+                "HTTP/SSE transports — ignored for stdio servers", self.name,
+            )
         if not _MCP_AVAILABLE:
             raise ImportError(
                 f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
@@ -2760,6 +2847,9 @@ class MCPServerTask:
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
+        # Optional per-user identity header (config-gated; static or
+        # profile-derived). Explicit headers of the same name win.
+        headers = _apply_identity_header(self.name, config, headers)
         # Some MCP servers require MCP-Protocol-Version on the initial
         # initialize request and reject session-less POSTs otherwise.
         # Seed it as a client-level default, but treat user overrides as

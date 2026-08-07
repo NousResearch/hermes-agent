@@ -1111,6 +1111,12 @@ class GatewayKanbanWatchersMixin:
             )
             stale_timeout_seconds = 0
 
+        # kanban.reconcile_orphans (config.yaml, default true): each tick,
+        # requeue 'running' cards whose claim bookkeeping is broken (no
+        # valid claim, dead/gone worker) — the zombie-card reconciliation
+        # pass. Set false to keep orphans frozen for manual forensics.
+        reconcile_orphans = bool(kanban_cfg.get("reconcile_orphans", True))
+
         # Read kanban.default_assignee — fallback profile for tasks
         # created without an explicit assignee (e.g. via the dashboard).
         # When set, the dispatcher applies it to unassigned ready tasks
@@ -1247,6 +1253,7 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    reconcile_orphans=reconcile_orphans,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

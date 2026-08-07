@@ -1,8 +1,8 @@
 ---
 name: evm
 description: "Read-only EVM client: wallets, tokens, gas across 8 chains."
-version: 1.0.0
-author: Mibayy (@Mibayy), youssefea (@youssefea), ethernet8023 (@ethernet8023), Hermes Agent
+version: 1.1.0
+author: Mibayy (@Mibayy), youssefea (@youssefea), ethernet8023 (@ethernet8023), xyiy001 (@xyiy001), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -16,9 +16,10 @@ metadata:
 # EVM Blockchain Skill
 
 Query EVM-compatible blockchain data across 8 chains with USD pricing.
-14 commands: wallet portfolio, token info, transactions, activity, gas tracker,
+15 commands: wallet portfolio, token info, transactions, activity, gas tracker,
 network stats, price lookup, multi-chain scan, whale detection, ENS resolution,
-allowance checker, contract inspector, and transaction decoder.
+allowance checker, contract inspector, transaction decoder, and whitelist-gated
+raw `rpc` (read-only JSON-RPC).
 
 Supports 8 chains: Ethereum, BNB Chain (BSC), Base, Arbitrum One, Polygon,
 Optimism, Avalanche (C-Chain), zkSync Era.
@@ -45,6 +46,7 @@ No API key needed. Zero external dependencies — Python standard library only
 - User wants to check if a contract has dangerous token approvals
 - User wants to inspect a smart contract (proxy? ERC-20? ERC-721? bytecode size?)
 - User wants to compare gas costs across chains before a transaction
+- User needs a **whitelist-gated raw JSON-RPC** probe (`eth_chainId`, `eth_call`, …) without `web3.py`
 
 ---
 
@@ -100,6 +102,10 @@ python3 $SCRIPT ens 0xd8dA...96045               # Address -> ENS name
 # Whale detection
 python3 $SCRIPT whale                            # Large transfers (last 20 blocks, >$10k)
 python3 $SCRIPT whale --blocks 50 --min-usd 100000 --chain arbitrum
+
+# Whitelist raw JSON-RPC (read-only; endpoint URL redacted in output)
+python3 $SCRIPT rpc eth_chainId
+python3 $SCRIPT rpc eth_call --params '[{"to":"0x...","data":"0x..."},"latest"]'
 ```
 
 ---

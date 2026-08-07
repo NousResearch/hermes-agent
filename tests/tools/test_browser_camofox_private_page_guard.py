@@ -111,6 +111,48 @@ def test_private_page_blocks_camofox_input_actions(monkeypatch, _session, tool_c
     assert "do-not-send-this" not in json.dumps(out)
 
 
+def test_private_page_blocks_camofox_scroll_before_action(monkeypatch, _session):
+    _block_active(monkeypatch)
+
+    def fail_post(*_args, **_kwargs):
+        raise AssertionError("Camofox scroll HTTP call should not run on a private page")
+
+    monkeypatch.setattr(browser_camofox, "_post", fail_post)
+
+    out = json.loads(browser_camofox.camofox_scroll("down", task_id="t1"))
+
+    assert out["success"] is False
+    assert PRIVATE_URL in out["error"]
+    assert "private or internal address" in out["error"]
+    assert "scroll" in out["error"]
+
+
+def test_camofox_back_blocks_after_landing_on_private_page(monkeypatch, _session):
+    _block_active(monkeypatch)
+    calls = []
+
+    def fake_post(path, body=None, timeout=None):
+        calls.append((path, body, timeout))
+        return {"url": PRIVATE_URL}
+
+    monkeypatch.setattr(browser_camofox, "_post", fake_post)
+
+    out = json.loads(browser_camofox.camofox_back(task_id="t1"))
+
+    assert calls == [
+        (
+            "/tabs/tab-1/back",
+            {"userId": "user-1"},
+            None,
+        )
+    ]
+    assert out["success"] is False
+    assert PRIVATE_URL in out["error"]
+    assert "private or internal address" in out["error"]
+    assert "navigate back" in out["error"]
+    assert "url" not in out
+
+
 def test_snapshot_still_runs_when_page_is_public(monkeypatch, _session):
     _public_page(monkeypatch)
 
@@ -144,6 +186,50 @@ def test_camofox_click_still_runs_when_page_is_public(monkeypatch, _session):
         (
             "/tabs/tab-1/click",
             {"userId": "user-1", "ref": "e1"},
+            None,
+        )
+    ]
+
+
+def test_camofox_scroll_still_runs_when_page_is_public(monkeypatch, _session):
+    _public_page(monkeypatch)
+    calls = []
+
+    def fake_post(path, body=None, timeout=None):
+        calls.append((path, body, timeout))
+        return {}
+
+    monkeypatch.setattr(browser_camofox, "_post", fake_post)
+
+    out = json.loads(browser_camofox.camofox_scroll("down", task_id="t1"))
+
+    assert out == {"success": True, "scrolled": "down"}
+    assert calls == [
+        (
+            "/tabs/tab-1/scroll",
+            {"userId": "user-1", "direction": "down"},
+            None,
+        )
+    ]
+
+
+def test_camofox_back_still_runs_when_landed_page_is_public(monkeypatch, _session):
+    _public_page(monkeypatch)
+    calls = []
+
+    def fake_post(path, body=None, timeout=None):
+        calls.append((path, body, timeout))
+        return {"url": "https://example.test/previous"}
+
+    monkeypatch.setattr(browser_camofox, "_post", fake_post)
+
+    out = json.loads(browser_camofox.camofox_back(task_id="t1"))
+
+    assert out == {"success": True, "url": "https://example.test/previous"}
+    assert calls == [
+        (
+            "/tabs/tab-1/back",
+            {"userId": "user-1"},
             None,
         )
     ]

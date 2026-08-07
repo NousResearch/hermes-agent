@@ -920,6 +920,30 @@ agent:
   session_stall_timeout: 300   # seconds; 0 disables the watchdog
 ```
 
+## Gateway Agent Cache
+
+The gateway keeps one agent per session so a conversation reuses its cached prompt prefix instead of rebuilding the system prompt every turn. That cached agent also holds the session's full transcript — tool output included, which is tens of megabytes on a session with a hundred tool calls. On a busy multi-platform gateway the cache is therefore the largest single consumer of memory in the process.
+
+```yaml
+agent:
+  agent_cache:
+    max_size: 128            # LRU entry cap
+    idle_ttl_secs: 3600      # evict an agent idle this long
+    memory_high_mb: auto     # anon-RSS budget; number, "auto", or 0/off
+    max_evictions_per_pass: 16
+    protect_recent: 8
+```
+
+`max_size` and `idle_ttl_secs` bound the cache by count and by time. Neither knows how many bytes it holds, so `memory_high_mb` adds a third bound: once the gateway's own anonymous resident memory crosses the budget, it sheds least-recently-used transcripts, which reload from the stored session on the next turn. Lower it if the gateway is competing for memory with other services; raise it (or set `0` to switch the pass off) if you would rather keep every prefix warm.
+
+`auto` derives the budget from the memory limit the gateway actually runs under — the cgroup limit for a container or systemd unit, total RAM otherwise — so a `MemoryMax`/`MemoryHigh` on the unit is respected without a second number to keep in sync.
+
+Sessions that are mid-turn, the `protect_recent` most recently used ones, and any session whose transcript has not finished being written to disk are never shed. Eviction is logged at WARNING with the measured RSS and the sessions dropped:
+
+```
+Agent cache pressure: anon RSS 6802MB over budget 6656MB — evicting 5 LRU session(s): ...
+```
+
 ## Context Engine
 
 The context engine controls how conversations are managed when approaching the model's token limit. The built-in `compressor` engine uses lossy summarization (see [Context Compression](/developer-guide/context-compression-and-caching)). Plugin engines can replace it with alternative strategies.

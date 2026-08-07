@@ -208,11 +208,18 @@ def check_email_requirements() -> bool:
 
     Treats blank/whitespace-only values as missing so an abandoned setup that
     left empty ``EMAIL_*`` keys in ``.env`` does not enable the platform (#40715).
+
+    In send-only mode (EMAIL_RECEIVE=false) the IMAP host is not required —
+    the platform then works purely as an SMTP sender.
     """
     addr = _get_secret("EMAIL_ADDRESS", "").strip()
     pwd = _get_secret("EMAIL_PASSWORD", "").strip()
     imap = _get_secret("EMAIL_IMAP_HOST", "").strip()
     smtp = _get_secret("EMAIL_SMTP_HOST", "").strip()
+    receive_env = _get_secret("EMAIL_RECEIVE", "").strip().lower()
+    receive_disabled = bool(receive_env) and receive_env in {"0", "false", "no", "off"}
+    if receive_disabled:
+        return all([addr, pwd, smtp])
     return all([addr, pwd, imap, smtp])
 
 
@@ -487,6 +494,17 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
+        # Send-only mode: when EMAIL_RECEIVE=false the adapter skips IMAP
+        # entirely (no connection test, no polling) and is used purely as an
+        # SMTP sender. Configurable via env or platforms.email.receive in
+        # config.yaml. Enabled by default (backwards compatible) — an unset
+        # variable must NOT flip the adapter into send-only mode.
+        if "receive" in extra:
+            self._receive_enabled = bool(extra["receive"])
+        else:
+            receive_env = _get_secret("EMAIL_RECEIVE", "").strip().lower()
+            self._receive_enabled = True if not receive_env else receive_env in {"1", "true", "yes", "on"}
+
         # Skip attachments — configured via config.yaml:
         #   platforms:
         #     email:
@@ -594,7 +612,11 @@ class EmailAdapter(BasePlatformAdapter):
             return _connect(ipv4_only=True)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Connect to the IMAP server and start polling for new messages."""
+        """Connect to the IMAP server and start polling for new messages.
+
+        In send-only mode (EMAIL_RECEIVE=false) the IMAP connection test and
+        the polling loop are skipped entirely — only SMTP is validated.
+        """
         # Validate up front so a missing host surfaces as an actionable config
         # error instead of IMAP4_SSL("") raising the cryptic
         # ``[Errno 8] nodename nor servname provided, or not known``.
@@ -603,11 +625,12 @@ class EmailAdapter(BasePlatformAdapter):
             for name, value in (
                 ("EMAIL_ADDRESS", self._address),
                 ("EMAIL_PASSWORD", self._password),
-                ("EMAIL_IMAP_HOST", self._imap_host),
                 ("EMAIL_SMTP_HOST", self._smtp_host),
             )
             if not value
         ]
+        if self._receive_enabled and not self._imap_host:
+            missing.append("EMAIL_IMAP_HOST")
         if missing:
             message = (
                 "Not configured — missing "
@@ -625,24 +648,27 @@ class EmailAdapter(BasePlatformAdapter):
             )
             return False
 
-        try:
-            # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
-            _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
-            imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
-        except Exception as e:
-            logger.error("[Email] IMAP connection failed: %s", e)
-            return False
+        if self._receive_enabled:
+            try:
+                # Test IMAP connection
+                imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+                imap.login(self._address, self._password)
+                _send_imap_id(imap)
+                # Mark all existing messages as seen so we only process new ones
+                imap.select("INBOX")
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    for uid in data[0].split():
+                        self._seen_uids.add(uid)
+                # Keep only the most recent UIDs to prevent unbounded growth
+                self._trim_seen_uids()
+                imap.logout()
+                logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            except Exception as e:
+                logger.error("[Email] IMAP connection failed: %s", e)
+                return False
+        else:
+            logger.info("[Email] Send-only mode (EMAIL_RECEIVE=false) — IMAP skipped, SMTP only.")
 
         try:
             # Test SMTP connection
@@ -657,8 +683,9 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         self._running = True
-        self._poll_task = asyncio.create_task(self._poll_loop())
-        print(f"[Email] Connected as {self._address}")
+        if self._receive_enabled:
+            self._poll_task = asyncio.create_task(self._poll_loop())
+        print(f"[Email] Connected as {self._address}" + ("" if self._receive_enabled else " (send-only, IMAP polling off)"))
         return True
 
     async def disconnect(self) -> None:
@@ -714,7 +741,7 @@ class EmailAdapter(BasePlatformAdapter):
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
 
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")
                     if status != "OK":
                         continue
 

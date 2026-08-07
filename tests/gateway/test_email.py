@@ -56,6 +56,32 @@ class TestCheckRequirements(unittest.TestCase):
         from plugins.platforms.email.adapter import check_email_requirements
         self.assertTrue(check_email_requirements())
 
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "a@b.com",
+        "EMAIL_PASSWORD": "pw",
+        "EMAIL_IMAP_HOST": "imap.b.com",
+        "EMAIL_SMTP_HOST": "smtp.b.com",
+        "EMAIL_RECEIVE": "false",
+    }, clear=False)
+    def test_requirements_send_only_ignores_missing_imap(self):
+        """Send-only mode (EMAIL_RECEIVE=false) must not require an IMAP host —
+        the platform is then a pure SMTP sender."""
+        from plugins.platforms.email.adapter import check_email_requirements
+        with patch.dict(os.environ, {"EMAIL_IMAP_HOST": ""}, clear=False):
+            self.assertTrue(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "",
+        "EMAIL_PASSWORD": "",
+        "EMAIL_IMAP_HOST": "",
+        "EMAIL_SMTP_HOST": "",
+        "EMAIL_RECEIVE": "false",
+    }, clear=False)
+    def test_requirements_send_only_still_needs_smtp_creds(self):
+        """Send-only mode still requires address/password/SMTP host."""
+        from plugins.platforms.email.adapter import check_email_requirements
+        self.assertFalse(check_email_requirements())
+
 
 class TestHelperFunctions(unittest.TestCase):
     """Test email parsing helper functions."""
@@ -486,6 +512,37 @@ class TestConnectDisconnect(unittest.TestCase):
             if adapter._poll_task:
                 adapter._poll_task.cancel()
 
+    def test_connect_send_only_skips_imap(self):
+        """EMAIL_RECEIVE=false: connect() must skip IMAP entirely (no
+        connection test, no polling loop) and only validate SMTP."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_RECEIVE": "false",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        with patch("imaplib.IMAP4_SSL") as mock_imap, \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            result = asyncio.run(adapter.connect())
+
+            self.assertTrue(result)
+            # IMAP must never be touched in send-only mode
+            mock_imap.assert_not_called()
+            # No polling loop may start
+            self.assertIsNone(adapter._poll_task)
+            # SMTP still validated
+            mock_smtp.assert_called()
+            adapter._running = False
+
 
 class TestFetchNewMessages(unittest.TestCase):
     """Test IMAP message fetching logic."""
@@ -530,6 +587,42 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
         self.assertIn(b"3", adapter._seen_uids)
+
+    def test_fetch_uses_body_peek_not_rfc822(self):
+        """IMAP fetch must use BODY.PEEK[] so Gmail does not auto-mark
+        messages as seen (RFC822 is treated by Gmail as a body read)."""
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                return ("OK", [(b"1", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            adapter._fetch_new_messages()
+
+        # Assert the fetch command explicitly uses BODY.PEEK[] — the
+        # regression this guards against is (RFC822), which Gmail's IMAP
+        # server treats as a body read and marks the message as seen.
+        fetch_calls = [
+            args for args in mock_imap.uid.call_args_list
+            if args[0] and args[0][0] == "fetch"
+        ]
+        self.assertTrue(fetch_calls, "expected at least one uid fetch call")
+        fetch_args = fetch_calls[0][0]
+        self.assertEqual(fetch_args[2], "(BODY.PEEK[])")
+        self.assertNotIn("RFC822", fetch_args[2])
 
 
 class TestPollLoop(unittest.TestCase):

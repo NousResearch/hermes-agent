@@ -21,7 +21,7 @@ description: "在构建前验证想法的一次性实验"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `spike`, `prototype`, `experiment`, `feasibility`, `throwaway`, `exploration`, `research`, `planning`, `mvp`, `proof-of-concept` |
-| 相关 skill | [`sketch`](/user-guide/skills/bundled/creative/creative-sketch)、[`writing-plans`](/user-guide/skills/bundled/software-development/software-development-writing-plans)、[`subagent-driven-development`](/user-guide/skills/bundled/software-development/software-development-subagent-driven-development)、[`plan`](/user-guide/skills/bundled/software-development/software-development-plan) |
+| 相关 skill | [`sketch`](/user-guide/skills/bundled/creative/creative-sketch)、[`subagent-driven-development`](/user-guide/skills/optional/software-development/software-development-subagent-driven-development)、[`plan`](/user-guide/skills/bundled/software-development/software-development-plan) |
 
 ## 参考：完整 SKILL.md
 
@@ -38,7 +38,7 @@ description: "在构建前验证想法的一次性实验"
 ## 何时不使用此 skill
 
 - 答案可以从文档或阅读代码中直接获得——做调研即可，不必构建
-- 工作属于生产路径——改用 `writing-plans` / `plan`
+- 工作属于生产路径——改用 `plan` skill
 - 想法已经验证——直接跳到实现
 
 ## 如果用户安装了完整的 GSD 系统

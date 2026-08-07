@@ -21,7 +21,7 @@ description: "提交前审查：安全扫描、质量门控、自动修复"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `code-review`, `security`, `verification`, `quality`, `pre-commit`, `auto-fix` |
-| 相关 skill | [`subagent-driven-development`](/user-guide/skills/bundled/software-development/software-development-subagent-driven-development), [`writing-plans`](/user-guide/skills/bundled/software-development/software-development-writing-plans), [`test-driven-development`](/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`github-code-review`](/user-guide/skills/bundled/github/github-github-code-review) |
+| 相关 skill | [`subagent-driven-development`](/user-guide/skills/optional/software-development/software-development-subagent-driven-development), [`plan`](/user-guide/skills/bundled/software-development/software-development-plan), [`test-driven-development`](/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`github-code-review`](/user-guide/skills/bundled/github/github-github-code-review) |
 
 ## 参考：完整 SKILL.md
 
@@ -273,7 +273,7 @@ element.textContent = userInput;
 
 **test-driven-development：** 本流水线验证是否遵循了 TDD 纪律 — 测试存在、测试通过、无回归。
 
-**writing-plans：** 验证实现是否符合计划需求。
+**plan：** 验证实现是否符合计划需求。
 
 ## 注意事项
 

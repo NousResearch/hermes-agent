@@ -231,6 +231,11 @@ SEND_MESSAGE_SCHEMA = {
             "message_id": {
                 "type": "string",
                 "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
+            },
+            "mentions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "For WhatsApp group sends: list of phone numbers or JIDs to @-mention. Each entry is normalized to a WhatsApp JID and forwarded to the bridge on the first chunk only so the message pings those participants in the group without the ping repeating across continuation chunks."
             }
         },
         "required": []
@@ -359,6 +364,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    mentions = args.get("mentions")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -496,6 +502,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                mentions=mentions,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -780,7 +787,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, mentions=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -1058,6 +1065,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 force_document=force_document,
                 caption=_wa_caption,
+                **({"mentions": mentions} if mentions else {}),
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1071,6 +1079,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 media_files=media_files if is_last else None,
                 thread_id=thread_id,
                 force_document=force_document,
+                **({"mentions": mentions} if mentions and i == 0 else {}),
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1119,9 +1128,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         )
 
     last_result = None
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
         if platform == Platform.WHATSAPP:
-            result = await _registry_standalone_send("whatsapp", pconfig, chat_id, chunk, thread_id)
+            result = await _registry_standalone_send(
+                "whatsapp", pconfig, chat_id, chunk, thread_id,
+                **({"mentions": mentions} if mentions and i == 0 else {}),
+            )
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
@@ -1497,12 +1509,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 # (plugins/platforms/slack/adapter.py), wired via standalone_sender_fn. #41112.
 
 
-async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None):
+async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None, **kwargs):
     """Dispatch a one-shot send through a migrated platform plugin's
     standalone_sender_fn (registry hook).  Used for platforms whose adapter
     moved out of gateway/platforms/ into plugins/platforms/<name>/ (#41112):
     the legacy inline ``_send_<platform>`` helper now lives in the plugin as
     ``_standalone_send`` and is reached via the platform registry.
+
+    Extra keyword arguments (e.g. ``mentions`` for WhatsApp) are forwarded
+    to the plugin's ``_standalone_send`` so platform-specific features can
+    be added without patching this registry dispatcher.
     """
     from gateway.platform_registry import platform_registry
     from hermes_cli.plugins import discover_plugins
@@ -1510,7 +1526,7 @@ async def _registry_standalone_send(platform_name, pconfig, chat_id, message, th
     entry = platform_registry.get(platform_name)
     if entry is None or entry.standalone_sender_fn is None:
         return {"error": f"{platform_name} plugin not registered or missing standalone_sender_fn"}
-    return await entry.standalone_sender_fn(pconfig, chat_id, message, thread_id=thread_id)
+    return await entry.standalone_sender_fn(pconfig, chat_id, message, thread_id=thread_id, **kwargs)
 
 
 # _send_whatsapp moved to plugins/platforms/whatsapp/adapter.py::_standalone_send,

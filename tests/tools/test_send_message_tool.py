@@ -309,6 +309,7 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
             force_document=False,
+            mentions=None,
         )
 
 
@@ -348,6 +349,7 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
             force_document=False,
+            mentions=None,
         )
 
     def test_top_level_send_failure_redacts_query_token(self):
@@ -709,6 +711,111 @@ class TestSendToPlatformWhatsapp:
         _call = async_mock.await_args
         assert _call.args[1] == chat_id
         assert _call.args[2] == "hello from hermes"
+
+    def test_whatsapp_non_media_send_forwards_mentions(self):
+        """A non-empty mentions list is forwarded to the WhatsApp
+        standalone sender (affirmative propagation, not just the
+        mentions=None default)."""
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
+        discover_plugins()
+        chat_id = "test-user@lid"
+        mentions = ["+15551234567", "15551239876@s.whatsapp.net"]
+        async_mock = AsyncMock(return_value={"success": True, "platform": "whatsapp", "chat_id": chat_id, "message_id": "abc123"})
+
+        wa_entry = platform_registry.get("whatsapp")
+        original_sender = wa_entry.standalone_sender_fn
+        wa_entry.standalone_sender_fn = async_mock
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WHATSAPP,
+                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000}),
+                    chat_id,
+                    "hello from hermes",
+                    mentions=mentions,
+                )
+            )
+        finally:
+            wa_entry.standalone_sender_fn = original_sender
+
+        assert result["success"] is True
+        async_mock.assert_awaited_once()
+        assert async_mock.await_args.kwargs.get("mentions") == mentions
+
+    def test_whatsapp_non_media_chunked_mentions_first_chunk_only(self):
+        """A long non-media WhatsApp message is chunked; mentions must be
+        forwarded on the first chunk only so continuation chunks don't
+        re-ping the same recipients (mirrors the media path guard)."""
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
+        discover_plugins()
+        chat_id = "test-user@lid"
+        mentions = ["+15551234567"]
+        long_msg = "word " * 3000  # ~15k chars -> 4 chunks over WhatsApp's 4096 limit
+        async_mock = AsyncMock(return_value={"success": True, "platform": "whatsapp", "chat_id": chat_id, "message_id": "abc123"})
+
+        wa_entry = platform_registry.get("whatsapp")
+        original_sender = wa_entry.standalone_sender_fn
+        wa_entry.standalone_sender_fn = async_mock
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WHATSAPP,
+                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000}),
+                    chat_id,
+                    long_msg,
+                    mentions=mentions,
+                )
+            )
+        finally:
+            wa_entry.standalone_sender_fn = original_sender
+
+        assert result["success"] is True
+        calls = async_mock.await_args_list
+        assert len(calls) >= 3  # actually chunked, not a single send
+        assert calls[0].kwargs.get("mentions") == mentions
+        for call in calls[1:]:
+            assert "mentions" not in call.kwargs
+
+    def test_whatsapp_media_chunked_mentions_first_chunk_only(self, tmp_path):
+        """A long WhatsApp media send (text too long for a native caption)
+        is chunked; mentions are forwarded on the first chunk only."""
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
+        discover_plugins()
+        chat_id = "test-user@lid"
+        mentions = ["+15551234567"]
+        long_msg = "word " * 3000  # > 4096 caption limit -> chunked media path
+        media = tmp_path / "photo.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\n")
+        async_mock = AsyncMock(return_value={"success": True, "platform": "whatsapp", "chat_id": chat_id, "message_id": "abc123"})
+
+        wa_entry = platform_registry.get("whatsapp")
+        original_sender = wa_entry.standalone_sender_fn
+        wa_entry.standalone_sender_fn = async_mock
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WHATSAPP,
+                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000}),
+                    chat_id,
+                    long_msg,
+                    media_files=[(str(media), False)],
+                    mentions=mentions,
+                )
+            )
+        finally:
+            wa_entry.standalone_sender_fn = original_sender
+
+        assert result["success"] is True
+        calls = async_mock.await_args_list
+        assert len(calls) >= 3  # actually chunked, not a single send
+        assert calls[0].kwargs.get("mentions") == mentions
+        for call in calls[1:]:
+            assert "mentions" not in call.kwargs
+        # media rides the last chunk
+        assert calls[-1].kwargs.get("media_files") == [(str(media), False)]
 
 
 class TestSendTelegramHtmlDetection:

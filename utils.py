@@ -88,6 +88,14 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         pass
 
 
+def _unlink_quietly(path: str) -> None:
+    """Best-effort removal of a staging temp file."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
@@ -101,9 +109,18 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     This helper resolves the symlink first so ``os.replace`` writes to
     the real file in-place while the symlink survives.  For non-symlink
     and non-existent paths the behavior is identical to a plain
-    ``os.replace`` call unless the rename fails with ``EXDEV`` or ``EBUSY``;
-    those cases fall back to copy/fsync/unlink for cross-device, bind-mount,
-    and busy-file deployments.
+    ``os.replace`` call.
+
+    When the rename fails with ``EXDEV`` or ``EBUSY`` the new content is
+    staged into the *resolved target's own directory* and renamed from
+    there, so the second ``os.replace`` is same-filesystem and therefore
+    still atomic.  Copying straight onto the target instead — the previous
+    behavior — opens it ``"wb"`` and truncates it before the first
+    replacement byte lands, so an interrupted copy left the user's config
+    or credentials partial or empty.  Only a target that cannot be renamed
+    onto at all (a busy or bind-mounted inode), or a directory that will
+    not accept a staging temp, degrades to that in-place copy; that
+    residual case remains non-atomic.
 
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
@@ -117,21 +134,57 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
         if exc.errno not in (errno.EXDEV, errno.EBUSY):
             raise
         logger.debug(
-            "atomic_replace: %s -> %s failed with %s; falling back to copy",
+            "atomic_replace: %s -> %s failed with %s; staging beside the target",
             tmp_str,
             real_path,
             errno.errorcode.get(exc.errno, exc.errno),
         )
-        shutil.copyfile(tmp_str, real_path)
         try:
-            shutil.copystat(tmp_str, real_path)
+            staged_fd, staged = tempfile.mkstemp(
+                dir=os.path.dirname(real_path) or ".",
+                prefix=".tmp_xdev_",
+                suffix=".tmp",
+            )
+            os.close(staged_fd)
         except OSError:
-            pass
-        try:
-            with open(real_path, "rb") as f:
-                os.fsync(f.fileno())
-        except OSError:
-            pass
+            # The target's directory will not take a staging temp; the
+            # in-place copy below is the only remaining option.
+            staged = None
+
+        replaced = False
+        if staged is not None:
+            try:
+                shutil.copyfile(tmp_str, staged)
+                try:
+                    shutil.copystat(tmp_str, staged)
+                except OSError:
+                    pass
+                with open(staged, "rb") as handle:
+                    os.fsync(handle.fileno())
+            except OSError:
+                # The copy failed (ENOSPC, I/O error, ...).  Only the staging
+                # temp is damaged, so surface the failure with the target's
+                # existing contents still intact rather than overwriting it.
+                _unlink_quietly(staged)
+                raise
+            try:
+                os.replace(staged, real_path)
+                replaced = True
+            except OSError:
+                # A busy or bind-mounted inode cannot be renamed onto.
+                _unlink_quietly(staged)
+
+        if not replaced:
+            shutil.copyfile(tmp_str, real_path)
+            try:
+                shutil.copystat(tmp_str, real_path)
+            except OSError:
+                pass
+            try:
+                with open(real_path, "rb") as f:
+                    os.fsync(f.fileno())
+            except OSError:
+                pass
         os.unlink(tmp_str)
     return real_path
 

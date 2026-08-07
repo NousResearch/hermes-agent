@@ -446,6 +446,76 @@ class TestPrompt:
 
         assert captured.get("child") == resp.session_id
 
+    @pytest.mark.asyncio
+    async def test_crashed_turn_preserves_agent_working_history(self, agent, mock_manager):
+        """#80770 counterpart for the ACP surface: agent.run_conversation()
+        persists its own working transcript into agent._session_messages
+        independently of this ACP session's state.history snapshot (see
+        agent/conversation_loop.py's per-round _persist_session() calls). If
+        the turn raises, the next prompt must not be built on the stale
+        pre-turn state.history while the agent's own persisted transcript has
+        already moved on."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.history = [{"role": "user", "content": "old message"}]
+
+        def _crash(*args, **kwargs):
+            # Simulates _persist_session() having already run at least once
+            # during the turn (e.g. after a tool call) before the crash.
+            state.agent._session_messages = [
+                {"role": "user", "content": "old message"},
+                {"role": "assistant", "content": "partial work before crash"},
+            ]
+            raise RuntimeError("simulated turn crash")
+
+        state.agent.run_conversation = _crash
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="trigger crash")],
+            session_id=resp.session_id,
+        )
+
+        assert state.history == state.agent._session_messages
+
+    @pytest.mark.asyncio
+    async def test_crashed_turn_with_no_working_history_keeps_pre_turn_snapshot(
+        self, agent, mock_manager
+    ):
+        """If the crash happens before _persist_session() ever ran (no tool
+        round completed yet), agent._session_messages is whatever the mock
+        default leaves it as -- not a list -- and state.history must fall
+        back to the pre-turn snapshot rather than adopting garbage."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.history = [{"role": "user", "content": "old message"}]
+        # MagicMock default: state.agent._session_messages is an unset
+        # auto-attribute (a MagicMock, not a list) -- the crash happens
+        # before anything sets it to a real list.
+
+        def _crash(*args, **kwargs):
+            raise RuntimeError("simulated turn crash before any persist")
+
+        state.agent.run_conversation = _crash
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="trigger crash")],
+            session_id=resp.session_id,
+        )
+
+        assert state.history == [{"role": "user", "content": "old message"}]
+
 
 
 

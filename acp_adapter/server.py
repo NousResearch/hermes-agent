@@ -1914,7 +1914,23 @@ class HermesACPAgent(acp.Agent):
                 return result
             except Exception as e:
                 logger.exception("Agent error in session %s", session_id)
-                return {"final_response": f"Error: {e}", "messages": state.history}
+                # agent.run_conversation() builds its own working copy from
+                # conversation_history (agent/turn_context.py: messages =
+                # list(conversation_history)) and persists it independently
+                # into agent._session_messages via _persist_session(), called
+                # per tool round/API call throughout the turn -- see
+                # agent/conversation_loop.py. On a raise, that working copy is
+                # ahead of this ACP session's own state.history snapshot,
+                # which the caller only ever replaces from a successful
+                # return's "messages" key. Return the working copy instead of
+                # replaying the pre-turn snapshot on the next prompt (mirrors
+                # tui_gateway/server.py's _restore_agent_history_after_turn_error,
+                # #80770).
+                agent_messages = getattr(agent, "_session_messages", None)
+                recovered_history = (
+                    agent_messages if isinstance(agent_messages, list) else state.history
+                )
+                return {"final_response": f"Error: {e}", "messages": recovered_history}
             finally:
                 # Restore the interactive contextvar for this context.
                 if interactive_token is not None:

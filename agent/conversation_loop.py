@@ -4351,6 +4351,59 @@ def run_conversation(
                         agent.log_prefix,
                     )
 
+                # Output-cap errors are deterministic request-shape failures:
+                # retrying with the same oversized max_tokens only burns the
+                # generic retry budget. Clamp before retry bookkeeping so
+                # provider messages such as DeepSeek's "max_tokens (98304)
+                # exceeds model's maximum output tokens (65536)" recover on
+                # the next request instead of surfacing "failed after 3
+                # retries".
+                _output_cap_retry_budget = parse_available_output_tokens_from_error(
+                    str(api_error)
+                )
+                if _output_cap_retry_budget is not None:
+                    compressor = agent.context_compressor
+                    old_ctx = compressor.context_length
+                    request_input_estimate = estimate_request_tokens_rough(
+                        api_messages, tools=agent.tools or None,
+                    )
+                    local_available_out = old_ctx - request_input_estimate
+                    if local_available_out > 0:
+                        safe_out = max(
+                            1,
+                            min(_output_cap_retry_budget, local_available_out) - 64,
+                        )
+                    else:
+                        safe_out = max(1, _output_cap_retry_budget - 64)
+                    agent._ephemeral_max_output_tokens = safe_out
+                    agent._buffer_vprint(
+                        f"⚠️  Output cap too large for current prompt — "
+                        f"retrying with max_tokens={safe_out:,} "
+                        f"(provider_available={_output_cap_retry_budget:,}, "
+                        f"estimated_request_tokens={request_input_estimate:,}; "
+                        f"context_length unchanged at {old_ctx:,})"
+                    )
+                    compression_attempts += 1
+                    if compression_attempts > max_compression_attempts:
+                        agent._flush_status_buffer()
+                        agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
+                        agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
+                        logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                        agent._persist_session(messages, conversation_history)
+                        _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
+                        return {
+                            "final_response": _final_response,
+                            "messages": messages,
+                            "completed": False,
+                            "api_calls": api_call_count,
+                            "error": _final_response,
+                            "partial": True,
+                            "failed": True,
+                            "compression_exhausted": True,
+                        }
+                    _retry.restart_with_compressed_messages = True
+                    break
+
                 retry_count += 1
                 elapsed_time = time.time() - api_start_time
                 agent._touch_activity(

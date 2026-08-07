@@ -4253,6 +4253,92 @@ class TestRunConversation:
         assert agent.context_compressor.context_length == 200_000
         mock_compress.assert_called_once()
 
+    def test_output_cap_retry_before_generic_retry_exhaustion(self, agent):
+        """Provider max-output-cap 400s should clamp immediately, not burn all
+        generic retries and surface "API call failed after 3 retries".
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "deepseek"
+        agent.base_url = "https://api.deepseek.com/v1"
+        agent.model = "deepseek-v4-flash"
+        agent.max_tokens = 98_304
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        error_msg = (
+            "[400]: max_tokens (98304) exceeds model's maximum output tokens "
+            "(65536) for model deepseek-v4-flash "
+            "(ref: 7735422e-9cb4-4075-a779-dfecb3204a0e)"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert len(agent.client.chat.completions.create.call_args_list) == 2
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert second_call["max_tokens"] <= 65_472
+        assert agent.context_compressor.context_length == 200_000
+        mock_compress.assert_not_called()
+
+    def test_output_cap_retry_when_gateway_wraps_error_as_rate_limit(self, agent):
+        """Some relays wrap the upstream max-output 400 as HTTP 429. The
+        parsed output cap should still win over generic rate-limit retrying.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "custom"
+        agent.base_url = "http://192.168.1.254:20128/v1"
+        agent.model = "deepseekv4flash"
+        agent.max_tokens = 98_304
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        error_msg = (
+            "Error code: 429 - {'error': {'message': \"[400]: max_tokens "
+            "(98304) exceeds model's maximum output tokens (65536) for model "
+            "deepseek-v4-flash (ref: 37bde60f-44e7-44e2-b995-4af17fba6d6b)\", "
+            "'type': 'rate_limit_error', 'code': 'rate_limit_exceeded'}}"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 429
+        exc.code = "rate_limit_exceeded"
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert len(agent.client.chat.completions.create.call_args_list) == 2
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert second_call["max_tokens"] <= 65_472
+        mock_compress.assert_not_called()
+
     def test_output_cap_retry_with_large_api_only_content(self, agent):
         """When a large system prompt makes api_messages huge while persisted
         messages stay tiny, the retry cap must still respect provider

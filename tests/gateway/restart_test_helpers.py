@@ -157,6 +157,7 @@ def make_restart_runner(
     runner.session_store = MagicMock()
     runner.session_store._entries = {}
     runner.delivery_router = MagicMock()
+    runner._completion_registry = GatewayRunner.PendingCompletionRegistry()
 
     platform_adapter = adapter or RestartTestAdapter()
     platform_adapter.set_message_handler(AsyncMock(return_value=None))

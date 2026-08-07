@@ -2534,7 +2534,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             )
     if res.skipped_nonspawnable:
         print(
-            f"Skipped (non-spawnable assignee — terminal lane, OK): "
+            f"Dispatch failed (missing assignee profile; create it or reassign): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
     return 0

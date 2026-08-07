@@ -173,9 +173,10 @@ const ThinkingDisclosure: FC<{
             // Body sits flush with the "Thinking" header — no left indent —
             // and inherits the disclosure-level opacity fade defined in
             // styles.css (~0.67 at rest, 1 on hover/focus).
-            'mt-0.5 w-full min-w-0 max-w-full overflow-hidden wrap-anywhere pb-1',
-            isPreview && 'max-h-40'
+            'mt-0.5 w-full min-w-0 max-w-full overflow-x-hidden overflow-y-auto overscroll-contain wrap-anywhere pb-1',
+            isPreview ? 'max-h-40' : 'max-h-[40dvh]'
           )}
+          data-slot="aui_thinking-body"
           ref={scrollRef}
         >
           <div ref={contentRef}>{children}</div>

@@ -20,6 +20,10 @@ class TestResizeObserver {
     this.target = target
   }
 
+  get observedTarget(): Element | null {
+    return this.target
+  }
+
   unobserve() {}
 
   disconnect() {
@@ -612,6 +616,35 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toBe(
       'The user is asking what this file is.'
     )
+  })
+
+  it('bounds completed expanded reasoning in an inner scroll container', () => {
+    const { container } = render(<ReasoningHarness />)
+    const ui = within(container)
+
+    fireEvent.click(ui.getByRole('button', { name: /thought/i }))
+
+    const reasoningText = container.querySelector('[data-slot="aui_reasoning-text"]')
+    const body = container.querySelector('[data-slot="aui_thinking-body"]')
+
+    expect(body?.classList.contains('max-h-[40dvh]')).toBe(true)
+    expect(body?.classList.contains('overflow-y-auto')).toBe(true)
+    expect(body?.classList.contains('overscroll-contain')).toBe(true)
+    expect(reasoningText?.textContent).toBe('The user is asking what this file is.')
+  })
+
+  it('keeps live reasoning in the observed inner scroll container', async () => {
+    const { container } = render(<RunningReasoningHarness />)
+
+    await waitFor(() => {
+      const reasoningText = container.querySelector('[data-slot="aui_reasoning-text"]')
+      const body = container.querySelector('[data-slot="aui_thinking-body"]')
+
+      expect(body?.classList.contains('max-h-40')).toBe(true)
+      expect(body?.classList.contains('overflow-y-auto')).toBe(true)
+      expect(body?.classList.contains('overscroll-contain')).toBe(true)
+      expect([...resizeObservers].some(observer => observer.observedTarget === reasoningText?.parentElement)).toBe(true)
+    })
   })
 
   it('groups consecutive reasoning parts under one thinking disclosure', () => {

@@ -572,6 +572,90 @@ def _rich_normalize_linebreaks(text: str) -> str:
     return ''.join(out)
 
 
+_RICH_FENCE_LINE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+_RICH_FENCE_CLOSE_LINE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$")
+_RICH_DETAILS_OPEN_RE = re.compile(r"<details\b", re.IGNORECASE)
+_RICH_DETAILS_CLOSE_RE = re.compile(r"</details\s*>", re.IGNORECASE)
+
+
+def _split_rich_markdown_blocks(text: str, target_chars: int) -> list[str]:
+    """Split rich Markdown at blank-line block boundaries.
+
+    Telegram clients fold long rich messages after roughly 8k characters.
+    This splitter lets an opt-in transport target stay below that UI fold while
+    keeping every emitted chunk independently parseable. Blank lines inside
+    fenced code blocks and ``<details>`` sections are protected; GFM tables are
+    naturally kept whole because valid table rows are contiguous.
+
+    A single indivisible block is never cut merely to satisfy ``target_chars``.
+    It may therefore exceed the target (while the caller's normal 32,768-char
+    rich-message cap still applies), preferring a client-side fold over broken
+    Markdown or a truncated table/code block.
+    """
+    if (
+        not text
+        or target_chars <= 0
+        or len(_rich_normalize_linebreaks(text)) <= target_chars
+    ):
+        return [text] if text else []
+
+    blocks: list[str] = []
+    current: list[str] = []
+    fence_char: Optional[str] = None
+    fence_len = 0
+    details_depth = 0
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if fence_char is None:
+            fence_match = _RICH_FENCE_LINE_RE.match(line)
+            if fence_match:
+                marker = fence_match.group(1)
+                marker_char = marker[0]
+                fence_char = marker_char
+                fence_len = len(marker)
+        else:
+            fence_close_match = _RICH_FENCE_CLOSE_LINE_RE.match(line)
+            if fence_close_match:
+                marker = fence_close_match.group(1)
+                marker_char = marker[0]
+                if marker_char == fence_char and len(marker) >= fence_len:
+                    fence_char = None
+                    fence_len = 0
+
+        if fence_char is None:
+            details_depth += len(_RICH_DETAILS_OPEN_RE.findall(line))
+            details_depth -= len(_RICH_DETAILS_CLOSE_RE.findall(line))
+            details_depth = max(details_depth, 0)
+
+        if not stripped and fence_char is None and details_depth == 0:
+            if current:
+                block = "\n".join(current).strip("\n")
+                if block:
+                    blocks.append(block)
+                current = []
+            continue
+        current.append(line)
+
+    if current:
+        block = "\n".join(current).strip("\n")
+        if block:
+            blocks.append(block)
+
+    chunks: list[str] = []
+    pending = ""
+    for block in blocks:
+        candidate = f"{pending}\n\n{block}" if pending else block
+        if pending and len(_rich_normalize_linebreaks(candidate)) > target_chars:
+            chunks.append(pending)
+            pending = block
+        else:
+            pending = candidate
+    if pending:
+        chunks.append(pending)
+    return chunks
+
+
 # Watchdog bound for `await updater.stop()`. When the underlying TCP socket is
 # in CLOSE-WAIT the PTB polling task is blocked on epoll on the dead socket and
 # never wakes, so an unguarded stop() hangs indefinitely and wedges the whole
@@ -735,6 +819,17 @@ class TelegramAdapter(BasePlatformAdapter):
         # as plain text, which is worse than degraded table/task-list rendering
         # for command snippets and mobile handoffs.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # Optional client-compatibility ceiling below Telegram's 32,768-char
+        # API limit. Current clients fold rich messages at roughly 8k chars,
+        # and some macOS builds fail to expose the corresponding Show More
+        # control. Keeping the default at the API cap preserves existing
+        # behavior; affected profiles can opt into block-aware rich chunks.
+        self._rich_message_chunk_chars: int = int(self._coerce_float_extra(
+            "rich_message_chunk_chars",
+            float(self.RICH_MESSAGE_MAX_CHARS),
+            min_value=1000.0,
+            max_value=float(self.RICH_MESSAGE_MAX_CHARS),
+        ))
         # Rich draft previews use a separate opt-in. Telegram macOS / Desktop
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
@@ -1752,7 +1847,14 @@ class TelegramAdapter(BasePlatformAdapter):
             and not getattr(self, "_rich_send_disabled", False)
             and self._bot_supports_rich()
         ):
-            return self.RICH_MESSAGE_MAX_CHARS
+            return min(
+                self.RICH_MESSAGE_MAX_CHARS,
+                getattr(
+                    self,
+                    "_rich_message_chunk_chars",
+                    self.RICH_MESSAGE_MAX_CHARS,
+                ),
+            )
         return None
 
     def _rich_message_payload(
@@ -1862,7 +1964,154 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Optional[SendResult]:
-        """Attempt a single ``sendRichMessage`` send.
+        """Send one or more independently valid rich-message blocks.
+
+        ``rich_message_chunk_chars`` is an opt-in client-compatibility target,
+        not a change to Telegram's API limit. The completed agent response is
+        split only at safe Markdown block boundaries and each accepted chunk is
+        recorded before the next is attempted.
+
+        If Telegram permanently rejects the first rich chunk, return ``None``
+        so the existing whole-message legacy fallback remains safe. If a later
+        chunk is rejected, the already-delivered rich prefix must not be
+        duplicated; deliver only the remaining tail through the legacy path.
+        An ambiguous transport failure after a partial send is reported with
+        delivery metadata and is deliberately non-retryable as a whole.
+        """
+        target_chars = getattr(
+            self,
+            "_rich_message_chunk_chars",
+            self.RICH_MESSAGE_MAX_CHARS,
+        )
+        chunks = _split_rich_markdown_blocks(content, target_chars)
+        if len(chunks) <= 1:
+            return await self._try_send_rich_once(
+                chat_id, content, reply_to, metadata,
+            )
+
+        message_ids: list[str] = []
+        delivered_chunks: list[str] = []
+        for index, chunk in enumerate(chunks):
+            chunk_metadata = dict(metadata or {})
+            if index < len(chunks) - 1:
+                chunk_metadata["notify"] = False
+            result = await self._try_send_rich_once(
+                chat_id,
+                chunk,
+                reply_to if index == 0 else None,
+                chunk_metadata,
+            )
+            if result is None:
+                if index == 0:
+                    return None
+
+                # A per-message parser/capability rejection is known not to
+                # have delivered this chunk. Preserve the accepted rich prefix
+                # and send only the untouched tail via the legacy path.
+                tail = "\n\n".join(chunks[index:])
+                legacy_metadata = dict(metadata or {})
+                legacy_metadata["expect_edits"] = True
+                legacy_result = await self.send(
+                    chat_id=chat_id,
+                    content=tail,
+                    reply_to=message_ids[-1] if message_ids else None,
+                    metadata=legacy_metadata,
+                )
+                if not legacy_result.success:
+                    return self._partial_rich_failure(
+                        chunks=chunks,
+                        delivered_chunks=delivered_chunks,
+                        message_ids=message_ids,
+                        failure=legacy_result,
+                    )
+                legacy_raw = legacy_result.raw_response
+                legacy_ids = (
+                    list(legacy_raw.get("message_ids") or ())
+                    if isinstance(legacy_raw, dict)
+                    else []
+                )
+                if not legacy_ids and legacy_result.message_id:
+                    legacy_ids = [str(legacy_result.message_id)]
+                all_ids = message_ids + [str(mid) for mid in legacy_ids]
+                return SendResult(
+                    success=True,
+                    message_id=all_ids[-1] if all_ids else None,
+                    continuation_message_ids=tuple(all_ids[1:]),
+                    raw_response={
+                        "message_ids": tuple(all_ids),
+                        "rich_chunks": index,
+                        "legacy_tail": True,
+                    },
+                )
+
+            if not result.success:
+                if index == 0:
+                    return result
+                return self._partial_rich_failure(
+                    chunks=chunks,
+                    delivered_chunks=delivered_chunks,
+                    message_ids=message_ids,
+                    failure=result,
+                )
+
+            delivered_chunks.append(chunk)
+            if result.message_id:
+                message_ids.append(str(result.message_id))
+
+        logger.info(
+            "[%s] Rich response delivered in %d block-aware chunks",
+            self.name,
+            len(chunks),
+        )
+        return SendResult(
+            success=True,
+            message_id=message_ids[-1] if message_ids else None,
+            continuation_message_ids=tuple(message_ids[1:]),
+            raw_response={
+                "message_ids": tuple(message_ids),
+                "rich_chunks": len(chunks),
+                "legacy_tail": False,
+            },
+        )
+
+    def _partial_rich_failure(
+        self,
+        *,
+        chunks: list[str],
+        delivered_chunks: list[str],
+        message_ids: list[str],
+        failure: SendResult,
+    ) -> SendResult:
+        """Describe a rich continuation failure without whole-answer retry."""
+        raw = dict(failure.raw_response) if isinstance(failure.raw_response, dict) else {}
+        raw.update({
+            "partial_rich": True,
+            "delivered_chunks": len(delivered_chunks),
+            "total_chunks": len(chunks),
+            "last_message_id": message_ids[-1] if message_ids else None,
+            "delivered_prefix": "\n\n".join(delivered_chunks),
+            "message_ids": tuple(message_ids),
+        })
+        return SendResult(
+            success=False,
+            message_id=message_ids[-1] if message_ids else None,
+            error=failure.error or "rich_continuation_failed",
+            raw_response=raw,
+            # Retrying the full send would duplicate the accepted prefix.
+            retryable=False,
+            retry_after=failure.retry_after,
+            continuation_message_ids=tuple(message_ids[1:]),
+            error_kind=failure.error_kind,
+        )
+
+    async def _try_send_rich_once(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        """Attempt exactly one ``sendRichMessage`` send.
 
         Returns a :class:`SendResult` (success, or a transient failure that the
         caller must NOT legacy-resend), or ``None`` to signal "fall back to the

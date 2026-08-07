@@ -172,6 +172,130 @@ async def test_oversized_content_skips_rich_and_chunks():
     assert adapter._bot.send_message.await_count > 1
 
 
+def _long_block_rich_content():
+    return (
+        "## Findings\n\n"
+        + ("Alpha sentence. " * 55)
+        + "\n\n"
+        + "| Layer | Status |\n|---|---|\n| transport | healthy |\n"
+        + "\n\n"
+        + ("Beta sentence. " * 55)
+    )
+
+
+@pytest.mark.asyncio
+async def test_opt_in_rich_chunk_target_sends_complete_block_aware_sequence():
+    adapter = _make_adapter(extra={"rich_message_chunk_chars": 1000})
+    adapter._bot.do_api_request = AsyncMock(
+        side_effect=[
+            SimpleNamespace(message_id=101),
+            SimpleNamespace(message_id=102),
+        ]
+    )
+    content = _long_block_rich_content()
+
+    result = await adapter.send(
+        "12345",
+        content,
+        metadata={"notify": True},
+    )
+
+    assert result.success is True
+    assert result.message_id == "102"
+    assert result.continuation_message_ids == ("102",)
+    assert result.raw_response["message_ids"] == ("101", "102")
+    assert result.raw_response["rich_chunks"] == 2
+    calls = adapter._bot.do_api_request.await_args_list
+    assert len(calls) == 2
+    payloads = [call.kwargs["api_kwargs"] for call in calls]
+    markdown_chunks = [payload["rich_message"]["markdown"] for payload in payloads]
+    assert all(len(chunk) <= 1000 for chunk in markdown_chunks)
+    assert any(
+        "| Layer | Status |\n|---|---|\n| transport | healthy |" in chunk
+        for chunk in markdown_chunks
+    )
+    # Match one-message notification semantics: only the final chunk notifies.
+    assert payloads[0]["disable_notification"] is True
+    assert "disable_notification" not in payloads[1]
+
+
+@pytest.mark.asyncio
+async def test_rich_chunk_target_keeps_indivisible_details_block_whole():
+    adapter = _make_adapter(extra={"rich_message_chunk_chars": 1000})
+    details = (
+        "<details><summary>Long appendix</summary>\n\n"
+        + ("one uninterrupted section " * 60)
+        + "\n\n</details>"
+    )
+    content = "## Report\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n" + details
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    calls = adapter._bot.do_api_request.await_args_list
+    assert len(calls) == 2
+    detail_chunks = [
+        call.kwargs["api_kwargs"]["rich_message"]["markdown"]
+        for call in calls
+        if "<details>" in call.kwargs["api_kwargs"]["rich_message"]["markdown"]
+    ]
+    assert len(detail_chunks) == 1
+    assert detail_chunks[0].endswith("</details>")
+    assert len(detail_chunks[0]) > 1000
+
+
+@pytest.mark.asyncio
+async def test_rich_chunk_partial_transport_failure_is_not_whole_message_retryable():
+    adapter = _make_adapter(extra={"rich_message_chunk_chars": 1000})
+    adapter._bot.do_api_request = AsyncMock(
+        side_effect=[
+            SimpleNamespace(message_id=101),
+            TimedOut("timed out"),
+        ]
+    )
+
+    result = await adapter.send("12345", _long_block_rich_content())
+
+    assert result.success is False
+    assert result.retryable is False
+    assert result.message_id == "101"
+    assert result.raw_response["partial_rich"] is True
+    assert result.raw_response["delivered_chunks"] == 1
+    assert result.raw_response["total_chunks"] == 2
+    assert result.raw_response["message_ids"] == ("101",)
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_later_rich_parser_rejection_delivers_only_tail_via_legacy():
+    adapter = _make_adapter(extra={"rich_message_chunk_chars": 1000})
+    adapter._bot.do_api_request = AsyncMock(
+        side_effect=[
+            SimpleNamespace(message_id=101),
+            BadRequest("can't parse rich message"),
+        ]
+    )
+    adapter._bot.send_message = AsyncMock(
+        return_value=SimpleNamespace(message_id=202)
+    )
+
+    result = await adapter.send("12345", _long_block_rich_content())
+
+    assert result.success is True
+    assert result.message_id == "202"
+    assert result.raw_response["rich_chunks"] == 1
+    assert result.raw_response["legacy_tail"] is True
+    assert result.raw_response["message_ids"] == ("101", "202")
+    adapter._bot.do_api_request.assert_awaited()
+    adapter._bot.send_message.assert_awaited_once()
+
+
+def test_rich_chunk_target_caps_streaming_overflow_before_client_fold():
+    adapter = _make_adapter(extra={"rich_message_chunk_chars": 7000})
+
+    assert adapter.streaming_overflow_limit() == 7000
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "exc",

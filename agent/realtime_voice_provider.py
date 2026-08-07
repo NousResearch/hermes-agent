@@ -547,6 +547,24 @@ class RealtimeVoiceSession(abc.ABC):
     async def _continue_response(self, batch_id: str) -> None:
         raise UnsupportedRealtimeCapability(RealtimeCapability.CONTINUATION)
 
+    def _finalize_close_task(self, task: asyncio.Task[None]) -> None:
+        """Record one cleanup outcome even when its waiting caller is cancelled."""
+        if task.cancelled():
+            if self._close_task is task:
+                self._close_task = None
+            return
+        try:
+            task.result()
+        except BaseException:
+            # Retrieving the exception prevents an orphaned-task warning when
+            # the sole waiter was cancelled. A later close may retry cleanup.
+            if self._close_task is task:
+                self._close_task = None
+        else:
+            if self._close_task is task:
+                self._closed = True
+                self._close_task = None
+
     async def close(self) -> None:
         """Release resources once; repeated calls are successful no-ops."""
         async with self._close_lock:
@@ -556,14 +574,11 @@ class RealtimeVoiceSession(abc.ABC):
             if task is None:
                 task = asyncio.create_task(self._close())
                 self._close_task = task
+                task.add_done_callback(self._finalize_close_task)
 
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
-            if task.done():
-                async with self._close_lock:
-                    if self._close_task is task:
-                        self._close_task = None
             raise
         except BaseException:
             async with self._close_lock:

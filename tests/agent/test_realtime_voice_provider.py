@@ -534,6 +534,50 @@ async def test_cancelled_close_caller_leaves_cleanup_owned_for_second_close() ->
 
 
 @pytest.mark.asyncio
+async def test_cancel_racing_success_does_not_repeat_cleanup() -> None:
+    session = _ControlledCloseSession()
+    first = asyncio.create_task(session.close())
+    await session.close_entered.wait()
+
+    session.release_close.set()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    await session.close()
+
+    assert session.closed_count == 1
+    assert session.completed_close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_waiter_cleanup_failure_is_observed_and_retryable() -> None:
+    session = _ControlledCloseSession([RuntimeError("cleanup failed"), None])
+    loop = asyncio.get_running_loop()
+    orphaned = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: orphaned.append(context))
+    try:
+        first = asyncio.create_task(session.close())
+        await session.close_entered.wait()
+
+        session.release_close.set()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await asyncio.sleep(0)
+
+        await session.close()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert session.closed_count == 2
+    assert session.completed_close_count == 1
+    assert orphaned == []
+
+
+@pytest.mark.asyncio
 async def test_close_exception_allows_later_retry() -> None:
     session = _ControlledCloseSession([RuntimeError("cleanup failed"), None])
     session.release_close.set()

@@ -70,6 +70,14 @@ def _hermes_home_from_env() -> Path:
     """
     val = os.environ.get("HERMES_HOME", "").strip()
     if val:
+        # Guard: WSL auto-forwards Windows user env vars via /init interop.
+        # The Desktop installer writes HERMES_HOME as a Windows user env var
+        # (e.g. ``D:\\hermes-desktop\\hermes``) which leaks into every WSL
+        # shell — silently routing CLI sessions into the Desktop's state.db.
+        # Detect a Windows drive-letter path inside WSL and fall back to the
+        # platform default instead.  See issue #71826.
+        if is_wsl() and len(val) >= 2 and val[1] == ":":
+            return _get_platform_default_hermes_home()
         return Path(val)
     return _get_platform_default_hermes_home()
 

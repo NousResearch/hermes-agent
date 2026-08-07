@@ -1380,6 +1380,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     # ── Text debounce batching ──────────────────────────────────────
 
+    _TEXT_BATCH_FAST_LEN = 320
+    _TEXT_BATCH_FAST_DELAY_S = 0.18
+    _TEXT_BATCH_SHORT_LEN = 1024
+    _TEXT_BATCH_SHORT_DELAY_S = 0.24
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
     def _text_batch_key(self, event: MessageEvent) -> str:
@@ -1426,8 +1430,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             pending = self._pending_text_batches.get(key)
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            total_len = len(pending.text or "") if pending else 0
             if last_len >= self._SPLIT_THRESHOLD:
                 delay = self._text_batch_split_delay_seconds
+            elif total_len <= self._TEXT_BATCH_FAST_LEN:
+                delay = min(
+                    self._text_batch_delay_seconds, self._TEXT_BATCH_FAST_DELAY_S
+                )
+            elif total_len <= self._TEXT_BATCH_SHORT_LEN:
+                delay = min(
+                    self._text_batch_delay_seconds, self._TEXT_BATCH_SHORT_DELAY_S
+                )
             else:
                 delay = self._text_batch_delay_seconds
             await asyncio.sleep(delay)

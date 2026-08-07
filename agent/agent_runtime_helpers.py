@@ -3503,7 +3503,41 @@ def looks_like_codex_intermediate_ack(
     has_future_ack = bool(
         re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
     )
-    if not has_future_ack:
+    # Some tool-using providers narrate the next action in terse log style
+    # rather than with a first-person lead-in: "Brief written. Creating the
+    # session now." Keep this deliberately narrower than the general action
+    # vocabulary: a present-participle clause must begin the response or follow
+    # a sentence/status delimiter, completed-report predicates (for example,
+    # "Testing completed successfully") stay final, and questions are never
+    # auto-continued.
+    action_clause_pattern = re.compile(
+        r"(?:^|[.!…—–-]\s+|\n+\s*)(?:(?:re)?launching|(?:re)?starting|creating|"
+        r"checking|running|writing|opening|reading|inspecting|reviewing|"
+        r"testing|debugging|searching|fixing)\b"
+    )
+    completion_predicate_pattern = re.compile(
+        r"\b(?:completed|finished|succeeded|failed|passed|complete|done|successful)\b"
+        r"(?=\s*(?:$|[)\]])|\s+(?:successfully|with|without|due|because|after|before)\b)"
+    )
+    declarative_predicate_pattern = re.compile(
+        r"\b(?:is|are|was|were|would|could|should|can|will|tells?|shows?|helps?|"
+        r"costs?|means?|takes?|requires?)\b"
+    )
+    has_pronounless_action = False
+    if "?" not in assistant_text:
+        for action_match in action_clause_pattern.finditer(assistant_text):
+            clause_tail = assistant_text[action_match.end() :]
+            clause_tail = re.split(r"[.!?…\n]", clause_tail, maxsplit=1)[0]
+            if completion_predicate_pattern.search(clause_tail):
+                continue
+            declarative_predicate = declarative_predicate_pattern.search(clause_tail)
+            if declarative_predicate and not re.search(
+                r"\b(?:if|whether)\b", clause_tail[: declarative_predicate.start()]
+            ):
+                continue
+            has_pronounless_action = True
+            break
+    if not (has_future_ack or has_pronounless_action):
         return False
 
     action_markers = (
@@ -3543,7 +3577,9 @@ def looks_like_codex_intermediate_ack(
         "path",
     )
 
-    assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
+    assistant_mentions_action = has_pronounless_action or any(
+        marker in assistant_text for marker in action_markers
+    )
     if not assistant_mentions_action:
         return False
 

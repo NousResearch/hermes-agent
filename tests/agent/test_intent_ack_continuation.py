@@ -84,6 +84,27 @@ def test_enabled_is_mode_not_off():
 
 
 
+def test_codex_only_path_accepts_pronounless_workspace_announcement():
+    """The default codex path keeps ACP-style action narration moving."""
+    a = _agent("auto", "codex_responses")
+    user = "add a migration"
+    msgs = [{"role": "user", "content": user}]
+    assert looks_like_codex_intermediate_ack(
+        a,
+        user,
+        "Creating the migration file in the repo now.",
+        msgs,
+        require_workspace=True,
+    )
+    assert not looks_like_codex_intermediate_ack(
+        a,
+        user,
+        "Testing complete. The repo is clean.",
+        msgs,
+        require_workspace=True,
+    )
+
+
 def test_multipart_user_message_does_not_crash_on_workspace_path():
     """#9562: vision requests forward ``user_message`` as a multi-part list.
 
@@ -114,6 +135,56 @@ def test_all_path_drops_workspace_requirement():
     assert looks_like_codex_intermediate_ack(
         a, REPRO_USER, REPRO_ACK, msgs, require_workspace=False
     )
+
+
+def test_pronounless_action_announcements_continue_when_opted_in():
+    """#72692: Copilot ACP uses terse log-style action narration."""
+    a = _agent(True, "chat_completions")
+    user = "write the brief and launch the session"
+    msgs = [{"role": "user", "content": user}]
+    announcements = (
+        "Launching it now.",
+        "Brief written. Creating the session now.",
+        "EXIT=1 — checking the actual log.",
+        "Relaunching with corrected arguments.",
+        "Running now (pid 19441, no early exit). Checking the log…",
+        "Brief written\nCreating the session now",
+        "Checking whether the service is healthy.",
+    )
+    for announcement in announcements:
+        assert looks_like_codex_intermediate_ack(
+            a, user, announcement, msgs, require_workspace=False
+        ), announcement
+
+
+def test_pronounless_action_guardrails_reject_questions_and_finals():
+    a = _agent(True, "chat_completions")
+    user = "launch the session"
+    msgs = [{"role": "user", "content": user}]
+    final_answers = (
+        "Should I launch it now?",
+        "Nothing to do here.",
+        "Interesting result; no action is needed.",
+        "Done. The deployment succeeded.",
+        "Testing completed successfully.",
+        "Checking finished with no issues.",
+        "Testing has completed successfully.",
+        "Checking is complete.",
+        "Running was successful.",
+        "Testing complete.",
+        "Checking done.",
+        "Running successful.",
+        "Testing the parser completed successfully.",
+        "Checking the logs finished with no errors.",
+        "Running the suite passed. 42 tests, 0 failures.",
+        "Running the suite in parallel with pytest-xdist is the fastest win.",
+        "Checking the CI logs would be the first step.",
+        "Reading the traceback tells you which parser rule failed.",
+    )
+    for final in final_answers:
+        assert not looks_like_codex_intermediate_ack(
+            a, user, final, msgs, require_workspace=False
+        ), final
 
 
 # ── detector: guardrails that hold regardless of workspace ───────────────────

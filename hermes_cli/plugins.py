@@ -1925,10 +1925,18 @@ class PluginManager:
             else:
                 module = self._load_entrypoint_module(manifest)
 
+            register_fn = None
+            if not isinstance(module, types.ModuleType) and callable(module):
+                # Entry points declared as ``module:function`` resolve to the
+                # function object itself via ``ep.load()``, not its module.
+                register_fn = module
+                module = sys.modules.get(getattr(register_fn, "__module__", ""))
+
             loaded.module = module
 
             # Call register()
-            register_fn = getattr(module, "register", None)
+            if register_fn is None:
+                register_fn = getattr(module, "register", None)
             if register_fn is None:
                 loaded.error = "no register() function"
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
@@ -2078,8 +2086,15 @@ class PluginManager:
         spec.loader.exec_module(module)
         return module
 
-    def _load_entrypoint_module(self, manifest: PluginManifest) -> types.ModuleType:
-        """Load a pip-installed plugin via its entry-point reference."""
+    def _load_entrypoint_module(
+        self, manifest: PluginManifest
+    ) -> Union[types.ModuleType, Callable[..., Any]]:
+        """Load a pip-installed plugin via its entry-point reference.
+
+        Returns whatever ``ep.load()`` resolves to: the module for a bare
+        ``module`` entry point, or the referenced attribute (typically the
+        ``register`` callable) for the ``module:function`` form.
+        """
         eps = importlib.metadata.entry_points()
         if hasattr(eps, "select"):
             group_eps = eps.select(group=ENTRY_POINTS_GROUP)

@@ -339,6 +339,54 @@ class TestPluginDiscovery:
 
 
 
+    def test_entry_point_function_form_registers(self, tmp_path, monkeypatch):
+        """Entry points declared as ``module:function`` register via the callable.
+
+        Regression for #72052: real ``EntryPoint.load()`` returns the referenced
+        attribute for the ``module:function`` form, not the module. The loader
+        used to look for ``.register`` on that function object, find nothing,
+        and warn "no register() function" on every discovery pass.
+        """
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Entry-point plugins load only when opted into plugins.enabled.
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["fn_plugin"]}})
+        )
+
+        fake_module = types.ModuleType("fake_fn_plugin")
+        register_calls = []
+
+        def register(ctx):
+            register_calls.append(ctx)
+
+        register.__module__ = "fake_fn_plugin"
+        fake_module.register = register  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "fake_fn_plugin", fake_module)
+
+        fake_ep = MagicMock()
+        fake_ep.name = "fn_plugin"
+        fake_ep.value = "fake_fn_plugin:register"
+        fake_ep.group = ENTRY_POINTS_GROUP
+        # Mirror real importlib behavior: load() resolves to the attribute.
+        fake_ep.load.return_value = register
+
+        def fake_entry_points():
+            result = MagicMock()
+            result.select = MagicMock(return_value=[fake_ep])
+            return result
+
+        with patch("importlib.metadata.entry_points", fake_entry_points):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        entry = mgr._plugins["fn_plugin"]
+        assert entry.error is None, entry.error
+        assert entry.enabled
+        assert len(register_calls) == 1
+        assert entry.module is fake_module
+
     def test_force_rediscover_clears_all_plugin_registries(self, monkeypatch):
         """force=True must clear every plugin-populated registry.
 

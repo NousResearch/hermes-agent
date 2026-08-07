@@ -2231,8 +2231,252 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 _SHELL_LEVEL_BACKGROUND_RE = re.compile(
     r"(?:^|[;&|]\s*|&&\s*|\|\|\s*|\$\(\s*)(?:nohup|disown|setsid)\b", re.IGNORECASE | re.MULTILINE
 )
-_INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
-_TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
+
+
+def _heredoc_declarations(line: str) -> list[tuple[str, bool]]:
+    """Return ``(delimiter, strip_tabs)`` declarations outside quotes/comments.
+
+    This intentionally recognizes the common shell heredoc forms without
+    attempting to parse the full shell grammar.  Keeping it lexical is enough
+    for the terminal guard: heredoc bodies are data, so shell-looking ``&``
+    characters in them must not be treated as job-control operators.
+    """
+    declarations: list[tuple[str, bool]] = []
+    i = 0
+    n = len(line)
+
+    while i < n:
+        ch = line[i]
+
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+
+        if ch in {"'", '"', "`"}:
+            quote = ch
+            i += 1
+            while i < n:
+                if line[i] == "\\" and quote != "'" and i + 1 < n:
+                    i += 2
+                    continue
+                if line[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+
+        # A shell comment begins at the start of a word, not in ``foo#bar``.
+        if ch == "#" and (i == 0 or line[i - 1].isspace() or line[i - 1] in ";|&()"):
+            break
+
+        if line.startswith("<<<", i):
+            # Herestring — not a heredoc; skip all three characters and move on.
+            i += 3
+            continue
+
+        if line.startswith("<<", i):
+            i += 2
+            strip_tabs = i < n and line[i] == "-"
+            if strip_tabs:
+                i += 1
+            while i < n and line[i] in " \t":
+                i += 1
+            if i >= n:
+                break
+
+            if line[i] in {"'", '"'}:
+                quote = line[i]
+                i += 1
+                start = i
+                while i < n and line[i] != quote:
+                    if line[i] == "\\" and quote == '"' and i + 1 < n:
+                        i += 2
+                        continue
+                    i += 1
+                delimiter = line[start:i]
+                if i < n:
+                    i += 1
+            else:
+                start = i
+                while i < n and not line[i].isspace() and line[i] not in ";|&()<>":
+                    i += 1
+                delimiter = line[start:i]
+
+            if delimiter:
+                declarations.append((delimiter, strip_tabs))
+            continue
+
+        i += 1
+
+    return declarations
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Replace heredoc bodies and terminators with same-length whitespace.
+
+    Length and newlines are preserved so operator positions still index the
+    original command and commands following a heredoc retain their statement
+    boundaries. Multiple heredocs declared on one command line are consumed
+    in declaration order, as the shell does.
+    """
+    pending: list[tuple[str, bool]] = []
+    result: list[str] = []
+
+    for line in command.splitlines(keepends=True):
+        if pending:
+            delimiter, strip_tabs = pending[0]
+            candidate = line.rstrip("\r\n")
+            if strip_tabs:
+                candidate = candidate.lstrip("\t")
+            if candidate == delimiter:
+                pending.pop(0)
+            if line.endswith("\r\n"):
+                result.append(" " * (len(line) - 2) + "\r\n")
+            elif line.endswith(("\n", "\r")):
+                result.append(" " * (len(line) - 1) + line[-1])
+            else:
+                result.append(" " * len(line))
+            continue
+
+        result.append(line)
+        pending.extend(_heredoc_declarations(line))
+
+    return "".join(result)
+
+
+def _shell_background_operator_positions(command: str) -> list[int]:
+    """Return positions of real unquoted shell ``&`` operators in *command*.
+
+    Distinguishes job-control ``&`` from ``&&``, ``&>``, ``|&``, fd redirects,
+    ``;&``/``;;&`` case-fallthrough operators, and arithmetic/subshell
+    expansions, and ignores escaped operators, quoted strings, comments, and
+    heredoc bodies.
+    """
+    sanitized = _strip_heredoc_bodies(command)
+    positions: list[int] = []
+    i = 0
+    n = len(sanitized)
+
+    while i < n:
+        ch = sanitized[i]
+
+        if ch.isspace():
+            i += 1
+            continue
+
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+
+        if ch == "#" and (i == 0 or sanitized[i - 1].isspace() or sanitized[i - 1] in ";|&()"):
+            newline = sanitized.find("\n", i)
+            if newline == -1:
+                break
+            i = newline + 1
+            continue
+
+        if ch in {"'", '"', "`"}:
+            quote = ch
+            i += 1
+            while i < n:
+                if sanitized[i] == "\\" and quote != "'" and i + 1 < n:
+                    i += 2
+                    continue
+                if sanitized[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+
+        # Skip parenthesised groups — subshells $(…), arithmetic $((…)),
+        # and plain (…) — so that & inside them is never counted.
+        if ch == "(":
+            depth = 1
+            i += 1
+            while i < n and depth:
+                if sanitized[i] == "(":
+                    depth += 1
+                elif sanitized[i] == ")":
+                    depth -= 1
+                elif sanitized[i] in {"'", '"'}:
+                    quote = sanitized[i]
+                    i += 1
+                    while i < n:
+                        if sanitized[i] == "\\" and quote != "'" and i + 1 < n:
+                            i += 2
+                            continue
+                        if sanitized[i] == quote:
+                            break
+                        i += 1
+                i += 1
+            continue
+
+        if ch == "&":
+            if sanitized.startswith("&&", i) or sanitized.startswith("&>", i):
+                # && (logical-and) and &> (redirect) — not job-control.
+                i += 2
+                continue
+            if i > 0 and sanitized[i - 1] in "<>|;":
+                # fd redirect (2>&1), pipe-stderr (|&), case fallthrough (;&, ;;&).
+                i += 1
+                continue
+            positions.append(i)
+            i += 1
+            continue
+
+        # Skip a whole token so quoted fragments within it cannot be mistaken
+        # for operators (for example: ``printf prefix" & "suffix``).
+        _, next_i = _read_shell_token(sanitized, i)
+        i = max(next_i, i + 1)
+
+    return positions
+
+
+def _contains_shell_background_operator(command: str) -> bool:
+    """Return whether *command* contains a real unquoted shell ``&`` operator."""
+    return bool(_shell_background_operator_positions(command))
+
+
+def _is_final_shell_background_operator(command: str, position: int) -> bool:
+    """Return whether only whitespace/comments follow the operator.
+
+    *position* comes from :func:`_shell_background_operator_positions`, which
+    scans the sanitized command.  Because :func:`_strip_heredoc_bodies`
+    preserves total length, positions are valid indices into *command* too.
+    """
+    i = position + 1
+    n = len(command)
+
+    while i < n:
+        if command[i].isspace():
+            i += 1
+            continue
+        if command[i] == "#" and (
+            i == 0 or command[i - 1].isspace() or command[i - 1] in ";|&()"
+        ):
+            newline = command.find("\n", i)
+            if newline == -1:
+                return True
+            i = newline + 1
+            continue
+        return False
+
+    return True
+
+
+def _normalize_final_shell_background_operator(command: str, position: int) -> str:
+    """Remove one final ``&`` and any now-dangling line continuation."""
+    prefix = command[:position]
+    suffix = command[position + 1:]
+
+    # Models often format a multiline command with ``\`` on every line,
+    # including the line immediately before a standalone final ``&``.
+    prefix = re.sub(r"\\[ \t]*\r?\n[ \t]*$", "", prefix)
+    prefix = prefix.rstrip()
+
+    if suffix.lstrip().startswith("#"):
+        return f"{prefix} {suffix.lstrip()}".rstrip()
+    return prefix
 
 
 def _strip_quotes(command: str) -> str:
@@ -2240,10 +2484,13 @@ def _strip_quotes(command: str) -> str:
 
     This prevents false positives when keywords like 'nohup' or 'setsid' appear
     in commit messages, Python -c code, echo arguments, or PR body text.
-    Also strips backtick-quoted content and heredoc-style inline text.
+    Also strips backtick-quoted content and heredoc bodies.
     """
+    # Remove heredoc bodies first — before quote stripping, which would mangle
+    # quoted delimiter names (e.g. << 'EOF' → << '' losing the delimiter).
+    result = _strip_heredoc_bodies(command)
     # Remove single-quoted strings (no escaping inside single quotes in shell)
-    result = re.sub(r"'[^']*'", "''", command)
+    result = re.sub(r"'[^']*'", "''", result)
     # Remove double-quoted strings (handle escaped quotes)
     result = re.sub(r'"(?:[^"\\]|\\.)*"', '""', result)
     # Remove backtick-quoted strings
@@ -2295,7 +2542,7 @@ def _foreground_background_guidance(command: str) -> str | None:
             "checks and tests in separate commands."
         )
 
-    if _INLINE_BACKGROUND_AMP_RE.search(unquoted) or _TRAILING_BACKGROUND_AMP_RE.search(unquoted):
+    if _contains_shell_background_operator(command):
         return (
             "Foreground command uses '&' backgrounding. Re-send WITHOUT the '&' as "
             "terminal(command=\"<cmd>\", background=true) — add notify_on_complete=true "
@@ -2478,6 +2725,59 @@ def terminal_tool(
                 f"timeout must be a positive number of seconds (got {timeout})."
             )
         effective_timeout = timeout or default_timeout
+        background_normalization_warning = None
+
+        # Normalize the standard shell spelling ``command &`` into Hermes'
+        # managed background mode. Only one final top-level operator is
+        # unambiguous; internal job control is rejected below.
+        background_positions = _shell_background_operator_positions(command)
+        shell_wrappers = _SHELL_LEVEL_BACKGROUND_RE.search(_strip_quotes(command))
+        has_single_final_background = (
+            len(background_positions) == 1
+            and _is_final_shell_background_operator(command, background_positions[0])
+        )
+        if (
+            has_single_final_background
+            and not shell_wrappers
+        ):
+            requested_background = background
+            command = _normalize_final_shell_background_operator(
+                command,
+                background_positions[0],
+            )
+            background = True
+            if requested_background:
+                background_normalization_warning = (
+                    "Command set background=true and also used a final shell '&'. "
+                    "Only background=true is needed. Hermes removed the redundant "
+                    f"'&' and ran this managed command: {command}"
+                )
+            else:
+                background_normalization_warning = (
+                    "Command used a final shell '&' without background=true. "
+                    "Use terminal(background=true) for managed background processes. "
+                    "Hermes removed the final '&', set background=true, and ran this "
+                    f"managed command: {command}"
+                )
+            background_positions = []
+
+        if background_positions and not has_single_final_background:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": (
+                    "Command contains internal shell '&' backgrounding before "
+                    "additional commands. Hermes cannot safely track a background "
+                    "process inside a compound command. Start the background process "
+                    "in its own terminal call with background=true and no '&', then "
+                    "run the remaining commands in a separate terminal call. Hermes "
+                    "returns the managed PID and session ID; do not use '$!'. For "
+                    "example, first use terminal(command=\"<long-running command>\", "
+                    "background=true), then use terminal(command=\"<follow-up "
+                    "commands>\")."
+                ),
+                "status": "error",
+            }, ensure_ascii=False)
 
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
@@ -2499,6 +2799,22 @@ def terminal_tool(
                     "error": guidance,
                     "status": "error",
                 }, ensure_ascii=False)
+
+        # Guardrail: background=True but the command still uses shell-level
+        # backgrounding. The shell double-backgrounds the process so Hermes
+        # tracks the wrong pid and cannot poll, wait, or stream output.
+        if background and _contains_shell_background_operator(command):
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": (
+                    "Command contains '&' backgrounding but background=true is already set — "
+                    "remove the '&' from the command string and re-submit. "
+                    "Use background=true alone; adding '&' causes the shell to double-background "
+                    "the process so Hermes tracks the wrong pid."
+                ),
+                "status": "error",
+            }, ensure_ascii=False)
 
         # Start cleanup thread
         _start_cleanup_thread()
@@ -2822,6 +3138,8 @@ def terminal_tool(
                     result_data["approval"] = approval_note
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
+                if background_normalization_warning:
+                    result_data["warning"] = background_normalization_warning
 
                 # Nudge: background=True without notify_on_complete=True OR
                 # watch_patterns is a silent process. The agent has NO way to

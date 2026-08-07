@@ -94,6 +94,13 @@ class TestBuildLearnPrompt:
         assert "zero-width" in hyg
         assert "bidi" in hyg or "bidirectional" in hyg
 
+    def test_existing_skill_is_extended_instead_of_created_again(self):
+        prompt = build_learn_prompt("add these notes to my distributed-systems skill")
+        assert "First check the available skills" in prompt
+        assert "If one exists, load it with `skill_view`" in prompt
+        assert "Only when no matching skill exists" in prompt
+        assert 'action="create"' in prompt
+
 
 class TestLearnRegistryWiring:
     def test_learn_is_registered_and_resolves(self):

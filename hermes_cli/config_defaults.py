@@ -40,6 +40,29 @@ DEFAULT_CONFIG = {
         # rejected with a resend notice rather than run without serialization.
         # Non-positive values fall back to 1800 seconds.
         "gateway_turn_lease_timeout": 1800,
+        # Per-session AIAgent cache in the gateway. Each cached agent keeps a
+        # warm prompt prefix AND the session's full transcript, so the cache
+        # trades memory for cost: too small and every turn re-pays an uncached
+        # prompt, too large and tool-heavy transcripts fill the heap.
+        "agent_cache": {
+            # LRU entry cap.
+            "max_size": 128,
+            # Evict an agent that has been idle this long (seconds).
+            "idle_ttl_secs": 3600,
+            # Anonymous-RSS budget (MB) above which the gateway starts shedding
+            # least-recently-used transcripts, which reload from the persisted
+            # session on the next turn. "auto" derives the budget from the
+            # cgroup memory limit the gateway runs under (or total RAM when
+            # uncapped); a number sets it explicitly; 0/off disables the pass
+            # and lets memory grow to whatever the two bounds above allow.
+            "memory_high_mb": "auto",
+            # Upper bound on how many sessions one pressure pass sheds, so a
+            # burst of teardowns cannot stall the gateway.
+            "max_evictions_per_pass": 16,
+            # Most-recently-used sessions the pressure pass never touches —
+            # they are the ones actively paying for a warm prompt cache.
+            "protect_recent": 8,
+        },
         # Force-interrupt budget once gateway stop()/drain has begun
         # (seconds). Applies to SIGTERM/external stop and to the final
         # phase of in-band restart after any after-turn wait. 0 = interrupt

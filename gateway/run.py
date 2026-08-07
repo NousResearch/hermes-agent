@@ -71,6 +71,12 @@ from hermes_cli.fallback_config import get_fallback_chain
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
 # memory providers, etc.).  LRU order + idle TTL eviction are enforced
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
+#
+# These are the defaults; `agent.agent_cache.max_size` /
+# `agent.agent_cache.idle_ttl_secs` in config.yaml override them per
+# deployment.  Neither bound knows how many BYTES a cached agent holds, so
+# _sweep_agent_cache_under_pressure() adds the missing memory-pressure valve
+# (see gateway/agent_cache_pressure.py).
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
@@ -12180,6 +12186,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.debug("Idle agent sweep failed: %s", _e)
 
+                # Neither the LRU cap nor the idle TTL is aware of how much
+                # memory a cached transcript costs, so a busy gateway keeps
+                # every warm session's tool output resident until RSS hits the
+                # cgroup limit (#80764). Shed LRU transcripts once the heap is
+                # over budget; they reload from the persisted session on the
+                # next turn.
+                try:
+                    self._sweep_agent_cache_under_pressure()
+                except Exception as _e:
+                    logger.debug("Agent cache pressure sweep failed: %s", _e)
+
                 # Periodically prune stale SessionStore entries.  The
                 # in-memory dict (and sessions.json) would otherwise grow
                 # unbounded in gateways serving many rotating chats /
@@ -23731,8 +23748,156 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if hasattr(agent, "_session_messages"):
             agent._session_messages = []
 
+    def _agent_cache_bounds(self):
+        """Operator-configured agent-cache bounds, resolved once per process.
+
+        Resolved lazily rather than in ``__init__`` so it also works for the
+        ``__new__``-constructed runners used by tests and by the slash-command
+        mixin.
+        """
+        bounds = getattr(self, "_agent_cache_bounds_cache", None)
+        if bounds is None:
+            from gateway.agent_cache_pressure import resolve_agent_cache_bounds
+
+            try:
+                bounds = resolve_agent_cache_bounds(_load_gateway_config())
+            except Exception as _e:
+                from gateway.agent_cache_pressure import AgentCacheBounds
+
+                logger.debug("Agent cache bounds config read failed: %s", _e)
+                bounds = AgentCacheBounds()
+            self._agent_cache_bounds_cache = bounds
+        return bounds
+
+    def _agent_cache_cap(self) -> int:
+        """Effective LRU cap — the configured override, else the default."""
+        configured = self._agent_cache_bounds().max_size
+        return configured if configured else _AGENT_CACHE_MAX_SIZE
+
+    def _agent_cache_idle_ttl(self) -> float:
+        """Effective idle TTL in seconds — configured override, else default."""
+        configured = self._agent_cache_bounds().idle_ttl_secs
+        return configured if configured else _AGENT_CACHE_IDLE_TTL_SECS
+
+    def _sweep_agent_cache_under_pressure(self) -> int:
+        """Shed cached transcripts once the gateway's own heap nears its budget.
+
+        The LRU cap counts entries and the idle sweep counts seconds; neither
+        knows that one cached agent pins a full ``_session_messages``
+        transcript — tens of MB on a session with 100+ tool calls.  A gateway
+        serving many chats therefore holds every warm transcript indefinitely:
+        agents that took a turn within the TTL are never idle-swept, and the
+        sweep additionally defers finalizable sessions until they expire.  RSS
+        climbs until the cgroup throttles and SIGTERM can no longer flush
+        inside systemd's stop timeout (#80764).
+
+        This is the missing valve.  Above the configured anonymous-RSS budget
+        it evicts LRU agents through the same soft path the cap enforcer uses,
+        so the transcript is dropped and rebuilt from the persisted session on
+        the next turn.  Three things are never touched: agents mid-turn (their
+        clients and sandboxes are in use), the most recently used sessions
+        (whose prompt cache is worth the most), and any session whose live
+        transcript has not finished reaching disk.
+
+        Returns the number of entries evicted (0 when memory is fine).
+        """
+        from gateway.agent_cache_pressure import (
+            plan_pressure_evictions,
+            read_anon_rss_mb,
+            transcript_persistence_caught_up,
+        )
+
+        bounds = self._agent_cache_bounds()
+        if not bounds.memory_high_mb:
+            return 0
+        _cache = getattr(self, "_agent_cache", None)
+        _lock = getattr(self, "_agent_cache_lock", None)
+        if not _cache or _lock is None:
+            # Nothing cached — whatever is using the heap, it isn't us, and
+            # warning about it every tick would point at the wrong subsystem.
+            return 0
+
+        rss_mb = read_anon_rss_mb()
+        if rss_mb is None or rss_mb < bounds.memory_high_mb:
+            return 0
+
+        running_ids = {
+            id(a)
+            for _, a in self._running_agent_items()
+            if a is not None and a is not _AGENT_PENDING_SENTINEL
+        }
+
+        def _is_evictable(key: str, agent: Any) -> bool:
+            if agent is None or agent is _AGENT_PENDING_SENTINEL:
+                return False
+            if id(agent) in running_ids:
+                return False
+            return transcript_persistence_caught_up(agent)
+
+        with _lock:
+            ordered = [
+                (key, entry[0] if isinstance(entry, tuple) and entry else entry)
+                for key, entry in _cache.items()
+            ]
+            plan = plan_pressure_evictions(
+                ordered,
+                is_evictable=_is_evictable,
+                max_evictions=bounds.max_evictions_per_pass,
+                protect_recent=bounds.protect_recent,
+            )
+            for key, _ in plan:
+                _cache.pop(key, None)
+
+        if not plan:
+            _mid_turn = sum(1 for _, a in ordered if a is not None and id(a) in running_ids)
+            logger.warning(
+                "Agent cache pressure: anon RSS %dMB over budget %dMB but no "
+                "evictable session (%d cached, %d mid-turn) — memory will keep "
+                "climbing until those turns finish.",
+                rss_mb, bounds.memory_high_mb, len(ordered), _mid_turn,
+            )
+            return 0
+
+        logger.warning(
+            "Agent cache pressure: anon RSS %dMB over budget %dMB — evicting "
+            "%d LRU session(s): %s",
+            rss_mb, bounds.memory_high_mb, len(plan),
+            ", ".join(key for key, _ in plan),
+        )
+        try:
+            threading.Thread(
+                target=self._release_pressure_batch,
+                args=(plan,),
+                daemon=True,
+                name="agent-cache-pressure",
+            ).start()
+        except Exception:
+            self._release_pressure_batch(plan)
+        return len(plan)
+
+    def _release_pressure_batch(self, plan: List[tuple]) -> None:
+        """Release a pressure-evicted batch, then return the heap to the OS.
+
+        Sequential on one daemon thread rather than a thread per agent: the
+        batch is already capped, and the point of the pass is to reclaim
+        memory, not to race N teardowns. The trailing ``malloc_trim`` is what
+        turns "Python dropped the transcript" into "RSS actually fell" —
+        without it glibc keeps the freed arenas and the cgroup never notices.
+        """
+        for key, agent in plan:
+            try:
+                self._commit_then_release_soft(agent, key)
+            except Exception as _e:
+                logger.debug("Pressure release failed for %s: %s", key, _e)
+        try:
+            from hermes_cli.mem_trim import trim_memory
+
+            trim_memory(force=True, reason="agent_cache_pressure")
+        except Exception:
+            pass
+
     def _enforce_agent_cache_cap(self) -> None:
-        """Evict oldest cached agents when cache exceeds _AGENT_CACHE_MAX_SIZE.
+        """Evict oldest cached agents when cache exceeds the LRU cap.
 
         Must be called with _agent_cache_lock held.  Resource cleanup
         (memory provider shutdown, tool resource close) is scheduled
@@ -23772,7 +23937,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # already-cached long-running one.  The cache may therefore stay
         # temporarily over cap; it will re-check on the next insert,
         # after active turns have finished.
-        excess = max(0, len(_cache) - _AGENT_CACHE_MAX_SIZE)
+        cap = self._agent_cache_cap()
+        excess = max(0, len(_cache) - cap)
         evict_plan: List[tuple] = []  # [(key, agent), ...]
         if excess > 0:
             ordered_keys = list(_cache.keys())
@@ -23786,12 +23952,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for key, _ in evict_plan:
             _cache.pop(key, None)
 
-        remaining_over_cap = len(_cache) - _AGENT_CACHE_MAX_SIZE
+        remaining_over_cap = len(_cache) - cap
         if remaining_over_cap > 0:
             logger.warning(
                 "Agent cache over cap (%d > %d); %d excess slot(s) held by "
                 "mid-turn agents — will re-check on next insert.",
-                len(_cache), _AGENT_CACHE_MAX_SIZE, remaining_over_cap,
+                len(_cache), cap, remaining_over_cap,
             )
 
         for key, agent in evict_plan:
@@ -23814,7 +23980,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ).start()
 
     def _sweep_idle_cached_agents(self) -> int:
-        """Evict cached agents whose AIAgent has been idle > _AGENT_CACHE_IDLE_TTL_SECS.
+        """Evict cached agents whose AIAgent has been idle past the idle TTL.
 
         Safe to call from the session expiry watcher without holding the
         cache lock — acquires it internally.  Returns the number of entries
@@ -23829,6 +23995,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _cache is None or _lock is None:
             return 0
         now = time.time()
+        idle_ttl = self._agent_cache_idle_ttl()
         to_evict: List[tuple] = []
         running_ids = {
             id(a)
@@ -23845,7 +24012,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_activity = getattr(agent, "_last_activity_ts", None)
                 if last_activity is None:
                     continue
-                if (now - last_activity) > _AGENT_CACHE_IDLE_TTL_SECS:
+                if (now - last_activity) > idle_ttl:
                     # Check whether the session has actually expired in the
                     # session store.  If it hasn't (e.g. daily-reset mode
                     # where the reset fires hours after the user's last

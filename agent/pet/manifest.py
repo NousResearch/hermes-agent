@@ -25,6 +25,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from agent.pet.network import stream_petdex
+
 logger = logging.getLogger(__name__)
 
 MANIFEST_URL = "https://petdex.dev/api/manifest"
@@ -124,19 +126,12 @@ def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False) ->
         return _cache[1]
 
     try:
-        import httpx
+        with stream_petdex(MANIFEST_URL, timeout=timeout) as resp:
+            resp.raise_for_status()
+            resp.read()
+            payload = resp.json()
     except ImportError as exc:  # pragma: no cover - httpx is a core dep
         raise ManifestError("httpx is required to fetch the petdex manifest") from exc
-
-    try:
-        resp = httpx.get(
-            MANIFEST_URL,
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "hermes-agent-petdex"},
-        )
-        resp.raise_for_status()
-        payload = resp.json()
     except Exception as exc:  # noqa: BLE001 - normalize to one error type
         raise ManifestError(f"could not fetch petdex manifest: {exc}") from exc
 

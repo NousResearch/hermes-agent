@@ -46,11 +46,17 @@ def _normalize_cwd_for_compare(cwd: str | None) -> str:
         raw = "."
     expanded = os.path.expanduser(raw)
 
-    # Normalize Windows drive paths into the equivalent WSL mount form so
-    # ACP history filters match the same workspace across Windows and WSL.
-    from hermes_constants import windows_path_to_wsl
+    # Normalize the Windows spellings into the POSIX form so ACP history
+    # filters match the same workspace across Windows and WSL. Both forms
+    # ``_translate_acp_cwd`` accepts have to be covered, and in the same
+    # order: a session opened from a ``\\wsl.localhost\`` workspace is stored
+    # POSIX-translated, so a UNC filter that never translates can never match
+    # its own rows.
+    from hermes_constants import windows_path_to_wsl, wsl_unc_path_to_posix
 
-    translated = windows_path_to_wsl(expanded)
+    translated = wsl_unc_path_to_posix(expanded)
+    if translated is None:
+        translated = windows_path_to_wsl(expanded)
     if translated is not None:
         expanded = translated
     elif re.match(r"^/mnt/[A-Za-z]/", expanded):

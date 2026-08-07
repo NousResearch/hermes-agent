@@ -100,6 +100,35 @@ def test_vercel_backend_without_sdk_logs_specific_error(monkeypatch, caplog):
     )
 
 
+def test_apple_container_requirements_use_non_mutating_check(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+    import tools.environments.apple_container as apple
+
+    checked = []
+    monkeypatch.setattr(apple, "_ensure_container_available", lambda: checked.append(True) or "/container")
+
+    assert terminal_tool_module.check_terminal_requirements() is True
+    assert checked == [True]
+
+
+def test_apple_container_requirements_reject_macos_25_arm64(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+    import tools.environments.apple_container as apple
+
+    monkeypatch.setattr(apple.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(apple.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(
+        apple.platform, "mac_ver", lambda: ("25.6", ("", "", ""), "")
+    )
+    monkeypatch.setattr(
+        apple, "find_container_cli", lambda: pytest.fail("CLI must not be probed")
+    )
+
+    assert terminal_tool_module.check_terminal_requirements() is False
+
+
 def test_vercel_backend_without_auth_logs_specific_error(monkeypatch, caplog):
     _clear_terminal_env(monkeypatch)
     monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")

@@ -458,11 +458,11 @@ def from_agent_visible_cache_path(
     """Translate a sandbox/container cache path back to its host path.
 
     Inverse of :func:`to_agent_visible_cache_path`. Returns the input unchanged
-    when the active backend is not Docker, or when the path is not under any
+    when the active backend does not use local bind mounts, or when the path is not under any
     auto-mounted cache directory — the caller then treats a still-container
     path as "no host file" and falls back to an in-container read.
     """
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+    if os.environ.get("TERMINAL_ENV", "local") not in {"docker", "apple_container"}:
         return container_path
 
     path = Path(container_path)
@@ -483,13 +483,13 @@ def to_agent_visible_cache_path(
 
     Returns the input unchanged if it is not under any auto-mounted cache
     directory, or if the active terminal backend does not require path
-    translation (only Docker for now).
+    translation (Docker and Apple Container).
     """
-    # Only Docker backend requires translation at this time.  Other backends
+    # Local bind-mounted backends require translation. Other backends
     # (Modal, Daytona, Vercel) use different mount semantics and will be
     # addressed separately if needed.  Backend is identified by TERMINAL_ENV
     # (same env var tools/terminal_tool.py reads in _get_environment_config).
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+    if os.environ.get("TERMINAL_ENV", "local") not in {"docker", "apple_container"}:
         return host_path
 
     mapped = map_cache_path_to_container(host_path, container_base=container_base)
@@ -526,5 +526,4 @@ def iter_cache_files(
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
-
 

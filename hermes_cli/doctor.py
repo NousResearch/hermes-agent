@@ -1884,6 +1884,32 @@ def run_doctor(args):
         else:
             check_info("Vercel persistence: ephemeral filesystem")
 
+    # Apple Container (if using apple_container backend)
+    if terminal_env == "apple_container":
+        from tools.environments.apple_container import (
+            container_system_status,
+            find_container_cli,
+            is_apple_container_supported_host,
+        )
+
+        supported_host = is_apple_container_supported_host()
+        if not supported_host:
+            check_fail("Apple Container requires macOS 26 or later on Apple Silicon (arm64)")
+            issues.append("Use macOS 26 or later on Apple Silicon for Apple Container")
+            container_bin = None
+        else:
+            container_bin = find_container_cli()
+        if container_bin:
+            running, _detail = container_system_status(container_bin)
+            if running:
+                check_ok("Apple Container", "(system running)")
+            else:
+                check_fail("Apple Container system not running")
+                issues.append("Start manually with: container system start")
+        elif supported_host:
+            check_fail("container CLI not found", "(required for TERMINAL_ENV=apple_container)")
+            issues.append("Install Apple Container manually (requires macOS 26+ on Apple Silicon)")
+
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")

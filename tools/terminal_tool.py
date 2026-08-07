@@ -357,8 +357,18 @@ def _docker_volume_uses_host_path(volume_spec: str) -> bool:
 
 
 def _docker_has_host_access(config: Dict[str, Any]) -> bool:
-    """Return True when a Docker sandbox exposes host paths through bind mounts."""
-    if config.get("env_type") != "docker":
+    """Return True when a local container exposes user-selected host paths.
+
+    The historical name is retained for callers, but Apple Container has the
+    same approval implication as Docker when explicit bind mounts are present.
+    """
+    env_type = config.get("env_type")
+    if env_type == "apple_container":
+        return any(
+            _docker_volume_uses_host_path(volume)
+            for volume in config.get("apple_container_volumes", [])
+        )
+    if env_type != "docker":
         return False
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
@@ -1297,7 +1307,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     _ISOLATION_KEYS = frozenset({
         "docker_image", "modal_image", "singularity_image",
-        "daytona_image", "env_type",
+        "daytona_image", "apple_container_image", "env_type",
     })
     if task_id and task_id in _task_env_overrides:
         overrides = _task_env_overrides[task_id]
@@ -1364,7 +1374,9 @@ def _safe_getcwd() -> str:
 # cwd looks when it leaks toward a Linux container's ``-w`` flag.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_BACKENDS = frozenset(
+    {"docker", "singularity", "modal", "daytona", "vercel_sandbox", "apple_container"}
+)
 
 
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
@@ -1466,8 +1478,9 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+    container_backend = env_type in _CONTAINER_BACKENDS
     docker_backend = env_type == "docker"
+    apple_container_backend = env_type == "apple_container"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
     # the active backend is local/ssh.  Do not parse their JSON/numeric payloads
@@ -1494,6 +1507,17 @@ def _get_env_config() -> Dict[str, Any]:
         docker_env = {}
         docker_extra_args = []
         docker_shm_size = "1g"
+
+    if apple_container_backend:
+        apple_container_volumes = _parse_env_var(
+            "TERMINAL_APPLE_CONTAINER_VOLUMES", "[]", json.loads, "valid JSON"
+        )
+        if not isinstance(apple_container_volumes, list):
+            raise ValueError(
+                "Invalid value for TERMINAL_APPLE_CONTAINER_VOLUMES: expected a JSON list."
+            )
+    else:
+        apple_container_volumes = []
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
@@ -1540,6 +1564,10 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "apple_container_image": os.getenv(
+            "TERMINAL_APPLE_CONTAINER_IMAGE", "python:3.11-slim-bookworm"
+        ),
+        "apple_container_volumes": apple_container_volumes,
         "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
@@ -1609,7 +1637,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
+            "daytona", "vercel_sandbox", "apple_container", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
         cwd: Working directory
         timeout: Default command timeout
@@ -1748,6 +1776,22 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             task_id=task_id,
         )
 
+    elif env_type == "apple_container":
+        from tools.environments.apple_container import (
+            AppleContainerEnvironment as _AppleContainerEnvironment,
+        )
+
+        return _AppleContainerEnvironment(
+            image=cc.get("apple_container_image") or image,
+            cwd=cwd,
+            timeout=timeout,
+            cpu=cpu,
+            memory=memory,
+            persistent_filesystem=persistent,
+            task_id=task_id,
+            volumes=cc.get("apple_container_volumes", []),
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1763,7 +1807,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', "
+            f"'apple_container', or 'ssh'"
         )
 
 
@@ -2316,6 +2361,11 @@ def terminal_tool(
             image = overrides.get("modal_image") or config["modal_image"]
         elif env_type == "daytona":
             image = overrides.get("daytona_image") or config["daytona_image"]
+        elif env_type == "apple_container":
+            image = (
+                overrides.get("apple_container_image")
+                or config["apple_container_image"]
+            )
         else:
             image = ""
 
@@ -2433,7 +2483,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+                        if env_type in _CONTAINER_BACKENDS:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -2441,6 +2491,12 @@ def terminal_tool(
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
                                 "vercel_runtime": config.get("vercel_runtime", ""),
+                                "apple_container_image": config.get(
+                                    "apple_container_image", "python:3.11-slim-bookworm"
+                                ),
+                                "apple_container_volumes": config.get(
+                                    "apple_container_volumes", []
+                                ),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
@@ -3293,6 +3349,12 @@ def check_terminal_requirements() -> bool:
         elif env_type == "vercel_sandbox":
             return _check_vercel_sandbox_requirements(config)
 
+        elif env_type == "apple_container":
+            from tools.environments.apple_container import _ensure_container_available
+
+            _ensure_container_available()
+            return True
+
         elif env_type == "daytona":
             from daytona import Daytona  # noqa: F401 — SDK presence check
             from agent.secret_scope import get_secret
@@ -3301,7 +3363,7 @@ def check_terminal_requirements() -> bool:
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, vercel_sandbox, apple_container, ssh.",
                 env_type,
             )
             return False
@@ -3344,7 +3406,7 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/vercel_sandbox/ssh)"
+        "(local/docker/singularity/modal/daytona/vercel_sandbox/apple_container/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")

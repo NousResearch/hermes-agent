@@ -1000,6 +1000,7 @@ WSL_ENVIRONMENT_HINT = (
 _REMOTE_TERMINAL_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh",
     "vercel_sandbox", "managed_modal",
+    "apple_container",
 })
 
 
@@ -1014,6 +1015,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "managed_modal": "a managed Modal sandbox (Linux)",
     "daytona": "a Daytona workspace (Linux)",
     "vercel_sandbox": "a Vercel sandbox (Linux)",
+    "apple_container": "a Linux VM via Apple Container",
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
@@ -1051,6 +1053,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     if cached is not None:
         return cached or None
 
+    env = None
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
         # non-local backend is actually configured.
@@ -1074,6 +1077,8 @@ def _probe_remote_backend(env_type: str) -> str | None:
             image = config.get("modal_image", "")
         elif env_type == "daytona":
             image = config.get("daytona_image", "")
+        elif env_type == "apple_container":
+            image = config.get("apple_container_image", "python:3.11-slim-bookworm")
         else:
             image = ""
 
@@ -1088,13 +1093,23 @@ def _probe_remote_backend(env_type: str) -> str | None:
             }
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+        if env_type in {
+            "docker", "singularity", "modal", "daytona", "vercel_sandbox",
+            "apple_container",
+        }:
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
                 "modal_mode": config.get("modal_mode", "auto"),
+                "vercel_runtime": config.get("vercel_runtime", ""),
+                "apple_container_image": config.get(
+                    "apple_container_image", "python:3.11-slim-bookworm"
+                ),
+                "apple_container_volumes": config.get(
+                    "apple_container_volumes", []
+                ),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                 "docker_forward_env": config.get("docker_forward_env", []),
@@ -1137,6 +1152,12 @@ def _probe_remote_backend(env_type: str) -> str | None:
         logger.debug("Backend probe failed: %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
         return None
+    finally:
+        if env_type == "apple_container" and env is not None:
+            try:
+                env.cleanup()
+            except Exception as cleanup_error:
+                logger.debug("Apple Container backend probe cleanup failed: %s", cleanup_error)
 
     # Parse key=value lines back into a tidy summary.
     parsed: dict[str, str] = {}
@@ -1179,7 +1200,7 @@ def build_environment_hints() -> str:
       and a Windows-only note that `terminal` shells out to bash, not
       PowerShell).
     - For **remote / sandbox** terminal backends (docker, singularity,
-      modal, daytona, ssh, vercel_sandbox): host info is **suppressed**
+      modal, daytona, ssh, vercel_sandbox, apple_container): host info is **suppressed**
       because the agent's tools can't touch the host — only the backend
       matters. A live probe inside the backend reports its OS, user, $HOME,
       and cwd. Falls back to a static summary if the probe fails.

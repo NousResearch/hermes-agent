@@ -1,13 +1,13 @@
 ---
 sidebar_position: 2
 sidebar_label: "Google Workspace"
-title: "Google Workspace — Gmail, Calendar, Drive, Sheets & Docs"
-description: "Send email, manage calendar events, search Drive, read/write Sheets, and access Docs — all through OAuth2-authenticated Google APIs"
+title: "Google Workspace — Gmail, Calendar, Drive, Tasks, Sheets & Docs"
+description: "Send email, manage calendar events and tasks, search Drive, read/write Sheets, and access Docs — all through OAuth2-authenticated Google APIs"
 ---
 
 # Google Workspace Skill
 
-Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration for Hermes. Uses OAuth2 with automatic token refresh. Prefers the [Google Workspace CLI (`gws`)](https://github.com/googleworkspace/cli) when available for broader coverage, and falls back to Google's Python client libraries otherwise.
+Gmail, Calendar, Drive, Tasks, Contacts, Sheets, and Docs integration for Hermes. Uses OAuth2 with automatic token refresh. Prefers the [Google Workspace CLI (`gws`)](https://github.com/googleworkspace/cli) when available for broader coverage, and falls back to Google's Python client libraries otherwise.
 
 **Skill path:** `skills/productivity/google-workspace/`
 
@@ -15,7 +15,7 @@ Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration for Hermes. Uses 
 
 The setup is fully agent-driven — ask Hermes to set up Google Workspace and it walks you through each step. The flow:
 
-1. **Create a Google Cloud project** and enable the required APIs (Gmail, Calendar, Drive, Sheets, Docs, People)
+1. **Create a Google Cloud project** and enable the required APIs (Gmail, Calendar, Drive, Tasks, Sheets, Docs, People)
 2. **Create OAuth 2.0 credentials** (Desktop app type) and download the client secret JSON
 3. **Authorize** — Hermes generates an auth URL, you approve in the browser, paste back the redirect URL
 4. **Done** — token auto-refreshes from that point on
@@ -114,7 +114,7 @@ $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
 $GAPI calendar list
 $GAPI calendar list --start 2026-03-01T00:00:00Z --end 2026-03-07T23:59:59Z
 
-# Create event (timezone required)
+# Create event (timezone recommended; naive datetimes use Hermes' configured timezone)
 $GAPI calendar create --summary "Team Standup" \
   --start 2026-03-01T10:00:00-07:00 --end 2026-03-01T10:30:00-07:00
 
@@ -128,7 +128,22 @@ $GAPI calendar delete EVENT_ID
 ```
 
 :::warning
-Calendar times **must** include a timezone offset (e.g. `-07:00`) or use UTC (`Z`). Bare datetimes like `2026-03-01T10:00:00` are ambiguous and will be treated as UTC.
+Calendar times should include a timezone offset (e.g. `-07:00`) or use UTC (`Z`) when possible. Bare datetimes like `2026-03-01T10:00:00` are interpreted with Hermes' configured timezone, falling back to the server-local timezone.
+:::
+
+## Tasks
+
+```bash
+# List tasks from the default task list
+$GAPI tasks list --max 20
+
+# Create a task, optionally with a due date
+$GAPI tasks add --title "Pay invoice" --due 2026-03-01
+$GAPI tasks add --title "Inbox zero"
+```
+
+:::caution
+Creating a Google Task is a write action. Hermes should show the task title, target task list, and due date (if any) and ask for confirmation before running `tasks add`.
 :::
 
 ## Drive
@@ -176,6 +191,8 @@ All commands return JSON. Key fields per service:
 | `gmail send/reply` | `status`, `id`, `threadId` |
 | `calendar list` | `id`, `summary`, `start`, `end`, `location`, `description`, `htmlLink` |
 | `calendar create` | `status`, `id`, `summary`, `htmlLink` |
+| `tasks list` | `tasklistId`, `tasklistTitle`, `tasks` |
+| `tasks add` | `status`, `tasklistId`, `tasklistTitle`, `id`, `title`, `due`, `webViewLink` |
 | `drive search` | `id`, `name`, `mimeType`, `modifiedTime`, `webViewLink` |
 | `contacts list` | `name`, `emails`, `phones` |
 | `sheets get` | 2D array of cell values |

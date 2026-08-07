@@ -228,6 +228,25 @@ def _get_langfuse() -> Optional[Langfuse]:
     return _LANGFUSE_CLIENT
 
 
+
+def _langfuse_session_id(
+    session_id: str = "",
+    gateway_session_key: str = "",
+) -> str:
+    """Stable Langfuse session id for multi-turn grouping.
+
+    Prefer ``gateway_session_key`` (from ``X-Hermes-Session-Key`` / agent
+    ``_gateway_session_key``) over the ephemeral SQLite ``session_id``.
+    The API server mints a fresh UUID ``session_id`` per ``/v1/responses``
+    request when Open WebUI does not chain ``previous_response_id``; the
+    gateway key is the durable per-channel identifier (issue #71556).
+    """
+    key = (gateway_session_key or "").strip()
+    if key:
+        return key
+    return (session_id or "").strip()
+
+
 def _scope_prefix(task_id: str, session_id: str) -> str:
     """The task/session/thread prefix shared by every trace-key shape."""
     if task_id:
@@ -602,8 +621,10 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse,
-                      turn_id: str = "", api_request_id: str = "") -> TraceState:
-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
+                      turn_id: str = "", api_request_id: str = "",
+                      gateway_session_key: str = "") -> TraceState:
+    lf_session = _langfuse_session_id(session_id, gateway_session_key)
+    trace_id = client.create_trace_id(seed=f"{lf_session or 'sessionless'}::{task_id or task_key}")
     trace_input = _extract_last_user_message(messages)
     metadata = {
         "source": "hermes",
@@ -614,17 +635,20 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         "provider": provider,
         "model": model,
         "api_mode": api_mode,
+        "gateway_session_key": gateway_session_key or None,
+        "hermes_session_id": session_id or None,
     }
 
     # session_id must be passed in trace_context for Langfuse session grouping.
+    # Prefer the stable gateway key over the ephemeral agent session UUID.
     trace_ctx: Dict[str, Any] = {"trace_id": trace_id}
-    if session_id:
-        trace_ctx["session_id"] = session_id
+    if lf_session:
+        trace_ctx["session_id"] = lf_session
 
     if propagate_attributes is not None:
         try:
             with propagate_attributes(
-                session_id=session_id or task_key,
+                session_id=lf_session or task_key,
                 trace_name="Hermes turn",
                 tags=["hermes", "langfuse"],
             ):
@@ -778,7 +802,8 @@ def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = 
                     provider: str = "", base_url: str = "", api_mode: str = "",
                     api_call_count: int = 0, messages: Any = None, turn_type: str = "user",
                     conversation_history: Any = None, user_message: Any = None,
-                    turn_id: str = "", api_request_id: str = "", **_: Any) -> None:
+                    turn_id: str = "", api_request_id: str = "",
+                    gateway_session_key: str = "", **_: Any) -> None:
     # Older Hermes branches used pre_llm_call for request-scoped tracing and
     # passed the actual API messages. Current Hermes also has a turn-scoped
     # pre_llm_call used for context injection; tracing that hook creates an
@@ -817,6 +842,7 @@ def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = 
                 client=client,
                 turn_id=turn_id,
                 api_request_id=api_request_id,
+                gateway_session_key=gateway_session_key,
             )
             _evict_stale_locked()
             _TRACE_STATE[task_key] = state
@@ -845,6 +871,7 @@ def on_pre_llm_request(
     user_message: Any = None,
     turn_id: str = "",
     api_request_id: str = "",
+    gateway_session_key: str = "",
     **_: Any,
 ) -> None:
     client = _get_langfuse()
@@ -881,6 +908,7 @@ def on_pre_llm_request(
                 client=client,
                 turn_id=turn_id,
                 api_request_id=api_request_id,
+                gateway_session_key=gateway_session_key,
             )
             _evict_stale_locked()
             _TRACE_STATE[task_key] = state

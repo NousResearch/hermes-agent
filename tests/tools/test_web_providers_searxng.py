@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import unicodedata
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -92,6 +93,231 @@ class TestSearXNGSearchProviderSearch:
         assert result["data"]["web"][1]["title"] == "Mid"
         assert result["data"]["web"][2]["title"] == "Low"
 
+    def test_empty_results_with_unresponsive_engine_returns_failure(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response({
+            "results": [],
+            "unresponsive_engines": [["startpage", "Suspended: CAPTCHA"]],
+        })
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert "startpage" in result["error"]
+        assert "Suspended: CAPTCHA" in result["error"]
+        assert set(result) == {"success", "error"}
+
+    def test_usable_results_with_unresponsive_engine_are_degraded(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        response = {
+            **self._SAMPLE_RESPONSE,
+            "unresponsive_engines": [["startpage", "timeout"]],
+        }
+        mock_resp = self._make_mock_response(response)
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=1)
+
+        assert result["success"] is True
+        assert [item["title"] for item in result["data"]["web"]] == ["Result A"]
+        assert result["data"]["degraded"] is True
+        assert result["data"]["unresponsive_engines"] == [
+            {"engine": "startpage", "reason": "timeout"},
+        ]
+
+    def test_empty_results_without_unresponsive_engines_remain_successful(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response({"results": []})
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result == {"success": True, "data": {"web": []}}
+
+    def test_malformed_unresponsive_engines_fail_without_false_diagnostics(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response({
+            "results": [],
+            "unresponsive_engines": [
+                None,
+                "startpage: timeout",
+                ["startpage"],
+                ["", "timeout"],
+                ["startpage", ""],
+                [{"name": "startpage"}, "timeout"],
+                ["startpage", {"reason": "timeout"}],
+            ],
+        })
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert "diagnostic" in result["error"].lower()
+        assert "startpage" not in result["error"].lower()
+        assert set(result) == {"success", "error"}
+
+    def test_wrong_type_unresponsive_engines_fail_without_false_diagnostics(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response({
+            "results": [],
+            "unresponsive_engines": {"bing": "timeout"},
+        })
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert "diagnostic" in result["error"].lower()
+        assert "bing" not in result["error"].lower()
+        assert set(result) == {"success", "error"}
+
+    def test_unresponsive_engine_diagnostics_are_sanitized_and_bounded(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response({
+            "results": [
+                {
+                    "title": "Usable",
+                    "url": "https://usable.example",
+                    "content": "",
+                    "score": 1,
+                }
+            ],
+            "unresponsive_engines": [
+                [
+                    f"engine-{index}\n\x1b[31m\u202e" + ("e" * 200),
+                    f"timeout-{index}\r\nFORGED" + ("r" * 500),
+                ]
+                for index in range(25)
+            ],
+        })
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        diagnostics = result["data"]["unresponsive_engines"]
+        assert result["success"] is True
+        assert result["data"]["unresponsive_engines_truncated"] is True
+        assert len(diagnostics) == 10
+        assert all(len(item["engine"]) <= 80 for item in diagnostics)
+        assert all(len(item["reason"]) <= 200 for item in diagnostics)
+        assert all(
+            not unicodedata.category(char).startswith("C")
+            for item in diagnostics
+            for value in item.values()
+            for char in value
+        )
+        assert all("\n" not in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.parametrize(
+        "payload",
+        [[], {}, {"error": "backend unavailable"}, {"results": None}],
+    )
+    def test_malformed_response_payload_returns_failure(self, monkeypatch, payload):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response(payload)
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert "invalid" in result["error"].lower()
+        assert set(result) == {"success", "error"}
+
+    def test_malformed_result_items_do_not_count_as_usable(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response({
+            "results": [None, "bad", {}, {"url": ""}],
+            "unresponsive_engines": [["startpage", "timeout"]],
+        })
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert "startpage" in result["error"]
+        assert set(result) == {"success", "error"}
+
+    def test_malformed_scores_do_not_crash_or_outrank_finite_scores(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response({
+            "results": [
+                {"title": "Huge", "url": "https://huge.example", "score": 10**1000},
+                {"title": "NaN", "url": "https://nan.example", "score": "NaN"},
+                {
+                    "title": "Infinite",
+                    "url": "https://infinite.example",
+                    "score": "Infinity",
+                },
+                {"title": "Finite", "url": "https://finite.example", "score": 0.5},
+            ],
+        })
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=4)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "Finite"
+
+    def test_truncated_invalid_diagnostics_cannot_hide_engine_failure(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response({
+            "results": [],
+            "unresponsive_engines": [[None, None]] * 100
+            + [["bing", "timeout"]],
+        })
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert "diagnostic" in result["error"].lower()
+        assert set(result) == {"success", "error"}
+
+    def test_field_inspection_truncation_cannot_hide_engine_failure(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response({
+            "results": [],
+            "unresponsive_engines": [["\x00" * 320 + "bing", "timeout"]],
+        })
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert "diagnostic" in result["error"].lower()
+        assert set(result) == {"success", "error"}
 
     def test_trailing_slash_stripped_from_url(self, monkeypatch):
         """Base URL trailing slash should not produce double-slash in endpoint."""

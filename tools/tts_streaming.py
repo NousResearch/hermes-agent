@@ -455,7 +455,7 @@ class XAIStreamer(StreamingTTSProvider):
         ).strip()
 
         async with websockets.connect(
-            ws_url, extra_headers={"Authorization": f"Bearer {api_key}"}
+            ws_url, additional_headers={"Authorization": f"Bearer {api_key}"}
         ) as ws:
             await ws.send(_json.dumps({
                 "text": text,

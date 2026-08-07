@@ -230,7 +230,28 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     root.style.setProperty(k, v)
   }
 
-  const chromeBg = chromeBackground(c.background, isDark)
+  // Window-chrome band overrides (a skin's `chrome:` block). Always set so
+  // consumers can reference the vars unconditionally; absent keys fall back to
+  // the EXACT current surfaces (the CSS var references, not re-derived hexes),
+  // so default-mode rendering is pixel-identical — matching the resolver's
+  // fallbacks in themes/skin.ts for skins that do set chrome keys.
+  const chrome = theme.chrome ?? {}
+
+  const chromeVars: Record<string, string> = {
+    '--titlebar-background': chrome.titlebarBackground ?? 'var(--ui-chat-surface-background)',
+    '--titlebar-foreground': chrome.titlebarForeground ?? c.foreground,
+    '--titlebar-border': chrome.titlebarBorder ?? c.border,
+    '--titlebar-control-hover': chrome.controlHover ?? mix(c.background, c.foreground, isDark ? 0.08 : 0.05),
+    '--titlebar-control-close-hover': chrome.controlCloseHover ?? c.destructive,
+    '--statusbar-background': chrome.statusbarBackground ?? 'var(--ui-sidebar-surface-background)',
+    '--statusbar-foreground': chrome.statusbarForeground ?? 'var(--ui-text-tertiary)'
+  }
+
+  for (const [k, v] of Object.entries(chromeVars)) {
+    root.style.setProperty(k, v)
+  }
+
+  const chromeBg = chromeBackground(chrome.titlebarBackground ?? c.background, isDark)
 
   window.hermesDesktop?.setTitleBarTheme?.({
     background: chromeBg,

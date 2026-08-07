@@ -136,6 +136,16 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
+  // App-drawn window chrome: renderer min/max/close (see WindowControls) and
+  // the persisted chrome-mode setting ('overlay' | 'app-drawn'). Mirrors the
+  // translucency pattern: the renderer owns the value, main persists it for
+  // window creation before the renderer loads.
+  setWindowChrome: payload => ipcRenderer.send('hermes:window-chrome', payload),
+  windowControls: {
+    minimize: () => ipcRenderer.send('hermes:window-control:minimize'),
+    toggleMaximize: () => ipcRenderer.send('hermes:window-control:toggle-maximize'),
+    close: () => ipcRenderer.send('hermes:window-control:close')
+  },
   setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),

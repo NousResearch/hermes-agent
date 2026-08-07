@@ -47,4 +47,33 @@ describe('skinToDesktopTheme', () => {
 
     expect(theme.colors.destructive).toBe(normalizeHex('#ff5566'))
   })
+
+  it('maps the chrome block onto the theme with palette fallbacks', () => {
+    const theme = withColors('chrome', {
+      background: '#101010',
+      banner_text: '#eeeeee',
+      ui_error: '#ff5566'
+    })!
+
+    // Absent keys fall back to the derived palette.
+    expect(theme.chrome?.titlebarBackground).toBe('#101010')
+    expect(theme.chrome?.statusbarForeground).toBe(theme.colors.mutedForeground)
+    expect(theme.chrome?.controlCloseHover).toBe(theme.colors.destructive)
+
+    const custom = skinToDesktopTheme({
+      name: 'chrome',
+      colors: { background: '#101010', banner_text: '#eeeeee' },
+      chrome: {
+        titlebar_background: '#0a0a0e',
+        control_close_hover: '#e81123',
+        statusbar_background: '#000000'
+      }
+    })!
+
+    expect(custom.chrome?.titlebarBackground).toBe('#0a0a0e')
+    expect(custom.chrome?.controlCloseHover).toBe(normalizeHex('#e81123'))
+    expect(custom.chrome?.statusbarBackground).toBe('#000000')
+    // Unset chrome keys still fall back.
+    expect(custom.chrome?.titlebarForeground).toBe(custom.colors.foreground)
+  })
 })

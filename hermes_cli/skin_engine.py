@@ -110,6 +110,20 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       web_search: "🔮"        # Override web_search tool emoji
       # Any tool not listed here uses its registry default
 
+    # Window chrome (desktop app's app-drawn chrome): optional overrides for
+    # the titlebar band, the min/max/close hover states and the statusbar
+    # band. Each key falls back to the derived palette when unset — a skin
+    # usually sets just titlebar_background + statusbar_background to give
+    # the window frame its own band.
+    chrome:
+      titlebar_background: "#0e0e12"     # Titlebar band; falls back to background
+      titlebar_foreground: "#f0f0f0"     # Titlebar text/icons; falls back to foreground
+      titlebar_border: "#2a2a30"         # Titlebar bottom border; falls back to border
+      control_hover: "#1c1c22"           # Min/max/close hover; falls back to muted
+      control_close_hover: "#e81123"     # Close-button hover (WinAmp red); falls back to destructive
+      statusbar_background: "#0a0a0e"    # Statusbar band; falls back to sidebar surface
+      statusbar_foreground: "#9a9aa2"    # Statusbar text; falls back to muted foreground
+
 USAGE
 =====
 
@@ -175,10 +189,18 @@ class SkinConfig:
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
+    # Window-chrome overrides for the desktop app's app-drawn chrome
+    # (titlebar band, min/max/close hover, statusbar band). All optional; the
+    # desktop resolver falls back to the derived palette per key.
+    chrome: Dict[str, str] = field(default_factory=dict)
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
         return self.colors.get(key, fallback)
+
+    def get_chrome(self, key: str, fallback: str = "") -> str:
+        """Get a window-chrome value with fallback."""
+        return self.chrome.get(key, fallback)
 
     def get_spinner_wings(self) -> List[Tuple[str, str]]:
         """Get spinner wing pairs, or empty list if none."""
@@ -827,6 +849,7 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     spinner_overrides = _mapping_or_empty(data.get("spinner"), section="spinner", skin_name=skin_name)
     branding_overrides = _mapping_or_empty(data.get("branding"), section="branding", skin_name=skin_name)
     emoji_overrides = _mapping_or_empty(data.get("tool_emojis"), section="tool_emojis", skin_name=skin_name)
+    chrome_overrides = _mapping_or_empty(data.get("chrome"), section="chrome", skin_name=skin_name)
 
     colors = dict(default.get("colors", {}))
     colors.update(color_overrides)
@@ -834,6 +857,8 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     spinner.update(spinner_overrides)
     branding = dict(default.get("branding", {}))
     branding.update(branding_overrides)
+    chrome = dict(default.get("chrome", {}))
+    chrome.update(chrome_overrides)
 
     # Paired palettes are NOT merged over the default skin's blocks: an empty
     # block means "this skin has no hand-tuned variant for that polarity", and
@@ -855,6 +880,7 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         tool_emojis=emoji_overrides,
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
+        chrome=chrome,
     )
 
 

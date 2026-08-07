@@ -355,6 +355,8 @@ export interface Translations {
       terminalFontReset: string
       translucencyTitle: string
       translucencyDesc: string
+      windowChromeTitle: string
+      windowChromeDesc: string
       backdropTitle: string
       backdropDesc: string
       reactionsTitle: string
@@ -2006,6 +2008,12 @@ export interface Translations {
 
   shell: {
     windowControls: string
+    windowButtons: {
+      minimize: string
+      maximize: string
+      restore: string
+      close: string
+    }
     paneControls: string
     appControls: string
     modelMenu: {

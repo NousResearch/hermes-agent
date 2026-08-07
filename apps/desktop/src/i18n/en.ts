@@ -451,6 +451,9 @@ export const en: Translations = {
       terminalFontReset: 'Use default',
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
+      windowChromeTitle: 'App-Drawn Window Chrome',
+      windowChromeDesc:
+        'Draw min/max/close in the app instead of the OS. Needed for custom window-frame skins; also fixes missing window controls on WSLg. Applies after restart.',
       backdropTitle: 'Chat Backdrop',
       backdropDesc: 'The faint statue image behind the conversation.',
       reactionsTitle: 'Message Reactions',
@@ -2407,6 +2410,12 @@ export const en: Translations = {
 
   shell: {
     windowControls: 'Window controls',
+    windowButtons: {
+      minimize: 'Minimize',
+      maximize: 'Maximize',
+      restore: 'Restore',
+      close: 'Close'
+    },
     paneControls: 'Pane controls',
     appControls: 'App controls',
     modelMenu: {

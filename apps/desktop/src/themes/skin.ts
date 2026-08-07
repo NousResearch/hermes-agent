@@ -18,7 +18,7 @@
 import type { HermesSkin, SkinColors } from '@hermes/shared/skin'
 
 import { ensureContrast, luminance, mix, normalizeHex, readableOn } from './color'
-import type { DesktopTheme, DesktopThemeColors } from './types'
+import type { DesktopTheme, DesktopThemeChrome, DesktopThemeColors } from './types'
 
 // The accent labels the sidebar in small uppercase text, so it must clear WCAG AA
 // for normal text or section headers go invisible — mirrors the VS Code importer.
@@ -105,6 +105,27 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     userBubbleBorder: border
   }
 
+  // Window-chrome overrides from the skin's `chrome:` block. Each key falls
+  // back to the derived palette above, so a skin can tint just the titlebar
+  // band without re-authoring the whole frame.
+  const rawChrome = (skin.chrome ?? {}) as Record<string, string | undefined>
+
+  const normalize = (key: string): string | undefined => {
+    const value = normalizeHex(rawChrome[key] ?? '', background)
+
+    return value ?? undefined
+  }
+
+  const chrome: DesktopThemeChrome = {
+    titlebarBackground: normalize('titlebar_background') ?? background,
+    titlebarForeground: normalize('titlebar_foreground') ?? foreground,
+    titlebarBorder: normalize('titlebar_border') ?? border,
+    controlHover: normalize('control_hover') ?? mix(background, foreground, dark ? 0.08 : 0.05),
+    controlCloseHover: normalize('control_close_hover') ?? destructive,
+    statusbarBackground: normalize('statusbar_background') ?? sidebar,
+    statusbarForeground: normalize('statusbar_foreground') ?? mutedForeground
+  }
+
   return {
     name,
     label: titleCase(name),
@@ -112,6 +133,7 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     // Single palette in both slots: a skin is one-mode, so the light/dark toggle
     // shouldn't invert it. renderedModeFor still paints `.dark` from luminance.
     colors: palette,
-    darkColors: palette
+    darkColors: palette,
+    chrome
   }
 }

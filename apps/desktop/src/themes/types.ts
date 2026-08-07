@@ -98,4 +98,20 @@ export interface DesktopTheme {
   terminal?: DesktopTerminalPalette
   /** Dark-variant terminal ANSI palette. Falls back to `terminal`. */
   darkTerminal?: DesktopTerminalPalette
+  /** Window-chrome overrides (app-drawn controls + titlebar/statusbar bands).
+   *  All optional — absent keys fall back to the derived palette. */
+  chrome?: DesktopThemeChrome
+}
+
+/** Window-chrome color overrides, written to the titlebar/statusbar CSS vars
+ *  by the theme applier. Authored through a skin's `chrome:` block; a
+ *  hand-written DesktopTheme (plugin THEMES_AREA) may set them directly. */
+export interface DesktopThemeChrome {
+  titlebarBackground?: string
+  titlebarForeground?: string
+  titlebarBorder?: string
+  controlHover?: string
+  controlCloseHover?: string
+  statusbarBackground?: string
+  statusbarForeground?: string
 }

@@ -117,6 +117,54 @@ class TestUserSkins:
         # Should inherit defaults for unspecified colors
         assert skin.get_color("banner_border") == "#CD7F32"  # from default
 
+
+class TestSkinChrome:
+    def test_default_skin_has_empty_chrome(self):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin("default")
+        assert skin.chrome == {}
+        assert skin.get_chrome("titlebar_background") == ""
+
+    def test_chrome_block_round_trips(self, tmp_path, monkeypatch):
+        from hermes_cli.skin_engine import load_skin
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        skin_file = skins_dir / "chromed.yaml"
+        import yaml
+        skin_file.write_text(
+            yaml.dump({
+                "name": "chromed",
+                "colors": {"background": "#101010"},
+                "chrome": {
+                    "titlebar_background": "#0a0a0e",
+                    "control_close_hover": "#e81123",
+                    "statusbar_background": "#000000",
+                },
+            })
+        )
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        skin = load_skin("chromed")
+        assert skin.get_chrome("titlebar_background") == "#0a0a0e"
+        assert skin.get_chrome("control_close_hover") == "#e81123"
+        assert skin.get_chrome("statusbar_background") == "#000000"
+        # Unset chrome keys fall back to the fallback arg, not the palette.
+        assert skin.get_chrome("titlebar_foreground", "#f0f0f0") == "#f0f0f0"
+
+    def test_invalid_chrome_section_is_ignored(self, tmp_path, monkeypatch):
+        from hermes_cli.skin_engine import load_skin
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        skin_file = skins_dir / "badchrome.yaml"
+        import yaml
+        skin_file.write_text(
+            yaml.dump({"name": "badchrome", "chrome": ["not", "a", "map"]})
+        )
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        skin = load_skin("badchrome")
+        assert skin.chrome == {}
+
     def test_load_user_skin_invalid_section_types_fall_back_to_defaults(self, tmp_path, monkeypatch):
         from hermes_cli.skin_engine import load_skin
 

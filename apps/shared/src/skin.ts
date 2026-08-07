@@ -85,8 +85,26 @@ export const SKIN_BRANDING_TOKENS = [
 
 export type SkinBrandingToken = (typeof SKIN_BRANDING_TOKENS)[number]
 
+/** Window-chrome tokens (desktop app-drawn chrome — titlebar/statusbar bands,
+ *  min/max/close hovers). All optional; the desktop resolver falls back to the
+ *  derived palette per key. */
+export const SKIN_CHROME_TOKENS = [
+  'titlebar_background',
+  'titlebar_foreground',
+  'titlebar_border',
+  'control_hover',
+  'control_close_hover',
+  'statusbar_background',
+  'statusbar_foreground'
+] as const
+
+export type SkinChromeToken = (typeof SKIN_CHROME_TOKENS)[number]
+
 /** Hex color per token. Open-ended so back-compat / niche keys still round-trip. */
 export type SkinColors = Partial<Record<SkinColorToken, string>> & { [key: string]: string | undefined }
+
+/** Window-chrome hex overrides. Open-ended for the same reason. */
+export type SkinChrome = Partial<Record<SkinChromeToken, string>> & { [key: string]: string | undefined }
 
 /** Branding strings per token. Open-ended for the same reason. */
 export type SkinBranding = Partial<Record<SkinBrandingToken, string>> & { [key: string]: string | undefined }
@@ -107,4 +125,6 @@ export interface HermesSkin {
   banner_hero?: string
   tool_prefix?: string
   help_header?: string
+  /** Desktop app-drawn chrome overrides (titlebar/statusbar bands). */
+  chrome?: SkinChrome
 }

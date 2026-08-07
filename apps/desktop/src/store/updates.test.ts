@@ -80,7 +80,8 @@ const setRemote = (on: boolean) =>
     token: 't',
     wsUrl: 'ws://box:9119',
     logs: [],
-    windowButtonPosition: null
+    windowButtonPosition: null,
+    windowChromeMode: 'overlay'
   })
 
 describe('maybeNotifyUpdateAvailable', () => {

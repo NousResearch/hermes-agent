@@ -3276,6 +3276,8 @@ def resolve_skin() -> dict:
             "banner_hero": skin.banner_hero,
             "tool_prefix": skin.tool_prefix,
             "help_header": (skin.branding or {}).get("help_header", ""),
+            # Desktop app-drawn chrome overrides (titlebar/statusbar bands).
+            "chrome": skin.chrome,
         }
     except Exception:
         return {}

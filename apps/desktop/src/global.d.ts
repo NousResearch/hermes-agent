@@ -151,6 +151,14 @@ declare global {
       setActiveWork?: (payload: HermesActiveWork) => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
+      // App-drawn window chrome: persist the mode and drive min/max/close
+      // over IPC (see WindowControls).
+      setWindowChrome?: (payload: { mode: 'overlay' | 'app-drawn' }) => void
+      windowControls?: {
+        minimize: () => void
+        toggleMaximize: () => void
+        close: () => void
+      }
       setTranslucency?: (payload: { intensity: number }) => void
       setKeepAwake?: (on: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
@@ -486,6 +494,9 @@ export interface HermesConnection {
   // connection belongs to.
   profile?: string
   windowButtonPosition: { x: number; y: number } | null
+  // 'overlay' = native WCO / traffic lights (default); 'app-drawn' = the
+  // renderer paints min/max/close (frame: false, non-macOS).
+  windowChromeMode: 'overlay' | 'app-drawn'
 }
 
 export interface HermesTitleBarTheme {
@@ -501,10 +512,14 @@ export interface HermesActiveWork {
 
 export interface HermesWindowState {
   isFullscreen: boolean
+  isMaximized?: boolean
   isMinimized?: boolean
   isVisible?: boolean
   nativeOverlayWidth: number
   windowButtonPosition: { x: number; y: number } | null
+  // 'overlay' = native WCO / traffic lights (default); 'app-drawn' = the
+  // renderer paints min/max/close (frame: false, non-macOS).
+  windowChromeMode: 'overlay' | 'app-drawn'
 }
 
 export interface DesktopActiveProfile {

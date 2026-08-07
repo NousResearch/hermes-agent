@@ -181,6 +181,13 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
             container_key = _resolve_container_task_id(task_id)
         except Exception:
             container_key = task_id
+        if os.getenv("EXP_BACKEND") == "1":
+            # Experimental backend identity is host-selected by the registry.
+            # Never infer it from a plugin-returned Python class name.
+            cfg = _get_env_config()
+            return str(
+                cfg.get("env_type") or os.getenv("TERMINAL_ENV") or ""
+            ).lower()
         with _env_lock:
             env = _active_environments.get(container_key) or _active_environments.get(task_id)
         if env is not None:
@@ -204,12 +211,29 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
 
 
 def _uses_container_paths(task_id: str = "default") -> bool:
+    env_type = _terminal_env_type_for_task(task_id)
+    if os.getenv("EXP_BACKEND") == "1":
+        from tools.environments.builtin_backends import (
+            register_builtin_terminal_backends,
+        )
+        from tools.environments.definitions import FilesystemSemantics
+        from tools.environments.registry import terminal_backend_registry
+
+        register_builtin_terminal_backends(terminal_backend_registry)
+        definition = terminal_backend_registry.get(env_type)
+        if definition is None:
+            return True
+        return (
+            definition.capabilities.filesystem_semantics
+            is not FilesystemSemantics.HOST
+        )
     try:
         from tools.terminal_tool import _CONTAINER_BACKENDS
+
         container_backends = _CONTAINER_BACKENDS
     except Exception:
         container_backends = _CONTAINER_PATH_BACKENDS_FALLBACK
-    return _terminal_env_type_for_task(task_id) in container_backends
+    return env_type in container_backends
 
 
 def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
@@ -330,9 +354,21 @@ def _resolve_base_dir(
     outright (rather than anchoring them to the process cwd) and fall through to
     the process cwd only as a last resort, deterministically.
     """
-    root = _authoritative_workspace_root(task_id)
     if container_paths is None:
         container_paths = _uses_container_paths(task_id)
+    if container_paths and os.getenv("EXP_BACKEND") == "1":
+        from tools.environments.registry import terminal_backend_registry
+
+        env_type = _terminal_env_type_for_task(task_id)
+        definition = terminal_backend_registry.get(env_type)
+        # Do not consult session overrides, TERMINAL_CWD, os.getcwd(), or host
+        # tilde expansion for a third-party/unknown backend. A registered remote
+        # default is the only safe initial anchor; unknown backends stay relative
+        # and will fail during explicit backend resolution.
+        base_text = definition.default_cwd if definition and definition.default_cwd else "."
+        return _normalize_without_host_deref(base_text)
+
+    root = _authoritative_workspace_root(task_id)
     if root:
         base_text = _expand_tilde(root)
     else:
@@ -373,7 +409,13 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     """
     container_paths = _uses_container_paths(task_id)
     if container_paths:
-        expanded = _expand_tilde(filepath)
+        # Remote tildes belong to the backend; expanding them on the Hermes host
+        # leaks the host home directory into the remote path.
+        expanded = filepath if os.getenv("EXP_BACKEND") == "1" else _expand_tilde(filepath)
+        if os.getenv("EXP_BACKEND") == "1" and (
+            expanded == "~" or expanded.startswith("~/")
+        ):
+            return _normalize_without_host_deref(expanded)
         if posixpath.isabs(expanded):
             return _normalize_without_host_deref(expanded)
         resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
@@ -414,6 +456,8 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     (no ``cd`` run yet) is warned on the very first write.
     """
     try:
+        if _uses_container_paths(task_id) and os.getenv("EXP_BACKEND") == "1":
+            return None
         if Path(_expand_tilde(filepath)).is_absolute():
             return None
         workspace_root = _authoritative_workspace_root(task_id)
@@ -1101,6 +1145,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _creation_locks_lock,
         _resolve_container_task_id,
         _is_unusable_container_cwd,
+        _sanitize_registered_sandbox_cwd,
         _CONTAINER_BACKENDS,
     )
     import time
@@ -1185,6 +1230,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             # bypass the guard.  Valid in-container override paths (RL/benchmark
             # sandboxes that set cwd to /workspace, /root, etc.) are absolute
             # non-host paths and pass through untouched.
+            cwd = _sanitize_registered_sandbox_cwd(env_type, cwd, config["cwd"])
             if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
                 if cwd != config["cwd"]:
                     logger.info(

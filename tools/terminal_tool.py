@@ -1404,6 +1404,50 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     return False
 
 
+def _registered_sandbox_backend_definition(env_type: str):
+    """Return a registered backend that declares isolated filesystem semantics."""
+    if os.getenv("EXP_BACKEND") != "1":
+        return None
+    from tools.environments.definitions import FilesystemSemantics
+    from tools.environments.registry import terminal_backend_registry
+
+    definition = terminal_backend_registry.get(env_type)
+    if definition is None:
+        return None
+    capabilities = definition.capabilities
+    if not (
+        capabilities.requires_sandbox_cwd
+        or capabilities.filesystem_semantics is FilesystemSemantics.ISOLATED
+    ):
+        return None
+    return definition
+
+
+def _sanitize_registered_sandbox_cwd(
+    env_type: str,
+    cwd: str,
+    default_cwd: str,
+    *,
+    verified_cwd: str | None = None,
+) -> str:
+    """Normalize cwd values for registered isolated backends."""
+    definition = _registered_sandbox_backend_definition(env_type)
+    if definition is None:
+        return cwd
+    safe_default = definition.default_cwd or "~"
+    if cwd == safe_default:
+        return cwd
+    if cwd == "~" or cwd.startswith("~/"):
+        return cwd
+    logger.info(
+        "Ignoring cwd %r for isolated backend %s; using %r instead.",
+        cwd,
+        env_type,
+        safe_default,
+    )
+    return safe_default
+
+
 # One-shot guard for the config-fallback bridge below.  Purely an
 # optimization: after the first attempt either TERMINAL_ENV is set (bridge
 # succeeded — merged config always carries terminal.backend) or the import
@@ -1495,13 +1539,19 @@ def _get_env_config() -> Dict[str, Any]:
         docker_extra_args = []
         docker_shm_size = "1g"
 
+    experimental_definition = _registered_sandbox_backend_definition(env_type)
+    registered_sandbox_backend = experimental_definition is not None
+
     # Default cwd: local uses the host's current directory, ssh uses the
-    # remote home, Vercel uses its documented workspace root, and everything
-    # else starts in the backend's default root-like cwd.
+    # remote home, registered sandbox backends declare their own default,
+    # Vercel uses its documented workspace root, and legacy container backends
+    # start in a root-like cwd.
     if env_type == "local":
         default_cwd = _safe_getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
+    elif registered_sandbox_backend and experimental_definition.default_cwd:
+        default_cwd = experimental_definition.default_cwd
     elif env_type == "vercel_sandbox":
         default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
     else:
@@ -1512,7 +1562,10 @@ def _get_env_config() -> Dict[str, Any]:
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
-    if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
+    registered_remote_tilde = registered_sandbox_backend and (
+        cwd == "~" or cwd.startswith("~/")
+    )
+    if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd) and not registered_remote_tilde:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
@@ -1524,12 +1577,18 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
+    elif registered_sandbox_backend:
+        cwd = _sanitize_registered_sandbox_cwd(env_type, cwd, default_cwd)
     elif env_type in _CONTAINER_BACKENDS and cwd:
-        # Host paths and relative paths that won't work inside containers
+        # Host paths and relative paths that won't work inside containers.
         if _is_unusable_container_cwd(cwd) and cwd != default_cwd:
-            logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
-                        "(host/relative path won't work in sandbox). Using %r instead.",
-                        cwd, env_type, default_cwd)
+            logger.info(
+                "Ignoring TERMINAL_CWD=%r for %s backend "
+                "(host/relative path won't work in sandbox). Using %r instead.",
+                cwd,
+                env_type,
+                default_cwd,
+            )
             cwd = default_cwd
 
     return {
@@ -1599,11 +1658,56 @@ def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     )
 
 
-def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
-                        ssh_config: dict = None, container_config: dict = None,
-                        local_config: dict = None,
-                        task_id: str = "default",
-                        host_cwd: str = None):
+def _create_environment(
+    env_type: str,
+    image: str,
+    cwd: str,
+    timeout: int,
+    ssh_config: dict = None,
+    container_config: dict = None,
+    local_config: dict = None,
+    task_id: str = "default",
+    host_cwd: str = None,
+):
+    """Create an environment through the migration facade."""
+    from tools.environments.definitions import BackendFactoryRequest
+    from tools.environments.facade import get_environment_facade
+
+    request = BackendFactoryRequest(
+        backend_name=env_type,
+        image=image,
+        cwd=cwd,
+        timeout=timeout,
+        task_id=task_id,
+        host_cwd=host_cwd,
+        terminal_config={
+            "ssh_config": ssh_config,
+            "container_config": container_config,
+            "local_config": local_config,
+        },
+    )
+
+    def legacy_factory(factory_request: BackendFactoryRequest):
+        return _create_environment_legacy(
+            factory_request.backend_name,
+            factory_request.image,
+            factory_request.cwd,
+            factory_request.timeout,
+            ssh_config=factory_request.terminal_config.get("ssh_config"),
+            container_config=factory_request.terminal_config.get("container_config"),
+            local_config=factory_request.terminal_config.get("local_config"),
+            task_id=factory_request.task_id,
+            host_cwd=factory_request.host_cwd,
+        )
+
+    return get_environment_facade(legacy_factory).create_environment(request)
+
+
+def _create_environment_legacy(env_type: str, image: str, cwd: str, timeout: int,
+                               ssh_config: dict = None, container_config: dict = None,
+                               local_config: dict = None,
+                               task_id: str = "default",
+                               host_cwd: str = None):
     """
     Create an execution environment for sandboxed command execution.
     
@@ -2320,18 +2424,14 @@ def terminal_tool(
             image = ""
 
         cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
-        # A per-task cwd override (registered by the gateway/TUI for workspace
-        # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
-        # config["cwd"] was already sanitized for container backends in
-        # _get_env_config() while the override is raw. On a container backend a
-        # raw host path (e.g. a Windows desktop session's C:\Users\<user>, or a
-        # POSIX /home/<user>) reaches `docker run -w <host-path>` and the
-        # container fails to start (exit 125). Re-apply the same host/relative
-        # path guard to the *resolved* cwd so the override can't bypass it.
-        # Valid in-container override paths (RL/benchmark sandboxes that set
-        # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
-        # through untouched.
-        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+        # Re-apply cwd isolation after task/session overrides are merged. Registered
+        # isolated backends accept only their declared default, remote tilde paths,
+        # or a cwd verified by the live backend. Legacy container backends retain
+        # their existing host-prefix guard.
+        registered_sandbox_backend = _registered_sandbox_backend_definition(env_type)
+        if registered_sandbox_backend is not None:
+            cwd = _sanitize_registered_sandbox_cwd(env_type, cwd, config["cwd"])
+        elif env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
             if cwd != config["cwd"]:
                 logger.info(
                     "Ignoring host/relative cwd override %r for %s backend "
@@ -2687,6 +2787,12 @@ def terminal_tool(
                 default_cwd=cwd,
                 session_key=session_key,
             )
+            effective_cwd = _sanitize_registered_sandbox_cwd(
+                env_type,
+                effective_cwd,
+                cwd,
+                verified_cwd=getattr(env, "cwd", None),
+            )
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -2947,6 +3053,12 @@ def terminal_tool(
                         default_cwd=cwd,
                         session_key=session_key,
                     )
+                    command_cwd = _sanitize_registered_sandbox_cwd(
+                        env_type,
+                        command_cwd,
+                        cwd,
+                        verified_cwd=getattr(env, "cwd", None),
+                    )
                     execute_kwargs = {
                         "timeout": effective_timeout,
                         "cwd": command_cwd,
@@ -3201,6 +3313,20 @@ def check_terminal_requirements() -> bool:
     try:
         config = _get_env_config()
         env_type = config["env_type"]
+
+        if os.getenv("EXP_BACKEND") == "1":
+            from tools.environments.manager import EnvironmentManager
+
+            try:
+                EnvironmentManager().resolve_backend(env_type)
+            except Exception as exc:
+                logger.error(
+                    "Experimental terminal backend %r is unavailable: %s",
+                    env_type,
+                    exc,
+                )
+                return False
+            return True
 
         if env_type == "local":
             return True

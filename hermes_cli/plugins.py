@@ -948,6 +948,50 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- terminal backend registration ---------------------------------------
+
+    def register_terminal_backend(self, definition) -> None:
+        """Register a terminal backend definition without creating resources.
+
+        Third-party plugins should construct
+        :class:`tools.environments.BackendDefinition` and register it from
+        their module-level ``register(ctx)`` function. Environment instances
+        remain owned by the host's EnvironmentManager.
+        """
+        from dataclasses import replace
+
+        from tools.environments.definitions import BackendDefinition
+        from tools.environments import registry as registry_module
+
+        if not isinstance(definition, BackendDefinition):
+            raise TypeError(
+                "register_terminal_backend() requires a BackendDefinition"
+            )
+
+        from tools.environments.builtin_backends import (
+            RESERVED_BUILTIN_BACKEND_NAMES,
+        )
+        from tools.environments.registry import BackendAlreadyRegisteredError
+
+        if definition.name in RESERVED_BUILTIN_BACKEND_NAMES:
+            raise BackendAlreadyRegisteredError(
+                f"Terminal backend {definition.name!r} is reserved for a built-in backend"
+            )
+
+        plugin_id = self.manifest.key or self.manifest.name
+        registered = replace(
+            definition,
+            source=self.manifest.source,
+            plugin_name=plugin_id,
+        )
+        registry_module.terminal_backend_registry.register(registered)
+        self._manager._plugin_terminal_backend_names.add(registered.name)
+        logger.debug(
+            "Plugin %s registered terminal backend: %s",
+            self.manifest.name,
+            registered.name,
+        )
+
     # -- platform adapter registration ---------------------------------------
 
     def register_platform(
@@ -1284,6 +1328,7 @@ class PluginManager:
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
+        self._plugin_terminal_backend_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
@@ -1306,6 +1351,29 @@ class PluginManager:
     # Public
     # -----------------------------------------------------------------------
 
+    def _unregister_terminal_backend_names(
+        self,
+        names: Set[str],
+        *,
+        plugin_id: str | None = None,
+    ) -> None:
+        """Remove tracked terminal backends, optionally enforcing ownership."""
+        if not names:
+            return
+
+        from tools.environments import registry as registry_module
+
+        registry = registry_module.terminal_backend_registry
+        for backend_name in names:
+            definition = registry.get(backend_name)
+            if definition is None:
+                self._plugin_terminal_backend_names.discard(backend_name)
+                continue
+            if plugin_id is not None and definition.plugin_name != plugin_id:
+                continue
+            registry.unregister(backend_name)
+            self._plugin_terminal_backend_names.discard(backend_name)
+
     def discover_and_load(self, force: bool = False) -> None:
         """Scan all plugin sources and load each plugin found.
 
@@ -1320,11 +1388,15 @@ class PluginManager:
             self._discovered = True
             return
         if force:
+            self._unregister_terminal_backend_names(
+                set(self._plugin_terminal_backend_names)
+            )
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()
             self._plugin_tool_names.clear()
             self._plugin_platform_names.clear()
+            self._plugin_terminal_backend_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
@@ -1337,10 +1409,15 @@ class PluginManager:
         # registry" — callers swallow the exception and would otherwise be
         # permanently stranded on the early-return above (the "No web provider
         # configured" class of failures).
+        terminal_backend_names_before = set(self._plugin_terminal_backend_names)
         self._discovered = True
         try:
             self._discover_and_load_inner()
         except BaseException:
+            added_terminal_backends = (
+                self._plugin_terminal_backend_names - terminal_backend_names_before
+            )
+            self._unregister_terminal_backend_names(added_terminal_backends)
             self._discovered = False
             raise
 
@@ -1790,6 +1867,7 @@ class PluginManager:
             f"{_NS_PARENT}.{_slug}",
             PluginContext(manifest, self)._tool_override_allowed(""),
         )
+        _terminal_backend_names_before = set(self._plugin_terminal_backend_names)
         try:
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
@@ -1852,6 +1930,13 @@ class PluginManager:
                 )
 
         except Exception as exc:
+            added_terminal_backends = (
+                self._plugin_terminal_backend_names - _terminal_backend_names_before
+            )
+            self._unregister_terminal_backend_names(
+                added_terminal_backends,
+                plugin_id=_plugin_id,
+            )
             loaded.error = str(exc)
             logger.warning(
                 "Failed to load plugin '%s': %s",

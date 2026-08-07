@@ -1018,6 +1018,40 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+def _experimental_backend_definition(backend: str):
+    """Return a registered definition only for the experimental runtime."""
+    if os.getenv("EXP_BACKEND") != "1":
+        return None
+    from tools.environments.builtin_backends import register_builtin_terminal_backends
+    from tools.environments.registry import terminal_backend_registry
+
+    register_builtin_terminal_backends(terminal_backend_registry)
+    return terminal_backend_registry.get(backend)
+
+
+def _is_remote_terminal_backend(backend: str) -> bool:
+    if os.getenv("EXP_BACKEND") == "1":
+        definition = _experimental_backend_definition(backend)
+        if definition is None:
+            return True
+        from tools.environments.definitions import ExecutionLocation
+
+        return (
+            definition.capabilities.execution_location
+            is not ExecutionLocation.LOCAL
+        )
+    return backend in _REMOTE_TERMINAL_BACKENDS
+
+
+def _backend_fallback_description(backend: str) -> str:
+    definition = _experimental_backend_definition(backend)
+    if definition is not None and definition.description.strip():
+        return definition.description.strip()
+    return _BACKEND_FALLBACK_DESCRIPTIONS.get(
+        backend, f"a {backend} environment (likely Linux)"
+    )
+
+
 # Cache the backend probe result per process so we only pay the probe cost
 # on the first prompt build of a session. Keyed by (env_type, cwd_hint) so
 # a mid-process backend switch rebuilds the string. Kept in-module (not on
@@ -1192,7 +1226,7 @@ def build_environment_hints() -> str:
     hints: list[str] = []
 
     backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
-    is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS
+    is_remote_backend = _is_remote_terminal_backend(backend)
 
     if not is_remote_backend:
         # --- Host info block (local backend: host == where tools run) ---
@@ -1239,9 +1273,7 @@ def build_environment_hints() -> str:
                 f"backend state matters:\n{probe}"
             )
         else:
-            description = _BACKEND_FALLBACK_DESCRIPTIONS.get(
-                backend, f"a {backend} environment (likely Linux)"
-            )
+            description = _backend_fallback_description(backend)
             hints.append(
                 f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
                 f"`write_file`, `patch`, and `search_files` tools all operate "

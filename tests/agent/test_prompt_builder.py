@@ -725,7 +725,19 @@ class TestEnvironmentHints:
         _pb._clear_backend_probe_cache()
         assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
 
-
+    def test_build_environment_hints_uses_live_probe_when_available(self, monkeypatch):
+        """When the probe succeeds, its output must appear in the hint block."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        monkeypatch.setenv("EXP_BACKEND", "0")
+        fake_probe_output = "  OS: Linux 6.8.0\n  User: root\n  Home: /root\n  Working directory: /workspace"
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: fake_probe_output)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Terminal backend: modal" in result
+        assert "Linux 6.8.0" in result
+        assert "/workspace" in result
     def test_probe_remote_backend_imports_real_factory(self, monkeypatch):
         """Regression for #53667: the probe imported a nonexistent
         ``get_environment`` from ``tools.environments`` and always died with

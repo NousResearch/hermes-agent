@@ -552,6 +552,8 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
 
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    from cron.jobs import effective_job_state
+
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
@@ -573,7 +575,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_status": job.get("last_status"),
         "last_delivery_error": job.get("last_delivery_error"),
         "enabled": job.get("enabled", True),
-        "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
+        # Derive from enabled so half-paused records never render as paused.
+        "state": effective_job_state(job),
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
     }

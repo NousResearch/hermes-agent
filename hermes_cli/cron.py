@@ -113,11 +113,15 @@ def cron_list(show_all: bool = False):
     print(color("└─────────────────────────────────────────────────────────────────────────┘", Colors.CYAN))
     print()
 
+    from cron.jobs import effective_job_state
+
     for job in jobs:
         job_id = job.get("id", "?")
         name = job.get("name", "(unnamed)")
         schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
-        state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
+        # Derive from the scheduler-honoured flag — never show [paused] when
+        # enabled=true (half-paused contradiction must not look frozen).
+        state = effective_job_state(job)
         next_run = job.get("next_run_at", "?")
 
         # `repeat` may be present-but-null in the job record (e.g. a one-shot

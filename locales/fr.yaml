@@ -279,6 +279,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "Aucun point de contrôle trouvé pour {cwd}"
     invalid_number:        "Numéro de point de contrôle invalide. Utilisez 1-{max}."
     restored:              "✅ Restauré au point de contrôle {hash} : {reason}\nUn instantané pré-rollback a été enregistré automatiquement."
+    kept_user_edits:       "↷ Vos modifications manuelles ont été conservées : {files}\nUtilisez /rollback <N> --all pour les restaurer aussi."
     restore_failed:        "❌ {error}"
 
   diff:

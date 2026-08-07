@@ -3297,6 +3297,16 @@ class GatewaySlashCommandsMixin:
         cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
         arg = event.get_command_args().strip()
 
+        # --all / --force: classic full restore, overwriting user edits too.
+        restore_all = False
+        arg_parts = []
+        for tok in arg.split():
+            if tok.lower() in ("--all", "--force"):
+                restore_all = True
+            else:
+                arg_parts.append(tok)
+        arg = " ".join(arg_parts)
+
         if not arg:
             checkpoints = mgr.list_checkpoints(cwd)
             return format_checkpoint_list(checkpoints, cwd)
@@ -3316,13 +3326,22 @@ class GatewaySlashCommandsMixin:
         except ValueError:
             target_hash = arg
 
-        result = mgr.restore(cwd, target_hash)
+        result = mgr.restore(cwd, target_hash, safe=not restore_all)
         if result["success"]:
-            return t(
+            msg = t(
                 "gateway.rollback.restored",
                 hash=result["restored_to"],
                 reason=result["reason"],
             )
+            skipped = result.get("skipped_user_edits") or []
+            if skipped:
+                shown = ", ".join(skipped[:5])
+                more = f" (+{len(skipped) - 5})" if len(skipped) > 5 else ""
+                msg += "\n" + t(
+                    "gateway.rollback.kept_user_edits",
+                    files=shown + more,
+                )
+            return msg
         return t("gateway.rollback.restore_failed", error=result["error"])
 
     async def _handle_diff_command(self, event: MessageEvent) -> str:

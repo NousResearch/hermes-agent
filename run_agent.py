@@ -3565,9 +3565,19 @@ class AIAgent:
             return
         landed = file_mutation_result_landed(tool_name, result)
         if landed:
+            landed_paths = _extract_landed_file_mutation_paths(tool_name, args, result)
             changed = getattr(self, "_turn_file_mutation_paths", None)
             if changed is not None:
-                changed.update(_extract_landed_file_mutation_paths(tool_name, args, result))
+                changed.update(landed_paths)
+            # Feed the checkpoint agent-write ledger so /rollback's safe mode
+            # can tell Hermes-authored content from later user hand-edits.
+            mgr = getattr(self, "_checkpoint_mgr", None)
+            if mgr is not None and getattr(mgr, "enabled", False):
+                for _p in landed_paths:
+                    try:
+                        mgr.record_agent_write(_p)
+                    except Exception:
+                        pass
         if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:

@@ -1697,14 +1697,10 @@ class SessionStore:
             )
             entry_json = json.dumps(serialized_entry)
             revision = self._next_routing_generation_locked()
-            fallback_data: Optional[Dict[str, Any]] = None
-            if entry_data is not None:
-                fallback_data = {
-                    key: current.to_dict()
-                    for key, current in self._entries.items()
-                }
-                fallback_data[session_key] = serialized_entry
-            return entry_json, revision, fallback_data
+            # Don't eagerly build the O(n) full snapshot — only the candidate
+            # is needed for the DB upsert.  The fallback is deferred to the
+            # except branch below where it's actually used.
+            return entry_json, revision, serialized_entry if entry_data is not None else None
 
         if lock_held:
             captured = _capture()
@@ -1713,7 +1709,7 @@ class SessionStore:
                 captured = _capture()
         if captured is None:
             return
-        entry_json, revision, fallback_data = captured
+        entry_json, revision, candidate_entry = captured
         _db = getattr(self, "_db", None)
         saver = getattr(_db, "save_gateway_routing_entry", None) if _db else None
         if callable(saver):
@@ -1741,7 +1737,23 @@ class SessionStore:
                     "(%s); falling back to full index rewrite",
                     session_key, exc,
                 )
-        if fallback_data is not None:
+        if candidate_entry is not None:
+            # DB upsert failed (or no DB): build the full snapshot now, carrying
+            # the candidate entry so the fallback persists the intended
+            # transition rather than re-snapshotting the unchanged live value.
+            if lock_held:
+                # Caller already holds _lock — build snapshot in-place.
+                fallback_data: Dict[str, Any] = {
+                    key: current.to_dict()
+                    for key, current in self._entries.items()
+                }
+            else:
+                with self._lock:
+                    fallback_data = {
+                        key: current.to_dict()
+                        for key, current in self._entries.items()
+                    }
+            fallback_data[session_key] = candidate_entry
             self._persist_routing_data(fallback_data, revision)
         else:
             self._save_entries()

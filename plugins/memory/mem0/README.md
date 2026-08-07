@@ -114,16 +114,27 @@ hermes memory setup mem0 --mode oss \
 hermes memory setup mem0 --mode oss --oss-llm-key sk-...
 ```
 
-Or edit `$HERMES_HOME/mem0.json` directly:
+Or edit `$HERMES_HOME/mem0.json` directly. For local Qdrant,
+`hermes memory setup` resolves the default to the active profile's
+`$HERMES_HOME/mem0_qdrant` directory and stores the resolved absolute path:
+
 ```json
 {
   "mode": "oss",
   "oss": {
     "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
     "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
-    "vector_store": {"provider": "qdrant", "config": {"path": "~/.hermes/mem0_qdrant"}}
+    "vector_store": {"provider": "qdrant", "config": {"path": "/absolute/path/to/active-hermes-home/mem0_qdrant"}}
   }
 }
+```
+
+To deliberately keep using the legacy shared store from a named profile,
+set it as an explicit override:
+
+```bash
+hermes memory setup mem0 --mode oss --oss-llm-key sk-... \
+  --oss-vector-path ~/.hermes/mem0_qdrant
 ```
 
 ### OSS to Platform
@@ -159,8 +170,9 @@ Circuit breaker tripped after 5 consecutive failures. Resets after 2 minutes.
 ### OSS: Qdrant connection refused
 
 ```bash
-# If using local Qdrant, check the storage path is writable:
-ls -la ~/.hermes/mem0_qdrant
+# If using local Qdrant, check the active profile's storage path is writable.
+# HERMES_HOME defaults to ~/.hermes for the default profile.
+ls -la "${HERMES_HOME:-$HOME/.hermes}/mem0_qdrant"
 
 # If using Qdrant server, check it's reachable:
 curl http://localhost:6333/healthz

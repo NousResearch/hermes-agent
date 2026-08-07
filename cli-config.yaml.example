@@ -1007,6 +1007,13 @@ platform_toolsets:
 # Platform-specific knobs live under `extra`.
 #
 # platforms:
+#   matrix:
+#     extra:
+#       # Keep processing reactions on each message (default), or set `thread`
+#       # to aggregate 👀/✅/❌ on the Matrix thread root event.
+#       processing_reaction_scope: "message"  # message | thread
+#       # Maximum completed thread states retained in memory (default: 500).
+#       processing_reaction_state_limit: 500
 #   telegram:
 #     reply_to_mode: "first"  # off | first | all
 #     # guest_mode lets explicit @mentions from non-allowlisted groups through.

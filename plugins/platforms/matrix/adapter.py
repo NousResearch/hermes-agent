@@ -19,6 +19,11 @@ Environment variables:
     MATRIX_HOME_ROOM        Room ID for cron/notification delivery
     MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
                             (eyes/checkmark/cross). Default: true
+                            `platforms.matrix.extra.processing_reaction_scope`
+                            accepts `message` (default) or `thread` to place
+                            the state on the Matrix thread root event.
+                            `processing_reaction_state_limit` bounds completed
+                            thread state retained in memory (default: 500).
     MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
     MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
                                 (alias of matrix.free_response_rooms)
@@ -505,6 +510,17 @@ class MatrixRoomIdentity:
     has_explicit_name: bool
     chat_type: str
     conflict: bool = False
+
+
+@dataclass
+class _MatrixProcessingReactionState:
+    """Hermes-owned processing reactions for one Matrix target event."""
+
+    generation: int = 0
+    eyes_event_id: str | None = None
+    terminal_event_id: str | None = None
+    terminal_emoji: str | None = None
+    active_message_ids: Set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -1149,6 +1165,8 @@ class MatrixAdapter(BasePlatformAdapter):
     # overrides both from _resolve_max_message_length().
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _split_threshold = DEFAULT_MAX_MESSAGE_LENGTH - 100
+    _processing_reaction_scope = "message"
+    _processing_reaction_state_limit = 500
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
@@ -1274,7 +1292,29 @@ class MatrixAdapter(BasePlatformAdapter):
         self._reactions_enabled: bool = os.getenv(
             "MATRIX_REACTIONS", "true"
         ).lower() not in {"false", "0", "no"}
+        raw_reaction_scope = config.extra.get("processing_reaction_scope", "message")
+        reaction_scope = (
+            raw_reaction_scope.strip().lower()
+            if isinstance(raw_reaction_scope, str)
+            else "message"
+        )
+        if reaction_scope not in {"message", "thread"}:
+            logger.warning(
+                "Matrix: unsupported processing_reaction_scope=%r; using message",
+                raw_reaction_scope,
+            )
+            reaction_scope = "message"
+        self._processing_reaction_scope = reaction_scope
+        raw_state_limit = config.extra.get("processing_reaction_state_limit", 500)
+        try:
+            self._processing_reaction_state_limit = max(1, int(raw_state_limit))
+        except (TypeError, ValueError):
+            self._processing_reaction_state_limit = 500
         self._pending_reactions: dict[tuple[str, str], str] = {}
+        self._reaction_states: dict[
+            tuple[str, str], _MatrixProcessingReactionState
+        ] = {}
+        self._processing_event_generations: dict[tuple[str, str], int] = {}
         # Delay before redacting reactions so Matrix homeservers have time to
         # deliver the final message event without tripping "missing event"
         # errors in some clients.  5s is empirically safe; not user-tunable —
@@ -3927,44 +3967,252 @@ class MatrixAdapter(BasePlatformAdapter):
         self._reaction_redaction_tasks.add(task)
         task.add_done_callback(self._reaction_redaction_tasks.discard)
 
+    def _processing_reaction_target(
+        self,
+        event: MessageEvent,
+    ) -> tuple[str, str] | None:
+        """Return the Matrix event that owns this processing state.
+
+        Thread-scoped reactions point at ``SessionSource.thread_id`` (the
+        Matrix thread root).  Non-threaded events keep the legacy per-message
+        target so enabling the feature cannot make unrelated messages share a
+        status reaction.
+        """
+
+        source = getattr(event, "source", None)
+        room_id = getattr(source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not isinstance(room_id, str) or not room_id:
+            return None
+        if not isinstance(message_id, str) or not message_id:
+            return None
+
+        if getattr(self, "_processing_reaction_scope", "message") == "thread":
+            thread_id = getattr(source, "thread_id", None)
+            if isinstance(thread_id, str) and thread_id:
+                return room_id, thread_id
+        return room_id, message_id
+
+    def _get_processing_reaction_state(
+        self,
+        reaction_key: tuple[str, str],
+    ) -> _MatrixProcessingReactionState:
+        """Get state for a target, tolerating lightweight test instances."""
+
+        states = getattr(self, "_reaction_states", None)
+        if states is None:
+            states = {}
+            self._reaction_states = states
+        return states.setdefault(reaction_key, _MatrixProcessingReactionState())
+
+    def _prune_completed_processing_reaction_states(
+        self,
+        protected_key: tuple[str, str] | None = None,
+    ) -> list[tuple[tuple[str, str], _MatrixProcessingReactionState]]:
+        """Drop old completed thread state while preserving active turns."""
+        states = getattr(self, "_reaction_states", None)
+        if not states:
+            return []
+        try:
+            limit = max(1, int(getattr(self, "_processing_reaction_state_limit", 500)))
+        except (TypeError, ValueError):
+            limit = 500
+        if len(states) <= limit:
+            return []
+
+        pending = getattr(self, "_pending_reactions", {})
+        removed: list[tuple[tuple[str, str], _MatrixProcessingReactionState]] = []
+        for key, state in list(states.items()):
+            if len(states) <= limit:
+                break
+            if key == protected_key:
+                continue
+            if getattr(state, "active_message_ids", set()):
+                continue
+            if state.eyes_event_id is not None or key in pending:
+                continue
+            states.pop(key, None)
+            removed.append((key, state))
+        return removed
+
+    async def _redact_tracked_reaction(
+        self,
+        room_id: str,
+        reaction_event_id: str | None,
+        reason: str,
+    ) -> None:
+        """Redact one Hermes-owned reaction without breaking message flow."""
+
+        if not reaction_event_id:
+            return
+        try:
+            if not await self._redact_reaction(room_id, reaction_event_id, reason):
+                logger.debug(
+                    "Matrix: failed to redact tracked reaction %s",
+                    reaction_event_id,
+                )
+        except Exception as exc:
+            logger.debug(
+                "Matrix: tracked reaction redaction failed for %s: %s",
+                reaction_event_id,
+                exc,
+            )
+
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add eyes reaction when the agent starts processing a message."""
+        """Add eyes to the message or thread root when processing starts."""
         if not self._reactions_enabled:
             return
-        msg_id = event.message_id
-        room_id = event.source.chat_id
-        if msg_id and room_id:
-            reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
-            if reaction_event_id:
-                self._pending_reactions[(room_id, msg_id)] = reaction_event_id
+        target = self._processing_reaction_target(event)
+        if target is None:
+            return
+        room_id, target_event_id = target
+        reaction_key = (room_id, target_event_id)
+        state = self._get_processing_reaction_state(reaction_key)
+        for expired_key, expired_state in self._prune_completed_processing_reaction_states(
+            protected_key=reaction_key
+        ):
+            await self._redact_tracked_reaction(
+                expired_key[0],
+                expired_state.terminal_event_id,
+                "processing state expired",
+            )
+        state.generation += 1
+        generation = state.generation
+
+        event_message_id = event.message_id
+        event_generations = getattr(self, "_processing_event_generations", None)
+        if event_generations is None:
+            event_generations = {}
+            self._processing_event_generations = event_generations
+        event_generations[(room_id, event_message_id)] = generation
+        if isinstance(event_message_id, str):
+            state.active_message_ids.add(event_message_id)
+
+        previous_eyes_event_id = state.eyes_event_id
+        previous_terminal_event_id = state.terminal_event_id
+        state.eyes_event_id = None
+        state.terminal_event_id = None
+        state.terminal_emoji = None
+        if (
+            getattr(self, "_pending_reactions", {}).get(reaction_key)
+            == previous_eyes_event_id
+        ):
+            self._pending_reactions.pop(reaction_key, None)
+
+        # A new turn reopens a completed thread.  Only event IDs returned by
+        # this adapter are redacted, so user-authored reactions remain intact.
+        await self._redact_tracked_reaction(
+            room_id,
+            previous_eyes_event_id,
+            "processing resumed",
+        )
+        await self._redact_tracked_reaction(
+            room_id,
+            previous_terminal_event_id,
+            "processing resumed",
+        )
+
+        reaction_event_id = await self._send_reaction(
+            room_id,
+            target_event_id,
+            "\U0001f440",
+        )
+        if state.generation != generation:
+            # Another start won while the network request was in flight.  Do
+            # not let this stale request become the current eyes marker.
+            await self._redact_tracked_reaction(
+                room_id,
+                reaction_event_id,
+                "stale processing start",
+            )
+            return
+        if reaction_event_id:
+            state.eyes_event_id = reaction_event_id
+            self._pending_reactions[reaction_key] = reaction_event_id
 
     async def on_processing_complete(
         self,
         event: MessageEvent,
         outcome: ProcessingOutcome,
     ) -> None:
-        """Replace eyes with checkmark (success) or cross (failure)."""
+        """Replace the active marker with a terminal processing state."""
         if not self._reactions_enabled:
             return
-        msg_id = event.message_id
-        room_id = event.source.chat_id
-        if not msg_id or not room_id:
+        target = self._processing_reaction_target(event)
+        if target is None:
             return
+        room_id, target_event_id = target
+        reaction_key = (room_id, target_event_id)
+        state = self._get_processing_reaction_state(reaction_key)
+
+        event_message_id = event.message_id
+        event_generations = getattr(self, "_processing_event_generations", {})
+        event_generation = event_generations.pop((room_id, event_message_id), None)
+        state.active_message_ids.discard(event_message_id)
+        if event_generation is not None and event_generation != state.generation:
+            # A newer message in this thread owns the visible state.
+            return
+
         if outcome == ProcessingOutcome.CANCELLED:
+            if getattr(self, "_processing_reaction_scope", "message") == "thread":
+                eyes_event_id = state.eyes_event_id
+                if eyes_event_id is None:
+                    eyes_event_id = getattr(self, "_pending_reactions", {}).get(
+                        reaction_key
+                    )
+                state.eyes_event_id = None
+                if (
+                    getattr(self, "_pending_reactions", {}).get(reaction_key)
+                    == eyes_event_id
+                ):
+                    self._pending_reactions.pop(reaction_key, None)
+                await self._redact_tracked_reaction(
+                    room_id,
+                    eyes_event_id,
+                    "processing cancelled",
+                )
+            else:
+                self._reaction_states.pop(reaction_key, None)
+            # Preserve the legacy message-scoped cancellation behavior.
             return
-        reaction_key = (room_id, msg_id)
-        if reaction_key in self._pending_reactions:
-            eyes_event_id = self._pending_reactions.pop(reaction_key)
+
+        eyes_event_id = state.eyes_event_id
+        if eyes_event_id is None:
+            eyes_event_id = getattr(self, "_pending_reactions", {}).get(reaction_key)
+        state.eyes_event_id = None
+        if getattr(self, "_pending_reactions", {}).get(reaction_key) == eyes_event_id:
+            self._pending_reactions.pop(reaction_key, None)
+        if eyes_event_id:
             self._schedule_reaction_redaction(
                 room_id,
                 eyes_event_id,
                 "processing complete",
             )
-        await self._send_reaction(
+
+        # This mainly protects idempotent/recovered state.  A normal new turn
+        # already removes the previous terminal event in on_processing_start.
+        previous_terminal_event_id = state.terminal_event_id
+        state.terminal_event_id = None
+        state.terminal_emoji = None
+        await self._redact_tracked_reaction(
             room_id,
-            msg_id,
-            "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c",
+            previous_terminal_event_id,
+            "processing complete",
         )
+
+        terminal_emoji = "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c"
+        terminal_event_id = await self._send_reaction(
+            room_id,
+            target_event_id,
+            terminal_emoji,
+        )
+        if terminal_event_id:
+            state.terminal_event_id = terminal_event_id
+            state.terminal_emoji = terminal_emoji
+        if getattr(self, "_processing_reaction_scope", "message") != "thread":
+            # Message-scoped reactions do not need a reopening state after the
+            # terminal event is sent; avoid retaining one entry per message.
+            self._reaction_states.pop(reaction_key, None)
 
     async def _on_reaction(self, event: Any) -> None:
         """Handle incoming reaction events."""

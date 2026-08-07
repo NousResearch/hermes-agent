@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
+import { ScopedCommandSearch, type ScopedCommandSearchItem } from '@/components/ui/scoped-command-search'
 import { useI18n } from '@/i18n'
-import type { EnvVarInfo } from '@/types/hermes'
 
 import { CredentialKeyCard, credentialPlaceholder, credentialRowLabel } from './credential-key-ui'
 import { useEnvCredentials } from './env-credentials'
@@ -28,73 +29,127 @@ const VIEW_CATEGORIES: Record<KeysView, readonly string[]> = {
   tools: ['tool']
 }
 
+const credentialElementId = (key: string) => `credential-key-${key}`
+
 export function KeysSettings({ view }: KeysSettingsProps) {
   const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
+  const [, setSearchParams] = useSearchParams()
   const [openKey, setOpenKey] = useState<null | string>(null)
+  const [query, setQuery] = useState('')
 
   useEffect(() => {
     setOpenKey(null)
+    setQuery('')
   }, [view])
 
-  // Deep link from Capabilities env-var rows (?tab=keys&key=<ENV_KEY>): scroll
-  // the credential card into view, flash it, and expand it. Same mechanism the
-  // command palette uses for config fields / archived sessions.
-  useDeepLinkHighlight({
-    elementId: key => `credential-key-${key}`,
-    onResolve: key => setOpenKey(key),
-    param: 'key',
-    ready: key => Boolean(vars && key in vars)
-  })
-
-  const groups = useMemo(() => {
+  const entries = useMemo(() => {
     if (!vars) {
       return []
     }
 
-    return KEYS_VIEWS.flatMap(v => {
-      const cats = VIEW_CATEGORIES[v]
+    const cats = VIEW_CATEGORIES[view]
 
-      const entries = Object.entries(vars)
-        .filter(([, info]) => !info.channel_managed && cats.includes(asText(info.category)))
-        .sort(([a], [b]) => a.localeCompare(b))
+    return Object.entries(vars)
+      .filter(([, info]) => !info.channel_managed && cats.includes(asText(info.category)))
+      .sort(([a], [b]) => a.localeCompare(b))
+  }, [vars, view])
 
-      return entries.length === 0 ? [] : [{ category: v, entries }]
-    })
-  }, [vars])
+  const searchItems = useMemo<ScopedCommandSearchItem[]>(
+    () =>
+      entries.map(([key, info]) => ({
+        description: info.description?.trim() || key,
+        id: key,
+        keywords: [
+          key,
+          asText(info.description),
+          asText(info.url),
+          ...(Array.isArray(info.tools) ? info.tools.map(asText) : [])
+        ].filter(Boolean),
+        label: credentialRowLabel(key, info)
+      })),
+    [entries]
+  )
+
+  const renderableKeys = useMemo(() => new Set(entries.map(([key]) => key)), [entries])
+
+  const resolveDeepLink = useCallback((key: string) => {
+    setQuery('')
+    setOpenKey(key)
+  }, [])
+
+  const deepLinkReady = useCallback((key: string) => renderableKeys.has(key), [renderableKeys])
+
+  const selectSearchResult = useCallback(
+    (item: ScopedCommandSearchItem) => {
+      setQuery('')
+      setSearchParams(
+        previous => {
+          const next = new URLSearchParams(previous)
+          next.set('key', item.id)
+
+          return next
+        },
+        { replace: true }
+      )
+    },
+    [setSearchParams]
+  )
+
+  // Deep link from Capabilities env-var rows (?tab=keys&key=<ENV_KEY>): scroll
+  // the credential card into view, flash it, and expand it. Only consume keys
+  // rendered by this sub-view so a stale Tools/Settings pairing cannot keep
+  // clearing the user's search while the target remains impossible to mount.
+  useDeepLinkHighlight({
+    elementId: credentialElementId,
+    onResolve: resolveDeepLink,
+    param: 'key',
+    ready: deepLinkReady
+  })
 
   if (!vars) {
-    return <SettingsSkeleton sections={[{ rows: 5 }]} />
+    return <SettingsSkeleton search sections={[{ rows: 5 }]} />
   }
 
-  const visible = groups.filter(g => g.category === view)
+  const searchLabel = view === 'tools' ? t.settings.keys.searchTools : t.settings.keys.searchSettings
 
   return (
     <SettingsContent>
-      {visible.map(group => (
-        <div className="grid gap-2" key={group.category}>
-          {group.entries.map(([key, info]: [string, EnvVarInfo]) => {
-            const label = credentialRowLabel(key, info)
+      {entries.length > 0 ? (
+        <>
+          <div className="pb-3">
+            <ScopedCommandSearch
+              emptyMessage={t.settings.keys.noMatch}
+              items={searchItems}
+              onSelect={selectSearchResult}
+              onValueChange={setQuery}
+              placeholder={searchLabel}
+              value={query}
+            />
+          </div>
 
-            return (
-              <div className="scroll-mt-6 rounded-[6px]" id={`credential-key-${key}`} key={key}>
-                <CredentialKeyCard
-                  expanded={openKey === key}
-                  info={info}
-                  label={label}
-                  onExpand={() => setOpenKey(key)}
-                  onToggle={() => setOpenKey(prev => (prev === key ? null : key))}
-                  placeholder={credentialPlaceholder(key, info, label)}
-                  rowProps={rowProps}
-                  varKey={key}
-                />
-              </div>
-            )
-          })}
-        </div>
-      ))}
+          <div className="grid gap-2">
+            {entries.map(([key, info]) => {
+              const label = credentialRowLabel(key, info)
 
-      {visible.length === 0 && (
+              return (
+                <div className="scroll-mt-6 rounded-[6px]" id={`credential-key-${key}`} key={key}>
+                  <CredentialKeyCard
+                    expanded={openKey === key}
+                    info={info}
+                    label={label}
+                    onExpand={() => setOpenKey(key)}
+                    onToggle={() => setOpenKey(prev => (prev === key ? null : key))}
+                    placeholder={credentialPlaceholder(key, info, label)}
+                    rowProps={rowProps}
+                    varKey={key}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        </>
+      ) : (
         <div className="rounded-lg border border-dashed border-(--ui-stroke-tertiary) px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
           {t.settings.keys.empty}
         </div>

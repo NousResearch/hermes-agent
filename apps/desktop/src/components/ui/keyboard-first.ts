@@ -28,9 +28,19 @@ const RELEASE_EVENT = 'hermes:release-typing-focus'
  *
  * Mount-scoped: overlays mount when they open, so "quiet until moved" needs no
  * knowledge of whether a hotkey or a click opened it.
+ *
+ * Lists that stay MOUNTED while hidden (a scoped search keeps its listbox for
+ * the aria-controls contract) outlive that mount-scoped guard — the first
+ * pointer movement releases it long before the list ever appears. Pass a
+ * `rearm` value that changes when the list becomes visible and the guard arms
+ * again for the fresh appearance.
  */
-export function usePointerQuiet(): boolean {
+export function usePointerQuiet(rearm?: unknown): boolean {
   const [quiet, setQuiet] = useState(true)
+
+  useEffect(() => {
+    setQuiet(true)
+  }, [rearm])
 
   useEffect(() => {
     const wake = () => setQuiet(false)

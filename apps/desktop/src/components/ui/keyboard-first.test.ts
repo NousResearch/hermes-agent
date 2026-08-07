@@ -45,6 +45,33 @@ describe('usePointerQuiet', () => {
     expect(renderHook(() => usePointerQuiet()).result.current).toBe(true)
   })
 
+  it('re-arms when the re-arm key changes, even after the pointer moved', () => {
+    const { result, rerender } = renderHook(({ hidden }) => usePointerQuiet(hidden), {
+      initialProps: { hidden: true }
+    })
+
+    move()
+    expect(result.current).toBe(false)
+
+    // A list kept mounted while hidden becomes visible: the guard arms again
+    // for the fresh appearance despite the earlier movement.
+    rerender({ hidden: false })
+    expect(result.current).toBe(true)
+
+    move()
+    expect(result.current).toBe(false)
+  })
+
+  it('does not re-arm on re-render while the re-arm key is unchanged', () => {
+    const { result, rerender } = renderHook(({ hidden }) => usePointerQuiet(hidden), {
+      initialProps: { hidden: true }
+    })
+
+    move()
+    rerender({ hidden: true })
+    expect(result.current).toBe(false)
+  })
+
   it('drops its listeners on unmount', () => {
     const remove = vi.spyOn(window, 'removeEventListener')
 

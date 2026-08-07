@@ -4345,6 +4345,7 @@ async def _retry_same_provider_async(
     resolved_base_url: Optional[str],
     resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str],
+    main_runtime: Optional[Dict[str, Any]] = None,
     final_model: Optional[str],
     messages: list,
     temperature: Optional[float],
@@ -4371,6 +4372,14 @@ async def _retry_same_provider_async(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            # Mirrors the sync twin. Without it the rebuilt client resolves
+            # against an EMPTY runtime (``_normalize_main_runtime(None)`` ->
+            # ``{}``), dropping the main agent's provider / model / base_url /
+            # api_key. ``main_runtime`` is also part of the client cache key,
+            # so the retry cannot reuse the correct cached client either: the
+            # recovery attempt targets the wrong endpoint and fails, defeating
+            # the credential refresh that just succeeded.
+            main_runtime=main_runtime,
         )
         effective_provider = _effective_provider_for_client(
             retry_client, resolved_provider,
@@ -9855,6 +9864,7 @@ async def _async_call_llm_impl(
                     resolved_base_url=resolved_base_url,
                     resolved_api_key=resolved_api_key,
                     resolved_api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
                     final_model=final_model,
                     messages=messages,
                     temperature=temperature,
@@ -9898,6 +9908,7 @@ async def _async_call_llm_impl(
                         resolved_base_url=resolved_base_url,
                         resolved_api_key=resolved_api_key,
                         resolved_api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
                         final_model=final_model,
                         messages=messages,
                         temperature=temperature,

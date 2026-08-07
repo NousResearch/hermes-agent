@@ -3961,6 +3961,15 @@ This compaction should PRIORITISE preserving all information related to the focu
                     "base_url": self.base_url,
                     "api_key": self.api_key,
                     "api_mode": self.api_mode,
+                    # Stamp which endpoint self.model was resolved
+                    # against. update_model() keeps these three in lockstep, so
+                    # a mismatch downstream means the snapshot was merged with a
+                    # superseded runtime (cross-provider fallback leaving a
+                    # stale model name). The auxiliary layer drops the orphaned
+                    # model instead of sending it to a foreign endpoint, which
+                    # previously produced a silent 400 and a degraded
+                    # placeholder summary that never reduced tokens.
+                    "model_endpoint": (self.provider, self.base_url),
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 # NO max_tokens: the output cap must never truncate a summary.
@@ -5624,6 +5633,8 @@ This compaction should PRIORITISE preserving all information related to the focu
                 "base_url": self.base_url or "",
                 "api_key": self.api_key or "",
                 "api_mode": getattr(self, "api_mode", "") or "",
+                # Same endpoint provenance stamp as _generate_summary.
+                "model_endpoint": (self.provider or "", self.base_url or ""),
             })
 
         try:

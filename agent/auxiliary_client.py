@@ -3588,6 +3588,92 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
         identity = normalized.get(identity_field)
         if isinstance(identity, str):
             normalized[identity_field] = identity.lower()
+    # Read provenance from the RAW snapshot: ``model_endpoint`` is a tuple, so
+    # the string-only field loop above would silently drop it, and it must NOT
+    # join _MAIN_RUNTIME_CONTEXT_FIELDS because those fields feed the client
+    # cache key discriminator.
+    return _enforce_runtime_endpoint_model_coherence(
+        normalized, main_runtime.get("model_endpoint"),
+    )
+
+
+# Endpoint/model provenance guard for auxiliary runtime snapshots.
+#
+# ``_normalize_main_runtime`` copies fields individually and skips empty ones.
+# That per-field merge is what makes a cross-provider fallback able to leave an
+# INCOHERENT snapshot behind: the fallback swap rewrites ``provider`` and
+# ``base_url`` (e.g. → nvidia / integrate.api.nvidia.com) while a stale
+# ``model`` from the previous runtime survives untouched. Auxiliary tasks then
+# resolve a client for the NEW endpoint and send the OLD model name to it:
+#
+#   base_url=https://integrate.api.nvidia.com/v1/  model=claude-opus-5
+#   → 400 "The supported API model names are deepseek-v4-pro or
+#          deepseek-v4-flash, but you passed claude-opus-5."
+#
+# Failure mode matters: compression is the main consumer, and a failed summary
+# is SILENT — it only logs, then inserts a degraded placeholder marker instead
+# of a real handoff. The session keeps its tokens, so the threshold re-trips
+# immediately and compaction spins.
+#
+# A model name is only meaningful for the endpoint it was resolved against, so
+# an endpoint change invalidates a model carried over from another endpoint.
+# Drop the orphaned model rather than mixing the two: downstream resolution
+# already treats a missing model as "use this provider's default", which is
+# correct-by-construction, whereas a mismatched pair is guaranteed to fail.
+_RUNTIME_ENDPOINT_IDENTITY_FIELDS = ("provider", "base_url")
+
+
+def _runtime_endpoint_identity(runtime: Dict[str, Any]) -> Tuple[str, str]:
+    """Return the (provider, base_url) identity a model name is scoped to."""
+    provider = str(runtime.get("provider") or "").strip().lower()
+    base_url = str(runtime.get("base_url") or "").strip().rstrip("/").lower()
+    return provider, base_url
+
+
+def _enforce_runtime_endpoint_model_coherence(
+    normalized: Dict[str, Any],
+    recorded: Any = None,
+) -> Dict[str, Any]:
+    """Drop a model that belongs to a different endpoint than the snapshot's.
+
+    ``model_endpoint`` records which (provider, base_url) pair the model name
+    was resolved against. When the recorded pair no longer matches the
+    snapshot's own endpoint, the model is a leftover from a superseded runtime
+    (cross-provider fallback, /model switch, restore) and must not be sent.
+    Snapshots without provenance are left alone — absence of evidence is not
+    evidence of a mismatch, and stripping models from every legacy caller
+    would regress correct single-endpoint routing.
+    """
+    # Defensive: also honour provenance that reached ``normalized`` directly,
+    # so a future caller adding the field to the copied set still gets checked.
+    if recorded is None:
+        recorded = normalized.pop("model_endpoint", None)
+    else:
+        normalized.pop("model_endpoint", None)
+    model = normalized.get("model")
+    if not model or not isinstance(recorded, (tuple, list)) or len(recorded) != 2:
+        return normalized
+    recorded_identity = (
+        str(recorded[0] or "").strip().lower(),
+        str(recorded[1] or "").strip().rstrip("/").lower(),
+    )
+    current_identity = _runtime_endpoint_identity(normalized)
+    # Only an endpoint we can actually compare counts as a mismatch: an empty
+    # recorded identity means the producer did not know its endpoint yet.
+    if not any(recorded_identity) or recorded_identity == current_identity:
+        return normalized
+    logger.warning(
+        "Auxiliary runtime dropped a stale model name: model=%r was resolved "
+        "for provider=%r base_url=%r but this runtime is provider=%r "
+        "base_url=%r. Using the endpoint's default model instead of sending a "
+        "mismatched pair.",
+        model,
+        recorded_identity[0] or "(unset)",
+        recorded_identity[1] or "(unset)",
+        current_identity[0] or "(unset)",
+        current_identity[1] or "(unset)",
+    )
+    normalized.pop("model", None)
     return normalized
 
 
@@ -5448,7 +5534,40 @@ def _resolve_auto_route(
     # cheap provider-side default.  Explicit per-task overrides set via
     # config.yaml (auxiliary.<task>.provider) still win over this.
     main_provider = str(runtime_provider or _read_main_provider() or "")
-    main_model = str(runtime_model or _read_main_model() or "")
+    # ``_read_main_model()`` is config.yaml's ``model.default`` — a
+    # name that is only valid on the CONFIGURED provider. When the live runtime
+    # has been swapped to a different provider by a cross-provider fallback,
+    # falling back to the configured model name pairs a foreign model with the
+    # fallback endpoint and the request 400s:
+    #
+    #   provider=nvidia base_url=integrate.api.nvidia.com model=claude-opus-5
+    #   → "The supported API model names are deepseek-v4-pro or
+    #      deepseek-v4-flash, but you passed claude-opus-5."
+    #
+    # Only inherit the configured model when the runtime provider still IS the
+    # configured provider. Otherwise leave it empty so the resolution below
+    # asks the actual endpoint for its own default — a provider's own default
+    # is always valid on that provider, a borrowed name is not.
+    _config_main_model = str(_read_main_model() or "")
+    if runtime_model:
+        main_model = str(runtime_model)
+    elif runtime_provider and _config_main_model:
+        _configured_provider = str(_read_main_provider() or "").strip().lower()
+        _live_provider = str(runtime_provider).strip().lower()
+        if _live_provider == _configured_provider:
+            main_model = _config_main_model
+        else:
+            logger.warning(
+                "Auxiliary auto-resolution declined to reuse the configured "
+                "model %r: the live runtime provider is %r but %r is configured "
+                "for %r. Falling through to the endpoint's own default model "
+                "instead of sending a cross-endpoint pair.",
+                _config_main_model, _live_provider,
+                _config_main_model, _configured_provider or "(unset)",
+            )
+            main_model = ""
+    else:
+        main_model = _config_main_model
 
     # MoA virtual provider: the "model" is a preset name (e.g. "opus-gpt") and
     # there is no real "moa" HTTP endpoint, so resolving an aux client against
@@ -5749,6 +5868,15 @@ def resolve_provider_client(
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
     _validate_proxy_env_urls()
+    # This router backfills a missing model from
+    # ``main_runtime.get("model")`` in a dozen provider branches below. If the
+    # snapshot is incoherent (endpoint swapped by a cross-provider fallback,
+    # stale model name left behind), every one of those branches would send the
+    # foreign model to the new endpoint. Normalizing here strips an
+    # endpoint-orphaned model once, at the single chokepoint, instead of
+    # auditing each backfill site.
+    if main_runtime is not None:
+        main_runtime = _normalize_main_runtime(main_runtime)
     # Preserve the original provider name before alias normalization so a
     # user-declared ``custom_providers`` entry whose name coincidentally
     # matches a built-in alias (e.g. user names their custom provider "kimi"

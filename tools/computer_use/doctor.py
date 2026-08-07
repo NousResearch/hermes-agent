@@ -54,22 +54,17 @@ class HealthReportUnavailable(RuntimeError):
     """
 
 
-def _cua_child_env() -> Dict[str, str]:
-    """cua-driver child env with the Hermes telemetry policy applied.
-
-    Delegates to ``cua_backend.cua_driver_child_env`` (telemetry disabled by
-    default unless the user opts in). Falls back to the current environment
-    if that import fails, so doctor never breaks on a telemetry-helper error.
-    """
+def _cua_child_env(driver_cmd: Optional[str] = None) -> Dict[str, str]:
+    """Return the same driver environment the runtime will launch with."""
     try:
         from tools.computer_use.cua_backend import cua_driver_child_env
 
-        return cua_driver_child_env()
+        return cua_driver_child_env(driver_cmd=driver_cmd)
     except Exception:
         return dict(os.environ)
 
 
-def _sanitized_cua_env() -> Dict[str, str]:
+def _sanitized_cua_env(driver_cmd: Optional[str] = None) -> Dict[str, str]:
     """Telemetry-policy env with Hermes provider secrets stripped.
 
     cua-driver is a third-party binary — it must never inherit provider
@@ -77,7 +72,7 @@ def _sanitized_cua_env() -> Dict[str, str]:
     telemetry env if the sanitizer can't be imported, so doctor keeps
     working in stripped-down environments.
     """
-    env = _cua_child_env()
+    env = _cua_child_env(driver_cmd)
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
@@ -217,7 +212,7 @@ def _open_mcp(binary: str) -> subprocess.Popen:
         errors="replace",
         bufsize=1,
         creationflags=windows_hide_flags(),
-        env=_sanitized_cua_env(),
+        env=_sanitized_cua_env(binary),
     )
 
 
@@ -842,12 +837,54 @@ def run_doctor(
 
     identity = _build_identity(binary, report)
 
+    # cua-driver's health model is authoritative for protocol/runtime checks.
+    # Hermes adds a read-only Linux desktop envelope because the driver cannot
+    # know whether it inherited the graphical environment correctly from a
+    # desktop launcher. Arch package remediation is a separately gated layer.
+    wayland_report: Optional[Dict[str, Any]] = None
+    # Keep the old driver-resolution tests and non-Linux behavior narrow: Linux
+    # desktop probing only belongs to a real Linux invocation, not a unit test that
+    # simulates an arbitrary driver on this host.
+    if (
+        sys.platform == "linux"
+        and not driver_cmd
+        and not os.environ.get("HERMES_CUA_DRIVER_CMD")
+    ):
+        try:
+            from tools.computer_use.linux_wayland import arch_install_hint, diagnose_linux_computer_use
+            from hermes_cli.config import load_config as _load_cfg
+            wayland_report = diagnose_linux_computer_use(binary, config=_load_cfg() or {})
+            hint = arch_install_hint(wayland_report)
+            if not json_output:
+                session = wayland_report["session"]
+                print(f"\nLinux session: {session['kind']}"
+                      f" (desktop={session.get('desktop') or 'unknown'}, "
+                      f"wayland={wayland_report['native_wayland_enabled']})")
+                for key, label in (
+                    ("portal_dbus_available", "XDG portal D-Bus"),
+                    ("atspi_dbus_available", "AT-SPI D-Bus"),
+                    ("pipewire_service", "PipeWire service"),
+                ):
+                    print(f"  {'✅' if wayland_report[key] else '❌'} {label}")
+                for reason in wayland_report["capabilities"]["degraded_reasons"]:
+                    print(f"  ⚠️ {reason}")
+                for failure in wayland_report["capabilities"]["hard_failures"]:
+                    print(f"  ❌ {failure}")
+                if hint:
+                    print(f"  → {hint}")
+        except Exception as exc:
+            # Doctor remains useful even if platform enrichment fails.
+            if not json_output:
+                print(f"\n⚠️ Linux Wayland enrichment unavailable: {exc}")
+
     if json_output:
         # Additive envelope: preserve the upstream health_report keys and
         # attach Hermes identity under hermes_identity so existing parsers
         # that only read overall/checks keep working.
         payload = dict(report)
         payload["hermes_identity"] = identity
+        if wayland_report is not None:
+            payload["hermes_linux_wayland"] = wayland_report
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
     else:

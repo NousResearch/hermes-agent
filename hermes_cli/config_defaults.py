@@ -3068,6 +3068,16 @@ DEFAULT_CONFIG = {
         #   True  = always disable the overlay
         #   False = always enable the overlay
         "no_overlay": None,
+        # Linux native-Wayland policy. `auto` enables cua-driver's experimental
+        # backend only inside a verified Wayland graphical session AND only
+        # when the resolved driver passes Hermes' safe capability gate. Use
+        # `disabled` as the emergency off switch; `enabled` is an explicit
+        # operator opt-in for testing a newer driver/compositor.
+        "linux": {
+            "wayland": {
+                "enabled": "auto",  # auto | enabled | disabled
+            },
+        },
     },
 
     # =========================================================================

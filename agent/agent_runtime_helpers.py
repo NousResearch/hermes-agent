@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.timeouts import get_provider_request_timeout
+from agent.message_sanitization import _FULL_ARGS_LOG_BOUND
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
@@ -385,10 +386,19 @@ def sanitize_tool_call_arguments(
                 # itself becomes an orphan (#58168).
                 tool_call_id = _ra().AIAgent._get_tool_call_id_static(tool_call) or None
                 function_name = function.get("name", "?")
-                preview = arguments[:80]
+                # Log the FULL original argument string (bounded), not an
+                # 80-char preview: this branch is about to overwrite the
+                # only copy of these bytes in the transcript with "{}", and
+                # for a truncated write_file/patch call the destroyed
+                # arguments contain real user content (#80498 — streamed
+                # file content survived only as a log preview). A corrupted
+                # call is rare, so the oversized WARNING is a fair price for
+                # making the data recoverable from agent.log.
+                preview = arguments[:_FULL_ARGS_LOG_BOUND]
                 log.warning(
                     "Corrupted tool_call arguments repaired before request "
-                    "(session=%s, message_index=%s, tool_call_id=%s, function=%s, preview=%r)",
+                    "(session=%s, message_index=%s, tool_call_id=%s, function=%s, "
+                    "original_arguments=%r)",
                     session_id or "-",
                     message_index,
                     tool_call_id or "-",

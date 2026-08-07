@@ -225,3 +225,50 @@ class TestProviderShutdown:
         assert provider._store is None
         assert MemoryStore._shared == {}
 
+
+
+class TestMemoryColonPath:
+    """MemoryStore(':memory:') must honor sqlite's reserved in-memory name.
+
+    Pre-fix, the shared-connection registry keyed on
+    ``Path(':memory:').resolve()`` — which turns the reserved name into a
+    literal on-disk file in the CWD, shared by every ':memory:' caller in
+    that directory (silently coupling fixtures that asked for private
+    in-memory DBs, and leaving garbage files behind). The fix bypasses the
+    registry for ':memory:' — each instance gets a private connection,
+    matching sqlite semantics (SessionDB in hermes_state.py already treats
+    ':memory:' verbatim).
+    """
+
+    def test_memory_store_creates_no_cwd_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        store = MemoryStore(":memory:")
+        store.add_fact("anything at all")
+        store.close()
+        assert not (tmp_path / ":memory:").exists(), (
+            "':memory:' was path-resolved into a literal on-disk file")
+
+    def test_memory_stores_are_isolated(self):
+        """Two ':memory:' stores must NOT share state — sqlite semantics
+        are one private database per connection."""
+        a = MemoryStore(":memory:")
+        b = MemoryStore(":memory:")
+        try:
+            a.add_fact("fact only in store A")
+            assert b.search_facts("fact only in store A") == []
+        finally:
+            a.close()
+            b.close()
+
+    def test_file_backed_stores_still_share_connection(self, tmp_path):
+        """Registry regression guard: same file path = one shared
+        connection, visible state across instances."""
+        path = tmp_path / "shared.db"
+        a = MemoryStore(path)
+        b = MemoryStore(path)
+        try:
+            a.add_fact("fact in the shared file")
+            assert len(b.search_facts("fact in the shared file")) == 1
+        finally:
+            a.close()
+            b.close()

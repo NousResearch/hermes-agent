@@ -132,30 +132,55 @@ class MemoryStore:
         # resolve() (not just expanduser) so symlinked/relative paths to the
         # same file share ONE connection instead of silently reintroducing
         # the multi-writer contention this registry exists to prevent.
-        try:
-            self._key = str(self.db_path.resolve())
-        except OSError:
-            self._key = str(self.db_path)
-        with MemoryStore._shared_guard:
-            entry = MemoryStore._shared.get(self._key)
-            if entry is None:
-                conn = sqlite3.connect(
-                    self._key,
+        #
+        # EXCEPTION: sqlite's reserved ":memory:" name must reach
+        # sqlite3.connect verbatim — resolve() would turn it into a literal
+        # on-disk file in the CWD (shared by every ":memory:" caller in that
+        # directory, silently coupling tests/fixtures that asked for private
+        # in-memory DBs). In-memory stores are private by sqlite semantics:
+        # each instance gets its own connection and bypasses the registry.
+        if str(db_path) == ":memory:":
+            self._key = None
+            entry = {
+                "conn": sqlite3.connect(
+                    ":memory:",
                     check_same_thread=False,
                     timeout=10.0,
-                    # Autocommit: every statement is its own transaction, so a
-                    # write that raises mid-method can never leave a dangling
-                    # transaction (and its write lock) open. The explicit
-                    # commit() calls below become harmless no-ops.
                     isolation_level=None,
-                )
-                conn.row_factory = sqlite3.Row
-                entry = {"conn": conn, "lock": threading.RLock(), "refs": 0, "ready": False}
-                MemoryStore._shared[self._key] = entry
-            entry["refs"] += 1
+                ),
+                "lock": threading.RLock(),
+                "refs": 1,
+                "ready": False,
+            }
+            entry["conn"].row_factory = sqlite3.Row
             self._entry = entry
             self._conn = entry["conn"]
             self._lock = entry["lock"]
+        else:
+            try:
+                self._key = str(self.db_path.resolve())
+            except OSError:
+                self._key = str(self.db_path)
+            with MemoryStore._shared_guard:
+                entry = MemoryStore._shared.get(self._key)
+                if entry is None:
+                    conn = sqlite3.connect(
+                        self._key,
+                        check_same_thread=False,
+                        timeout=10.0,
+                        # Autocommit: every statement is its own transaction, so a
+                        # write that raises mid-method can never leave a dangling
+                        # transaction (and its write lock) open. The explicit
+                        # commit() calls below become harmless no-ops.
+                        isolation_level=None,
+                    )
+                    conn.row_factory = sqlite3.Row
+                    entry = {"conn": conn, "lock": threading.RLock(), "refs": 0, "ready": False}
+                    MemoryStore._shared[self._key] = entry
+                entry["refs"] += 1
+                self._entry = entry
+                self._conn = entry["conn"]
+                self._lock = entry["lock"]
 
         # Initialise the schema once per shared connection.
         with self._lock:

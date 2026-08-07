@@ -24,6 +24,18 @@ from agent.turn_context import (
 )
 
 
+# ``invoke_hook`` fans out by hook NAME — one stub answering every name with the
+# same payload also feeds ``pre_persist_user_message``, whose returns are
+# *durable* and are composed into ``content`` (that hook's whole point). These
+# tests pin the opposite invariant: ``content`` stays clean and the composed
+# body lives in the ``api_content`` sidecar. So scope the stub to the hook it
+# actually models — the ephemeral ``pre_llm_call`` context injection.
+def _pre_llm_call_context(*results):
+    def _stub(hook_name, **_kwargs):
+        return list(results) if hook_name == "pre_llm_call" else []
+    return _stub
+
+
 class _FakeTodoStore:
     def has_items(self):
         return True
@@ -168,7 +180,7 @@ class TestStringContentSidecarDelivery:
         agent._gateway_turn_context_notes = VC_NOTE
         with patch(
             "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
+            _pre_llm_call_context({"context": "PLUGIN-CTX"}),
         ):
             ctx = _build(agent)
         msg = ctx.messages[ctx.current_turn_user_idx]

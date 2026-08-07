@@ -1,4 +1,30 @@
-# Petdex — Animated Pet Mascots
+---
+author: Hermes Agent
+description: Install and select animated petdex mascots for Hermes.
+license: MIT
+metadata:
+  hermes:
+    category: productivity
+    homepage: https://petdex.dev
+    scenes:
+    - hermes
+    tags:
+    - petdex
+    - mascot
+    - cli
+    - terminal
+    - display
+    - hermes
+    - config
+name: petdex
+platforms:
+- linux
+- macos
+- windows
+version: 1.0.0
+---
+
+# Petdex Skill
 
 Browse, install, and select animated "pet" mascots from the public
 [petdex](https://github.com/crafter-station/petdex) gallery. An installed pet

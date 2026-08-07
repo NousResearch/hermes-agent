@@ -20,6 +20,11 @@ DEFAULT_CONFIG = {
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
     },
+    # Skill-graph mode: when True, the bundled skill-graph plugin loads
+    # skills from graph-managed directories with FTS+relationship search.
+    # When False (default), skills remain flat-file-only for minimal
+    # startup overhead.
+    "skill_graph_mode": False,
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,

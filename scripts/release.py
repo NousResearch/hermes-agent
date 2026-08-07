@@ -34,6 +34,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
+# The MCP Registry manifest must stay version-locked with pyproject.toml.
+# tests/test_project_metadata.py enforces this lockstep so a release bump
+# updates the package and registry metadata atomically.
+MCP_REGISTRY_MANIFEST = REPO_ROOT / "server.json"
+
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
 # ──────────────────────────────────────────────────────────────────────
@@ -2220,6 +2225,42 @@ def update_version_files(semver: str, calver_date: str):
         )
         desktop_pkg.write_text(pkg_text, encoding="utf-8")
 
+    # Keep the MCP Registry manifest version-locked with pyproject.toml.
+    _update_mcp_registry_versions(semver)
+
+
+def _update_mcp_registry_versions(semver: str) -> None:
+    """Bump the MCP Registry server manifest in lockstep with pyproject.
+
+    Skips silently if the manifest is missing — older release branches predate
+    the MCP Registry assets.
+    """
+    if MCP_REGISTRY_MANIFEST.exists():
+        manifest = json.loads(MCP_REGISTRY_MANIFEST.read_text(encoding="utf-8"))
+        manifest["version"] = semver
+        for package in manifest.get("packages", []):
+            if package.get("registryType") == "pypi":
+                package["version"] = semver
+                runtime_args = package.get("runtimeArguments", [])
+                for arg in runtime_args:
+                    if arg.get("value", "").startswith("hermes-agent[mcp]"):
+                        arg["value"] = f"hermes-agent[mcp]=={semver}"
+        MCP_REGISTRY_MANIFEST.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+
+
+def _version_bump_files() -> list[Path]:
+    """Return every file mutated by a release version bump.
+
+    The MCP manifest is optional for compatibility with older release branches,
+    but when present it must be staged with the package version files.
+    """
+    files = [VERSION_FILE, PYPROJECT_FILE]
+    if MCP_REGISTRY_MANIFEST.exists():
+        files.append(MCP_REGISTRY_MANIFEST)
+    return files
+
 
 def resolve_author(name: str, email: str) -> str:
     """Resolve a git author to a GitHub @mention."""
@@ -2557,8 +2598,8 @@ def main():
             update_version_files(new_version, calver_date)
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
-            # Commit version bump
-            add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
+            # Commit every file mutated by the version bump.
+            add_files = [str(path) for path in _version_bump_files()]
             add_result = git_result("add", *add_files)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")

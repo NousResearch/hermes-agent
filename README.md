@@ -3,6 +3,9 @@
 </p>
 
 # Hermes Agent ☤
+
+<!-- mcp-name: io.github.nousresearch/hermes-agent -->
+
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
 </p>
@@ -254,6 +257,10 @@ scripts/run_tests.sh
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+
+## Commercial support
+
+Need Hermes deployed for a team, connected to Slack/Discord/Telegram, exposed through MCP, or extended with custom tools and skills? See [COMMERCIAL_SUPPORT.md](COMMERCIAL_SUPPORT.md) for optional deployment and integration support.
 
 ---
 

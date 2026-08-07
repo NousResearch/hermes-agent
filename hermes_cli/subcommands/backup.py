@@ -35,4 +35,10 @@ def build_backup_parser(subparsers, *, cmd_backup: Callable) -> None:
     backup_parser.add_argument(
         "-l", "--label", help="Label for the snapshot (only used with --quick)"
     )
+    backup_parser.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_archives",
+        help="List existing backup archives (auto, pre-update, pre-migration, manual)",
+    )
     backup_parser.set_defaults(func=cmd_backup)

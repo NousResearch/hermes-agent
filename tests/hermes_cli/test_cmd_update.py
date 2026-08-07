@@ -631,6 +631,110 @@ class TestCmdUpdateCheckBranchFlag:
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
 
 
+class TestCmdUpdateCheckCommitList:
+    """``hermes update --check`` prints a bounded summary of pending commits
+    alongside the behind-count, using the same compare_branch that produced
+    the count (so the list and the number never disagree)."""
+
+    def _check_side_effect(
+        self,
+        *,
+        commit_count: str = "3",
+        log_lines: list[str] | None = None,
+    ):
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+
+            if "fetch" in joined and "upstream" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "fetch" in joined and "origin" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
+            if "log" in joined and "--oneline" in joined:
+                stdout = "\n".join(log_lines or []) + ("\n" if log_lines else "")
+                return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        return side_effect
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_pending_commit_list_shown_when_behind(self, mock_run, _mock_method, capsys):
+        mock_run.side_effect = self._check_side_effect(
+            commit_count="2",
+            log_lines=["abc1234 fix: something", "def5678 feat: something else"],
+        )
+        args = SimpleNamespace(check=True, branch=None)
+
+        cmd_update(args)
+
+        out = capsys.readouterr().out
+        assert "Pending changes:" in out
+        assert "abc1234 fix: something" in out
+        assert "def5678 feat: something else" in out
+        assert "more commit(s)" not in out  # exactly 2 behind, 2 shown
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        log_cmds = [c for c in commands if "log" in c and "--oneline" in c]
+        assert any("--max-count=10" in c for c in log_cmds), log_cmds
+        # Uses the SAME compare_branch (upstream/main here) as the count.
+        assert any("upstream/main" in c for c in log_cmds), log_cmds
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_pending_commit_list_hidden_when_up_to_date(self, mock_run, _mock_method, capsys):
+        mock_run.side_effect = self._check_side_effect(commit_count="0", log_lines=[])
+
+        cmd_update(SimpleNamespace(check=True, branch=None))
+
+        out = capsys.readouterr().out
+        assert "Already up to date" in out
+        assert "Pending changes:" not in out
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_pending_commit_list_capped_with_overflow_hint(self, mock_run, _mock_method, capsys):
+        """git log --max-count=10 already caps the raw output; the overflow
+        hint uses the independent `behind` rev-list count, not
+        len(log_lines), so it stays correct even though git's own cap
+        means log_lines can never itself exceed 10."""
+        ten_lines = [f"{i:07x} commit {i}" for i in range(10)]
+        mock_run.side_effect = self._check_side_effect(commit_count="15", log_lines=ten_lines)
+
+        cmd_update(SimpleNamespace(check=True, branch=None))
+
+        out = capsys.readouterr().out
+        assert "Pending changes:" in out
+        for line in ten_lines:
+            assert line in out
+        assert "… and 5 more commit(s)" in out
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
+    def test_pending_commit_list_failure_does_not_block_check_result(
+        self, mock_run, _mock_method, capsys
+    ):
+        """The commit list is advisory -- if the git log subprocess itself
+        raises, the behind-count result must still print normally."""
+        def flaky_side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "log" in joined and "--oneline" in joined:
+                raise OSError("git binary not found")
+            return self._check_side_effect(commit_count="2", log_lines=[])(cmd, **kwargs)
+
+        mock_run.side_effect = flaky_side_effect
+
+        cmd_update(SimpleNamespace(check=True, branch=None))  # must not raise
+
+        out = capsys.readouterr().out
+        assert "Update available: 2 commits behind" in out
+        assert "Pending changes:" not in out
+
+
 class TestCmdUpdateZipBranchRefusal:
     """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.
 

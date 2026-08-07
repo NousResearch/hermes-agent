@@ -11274,6 +11274,12 @@ def _(rid, params: dict) -> dict:
             {"key": "terminal.cwd", "value": cwd, "cwd": cwd, "branch": _git_branch_for_cwd(cwd)},
         )
 
+    if key in {"message_reactions", "display.message_reactions"}:
+        raw = str(value or "").strip().lower()
+        enabled = raw in {"1", "on", "true", "yes"}
+        _write_config_key("display.message_reactions", enabled)
+        return _ok(rid, {"key": key, "value": "on" if enabled else "off"})
+
     if key in {"prompt", "personality", "skin"}:
         try:
             cfg = _load_cfg_raw()  # write-back round-trip ("prompt" saves cfg)

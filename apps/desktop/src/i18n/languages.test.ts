@@ -15,6 +15,7 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('zh_HK')).toBe('zh-hant')
     expect(normalizeLocale('ja')).toBe('ja')
     expect(normalizeLocale('ja-JP')).toBe('ja')
+    expect(normalizeLocale('tr-TR')).toBe('tr')
     expect(normalizeLocale('ar')).toBe('ar')
     expect(normalizeLocale('AR-SA')).toBe('ar')
     expect(normalizeLocale(' ar_eg ')).toBe('ar')
@@ -35,6 +36,7 @@ describe('desktop i18n languages', () => {
     expect(isLocale('zh')).toBe(true)
     expect(isLocale('zh-hant')).toBe(true)
     expect(isLocale('ja')).toBe(true)
+    expect(isLocale('tr')).toBe(true)
     expect(isLocale('ar')).toBe(true)
   })
 

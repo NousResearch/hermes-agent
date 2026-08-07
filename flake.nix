@@ -42,6 +42,7 @@
         ./nix/overlays.nix
         ./nix/nixosModules.nix
         ./nix/checks.nix
+        ./nix/vmTest.nix
         ./nix/devShell.nix
       ];
     };

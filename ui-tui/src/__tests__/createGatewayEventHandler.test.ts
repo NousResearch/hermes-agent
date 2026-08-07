@@ -195,6 +195,77 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
   })
 
+  it('keeps automatic compaction status pinned beyond 4 seconds (#70338)', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+    const compactText = '🗜️ Compacting context — summarizing earlier conversation so I can continue...'
+
+    vi.useFakeTimers()
+
+    try {
+      onEvent({
+        payload: { kind: 'compacting', text: compactText },
+        type: 'status.update'
+      } as any)
+
+      expect(getUiState().status).toBe(compactText)
+
+      // Automatic compaction runs for tens of seconds to minutes. The label
+      // must NOT revert to generic activity after the 4s window that other
+      // transient statuses use — otherwise the operation looks frozen.
+      vi.advanceTimersByTime(4001)
+      expect(getUiState().status).toBe(compactText)
+
+      vi.advanceTimersByTime(120_000)
+      expect(getUiState().status).toBe(compactText)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('replaces the compaction status when normal activity resumes (#70338)', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    vi.useFakeTimers()
+
+    try {
+      onEvent({
+        payload: { kind: 'compacting', text: '🗜️ Compacting context…' },
+        type: 'status.update'
+      } as any)
+      expect(getUiState().status).toBe('🗜️ Compacting context…')
+
+      // A later status event (compaction finished, model resumed) replaces the
+      // pinned label — it must not linger stale.
+      onEvent({
+        payload: { kind: 'status', text: 'thinking…' },
+        type: 'status.update'
+      } as any)
+      expect(getUiState().status).toBe('thinking…')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not add a transcript line for automatic compaction, unlike manual compress (#70338)', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { kind: 'compacting', text: '🗜️ Compacting context…' },
+      type: 'status.update'
+    } as any)
+
+    // Manual '/compress' (compressing) pushes a transcript line; automatic
+    // compaction can fire every turn on a large session, so it must not.
+    expect(ctx.system.sys).not.toHaveBeenCalled()
+    expect(getUiState().status).toBe('🗜️ Compacting context…')
+  })
+
   it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

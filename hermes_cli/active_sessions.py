@@ -54,12 +54,22 @@ def coerce_max_concurrent_sessions(value: Any, key: str = "max_concurrent_sessio
 
 
 def resolve_max_concurrent_sessions(config: Any) -> Optional[int]:
-    """Resolve top-level max_concurrent_sessions with gateway.* fallback."""
+    """Resolve top-level max_concurrent_sessions with gateway.* fallback.
+
+    The top-level key takes precedence only when it carries an actual value.
+    A ``None`` top-level value falls back to ``gateway.max_concurrent_sessions``:
+    ``DEFAULT_CONFIG`` injects a top-level ``max_concurrent_sessions: None``, so
+    after the config deep-merge the key is *always present*. Gating the fallback
+    on key presence (``"max_concurrent_sessions" in config``) would therefore
+    make the gateway fallback unreachable and silently ignore an existing
+    ``gateway.max_concurrent_sessions`` cap on the CLI/TUI/dashboard surfaces.
+    """
     raw: Any = None
     key = "max_concurrent_sessions"
     if isinstance(config, dict):
-        if "max_concurrent_sessions" in config:
-            raw = config.get("max_concurrent_sessions")
+        top_level = config.get("max_concurrent_sessions")
+        if top_level is not None:
+            raw = top_level
         else:
             gateway_cfg = config.get("gateway")
             if isinstance(gateway_cfg, dict):

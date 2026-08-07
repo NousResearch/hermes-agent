@@ -3083,6 +3083,35 @@ def _apply_managed(cfg: dict) -> dict:
         return cfg
 
 
+
+class _ManagedConfigWriteError(ValueError):
+    """Raised when a write targets a key pinned by HERMES_MANAGED_DIR."""
+
+
+def _refuse_managed_keys(*key_paths: str) -> None:
+    """Raise if any dotted key is administrator-pinned (CLI set_config_value parity).
+
+    Fail-open when managed-scope lookup itself errors — a broken/absent managed
+    scope must never block a write the administrator did not actually pin.
+    """
+    try:
+        from hermes_cli import managed_scope
+
+        for key_path in key_paths:
+            if not managed_scope.is_key_managed(key_path):
+                continue
+            managed_dir = managed_scope.get_managed_dir()
+            src = (managed_dir / "config.yaml") if managed_dir else "the managed scope"
+            raise _ManagedConfigWriteError(
+                f"Cannot set '{key_path}': it is managed by your administrator ({src}) "
+                "and cannot be changed."
+            )
+    except _ManagedConfigWriteError:
+        raise
+    except Exception:
+        return
+
+
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_mtime, _cfg_path
 
@@ -3966,6 +3995,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
 
 
 def _write_config_key(key_path: str, value):
+    _refuse_managed_keys(key_path)
     # Write-back round-trip: raw read is mandatory — saving the managed-
     # overlaid / env-expanded view would persist those values into the file.
     cfg = _load_cfg_raw()
@@ -10623,6 +10653,13 @@ def _respond(rid, params, key, *, allow_expired=False):
 # in a follow-up once that PR lands.
 @method("config.set")
 def _(rid, params: dict) -> dict:
+    try:
+        return _config_set(rid, params)
+    except _ManagedConfigWriteError as e:
+        return _err(rid, 4030, str(e))
+
+
+def _config_set(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
     session = _sessions.get(params.get("session_id", ""))
 
@@ -10993,6 +11030,8 @@ def _(rid, params: dict) -> dict:
                     os.environ.pop("HERMES_YOLO_MODE", None)
                     nv = "0"
             return _ok(rid, {"key": key, "value": nv, "scope": "session"})
+        except _ManagedConfigWriteError:
+            raise
         except Exception as e:
             return _err(rid, 5001, str(e))
 
@@ -11004,6 +11043,10 @@ def _(rid, params: dict) -> dict:
             scope = str(params.get("scope") or "").strip().lower()
             global_scope = scope == "global"
             if arg in {"show", "on"}:
+                # Direct mutate-and-save — must check leaves before _save_cfg.
+                _refuse_managed_keys(
+                    "display.show_reasoning", "display.sections.thinking"
+                )
                 cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -11022,6 +11065,9 @@ def _(rid, params: dict) -> dict:
                     session["show_reasoning"] = True
                 return _ok(rid, {"key": key, "value": "show"})
             if arg in {"hide", "off"}:
+                _refuse_managed_keys(
+                    "display.show_reasoning", "display.sections.thinking"
+                )
                 cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -11047,6 +11093,9 @@ def _(rid, params: dict) -> dict:
             # display.reasoning_full is persisted too so the config key stays
             # consistent across the CLI and TUI surfaces.
             if arg in {"full", "all"}:
+                _refuse_managed_keys(
+                    "display.reasoning_full", "display.sections.thinking"
+                )
                 cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -11063,6 +11112,9 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 return _ok(rid, {"key": key, "value": "full"})
             if arg in {"clamp", "collapse", "short"}:
+                _refuse_managed_keys(
+                    "display.reasoning_full", "display.sections.thinking"
+                )
                 cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -11102,6 +11154,8 @@ def _(rid, params: dict) -> dict:
                     _session_info(session["agent"], session),
                 )
             return _ok(rid, {"key": key, "value": arg})
+        except _ManagedConfigWriteError:
+            raise
         except Exception as e:
             return _err(rid, 5001, str(e))
 
@@ -11109,6 +11163,11 @@ def _(rid, params: dict) -> dict:
         nv = str(value or "").strip().lower()
         if nv not in _DETAIL_MODES:
             return _err(rid, 4002, f"unknown details_mode: {value}")
+        # Fans out to every section leaf — validate each, not just the head key.
+        _refuse_managed_keys(
+            "display.details_mode",
+            *(f"display.sections.{s}" for s in _DETAIL_SECTION_NAMES),
+        )
         cfg = _load_cfg_raw()  # write-back round-trip
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         sections = (
@@ -11130,6 +11189,10 @@ def _(rid, params: dict) -> dict:
         section = key.split(".", 1)[1]
         if section not in _DETAIL_SECTION_NAMES:
             return _err(rid, 4002, f"unknown section: {section}")
+
+        # Covers both the set path and the empty-value clear path below —
+        # clearing a pinned leaf is just as much a write.
+        _refuse_managed_keys(f"display.sections.{section}")
 
         cfg = _load_cfg_raw()  # write-back round-trip
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -11275,6 +11338,10 @@ def _(rid, params: dict) -> dict:
         )
 
     if key in {"prompt", "personality", "skin"}:
+        # Only "prompt" mutates-and-saves directly (top-level custom_prompt).
+        # "personality"/"skin" route through _write_config_key.
+        if key == "prompt":
+            _refuse_managed_keys("custom_prompt")
         try:
             cfg = _load_cfg_raw()  # write-back round-trip ("prompt" saves cfg)
             if key == "prompt":
@@ -11309,6 +11376,8 @@ def _(rid, params: dict) -> dict:
                 if info is not None:
                     resp["info"] = info
             return _ok(rid, resp)
+        except _ManagedConfigWriteError:
+            raise
         except Exception as e:
             return _err(rid, 5001, str(e))
 

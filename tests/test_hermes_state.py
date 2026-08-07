@@ -3547,6 +3547,35 @@ def test_find_session_by_origin_matching_rules(db):
     assert db.find_session_by_origin(
         platform="discord", chat_id="ch7", thread_id="other"
     ) is None
+    assert db.find_session_by_origin(
+        platform="discord", chat_id="ch7"
+    ) is None
+    # Threadless lookup must not pick a topic row (even if it is newer).
+    db.create_session(
+        "gw-flat", "telegram", user_id="u1",
+        session_key="agent:main:telegram:group:-1001", chat_id="-1001",
+        chat_type="group",
+    )
+    db.create_session(
+        "gw-topic", "telegram", user_id="u1",
+        session_key="agent:main:telegram:group:-1001:topic:42", chat_id="-1001",
+        chat_type="group", thread_id="42",
+    )
+    assert db.find_session_by_origin(
+        platform="telegram", chat_id="-1001"
+    ) == "gw-flat"
+    assert db.find_session_by_origin(
+        platform="telegram", chat_id="-1001", thread_id="42"
+    ) == "gw-topic"
+    # Topic-only chat + no thread_id -> None (do not contaminate).
+    db.create_session(
+        "gw-only-topic", "telegram", user_id="u1",
+        session_key="agent:main:telegram:group:-1002:topic:7", chat_id="-1002",
+        chat_type="group", thread_id="7",
+    )
+    assert db.find_session_by_origin(
+        platform="telegram", chat_id="-1002"
+    ) is None
 
 
 

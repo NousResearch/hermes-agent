@@ -3536,10 +3536,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Find the most recent live session_id for a platform + chat origin.
 
         Equivalent of gateway/mirror's sessions.json scan: matches on
-        source + chat_id (+ thread_id when provided).  When ``user_id`` is
-        provided, exact sender matches are preferred; if multiple distinct
-        users share the chat and none matches, returns None rather than
-        contaminating another participant's session.
+        source + chat_id (+ thread_id when provided).  When ``thread_id`` is
+        omitted (``None``), only non-threaded / parent-chat rows match so a
+        bare chat delivery cannot land in a newer forum-topic session.
+        When ``user_id`` is provided, exact sender matches are preferred; if
+        multiple distinct users share the chat and none matches, returns None
+        rather than contaminating another participant's session.
         """
         if not platform or chat_id in (None, ""):
             return None
@@ -3554,6 +3556,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if thread_id is not None:
             query += " AND COALESCE(thread_id, '') = ?"
             params.append(str(thread_id))
+        else:
+            # Threadless lookup must not pick forum/topic rows for the same chat.
+            query += " AND COALESCE(thread_id, '') = ''"
         query += " ORDER BY started_at DESC"
         with self._lock:
             rows = [dict(r) for r in self._conn.execute(query, params).fetchall()]

@@ -171,6 +171,19 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        bundled-whatsapp-bridge = pkgs.runCommand "hermes-bundled-whatsapp-bridge" { } ''
+          set -e
+          bridge=${hermes-agent}/share/hermes-agent/whatsapp-bridge
+          test -f "$bridge/bridge.js"
+          test -f "$bridge/allowlist.js"
+          test -f "$bridge/package.json"
+          test -f "$bridge/package-lock.json"
+          grep -q "HERMES_WHATSAPP_BRIDGE_DIR" ${hermes-agent}/bin/hermes
+          ${pkgs.nodejs}/bin/node --check "$bridge/bridge.js"
+          mkdir -p $out
+          echo ok > $out/result
+        '';
+
         # Verify bundled i18n locale catalogs are present and resolvable.
         # Regression for #23943 / #27632 / #35374 — sealed Nix venvs dropped
         # locales/, surfacing raw i18n keys like gateway.reset.header_default.

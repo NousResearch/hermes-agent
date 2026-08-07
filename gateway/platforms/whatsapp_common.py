@@ -503,6 +503,37 @@ class WhatsAppBehaviorMixin:
 # Shared bridge directory resolution for CLI and adapter
 # ---------------------------------------------------------------------------
 
+def _restore_write_permissions(root: Path) -> None:
+    """Add owner-write to ``root`` and its bridge source files/directories.
+
+    A mirror copied from a read-only packaged source (e.g. the Nix store, where
+    directories are ``0555`` and files ``0444``) inherits those bits via
+    ``shutil.copytree``, which uses ``copy2``/``copystat`` and preserves mode.
+    Without owner write, ``npm install`` cannot create ``node_modules`` or
+    rewrite ``package-lock.json`` in the mirror, so the bridge still fails to
+    start — defeating the whole point of mirroring. See #15336.
+
+    ``node_modules`` is skipped: npm owns those files, the tree can be huge, and
+    walking it on every reuse would be wasteful. Pruning it keeps the in-place
+    heal cheap enough to run unconditionally on the mirror-reuse path.
+    """
+    import stat as _stat
+
+    def _add_owner_write(target: str) -> None:
+        try:
+            os.chmod(target, os.stat(target).st_mode | _stat.S_IWUSR)
+        except OSError:
+            # Best-effort: one unwritable entry should not abort the heal.
+            pass
+
+    _add_owner_write(str(root))
+    for dirpath, dirnames, filenames in os.walk(root):
+        if "node_modules" in dirnames:
+            dirnames.remove("node_modules")  # prune traversal + chmod
+        for name in (*dirnames, *filenames):
+            _add_owner_write(os.path.join(dirpath, name))
+
+
 def resolve_whatsapp_bridge_dir() -> Path:
     """Resolve the WhatsApp bridge directory, mirroring to HERMES_HOME if needed.
 
@@ -515,9 +546,16 @@ def resolve_whatsapp_bridge_dir() -> Path:
     import shutil
     from pathlib import Path as _Path
 
-    # Default location in install tree (may be read-only)
+    # Package wrappers may expose bridge source outside the Python tree (Nix
+    # store, Homebrew prefix, etc.). Resolve that path centrally so the adapter,
+    # CLI setup flow, and dashboard pairing flow all use the same source.
     from hermes_constants import get_hermes_home
-    install_bridge = _Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    packaged_bridge = os.getenv("HERMES_WHATSAPP_BRIDGE_DIR", "").strip()
+    install_bridge = (
+        _Path(packaged_bridge).expanduser()
+        if packaged_bridge
+        else _Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    )
 
     # Try HERMES_HOME location first
     hermes_home = get_hermes_home()
@@ -537,6 +575,11 @@ def resolve_whatsapp_bridge_dir() -> Path:
 
     # Install dir is read-only, mirror to HERMES_HOME if needed
     if hermes_home_bridge.exists():
+        # A mirror created before this permission fix (or by an interrupted
+        # copy) may itself be read-only, which still blocks npm. Re-assert
+        # owner write in place — node_modules is pruned, so this is cheap and
+        # never disturbs already-installed dependencies. See #15336.
+        _restore_write_permissions(hermes_home_bridge)
         return hermes_home_bridge
 
     # Mirror the bridge source to HERMES_HOME
@@ -547,6 +590,9 @@ def resolve_whatsapp_bridge_dir() -> Path:
             hermes_home_bridge,
             dirs_exist_ok=False,
         )
+        # A read-only packaged source (Nix store) would otherwise leave the
+        # mirror read-only, blocking the `npm install` that runs here. #15336
+        _restore_write_permissions(hermes_home_bridge)
         return hermes_home_bridge
     except Exception:
         return install_bridge

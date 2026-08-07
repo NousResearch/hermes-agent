@@ -145,6 +145,71 @@ def _normalize_path(path: str) -> str:
     return p.rstrip("/\\") or p
 
 
+def _is_windows_style_path(path: str) -> bool:
+    """True for drive-letter, UNC, or any path that Windows treats case-insensitively.
+
+    Matches the identity rules used by ``tui_gateway.project_tree._path_key`` so
+    create-time primary_path dedup and sidebar lane identity agree on Windows
+    spellings even when the host process is POSIX (tests / remote backends).
+    """
+    value = (path or "").strip()
+    if os.name == "nt":
+        return True
+    return bool(re.match(r"^[A-Za-z]:[/\\]", value)) or value.startswith(("\\", "//"))
+
+
+def _path_identity_key(path: str) -> str:
+    """Canonical primary_path comparison key (separator + Windows case).
+
+    Used only for equality checks — stored paths keep their normalized spelling.
+
+    Pure Windows spellings (``E:\\foo``, ``//server/share``) must NOT go through
+    POSIX ``os.path.abspath``: that treats them as relative names and prepends
+    cwd, which would break both identity and Windows-style detection. On a
+    Windows host, ``_normalize_path`` is used so ``.`` / ``..`` resolve as usual.
+    """
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    if _is_windows_style_path(raw) and os.name != "nt":
+        # Keep drive/UNC identity without host-cwd pollution.
+        cleaned = raw.replace("\\", "/").rstrip("/")
+        segs = [s for s in cleaned.split("/") if s]
+        return "/".join(s.casefold() for s in segs)
+
+    norm = _normalize_path(raw)
+    segs = [s for s in re.split(r"[/\\]", norm.rstrip("/\\")) if s]
+    if os.name == "nt" or _is_windows_style_path(norm):
+        segs = [s.casefold() for s in segs]
+    return "/".join(segs)
+
+
+def find_project_by_primary_path(
+    conn: sqlite3.Connection,
+    path: str,
+    *,
+    include_archived: bool = False,
+) -> Optional[Project]:
+    """Return the non-archived project whose primary_path is ``path``, if any.
+
+    Comparison uses :func:`_path_identity_key` so equivalent Windows spellings
+    (case / separators / trailing slash) collide. Archived projects are skipped
+    unless ``include_archived`` is set, so a deliberate recreation after archive
+    remains possible.
+    """
+    if not str(path or "").strip():
+        return None
+    key = _path_identity_key(path)
+    if not key:
+        return None
+    for proj in list_projects(conn, include_archived=include_archived):
+        if not proj.primary_path:
+            continue
+        if _path_identity_key(proj.primary_path) == key:
+            return proj
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Connection management
 # ---------------------------------------------------------------------------
@@ -336,6 +401,11 @@ def create_project(
     ``folders`` are normalized to absolute paths. If ``primary_path`` is given
     it is added to the folder set (if not already present) and marked primary;
     otherwise the first folder becomes primary.
+
+    When the resolved primary path already belongs to a non-archived project,
+    raises ``ValueError`` naming that project (CLI / desktop / tools all share
+    this entrypoint). Projects with no primary folder are not constrained by
+    path uniqueness. Archiving frees the path so a fresh project can reuse it.
     """
     name = str(name or "").strip()
     if not name:
@@ -358,6 +428,15 @@ def create_project(
         primary = folder_paths[0]
 
     with write_txn(conn):
+        if primary:
+            # Look up inside the write txn so concurrent creates cannot both
+            # pass a pre-check and insert duplicate primaries.
+            existing = find_project_by_primary_path(conn, primary)
+            if existing is not None:
+                raise ValueError(
+                    f"folder already belongs to project {existing.slug} "
+                    f"({existing.id})"
+                )
         unique = _unique_slug(conn, slug_candidate)
         conn.execute(
             "INSERT INTO projects "

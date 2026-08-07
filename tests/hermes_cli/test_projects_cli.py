@@ -57,5 +57,15 @@ def test_rename_and_archive(tmp_path):
         assert len(pdb.list_projects(conn)) == 1
 
 
+def test_create_duplicate_primary_path_is_rejected(capsys, tmp_path):
+    """CLI create surfaces the projects_db primary_path collision (#75820)."""
+    assert _run(["create", "GeoTrace", str(tmp_path)]) == 0
+    assert _run(["create", "GeoTrace", str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert "folder already belongs to project" in err
+    with pdb.connect_closing() as conn:
+        assert len(pdb.list_projects(conn)) == 1
+
+
 
 

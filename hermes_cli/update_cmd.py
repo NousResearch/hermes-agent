@@ -838,6 +838,42 @@ def _print_update_completion(message: str) -> None:
         print(f"=== hermes-update completed {action_id} ===")
 
 
+def _read_project_version() -> str | None:
+    """Read the ``version`` field from the checkout's pyproject.toml.
+
+    Reads the on-disk file (not importlib.metadata) because after a git
+    pull the installed distribution metadata still describes the OLD
+    version; the file is the only source that reflects what was just
+    pulled. Returns None on any failure — version reporting is cosmetic
+    and must never break an update.
+    """
+    try:
+        import tomllib
+
+        with open(_m().PROJECT_ROOT / "pyproject.toml", "rb") as fh:
+            version = tomllib.load(fh).get("project", {}).get("version")
+        return str(version) if version else None
+    except Exception:
+        return None
+
+
+def _update_complete_message(pre_version: str | None) -> str:
+    """Completion line with the version transition when it is known.
+
+    Ported from PrimeIntellect-ai/prime-agent#630: after a successful
+    self-update, show both versions (``v0.19.4 → v0.20.0``) so the user
+    can see what they actually got. Falls back to the plain message when
+    either side is unknown or the version did not change (e.g. several
+    commits landed within one release).
+    """
+    post_version = _read_project_version()
+    if pre_version and post_version and pre_version != post_version:
+        return f"✓ Update complete! (v{pre_version} → v{post_version})"
+    if post_version:
+        return f"✓ Update complete! (v{post_version})"
+    return "✓ Update complete!"
+
+
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -849,6 +885,10 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
     import tempfile
     import zipfile
     from urllib.request import urlretrieve
+
+    # Snapshot the pre-update version before files are replaced so the
+    # completion line can report the transition (prime-agent#630 port).
+    pre_update_version = _read_project_version()
 
     # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
     # static archive from GitHub, which is fine for the default "main"
@@ -1205,7 +1245,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False):
         print("  Code and Python deps are updated, but the dashboard/TUI may")
         print("  be in a mixed state until the Node deps are rebuilt.")
     else:
-        _print_update_completion("✓ Update complete!")
+        _print_update_completion(_update_complete_message(pre_update_version))
     try:
         _print_curator_first_run_notice()
     except Exception as e:
@@ -4406,6 +4446,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
     active_lazy_features = _m()._capture_active_lazy_features()
     active_tool_dependencies = _m()._capture_active_tool_dependencies()
 
+    # Snapshot the pre-update version before any code is pulled so the
+    # completion line can report the transition (prime-agent#630 port).
+    pre_update_version = _read_project_version()
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default))
@@ -5582,7 +5625,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("  Code and Python deps are updated, but the dashboard/TUI may")
             print("  be in a mixed state until the Node deps are rebuilt.")
         else:
-            _print_update_completion("✓ Update complete!")
+            _print_update_completion(_update_complete_message(pre_update_version))
 
         # Search-index optimization notice (v23). Existing installs keep their
         # working search index untouched on update; the compact v23 layout —

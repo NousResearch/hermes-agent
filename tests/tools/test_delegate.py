@@ -337,6 +337,33 @@ class TestDelegateTask(unittest.TestCase):
         finally:
             parent_db.close()
 
+    def test_child_without_parent_db_still_degrades_to_none(self):
+        """Parent without a SessionDB -> child gets None (pre-fix behaviour).
+
+        The dedicated-handle path must not change the degradation contract:
+        a parent that never opened a session store (headless/oneshot runs,
+        test doubles) still yields ``session_db=None`` children.
+        """
+        parent = _make_mock_parent(depth=0)
+        parent._session_db = None
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="test",
+                context=None,
+                toolsets=None,
+                model="test-model",
+                max_iterations=5,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertIsNone(kwargs["session_db"])
+
     def test_nous_child_rederives_api_mode_from_model(self):
         """Portal is dual-wire — same provider + different model prefix must
         not inherit the parent's Messages/chat_completions mode verbatim."""

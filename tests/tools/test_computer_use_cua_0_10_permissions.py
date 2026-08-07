@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -187,7 +189,19 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
         proxy_command, proxy_args = daemon.proxy_invocation()
         daemon.stop()
 
-    assert command[:2] == ["/opt/cua-driver", "serve"]
+    if os.name == "posix":
+        from tools import mcp_stdio_watchdog
+
+        assert command[:5] == [
+            sys.executable,
+            os.path.abspath(mcp_stdio_watchdog.__file__),
+            "--ppid",
+            str(os.getpid()),
+            "--",
+        ]
+        assert command[5:7] == ["/opt/cua-driver", "serve"]
+    else:
+        assert command[:2] == ["/opt/cua-driver", "serve"]
     assert "--embedded" in command
     assert command[command.index("--permission-mode") + 1] == "unrestricted"
     assert "--dangerously-bypass-approvals" in command

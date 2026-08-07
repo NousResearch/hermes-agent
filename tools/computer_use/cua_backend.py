@@ -149,6 +149,14 @@ _CUA_DRIVER_DEFAULT_CMD = "cua-driver"
 _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
                             # driver doesn't expose `manifest` — see
                             # `_resolve_mcp_invocation` below)
+# The lifecycle owner times out its own MCP startup so the same asyncio task
+# that entered stdio_client/ClientSession also unwinds them and reaps the child.
+_CUA_MCP_STARTUP_TIMEOUT_SECONDS = 25.0
+# The synchronous caller must wait beyond the startup deadline while the
+# lifecycle owner joins a blocking daemon-start worker and reaps owned children.
+# Embedded status probes can consume 2s and stop escalation roughly 10s, so 15s
+# preserves a bounded outer guard without exposing failure before cleanup ends.
+_CUA_MCP_STARTUP_CLEANUP_GRACE_SECONDS = 15.0
 
 # Whole-screen / desktop capture. cua-driver is a window-oriented driver —
 # its `get_window_state` / `screenshot` tools capture a single window (by
@@ -191,11 +199,15 @@ _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 
 
 def _computer_use_cfg() -> Dict[str, Any]:
-    """The ``computer_use`` config block, or ``{}`` when config is unreadable."""
+    """The ``computer_use`` config block, or ``{}`` when invalid/unreadable."""
     try:
         from hermes_cli.config import load_config
 
-        return (load_config() or {}).get("computer_use") or {}
+        cfg = load_config() or {}
+        if not isinstance(cfg, dict):
+            return {}
+        section = cfg.get("computer_use", {}) or {}
+        return section if isinstance(section, dict) else {}
     except Exception:
         return {}
 
@@ -428,16 +440,30 @@ class _EmbeddedCuaDaemon:
         except Exception:
             pass
 
-    def start(self) -> None:
+    def start(
+        self,
+        driver_cmd: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         if self._process is not None and self._process.poll() is None:
             return
         from tools.environments.local import _sanitize_subprocess_env
 
+        def _raise_if_cancelled() -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("embedded cua-driver startup cancelled")
+
+        _raise_if_cancelled()
+        if driver_cmd:
+            self._driver_cmd = driver_cmd
         if not self._driver_cmd:
             self._driver_cmd = resolve_cua_driver_cmd() or ""
         if not self._driver_cmd:
             raise RuntimeError(cua_driver_install_hint())
         self._command, self._mcp_args = _resolve_mcp_invocation(self._driver_cmd)
+        # Manifest discovery is blocking. A lifecycle timeout may arrive while
+        # it runs, so re-check before crossing the process-spawn boundary.
+        _raise_if_cancelled()
         env = _sanitize_subprocess_env(self.child_env())
         command = [
             self._command,
@@ -450,14 +476,22 @@ class _EmbeddedCuaDaemon:
             "unrestricted",
             "--dangerously-bypass-approvals",
         ]
+        from tools.mcp_stdio_watchdog import wrap_command
+
+        supervised_command, supervised_args = wrap_command(command[0], command[1:])
         self._process = subprocess.Popen(
-            command,
+            [supervised_command, *supervised_args],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
             env=env,
         )
+        # Close the narrow check→Popen race: if cancellation landed between
+        # those operations, reap the process before the worker can return.
+        if cancel_event is not None and cancel_event.is_set():
+            self.stop()
+            raise RuntimeError("embedded cua-driver startup cancelled")
         self._stderr_thread = threading.Thread(
             target=self._drain_stderr,
             args=(self._process,),
@@ -468,6 +502,9 @@ class _EmbeddedCuaDaemon:
 
         deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                self.stop()
+                raise RuntimeError("embedded cua-driver startup cancelled")
             if self._process.poll() is not None:
                 detail = "; ".join(self._stderr_tail) or "no diagnostic output"
                 raise RuntimeError(
@@ -689,12 +726,27 @@ def _has_path_separator(value: str) -> bool:
     return os.sep in value or (os.altsep is not None and os.altsep in value)
 
 
+def configured_cua_driver_path() -> str:
+    """Return the profile-configured cua-driver path when it is a string."""
+    value = _computer_use_cfg().get("driver_path", "")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def configured_cua_driver_path_error() -> Optional[str]:
+    """Describe an explicitly invalid profile driver_path value, if present."""
+    value = _computer_use_cfg().get("driver_path", "")
+    if isinstance(value, str):
+        return None
+    return f"expected a string, got {type(value).__name__}"
+
+
 def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
     """Return candidate cua-driver commands in resolution order.
 
-    ``override`` is authoritative when supplied. Otherwise a non-empty
-    ``HERMES_CUA_DRIVER_CMD`` is authoritative; only when neither is set do we
-    use PATH and canonical install locations.
+    ``override`` is authoritative when supplied. Otherwise the profile-safe
+    ``computer_use.driver_path`` setting wins, followed by the legacy
+    ``HERMES_CUA_DRIVER_CMD`` environment override. Only when none is set do
+    we use PATH and canonical install locations.
 
     Desktop apps launched from Finder/Dock often inherit a narrow PATH that
     omits user-local install directories. The upstream cua-driver installer
@@ -702,7 +754,24 @@ def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
     Hermes Desktop/TUI session can otherwise filter out the `computer_use`
     tool even though `hermes computer-use doctor` succeeds from a login shell.
     """
-    configured = (override if override is not None else os.environ.get(_CUA_DRIVER_CMD_ENV, "")).strip()
+    if override is not None:
+        configured = override.strip()
+    else:
+        config_error = configured_cua_driver_path_error()
+        if config_error:
+            # The profile explicitly contains driver_path but its value cannot
+            # name an executable. Do not silently weaken the pin to env/PATH.
+            return []
+        configured = configured_cua_driver_path()
+        if configured:
+            expanded = os.path.expanduser(configured)
+            if not os.path.isabs(expanded):
+                from hermes_cli.config import get_config_path
+
+                expanded = str(get_config_path().parent / expanded)
+            configured = expanded
+        if not configured:
+            configured = os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip()
     if configured:
         # An explicit override is authoritative: if it is wrong, report the
         # driver missing instead of silently picking a different binary.
@@ -728,19 +797,21 @@ def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
 def resolve_cua_driver_cmd(override: Optional[str] = None) -> Optional[str]:
     """Resolve the cua-driver executable for every runtime/status surface.
 
-    A supplied override (or ``HERMES_CUA_DRIVER_CMD``) is never silently
-    replaced by another binary. Otherwise resolve PATH first, then canonical
-    user-local installation locations used by the official installer.
+    An explicit CLI override, profile path, or legacy environment override is
+    never silently replaced by another binary. Resolved executables are
+    returned as absolute canonical paths. Otherwise resolve PATH first, then
+    canonical user-local installation locations used by the installer.
     """
     for candidate in _candidate_cua_driver_commands(override):
         expanded = os.path.expanduser(candidate)
         if _has_path_separator(expanded):
-            if shutil.which(expanded):
-                return expanded
+            resolved = shutil.which(expanded)
+            if resolved:
+                return os.path.realpath(os.path.abspath(resolved))
         else:
             resolved = shutil.which(expanded)
             if resolved:
-                return resolved
+                return os.path.realpath(os.path.abspath(resolved))
     return None
 
 
@@ -1142,59 +1213,124 @@ class _CuaDriverSession:
         # when startup wedges, the caller reports HOW FAR it got instead of
         # an opaque "never reached ready".
         self._startup_phase = "binary-check"
+        embedded_start_task: Optional[asyncio.Task[Any]] = None
+        embedded_cancel_event = (
+            threading.Event() if self._embedded_daemon is not None else None
+        )
+
+        async def _cleanup_embedded_startup() -> None:
+            """Cancel, join, then reap the exact private-daemon startup."""
+            if self._embedded_daemon is None:
+                return
+            if embedded_cancel_event is not None:
+                embedded_cancel_event.set()
+            # Join before the final stop so a worker blocked before Popen cannot
+            # spawn after stop() has already observed an empty process slot.
+            if embedded_start_task is not None:
+                try:
+                    await asyncio.shield(embedded_start_task)
+                except BaseException:
+                    pass
+            await asyncio.to_thread(self._embedded_daemon.stop)
 
         try:
-            driver_cmd = resolve_cua_driver_cmd()
-            if not driver_cmd:
-                raise RuntimeError(cua_driver_install_hint())
+            # Own the complete startup budget here, including synchronous
+            # driver/manifest discovery.  Run blocking probes in a worker so
+            # this lifecycle task can enforce its deadline; the MCP SDK async
+            # contexts themselves still enter and exit in this same task.
+            async with asyncio.timeout(_CUA_MCP_STARTUP_TIMEOUT_SECONDS) as startup_timeout:
+                driver_cmd = await asyncio.to_thread(resolve_cua_driver_cmd)
+                if not driver_cmd:
+                    raise RuntimeError(cua_driver_install_hint())
 
-            # Surface 8: ask cua-driver itself which subcommand spawns
-            # the MCP server, instead of hardcoding ["mcp"]. Falls back
-            # transparently for older drivers / any discovery failure.
-            self._startup_phase = "manifest-discovery"
-            if self._embedded_daemon is not None:
-                command, args = self._embedded_daemon.proxy_invocation()
-                child_env = self._embedded_daemon.child_env()
-            else:
-                command, args = _resolve_mcp_invocation(driver_cmd)
-                child_env = cua_driver_child_env()
-            _t_manifest = _time.monotonic()
-            params = StdioServerParameters(
-                command=command,
-                args=args,
-                # Apply the telemetry policy first (default: disabled), then
-                # sanitize Hermes-managed secrets out of the child env.
-                env=_sanitize_subprocess_env(child_env),
-            )
-
-            async with stdio_client(params) as (read, write):
-                self._startup_phase = "mcp-initialize"
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    _t_init = _time.monotonic()
-                    # Populate capabilities + capability_version BEFORE
-                    # exposing the session to callers, so the first
-                    # tool call already sees them.
-                    self._startup_phase = "capability-discovery"
-                    await self._populate_capabilities(session)
-                    self._session = session
-                    self._startup_phase = "ready"
-                    self._ready_event.set()
-                    logger.info(
-                        "cua-driver session ready in %.1fs "
-                        "(manifest=%.1fs, mcp_init=%.1fs)",
-                        _time.monotonic() - _t0,
-                        _t_manifest - _t0,
-                        _t_init - _t_manifest,
+                if self._embedded_daemon is not None:
+                    self._startup_phase = "embedded-daemon"
+                    embedded_start_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            self._embedded_daemon.start,
+                            driver_cmd,
+                            embedded_cancel_event,
+                        )
                     )
-                    # Hold the contexts open until stop() / restart asks
-                    # us to wind down. Tool calls run as their own tasks
-                    # on the same loop and touch self._session directly.
-                    await self._shutdown_event.wait()
+                    # Keep ownership of the worker when the absolute startup
+                    # timeout cancels this lifecycle task. The timeout handler
+                    # stops the daemon and joins this exact worker before
+                    # exposing failure to the synchronous caller.
+                    await asyncio.shield(embedded_start_task)
+
+                # Surface 8: ask cua-driver itself which subcommand spawns
+                # the MCP server, instead of hardcoding ["mcp"]. Falls back
+                # transparently for older drivers / any discovery failure.
+                self._startup_phase = "manifest-discovery"
+                if self._embedded_daemon is not None:
+                    command, args = await asyncio.to_thread(
+                        self._embedded_daemon.proxy_invocation
+                    )
+                    child_env = self._embedded_daemon.child_env()
+                else:
+                    command, args = await asyncio.to_thread(
+                        _resolve_mcp_invocation, driver_cmd
+                    )
+                    child_env = cua_driver_child_env()
+                # Reuse Hermes's stdio MCP parent-death supervisor on POSIX. It
+                # owns only this invocation's process group, so a hard gateway
+                # death reaps the exact cua-driver tree without name-based kills.
+                from tools.mcp_stdio_watchdog import wrap_command
+
+                command, args = wrap_command(command, args)
+                _t_manifest = _time.monotonic()
+                params = StdioServerParameters(
+                    command=command,
+                    args=args,
+                    # Apply the telemetry policy first (default: disabled), then
+                    # sanitize Hermes-managed secrets out of the child env.
+                    env=_sanitize_subprocess_env(child_env),
+                )
+
+                self._startup_phase = "mcp-spawn"
+                async with stdio_client(params) as (read, write):
+                    self._startup_phase = "mcp-initialize"
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        _t_init = _time.monotonic()
+                        # Populate capabilities + capability_version BEFORE
+                        # exposing the session to callers, so the first
+                        # tool call already sees them.
+                        self._startup_phase = "capability-discovery"
+                        await self._populate_capabilities(session)
+                        self._session = session
+                        self._startup_phase = "ready"
+                        self._ready_event.set()
+                        logger.info(
+                            "cua-driver session ready in %.1fs "
+                            "(manifest=%.1fs, mcp_init=%.1fs)",
+                            _time.monotonic() - _t0,
+                            _t_manifest - _t0,
+                            _t_init - _t_manifest,
+                        )
+                        # Startup is complete: disarm the setup deadline while
+                        # preserving this task as owner of both async contexts.
+                        startup_timeout.reschedule(None)
+                        # Hold the contexts open until stop() / restart asks
+                        # us to wind down. Tool calls run as their own tasks
+                        # on the same loop and touch self._session directly.
+                        await self._shutdown_event.wait()
+        except asyncio.TimeoutError as e:
+            phase = getattr(self, "_startup_phase", "unknown")
+            await _cleanup_embedded_startup()
+            timeout_error = asyncio.TimeoutError(
+                "cua-driver MCP startup timed out after "
+                f"{_CUA_MCP_STARTUP_TIMEOUT_SECONDS:g}s "
+                f"(stuck in phase: {phase})"
+            )
+            self._setup_error = timeout_error
+            self._ready_event.set()
+            raise timeout_error from e
         except BaseException as e:
-            # Capture both ordinary errors and anyio CancelledError.
+            # Capture ordinary errors and anyio CancelledError.
             # The caller (start()) inspects this to surface setup
             # failures to the synchronous world.
+            await _cleanup_embedded_startup()
             self._setup_error = e
             self._ready_event.set()
             raise
@@ -1285,7 +1421,11 @@ class _CuaDriverSession:
         self._lifecycle_future = asyncio.run_coroutine_threadsafe(
             self._lifecycle_coro(), loop
         )
-        if not self._ready_event.wait(timeout=30.0):
+        ready_guard_seconds = (
+            _CUA_MCP_STARTUP_TIMEOUT_SECONDS
+            + _CUA_MCP_STARTUP_CLEANUP_GRACE_SECONDS
+        )
+        if not self._ready_event.wait(timeout=ready_guard_seconds):
             # Best-effort: signal shutdown if the future is still alive.
             self._signal_shutdown_locked()
             # Surface which startup phase wedged (issue #57025) — "doctor
@@ -1294,7 +1434,8 @@ class _CuaDriverSession:
             phase = getattr(self, "_startup_phase", "unknown")
             from hermes_constants import display_hermes_home
             raise RuntimeError(
-                "cua-driver session never reached ready (timeout 30s; "
+                "cua-driver session never reached ready "
+                f"(timeout {ready_guard_seconds:g}s including cleanup; "
                 f"stuck in phase: {phase}). "
                 "Run `hermes computer-use doctor` and check "
                 f"{display_hermes_home()}/logs/agent.log for the phase timings."
@@ -1912,7 +2053,7 @@ class CuaDriverBackend(ComputerUseBackend):
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
         self.permission_mode = permission_mode
         self._embedded_daemon = (
-            _EmbeddedCuaDaemon(resolve_cua_driver_cmd() or "", permission_mode)
+            _EmbeddedCuaDaemon("", permission_mode)
             if permission_mode == "unrestricted"
             else None
         )
@@ -1987,8 +2128,6 @@ class CuaDriverBackend(ComputerUseBackend):
         import importlib
         importlib.invalidate_caches()
         try:
-            if self._embedded_daemon is not None:
-                self._embedded_daemon.start()
             self._session.start()
         except Exception:
             if self._embedded_daemon is not None:

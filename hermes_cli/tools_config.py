@@ -699,9 +699,9 @@ TOOL_CATEGORIES = {
                 ),
                 "env_vars": [
                     # cua-driver reads HOME/TMPDIR from the process env, no
-                    # extra keys required. Set HERMES_CUA_DRIVER_CMD to use a
-                    # specific binary (e.g. a local build); there is no
-                    # version-pin env var.
+                    # extra keys required. Use computer_use.driver_path for a
+                    # profile-safe binary pin; HERMES_CUA_DRIVER_CMD remains a
+                    # legacy override when no profile path is configured.
                 ],
                 "post_setup": "cua_driver",
             },

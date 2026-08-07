@@ -135,14 +135,41 @@ def _normalize_version_token(text: str) -> str:
     return m.group(1) if m else text.strip().lower()
 
 
-def _build_identity(binary: str, report: Dict[str, Any]) -> Dict[str, Any]:
-    """Hermes-side identity block comparing resolved binary vs health_report."""
-    cli = _read_cli_version(binary) or ""
+def _build_identity(
+    binary: Optional[str],
+    report: Optional[Dict[str, Any]] = None,
+    *,
+    driver_cmd: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Hermes identity and provenance for selected or failed resolution."""
+    from tools.computer_use.cua_backend import (
+        configured_cua_driver_path,
+        configured_cua_driver_path_error,
+    )
+
+    report = report or {}
+    configured_path = configured_cua_driver_path()
+    configured_error = configured_cua_driver_path_error()
+    legacy_env = os.getenv("HERMES_CUA_DRIVER_CMD", "").strip()
+    if driver_cmd is not None and driver_cmd.strip():
+        selection_source = "cli"
+    elif configured_path or configured_error:
+        selection_source = "config"
+    elif legacy_env:
+        selection_source = "environment"
+    else:
+        selection_source = "auto"
+
+    cli = (_read_cli_version(binary) or "") if binary else ""
     report_v = str(report.get("driver_version") or "")
     cli_tok = _normalize_version_token(cli)
     report_tok = _normalize_version_token(report_v)
     mismatch = bool(cli_tok and report_tok and cli_tok != report_tok)
     return {
+        "selection_source": selection_source,
+        "configured_driver_path": configured_path or None,
+        "configured_driver_error": configured_error,
+        "legacy_env_driver_cmd": legacy_env or None,
         "resolved_binary": binary,
         "cli_version": cli or None,
         "health_report_driver_version": report_v or None,
@@ -746,6 +773,10 @@ def _print_text_report(
     )
     if identity.get("resolved_binary"):
         print(f"  {col_dim}binary: {identity['resolved_binary']}{col_reset}")
+    if identity.get("selection_source"):
+        print(f"  {col_dim}selection: {identity['selection_source']}{col_reset}")
+    if identity.get("configured_driver_path"):
+        print(f"  {col_dim}configured: {identity['configured_driver_path']}{col_reset}")
     if cli_v and report_v and str(report_v) not in str(cli_v) and str(cli_v) not in str(report_v):
         # Only annotate when the free-form strings clearly differ.
         print(
@@ -827,9 +858,41 @@ def run_doctor(
 
     binary = resolve_cua_driver_cmd(driver_cmd)
     if not binary:
-        looked_for = driver_cmd or "cua-driver (PATH and canonical install paths)"
-        print(f"cua-driver: not installed (looked for {looked_for!r}).")
-        print("  Run: hermes computer-use install")
+        identity = _build_identity(None, driver_cmd=driver_cmd)
+        source = identity["selection_source"]
+        attempted = {
+            "cli": driver_cmd,
+            "config": identity["configured_driver_path"]
+            or f"<invalid: {identity['configured_driver_error']}>",
+            "environment": identity["legacy_env_driver_cmd"],
+            "auto": "cua-driver (PATH and canonical install paths)",
+        }[source]
+        message = f"cua-driver not found for {source} selection: {attempted!r}"
+        if json_output:
+            payload = {
+                "schema_version": "1",
+                "overall": "failed",
+                "checks": [],
+                "error": {"code": "driver_not_found", "message": message},
+                "hermes_identity": identity,
+            }
+            json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        else:
+            print(f"cua-driver: not installed ({message}).")
+            print(f"  selection: {source}")
+            if identity["configured_driver_path"]:
+                print(f"  configured: {identity['configured_driver_path']}")
+            if identity["configured_driver_error"]:
+                print(f"  config error: {identity['configured_driver_error']}")
+            if source == "config":
+                print("  Fix or remove computer_use.driver_path in this profile's config.")
+            elif source == "environment":
+                print("  Fix or unset HERMES_CUA_DRIVER_CMD.")
+            elif source == "cli":
+                print("  Fix the explicit cua-driver command/path.")
+            else:
+                print("  Run: hermes computer-use install")
         return 2
 
     try:
@@ -837,10 +900,30 @@ def run_doctor(
             binary, include=include, skip=skip,
         )
     except RuntimeError as e:
-        print(f"cua-driver health_report failed: {e}", file=sys.stderr)
+        identity = _build_identity(binary, driver_cmd=driver_cmd)
+        message = f"cua-driver health_report failed: {e}"
+        if json_output:
+            payload = {
+                "schema_version": "1",
+                "overall": "failed",
+                "checks": [],
+                "error": {"code": "health_report_failed", "message": message},
+                "hermes_identity": identity,
+            }
+            json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        else:
+            print(message, file=sys.stderr)
+            print(f"  binary: {identity['resolved_binary']}", file=sys.stderr)
+            print(f"  selection: {identity['selection_source']}", file=sys.stderr)
+            if identity["configured_driver_path"]:
+                print(
+                    f"  configured: {identity['configured_driver_path']}",
+                    file=sys.stderr,
+                )
         return 2
 
-    identity = _build_identity(binary, report)
+    identity = _build_identity(binary, report, driver_cmd=driver_cmd)
 
     if json_output:
         # Additive envelope: preserve the upstream health_report keys and

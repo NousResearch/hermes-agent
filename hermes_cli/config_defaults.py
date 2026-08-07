@@ -3046,7 +3046,11 @@ DEFAULT_CONFIG = {
 
     # Computer Use (cua-driver) toolset settings.
     "computer_use": {
-        # cua-driver ships with anonymous usage telemetry (PostHog) ENABLED
+        # Exact cua-driver executable selected for this Hermes profile.
+        # Prefer this over the legacy HERMES_CUA_DRIVER_CMD environment
+        # override; empty means resolve from PATH/canonical install locations.
+        "driver_path": "",
+        # cua-driver ships with anonymous usage telemetry (PostHog) enabled
         # by default upstream. Hermes disables it for our users unless they
         # explicitly opt in here. When false (default), Hermes sets
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in the cua-driver child env for

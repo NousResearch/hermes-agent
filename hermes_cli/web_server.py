@@ -1042,9 +1042,8 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # the MCP tab) — fold it into the agent tab rather than spawning a
     # one-field orphan category.
     "mcp": "agent",
-    # `computer_use.cua_telemetry` is the only schema-surfaced computer_use
-    # field — fold it into the agent tab rather than spawning a one-field
-    # orphan category.
+    # Keep the computer_use settings grouped into the agent tab rather than
+    # spawning a small single-purpose category.
     "computer_use": "agent",
     # `telemetry.shared_metrics.enabled` is the only schema-surfaced telemetry
     # field — fold it into security alongside the other privacy-posture toggles.

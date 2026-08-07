@@ -82,11 +82,127 @@ class TestRegistration:
         driver.write_text("#!/bin/sh\nexit 0\n")
         driver.chmod(0o755)
 
+        monkeypatch.setattr(cua_backend, "_computer_use_cfg", lambda: {})
         monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(driver))
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
         assert cua_backend.resolve_cua_driver_cmd() == str(driver)
         assert cua_backend.cua_driver_binary_available() is True
+
+    def test_profile_driver_path_wins_over_legacy_env(self, tmp_path, monkeypatch):
+        """A profile setting must select the runtime binary ahead of legacy env."""
+        from tools.computer_use import cua_backend
+
+        driver = tmp_path / "profile-cua-driver"
+        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.chmod(0o755)
+        (tmp_path / "config.yaml").write_text(
+            f"computer_use:\n  driver_path: {driver}\n"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/missing/legacy-driver")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        assert cua_backend.resolve_cua_driver_cmd() == str(driver.resolve())
+
+    def test_invalid_profile_driver_path_is_authoritative(self, tmp_path, monkeypatch):
+        from tools.computer_use import cua_backend
+
+        fallback = tmp_path / "fallback-cua-driver"
+        fallback.write_text("#!/bin/sh\nexit 0\n")
+        fallback.chmod(0o755)
+        missing = tmp_path / "missing-profile-driver"
+        (tmp_path / "config.yaml").write_text(
+            f"computer_use:\n  driver_path: {missing}\n"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(fallback))
+        monkeypatch.setenv("PATH", str(tmp_path))
+
+        assert cua_backend.resolve_cua_driver_cmd() is None
+        assert cua_backend.cua_driver_binary_available() is False
+
+    def test_profile_driver_path_is_returned_canonically(self, tmp_path, monkeypatch):
+        from tools.computer_use import cua_backend
+
+        driver = tmp_path / "real-cua-driver"
+        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.chmod(0o755)
+        link = tmp_path / "selected-cua-driver"
+        link.symlink_to(driver)
+        (tmp_path / "config.yaml").write_text(
+            f"computer_use:\n  driver_path: {link}\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+
+        assert cua_backend.resolve_cua_driver_cmd() == str(driver.resolve())
+
+    def test_malformed_profile_driver_config_falls_back_safely(self, tmp_path, monkeypatch):
+        from tools.computer_use import cua_backend
+
+        fallback = tmp_path / "fallback-cua-driver"
+        fallback.write_text("#!/bin/sh\nexit 0\n")
+        fallback.chmod(0o755)
+        (tmp_path / "config.yaml").write_text("computer_use:\n  - malformed\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(fallback))
+
+        assert cua_backend.resolve_cua_driver_cmd() == str(fallback.resolve())
+
+    def test_nonscalar_profile_driver_path_fails_closed(self, tmp_path, monkeypatch):
+        from tools.computer_use import cua_backend
+
+        fallback = tmp_path / "fallback-cua-driver"
+        fallback.write_text("#!/bin/sh\nexit 0\n")
+        fallback.chmod(0o755)
+        (tmp_path / "config.yaml").write_text(
+            "computer_use:\n  driver_path:\n    - not-a-path\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(fallback))
+
+        assert cua_backend.resolve_cua_driver_cmd() is None
+
+    def test_bare_profile_driver_name_is_anchored_to_profile(self, tmp_path, monkeypatch):
+        from tools.computer_use import cua_backend
+
+        profile_driver = tmp_path / "cua-driver"
+        profile_driver.write_text("#!/bin/sh\nexit 0\n")
+        profile_driver.chmod(0o755)
+        path_dir = tmp_path / "path-bin"
+        path_dir.mkdir()
+        path_driver = path_dir / "cua-driver"
+        path_driver.write_text("#!/bin/sh\nexit 0\n")
+        path_driver.chmod(0o755)
+        (tmp_path / "config.yaml").write_text(
+            "computer_use:\n  driver_path: cua-driver\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("PATH", str(path_dir))
+
+        assert cua_backend.resolve_cua_driver_cmd() == str(profile_driver.resolve())
+
+    def test_relative_profile_driver_path_is_anchored_to_profile(self, tmp_path, monkeypatch):
+        from tools.computer_use import cua_backend
+
+        profile = tmp_path / "profile"
+        workspace = tmp_path / "workspace"
+        driver = profile / "bin" / "cua-driver"
+        driver.parent.mkdir(parents=True)
+        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.chmod(0o755)
+        workspace.mkdir()
+        (profile / "config.yaml").write_text(
+            "computer_use:\n  driver_path: bin/cua-driver\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+        monkeypatch.chdir(workspace)
+
+        assert cua_backend.resolve_cua_driver_cmd() == str(driver.resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -1333,6 +1449,412 @@ class TestCaptureAfterExactTarget:
             "mode": "som", "app": None, "pid": 7675, "window_id": 42,
         }]
 
+class TestCuaMcpStartupCleanup:
+    def test_lifecycle_timeout_unwinds_stdio_before_outer_guard(self, monkeypatch):
+        """A wedged initialize must time out inside the lifecycle owner.
+
+        The synchronous 30s ready guard cannot safely reap an SDK-owned child:
+        setting the shutdown event is ineffective while initialize is blocked.
+        The owning asyncio task must time itself out so stdio_client.__aexit__
+        completes before setup failure is reported.
+        """
+        import asyncio
+        import time
+        from contextlib import asynccontextmanager
+        from unittest.mock import MagicMock
+
+        from tools.computer_use import cua_backend
+
+        session = cua_backend._CuaDriverSession(cua_backend._AsyncBridge())
+        stdio_exited = asyncio.Event()
+
+        @asynccontextmanager
+        async def fake_stdio_client(_params):
+            try:
+                yield MagicMock(), MagicMock()
+            finally:
+                stdio_exited.set()
+
+        class HangingSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+            async def initialize(self):
+                await asyncio.sleep(3600)
+
+        monkeypatch.setattr(
+            cua_backend, "_CUA_MCP_STARTUP_TIMEOUT_SECONDS", 0.05, raising=False
+        )
+        monkeypatch.setattr(cua_backend, "resolve_cua_driver_cmd", lambda: "cua-driver")
+        monkeypatch.setattr(
+            cua_backend,
+            "_resolve_mcp_invocation",
+            lambda _cmd: ("cua-driver", ["mcp"]),
+        )
+        monkeypatch.setattr("mcp.client.stdio.stdio_client", fake_stdio_client)
+        monkeypatch.setattr("mcp.ClientSession", lambda *_args, **_kwargs: HangingSession())
+
+        async def drive():
+            started = time.monotonic()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(session._lifecycle_coro(), timeout=0.5)
+            return time.monotonic() - started
+
+        elapsed = asyncio.run(drive())
+        assert elapsed < 0.25
+        assert stdio_exited.is_set(), "stdio context must unwind before failure returns"
+        assert isinstance(session._setup_error, asyncio.TimeoutError)
+        assert "mcp-initialize" in str(session._setup_error)
+        assert "0.05s" in str(session._setup_error)
+
+    def test_startup_deadline_includes_blocking_manifest_discovery(self, monkeypatch):
+        """Manifest probing must not consume the cleanup headroom outside the deadline."""
+        import asyncio
+        import time
+        from contextlib import asynccontextmanager
+        from unittest.mock import MagicMock
+
+        from tools.computer_use import cua_backend
+
+        session = cua_backend._CuaDriverSession(cua_backend._AsyncBridge())
+        stdio_entered = False
+
+        def slow_manifest(_cmd):
+            time.sleep(0.2)
+            return "cua-driver", ["mcp"]
+
+        @asynccontextmanager
+        async def fake_stdio_client(_params):
+            nonlocal stdio_entered
+            stdio_entered = True
+            yield MagicMock(), MagicMock()
+
+        class HangingSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+            async def initialize(self):
+                await asyncio.sleep(3600)
+
+        monkeypatch.setattr(
+            cua_backend, "_CUA_MCP_STARTUP_TIMEOUT_SECONDS", 0.05
+        )
+        monkeypatch.setattr(cua_backend, "resolve_cua_driver_cmd", lambda: "cua-driver")
+        monkeypatch.setattr(cua_backend, "_resolve_mcp_invocation", slow_manifest)
+        monkeypatch.setattr("mcp.client.stdio.stdio_client", fake_stdio_client)
+        monkeypatch.setattr("mcp.ClientSession", lambda *_args, **_kwargs: HangingSession())
+
+        async def drive():
+            started = time.monotonic()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(session._lifecycle_coro(), timeout=0.5)
+            return time.monotonic() - started
+
+        elapsed = asyncio.run(drive())
+        assert elapsed < 0.15
+        assert not stdio_entered
+        assert "manifest-discovery" in str(session._setup_error)
+
+    def test_unrestricted_embedded_daemon_is_inside_startup_deadline(self, monkeypatch):
+        """A wedged private daemon must be stopped before timeout reaches the caller."""
+        import asyncio
+        import threading
+        import time
+
+        from tools.computer_use import cua_backend
+
+        class HangingEmbeddedDaemon:
+            def __init__(self):
+                self.started = threading.Event()
+                self.stop_requested = threading.Event()
+                self.worker_finished = threading.Event()
+
+            def start(self, _driver_cmd=None, cancel_event=None):
+                self.started.set()
+                while not self.stop_requested.wait(timeout=0.01):
+                    if cancel_event is not None and cancel_event.is_set():
+                        break
+                self.worker_finished.set()
+
+            def stop(self):
+                self.stop_requested.set()
+
+            def proxy_invocation(self):
+                raise AssertionError("MCP proxy must not start before daemon readiness")
+
+            def child_env(self):
+                return {}
+
+        daemon = HangingEmbeddedDaemon()
+        session = cua_backend._CuaDriverSession(
+            cua_backend._AsyncBridge(), cast(Any, daemon)
+        )
+        # _lifecycle_coro imports the optional MCP SDK before entering its
+        # startup timeout. Warm that import so elapsed time below measures the
+        # bounded daemon phase rather than one-time module import cost.
+        __import__("mcp.client.stdio")
+        monkeypatch.setattr(
+            cua_backend, "_CUA_MCP_STARTUP_TIMEOUT_SECONDS", 0.05
+        )
+        monkeypatch.setattr(
+            cua_backend, "resolve_cua_driver_cmd", lambda: "cua-driver"
+        )
+
+        async def drive():
+            started = time.monotonic()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(session._lifecycle_coro(), timeout=0.5)
+            return time.monotonic() - started
+
+        elapsed = asyncio.run(drive())
+        assert elapsed < 0.25
+        assert daemon.started.is_set()
+        assert daemon.stop_requested.is_set()
+        assert daemon.worker_finished.is_set(), (
+            "embedded daemon startup worker must finish before failure returns"
+        )
+        assert "embedded-daemon" in str(session._setup_error)
+
+    def test_unrestricted_timeout_cannot_spawn_after_cleanup_begins(
+        self, monkeypatch
+    ):
+        """Cancellation during manifest probing must prevent a later daemon spawn."""
+        import asyncio
+        import time
+
+        from tools.computer_use import cua_backend
+
+        daemon = cua_backend._EmbeddedCuaDaemon("", "unrestricted")
+        session = cua_backend._CuaDriverSession(
+            cua_backend._AsyncBridge(), daemon
+        )
+        spawned = False
+
+        def slow_manifest(_driver_cmd):
+            time.sleep(0.12)
+            return "cua-driver", ["mcp"]
+
+        def forbidden_spawn(*_args, **_kwargs):
+            nonlocal spawned
+            spawned = True
+            raise AssertionError("daemon spawned after startup timeout")
+
+        monkeypatch.setattr(
+            cua_backend, "_CUA_MCP_STARTUP_TIMEOUT_SECONDS", 0.05
+        )
+        monkeypatch.setattr(
+            cua_backend, "resolve_cua_driver_cmd", lambda: "cua-driver"
+        )
+        monkeypatch.setattr(cua_backend, "_resolve_mcp_invocation", slow_manifest)
+        __import__("mcp.client.stdio")
+        monkeypatch.setattr(cua_backend.subprocess, "Popen", forbidden_spawn)
+
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(
+                asyncio.wait_for(session._lifecycle_coro(), timeout=0.5)
+            )
+
+        assert not spawned
+        assert "embedded-daemon" in str(session._setup_error)
+
+    def test_external_cancellation_joins_embedded_startup_worker(self, monkeypatch):
+        """Lifecycle cancellation must not detach an unrestricted startup thread."""
+        import asyncio
+        import threading
+
+        from tools.computer_use import cua_backend
+
+        class HangingEmbeddedDaemon:
+            def __init__(self):
+                self.started = threading.Event()
+                self.stop_requested = threading.Event()
+                self.worker_finished = threading.Event()
+
+            def start(self, _driver_cmd=None, cancel_event=None):
+                import time
+
+                self.started.set()
+                rescue_deadline = time.monotonic() + 0.3
+                while (
+                    not self.stop_requested.wait(timeout=0.01)
+                    and time.monotonic() < rescue_deadline
+                ):
+                    if cancel_event is not None and cancel_event.is_set():
+                        break
+                self.worker_finished.set()
+
+            def stop(self):
+                self.stop_requested.set()
+
+            def proxy_invocation(self):
+                raise AssertionError("MCP proxy must not start before daemon readiness")
+
+            def child_env(self):
+                return {}
+
+        daemon = HangingEmbeddedDaemon()
+        session = cua_backend._CuaDriverSession(
+            cua_backend._AsyncBridge(), cast(Any, daemon)
+        )
+        monkeypatch.setattr(
+            cua_backend, "resolve_cua_driver_cmd", lambda: "cua-driver"
+        )
+        __import__("mcp.client.stdio")
+
+        async def drive():
+            task = asyncio.create_task(session._lifecycle_coro())
+            started = await asyncio.to_thread(daemon.started.wait, 0.2)
+            assert started
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(drive())
+        assert daemon.stop_requested.is_set()
+        assert daemon.worker_finished.is_set(), (
+            "embedded daemon startup worker must finish before cancellation returns"
+        )
+
+    def test_synchronous_start_guard_waits_for_timeout_cleanup(self, monkeypatch):
+        """The outer ready guard must leave the lifecycle enough cleanup headroom."""
+        import asyncio
+        import threading
+        import time
+
+        from tools.computer_use import cua_backend
+
+        native_event = threading.Event
+
+        class SlowCleanupDaemon:
+            def __init__(self):
+                self.stop_finished = native_event()
+
+            def start(self, _driver_cmd=None, cancel_event=None):
+                while cancel_event is None or not cancel_event.wait(timeout=0.01):
+                    pass
+
+            def stop(self):
+                time.sleep(0.12)
+                self.stop_finished.set()
+
+            def proxy_invocation(self):
+                raise AssertionError("MCP proxy must not start before daemon readiness")
+
+            def child_env(self):
+                return {}
+
+        class ScaledReadyEvent:
+            """Compress the old fixed 30s guard so this regression stays fast."""
+
+            def __init__(self):
+                self._event = native_event()
+
+            def set(self):
+                self._event.set()
+
+            def is_set(self):
+                return self._event.is_set()
+
+            def wait(self, timeout=None):
+                # Old code asks for 30s and is simulated as 0.10s. Revised
+                # code asks for startup + cleanup grace and gets that budget.
+                if timeout == 30.0:
+                    timeout = 0.10
+                return self._event.wait(timeout)
+
+        daemon = SlowCleanupDaemon()
+        session = cua_backend._CuaDriverSession(
+            cua_backend._AsyncBridge(), cast(Any, daemon)
+        )
+        monkeypatch.setattr(
+            cua_backend, "_CUA_MCP_STARTUP_TIMEOUT_SECONDS", 0.05
+        )
+        monkeypatch.setattr(
+            cua_backend,
+            "_CUA_MCP_STARTUP_CLEANUP_GRACE_SECONDS",
+            0.20,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            cua_backend, "resolve_cua_driver_cmd", lambda: "cua-driver"
+        )
+        __import__("mcp.client.stdio")
+        monkeypatch.setattr(cua_backend.threading, "Event", ScaledReadyEvent)
+
+        try:
+            with pytest.raises(RuntimeError):
+                session.start()
+            assert daemon.stop_finished.is_set(), (
+                "synchronous startup failure returned before daemon cleanup finished"
+            )
+        finally:
+            daemon.stop_finished.wait(timeout=0.5)
+            session._bridge.stop()
+
+    @pytest.mark.skipif(os.name != "posix", reason="process watchdog is POSIX-only")
+    def test_real_wedged_mcp_child_is_reaped_before_timeout_returns(
+        self, tmp_path, monkeypatch
+    ):
+        """Exercise the real MCP SDK + watchdog against a child that never speaks."""
+        import asyncio
+        import signal
+        import sys
+        import time
+
+        from tools.computer_use import cua_backend
+
+        pid_file = tmp_path / "wedged-child.pid"
+        server = tmp_path / "wedged_mcp.py"
+        server.write_text(
+            "import os, pathlib, sys, time\n"
+            "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+            "time.sleep(3600)\n",
+            encoding="utf-8",
+        )
+
+        session = cua_backend._CuaDriverSession(cua_backend._AsyncBridge())
+        monkeypatch.setattr(cua_backend, "_CUA_MCP_STARTUP_TIMEOUT_SECONDS", 0.5)
+        monkeypatch.setattr(cua_backend, "resolve_cua_driver_cmd", lambda: sys.executable)
+        monkeypatch.setattr(
+            cua_backend,
+            "_resolve_mcp_invocation",
+            lambda _cmd: (sys.executable, [str(server), str(pid_file)]),
+        )
+
+        def pid_alive(pid: int) -> bool:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True
+            return True
+
+        child_pid = None
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                asyncio.run(
+                    asyncio.wait_for(session._lifecycle_coro(), timeout=5.0)
+                )
+            assert pid_file.exists(), "real child never reached its entry point"
+            child_pid = int(pid_file.read_text(encoding="utf-8"))
+            deadline = time.monotonic() + 5.0
+            while pid_alive(child_pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert not pid_alive(child_pid), (
+                f"wedged MCP child {child_pid} survived lifecycle timeout cleanup"
+            )
+        finally:
+            if child_pid is not None and pid_alive(child_pid):
+                os.kill(child_pid, signal.SIGKILL)
+
+
 class TestCuaEnvironmentScrubbing:
     """Verify that cua-driver subprocess environment is sanitized (issue #37878)."""
 
@@ -1356,6 +1878,7 @@ class TestCuaEnvironmentScrubbing:
         session = _CuaDriverSession(bridge)
 
         captured_env: Dict[str, str] = {}
+        captured_invocation: Dict[str, Any] = {}
 
         async def drive_lifecycle():
             test_env = {
@@ -1368,6 +1891,10 @@ class TestCuaEnvironmentScrubbing:
 
             def capture_env(**kwargs):
                 captured_env.update(kwargs.get("env", {}))
+                captured_invocation.update({
+                    "command": kwargs.get("command"),
+                    "args": kwargs.get("args"),
+                })
                 # Return any sentinel — never actually used by the
                 # patched stdio_client path below.
                 return MagicMock()
@@ -1430,6 +1957,18 @@ class TestCuaEnvironmentScrubbing:
         # At least one safe var must survive the scrub.
         assert "PATH" in captured_env or "SAFE_VAR" in captured_env, \
             "At least one safe environment variable should be preserved"
+        if os.name == "posix":
+            from tools import mcp_stdio_watchdog
+
+            assert captured_invocation["command"] == sys.executable
+            assert captured_invocation["args"] == [
+                os.path.abspath(mcp_stdio_watchdog.__file__),
+                "--ppid",
+                str(os.getpid()),
+                "--",
+                "cua-driver",
+                "mcp",
+            ]
 
 
 class TestCuaCliFallbackResolution:

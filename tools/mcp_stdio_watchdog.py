@@ -51,7 +51,33 @@ import threading
 import time
 
 _POLL_INTERVAL_S = 2.0
-_TERM_GRACE_S = 3.0
+# The MCP Python SDK gives its direct child (this watchdog) 2 seconds to
+# terminate before SIGKILL.  Complete both TERM and KILL phases comfortably
+# inside that window so the SDK cannot kill us while the real server's process
+# group is still alive.
+_TERM_GRACE_S = 0.5
+
+
+def wrap_command(command: str, args: list[str]) -> tuple[str, list[str]]:
+    """Wrap a stdio MCP command with this parent-death supervisor on POSIX.
+
+    Non-POSIX callers receive the invocation unchanged. Bookkeeping failure is
+    fail-open so watchdog support can never prevent an MCP server from starting.
+    """
+    if os.name != "posix":
+        return command, args
+    try:
+        parent_pid = os.getpid()
+    except Exception:
+        return command, args
+    return sys.executable, [
+        os.path.abspath(__file__),
+        "--ppid",
+        str(parent_pid),
+        "--",
+        command,
+        *args,
+    ]
 
 
 def _is_orphaned(original_ppid: int, getppid=os.getppid) -> bool:

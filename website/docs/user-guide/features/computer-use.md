@@ -317,11 +317,19 @@ real headless Chromium and is the right answer for web-only tasks.
 
 ## Configuration
 
-Override the driver binary path (tests / CI / local builds):
+Pin an exact driver binary for this Hermes profile (tests / CI / local builds)
+in `config.yaml`:
 
+```yaml
+computer_use:
+  driver_path: /path/to/your/cua-driver
 ```
-HERMES_CUA_DRIVER_CMD=/path/to/your/cua-driver
-```
+
+`~` is expanded, and relative paths are resolved from the profile directory
+containing `config.yaml`. An explicit path is authoritative: if it is invalid,
+Hermes reports that error instead of silently selecting another installed
+driver. `HERMES_CUA_DRIVER_CMD` remains a legacy fallback only when
+`computer_use.driver_path` is empty.
 
 Swap the backend entirely (for testing):
 
@@ -352,8 +360,9 @@ CUA_DRIVER_RS_TELEMETRY_ENABLED`.
 
 When you're developing cua-driver itself — or want to test an
 unreleased fix — point Hermes at a binary you built from source instead
-of the published release. Hermes resolves the driver with
-`shutil.which("cua-driver")` and **does not enforce
+of the published release. Hermes honors the profile's
+`computer_use.driver_path` before checking the legacy environment override,
+PATH, and canonical install locations. It **does not enforce
 `HERMES_CUA_DRIVER_VERSION`**, so a local build (reported as
 `0.0.0-local-*`) is accepted as-is. Two approaches:
 
@@ -393,18 +402,21 @@ cua-driver --version                 # local builds report 0.0.0-local-release
 ### Option B — point Hermes straight at the built binary (fastest loop)
 
 Skip the install ceremony entirely: `cargo build` and set
-`HERMES_CUA_DRIVER_CMD` to the resulting binary. Best for rapid
+`computer_use.driver_path` to the resulting binary. Best for rapid
 edit/build/test.
 
 ```bash
 cargo build -p cua-driver            # add --release for a release build; run from libs/cua-driver/rust
 ```
 
-```
-# Windows (.env)
-HERMES_CUA_DRIVER_CMD=C:\path\to\cua\libs\cua-driver\rust\target\debug\cua-driver.exe
-# macOS / Linux (.env)
-HERMES_CUA_DRIVER_CMD=/path/to/cua/libs/cua-driver/rust/target/debug/cua-driver
+```yaml
+# config.yaml — Windows
+computer_use:
+  driver_path: 'C:\path\to\cua\libs\cua-driver\rust\target\debug\cua-driver.exe'
+
+# config.yaml — macOS / Linux
+computer_use:
+  driver_path: /path/to/cua/libs/cua-driver/rust/target/debug/cua-driver
 ```
 
 ### Confirm Hermes is using your build

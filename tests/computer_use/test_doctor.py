@@ -144,6 +144,103 @@ class TestDoctorExitCodes:
             code = doctor.run_doctor()
         assert code == 1
 
+    def test_missing_configured_driver_json_reports_fail_closed_provenance(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.computer_use import doctor
+
+        configured = tmp_path / "missing-profile-driver"
+        legacy = tmp_path / "working-legacy-driver"
+        legacy.write_text("#!/bin/sh\nexit 0\n")
+        legacy.chmod(0o755)
+        (tmp_path / "config.yaml").write_text(
+            f"computer_use:\n  driver_path: {configured}\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(legacy))
+
+        with patch("sys.stdout", new_callable=StringIO) as out:
+            assert doctor.run_doctor(json_output=True) == 2
+
+        payload = json.loads(out.getvalue())
+        assert payload["error"]["code"] == "driver_not_found"
+        identity = payload["hermes_identity"]
+        assert identity["selection_source"] == "config"
+        assert identity["configured_driver_path"] == str(configured)
+        assert identity["legacy_env_driver_cmd"] == str(legacy)
+        assert identity["resolved_binary"] is None
+
+    def test_missing_configured_driver_text_names_config_and_repair(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.computer_use import doctor
+
+        configured = tmp_path / "missing-profile-driver"
+        (tmp_path / "config.yaml").write_text(
+            f"computer_use:\n  driver_path: {configured}\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+
+        with patch("sys.stdout", new_callable=StringIO) as out:
+            assert doctor.run_doctor() == 2
+
+        text = out.getvalue()
+        assert "selection: config" in text
+        assert f"configured: {configured}" in text
+        assert "PATH and canonical install paths" not in text
+        assert "computer_use.driver_path" in text
+
+
+    def test_health_report_failure_json_keeps_selection_provenance(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.computer_use import doctor
+
+        driver = tmp_path / "profile-cua-driver"
+        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.chmod(0o755)
+        (tmp_path / "config.yaml").write_text(
+            f"computer_use:\n  driver_path: {driver}\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch(
+            "tools.computer_use.doctor._drive_health_report_or_fallback",
+            side_effect=RuntimeError("handshake exploded"),
+        ), patch("sys.stdout", new_callable=StringIO) as out:
+            assert doctor.run_doctor(json_output=True) == 2
+
+        payload = json.loads(out.getvalue())
+        assert payload["error"]["code"] == "health_report_failed"
+        identity = payload["hermes_identity"]
+        assert identity["selection_source"] == "config"
+        assert identity["configured_driver_path"] == str(driver)
+        assert identity["resolved_binary"] == str(driver.resolve())
+
+    def test_health_report_failure_text_keeps_selection_provenance(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from tools.computer_use import doctor
+
+        driver = tmp_path / "profile-cua-driver"
+        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.chmod(0o755)
+        (tmp_path / "config.yaml").write_text(
+            f"computer_use:\n  driver_path: {driver}\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch(
+            "tools.computer_use.doctor._drive_health_report_or_fallback",
+            side_effect=RuntimeError("handshake exploded"),
+        ):
+            assert doctor.run_doctor() == 2
+
+        text = capsys.readouterr().err
+        assert "selection: config" in text
+        assert f"configured: {driver}" in text
+        assert f"binary: {driver.resolve()}" in text
 
     def test_protocol_error_exits_2(self, capsys):
         """An empty stdout response (driver crashed during handshake) is a
@@ -267,6 +364,23 @@ class TestJsonOutput:
         assert "hermes_identity" in parsed
         assert parsed["hermes_identity"]["resolved_binary"]
 
+    def test_text_output_includes_driver_selection_provenance(self, capsys):
+        from tools.computer_use import doctor
+
+        doctor._print_text_report(
+            _ok_report(),
+            color=False,
+            identity={
+                "resolved_binary": "/real/cua-driver",
+                "selection_source": "config",
+                "configured_driver_path": "/selected/cua-driver",
+            },
+        )
+
+        rendered = capsys.readouterr().out
+        assert "selection: config" in rendered
+        assert "configured: /selected/cua-driver" in rendered
+
 
 # ── HERMES_CUA_DRIVER_CMD resolution ───────────────────────────────────────
 
@@ -322,6 +436,31 @@ class TestDriverCmdResolution:
             assert doctor.run_doctor() == 0
 
         health.assert_called_once_with(str(driver), include=(), skip=(), timeout=12.0)
+
+    def test_json_identity_reports_profile_driver_provenance(self, tmp_path, monkeypatch):
+        from tools.computer_use import doctor
+
+        driver = tmp_path / "profile-cua-driver"
+        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.chmod(0o755)
+        (tmp_path / "config.yaml").write_text(
+            f"computer_use:\n  driver_path: {driver}\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/missing/legacy-driver")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        with patch(
+            "tools.computer_use.doctor._drive_health_report_or_fallback",
+            return_value=_ok_report(),
+        ), patch("sys.stdout", new_callable=StringIO) as out:
+            assert doctor.run_doctor(json_output=True) == 0
+
+        identity = json.loads(out.getvalue())["hermes_identity"]
+        assert identity["selection_source"] == "config"
+        assert identity["configured_driver_path"] == str(driver)
+        assert identity["legacy_env_driver_cmd"] == "/missing/legacy-driver"
+        assert identity["resolved_binary"] == str(driver.resolve())
 
 
 # ── cua-driver 0.10 unclassified health_report fallback ────────────────────

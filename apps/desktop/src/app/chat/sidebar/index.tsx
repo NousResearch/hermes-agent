@@ -419,16 +419,35 @@ export function ChatSidebar({
     return out
   }, [pinnedSessionIds, sessionByAnyId])
 
-  const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
-  const pinnedIdSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
+  // Every id a pin is reachable under: the raw stored ids, plus BOTH identities
+  // of each session we resolved one to. A pin is stored on the durable lineage
+  // root, but the lists that must filter it out are fed from three independent
+  // fetches (recents, the messaging slice, the backend project tree) and each
+  // can surface the same conversation under either its live tip or its root.
+  // Comparing one identity against the other is how a pinned session ended up
+  // rendered twice — once in Pinned, once in its project group.
+  const pinnedIdentitySet = useMemo(() => {
+    const ids = new Set(pinnedSessionIds)
+
+    for (const session of pinnedSessions) {
+      ids.add(session.id)
+
+      if (session._lineage_root_id) {
+        ids.add(session._lineage_root_id)
+      }
+    }
+
+    return ids
+  }, [pinnedSessionIds, pinnedSessions])
 
   // A pinned session belongs to the Pinned section and nowhere else, so every
-  // other list filters it out (the flat recents already did). Match on the live
-  // id AND the durable pin id — a backend snapshot can surface either side of a
-  // compression tip rotation.
+  // other list filters it out. Match on either identity the row carries — a
+  // backend snapshot can surface either side of a compression tip rotation.
   const isPinnedSession = useCallback(
-    (session: SessionInfo) => pinnedRealIdSet.has(session.id) || pinnedIdSet.has(sessionPinId(session)),
-    [pinnedRealIdSet, pinnedIdSet]
+    (session: SessionInfo) =>
+      pinnedIdentitySet.has(session.id) ||
+      (session._lineage_root_id != null && pinnedIdentitySet.has(session._lineage_root_id)),
+    [pinnedIdentitySet]
   )
 
   // Full-text search across *all* sessions (not just the loaded page) so 699
@@ -519,10 +538,11 @@ export function ChatSidebar({
     }
   }, [agentOrderIds, agentOrderManual, unpinnedAgentSessions])
 
-  const agentSessions = useMemo(
-    () => (agentOrderManual ? orderByIds(unpinnedAgentSessions, s => s.id, agentOrderIds) : unpinnedAgentSessions),
-    [unpinnedAgentSessions, agentOrderIds, agentOrderManual]
-  )
+  // Recents render in recency order. The hand-picked order is layered on per
+  // date group inside the section (orderRowsWithinGroups) rather than baked
+  // into the list here, so a drag ranks a row among its own day's chats
+  // instead of flattening the whole sidebar into an undated manual mode.
+  const agentSessions = unpinnedAgentSessions
 
   // Recents are local-only: messaging-platform sessions are fetched as their
   // own slice ($messagingSessions) and rendered in self-managed per-platform
@@ -1268,7 +1288,7 @@ export function ChatSidebar({
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
-                contentClassName={cn('flex max-h-[50vh] flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
+                contentClassName="flex flex-col gap-px rounded-lg pb-2 pt-1"
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
                 label={s.pinned}
@@ -1304,7 +1324,7 @@ export function ChatSidebar({
                   // virtualized long list, which must keep its own scroller.
                   !recentsVirtualizes && COMPACT_FLAT
                 )}
-                dateGrouped={inProject || !agentOrderManual}
+                dateGrouped
                 dndSensors={dndSensors}
                 emptyState={
                   showSessionSkeletons ? (
@@ -1419,6 +1439,7 @@ export function ChatSidebar({
                   ) : undefined
                 }
                 liveSessions={inProject ? agentSessions : undefined}
+                manualOrderIds={agentOrderManual ? agentOrderIds : undefined}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}

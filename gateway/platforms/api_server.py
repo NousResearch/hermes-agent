@@ -3205,9 +3205,13 @@ class APIServerAdapter(BasePlatformAdapter):
             "output_tokens", "cache_read_tokens", "cache_write_tokens",
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
             "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id",
+            "_lineage_root_id", "pinned", "archived",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
+        # SQLite stores these as 0/1; clients reconcile against a real boolean.
+        for flag in ("pinned", "archived"):
+            if flag in payload:
+                payload[flag] = bool(payload[flag])
         # Avoid exposing full system prompts/model_config through the client API;
         # callers only need to know whether those snapshots exist.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
@@ -3275,13 +3279,19 @@ class APIServerAdapter(BasePlatformAdapter):
             offset=offset,
             include_children=include_children,
             order_by_last_active=True,
+            # A pin means "always reachable", so a pinned conversation that has
+            # aged past the recency window is back-filled rather than dropped.
+            include_pinned=True,
         )
+        # Back-filled pins arrive PAST the limit, so counting them would report
+        # another page that doesn't exist. Only the recency window decides.
+        windowed = sum(1 for s in sessions if not s.get("pinned"))
         return web.json_response({
             "object": "list",
             "data": [self._session_response(s) for s in sessions],
             "limit": limit,
             "offset": offset,
-            "has_more": len(sessions) == limit,
+            "has_more": windowed >= limit,
         })
 
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
@@ -3417,10 +3427,18 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        allowed = {"title", "end_reason"}
+        # `pinned` and `archived` are durable per-session flags the desktop
+        # sidebar owns (the "keep" flag exempts a chat from the auto-archive
+        # sweep). Rejecting them here was silently 400ing every pin the desktop
+        # made, so pins only ever lived in that one app's localStorage.
+        allowed = {"title", "end_reason", "pinned", "archived"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
+
+        for flag in ("pinned", "archived"):
+            if flag in body and not isinstance(body[flag], bool):
+                return web.json_response(_openai_error(f"'{flag}' must be a boolean", code="invalid_session_field"), status=400)
 
         db = await self._ensure_session_db_async()
         if "title" in body:
@@ -3428,6 +3446,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 await asyncio.to_thread(db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
             except ValueError as exc:
                 return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
+        if "pinned" in body:
+            await asyncio.to_thread(db.set_session_pinned, session_id, body["pinned"])
+        if "archived" in body:
+            await asyncio.to_thread(db.set_session_archived, session_id, body["archived"])
         if body.get("end_reason"):
             await asyncio.to_thread(db.end_session, session_id, str(body["end_reason"]))
         session = await asyncio.to_thread(db.get_session, session_id) or session

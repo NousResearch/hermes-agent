@@ -12153,13 +12153,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _exp_state = self._peek_session_state(key)
                             _cached_agent = _exp_state.turn.agent if _exp_state else None
                         if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
+                            # Snapshot the agent before the await.  During
+                            # the yield a new inbound message can insert a
+                            # NEW agent into _agent_cache for the same key.
+                            _agent_before_await = _cached_agent
                             await self._cleanup_agent_resources_off_loop(
                                 _cached_agent, context="session expiry"
                             )
-                        # Drop the cache entry so the AIAgent (and its LLM
-                        # clients, tool schemas, memory provider refs) can
-                        # be garbage-collected.  Otherwise the cache grows
-                        # unbounded across the gateway's lifetime.
+                            # Drop the cache entry ONLY if it still holds
+                            # the original agent.  If a new agent was
+                            # inserted during the await, _evict_cached_agent
+                            # would destroy the new agent's LLM pool while
+                            # its turn is wiring callbacks.
+                            if _cache_lock is not None:
+                                with _cache_lock:
+                                    _current = self._agent_cache.get(key)
+                                    _current_agent = _current[0] if isinstance(_current, tuple) else _current if _current else None
+                                    if _current_agent is not _agent_before_await:
+                                        logger.debug(
+                                            "Session expiry: skipping eviction "
+                                            "for %s -- new agent inserted "
+                                            "during cleanup", key,
+                                        )
+                                        self._clear_conversation_scope(
+                                            key, reason="expiry_finalized"
+                                        )
+                                        await self.async_session_store.set_expiry_finalized(entry)
+                                        _finalize_failures.pop(entry.session_id, None)
+                                        continue
                         self._evict_cached_agent(key)
                         # Permanently finalizing this session — one funnel
                         # call drops every conversation-scoped dict AND the

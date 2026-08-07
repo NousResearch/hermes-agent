@@ -179,9 +179,10 @@ def strip_anthropic_cache_control(
     multi-part text (merged user turns, imported transcripts) and parts
     carrying extra keys (``citations`` etc.) keep their structure; only
     per-part markers are removed. Marker removal is copy-on-write on the
-    part dicts: content parts may alias the persistent conversation history
-    (the per-call copy is shallow), and stripping must never rewrite the
-    stored transcript.
+    part dicts: content parts can alias caller-held message lists (the main
+    send path now hands structurally-cloned copies via
+    _clone_message_for_send, but other callers may pass shallow copies),
+    and stripping must never rewrite the stored transcript.
 
     Mutates the top-level message dicts of ``api_messages`` in place and
     returns the same list.

@@ -62,7 +62,7 @@ Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, and skills into 
 hermes profile create backup --clone-all
 ```
 
-Copies **everything** — config, API keys, personality, all memories, skills, cron jobs, plugins. A complete working snapshot. Per-profile history is excluded (session history, `state.db`, `backups/`, `state-snapshots/`, `checkpoints/`) — these belong to the source profile and can reach tens of GB. For a full backup including history, use `hermes profile export` or `hermes backup` instead.
+Copies **everything** — config, API keys, personality, all memories, skills, cron jobs, plugins. A complete working snapshot. Per-profile history is excluded (session history, `state.db`, `backups/`, `state-snapshots/`, `checkpoints/`) — these belong to the source profile and can reach tens of GB. For a full backup including history and credentials, use `hermes backup`. `hermes profile export` is for moving a profile to another machine: it never carries `.env` or `auth.json`, so you will need to re-run setup or copy your credentials across separately on the new machine.
 
 ### Clone from a specific profile
 
@@ -244,6 +244,18 @@ hermes profile rename coder dev-bot   # rename (updates alias + service)
 hermes profile export coder   # export to coder.tar.gz
 hermes profile import coder.tar.gz   # import from archive
 ```
+
+:::note
+`hermes profile export` omits credentials by design: `.env` and `auth.json` are excluded from the
+archive, so an export is safe to move around but is not a restorable backup on its own. After
+importing on a new machine, re-run setup or copy those files across through a channel you would
+trust with a secret. For a backup that keeps credentials, use `hermes backup`.
+
+How much else the archive carries depends on which profile you export. A named profile exports
+with its session history. Exporting the default profile also drops `state.db`, `checkpoints/`,
+`logs/`, and the various caches, because the default profile is `~/.hermes` itself and would
+otherwise pull in the repo checkout and multi-GB runtime state.
+:::
 
 ## Deleting a profile
 

@@ -3669,6 +3669,71 @@ def _lmstudio_fetch_raw_models(
     return raw_models
 
 
+def _lmstudio_entry_is_embedding(entry: dict) -> bool:
+    """True when an LM Studio catalog entry declares itself an embedding model.
+
+    This is the single classification rule for LM Studio catalog entries: an
+    entry is chat-capable unless it explicitly declares the ``embedding`` type.
+    LM Studio omits ``type`` on some entries, so "not explicitly an embedding"
+    is deliberately the chat-capable side — requiring an explicit ``llm`` would
+    hide untyped models from discovery.
+
+    Discovery (``probe_lmstudio_models``) and loaded-instance cleanup
+    (``ensure_lmstudio_model_loaded``) must share this predicate. If they
+    diverged, an untyped competing model could be offered as a usable chat
+    model while never being unloaded, leaving LM Studio in a dirty multi-LLM
+    state.
+    """
+    return str(entry.get("type") or "").strip().lower() == "embedding"
+
+
+def _lmstudio_identifier(value: Any) -> str:
+    """Normalize one raw LM Studio catalog identifier (``key`` / ``id``) value.
+
+    This is the single identifier rule for LM Studio catalog entries: a missing
+    or falsy value is no identifier at all, anything else is coerced to text and
+    stripped, and a value that is empty once stripped is no identifier either.
+
+    Discovery (``probe_lmstudio_models``), target lookup, and loaded-instance
+    classification (``ensure_lmstudio_model_loaded``) all go through this rule.
+    If they diverged, LM Studio padding a ``key`` or ``id`` with whitespace
+    would make discovery advertise the stripped identifier while loading
+    compared it raw — the requested target would not be found, or would be
+    mistaken for a competing LLM and needlessly evicted.
+    """
+    return str(value).strip() if value else ""
+
+
+def _lmstudio_entry_identifiers(entry: dict) -> set[str]:
+    """Return the normalized identifiers an LM Studio catalog entry answers to.
+
+    ``key`` and ``id`` are independent aliases for the same entry — LM Studio
+    publishes entries where they differ (e.g. a quantization-qualified ``id``) —
+    so a caller naming either one is naming this entry. Whitespace-only values
+    contribute nothing, matching ``_lmstudio_identifier``.
+    """
+    identifiers: set[str] = set()
+    for field in ("key", "id"):
+        identifier = _lmstudio_identifier(entry.get(field))
+        if identifier:
+            identifiers.add(identifier)
+    return identifiers
+
+
+def _lmstudio_preferred_identifier(entry: dict) -> str:
+    """Return the single identifier discovery should advertise ``entry`` under.
+
+    ``key`` wins over ``id`` so an entry is offered once, but only once both
+    have been normalized: precedence is between *usable* identifiers, never
+    between raw values. Choosing on the raw values instead would let a
+    whitespace-only ``key`` — truthy before it is stripped, empty after — hide
+    a perfectly good ``id``, dropping from discovery an entry that
+    ``_lmstudio_entry_identifiers`` still resolves through that ``id``.
+    Returns ``""`` when the entry has no usable identifier at all.
+    """
+    return _lmstudio_identifier(entry.get("key")) or _lmstudio_identifier(entry.get("id"))
+
+
 def probe_lmstudio_models(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -3692,9 +3757,12 @@ def probe_lmstudio_models(
     for raw in raw_models:
         if not isinstance(raw, dict):
             continue
-        if str(raw.get("type") or "").strip().lower() == "embedding":
+        if _lmstudio_entry_is_embedding(raw):
             continue
-        key = str(raw.get("key") or raw.get("id") or "").strip()
+        # A usable ``key`` wins over ``id``, so an entry is offered under a
+        # single identifier; both remain valid aliases when looking the entry
+        # back up (see ``_lmstudio_entry_identifiers``).
+        key = _lmstudio_preferred_identifier(raw)
         if key and key not in keys:
             keys.append(key)
     return keys
@@ -3741,6 +3809,31 @@ def ensure_lmstudio_model_loaded(
     Existing loaded-instance context is authoritative. Cold loads omit
     ``context_length`` unless the caller supplied an explicit override; the
     returned context must come from LM Studio's echoed or refreshed state.
+
+    No-op when exactly one LLM instance is loaded and it is the requested model
+    with sufficient context. If LM Studio has a dirty LLM state, such as another
+    LLM loaded at the same time or the target loaded below an explicitly
+    requested context, unload the loaded LLM instances before loading the
+    requested target model. "LLM" here means whatever
+    ``_lmstudio_entry_is_embedding`` leaves chat-capable, matching what
+    ``probe_lmstudio_models`` offers; instances of entries explicitly declared
+    as embeddings are never unloaded.
+
+    Catalog ``key``/``id`` values are normalized with ``_lmstudio_identifier``
+    for both target lookup and target/competitor classification, so any
+    identifier ``probe_lmstudio_models`` advertises resolves back to the entry
+    it came from. ``model`` itself is the caller's identifier and is used
+    verbatim — both when matching and in the load payload — so Hermes never
+    asks LM Studio to load a name the caller did not supply.
+
+    Target identity is a property of the catalog *entry*, never of a loaded
+    instance: an entry is the target when its normalized identifiers include
+    the requested one, and its loaded instances inherit that verdict. Runtime
+    instance identifiers are a separate namespace and are only ever used to
+    address an unload request.
+
+    This prevents LM Studio from keeping multiple large local LLMs resident when
+    Hermes switches models, which can force RAM/CPU fallback and severe slowdown.
     """
 
     def _result(
@@ -3771,7 +3864,7 @@ def ensure_lmstudio_model_loaded(
 
     def _find_entry(raw_models: list[dict]) -> Optional[dict]:
         for raw in raw_models:
-            if isinstance(raw, dict) and (raw.get("key") == model or raw.get("id") == model):
+            if isinstance(raw, dict) and model in _lmstudio_entry_identifiers(raw):
                 return raw
         return None
 
@@ -3800,13 +3893,94 @@ def ensure_lmstudio_model_loaded(
     if explicit_context is not None and max_ctx is not None and explicit_context > max_ctx:
         return _result(None, rejected=True)
 
-    current_context = _loaded_context(target_entry)
-    if current_context is not None:
-        return _result(current_context)
+    target_aliases = {model} | _lmstudio_entry_identifiers(target_entry)
 
-    loaded_instances = target_entry.get("loaded_instances")
-    if not isinstance(loaded_instances, list) or loaded_instances:
-        return _result(None)
+    # Inventory the loaded LLM instances so competing models can be unloaded
+    # before the target is (re)loaded. Chat-capability uses the same predicate
+    # as discovery (``_lmstudio_entry_is_embedding``), so any entry
+    # ``probe_lmstudio_models`` would offer as a chat model — including the
+    # untyped entries LM Studio publishes — is an unload candidate here.
+    # Entries explicitly declared as embeddings are never unloaded, except that
+    # the target entry itself is always inspected: its loaded context is
+    # authoritative whatever type LM Studio reports for it.
+    #
+    # Whether an instance belongs to the target is decided once per catalog
+    # entry, from that entry's normalized ``key``/``id`` aliases, and every
+    # instance nested under the entry inherits the verdict. A runtime
+    # ``instance_id`` lives in a different namespace — it is a handle for the
+    # unload payload, freely chosen when the model was loaded, and LM Studio
+    # lets it be any string, including the name of another model. Reading it as
+    # an alias would let a competing entry whose instance happens to be called
+    # ``model`` pass as the target, making a dirty state look clean and leaving
+    # the wrong LLM resident.
+    loaded_llm_instances: list[dict[str, Any]] = []
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            continue
+
+        is_target_model = bool(_lmstudio_entry_identifiers(raw) & target_aliases)
+        if _lmstudio_entry_is_embedding(raw) and not is_target_model:
+            continue
+
+        instances = raw.get("loaded_instances")
+        if not isinstance(instances, list):
+            continue
+        for inst in instances:
+            if not isinstance(inst, dict):
+                continue
+            instance_id = inst.get("id") or inst.get("instance_id")
+            if not isinstance(instance_id, str) or not instance_id:
+                continue
+            inst_cfg = inst.get("config")
+            cfg = inst_cfg if isinstance(inst_cfg, dict) else {}
+            loaded_llm_instances.append({
+                "instance_id": instance_id,
+                "is_target": is_target_model,
+                "loaded_ctx": _positive_int(cfg.get("context_length")),
+            })
+
+    if len(loaded_llm_instances) == 1 and loaded_llm_instances[0]["is_target"]:
+        # Clean state: the requested target is the only LLM resident. Its
+        # loaded context is authoritative unless the caller explicitly asked
+        # for a larger window than the instance actually has.
+        loaded_ctx = loaded_llm_instances[0]["loaded_ctx"]
+        if explicit_context is None or (
+            loaded_ctx is not None and loaded_ctx >= explicit_context
+        ):
+            return _result(loaded_ctx)
+
+    if loaded_llm_instances:
+        # Dirty state — competing LLMs, several instances, or the target loaded
+        # below the explicitly requested context. Reload the target too: it may
+        # have been loaded while resources were already contended, so cleaning
+        # up the other LLMs after the fact is not always enough to recover the
+        # intended GPU/RAM allocation.
+        unload_headers = dict(headers)
+        unload_headers["Content-Type"] = "application/json"
+        for item in loaded_llm_instances:
+            unload_body = json.dumps({"instance_id": item["instance_id"]}).encode()
+            try:
+                unload_request = urllib.request.Request(
+                    server_root + "/api/v1/models/unload",
+                    data=unload_body,
+                    headers=unload_headers,
+                    method="POST",
+                )
+                with _urlopen_model_catalog_request(
+                    unload_request,
+                    timeout=timeout,
+                ) as resp:
+                    resp.read()
+            except Exception:
+                return _result(None)
+    else:
+        current_context = _loaded_context(target_entry)
+        if current_context is not None:
+            return _result(current_context)
+
+        loaded_instances = target_entry.get("loaded_instances")
+        if not isinstance(loaded_instances, list) or loaded_instances:
+            return _result(None)
 
     load_payload: dict[str, Any] = {"model": model, "echo_load_config": True}
     if explicit_context is not None:
@@ -3861,6 +4035,10 @@ def lmstudio_model_reasoning_options(
     Pulls ``capabilities.reasoning.allowed_options`` from ``/api/v1/models``.
     Returns ``[]`` when the model is unknown, the endpoint is unreachable,
     or the model does not declare a reasoning capability.
+
+    Entry lookup uses the same normalized ``key``/``id`` identifiers as
+    discovery and loading, so a model name taken from
+    ``probe_lmstudio_models`` finds its capabilities here too.
     """
     try:
         raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=timeout)
@@ -3872,7 +4050,7 @@ def lmstudio_model_reasoning_options(
     for raw in raw_models:
         if not isinstance(raw, dict):
             continue
-        if raw.get("key") != model and raw.get("id") != model:
+        if model not in _lmstudio_entry_identifiers(raw):
             continue
         caps = raw.get("capabilities")
         reasoning = caps.get("reasoning") if isinstance(caps, dict) else None

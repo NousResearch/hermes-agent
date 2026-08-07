@@ -83,6 +83,28 @@ mcp_servers:
 
 Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset variable keeps its literal placeholder.
 
+### Context variables
+
+Beyond env vars, the Cursor-style context variables are interpolated too (names are case-sensitive):
+
+| Variable | Resolves to |
+|---|---|
+| `${userHome}` | The current user's home directory |
+| `${workspaceFolder}` | The session workspace root (the session's terminal cwd when known, else the process cwd) |
+| `${workspaceFolderBasename}` | The basename of `${workspaceFolder}` |
+| `${pathSeparator}` / `${/}` | The OS path separator (`os.sep`) |
+
+```yaml
+mcp_servers:
+  filesystem:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "${workspaceFolder}"]
+    env:
+      CACHE_DIR: "${userHome}${/}.cache${/}mcp"
+```
+
+Any other `${...}` reference falls through to the env-var lookup above.
+
 ## `tools` policy keys
 
 | Key | Type | Meaning |

@@ -154,6 +154,12 @@ from environment variables (which include everything in `~/.hermes/.env`).
 This is useful when a catalog entry wants to reference a value the user
 configured elsewhere — e.g. `${HOME}/foo` or `${MY_PROVIDER_TOKEN}`.
 
+Cursor-style context variables are also substituted (case-sensitive):
+`${userHome}` (home directory), `${workspaceFolder}` (session workspace
+root), `${workspaceFolderBasename}`, and `${pathSeparator}` / `${/}`
+(the OS path separator). See the
+[MCP config reference](/docs/reference/mcp-config-reference) for details.
+
 Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
 substituted at install-time with the path the catalog cloned the entry's
 repo into.

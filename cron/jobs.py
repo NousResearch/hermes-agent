@@ -34,7 +34,7 @@ except ImportError:  # pragma: no cover - non-Windows
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Optional, Dict, List, Any, Set, Tuple, Union
+from typing import Optional, Dict, List, Any, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
 
@@ -1062,8 +1062,97 @@ def load_jobs() -> List[Dict[str, Any]]:
     )
 
 
-def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
-    """Save all jobs to storage. Caller must hold _jobs_lock()."""
+def _peek_jobs_unlocked() -> Optional[List[Dict[str, Any]]]:
+    """Best-effort read of on-disk jobs without repair side-effects.
+
+    Caller must hold ``_jobs_lock()``. Returns ``[]`` when the file is
+    missing, ``None`` when the payload is unreadable/corrupt (caller should
+    not attempt a shrink-merge against an unknown baseline).
+    """
+    jobs_file = _current_cron_store().jobs_file
+    if not jobs_file.exists():
+        return []
+    try:
+        with open(jobs_file, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except Exception:
+        try:
+            with open(jobs_file, "r", encoding="utf-8-sig") as f:
+                data = json.loads(f.read(), strict=False)
+        except Exception:
+            return None
+    if isinstance(data, dict):
+        jobs = data.get("jobs", [])
+        return jobs if isinstance(jobs, list) else None
+    if isinstance(data, list):
+        return data
+    return None
+
+
+def _merge_unexpected_disk_jobs(
+    jobs: List[Dict[str, Any]],
+    *,
+    removed_ids: Optional[Collection[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Re-attach on-disk jobs missing from a save payload (#80624).
+
+    Under ``_jobs_lock()``'s degraded flock-timeout path (#60703), two
+    processes can both believe they own the store. A writer that loaded an
+    older/smaller snapshot then calls ``save_jobs`` and would otherwise
+    clobber concurrent creates (the filed ``no_agent`` watchdog pattern:
+    CLI/tool create succeeds, then a gateway tick/remove rewrites
+    ``jobs.json`` empty or without the new id).
+
+    Intentional deletes pass ``removed_ids``. Any other id present on disk
+    but absent from *jobs* is treated as a concurrent create and merged
+    back before the atomic write.
+    """
+    disk_jobs = _peek_jobs_unlocked()
+    if disk_jobs is None:
+        return jobs
+
+    intended_remove = {str(i) for i in (removed_ids or ()) if i}
+    new_ids: Set[str] = set()
+    for job in jobs:
+        if isinstance(job, dict) and job.get("id"):
+            new_ids.add(str(job["id"]))
+
+    preserved = 0
+    for disk_job in disk_jobs:
+        if not isinstance(disk_job, dict):
+            continue
+        disk_id = disk_job.get("id")
+        if not disk_id:
+            continue
+        disk_id = str(disk_id)
+        if disk_id in new_ids or disk_id in intended_remove:
+            continue
+        jobs.append(disk_job)
+        new_ids.add(disk_id)
+        preserved += 1
+
+    if preserved:
+        logger.warning(
+            "Preserved %d cron job(s) present on disk but missing from the "
+            "in-memory save payload (concurrent create under degraded lock "
+            "or stale writer) (#80624)",
+            preserved,
+        )
+    return jobs
+
+
+def _save_jobs_unlocked(
+    jobs: List[Dict[str, Any]],
+    *,
+    removed_ids: Optional[Collection[str]] = None,
+    replace: bool = False,
+):
+    """Save all jobs to storage. Caller must hold _jobs_lock().
+
+    ``removed_ids`` lists job ids this mutation intentionally deleted.
+    ``replace=True`` skips the shrink-merge guard (tests / disaster recovery
+    that mean to rewrite the store wholesale).
+    """
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
     # Snapshot the current owner BEFORE the atomic replace so a privileged
@@ -1079,27 +1168,105 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
             _stat_before = os.stat(jobs_file.parent)
         except OSError:
             _stat_before = None
-    fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
+
+    # Shrink-merge + rewrite loop (#80624): under the degraded flock-timeout
+    # path another process can create a job between our load and our write.
+    # Merge unexpected disk ids into the payload, stage the write, then
+    # re-peek; if new ids appeared, merge again and restage before replace.
+    tmp_path = None
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
+        for _attempt in range(5):
+            if not replace:
+                _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {"jobs": jobs, "updated_at": _hermes_now().isoformat()},
+                        f,
+                        indent=2,
+                    )
+                    f.flush()
+                    os.fsync(f.fileno())
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                tmp_path = None
+                raise
+
+            if not replace:
+                disk_jobs = _peek_jobs_unlocked()
+                if disk_jobs is not None:
+                    payload_ids = {
+                        str(j["id"])
+                        for j in jobs
+                        if isinstance(j, dict) and j.get("id")
+                    }
+                    intended = {str(i) for i in (removed_ids or ()) if i}
+                    if any(
+                        isinstance(dj, dict)
+                        and dj.get("id")
+                        and str(dj["id"]) not in payload_ids
+                        and str(dj["id"]) not in intended
+                        for dj in disk_jobs
+                    ):
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                        tmp_path = None
+                        continue
+
+            atomic_replace(tmp_path, jobs_file)
+            tmp_path = None
+            _secure_file(jobs_file)
+            _preserve_file_ownership(jobs_file, _stat_before)
+            return
+
+        # Exhausted retries — last merge + write without another re-peek.
+        if not replace:
+            _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_"
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(
+                {"jobs": jobs, "updated_at": _hermes_now().isoformat()},
+                f,
+                indent=2,
+            )
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, jobs_file)
+        tmp_path = None
         _secure_file(jobs_file)
         _preserve_file_ownership(jobs_file, _stat_before)
     except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
         raise
 
 
-def save_jobs(jobs: List[Dict[str, Any]]):
-    """Save all jobs to storage."""
+def save_jobs(
+    jobs: List[Dict[str, Any]],
+    *,
+    removed_ids: Optional[Collection[str]] = None,
+    replace: bool = False,
+):
+    """Save all jobs to storage.
+
+    See ``_save_jobs_unlocked`` for ``removed_ids`` / ``replace`` semantics
+    (shrink-merge guard against concurrent-create clobber, #80624).
+    """
     with _jobs_lock():
-        _save_jobs_unlocked(jobs)
+        _save_jobs_unlocked(jobs, removed_ids=removed_ids, replace=replace)
 
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
@@ -1678,7 +1845,7 @@ def remove_job(job_id: str) -> bool:
             # left over from before the create-time guard) fails closed without
             # half-applying the removal.
             job_output_dir = _job_output_dir(canonical_id)
-            save_jobs(jobs)
+            save_jobs(jobs, removed_ids={canonical_id})
             # Clean up output directory to prevent orphaned dirs accumulating
             if job_output_dir.exists():
                 shutil.rmtree(job_output_dir)
@@ -1890,7 +2057,7 @@ def claim_dispatch(job_id: str) -> bool:
                 # it stops appearing as due, and leave an operator-visible
                 # diagnostic instead of vanishing silently.
                 jobs.pop(i)
-                save_jobs(jobs)
+                save_jobs(jobs, removed_ids={job_id})
                 _write_wedged_oneshot_diagnostic(job)
                 logger.info(
                     "Job '%s': dispatch limit reached (%d/%d) — removing",
@@ -2102,15 +2269,22 @@ def _completed_oneshot_retention_days() -> float:
         return float(COMPLETED_ONESHOT_RETENTION_DAYS)
 
 
-def _sweep_completed_oneshots(raw_jobs: List[Dict[str, Any]], now: datetime) -> bool:
+def _sweep_completed_oneshots(
+    raw_jobs: List[Dict[str, Any]],
+    now: datetime,
+    *,
+    removed_ids: Optional[Set[str]] = None,
+) -> bool:
     """Prune terminal ``state == "completed"`` one-shot records past retention.
 
     Mutates *raw_jobs* in place; returns True when anything was removed (the
-    caller persists). Only one-shot (``schedule.kind == "once"``) records in
-    the terminal completed state are candidates; recurring jobs and non-
-    terminal one-shots are never touched. Age is measured from
-    ``last_run_at`` — a completed record without a parseable ``last_run_at``
-    is kept (never guess a record into deletion).
+    caller persists). Ids removed are added to *removed_ids* when provided so
+    ``save_jobs``'s shrink-merge guard (#80624) allows the intentional delete.
+    Only one-shot (``schedule.kind == "once"``) records in the terminal
+    completed state are candidates; recurring jobs and non-terminal one-shots
+    are never touched. Age is measured from ``last_run_at`` — a completed
+    record without a parseable ``last_run_at`` is kept (never guess a record
+    into deletion).
     """
     retention_days = _completed_oneshot_retention_days()
     if retention_days <= 0:
@@ -2136,6 +2310,9 @@ def _sweep_completed_oneshots(raw_jobs: List[Dict[str, Any]], now: datetime) -> 
                 continue
             raw_jobs.remove(rj)
             removed = True
+            rid = rj.get("id")
+            if removed_ids is not None and rid:
+                removed_ids.add(str(rid))
             logger.info(
                 "Job '%s': pruning completed one-shot record "
                 "(finished %s, retention %.1f days)",
@@ -2175,6 +2352,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     now = _hermes_now()
     raw_jobs = load_jobs()
     needs_save = False
+    intentionally_removed: Set[str] = set()
 
     # Repair id-less records BEFORE anything keys off ``job["id"]``. A direct
     # jobs.json edit that bypassed add_job() can leave a record without an "id"
@@ -2276,7 +2454,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     # being deleted on completion, but they must not accumulate in jobs.json
     # forever. Prune terminal one-shot records older than the retention
     # window each scan.
-    if _sweep_completed_oneshots(raw_jobs, now):
+    if _sweep_completed_oneshots(raw_jobs, now, removed_ids=intentionally_removed):
         needs_save = True
         jobs = [j for j in jobs if any(rj.get("id") == j.get("id") for rj in raw_jobs)]
 
@@ -2473,6 +2651,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             for rj in raw_jobs:
                                 if rj["id"] == job["id"]:
                                     raw_jobs.remove(rj)
+                                    intentionally_removed.add(str(rj["id"]))
                                     needs_save = True
                                     break
                             # The claimed run never completed here by
@@ -2516,7 +2695,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             continue
 
     if needs_save:
-        save_jobs(raw_jobs)
+        save_jobs(raw_jobs, removed_ids=intentionally_removed or None)
 
     return due
 

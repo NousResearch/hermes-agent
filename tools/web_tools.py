@@ -1046,6 +1046,28 @@ async def web_extract_tool(
 
 
 # Convenience function to check Firecrawl credentials
+def _provider_is_ready(provider) -> bool:
+    """Return True when *provider* reports readiness without raising.
+
+    ``get_active_*_provider()`` intentionally returns an explicitly configured
+    backend even when ``is_available()`` is False so the dispatcher can emit a
+    precise missing-credential error. Tool/doctor readiness gates must still
+    require a true availability probe — otherwise ``hermes doctor`` paints a
+    green ✓ for a backend that cannot run (issue #78412).
+    """
+    if provider is None:
+        return False
+    try:
+        return bool(provider.is_available())
+    except Exception as exc:  # noqa: BLE001 — broken provider == not ready
+        logger.debug(
+            "web provider %r.is_available() raised during readiness check: %s",
+            getattr(provider, "name", provider),
+            exc,
+        )
+        return False
+
+
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available.
 
@@ -1065,10 +1087,9 @@ def check_web_api_key() -> bool:
     # unlike _get_backend() the probe order is irrelevant.
     if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
         return True
-    # Any plugin-registered provider the registry considers active for either
-    # capability. Delegating to the registry's own availability-filtered
-    # resolvers keeps a single authority for "is a custom provider usable"
-    # rather than re-implementing the walk here.
+    # Plugin-registered path: the active-provider resolvers return an explicit
+    # config hit even when credentials are missing (so the tool can print a
+    # precise "set FOO_API_KEY" error). Readiness still requires is_available().
     try:
         from agent.web_search_registry import (
             get_active_search_provider,
@@ -1076,13 +1097,12 @@ def check_web_api_key() -> bool:
         )
 
         return (
-            get_active_search_provider() is not None
-            or get_active_extract_provider() is not None
+            _provider_is_ready(get_active_search_provider())
+            or _provider_is_ready(get_active_extract_provider())
         )
     except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
         logger.debug("web provider registry availability check failed: %s", exc)
         return False
-
 
 if __name__ == "__main__":
     """

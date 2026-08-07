@@ -444,6 +444,54 @@ class TestCheckWebApiKey:
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
 
+    def test_explicit_unavailable_active_provider_is_not_ready(self):
+        """#78412: get_active_* may return a configured backend whose
+        is_available() is False. check_web_api_key must still report False so
+        doctor does not paint a green check for a backend that cannot run.
+        """
+        class _UnavailableProvider:
+            name = "firecrawl"
+
+            def is_available(self):
+                return False
+
+        unavailable = _UnavailableProvider()
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}), \
+             patch("tools.web_tools._is_backend_available", return_value=False), \
+             patch(
+                 "agent.web_search_registry.get_active_search_provider",
+                 return_value=unavailable,
+             ), \
+             patch(
+                 "agent.web_search_registry.get_active_extract_provider",
+                 return_value=unavailable,
+             ):
+            from tools.web_tools import check_web_api_key, _provider_is_ready
+            assert _provider_is_ready(unavailable) is False
+            assert check_web_api_key() is False
+
+    def test_explicit_available_active_provider_is_ready(self):
+        """Registry-selected available provider still lights the gate."""
+        class _AvailableProvider:
+            name = "custom-ok"
+
+            def is_available(self):
+                return True
+
+        available = _AvailableProvider()
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "custom-ok"}), \
+             patch("tools.web_tools._is_backend_available", return_value=False), \
+             patch(
+                 "agent.web_search_registry.get_active_search_provider",
+                 return_value=available,
+             ), \
+             patch(
+                 "agent.web_search_registry.get_active_extract_provider",
+                 return_value=None,
+             ):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
 
 def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env

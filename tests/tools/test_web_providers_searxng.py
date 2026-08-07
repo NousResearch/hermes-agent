@@ -40,25 +40,32 @@ class TestSearXNGSearchProviderIsConfigured:
 class TestSearXNGSearchProviderSearch:
     """Happy path and error handling for SearXNGWebSearchProvider.search()."""
 
-    _SAMPLE_RESPONSE = {
-        "results": [
-            {"title": "Result A", "url": "https://a.example.com", "content": "Desc A", "score": 0.9},
-            {"title": "Result B", "url": "https://b.example.com", "content": "Desc B", "score": 0.7},
-            {"title": "Result C", "url": "https://c.example.com", "content": "Desc C", "score": 0.5},
-        ]
-    }
+    _SAMPLE_HTML = """
+<article class="result result-general category-general">
+<h3><a href="https://a.example.com" rel="noreferrer">Result A</a></h3>
+<p class="content">Desc A</p>
+</article>
+<article class="result result-general category-general">
+<h3><a href="https://b.example.com" rel="noreferrer">Result <span class="highlight">B</span></a></h3>
+<p class="content">Desc B</p>
+</article>
+<article class="result result-general category-general">
+<h3><a href="https://c.example.com" rel="noreferrer">Result C</a></h3>
+<p class="content">Desc C</p>
+</article>
+"""
 
-    def _make_mock_response(self, json_data, status_code=200):
+    def _make_mock_response(self, html_text, status_code=200):
         mock_resp = MagicMock()
         mock_resp.status_code = status_code
-        mock_resp.json.return_value = json_data
+        mock_resp.text = html_text
         mock_resp.raise_for_status = MagicMock()
         return mock_resp
 
     def test_happy_path_returns_normalized_results(self, monkeypatch):
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
         from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        mock_resp = self._make_mock_response(self._SAMPLE_RESPONSE)
+        mock_resp = self._make_mock_response(self._SAMPLE_HTML)
 
         with patch("httpx.get", return_value=mock_resp):
             result = SearXNGWebSearchProvider().search("test query", limit=5)
@@ -71,33 +78,64 @@ class TestSearXNGSearchProviderSearch:
         assert web[0]["description"] == "Desc A"
         assert web[0]["position"] == 1
 
-    def test_results_sorted_by_score_descending(self, monkeypatch):
-        """Results should be sorted by score before limit is applied."""
+    def test_results_in_document_order_and_limit_applied(self, monkeypatch):
+        """Results follow HTML document order; limit truncates the tail."""
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
         from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        unordered = {
-            "results": [
-                {"title": "Low",  "url": "https://low.example.com",  "content": "", "score": 0.1},
-                {"title": "High", "url": "https://high.example.com", "content": "", "score": 0.99},
-                {"title": "Mid",  "url": "https://mid.example.com",  "content": "", "score": 0.5},
-            ]
-        }
-        mock_resp = self._make_mock_response(unordered)
+        mock_resp = self._make_mock_response(self._SAMPLE_HTML)
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=2)
+
+        assert result["success"] is True
+        assert [r["title"] for r in result["data"]["web"]] == ["Result A", "Result B"]
+        assert result["data"]["web"][1]["position"] == 2
+
+    def test_highlight_span_stripped_from_title(self, monkeypatch):
+        """Nested <span class=\"highlight\"> must not leak into the title."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        mock_resp = self._make_mock_response(self._SAMPLE_HTML)
 
         with patch("httpx.get", return_value=mock_resp):
             result = SearXNGWebSearchProvider().search("query", limit=5)
 
+        assert result["data"]["web"][1]["title"] == "Result B"
+
+    def test_no_results_page_returns_empty_web(self, monkeypatch):
+        """A \"No results were found\" page is a valid empty search, not an error."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        no_results_html = (
+            '<div class="dialog-error-block" role="alert">'
+            "<p><strong>Sorry!</strong></p>"
+            "<p>No results were found. You can try to:</p></div>"
+        )
+        mock_resp = self._make_mock_response(no_results_html)
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("nothing", limit=5)
+
         assert result["success"] is True
-        assert result["data"]["web"][0]["title"] == "High"
-        assert result["data"]["web"][1]["title"] == "Mid"
-        assert result["data"]["web"][2]["title"] == "Low"
+        assert result["data"]["web"] == []
+
+    def test_http_error_returns_failure(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        mock_resp = self._make_mock_response("<html></html>", status_code=403)
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert "403" in result["error"]
 
 
     def test_trailing_slash_stripped_from_url(self, monkeypatch):
         """Base URL trailing slash should not produce double-slash in endpoint."""
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080/")
         from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        mock_resp = self._make_mock_response({"results": []})
+        mock_resp = self._make_mock_response("<html></html>")
 
         calls = []
         def capture_get(url, **kwargs):

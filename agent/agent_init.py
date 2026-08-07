@@ -2514,6 +2514,10 @@ def init_agent(
             proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
             min_tail_user_messages=compression_min_tail_users,
+            flat_memory_active=bool(
+                getattr(agent, "_memory_enabled", False)
+                or getattr(agent, "_user_profile_enabled", False)
+            ),
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

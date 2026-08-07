@@ -97,6 +97,12 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 
 
+_MEMORY_AUTHORITY_SENTENCE = (
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+)
+
 SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
@@ -123,15 +129,25 @@ SUMMARY_PREFIX = (
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
     "summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
-    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
-    "memory content due to this compaction note. "
+    f"{_MEMORY_AUTHORITY_SENTENCE}"
     "None of the above restricts HOW you work: your tools remain fully "
     "active — keep calling them normally for the active task (edit files, "
     "run commands, search) instead of merely narrating what you would do. "
     "The current session state (files, config, etc.) may reflect work "
     "described here — avoid repeating it:"
 )
+# SUMMARY_PREFIX without the flat-file memory sentence, used when the built-in
+# MEMORY.md/USER.md store is not loaded (memory_enabled and user_profile_enabled
+# both false — e.g. data-layer / external memory-provider setups) so agents
+# don't go looking for markdown memory files that don't exist.
+_SUMMARY_PREFIX_NO_MEMORY = SUMMARY_PREFIX.replace(_MEMORY_AUTHORITY_SENTENCE, "")
+
+
+def _summary_prefix_for(flat_memory_active: bool) -> str:
+    """Return the live compaction prefix for the given memory configuration."""
+    return SUMMARY_PREFIX if flat_memory_active else _SUMMARY_PREFIX_NO_MEMORY
+
+
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
 # Metadata key added to context compression summary messages so that frontends
@@ -2311,8 +2327,14 @@ class ContextCompressor(ContextEngine):
         proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096,
         min_tail_user_messages: int = 1,
+        flat_memory_active: bool = True,
     ):
         self.model = model
+        # Whether the built-in flat-file memory (MEMORY.md/USER.md) is loaded
+        # for this agent. When False (data-layer / external memory-provider
+        # setups), compaction notes omit the markdown-memory sentence so the
+        # model doesn't go looking for files that don't exist.
+        self._flat_memory_active = flat_memory_active
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
@@ -3584,7 +3606,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # exactly like the LLM-summary path.
         _pruned_names = _collect_ghosted_skill_names(turns_to_summarize)
         del _pruned_names[_MAX_PRUNED_SKILL_MARKERS:]
-        summary = self._with_summary_prefix(_redact_compaction_text(body.strip()))
+        summary = self._with_summary_prefix(_redact_compaction_text(body.strip()), flat_memory_active=self._flat_memory_active)
         if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
             summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
         # Re-inject AFTER the size cap: the markers live at the end of the
@@ -4066,7 +4088,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._last_summary_error = None
             self._last_summary_auth_failure = False
             self._last_summary_network_failure = False
-            return self._with_summary_prefix(summary)
+            return self._with_summary_prefix(summary, flat_memory_active=self._flat_memory_active)
         except Exception as e:
             # ``call_llm`` raises ``RuntimeError`` for two very different cases:
             #   1. No provider configured ("No LLM provider configured ...") —
@@ -4261,7 +4283,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # summarizer prompt.
         if _MERGED_SUMMARY_DELIMITER in text:
             text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].strip()
-        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
+        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, _SUMMARY_PREFIX_NO_MEMORY, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
                 break
@@ -4277,15 +4299,22 @@ This compaction should PRIORITISE preserving all information related to the focu
         return text
 
     @classmethod
-    def _with_summary_prefix(cls, summary: str) -> str:
-        """Normalize summary text to the current compaction handoff format."""
+    def _with_summary_prefix(cls, summary: str, *, flat_memory_active: bool = True) -> str:
+        """Normalize summary text to the current compaction handoff format.
+
+        ``flat_memory_active=False`` (built-in MEMORY.md/USER.md not loaded)
+        uses the prefix variant that omits the markdown-memory sentence.
+        """
+        prefix = _summary_prefix_for(flat_memory_active)
         text = cls._strip_summary_prefix(summary)
-        return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
+        return f"{prefix}\n{text}" if text else prefix
 
     @staticmethod
     def _starts_with_summary_prefix(text: str) -> bool:
         """Return True if *text* begins with any known handoff prefix."""
         if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
+            return True
+        if text.startswith(_SUMMARY_PREFIX_NO_MEMORY):
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
 
@@ -5698,7 +5727,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 and entry.get(COMPRESSED_SUMMARY_METADATA_KEY)
                 and entry.get(MICRO_COMPACT_MARKER_KEY)
             ):
-                entry["content"] = self._render_micro_marker_content(fresh_summary)
+                entry["content"] = self._render_micro_marker_content(fresh_summary, flat_memory_active=self._flat_memory_active)
                 # Content changed after a possible flush — clear the persisted
                 # stamp so the DB sync/flush rewrites the row.
                 entry.pop(_DB_PERSISTED_MARKER, None)
@@ -6051,7 +6080,7 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         summary_msg = {
             "role": "assistant",
-            "content": self._render_micro_marker_content(summary_text),
+            "content": self._render_micro_marker_content(summary_text, flat_memory_active=self._flat_memory_active),
             COMPRESSED_SUMMARY_METADATA_KEY: True,
             # Micro-created marker: eligible for supersede/defrag rewrites.
             # Batch markers never carry this key and are never touched —
@@ -6108,10 +6137,10 @@ This compaction should PRIORITISE preserving all information related to the focu
         return result
 
     @staticmethod
-    def _render_micro_marker_content(summary_text: str) -> str:
+    def _render_micro_marker_content(summary_text: str, *, flat_memory_active: bool = True) -> str:
         """Assemble the marker content wrapper around *summary_text*."""
         return (
-            f"{SUMMARY_PREFIX}\n\n"
+            f"{_summary_prefix_for(flat_memory_active)}\n\n"
             f"{HISTORICAL_TASK_HEADING}\n"
             f"{summary_text.strip()}"
             f"\n\n{_SUMMARY_END_MARKER}"
@@ -6644,7 +6673,14 @@ This compaction should PRIORITISE preserving all information related to the focu
             msg = _fresh_compaction_message_copy(messages[i])
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content")
-                _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
+                _memory_sentence = (
+                    " Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction."
+                    if self._flat_memory_active else ""
+                )
+                _compression_note = (
+                    "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work."
+                    f"{_memory_sentence}]"
+                )
                 if _compression_note not in _content_text_for_contains(existing):
                     msg["content"] = _append_text_to_content(
                         existing,

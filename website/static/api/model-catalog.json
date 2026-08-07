@@ -267,6 +267,14 @@
         },
         {
           "id": "sakana/fugu-ultra"
+        },
+        {
+          "id": "google/gemma-4-31b-it",
+          "description": ""
+        },
+        {
+          "id": "google/gemma-4-26b-a4b-it",
+          "description": ""
         }
       ]
     }

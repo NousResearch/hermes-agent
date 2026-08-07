@@ -52,6 +52,38 @@ MEDIA_MAX_BYTES = 25 * 1024 * 1024
 _REQUEST_TIMEOUT_S = 30.0
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _effective_port(parsed: urllib.parse.ParseResult) -> Optional[int]:
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is not None:
+        return port
+    scheme = (parsed.scheme or "").lower()
+    if scheme == "http":
+        return 80
+    if scheme == "https":
+        return 443
+    return None
+
+
+def _origin_key(parsed: urllib.parse.ParseResult) -> Optional[tuple[str, str, int]]:
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower().rstrip(".")
+    port = _effective_port(parsed)
+    if scheme not in {"http", "https"} or not host or port is None:
+        return None
+    return scheme, host, port
+
+
 def media_base_url(relay_dial_url: str) -> str:
     """Map the ``ws(s)://…/relay`` dial URL to the ``http(s)://…`` base.
 
@@ -91,7 +123,24 @@ class RelayMediaClient:
 
     def is_relay_media_url(self, url: str) -> bool:
         """Is ``url`` a connector re-host reference (needs our bearer to GET)?"""
-        return "/relay/media/" in (url or "")
+        try:
+            candidate = urllib.parse.urlparse(url or "")
+            base = urllib.parse.urlparse(self._base_url)
+        except Exception:
+            return False
+        if not candidate.scheme or not candidate.netloc:
+            return False
+        candidate_origin = _origin_key(candidate)
+        base_origin = _origin_key(base)
+        if (
+            candidate_origin is None
+            or base_origin is None
+            or candidate_origin != base_origin
+        ):
+            return False
+        base_path = (base.path or "").rstrip("/")
+        media_path = f"{base_path}/relay/media/"
+        return candidate.path.startswith(media_path)
 
     async def upload(
         self,
@@ -137,7 +186,7 @@ class RelayMediaClient:
         def _post() -> Optional[str]:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
+                with _NO_REDIRECT_OPENER.open(req, timeout=_REQUEST_TIMEOUT_S) as resp:
                     import json
 
                     body = json.loads(resp.read().decode("utf-8"))
@@ -171,7 +220,15 @@ class RelayMediaClient:
         def _get() -> Optional[str]:
             req = urllib.request.Request(url, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
+                if needs_auth:
+                    response_cm = _NO_REDIRECT_OPENER.open(
+                        req, timeout=_REQUEST_TIMEOUT_S
+                    )
+                else:
+                    response_cm = urllib.request.urlopen(
+                        req, timeout=_REQUEST_TIMEOUT_S
+                    )
+                with response_cm as resp:
                     length = int(resp.headers.get("Content-Length") or 0)
                     if length > MEDIA_MAX_BYTES:
                         logger.warning("relay media download too large: %s", url)

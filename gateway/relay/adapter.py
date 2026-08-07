@@ -466,15 +466,16 @@ class RelayAdapter(BasePlatformAdapter):
             for url in urls:
                 if not isinstance(url, str) or not url:
                     continue
+                is_rehost = self._is_relay_media_url(url, client)
                 if client is None:
                     # No authenticated client: keep public URLs, drop re-hosts.
-                    if "/relay/media/" not in url:
+                    if not is_rehost:
                         localized.append(url)
                     continue
                 path = await client.download(url)
                 if path:
                     localized.append(path)
-                elif "/relay/media/" not in url:
+                elif not is_rehost:
                     # A public URL that failed to download still has value as
                     # a URL (native adapters pass URLs to vision in some
                     # lanes); a dead re-host reference does not.
@@ -482,6 +483,23 @@ class RelayAdapter(BasePlatformAdapter):
             event.media_urls = localized
         except Exception:  # noqa: BLE001 - media localization must never break inbound
             logger.debug("relay inbound media localization failed", exc_info=True)
+
+    def _is_relay_media_url(
+        self, url: str, client: Optional[RelayMediaClient] = None
+    ) -> bool:
+        if client is not None:
+            return client.is_relay_media_url(url)
+        try:
+            from gateway.relay import relay_url
+            from gateway.relay.media import media_base_url
+
+            base = relay_url()
+            if not base:
+                return False
+            classifier = RelayMediaClient(media_base_url(base), "", "")
+            return classifier.is_relay_media_url(url)
+        except Exception:  # noqa: BLE001 - fallback classification is best-effort
+            return False
 
     def _capture_scope(self, event) -> None:
         """Remember a chat_id's egress discriminator from an inbound event so our

@@ -15,6 +15,8 @@ Covers:
 
 from __future__ import annotations
 
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 
@@ -60,6 +62,7 @@ class FakeMediaClient:
         self.downloads: list[str] = []
         self.upload_result: Optional[str] = "https://conn.example/relay/media/aa11"
         self.download_result: Optional[str] = "/tmp/relay_media_fake.png"
+        self._classifier = RelayMediaClient("https://conn.example", "gw1", "sec")
 
     async def upload(self, file_path, *, mime=None, filename=None):
         self.uploads.append((str(file_path), filename))
@@ -70,7 +73,7 @@ class FakeMediaClient:
         return self.download_result
 
     def is_relay_media_url(self, url: str) -> bool:
-        return "/relay/media/" in (url or "")
+        return self._classifier.is_relay_media_url(url)
 
 
 def _adapter(**desc_kw) -> tuple[RelayAdapter, StubConnector, FakeMediaClient]:
@@ -150,7 +153,50 @@ def _make_event(media_urls):
 
 
 @pytest.mark.asyncio
-async def test_inbound_without_client_keeps_public_drops_rehost():
+async def test_inbound_rehost_urls_are_localized():
+    adapter, _stub, fake = _adapter()
+    event = _make_event(["https://conn.example/relay/media/deadbeef"])
+    await adapter._localize_inbound_media(event)
+    assert fake.downloads == ["https://conn.example/relay/media/deadbeef"]
+    assert event.media_urls == ["/tmp/relay_media_fake.png"]
+
+
+@pytest.mark.asyncio
+async def test_inbound_dead_rehost_ref_is_dropped_public_url_kept():
+    adapter, _stub, fake = _adapter()
+    fake.download_result = None  # every download fails
+    event = _make_event(
+        [
+            "https://conn.example/relay/media/deadbeef",  # dead re-host → dropped
+            "https://cdn.discordapp.com/attachments/a/b.png",  # public → kept as URL
+        ]
+    )
+    await adapter._localize_inbound_media(event)
+    assert event.media_urls == ["https://cdn.discordapp.com/attachments/a/b.png"]
+
+
+@pytest.mark.asyncio
+async def test_inbound_download_failure_keeps_public_marker_url():
+    adapter, _stub, fake = _adapter()
+    fake.download_result = None
+    public_marker = "https://cdn.example/files/relay/media/photo.png"
+    event = _make_event(
+        [
+            "https://conn.example/relay/media/deadbeef",
+            public_marker,
+        ]
+    )
+    await adapter._localize_inbound_media(event)
+    assert fake.downloads == [
+        "https://conn.example/relay/media/deadbeef",
+        public_marker,
+    ]
+    assert event.media_urls == [public_marker]
+
+
+@pytest.mark.asyncio
+async def test_inbound_without_client_keeps_public_drops_rehost(monkeypatch):
+    monkeypatch.setenv("GATEWAY_RELAY_URL", "wss://conn.example/relay")
     adapter, _stub, _fake = _adapter()
     adapter._media_client = None
     adapter._get_media_client = lambda: None  # type: ignore[method-assign]
@@ -164,7 +210,215 @@ async def test_inbound_without_client_keeps_public_drops_rehost():
     assert event.media_urls == ["https://cdn.discordapp.com/attachments/a/b.png"]
 
 
+@pytest.mark.asyncio
+async def test_inbound_without_client_keeps_public_marker_url(monkeypatch):
+    monkeypatch.setenv("GATEWAY_RELAY_URL", "wss://conn.example/relay")
+    adapter, _stub, _fake = _adapter()
+    adapter._media_client = None
+    adapter._get_media_client = lambda: None  # type: ignore[method-assign]
+    public_marker = "https://cdn.example/files/relay/media/photo.png"
+    event = _make_event(
+        [
+            "https://conn.example/relay/media/deadbeef",
+            public_marker,
+        ]
+    )
+    await adapter._localize_inbound_media(event)
+    assert event.media_urls == [public_marker]
+
+
 # ── RelayMediaClient unit surface ────────────────────────────────────────
+
+
+def test_media_base_url_derivation():
+    assert media_base_url("wss://conn.example/relay") == "https://conn.example"
+    assert media_base_url("ws://localhost:8080/relay") == "http://localhost:8080"
+    assert media_base_url("https://conn.example") == "https://conn.example"
+
+
+def test_client_enabled_requires_full_credentials():
+    assert RelayMediaClient("https://c.example", "gw1", "sec").enabled is True
+    assert RelayMediaClient("https://c.example", None, "sec").enabled is False
+    assert RelayMediaClient("https://c.example", "gw1", None).enabled is False
+    assert RelayMediaClient("", "gw1", "sec").enabled is False
+
+
+def test_client_recognizes_rehost_urls():
+    c = RelayMediaClient("https://c.example", "gw1", "sec")
+    assert c.is_relay_media_url("https://c.example/relay/media/abc") is True
+    assert c.is_relay_media_url("https://evil.example/relay/media/abc") is False
+    assert c.is_relay_media_url("https://cdn.example/files/relay/media/photo.png") is False
+    assert c.is_relay_media_url("https://cdn.discordapp.com/a/b.png") is False
+
+
+def test_client_recognizes_rehost_urls_under_connector_base_path():
+    c = RelayMediaClient("https://c.example/team-a", "gw1", "sec")
+    assert c.is_relay_media_url("https://c.example/team-a/relay/media/abc") is True
+    assert c.is_relay_media_url("https://c.example/relay/media/abc") is False
+
+
+def test_client_recognizes_equivalent_default_port_origins():
+    implicit_https = RelayMediaClient("https://c.example", "gw1", "sec")
+    explicit_https = RelayMediaClient("https://c.example:443", "gw1", "sec")
+    implicit_http = RelayMediaClient("http://c.example", "gw1", "sec")
+
+    assert implicit_https.is_relay_media_url(
+        "https://c.example:443/relay/media/abc"
+    ) is True
+    assert explicit_https.is_relay_media_url(
+        "https://c.example/relay/media/abc"
+    ) is True
+    assert implicit_http.is_relay_media_url(
+        "http://c.example:80/relay/media/abc"
+    ) is True
+    assert implicit_https.is_relay_media_url(
+        "https://c.example:444/relay/media/abc"
+    ) is False
+    assert implicit_https.is_relay_media_url(
+        "http://c.example:443/relay/media/abc"
+    ) is False
+
+
+class _CaptureHandler(BaseHTTPRequestHandler):
+    seen: list[tuple[str, str, Optional[str]]] = []
+    location: str = ""
+    body: bytes = b"ok"
+    content_type: str = "application/octet-stream"
+
+    def do_GET(self):
+        type(self).seen.append(("GET", self.path, self.headers.get("Authorization")))
+        if type(self).location:
+            self.send_response(302)
+            self.send_header("Location", type(self).location)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", type(self).content_type)
+        self.send_header("Content-Length", str(len(type(self).body)))
+        self.end_headers()
+        self.wfile.write(type(self).body)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        type(self).seen.append(("POST", self.path, self.headers.get("Authorization")))
+        if type(self).location:
+            self.send_response(302)
+            self.send_header("Location", type(self).location)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"id":"uploaded"}')
+
+    def log_message(self, format, *args):
+        return
+
+
+def _serve(handler_cls):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def _stop(server: ThreadingHTTPServer) -> None:
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_download_does_not_follow_cross_origin_redirect():
+    class Capture(_CaptureHandler):
+        seen = []
+
+    capture_server = _serve(Capture)
+
+    class Redirect(_CaptureHandler):
+        seen = []
+        location = f"http://127.0.0.1:{capture_server.server_port}/capture"
+
+    redirect_server = _serve(Redirect)
+    result = None
+    try:
+        c = RelayMediaClient(
+            f"http://127.0.0.1:{redirect_server.server_port}", "gw1", "sec"
+        )
+        result = await c.download(
+            f"http://127.0.0.1:{redirect_server.server_port}/relay/media/x"
+        )
+        assert result is None
+        assert len(Redirect.seen) == 1
+        assert Redirect.seen[0][2]
+        assert Capture.seen == []
+    finally:
+        _stop(redirect_server)
+        _stop(capture_server)
+
+
+@pytest.mark.asyncio
+async def test_authenticated_upload_does_not_follow_cross_origin_redirect(tmp_path):
+    class Capture(_CaptureHandler):
+        seen = []
+
+    capture_server = _serve(Capture)
+
+    class Redirect(_CaptureHandler):
+        seen = []
+        location = f"http://127.0.0.1:{capture_server.server_port}/capture"
+
+    redirect_server = _serve(Redirect)
+    media = tmp_path / "clip.txt"
+    media.write_text("hello", encoding="utf-8")
+    try:
+        c = RelayMediaClient(
+            f"http://127.0.0.1:{redirect_server.server_port}", "gw1", "sec"
+        )
+        result = await c.upload(str(media))
+        assert result is None
+        assert len(Redirect.seen) == 1
+        assert Redirect.seen[0][0] == "POST"
+        assert Redirect.seen[0][2]
+        assert Capture.seen == []
+    finally:
+        _stop(redirect_server)
+        _stop(capture_server)
+
+
+@pytest.mark.asyncio
+async def test_public_download_keeps_normal_redirect_behavior():
+    class Capture(_CaptureHandler):
+        seen = []
+        body = b"public image"
+        content_type = "image/png"
+
+    capture_server = _serve(Capture)
+
+    class Redirect(_CaptureHandler):
+        seen = []
+        location = f"http://127.0.0.1:{capture_server.server_port}/capture.png"
+
+    redirect_server = _serve(Redirect)
+    try:
+        c = RelayMediaClient(
+            f"http://127.0.0.1:{redirect_server.server_port}", "gw1", "sec"
+        )
+        result = await c.download(
+            f"http://127.0.0.1:{redirect_server.server_port}/public/image"
+        )
+        assert result is not None
+        assert Path(result).read_bytes() == b"public image"
+        assert len(Redirect.seen) == 1
+        assert Redirect.seen[0][2] is None
+        assert len(Capture.seen) == 1
+        assert Capture.seen[0][2] is None
+    finally:
+        if result is not None:
+            Path(result).unlink(missing_ok=True)
+        _stop(redirect_server)
+        _stop(capture_server)
 
 
 @pytest.mark.asyncio

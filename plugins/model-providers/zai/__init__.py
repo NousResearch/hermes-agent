@@ -22,6 +22,10 @@ two enabled levels — ``high`` and ``max`` — on the OpenAI-compatible endpoin
 (per Z.AI / BigModel docs).  Hermes' richer effort scale is collapsed onto
 those two so the user's effort preference actually reaches the model instead
 of being silently dropped.
+
+Several Z.AI models work via /chat/completions but are absent from the
+vendor's /models catalog. :meth:`ZaiProfile.fetch_models` falls back to a
+curated allowlist (``_EXTRA_MODELS``) when the live catalog is unreachable.
 """
 
 from __future__ import annotations
@@ -29,8 +33,23 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import logging
 from providers import register_provider
 from providers.base import ProviderProfile
+
+# Models that work via /chat/completions but are absent from /models catalog
+_EXTRA_MODELS = {
+    "glm-5.2",
+    "glm-5",
+    "glm-4-9b",
+    "glm-4.5",
+    "glm-4.5-air",
+    "glm-4.6",
+    "glm-4.7",
+    "glm-4.5-flash",
+}
+
+logger = logging.getLogger(__name__)
 
 _GLM_VERSION_RE = re.compile(r"^glm-(\d+)(?:\.(\d+))?")
 
@@ -83,7 +102,7 @@ def _glm_5_2_reasoning_effort(reasoning_config: dict | None) -> str | None:
 
 
 class ZaiProfile(ProviderProfile):
-    """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort."""
+    """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort + curated catalog fallback."""
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
@@ -107,6 +126,29 @@ class ZaiProfile(ProviderProfile):
 
         return extra_body, top_level
 
+    def fetch_models(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+    ) -> list[str] | None:
+        """Fetch live catalog and merge with known working models.
+
+        Several Z.AI models work via /chat/completions but are absent from
+        the vendor's /models catalog. When the live fetch fails (network,
+        auth, schema change), fall back to the curated allowlist; when it
+        succeeds, merge the live list with the allowlist so working models
+        remain selectable even if the vendor temporarily drops them.
+        """
+        live_models = super().fetch_models(
+            api_key=api_key, base_url=base_url, timeout=timeout
+        )
+        if live_models is None:
+            return sorted(_EXTRA_MODELS)
+        merged = set(live_models) | _EXTRA_MODELS
+        return sorted(merged)
+
 
 zai = ZaiProfile(
     name="zai",
@@ -119,8 +161,11 @@ zai = ZaiProfile(
         "glm-5.2",
         "glm-5",
         "glm-4-9b",
+        "glm-4.5",
+        "glm-4.5-air",
+        "glm-4.5-flash",
     ),
-    base_url="https://api.z.ai/api/paas/v4",
+    base_url="https://api.z.ai/api/coding/paas/v4",
     default_aux_model="glm-4.5-flash",
 )
 

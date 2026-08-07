@@ -327,6 +327,8 @@ export const ja = defineLocale({
       terminalFontReset: '既定値を使用',
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
+      minimizeToTrayTitle: 'システムトレイに最小化',
+      minimizeToTrayDesc: 'ウィンドウを閉じると、Hermes は終了せずにシステムトレイに隠れます。Windows と Linux のみ（macOS は Dock で継続）。既定はオフ。',
       backdropTitle: 'チャット背景',
       backdropDesc: '会話の背後に表示される淡い彫像の画像。',
       reactionsTitle: 'メッセージリアクション',

@@ -27,7 +27,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -187,6 +188,7 @@ import {
 } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
+import { buildTrayIcon, buildTrayMenuItems, readPersistedMinimizeToTray, writePersistedMinimizeToTray } from './tray'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
@@ -769,6 +771,29 @@ function windowOpacity() {
   return 1 - (translucencyIntensity / 100) * 0.7
 }
 
+// Minimize-to-tray behavior (close the window → hide in the system tray
+// instead of quitting the app). Off by default — changing the close-button
+// contract is opt-in so existing users keep the current "X quits" behavior.
+// Windows/Linux only; on macOS the Dock already provides this (closing the
+// last window keeps the process alive), so the tray is never created there.
+// Persisted so a cold launch applies it before the first close event. Pure
+// read/write lives in electron/tray.ts (testable); we wire it to a module
+// variable here so the close handler reads a single source of truth.
+let minimizeToTray = false
+
+function loadMinimizeToTray() {
+  try {
+    minimizeToTray = readPersistedMinimizeToTray(app.getPath('userData'))
+  } catch {
+    minimizeToTray = false
+  }
+}
+
+// NOTE: loadMinimizeToTray() is invoked inside app.whenReady() (not at module
+// load) because app.getPath('userData') is only valid once the app is ready.
+// Called early in whenReady so createTray() and the close handler see the
+// persisted value on a cold launch.
+
 // Re-apply translucency to a live window (runtime toggle, no recreation).
 // `setOpacity` is a no-op on Linux, which is fine — it just stays opaque there.
 function applyWindowTranslucency(win) {
@@ -1050,6 +1075,12 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+let tray: Electron.Tray | null = null
+let isQuitting = false
+// Locale for the tray context menu, pushed from the renderer so the menu text
+// follows the user's chosen display language. Defaults to English until the
+// renderer reports its locale (see ipcMain.on('hermes:tray-menu-locale')).
+let trayMenuLocale = 'en'
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
@@ -8747,6 +8778,126 @@ function focusWindow(win) {
   win.focus()
 }
 
+// ── System tray ────────────────────────────────────────────────────────────
+// When `minimizeToTray` is enabled, the app hides to the system tray on window
+// close instead of quitting. This builds the tray icon + context menu. macOS is
+// excluded (the Dock already keeps the process alive and offers its own
+// show/hide/quit menu), matching the `!IS_MAC` guard used for the close handler.
+function createTray() {
+  if (IS_MAC) {
+    return
+  }
+
+  // Only build the tray when the feature is enabled. This guards both the
+  // cold-start call and the live rebuilds triggered by the locale handler —
+  // without it, a runtime toggle-off followed by a language change would
+  // resurrect the tray even though the flag is off.
+  if (!minimizeToTray) {
+    return
+  }
+
+  if (tray && !tray.isDestroyed()) {
+    return
+  }
+
+  const icon = buildTrayIcon(getAppIconPath(), IS_WINDOWS)
+
+  if (!icon) {
+    rememberLog('[tray] no app icon found; skipping tray creation')
+
+    return
+  }
+
+  tray = new Tray(icon)
+  tray.setToolTip('Hermes Agent')
+
+  const buildContextMenu = () => {
+    const visible = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
+
+    return Menu.buildFromTemplate(
+      buildTrayMenuItems({
+        isWindowVisible: Boolean(visible),
+        locale: trayMenuLocale,
+        onToggleVisibility: () => {
+          if (!mainWindow || mainWindow.isDestroyed()) {
+            createWindow()
+
+            return
+          }
+
+          if (mainWindow.isVisible()) {
+            mainWindow.hide()
+          } else {
+            focusWindow(mainWindow)
+          }
+        },
+        onNewSession: () => {
+          ensureMainWindow(mainWindow, {
+            isReady: app.isReady(),
+            createWindow,
+            focusWindow,
+            focusExisting: false
+          })
+          handleDeepLink('hermes://app/new-session')
+          // The window may be hidden in the tray; bring it forward so the
+          // navigation triggered above is actually visible.
+          focusWindow(mainWindow)
+        },
+        onOpenSettings: () => {
+          ensureMainWindow(mainWindow, {
+            isReady: app.isReady(),
+            createWindow,
+            focusWindow,
+            focusExisting: false
+          })
+          handleDeepLink('hermes://app/settings')
+          focusWindow(mainWindow)
+        },
+        onQuit: () => {
+          isQuitting = true
+          app.quit()
+        }
+      })
+    )
+  }
+
+  tray.setContextMenu(buildContextMenu())
+  // Windows: a plain left click toggles the window. Ignore the synthesized
+  // second click of a double-click so a double-click doesn't toggle twice
+  // (Electron fires both 'click' and 'double-click' on Windows).
+  tray.setIgnoreDoubleClickEvents(true)
+  const rebuildMenu = () => {
+    if (!tray || tray.isDestroyed()) {
+      return
+    }
+    tray.setContextMenu(buildContextMenu())
+  }
+  tray.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow()
+
+      return
+    }
+
+    if (mainWindow.isVisible()) {
+      mainWindow.hide()
+    } else {
+      focusWindow(mainWindow)
+    }
+
+    // Refresh the visibility label after toggling.
+    rebuildMenu()
+  })
+  // Keep the Show/Hide label in sync with the window. The context menu is a
+  // fixed snapshot from the last setContextMenu() call, so rebuild it whenever
+  // the window actually shows/hides (covers both tray clicks and the X-button
+  // close-to-tray path, which don't go through tray.on('click')).
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.on('show', rebuildMenu)
+    mainWindow.on('hide', rebuildMenu)
+  }
+}
+
 function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?: boolean } = {}) {
   const icon = getAppIconPath()
 
@@ -9348,6 +9499,21 @@ function createWindow() {
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
   mainWindow.on('close', () => schedulePersistWindowState.flush())
+
+  // Minimize-to-tray: when enabled (Windows/Linux only), closing the window
+  // hides it in the system tray instead of quitting. The real quit path is
+  // Always intercept close so a runtime toggle of the flag (which only
+  // builds/destroys the tray) takes effect on this existing window. The hide
+  // itself is gated on the live flag + platform + the quit latch. `app.quit()`
+  // — reached via the tray "退出" item, the app menu, or before-quit — sets
+  // isQuitting and bypasses this guard. macOS skips the tray entirely (Dock
+  // behavior), so it is excluded here too.
+  mainWindow.on('close', (event: Electron.Event) => {
+    if (!isQuitting && minimizeToTray && !IS_MAC) {
+      event.preventDefault()
+      mainWindow?.hide()
+    }
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   const createdMainWindow = mainWindow
@@ -10654,6 +10820,47 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
   }
 })
 
+// Renderer → main: toggle minimize-to-tray. Persists the choice and rebuilds
+// (or tears down) the tray so the change takes effect without a restart.
+ipcMain.on('hermes:minimize-to-tray', (_event, payload) => {
+  const next = Boolean(payload && payload.enabled)
+
+  if (next === minimizeToTray) {
+    return
+  }
+
+  minimizeToTray = next
+  writePersistedMinimizeToTray(app.getPath('userData'), next)
+
+  if (next) {
+    createTray()
+  } else if (tray && !tray.isDestroyed()) {
+    tray.destroy()
+    tray = null
+  }
+})
+
+// Tray menu locale: the renderer reports its current display language so the
+// tray context menu (built in the main process, which has no i18n) shows the
+// matching language. If the tray already exists, rebuild its menu live.
+ipcMain.on('hermes:tray-menu-locale', (_event, payload) => {
+  const locale = typeof payload === 'string' ? payload : 'en'
+
+  if (locale === trayMenuLocale) {
+    return
+  }
+
+  trayMenuLocale = locale
+
+  // Rebuild the tray (and its menu) so the new language takes effect. createTray
+  // is idempotent against an existing tray, so destroy first.
+  if (tray && !tray.isDestroyed()) {
+    tray.destroy()
+    tray = null
+  }
+  createTray()
+})
+
 // Keep-awake: hold the machine awake for long/overnight runs. Main owns the one
 // blocker and its persisted state so a cold launch restores it (applied on
 // ready — powerSaveBlocker needs the app ready). The renderer toggles it from
@@ -11846,6 +12053,10 @@ app.whenReady().then(() => {
   installEmbedReferer()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()
+  // Restore the minimize-to-tray preference before createWindow()/createTray()
+  // run, so a cold launch honors the persisted flag. app.getPath('userData')
+  // is valid here (inside whenReady).
+  loadMinimizeToTray()
   configureSpellChecker()
   registerPowerResumeListeners()
   keepAwake.set(readPersistedKeepAwake())
@@ -11865,6 +12076,13 @@ app.whenReady().then(() => {
   }
 
   createWindow()
+  // Build the system tray only when the feature is enabled (off by default).
+  // macOS is excluded inside createTray(); on Win/Linux the tray is created
+  // here on a cold launch if the persisted flag is set, and live via the
+  // settings IPC handler (electron/main.ts ~10786) when toggled at runtime.
+  if (minimizeToTray) {
+    createTray()
+  }
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
@@ -11916,7 +12134,7 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
     return false
   }
 
-  const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
+  const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff, trayMenuLocale)
   const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
 
   if (!prompt || !parent || parent.isDestroyed()) {
@@ -11928,7 +12146,7 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 
   void dialog
     .showMessageBox(parent, {
-      buttons: ['Keep Running', 'Quit Anyway'],
+      buttons: prompt.buttons,
       cancelId: 0,
       defaultId: 0,
       detail: prompt.detail,
@@ -11955,10 +12173,15 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 
 app.on('before-quit', event => {
   // Runs ahead of every teardown below, so "Keep Running" leaves the app
-  // exactly as it was.
+  // exactly as it was. Set the quit latch only AFTER this guard: if the quit
+  // is held (a turn is in flight), we return early and must leave isQuitting
+  // clear so the minimize-to-tray close handler keeps hiding the window later
+  // in the session. The latch is still set before any real teardown below.
   if (heldQuitForActiveWork(event)) {
     return
   }
+
+  isQuitting = true
 
   if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
     event.preventDefault()
@@ -12032,7 +12255,12 @@ app.on('window-all-closed', () => {
   // the bundle and relaunch — without this the script's PID-wait spins to its
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
+  //
+  // Windows/Linux with the tray active: keep the process alive in the tray
+  // (the user closed the window to hide, not quit). Only quit when there is no
+  // tray — i.e. minimize-to-tray is off, or this is a platform where the tray
+  // is never created (macOS falls through below).
+  if (isQuittingForHandoff || (process.platform !== 'darwin' && !tray)) {
     app.quit()
   }
 })

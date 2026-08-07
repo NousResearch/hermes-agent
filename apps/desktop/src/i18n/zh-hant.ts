@@ -319,6 +319,8 @@ export const zhHant = defineLocale({
       terminalFontReset: '使用預設字型',
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
+      minimizeToTrayTitle: '最小化到系統匣',
+      minimizeToTrayDesc: '關閉視窗時，Hermes 隱藏到系統匣而不退出。僅支援 Windows 與 Linux；macOS 透過 Dock 保持執行。預設關閉。',
       backdropTitle: '聊天背景',
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
       reactionsTitle: '訊息回應',

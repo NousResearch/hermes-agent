@@ -60,3 +60,31 @@ test('quitPromptFor speaks singular for one chat', () => {
   assert.equal(prompt.message, 'Hermes is still working on 1 chat.')
   assert.ok(prompt.detail.includes('mid-turn'))
 })
+
+test('quitPromptFor localizes to zh when locale is zh', () => {
+  const prompt = quitPromptFor({ count: 1, titles: ['固化室审查'] }, false, 'zh')
+
+  assert.ok(prompt)
+  assert.equal(prompt.message, 'Hermes 正在处理 1 个对话。')
+  assert.equal(prompt.buttons[0], '继续运行')
+  assert.equal(prompt.buttons[1], '仍然退出')
+  assert.ok(prompt.detail.includes('固化室审查'))
+  assert.ok(prompt.detail.includes('未写入的工作将丢失'))
+})
+
+test('quitPromptFor falls back to English for an unknown locale', () => {
+  const prompt = quitPromptFor({ count: 2, titles: ['Fix login'] }, false, 'xx')
+
+  assert.ok(prompt)
+  assert.equal(prompt.message, 'Hermes is still working on 2 chats.')
+  assert.equal(prompt.buttons[0], 'Keep Running')
+})
+
+test('quitPromptFor localizes plural + "more" for ja', () => {
+  const prompt = quitPromptFor({ count: 5, titles: ['a', 'b', 'c', 'd', 'e'] }, false, 'ja')
+
+  assert.ok(prompt)
+  assert.equal(prompt.message, 'Hermes は 5 件のチャットを処理中です。')
+  assert.ok(prompt.detail.includes('さらに 1 件'))
+  assert.equal(prompt.buttons[1], '強制終了')
+})

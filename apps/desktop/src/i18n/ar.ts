@@ -397,6 +397,8 @@ export const ar = defineLocale({
       toolViewDesc: 'تحكم في كيفية عرض نشاط الأدوات داخل المحادثة.',
       translucencyTitle: 'شفافية النافذة',
       translucencyDesc: 'إظهار سطح المكتب من خلال النافذة بالكامل. متاح على macOS وWindows فقط.',
+      minimizeToTrayTitle: 'تصغير إلى علبة النظام',
+      minimizeToTrayDesc: 'عند إغلاق النافذة، يختبئ Hermes في علبة النظام بدلًا من الإنهاء. Windows وLinux فقط؛ يستمر macOS عبر Dock. معطّل افتراضيًا.',
       backdropTitle: 'خلفية النافذة',
       backdropDesc: 'اختيار مقدار مزج خلفية سطح المكتب مع سطح Hermes.',
       reactionsTitle: 'تفاعلات الرسائل',

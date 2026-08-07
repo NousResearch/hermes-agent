@@ -18,7 +18,7 @@ import { isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
-import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
+import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 
 type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>
 
@@ -187,30 +187,51 @@ export function useDesktopIntegrations({
     return () => unsubscribe?.()
   }, [])
 
-  // hermes:// deep links -> a reviewable /blueprint command in the composer.
+  // hermes:// deep links. `blueprint` drops a reviewable /blueprint command in
+  // the composer; `app` routes in-app navigation from the system tray menu
+  // (Windows/Linux only — the tray is never created on macOS).
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
-      if (!payload || payload.kind !== 'blueprint' || !payload.name) {
+      if (!payload) {
         return
       }
 
-      const slots = Object.entries(payload.params || {})
-        .map(([k, v]) => {
-          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+      if (payload.kind === 'blueprint') {
+        if (!payload.name) {
+          return
+        }
 
-          return `${k}=${sval}`
-        })
-        .join(' ')
+        const slots = Object.entries(payload.params || {})
+          .map(([k, v]) => {
+            const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
 
-      const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
-      requestComposerInsert(command, { mode: 'block', target: 'main' })
-      requestComposerFocus('main')
+            return `${k}=${sval}`
+          })
+          .join(' ')
+
+        const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
+        requestComposerInsert(command, { mode: 'block', target: 'main' })
+        requestComposerFocus('main')
+
+        return
+      }
+
+      if (payload.kind === 'app') {
+        // The tray menu already ensures a live window before sending the link,
+        // so just navigate. `new-session` opens a fresh chat; `settings`
+        // opens the settings view.
+        if (payload.name === 'new-session') {
+          navigate(NEW_CHAT_ROUTE)
+        } else if (payload.name === 'settings') {
+          navigate(SETTINGS_ROUTE)
+        }
+      }
     })
 
     void window.hermesDesktop?.signalDeepLinkReady?.()
 
     return () => unsubscribe?.()
-  }, [])
+  }, [navigate])
 
   // ⌘W via the macOS menu accelerator → close the focused tab; if nothing is
   // closeable, fall back to closing the window (so ⌘W still works as the

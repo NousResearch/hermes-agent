@@ -451,6 +451,9 @@ export const en: Translations = {
       terminalFontReset: 'Use default',
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
+      minimizeToTrayTitle: 'Minimize to System Tray',
+      minimizeToTrayDesc:
+        'Closing the window hides Hermes in the system tray instead of quitting. Windows and Linux only; macOS keeps running via the Dock. Off by default.',
       backdropTitle: 'Chat Backdrop',
       backdropDesc: 'The faint statue image behind the conversation.',
       reactionsTitle: 'Message Reactions',

@@ -53,6 +53,14 @@ export function translateFrom(
 
 export function setRuntimeI18nLocale(locale: Locale) {
   runtimeLocale = locale
+
+  // Push the active display language to the main process so the system-tray
+  // context menu (built there, where there is no i18n) matches the UI language.
+  // Guarded: the bridge only exists in the desktop Electron build, and the
+  // tray feature may be disabled.
+  if (typeof window !== 'undefined' && window.hermesDesktop?.setTrayMenuLocale) {
+    window.hermesDesktop.setTrayMenuLocale(locale)
+  }
 }
 
 /** The locale module-level translators resolve against (the app's active

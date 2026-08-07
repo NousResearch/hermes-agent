@@ -967,6 +967,20 @@ class InvalidMcpUrlError(ValueError):
     """
 
 
+class McpCallAbortedError(RuntimeError):
+    """Raised when a session teardown aborts an in-flight ``tools/call``.
+
+    The response streams a pending call awaits on are owned by the dying
+    session's task group, and that teardown never cancels foreign awaiters —
+    without an explicit abort the call would hang holding ``_rpc_lock``,
+    starving every later call to the same server until an outer watchdog
+    fires (deleg_e8af57bc, 2026-08-02: 1225s hang on a 240s wait). The
+    server-side operation may still have completed; only the response was
+    lost, so callers must verify with a read-only call before retrying
+    anything with side effects.
+    """
+
+
 class NonMcpEndpointError(ConnectionError):
     """Raised when an HTTP MCP URL serves a non-MCP response.
 
@@ -1915,7 +1929,7 @@ class MCPServerTask:
         "_sampling", "_elicitation",
         "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
-        "_pending_call_context",
+        "_pending_call_context", "_inflight_calls",
         "_lifecycle_started_at", "_last_tool_call_at",
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
@@ -1963,6 +1977,7 @@ class MCPServerTask:
         # client-initiated RPCs per server. The lock is also applied to HTTP
         # transports for conservative per-server ordering.
         self._rpc_lock = asyncio.Lock()
+        self._inflight_calls: set[asyncio.Task] = set()
         self._pending_refresh_tasks: set[asyncio.Task] = set()
         # contextvars snapshot of the agent task that's currently in
         # session.call_tool(). The MCP recv loop dispatches incoming
@@ -2024,6 +2039,20 @@ class MCPServerTask:
     def mark_tool_call(self) -> None:
         """Record that a user-visible MCP operation is starting."""
         self._last_tool_call_at = time.monotonic()
+
+    def _abort_inflight_calls(self) -> None:
+        """Cancel tool calls still awaiting a response on a dying session.
+
+        Their response streams belong to the session being torn down, so no
+        answer can ever arrive; cancelling converts each into an immediate
+        :class:`McpCallAbortedError` (see the ``_call`` await site) and
+        releases ``_rpc_lock`` for the next caller. Synchronous on purpose —
+        it runs from ``finally`` blocks that may themselves be unwinding a
+        cancellation.
+        """
+        for task in tuple(self._inflight_calls):
+            task.cancel()
+        self._inflight_calls.clear()
 
     def _mark_lifecycle_started(self) -> None:
         now = time.monotonic()
@@ -2381,6 +2410,16 @@ class MCPServerTask:
                 # tool-capable server that doesn't implement it answers -32601;
                 # in that case fall back to the pre-ping ``list_tools`` probe
                 # for the rest of this connection rather than reconnect-looping.
+                #
+                # Never probe while an RPC is in flight (``_rpc_lock`` held): a
+                # single-threaded stdio server can't answer ping mid-dispatch,
+                # so the probe would time out and tear down a healthy transport,
+                # killing the very call it blames — the in-flight round-trip is
+                # itself the liveness signal, and its success path marks the
+                # session proven. The stdio recycle checks above already skip
+                # under the same condition.
+                if self.session and self._rpc_lock.locked():
+                    continue
                 if self.session:
                     try:
                         await self._keepalive_probe()
@@ -2398,6 +2437,13 @@ class MCPServerTask:
                     # Clear the rapid-drop budget (#62212).
                     self._mark_session_proven()
         finally:
+            # This method only exits when the session it guards is being
+            # abandoned (shutdown / reconnect / recycle) or the transport
+            # crashed out from under it. Either way, a tools/call still
+            # awaiting a response on this session can never be answered —
+            # abort it now so it fails fast and releases _rpc_lock instead
+            # of hanging until an outer watchdog fires.
+            self._abort_inflight_calls()
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
                     t.cancel()
@@ -5208,9 +5254,40 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # task, which doesn't inherit our contextvars) can replay
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
+                # Run the RPC as a child task registered on the server so a
+                # session teardown (_abort_inflight_calls) can cancel it.
+                # The response streams belong to the session's task group,
+                # and teardown never cancels foreign awaiters — an inline
+                # await here would strand forever holding _rpc_lock.
+                call_task = asyncio.create_task(
+                    server.session.call_tool(tool_name, arguments=args)
+                )
+                server._inflight_calls.add(call_task)
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    result = await call_task
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    cancelling = getattr(current, "cancelling", None)
+                    outer_cancelled = bool(cancelling and cancelling())
+                    if call_task.cancelled() and not outer_cancelled:
+                        # The teardown aborted the RPC; this coroutine itself
+                        # was not cancelled, so surface a real error rather
+                        # than propagating a cancellation nobody requested.
+                        raise McpCallAbortedError(
+                            f"MCP server '{server.name}' connection was reset "
+                            f"while this call was in flight; the response was "
+                            f"lost. The server-side operation may still have "
+                            f"completed — verify with a read-only status/"
+                            f"result call before retrying anything with side "
+                            f"effects."
+                        ) from None
+                    # Caller-driven cancellation (user interrupt, outer
+                    # timeout): propagate it into the RPC task too so it
+                    # doesn't keep running detached.
+                    call_task.cancel()
+                    raise
                 finally:
+                    server._inflight_calls.discard(call_task)
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably
             # healthy at the transport level (even if the tool itself
@@ -5315,6 +5392,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             return result
         except InterruptedError:
             return _interrupted_call_result()
+        except McpCallAbortedError as exc:
+            # Transport teardown aborted the call. Not a new failure signal
+            # (whatever killed the transport already drove the reconnect
+            # machinery), so no breaker strike — return the guidance so the
+            # model verifies server-side state instead of blind-retrying.
+            logger.warning(
+                "MCP tool %s/%s aborted by session teardown", server_name, tool_name,
+            )
+            return tool_error(str(exc))
         except Exception as exc:
             # Auth-specific recovery path: consult the manager, signal
             # reconnect if viable, retry once. Returns None to fall

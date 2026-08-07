@@ -56,7 +56,11 @@ def _patch_mcp_server():
     # `_rpc_lock` is acquired by _make_tool_handler's call path (mcp_tool.py
     # ~L2008) to serialize JSON-RPC against the server — build it inside the
     # fresh loop that _fake_run_on_mcp_loop spins up, not at fixture import.
-    fake_server = SimpleNamespace(session=fake_session, _rpc_lock=None)
+    # `_inflight_calls` is the teardown-abort registry the call path adds
+    # each RPC task to (mirrors MCPServerTask; see _abort_inflight_calls).
+    fake_server = SimpleNamespace(
+        session=fake_session, _rpc_lock=None, _inflight_calls=set()
+    )
     with patch.dict(mcp_tool._servers, {"test-server": fake_server}), \
          patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
         yield fake_session

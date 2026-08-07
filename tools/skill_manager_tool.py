@@ -1412,7 +1412,16 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     try:
         from tools import write_approval as wa
     except Exception:
-        return None  # fail open
+        # An unavailable gate module means we cannot determine whether write
+        # approval is required. Fail closed: refuse the write rather than
+        # silently granting an unattended skill write — create/edit/patch/
+        # delete/write_file/remove_file all mutate content a future turn may
+        # execute as trusted instructions.
+        return tool_error(
+            "skill write gate unavailable (write_approval module failed to "
+            "import); refusing write",
+            success=False,
+        )
 
     decision = wa.evaluate_gate(wa.SKILLS)
     if decision.allow:

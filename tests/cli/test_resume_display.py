@@ -274,6 +274,29 @@ class TestPreloadResumedSession:
         assert "ended_at = NULL" in call_args[0][0]
         mock_conn.commit.assert_called_once()
 
+    def test_rejects_runaway_transcript_before_history_load(self):
+        from hermes_state import SessionResumeTooLargeError
+
+        cli = _make_cli(resume="runaway-session")
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {
+            "id": "runaway-session",
+            "title": None,
+        }
+        mock_db.resolve_resume_session_id.return_value = "runaway-session"
+        mock_db.assert_resume_safe = MagicMock(
+            side_effect=SessionResumeTooLargeError(20_001)
+        )
+        cli._session_db = mock_db
+
+        output = StringIO()
+        cli.console.file = output
+        result = cli._preload_resumed_session()
+
+        assert result is False
+        assert "safe resume limit is 20000" in output.getvalue()
+        mock_db.get_resume_conversations.assert_not_called()
+
 
 
 # ── Tests for _handle_resume_command recap display ───────────────────
@@ -406,4 +429,3 @@ class TestResumeDisplaySanitization:
         assert "\x07" not in output
         assert "hi" in output and "there" in output
         assert "fine" in output
-

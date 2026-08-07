@@ -404,6 +404,19 @@ class CLIAgentSetupMixin:
                 resolved_meta = self._session_db.get_session(self.session_id)
                 if resolved_meta:
                     session_meta = resolved_meta
+            prior_resume_error = getattr(self, "_resume_history_error", None)
+            if prior_resume_error:
+                return False
+            resume_limit_error = self._resume_history_limit_error()
+            if resume_limit_error:
+                self._resume_history_error = resume_limit_error
+                if _quiet_mode:
+                    print(f"Cannot resume session: {resume_limit_error}", file=sys.stderr)
+                else:
+                    ChatConsole().print(
+                        f"[bold red]Cannot resume session:[/] {_escape(resume_limit_error)}"
+                    )
+                return False
             restored = self._session_db.get_messages_as_conversation(
                 self.session_id, repair_alternation=True
             )
@@ -573,6 +586,24 @@ class CLIAgentSetupMixin:
                 console.print(line)
             return False
 
+    def _resume_history_limit_error(self):
+        """Return a safe-resume error without materializing transcript rows."""
+        if not self._session_db:
+            return None
+        safety_check = getattr(self._session_db, "assert_resume_safe", None)
+        if not callable(safety_check):
+            return None
+        try:
+            safety_check(self.session_id)
+        except Exception as exc:
+            from hermes_state import SessionResumeTooLargeError
+
+            if isinstance(exc, SessionResumeTooLargeError):
+                return str(exc)
+            logger.warning("Resume safety check failed for %s: %s", self.session_id, exc)
+            return f"resume safety check failed: {exc}"
+        return None
+
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).
 
@@ -614,6 +645,14 @@ class CLIAgentSetupMixin:
             resolved_meta = self._session_db.get_session(self.session_id)
             if resolved_meta:
                 session_meta = resolved_meta
+
+        resume_limit_error = self._resume_history_limit_error()
+        if resume_limit_error:
+            self._resume_history_error = resume_limit_error
+            self._console_print(
+                f"[bold red]Cannot resume session:[/] {resume_limit_error}"
+            )
+            return False
 
         model_history, display_history = self._session_db.get_resume_conversations(self.session_id)
         restored = model_history

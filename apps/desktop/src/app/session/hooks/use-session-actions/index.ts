@@ -3,7 +3,12 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
 import { revealTreePane } from '@/components/pane-shell/tree/store'
-import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
+import {
+  deleteSession,
+  getAllSessionMessages,
+  getLatestSessionMessages,
+  setSessionArchived
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
@@ -707,7 +712,7 @@ export function useSessionActions({
           // prefetch. Watch mirrors stay live-only by design.
           const persistedTranscriptPromise = isWatchWindow()
             ? null
-            : getSessionMessages(storedSessionId, sessionProfile).catch(() => null)
+            : getLatestSessionMessages(storedSessionId, sessionProfile).catch(() => null)
 
           setFreshDraftReady(false)
           clearNotifications()
@@ -893,7 +898,7 @@ export function useSessionActions({
         // max(prefetch, resume) instead of their sum. The prefetch paints the
         // transcript as soon as it lands; the RPC binds the runtime id.
         // Watch windows skip the prefetch — lazy resume attaches the live mirror.
-        const prefetchPromise = watchWindow ? null : getSessionMessages(storedSessionId, sessionProfile)
+        const prefetchPromise = watchWindow ? null : getLatestSessionMessages(storedSessionId, sessionProfile)
 
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
@@ -1060,7 +1065,7 @@ export function useSessionActions({
         let fallbackError: unknown = null
 
         try {
-          const fallback = await getSessionMessages(storedSessionId, sessionProfile)
+          const fallback = await getLatestSessionMessages(storedSessionId, sessionProfile)
 
           if (!isCurrentResume()) {
             return
@@ -1318,7 +1323,7 @@ export function useSessionActions({
 
       try {
         await ensureGatewayProfile(profile)
-        const { messages } = await getSessionMessages(storedSessionId, profile)
+        const { messages } = await getAllSessionMessages(storedSessionId, profile)
         const branchMessages = toBranchMessages(toChatMessages(messages))
 
         if (!branchMessages.length) {

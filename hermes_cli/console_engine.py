@@ -1414,19 +1414,44 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> str:
     ns = parser.parse_args(args)
 
     def _run() -> None:
-        from hermes_state import SessionDB
+        from hermes_state import (
+            MAX_SAFE_EXPORT_MESSAGES,
+            SessionDB,
+            SessionExportTooLargeError,
+        )
 
         db = SessionDB()
         try:
+            def _guard_exports(session_ids: list[str]) -> None:
+                total_messages = 0
+                try:
+                    for session_id in session_ids:
+                        total_messages += db.assert_export_safe(
+                            session_id,
+                            max_messages=MAX_SAFE_EXPORT_MESSAGES - total_messages,
+                        )
+                except SessionExportTooLargeError as exc:
+                    raise ConsoleCommandError(
+                        f"Export includes more than {MAX_SAFE_EXPORT_MESSAGES:,} active "
+                        f"messages (limit reached at session '{exc.session_id}'). "
+                        "Use the Sessions page's streaming Export action instead."
+                    ) from exc
+
             if ns.session_id:
                 resolved_session_id = db.resolve_session_id(ns.session_id)
                 if not resolved_session_id:
                     raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
+                _guard_exports([resolved_session_id])
                 data = db.export_session(resolved_session_id)
                 if not data:
                     raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
                 rows = [data]
             else:
+                session_ids = [
+                    session["id"]
+                    for session in db.search_sessions(source=ns.source, limit=100000)
+                ]
+                _guard_exports(session_ids)
                 rows = db.export_all(source=ns.source)
 
             lines = [json.dumps(row, ensure_ascii=False) for row in rows]

@@ -3766,6 +3766,60 @@ class TestGetMessagesPagination:
         assert [m["content"] for m in page2] == ["msg-4", "msg-5", "msg-6", "msg-7"]
         assert [m["content"] for m in page3] == ["msg-8", "msg-9"]
 
+    def test_latest_pages_count_back_from_newest_but_remain_chronological(self, db):
+        self._seed(db)
+        page1 = db.get_messages("s1", limit=4, offset=0, latest=True)
+        page2 = db.get_messages("s1", limit=4, offset=4, latest=True)
+        page3 = db.get_messages("s1", limit=4, offset=8, latest=True)
+        assert [m["content"] for m in page1] == ["msg-6", "msg-7", "msg-8", "msg-9"]
+        assert [m["content"] for m in page2] == ["msg-2", "msg-3", "msg-4", "msg-5"]
+        assert [m["content"] for m in page3] == ["msg-0", "msg-1"]
+
+    def test_resume_safety_counts_active_rows_across_lineage(self, db):
+        db.create_session(session_id="root", source="cli")
+        db.append_messages_batch(
+            "root",
+            [{"role": "user", "content": f"root-{i}"} for i in range(3)],
+        )
+        db.create_session(
+            session_id="tip",
+            source="compression",
+            parent_session_id="root",
+        )
+        db.append_messages_batch(
+            "tip",
+            [{"role": "assistant", "content": f"tip-{i}"} for i in range(2)],
+        )
+
+        assert db.get_resume_message_count("tip") == 5
+        with pytest.raises(hermes_state.SessionResumeTooLargeError) as exc_info:
+            db.assert_resume_safe("tip", max_messages=4)
+        assert exc_info.value.message_count == 5
+        assert exc_info.value.limit == 4
+
+    def test_export_safety_is_bounded_to_the_requested_active_segment(self, db):
+        db.create_session(session_id="root", source="cli")
+        db.append_messages_batch(
+            "root",
+            [{"role": "user", "content": f"root-{i}"} for i in range(3)],
+        )
+        db.create_session(
+            session_id="tip",
+            source="compression",
+            parent_session_id="root",
+        )
+        db.append_messages_batch(
+            "tip",
+            [{"role": "assistant", "content": f"tip-{i}"} for i in range(2)],
+        )
+
+        assert db.assert_export_safe("tip", max_messages=2) == 2
+        with pytest.raises(hermes_state.SessionExportTooLargeError) as exc_info:
+            db.assert_export_safe("root", max_messages=2)
+        assert exc_info.value.session_id == "root"
+        assert exc_info.value.message_count == 3
+        assert exc_info.value.limit == 2
+
 
 
 

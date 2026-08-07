@@ -378,6 +378,26 @@ def _(rid, params: dict) -> dict:
                 target = tip
                 found = db.get_session(target) or found
 
+        # Every interactive resume path materializes the model history, even when
+        # omit_messages suppresses the response copy. Count the complete lineage
+        # before any reopen/history read so a runaway transcript cannot exhaust
+        # the dashboard. The metadata fallback keeps lightweight test/adaptor DBs
+        # that predate the shared SessionDB guard compatible.
+        from hermes_state import MAX_SAFE_RESUME_MESSAGES, SessionResumeTooLargeError
+
+        safety_check = getattr(db, "assert_resume_safe", None)
+        try:
+            if callable(safety_check):
+                safety_check(target)
+            else:
+                stored_message_count = int(found.get("message_count") or 0)
+                if stored_message_count > MAX_SAFE_RESUME_MESSAGES:
+                    raise SessionResumeTooLargeError(stored_message_count)
+        except SessionResumeTooLargeError as exc:
+            return _err(rid, 4130, str(exc))
+        except Exception as exc:
+            return _err(rid, 5000, f"resume safety check failed: {exc}")
+
         profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
             profile_home
         )

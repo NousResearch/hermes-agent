@@ -76,6 +76,40 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 
 
 @pytest.mark.asyncio
+async def test_session_messages_default_to_latest_bounded_page(adapter, session_db):
+    session_id = session_db.create_session("bounded-messages", "api_server")
+    session_db.replace_messages(
+        session_id,
+        [{"role": "user", "content": f"msg {i}"} for i in range(501)],
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert resp.status == 200
+        payload = await resp.json()
+
+        explicit_resp = await cli.get(
+            f"/api/sessions/{session_id}/messages?limit=2&offset=1"
+        )
+        assert explicit_resp.status == 200
+        explicit = await explicit_resp.json()
+
+    assert payload["pagination"] == {
+        "limit": 500,
+        "offset": 0,
+        "order": "latest",
+        "returned": 500,
+    }
+    assert payload["data"][0]["content"] == "msg 1"
+    assert payload["data"][-1]["content"] == "msg 500"
+    assert [message["content"] for message in explicit["data"]] == [
+        "msg 1",
+        "msg 2",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")

@@ -349,6 +349,39 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     ]
 
 
+def test_session_resume_rejects_runaway_transcript_before_history_load(
+    server, monkeypatch
+):
+    class _DB:
+        def get_session(self, sid):
+            return {"id": sid, "message_count": 20_001}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, sid):
+            return sid
+
+        def reopen_session(self, _sid):
+            raise AssertionError("oversized session must be rejected before reopen")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    response = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {
+                "session_id": "runaway-session",
+                "omit_messages": True,
+            },
+        }
+    )
+
+    assert response["error"]["code"] == 4130
+    assert "safe resume limit is 20000" in response["error"]["message"]
+
+
 def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
     """The LRU cap frees the least-recently-active DETACHED sessions when over
     the limit, and never a live-transport / running / mid-build one."""
@@ -663,5 +696,4 @@ def test_unregister_live_transport_stops_delivery(capture):
     assert a.frames == []
     # No live transports left → fell back to stdio.
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
-
 

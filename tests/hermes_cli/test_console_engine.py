@@ -262,6 +262,94 @@ def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home
     assert "Listable sessions: 1" in stats.output
 
 
+def test_sessions_export_rejects_oversized_single_before_touching_output(
+    _isolate_hermes_home,
+    monkeypatch,
+    tmp_path,
+):
+    import hermes_state
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        db.create_session("too-large", source="cli")
+        db.append_messages_batch(
+            "too-large",
+            [{"role": "user", "content": f"message-{i}"} for i in range(3)],
+        )
+    finally:
+        db.close()
+
+    monkeypatch.setattr(hermes_state, "MAX_SAFE_EXPORT_MESSAGES", 2)
+    materialized = []
+    original_export_session = SessionDB.export_session
+
+    def tracked_export_session(self, session_id):
+        materialized.append(session_id)
+        return original_export_session(self, session_id)
+
+    monkeypatch.setattr(SessionDB, "export_session", tracked_export_session)
+    output = tmp_path / "sessions.jsonl"
+    output.write_text("keep me\n", encoding="utf-8")
+
+    result = HermesConsoleEngine().execute(
+        f"sessions export {output} --session-id too-large",
+        confirmed=True,
+    )
+
+    assert result.status == "error"
+    assert "too-large" in result.output
+    assert "streaming Export" in result.output
+    assert "resume" not in result.output.lower()
+    assert materialized == []
+    assert output.read_text(encoding="utf-8") == "keep me\n"
+
+
+def test_sessions_export_all_preflights_before_export_all(
+    _isolate_hermes_home,
+    monkeypatch,
+    tmp_path,
+):
+    import hermes_state
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        db.create_session("first-safe", source="cli")
+        db.append_messages_batch(
+            "first-safe",
+            [{"role": "user", "content": f"first-{i}"} for i in range(2)],
+        )
+        db.create_session("second-safe", source="cli")
+        db.append_messages_batch(
+            "second-safe",
+            [{"role": "user", "content": f"second-{i}"} for i in range(2)],
+        )
+    finally:
+        db.close()
+
+    monkeypatch.setattr(hermes_state, "MAX_SAFE_EXPORT_MESSAGES", 3)
+    export_all_calls = []
+
+    def tracked_export_all(self, source=None):
+        export_all_calls.append(source)
+        raise AssertionError("export_all must not run before every guard passes")
+
+    monkeypatch.setattr(SessionDB, "export_all", tracked_export_all)
+    output = tmp_path / "all-sessions.jsonl"
+
+    result = HermesConsoleEngine().execute(
+        f"sessions export {output}",
+        confirmed=True,
+    )
+
+    assert result.status == "error"
+    assert "more than 3 active messages" in result.output
+    assert "streaming Export" in result.output
+    assert export_all_calls == []
+    assert not output.exists()
+
+
 def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home):
     from cron.jobs import create_job, get_job
 
@@ -337,5 +425,3 @@ def test_execute_handler_string_exit_returns_error_not_crash(_isolate_hermes_hom
 
     assert result.status == "error"
     assert result.output
-
-

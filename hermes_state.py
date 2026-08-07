@@ -84,6 +84,37 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 
 logger = logging.getLogger(__name__)
 
+MAX_SAFE_RESUME_MESSAGES = 20_000
+MAX_SAFE_EXPORT_MESSAGES = 20_000
+
+
+class SessionResumeTooLargeError(ValueError):
+    def __init__(self, message_count: int, limit: int = MAX_SAFE_RESUME_MESSAGES):
+        self.message_count = message_count
+        self.limit = limit
+        super().__init__(
+            f"session has at least {message_count} active messages across its lineage; "
+            f"safe resume limit is {limit}. Export or repair the session before "
+            "resuming it."
+        )
+
+
+class SessionExportTooLargeError(ValueError):
+    def __init__(
+        self,
+        session_id: str,
+        message_count: int,
+        limit: int = MAX_SAFE_EXPORT_MESSAGES,
+    ):
+        self.session_id = session_id
+        self.message_count = message_count
+        self.limit = limit
+        super().__init__(
+            f"session '{session_id}' has at least {message_count} active messages; "
+            f"safe in-memory export limit is {limit}"
+        )
+
+
 _COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
 
 
@@ -7352,6 +7383,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_inactive: bool = False,
         limit: Optional[int] = None,
         offset: int = 0,
+        latest: bool = False,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -7366,13 +7398,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         When ``limit`` is provided, returns at most ``limit`` messages
         starting from ``offset`` (0-based, in insertion order). Enables
         pagination for the API endpoint to avoid loading entire transcripts.
-        ``offset`` alone (without ``limit``) also pages — SQLite requires a
-        LIMIT clause for OFFSET, so it's emitted as ``LIMIT -1`` (unbounded).
+        With ``latest=True``, the offset is measured back from the newest
+        message and the selected page is still returned in chronological
+        order. ``offset`` alone (without ``limit``) also pages — SQLite
+        requires a LIMIT clause for OFFSET, so it's emitted as ``LIMIT -1``
+        (unbounded).
         """
         active_clause = "" if include_inactive else " AND active = 1"
         sql = (
             "SELECT * FROM messages WHERE session_id = ?"
-            f"{active_clause} ORDER BY id"
+            f"{active_clause} ORDER BY id {'DESC' if latest else 'ASC'}"
         )
         params: list = [session_id]
         if limit is not None or offset:
@@ -7382,6 +7417,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         with self._read_ctx() as conn:
             cursor = conn.execute(sql, params)
             rows = cursor.fetchall()
+        if latest:
+            rows.reverse()
         result = []
         for row in rows:
             msg = dict(row)
@@ -7816,6 +7853,66 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_row_ids=True,
         )
         return model_history, display_history
+
+    def get_resume_message_count(self, session_id: str) -> int:
+        """Count active rows that a full resume would materialize."""
+        session_ids = self._session_lineage_root_to_tip(session_id)
+        placeholders = ",".join("?" for _ in session_ids)
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM messages "
+                f"WHERE session_id IN ({placeholders}) AND active = 1",
+                tuple(session_ids),
+            ).fetchone()
+        return int(row[0] if row else 0)
+
+    def assert_resume_safe(
+        self,
+        session_id: str,
+        max_messages: int = MAX_SAFE_RESUME_MESSAGES,
+    ) -> int:
+        """Return resume row count or reject a transcript too large to load."""
+        if max_messages < 0:
+            raise ValueError("max_messages must be non-negative")
+        session_ids = self._session_lineage_root_to_tip(session_id)
+        placeholders = ",".join("?" for _ in session_ids)
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM ("
+                f"SELECT 1 FROM messages WHERE session_id IN ({placeholders}) "
+                "AND active = 1 LIMIT ?"
+                ")",
+                (*session_ids, max_messages + 1),
+            ).fetchone()
+        message_count = int(row[0] if row else 0)
+        if message_count > max_messages:
+            raise SessionResumeTooLargeError(message_count, max_messages)
+        return message_count
+
+    def assert_export_safe(
+        self,
+        session_id: str,
+        max_messages: int = MAX_SAFE_EXPORT_MESSAGES,
+    ) -> int:
+        """Return active row count or reject an unsafe in-memory export.
+
+        Exporting one session does not include compression ancestors, so this
+        guard deliberately counts only the requested segment. The limited
+        subquery stops as soon as it proves the transcript exceeds the bound.
+        """
+        if max_messages < 0:
+            raise ValueError("max_messages must be non-negative")
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM ("
+                "SELECT 1 FROM messages WHERE session_id = ? AND active = 1 LIMIT ?"
+                ")",
+                (session_id, max_messages + 1),
+            ).fetchone()
+        message_count = int(row[0] if row else 0)
+        if message_count > max_messages:
+            raise SessionExportTooLargeError(session_id, message_count, max_messages)
+        return message_count
 
     def get_ancestor_display_prefix(self, session_id: str) -> List[Dict[str, Any]]:
         """Return the ancestor-only display messages for a session lineage.

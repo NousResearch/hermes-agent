@@ -24,7 +24,7 @@ import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shel
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
-import { getSessionMessages, triggerCronJob } from '@/hermes'
+import { getLatestSessionMessages, triggerCronJob } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
@@ -330,7 +330,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
-          const latest = await getSessionMessages(storedSessionId, storedProfile)
+          const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
           const messages = toChatMessages(latest.messages)
           updateSessionState(
             runtimeSessionId,
@@ -377,7 +377,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
 
     try {
-      const latest = await getSessionMessages(storedSessionId, stored.profile)
+      const latest = await getLatestSessionMessages(storedSessionId, stored.profile)
       const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
       const sig = sessionMessagesSignature(latest.messages)
 

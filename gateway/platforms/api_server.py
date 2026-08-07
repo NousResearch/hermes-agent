@@ -3540,11 +3540,52 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = await self._ensure_session_db_async()
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
-        messages = await asyncio.to_thread(db.get_messages, resolved_id)
+        raw_limit = request.query.get("limit")
+        raw_offset = request.query.get("offset", "0")
+        order = request.query.get("order")
+        if order not in (None, "oldest", "latest"):
+            return web.json_response(
+                _openai_error(
+                    "order must be one of: oldest, latest",
+                    code="invalid_pagination",
+                ),
+                status=400,
+            )
+        try:
+            offset = int(raw_offset)
+            requested_limit = None if raw_limit is None else int(raw_limit)
+        except (TypeError, ValueError):
+            offset = -1
+            requested_limit = -1
+        if offset < 0 or (requested_limit is not None and requested_limit < 0):
+            return web.json_response(
+                _openai_error(
+                    "limit and offset must be non-negative integers",
+                    code="invalid_pagination",
+                ),
+                status=400,
+            )
+
+        default_page = requested_limit is None
+        latest_page = order == "latest" or (order is None and default_page)
+        limit = 500 if default_page else min(requested_limit, 500)
+        messages = await asyncio.to_thread(
+            db.get_messages,
+            resolved_id,
+            limit=limit,
+            offset=offset,
+            latest=latest_page,
+        )
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,
             "data": [self._message_response(m) for m in messages],
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "order": order or ("latest" if default_page else "oldest"),
+                "returned": len(messages),
+            },
         })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":

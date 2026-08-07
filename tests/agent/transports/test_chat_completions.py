@@ -359,6 +359,120 @@ class TestChatCompletionsKimi:
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
 
 
+class TestChatCompletionsMiniMax:
+    """MiniMax schema sanitization on both request-construction paths."""
+
+    def _minimax_tools(self, parameters):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "browser_snapshot",
+                    "description": "Snapshot",
+                    "parameters": parameters,
+                },
+            },
+        ]
+
+    def test_minimax_tools_sanitized_on_legacy_path(self, transport):
+        """Aggregator routes (Nous, OpenRouter) hit MiniMax by model name,
+        not base URL — the legacy (no provider profile) path must sanitize
+        the boolean tool parameter for the wire."""
+        tools = self._minimax_tools(
+            {
+                "type": "object",
+                "properties": {
+                    "full": {"type": "boolean", "description": "Full page"},
+                },
+            }
+        )
+        kw = transport.build_kwargs(
+            model="minimax/MiniMax-M3",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        prop = kw["tools"][0]["function"]["parameters"]["properties"]["full"]
+        assert prop["type"] == "integer"
+        assert prop["enum"] == [0, 1]
+
+    def test_minimax_tools_sanitized_on_provider_profile_path(self, transport):
+        """The ProviderProfile request-construction path sanitizes too."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("nous")
+        tools = self._minimax_tools(
+            {
+                "type": "object",
+                "properties": {
+                    "full": {"type": "boolean", "description": "Full page"},
+                },
+            }
+        )
+        kw = transport.build_kwargs(
+            model="minimax/MiniMax-M3",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            provider_profile=profile,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        prop = kw["tools"][0]["function"]["parameters"]["properties"]["full"]
+        assert prop["type"] == "integer"
+        assert prop["enum"] == [0, 1]
+
+    def test_minimax_multibranch_null_union_cleaned_on_wire(self, transport):
+        """Outer nullable/default are stripped from a retained multi-branch
+        union in the emitted tool schema (regression for the early-return
+        skip in the sanitizer)."""
+        tools = self._minimax_tools(
+            {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "integer"},
+                            {"type": "null"},
+                        ],
+                        "nullable": True,
+                        "default": "auto",
+                        "description": "Mode",
+                    },
+                },
+            }
+        )
+        kw = transport.build_kwargs(
+            model="minimax/MiniMax-M3",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        mode = kw["tools"][0]["function"]["parameters"]["properties"]["mode"]
+        assert "nullable" not in mode
+        assert "default" not in mode
+        assert mode["anyOf"] == [{"type": "string"}, {"type": "integer"}]
+
+    def test_non_minimax_tools_are_not_mutated(self, transport):
+        """Other models don't go through the MiniMax sanitizer."""
+        tools = self._minimax_tools(
+            {
+                "type": "object",
+                "properties": {
+                    "full": {"type": "boolean", "description": "Full page"},
+                },
+            }
+        )
+        kw = transport.build_kwargs(
+            model="anthropic/claude-sonnet-4.6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        # The boolean parameter is passed through untouched
+        prop = kw["tools"][0]["function"]["parameters"]["properties"]["full"]
+        assert prop["type"] == "boolean"
+
+
 class TestChatCompletionsLmStudioReasoning:
     """LM Studio publishes per-model reasoning ``allowed_options``. When the
     user requests an effort the model can't honor (e.g. ``high`` on a

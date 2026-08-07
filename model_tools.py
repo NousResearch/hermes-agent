@@ -811,6 +811,13 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         if not isinstance(value, str):
+            # Integer 0/1 → boolean coercion for MiniMax compatibility.
+            # When the schema sanitizer converts boolean to integer for
+            # MiniMax's OpenAI-compat endpoint, the model outputs 0/1 but
+            # the registry's original schema still expects boolean.
+            if expected == "boolean" and isinstance(value, int) and value in (0, 1):
+                args[key] = bool(value)
+                continue
             # Recurse into already-native containers so JSON-encoded
             # *elements* (array items) and *sub-fields* (nested object
             # properties) get normalized too — e.g. ``todos: ['{"id":...}']``
@@ -1035,13 +1042,28 @@ def _coerce_number(value: str, integer_only: bool = False):
     return f
 
 
-def _coerce_boolean(value: str):
-    """Try to parse *value* as a boolean.  Returns original string on failure."""
-    low = value.strip().lower()
-    if low == "true":
-        return True
-    if low == "false":
-        return False
+def _coerce_boolean(value):
+    """Try to parse *value* as a boolean.  Returns original value on failure.
+
+    Handles string inputs (``"true"``/``"false"``) and integer inputs
+    (``0``/``1``) — the latter arises from MiniMax schema sanitization
+    which converts ``boolean`` → ``integer [0, 1]``.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        # Only coerce explicit 0/1 — avoids silently converting arbitrary
+        # integers. MiniMax schema sanitization emits enum: [0, 1] so the
+        # model should never produce other values.
+        if value in (0, 1):
+            return bool(value)
+        return value
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low == "true":
+            return True
+        if low == "false":
+            return False
     return value
 
 

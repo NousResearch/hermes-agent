@@ -474,8 +474,12 @@ def _parse_structured_text(
             import jsonschema  # type: ignore[import-untyped]
             jsonschema.validate(parsed, json_schema)
         except ImportError:
-            # jsonschema is optional; skip strict validation when absent.
-            logger.debug("jsonschema unavailable; skipping schema validation")
+            # jsonschema is optional; skip strict validation when absent
+            # but warn so callers know their schema was NOT validated.
+            logger.warning(
+                "jsonschema package not installed; "
+                "skipping schema validation for structured output"
+            )
         except jsonschema.ValidationError as exc:  # type: ignore[attr-defined]
             raise ValueError(
                 f"Plugin LLM structured output did not match schema: {exc.message}"

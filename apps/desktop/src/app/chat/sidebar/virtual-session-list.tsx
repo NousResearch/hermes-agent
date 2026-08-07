@@ -1,7 +1,8 @@
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { useStore } from '@nanostores/react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { type FC, useCallback, useRef } from 'react'
+import { type FC, useCallback, useEffect, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -9,9 +10,11 @@ import { type SidebarListRow } from '@/lib/session-date-groups'
 import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
+import { $sessionListDensity } from '@/store/session-list-density'
 
 import { SidebarDateDivider } from './chrome'
 import { SidebarSessionRow } from './session-row'
+import { sessionRowEstimate } from './session-row-details'
 
 interface SessionRowCommonProps {
   branchStem?: string
@@ -42,7 +45,6 @@ export interface VirtualSessionListProps {
   workingSessionIdSet: Set<string>
 }
 
-const ROW_ESTIMATE_PX = 28
 const OVERSCAN_ROWS = 12
 
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
@@ -62,10 +64,15 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   const { t } = useI18n()
   const dividerLabels = t.sidebar.dateDivider
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const density = useStore($sessionListDensity)
 
   const virtualizer = useVirtualizer({
     count: listRows.length,
-    estimateSize: () => ROW_ESTIMATE_PX,
+    estimateSize: (index: number) => {
+      const row = listRows[index]
+
+      return row?.kind === 'divider' ? 28 : sessionRowEstimate(density)
+    },
     getItemKey: index => {
       const row = listRows[index]
 
@@ -76,6 +83,10 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     initialRect: { height: 600, width: 240 },
     overscan: OVERSCAN_ROWS
   })
+
+  // Rows are measured after paint, so changing density must invalidate cached
+  // measurements from the previous mode before off-screen rows re-enter.
+  useEffect(() => virtualizer.measure(), [density, virtualizer])
 
   const virtualItems = virtualizer.getVirtualItems()
   const totalSize = virtualizer.getTotalSize()

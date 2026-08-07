@@ -80,9 +80,14 @@ def test_verify_on_stop_preserves_composed_report_at_budget_limit(agent, monkeyp
     assert not result["messages"][1].get("_verification_stop_synthetic")
 
 
-def test_pre_verify_preserves_composed_report_at_budget_limit(agent, monkeypatch):
+@pytest.mark.parametrize("changed_paths", [set(), {"changed.py"}])
+def test_pre_verify_preserves_composed_report_at_budget_limit(
+    agent,
+    monkeypatch,
+    changed_paths,
+):
     def model_call(_api_kwargs):
-        agent._turn_file_mutation_paths = {"changed.py"}
+        agent._turn_file_mutation_paths = changed_paths
         return _response()
 
     agent._interruptible_api_call = model_call
@@ -103,6 +108,33 @@ def test_pre_verify_preserves_composed_report_at_budget_limit(agent, monkeypatch
     _assert_pending_response_survives(agent, result)
     # The assistant response persists (it is real, unflagged content).
     assert not result["messages"][1].get("_pre_verify_synthetic")
+
+
+def test_pre_verify_receives_empty_changed_paths_for_non_edit_turn(agent, monkeypatch):
+    agent.max_iterations = 2
+    agent.iteration_budget.max_total = 2
+    answers = iter([_response("I cannot complete this."), _response("Recovered result")])
+    agent._interruptible_api_call = lambda _kwargs: next(answers)
+    seen: list[dict] = []
+
+    def steer(**kwargs):
+        seen.append(kwargs)
+        if kwargs["attempt"] == 0:
+            return "recover inside the same turn"
+        return None
+
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "0")
+    with (
+        patch("hermes_cli.plugins.has_hook", side_effect=lambda name: name == "pre_verify"),
+        patch("hermes_cli.plugins.get_pre_verify_continue_message", side_effect=steer),
+        patch("agent.verify_hooks.max_verify_nudges", return_value=2),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+    ):
+        result = agent.run_conversation("finish the browser task")
+
+    assert result["final_response"] == "Recovered result"
+    assert [call["attempt"] for call in seen] == [0, 1]
+    assert all(call["changed_paths"] == [] for call in seen)
 
 
 def test_intermediate_ack_uses_summary_instead_of_premature_text(agent, monkeypatch):

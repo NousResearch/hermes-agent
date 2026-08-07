@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from wcwidth import wcswidth
 
 from hermes_cli.agent_import import (
     ENTRY_DELIMITER,
@@ -26,6 +27,7 @@ from hermes_cli.agent_import import (
     parse_existing_memory_entries,
     sanitize_mcp_env,
 )
+from hermes_cli.cli_output import STANDARD_BOX_WIDTH
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +719,16 @@ class TestCliWiring:
             overwrite=False, yes=False)
         import_agent_command(args)
         out = capsys.readouterr().out
+        lines = out.splitlines()
+        title_index = next(
+            index
+            for index, line in enumerate(lines)
+            if "Hermes — Import From Another Agent" in line
+        )
+        assert all(
+            wcswidth(line) == STANDARD_BOX_WIDTH
+            for line in lines[title_index - 1:title_index + 2]
+        )
         assert "Dry Run Results" in out
         assert "command-allowlist" in out
         # Baseline config.yaml/SOUL.md may be seeded by save_config() before

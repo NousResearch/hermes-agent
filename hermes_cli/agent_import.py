@@ -843,6 +843,7 @@ class AgentImporter:
 
 def import_agent_command(args) -> None:
     """Handle ``hermes import-agent`` (invoked from hermes_cli.main)."""
+    from hermes_cli.cli_output import format_box
     from hermes_cli.config import get_config_path, load_config, save_config
     from hermes_constants import get_hermes_home
     from hermes_cli.setup import (
@@ -879,9 +880,8 @@ def import_agent_command(args) -> None:
     source_dir = Path(explicit_source) if explicit_source else default_source_dir(agent)
 
     print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
-    print(color("│          ⚕ Hermes — Import From Another Agent          │", Colors.MAGENTA))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
+    for line in format_box([("⚕ Hermes — Import From Another Agent", 10)]):
+        print(color(line, Colors.MAGENTA))
 
     if not source_dir.is_dir():
         print()

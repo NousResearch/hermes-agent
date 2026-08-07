@@ -161,6 +161,7 @@ def print_header(title: str):
 
 
 from hermes_cli.cli_output import (  # noqa: E402
+    format_box,
     print_error,
     print_info,
     print_success,
@@ -2870,19 +2871,8 @@ def _run_portal_one_shot(config: dict) -> None:
     from hermes_cli.config import load_config
 
     print()
-    print(
-        color(
-            "┌─────────────────────────────────────────────────────────┐",
-            Colors.MAGENTA,
-        )
-    )
-    print(color("│     ⚕ Hermes Setup — Nous Portal (one-shot)             │", Colors.MAGENTA))
-    print(
-        color(
-            "└─────────────────────────────────────────────────────────┘",
-            Colors.MAGENTA,
-        )
-    )
+    for line in format_box([("⚕ Hermes Setup — Nous Portal (one-shot)", 5)]):
+        print(color(line, Colors.MAGENTA))
     print()
     print_info("  One subscription, 300+ models, plus the Tool Gateway:")
     print_info("    web search, image generation, TTS, browser automation")
@@ -3001,19 +2991,8 @@ def run_setup_wizard(args):
         for key, label, func in SETUP_SECTIONS:
             if key == section:
                 print()
-                print(
-                    color(
-                        "┌─────────────────────────────────────────────────────────┐",
-                        Colors.MAGENTA,
-                    )
-                )
-                print(color(f"│     ⚕ Hermes Setup — {label:<34s} │", Colors.MAGENTA))
-                print(
-                    color(
-                        "└─────────────────────────────────────────────────────────┘",
-                        Colors.MAGENTA,
-                    )
-                )
+                for line in format_box([(f"⚕ Hermes Setup — {label}", 5)]):
+                    print(color(line, Colors.MAGENTA))
                 func(config)
                 save_config(config)
                 print()
@@ -3035,39 +3014,15 @@ def run_setup_wizard(args):
     )
 
     print()
-    print(
-        color(
-            "┌─────────────────────────────────────────────────────────┐",
-            Colors.MAGENTA,
-        )
-    )
-    print(
-        color(
-            "│             ⚕ Hermes Agent Setup Wizard                │", Colors.MAGENTA
-        )
-    )
-    print(
-        color(
-            "├─────────────────────────────────────────────────────────┤",
-            Colors.MAGENTA,
-        )
-    )
-    print(
-        color(
-            "│  Let's configure your Hermes Agent installation.       │", Colors.MAGENTA
-        )
-    )
-    print(
-        color(
-            "│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA
-        )
-    )
-    print(
-        color(
-            "└─────────────────────────────────────────────────────────┘",
-            Colors.MAGENTA,
-        )
-    )
+    for line in format_box(
+        [
+            ("⚕ Hermes Agent Setup Wizard", 13),
+            ("Let's configure your Hermes Agent installation.", 2),
+            ("Press Ctrl+C at any time to exit.", 2),
+        ],
+        divider_after={0},
+    ):
+        print(color(line, Colors.MAGENTA))
 
     migration_ran = False
 

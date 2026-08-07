@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli.cli_output import format_box
 from hermes_cli.config import get_hermes_home, get_config_path, load_config, save_config
 from hermes_constants import get_optional_skills_dir
 from hermes_cli.setup import (
@@ -340,24 +341,8 @@ def _cmd_migrate(args):
     # importing API keys that the user may not have intended to copy.
 
     print()
-    print(
-        color(
-            "┌─────────────────────────────────────────────────────────┐",
-            Colors.MAGENTA,
-        )
-    )
-    print(
-        color(
-            "│          ⚕ Hermes — OpenClaw Migration                 │",
-            Colors.MAGENTA,
-        )
-    )
-    print(
-        color(
-            "└─────────────────────────────────────────────────────────┘",
-            Colors.MAGENTA,
-        )
-    )
+    for line in format_box([("⚕ Hermes — OpenClaw Migration", 10)]):
+        print(color(line, Colors.MAGENTA))
 
     # Check source directory
     if not source_dir.is_dir():
@@ -566,24 +551,8 @@ def _cmd_cleanup(args):
     explicit_source = getattr(args, "source", None)
 
     print()
-    print(
-        color(
-            "┌─────────────────────────────────────────────────────────┐",
-            Colors.MAGENTA,
-        )
-    )
-    print(
-        color(
-            "│          ⚕ Hermes — OpenClaw Cleanup                   │",
-            Colors.MAGENTA,
-        )
-    )
-    print(
-        color(
-            "└─────────────────────────────────────────────────────────┘",
-            Colors.MAGENTA,
-        )
-    )
+    for line in format_box([("⚕ Hermes — OpenClaw Cleanup", 10)]):
+        print(color(line, Colors.MAGENTA))
 
     # Find OpenClaw directories
     if explicit_source:

@@ -64,6 +64,7 @@ from hermes_cli.setup import (
     prompt_choice,
     prompt_yes_no,
 )
+from hermes_cli.cli_output import format_box
 from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
@@ -5067,12 +5068,15 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     from gateway.run import start_gateway
 
-    print("┌─────────────────────────────────────────────────────────┐")
-    print("│           ⚕ Hermes Gateway Starting...                 │")
-    print("├─────────────────────────────────────────────────────────┤")
-    print("│  Messaging platforms + cron scheduler                    │")
-    print("│  Press Ctrl+C to stop                                   │")
-    print("└─────────────────────────────────────────────────────────┘")
+    for line in format_box(
+        [
+            ("⚕ Hermes Gateway Starting...", 11),
+            ("Messaging platforms + cron scheduler", 2),
+            ("Press Ctrl+C to stop", 2),
+        ],
+        divider_after={0},
+    ):
+        print(line)
     print()
 
     # Exit with code 1 if gateway fails to connect any platform,
@@ -6443,40 +6447,15 @@ def gateway_setup():
         return
 
     print()
-    print(
-        color(
-            "┌─────────────────────────────────────────────────────────┐",
-            Colors.MAGENTA,
-        )
-    )
-    print(
-        color(
-            "│             ⚕ Gateway Setup                            │", Colors.MAGENTA
-        )
-    )
-    print(
-        color(
-            "├─────────────────────────────────────────────────────────┤",
-            Colors.MAGENTA,
-        )
-    )
-    print(
-        color(
-            "│  Configure messaging platforms and the gateway service. │",
-            Colors.MAGENTA,
-        )
-    )
-    print(
-        color(
-            "│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA
-        )
-    )
-    print(
-        color(
-            "└─────────────────────────────────────────────────────────┘",
-            Colors.MAGENTA,
-        )
-    )
+    for line in format_box(
+        [
+            ("⚕ Gateway Setup", 13),
+            ("Configure messaging platforms and the gateway service.", 2),
+            ("Press Ctrl+C at any time to exit.", 2),
+        ],
+        divider_after={0},
+    ):
+        print(color(line, Colors.MAGENTA))
 
     # ── Gateway service status ──
     print()

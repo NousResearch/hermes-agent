@@ -55,6 +55,8 @@ dependencies = [
   "pydantic==2.13.4",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit==3.0.52",
+  # Terminal cell widths for CLI boxes and Markdown tables.
+  "wcwidth==0.6.0",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
   # ``packaging`` is imported directly on three production paths but was never

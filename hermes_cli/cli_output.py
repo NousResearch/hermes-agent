@@ -5,8 +5,50 @@ functions previously duplicated across setup.py, tools_config.py,
 mcp_config.py, and memory_setup.py.
 """
 
+from collections.abc import Collection, Sequence
+
+from wcwidth import wcswidth
+
 from hermes_cli.colors import Colors, color
 from hermes_cli.secret_prompt import masked_secret_prompt
+
+
+STANDARD_BOX_WIDTH = 59
+
+
+# ─── Box Formatting ──────────────────────────────────────────────────────────
+
+
+def format_box(
+    rows: Sequence[tuple[str, int]],
+    *,
+    divider_after: Collection[int] = (),
+    width: int = STANDARD_BOX_WIDTH,
+) -> tuple[str, ...]:
+    """Return a complete box whose rows all have the requested cell width.
+
+    Each row is a ``(content, left_padding)`` pair. ``divider_after`` contains
+    zero-based row indexes after which a horizontal divider should be added.
+    """
+    if width < 2:
+        raise ValueError("box width must leave room for both borders")
+
+    inner_width = width - 2
+    lines = [f"┌{'─' * inner_width}┐"]
+    for index, (content, left_padding) in enumerate(rows):
+        content_width = wcswidth(content)
+        if content_width < 0:
+            raise ValueError("box content contains a non-printable character")
+
+        right_padding = inner_width - left_padding - content_width
+        if left_padding < 0 or right_padding < 0:
+            raise ValueError("box content does not fit within the requested width")
+
+        lines.append(f"│{' ' * left_padding}{content}{' ' * right_padding}│")
+        if index in divider_after:
+            lines.append(f"├{'─' * inner_width}┤")
+    lines.append(f"└{'─' * inner_width}┘")
+    return tuple(lines)
 
 
 # ─── Print Helpers ────────────────────────────────────────────────────────────

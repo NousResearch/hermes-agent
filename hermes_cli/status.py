@@ -14,6 +14,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.auth import AuthError, resolve_provider
+from hermes_cli.cli_output import format_box
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
@@ -134,9 +135,8 @@ def show_status(args):
     deep = getattr(args, 'deep', False)
 
     print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│                 ⚕ Hermes Agent Status                  │", Colors.CYAN))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+    for line in format_box([("⚕ Hermes Agent Status", 17)]):
+        print(color(line, Colors.CYAN))
 
     _paused_line = _estop_status_line()
     if _paused_line:

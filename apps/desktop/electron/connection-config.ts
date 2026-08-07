@@ -398,7 +398,9 @@ export interface ProfileBackendRoute {
  *
  *  1. The primary profile owns the window backend outright.
  *  2. A profile with its own remote override gets a pooled descriptor for that
- *     host, which is already scoped to it.
+ *     host. The remote server may multiplex multiple profiles (e.g. a shared
+ *     `hermes serve` instance), so REST paths carry `?profile=` so the server
+ *     can find or create the correct profile on demand.
  *  3. A profile inheriting the app-global remote shares the primary backend —
  *     one host serves every profile — so it is scoped per request instead.
  *  4. Any other local profile gets its own pooled backend, spawned with
@@ -417,7 +419,13 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
   }
 
   if (opts.profileRemoteOverride) {
-    return { backend: 'pool', descriptorProfile: null, scopePath: false }
+    // The pooled backend connects to the profile's own remote URL.  Pass
+    // scopePath: true so every generic REST call appends ?profile=<name> —
+    // this lets the remote hermes-serve find or auto-create the profile on
+    // demand.  descriptorProfile stays null: that field is consumed only by
+    // the primary-backend branch of ensureBackend (main.ts) and has no effect
+    // on a pooled route.
+    return { backend: 'pool', descriptorProfile: null, scopePath: true }
   }
 
   if (opts.globalRemote) {

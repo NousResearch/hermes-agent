@@ -247,10 +247,10 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
   },
   {
-    name: 'a profile with its own remote override gets a pooled descriptor for that host',
+    name: 'a profile with its own remote override gets a pooled descriptor for that host, scoped per request',
     profile: 'coder',
     opts: { primaryProfile: 'default', globalRemote: true, profileRemoteOverride: true },
-    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: true }
   },
   {
     name: 'a local non-primary profile gets its own pooled backend',
@@ -267,13 +267,13 @@ for (const route of ROUTES) {
 }
 
 test('resolveProfileBackendRoute only tags a descriptor when the backend is shared', () => {
-  // A pooled backend is already scoped to its profile, so tagging it would
-  // imply a second scope the caller must reconcile. Only the shared
-  // global-remote route carries one.
+  // A pooled backend scoped to its own remote URL carries descriptorProfile:
+  // null — that field is only used by the primary-backend path in ensureBackend.
+  // scopePath is what adds ?profile= to REST calls; it is independent.
   for (const route of ROUTES) {
     const resolved = resolveProfileBackendRoute(route.profile, route.opts)
 
-    assert.equal(Boolean(resolved.descriptorProfile), resolved.scopePath)
+    assert.equal(Boolean(resolved.descriptorProfile), resolved.scopePath && resolved.backend === 'primary')
     assert.ok(!resolved.descriptorProfile || resolved.backend === 'primary')
   }
 })
@@ -321,7 +321,8 @@ test('pathWithGlobalRemoteProfile does not replace an explicit profile query', (
   )
 })
 
-test('pathWithGlobalRemoteProfile skips local and per-profile remote override paths', () => {
+test('pathWithGlobalRemoteProfile skips local paths but appends profile on per-profile remote override paths', () => {
+  // Local (non-remote) paths: no profile appended
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', 'iris', {
       globalRemote: false,
@@ -329,12 +330,14 @@ test('pathWithGlobalRemoteProfile skips local and per-profile remote override pa
     }),
     '/api/model/info'
   )
+  // Per-profile remote override: profile IS appended so the server can
+  // multiplex / auto-create the named profile on the remote hermes-serve.
   assert.equal(
     pathWithGlobalRemoteProfile('/api/model/info', 'iris', {
       globalRemote: true,
       profileRemoteOverride: true
     }),
-    '/api/model/info'
+    '/api/model/info?profile=iris'
   )
 })
 

@@ -8,3 +8,11 @@ web/package-lock.json linguist-generated=true
 Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
+
+# Enforce LF for TypeScript/JavaScript sources so Windows contributors don't
+# introduce CRLF into source files that are tested and linted on Linux CI.
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.mjs       text eol=lf
+*.cjs       text eol=lf

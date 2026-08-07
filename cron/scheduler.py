@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -2252,6 +2253,12 @@ _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
+# How long to wait for stdout/stderr to drain after a timed-out script has been
+# tree-killed.  A descendant that survived the kill (or is wedged in
+# uninterruptible IO) can still hold the inherited pipes open, and an unbounded
+# drain would hang the scheduler thread forever — the very failure the timeout
+# exists to prevent.
+_SCRIPT_KILL_DRAIN_SECONDS = 10.0
 
 
 def _get_script_timeout() -> int:
@@ -2343,6 +2350,119 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
             env_overlay["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
 
     return str(interpreter), env_overlay
+
+
+def _kill_script_process_tree(proc: subprocess.Popen) -> None:
+    """Hard-kill a timed-out cron script *and everything it spawned*.
+
+    ``subprocess.run(timeout=...)`` only kills the direct child.  A script that
+    backgrounds work (``worker.py &``, a transcode, a model run) therefore left
+    its grandchildren behind: reparented to init, still burning CPU/GPU, and
+    still holding the inherited stdout/stderr pipes open.  With the default
+    one-hour (or longer) cron script timeout that runaway lives forever and the
+    next scheduled run collides with it.
+
+    ``_run_job_script`` spawns the script into its own process group / session
+    (POSIX ``start_new_session=True``, Windows ``CREATE_NEW_PROCESS_GROUP``) so
+    the whole tree can be addressed at once:
+
+    * POSIX — ``os.killpg(pgid, SIGKILL)``.  SIGKILL rather than SIGTERM
+      because this is already the timeout path: the script has had its entire
+      budget and we need a guaranteed stop, not a request.
+    * Windows — ``taskkill /PID <pid> /T /F``, the same tree-kill primitive
+      used by ``tools/process_registry.py`` and ``gateway.status.terminate_pid``.
+      Windows has no cascading process-group signal, and ``Popen.kill()`` is
+      ``TerminateProcess()`` on the single handle only.
+
+    Best-effort by design: every failure path falls back to ``proc.kill()`` so
+    the direct child dies even when the group kill is unavailable or refused.
+    """
+    pid = proc.pid
+    if sys.platform == "win32":
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+                creationflags=windows_hide_flags(),
+                stdin=subprocess.DEVNULL,
+            )
+            if result.returncode == 0:
+                return
+            details = (result.stderr or result.stdout or "").strip()
+            logger.debug(
+                "taskkill tree-kill of cron script pid %s exited %s: %s",
+                pid, result.returncode, details,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            logger.debug("taskkill tree-kill of cron script pid %s failed: %s", pid, exc)
+    else:
+        try:
+            pgid = os.getpgid(pid)  # windows-footgun: ok — POSIX-only branch
+            # Paranoia guard for unattended scheduler code: if start_new_session
+            # somehow did not take effect the child shares *our* process group,
+            # and killpg would take down the gateway itself.  Fall back to
+            # killing just the child in that case.
+            if pgid != os.getpgid(0):  # windows-footgun: ok — POSIX-only branch
+                os.killpg(pgid, getattr(signal, "SIGKILL", signal.SIGTERM))  # windows-footgun: ok — POSIX-only branch
+                return
+            logger.warning(
+                "Cron script pid %s shares the scheduler's process group; "
+                "killing only the direct child to avoid signalling the gateway.",
+                pid,
+            )
+        except (ProcessLookupError, PermissionError, OSError) as exc:
+            logger.debug("killpg of cron script pid %s failed: %s", pid, exc)
+
+    try:
+        proc.kill()
+    except Exception as exc:
+        logger.debug("Fallback kill of cron script pid %s failed: %s", pid, exc)
+
+
+def _kill_and_reap_script(proc: subprocess.Popen, path: Path) -> None:
+    """Tree-kill a cron script, then bound the cleanup of its pipes.
+
+    Shared by the timeout path and the catch-all bailout in
+    ``_run_job_script``.  Together those two call sites restore the guarantee
+    that ``subprocess.run``'s internal ``with Popen(...) as process:`` used to
+    give us for free: whatever goes wrong, we never return (or propagate) with
+    the script still running and our pipes still open.
+
+    Every step is best-effort and individually bounded — this only ever runs on
+    an already-failing path, so it must not introduce a *new* way to hang the
+    scheduler thread.  ``BaseException`` is caught deliberately: the catch-all
+    caller can be unwinding a ``KeyboardInterrupt``/``SystemExit`` during
+    gateway shutdown, and cleanup must still finish before that propagates.
+    """
+    _kill_script_process_tree(proc)
+    # Bounded drain.  A descendant that survived the kill can keep the
+    # inherited pipes open, and an unbounded communicate() would block the
+    # scheduler thread indefinitely.
+    try:
+        proc.communicate(timeout=_SCRIPT_KILL_DRAIN_SECONDS)
+        return
+    except BaseException as drain_exc:
+        if isinstance(drain_exc, subprocess.TimeoutExpired):
+            logger.warning(
+                "Cron script %s: output pipes still open %ss after the "
+                "timeout kill; abandoning the drain.",
+                path, _SCRIPT_KILL_DRAIN_SECONDS,
+            )
+        else:
+            logger.debug("Cron script %s: post-kill drain failed: %s", path, drain_exc)
+
+    for stream in (proc.stdout, proc.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=1)
+    except Exception:
+        pass
 
 
 def _run_job_script(
@@ -2464,17 +2584,46 @@ def _run_job_script(
         # NEVER mutate the Python process cwd — that would leak into
         # concurrent gateway sessions (#69396).
         _script_cwd = workdir or str(path.parent)
-        result = subprocess.run(
+        # Give the script its own process group / session so a timeout can kill
+        # the entire tree it spawned, not just the direct child (see
+        # _kill_script_process_tree).  subprocess.run(timeout=...) cannot do
+        # this, which is why this is an explicit Popen + communicate().
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = (
+                popen_kwargs.get("creationflags", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=script_timeout,
             cwd=_script_cwd,
             env=env,
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        try:
+            raw_stdout, raw_stderr = proc.communicate(timeout=script_timeout)
+        except subprocess.TimeoutExpired as timeout_exc:
+            _kill_and_reap_script(proc, path)
+            # Re-raise the *original* timeout so the message below stays exact.
+            raise timeout_exc
+        except BaseException:
+            # Parity with the ``with Popen(...)`` context manager inside
+            # subprocess.run that this call replaced: on *any* other failure
+            # — a pipe-read OSError, MemoryError, or a KeyboardInterrupt /
+            # SystemExit during gateway shutdown — never leave the script
+            # running with our pipes still open.  Bare re-raise so the outer
+            # handlers (and the caller) behave exactly as before.
+            _kill_and_reap_script(proc, path)
+            raise
+
+        stdout = (raw_stdout or "").strip()
+        stderr = (raw_stderr or "").strip()
+        returncode = proc.returncode
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2486,8 +2635,8 @@ def _run_job_script(
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if returncode != 0:
+            parts = [f"Script exited with code {returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:

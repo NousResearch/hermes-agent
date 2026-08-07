@@ -4,13 +4,16 @@ Tests cover:
 - Script field in job creation / storage / update
 - Script execution and output injection into prompts
 - Error handling (missing script, timeout, non-zero exit)
+- Timeout kills the whole process group (no orphaned grandchildren)
 - Path resolution (absolute, relative to HERMES_HOME/scripts/)
 """
 
 import json
 import os
+import signal
 import sys
 import textwrap
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +22,43 @@ import pytest
 
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+
+class _FakePopen:
+    """Minimal subprocess.Popen stand-in for spawn-argument assertions.
+
+    ``_run_job_script`` uses Popen + communicate() (rather than
+    subprocess.run) so it can tree-kill on timeout, so the spawn-shape tests
+    patch Popen instead.
+    """
+
+    def __init__(self, stdout="", stderr="", returncode=0):
+        self._stdout = stdout
+        self._stderr = stderr
+        self.returncode = returncode
+        self.pid = 4242
+        self.stdout = None
+        self.stderr = None
+
+    def communicate(self, timeout=None):
+        return self._stdout, self._stderr
+
+    def kill(self):
+        pass
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if *pid* still exists (POSIX only; used by the orphan tests)."""
+    try:
+        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only helper
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 @pytest.fixture
@@ -152,26 +192,34 @@ class TestRunJobScript:
 
         captured = {}
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             captured["argv"] = argv
             captured["kwargs"] = kwargs
-            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+            return _FakePopen(stdout="ok\n", stderr="")
 
         monkeypatch.setattr(sched_mod.sys, "platform", "win32")
         monkeypatch.setattr(sched_mod.sys, "executable", str(venv_python))
         monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0x08000000)
-        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", fake_popen)
+        # Present on Windows only; define it so this simulated-Windows test
+        # exercises the real creationflags path on POSIX CI too.
+        monkeypatch.setattr(
+            sched_mod.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False
+        )
 
         success, output = _run_job_script("probe.py")
 
         assert success is True
         assert output == "ok"
         assert captured["argv"] == [str(base_python), str(script.resolve())]
-        assert captured["kwargs"]["creationflags"] == 0x08000000
+        # Hide flags preserved, plus CREATE_NEW_PROCESS_GROUP so taskkill /T
+        # can reach the whole tree on timeout.
+        assert captured["kwargs"]["creationflags"] & 0x08000000
+        assert captured["kwargs"]["creationflags"] & 0x00000200
+        assert "start_new_session" not in captured["kwargs"]
         env = captured["kwargs"]["env"]
         assert env["VIRTUAL_ENV"] == str(venv)
         assert str(site_packages) in env["PYTHONPATH"]
-
 
     def test_non_windows_script_preserves_default_text_decoding(self, cron_env, monkeypatch):
         from cron import scheduler as sched_mod
@@ -182,13 +230,13 @@ class TestRunJobScript:
 
         captured = {}
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             captured["argv"] = argv
             captured["kwargs"] = kwargs
-            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+            return _FakePopen(stdout="ok\n", stderr="")
 
         monkeypatch.setattr(sched_mod.sys, "platform", "linux")
-        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", fake_popen)
 
         success, output = _run_job_script("probe.py")
 
@@ -196,6 +244,8 @@ class TestRunJobScript:
         assert output == "ok"
         assert captured["argv"] == [sys.executable, str(script.resolve())]
         assert captured["kwargs"]["text"] is True
+        # Own session so a timeout can killpg the whole tree.
+        assert captured["kwargs"]["start_new_session"] is True
         assert "creationflags" not in captured["kwargs"]
         assert "encoding" not in captured["kwargs"]
         assert "errors" not in captured["kwargs"]
@@ -429,3 +479,259 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group semantics")
+class TestScriptTimeoutKillsProcessGroup:
+    """Regression: a script timeout must kill the whole tree, not just bash.
+
+    ``subprocess.run(timeout=...)`` kills only the direct child.  Anything the
+    script backgrounded survived, reparented to init (PPID 1), still running
+    and still holding the inherited stdout/stderr pipes — so a multi-hour cron
+    timeout left a runaway workload alive forever and the next scheduled run
+    collided with it.
+    """
+
+    @staticmethod
+    def _wait_gone(pid: int, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not _pid_alive(pid):
+                return True
+            time.sleep(0.05)
+        return not _pid_alive(pid)
+
+    @staticmethod
+    def _reap(pid: int) -> None:
+        """Best-effort cleanup so a failing assertion can't leak the sleeper.
+
+        Broad except: on the *failing* path the sleeper has been reparented to
+        init, which puts it outside the test subtree and trips conftest's
+        live-system guard (a RuntimeError, not an OSError).
+        """
+        if not _pid_alive(pid):
+            return
+        try:
+            os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only test
+        except Exception:
+            pass
+
+    def test_backgrounded_grandchild_is_killed_on_timeout(self, cron_env, monkeypatch):
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        monkeypatch.setattr(sched_mod, "_SCRIPT_TIMEOUT", 2)
+
+        pidfile = cron_env / "grandchild.pid"
+        script = cron_env / "scripts" / "spawner.sh"
+        script.write_text(textwrap.dedent(f"""\
+            #!/bin/bash
+            {sys.executable} -c 'import time; time.sleep(300)' &
+            echo $! > {pidfile}
+            sleep 300
+        """), encoding="utf-8")
+
+        started = time.monotonic()
+        success, output = _run_job_script(str(script))
+        elapsed = time.monotonic() - started
+
+        assert success is False
+        assert "timed out" in output.lower()
+        # The bounded post-kill drain must not hang the scheduler.  2s timeout
+        # + 10s drain cap is the worst case; a healthy kill returns immediately.
+        assert elapsed < 12, f"timeout path took {elapsed:.1f}s"
+
+        grandchild = int(pidfile.read_text(encoding="utf-8").strip())
+        try:
+            assert self._wait_gone(grandchild), (
+                f"grandchild pid {grandchild} survived the script timeout "
+                "(orphaned, reparented to init)"
+            )
+        finally:
+            self._reap(grandchild)
+
+    def test_grandchild_holding_pipes_does_not_wedge_the_drain(self, cron_env, monkeypatch):
+        """The orphan also inherits stdout/stderr, so the drain must be bounded.
+
+        ``communicate()`` waits for EOF on the pipes.  A surviving descendant
+        keeps them open, which is the second way the old code could hang.
+        """
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        monkeypatch.setattr(sched_mod, "_SCRIPT_TIMEOUT", 2)
+
+        pidfile = cron_env / "holder.pid"
+        script = cron_env / "scripts" / "pipe_holder.sh"
+        # The background child inherits the script's stdout/stderr and never
+        # writes or exits, holding both pipes open.
+        script.write_text(textwrap.dedent(f"""\
+            #!/bin/bash
+            echo before-timeout
+            {sys.executable} -c 'import time; time.sleep(300)' &
+            echo $! > {pidfile}
+            sleep 300
+        """), encoding="utf-8")
+
+        started = time.monotonic()
+        success, output = _run_job_script(str(script))
+        elapsed = time.monotonic() - started
+
+        assert success is False
+        assert "timed out" in output.lower()
+        assert elapsed < 12, f"drain was not bounded: {elapsed:.1f}s"
+
+        holder = int(pidfile.read_text(encoding="utf-8").strip())
+        try:
+            assert self._wait_gone(holder), (
+                f"pipe-holding pid {holder} survived the script timeout"
+            )
+        finally:
+            self._reap(holder)
+
+    def test_non_timeout_failure_still_kills_the_tree(self, cron_env, monkeypatch):
+        """A pipe-read OSError must not leak the script or its descendants.
+
+        ``subprocess.run`` used ``with Popen(...) as process:`` internally, so
+        *any* exception in the body closed the pipes and reaped the child.  The
+        explicit Popen has no such context manager, so the catch-all bailout has
+        to provide the same guarantee — otherwise a long-lived gateway leaks a
+        running process plus its fds on every non-timeout failure.
+        """
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        pidfile = cron_env / "orphan.pid"
+        script = cron_env / "scripts" / "boom.sh"
+        script.write_text(textwrap.dedent(f"""\
+            #!/bin/bash
+            {sys.executable} -c 'import time; time.sleep(300)' &
+            echo $! > {pidfile}
+            sleep 300
+        """), encoding="utf-8")
+
+        real_popen = sched_mod.subprocess.Popen
+        spawned = {}
+
+        def popen_with_broken_communicate(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            spawned["pid"] = proc.pid
+            real_communicate = proc.communicate
+            calls = {"n": 0}
+
+            def failing_communicate(*a, **kw):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    # Wait until the script has actually spawned its child, so
+                    # the test exercises the leak rather than racing it.
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline and not pidfile.exists():
+                        time.sleep(0.05)
+                    raise OSError("simulated pipe read failure")
+                # The cleanup drain must still work normally.
+                return real_communicate(*a, **kw)
+
+            proc.communicate = failing_communicate
+            return proc
+
+        monkeypatch.setattr(
+            sched_mod.subprocess, "Popen", popen_with_broken_communicate
+        )
+
+        success, output = _run_job_script(str(script))
+
+        assert success is False
+        assert "simulated pipe read failure" in output
+
+        child = spawned["pid"]
+        grandchild = int(pidfile.read_text(encoding="utf-8").strip())
+        try:
+            assert self._wait_gone(child), (
+                f"script pid {child} survived a non-timeout failure"
+            )
+            assert self._wait_gone(grandchild), (
+                f"grandchild pid {grandchild} survived a non-timeout failure"
+            )
+        finally:
+            self._reap(child)
+            self._reap(grandchild)
+
+    def test_script_runs_in_its_own_session(self, cron_env):
+        """start_new_session=True is what makes the group kill possible."""
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "pgid_probe.py"
+        script.write_text(textwrap.dedent("""\
+            import os
+            print(os.getpid() == os.getpgid(0))
+        """), encoding="utf-8")
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+        assert output == "True", "script is not a process-group leader"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="simulates Windows from POSIX")
+class TestKillScriptProcessTree:
+    """Unit coverage for the tree-kill helper's two platform paths."""
+
+    def test_windows_uses_taskkill_tree_kill(self, monkeypatch):
+        from cron import scheduler as sched_mod
+
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(sched_mod.sys, "platform", "win32")
+        monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+
+        proc = _FakePopen()
+        killed = []
+        proc.kill = lambda: killed.append(True)
+
+        sched_mod._kill_script_process_tree(proc)
+
+        assert captured["argv"] == ["taskkill", "/PID", "4242", "/T", "/F"]
+        assert killed == [], "taskkill succeeded; no fallback kill expected"
+
+    def test_windows_nonzero_taskkill_falls_back_to_direct_kill(self, monkeypatch):
+        """taskkill can *run* and still fail (access denied, stale PID);
+        a non-zero exit must not be treated as a completed tree kill."""
+        from cron import scheduler as sched_mod
+
+        def fake_run(argv, **kwargs):
+            return SimpleNamespace(returncode=1, stdout="", stderr="Access is denied.")
+
+        monkeypatch.setattr(sched_mod.sys, "platform", "win32")
+        monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+
+        proc = _FakePopen()
+        killed = []
+        proc.kill = lambda: killed.append(True)
+
+        sched_mod._kill_script_process_tree(proc)
+
+        assert killed == [True], "non-zero taskkill must fall back to proc.kill()"
+
+    def test_refuses_to_killpg_the_schedulers_own_group(self, monkeypatch):
+        """If start_new_session ever failed, killpg would signal the gateway."""
+        from cron import scheduler as sched_mod
+
+        monkeypatch.setattr(sched_mod.os, "getpgid", lambda pid: 777)
+
+        def boom(pgid, sig):  # pragma: no cover - must never run
+            raise AssertionError("killpg called on the scheduler's own group")
+
+        monkeypatch.setattr(sched_mod.os, "killpg", boom)
+
+        proc = _FakePopen()
+        killed = []
+        proc.kill = lambda: killed.append(True)
+
+        sched_mod._kill_script_process_tree(proc)
+
+        assert killed == [True], "expected fallback to a direct child kill"

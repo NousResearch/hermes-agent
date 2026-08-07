@@ -73,6 +73,7 @@ def _make_runner_with_adapter(session_id: str = None):
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._queued_events = {}
+    runner._last_streamed_response = {}
 
     src = _make_source()
     # Default to a unique session_id so xdist parallel runs on the same worker
@@ -94,6 +95,33 @@ def _make_runner_with_adapter(session_id: str = None):
     adapter = _RecordingAdapter()
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner, adapter, session_entry, src
+
+
+@pytest.mark.asyncio
+async def test_goal_verdict_done_sent_via_adapter_send(hermes_home):
+    """When the judge says done, the '✓ Goal achieved' message must reach
+    the user through the adapter's ``send()`` method."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_entry.session_id)
+    mgr.set("ship the feature")
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "the feature shipped", False, None, False)):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="I shipped the feature.",
+        )
+        # fire-and-forget create_task — give the loop a tick
+        await asyncio.sleep(0.05)
+
+    assert len(adapter.sends) == 1, f"expected 1 send, got {len(adapter.sends)}: {adapter.sends}"
+    msg = adapter.sends[0]
+    assert msg["chat_id"] == "c1"
+    assert "Goal achieved" in msg["content"]
+    assert "the feature shipped" in msg["content"]
 
 
 @pytest.mark.asyncio
@@ -153,3 +181,156 @@ async def test_goal_verdict_budget_exhausted_sends_pause(hermes_home):
     assert not adapter._pending_messages
 
 
+@pytest.mark.asyncio
+async def test_goal_verdict_skipped_when_no_active_goal(hermes_home):
+    """No goal set → the hook is a no-op. Nothing is sent, nothing enqueued."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    await runner._post_turn_goal_continuation(
+        session_entry=session_entry,
+        source=src,
+        final_response="anything",
+    )
+    await asyncio.sleep(0.05)
+
+    assert adapter.sends == []
+    assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_goal_verdict_survives_adapter_without_send(hermes_home):
+    """Bad adapter (no ``send`` attribute) must not crash the judge hook."""
+    runner, _adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    GoalManager(session_entry.session_id).set("survive missing send")
+
+    class _NoSendAdapter:
+        def __init__(self):
+            self._pending_messages: dict = {}
+
+    runner.adapters[Platform.TELEGRAM] = _NoSendAdapter()
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "ok", False, None, False)):
+        # must not raise
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="whatever",
+        )
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_goal_continuation_recovers_stashed_streamed_response(hermes_home):
+    """When a turn was streamed (_agent_result is None), the goal hook must
+    recover the final response from the one-shot stash so the judge runs and
+    turns_used increments. After recovery the stash is consumed (popped).
+
+    This drives the *production* resolver (_resolve_goal_final_text) — the
+    exact method the streamed return-None path calls in _handle_message —
+    instead of manually performing the stash handoff, so a regression in
+    the pop wiring itself fails this test."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_entry.session_id)
+    state = mgr.set("complete this task")
+    assert state.turns_used == 0
+
+    session_key = runner._session_key_for_source(src)
+    stashed_text = "I have completed the task. Here is the final result."
+
+    # Stash the response (as the streaming path does)
+    runner._last_streamed_response[session_key] = stashed_text
+
+    # Goal hook resolves via the production method: agent returned None
+    # (streaming already delivered) -> real pop from the stash
+    recovered = runner._resolve_goal_final_text(None, session_key)
+    assert recovered == stashed_text, "stashed text must be recoverable"
+
+    # After pop, the entry is consumed (one-shot)
+    assert session_key not in runner._last_streamed_response, (
+        "stash must be consumed (one-shot)"
+    )
+
+    # A second recovery (e.g. an errored retry turn with no new streamed
+    # text) yields "" so the judge is skipped instead of looping
+    assert runner._resolve_goal_final_text(None, session_key) == ""
+
+    # Now simulate the goal hook: call _post_turn_goal_continuation with
+    # the recovered text and verify the judge fires and turns_used advances
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "all done", False, None, False)):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response=recovered,
+        )
+        await asyncio.sleep(0.05)
+
+    # Judge was called → verdict delivered
+    assert len(adapter.sends) == 1, f"expected 1 send, got {len(adapter.sends)}"
+    assert "Goal achieved" in adapter.sends[0]["content"]
+
+    # turns_used must increment — this proves the streaming bug is fixed
+    from hermes_cli.goals import load_goal
+    updated = load_goal(session_entry.session_id)
+    assert updated.turns_used == 1, (
+        f"turns_used must advance from 0 to 1 after a streamed turn, "
+        f"got {updated.turns_used}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_goal_final_text_resolver_passthrough_shapes(hermes_home):
+    """Non-streamed return shapes pass through _resolve_goal_final_text
+    unchanged: dict extracts final_response, str is used verbatim, and an
+    empty/None final_response yields '' (judge skipped)."""
+    runner, _, _, _ = _make_runner_with_adapter()
+
+    # dict shape (structured result)
+    assert runner._resolve_goal_final_text({"final_response": "hello"}, "k") == "hello"
+    assert runner._resolve_goal_final_text({"final_response": None}, "k") == ""
+    assert runner._resolve_goal_final_text({"final_response": ""}, "k") == ""
+
+    # str shape (plain result)
+    assert runner._resolve_goal_final_text("plain text reply", "k") == "plain text reply"
+
+    # Unknown shape -> "" (never crashes the hook)
+    assert runner._resolve_goal_final_text(12345, "k") == ""
+
+    # Stash untouched by non-None shapes
+    assert runner._last_streamed_response == {}
+
+
+@pytest.mark.asyncio
+async def test_goal_continuation_empty_stash_skips_judge(hermes_home):
+    """When no streamed text was stashed (empty stash), the goal hook
+    must not crash and must not call the judge."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager
+
+    GoalManager(session_entry.session_id).set("whatever")
+
+    session_key = runner._session_key_for_source(src)
+
+    # Empty / missing stash — the production resolver pops with a default
+    recovered = runner._resolve_goal_final_text(None, session_key)
+    assert recovered == ""
+
+    # Judge must be mocked because _post_turn_goal_continuation always
+    # calls evaluate_after_turn, which unpacks judge_goal(). The real code
+    # path guards empty text before reaching this method, but the method
+    # itself must still handle an empty response gracefully.
+    with patch("hermes_cli.goals.judge_goal", return_value=("continue", "empty response", False, None, False)):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response=recovered,
+        )
+        await asyncio.sleep(0.05)
+
+    assert "Continuing toward goal" in str(adapter.sends)

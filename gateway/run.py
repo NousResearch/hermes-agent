@@ -6033,6 +6033,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # SessionState.persistent.pending_command_text (NOTE: distinct from
         # the adapter-level _pending_messages Dict[str, MessageEvent] in
         # gateway/platforms/base.py, which shares the legacy name).
+        # One-shot streaming response stash, keyed by session_key. Populated
+        # by _handle_message_with_agent on streamed turns and consumed (popped)
+        # by _handle_message's goal-continuation hook, so /goal tracking
+        # works even when the handler returns None to avoid double-delivery.
+        self._last_streamed_response: Dict[str, str] = {}
         # Last successfully-resolved (non-empty) model, keyed by session. Used
         # as a fallback when a fresh config read transiently returns an empty
         # model (e.g. an mtime-keyed config-cache miss during a post-interrupt
@@ -14480,6 +14485,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_goal_command(event)
         return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
 
+    def _resolve_goal_final_text(
+        self, agent_result, quick_key: str
+    ) -> str:
+        """Resolve the final response text for the /goal continuation hook.
+
+        Handles every return shape of _handle_message_with_agent:
+
+        - dict: extract ``final_response`` (non-streaming structured result)
+        - str: the response text itself (non-streaming plain result)
+        - None: streaming already delivered the body and the handler
+          returned None to avoid double-delivery — recover the one-shot
+          stashed text keyed by session (consumed via pop, so a later turn
+          with no new streamed text gets "" and the judge is skipped).
+
+        Extracted as a method so the streamed return-None recovery path can
+        be unit-tested directly (driving the real production pop, not a
+        manual simulation of the stash handoff).
+        """
+        if isinstance(agent_result, dict):
+            return str(agent_result.get("final_response") or "")
+        if isinstance(agent_result, str):
+            return agent_result
+        if agent_result is None:
+            return self._last_streamed_response.pop(quick_key, "")
+        return ""
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -15890,11 +15921,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # next turn makes more progress. Wrapped in try/except so a
             # broken judge never breaks normal message handling.
             try:
-                _final_text = ""
-                if isinstance(_agent_result, dict):
-                    _final_text = str(_agent_result.get("final_response") or "")
-                elif isinstance(_agent_result, str):
-                    _final_text = _agent_result
+                _final_text = self._resolve_goal_final_text(
+                    _agent_result, _quick_key
+                )
                 # Skip for empty responses (interrupted / errored) — the
                 # judge would almost always say "continue" and we'd loop
                 # on error. Let the user drive the next turn.
@@ -18375,6 +18404,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                # Stash the streamed response so the /goal continuation hook
+                # (in _handle_message) can extract the text even when we return
+                # None to avoid double-delivery. Without this, the goal judge
+                # is never called when streaming is enabled, and /goal status
+                # always shows 0/n turns.
+                self._last_streamed_response[session_key] = response
                 return None
 
             return response

@@ -16,15 +16,20 @@ Model / provider selection mirrors `hermes chat`:
     - If only --provider given, error out (ambiguous — caller must pick a model).
 
 Session chaining (--resume / --continue):
-    - ``hermes --resume <id> -z "..."`` loads the session's prior transcript as
-      conversation history and appends this turn to the SAME session id — the
-      one-shot equivalent of resuming an interactive chat.
-    - If the id does not exist yet, it is created on first use ("create-on-
-      first-use"): callers that manage their own session keys (the Smith
-      Crafts OS gateway, cron workers, scripts) can mint a stable id up front
-      and pass it on every turn without parsing anything back out.
+    - ``hermes --resume <id|title> -z "..."`` loads the session's prior
+      transcript as conversation history and appends this turn to the SAME
+      session id — the one-shot equivalent of resuming an interactive chat.
+      ID-or-title resolution happens in ``hermes_cli.main`` before the value
+      reaches here, so this module always receives a session id.
+    - If the value matches no existing session, it is created on first use
+      ("create-on-first-use"): callers that manage their own session keys (the
+      Smith Crafts OS gateway, cron workers, scripts) can mint a stable id up
+      front and pass it on every turn without parsing anything back out.
+      Caller-minted ids are path-guarded at the CLI boundary because a session
+      id becomes a filename downstream.
     - ``--continue`` (optionally with a session name) resolves to the most
-      recent / named CLI session, exactly like interactive chat.
+      recent / named CLI session, exactly like interactive chat. Unlike
+      ``--resume``, an unmatched ``--continue`` is an error.
     - Best-effort: if the SQLite session store is unavailable, the turn still
       runs stateless rather than failing.
 

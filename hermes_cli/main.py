@@ -1342,19 +1342,60 @@ def _resolve_workspace_key() -> Optional[str]:
         return None
 
 
+def _is_unsafe_new_session_id(value: str) -> bool:
+    """Return True if *value* could escape the sessions directory as a path.
+
+    Mirrors ``gateway.session._is_path_unsafe``, which guards the gateway's
+    externally-supplied ``session_id`` at its entry boundary. Duplicated
+    rather than imported because ``gateway.session`` is a heavy module with
+    optional platform deps and this runs on every CLI startup.
+
+    Oneshot ``--resume`` creates unknown ids on first use, which makes it a
+    second entry boundary for caller-supplied session ids. The id becomes a
+    filename downstream — ``SessionDB._remove_session_files`` builds
+    ``sessions_dir / f"{session_id}.json"`` and ``request_dump_{id}_*.json``
+    unsanitized — so ``hermes --resume ../../x -z ...`` would mint a row that
+    a later ``sessions delete``/``prune`` unlinks outside the sessions dir
+    (CWE-22). Real and gateway-minted ids never contain these characters.
+    """
+    s = str(value or "")
+    if ".." in s or "/" in s or "\\" in s:
+        return True
+    return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
+
+
 def _resolve_oneshot_resume(args) -> Optional[str]:
     """Resolve --resume / --continue for oneshot (-z) mode.
 
-    ``--resume`` is passed through verbatim: oneshot supports create-on-
-    first-use session ids (callers like the Smith Crafts OS gateway mint
-    their own stable id and pass it on every turn), so no existence check
-    happens here — hermes_cli.oneshot loads whatever history the id has.
-    ``--continue`` resolves exactly like interactive chat: by name when a
-    value is given, otherwise the most recent CLI session; an unresolvable
-    ``--continue`` is an error (there is nothing sensible to chain onto).
+    ``--resume`` resolves by ID or title exactly like interactive chat
+    (``cmd_chat``) and the flag's own documented contract — the value is run
+    through :func:`_resolve_session_by_name_or_id`, which handles exact ids,
+    titles, and projection forward through compression lineage.
+
+    Unlike interactive chat, an id that resolves to nothing is NOT an error:
+    oneshot supports create-on-first-use session ids (callers like the Smith
+    Crafts OS gateway mint their own stable id and pass it on every turn), so
+    an unresolved value is returned as-is and ``hermes_cli.oneshot`` starts a
+    fresh session under it. Because that value is about to become a brand-new
+    session id — one that lands on disk as a filename — it must first pass the
+    path-traversal guard applied to every other caller-supplied session id.
+
+    ``--continue`` resolves by name when a value is given, otherwise the most
+    recent CLI session; an unresolvable ``--continue`` is an error (there is
+    nothing sensible to chain onto).
     """
     resume = (getattr(args, "resume", None) or "").strip() or None
     if resume:
+        resolved = _resolve_session_by_name_or_id(resume)
+        if resolved:
+            return resolved
+        # Create-on-first-use: the raw value becomes a new session id.
+        if _is_unsafe_new_session_id(resume):
+            sys.stderr.write(
+                f"hermes -z: invalid --resume session id '{resume}': "
+                "path separators and '..' are not allowed.\n"
+            )
+            sys.exit(2)
         return resume
     cont = getattr(args, "continue_last", None)
     if not cont:

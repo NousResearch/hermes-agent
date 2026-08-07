@@ -14,7 +14,7 @@ import pytest
 
 from acp_adapter.server import HermesACPAgent, _named_custom_provider_catalogs
 from acp_adapter.session import SessionManager
-from acp.schema import SessionModelState
+from acp.schema import SessionConfigOptionSelect
 
 
 MANTLE_URL = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
@@ -198,15 +198,17 @@ class TestModelStateIncludesNamedProviders:
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
-        assert isinstance(resp.models, SessionModelState)
-        assert resp.models.current_model_id == ""
+        assert resp.config_options is not None
+        model_option = resp.config_options[0]
+        assert isinstance(model_option, SessionConfigOptionSelect)
+        assert model_option.current_value == ""
         assert all(
-            not item.model_id.startswith(("ollama:", "custom:ollama:"))
-            for item in resp.models.available_models
+            not opt.value.startswith(("ollama:", "custom:ollama:"))
+            for opt in model_option.options
         )
 
     @pytest.mark.asyncio
-    async def test_named_provider_models_appear_in_model_state(self):
+    async def test_named_provider_models_appear_in_model_config(self):
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(
                 model="gpt-5.4", provider="openai-codex"
@@ -229,15 +231,17 @@ class TestModelStateIncludesNamedProviders:
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
-        assert isinstance(resp.models, SessionModelState)
-        ids = [m.model_id for m in resp.models.available_models]
+        assert resp.config_options is not None
+        model_option = resp.config_options[0]
+        assert isinstance(model_option, SessionConfigOptionSelect)
+        ids = [opt.value for opt in model_option.options]
         # Current provider's models come first, named endpoints after.
         assert ids[0] == "openai-codex:gpt-5.4"
         assert "custom:bedrock-mantle:openai.gpt-5.5" in ids
         named = next(
-            m
-            for m in resp.models.available_models
-            if m.model_id == "custom:bedrock-mantle:openai.gpt-5.5"
+            opt
+            for opt in model_option.options
+            if opt.value == "custom:bedrock-mantle:openai.gpt-5.5"
         )
         assert "AWS Bedrock Mantle" in (named.description or "")
 

@@ -90,9 +90,86 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.plan == "Pro"
     assert len(snapshot.windows) == 2
     assert snapshot.windows[0].label == "Session"
+    assert snapshot.windows[1].label == "Weekly"
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_labels_primary_window_as_weekly_when_duration_says_so(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct_123"}},
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "plus",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 40,
+                        "reset_at": 1_900_500_000,
+                        "limit_window_seconds": 604800,
+                    },
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert len(snapshot.windows) == 1
+    assert snapshot.windows[0].label == "Weekly"
+
+
+def test_fetch_account_usage_codex_preserves_positional_fallback_for_unknown_durations(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct_123"}},
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "plus",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 10,
+                        "reset_at": 1_900_000_000,
+                        "limit_window_seconds": 14400,
+                    },
+                    "secondary_window": {
+                        "used_percent": 20,
+                        "reset_at": 1_900_500_000,
+                        "limit_window_seconds": 6 * 86400,
+                    },
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

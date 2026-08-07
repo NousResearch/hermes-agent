@@ -66,9 +66,7 @@ export function DisclosureRow({
           {action}
         </span>
       )}
-      {trailing && (
-        <span className="flex h-(--conversation-line-height) shrink-0 items-center pl-1.5">{trailing}</span>
-      )}
+      {trailing && <span className="flex h-(--conversation-line-height) shrink-0 items-center pl-1.5">{trailing}</span>}
     </div>
   )
 }

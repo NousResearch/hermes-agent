@@ -111,13 +111,7 @@ describe('orderRowsWithinGroups', () => {
   it('reorders within a group without moving the dividers', () => {
     const rows = [session('a'), session('b'), divider('yesterday'), session('c'), session('d')]
 
-    expect(ids(orderRowsWithinGroups(rows, ['b', 'a', 'd', 'c']))).toEqual([
-      'b',
-      'a',
-      '--yesterday--',
-      'd',
-      'c'
-    ])
+    expect(ids(orderRowsWithinGroups(rows, ['b', 'a', 'd', 'c']))).toEqual(['b', 'a', '--yesterday--', 'd', 'c'])
   })
 
   it('never moves a row across a date divider', () => {
@@ -125,13 +119,7 @@ describe('orderRowsWithinGroups', () => {
     // stay there — chronology owns the groups, the drag only ranks inside one.
     const rows = [session('a'), session('b'), divider('lastWeek'), session('c'), session('d')]
 
-    expect(ids(orderRowsWithinGroups(rows, ['d', 'c', 'b', 'a']))).toEqual([
-      'b',
-      'a',
-      '--lastWeek--',
-      'd',
-      'c'
-    ])
+    expect(ids(orderRowsWithinGroups(rows, ['d', 'c', 'b', 'a']))).toEqual(['b', 'a', '--lastWeek--', 'd', 'c'])
   })
 
   it('leaves rows the order does not name in their recency slot', () => {

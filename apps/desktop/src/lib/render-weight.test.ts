@@ -72,7 +72,12 @@ describe('messagePaintWeight', () => {
 
   it('prices an image card flat, however long its data URL', () => {
     const card = (chars: number) => [
-      { type: 'tool-call', toolName: 'image_generate', args: {}, result: { image: `data:image/png;base64,${'A'.repeat(chars)}` } }
+      {
+        type: 'tool-call',
+        toolName: 'image_generate',
+        args: {},
+        result: { image: `data:image/png;base64,${'A'.repeat(chars)}` }
+      }
     ]
 
     expect(messagePaintWeight(card(10_000_000))).toBe(messagePaintWeight(card(80)))
@@ -80,7 +85,11 @@ describe('messagePaintWeight', () => {
 
   it('charges nothing for a row that renders nothing', () => {
     const hoisted = [
-      { type: 'tool-call', toolName: 'todo', args: { todos: Array.from({ length: 40 }, (_, i) => ({ content: `t${i}` })) } },
+      {
+        type: 'tool-call',
+        toolName: 'todo',
+        args: { todos: Array.from({ length: 40 }, (_, i) => ({ content: `t${i}` })) }
+      },
       { type: 'tool-call', toolName: 'react_to_message', args: { emoji: '❤️' } }
     ]
 

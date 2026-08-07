@@ -145,11 +145,7 @@ export function buildGroups(signature: string): MessageGroup[] {
 // Walk turns newest-first, summing their render weights until the budget is met;
 // everything before the first kept turn is hidden. `minVisible` turns are kept
 // regardless of weight. Returns the index of that first visible group.
-export function firstVisibleGroupIndex(
-  groups: readonly MessageGroup[],
-  budget: number,
-  minVisible = 0
-): number {
+export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: number, minVisible = 0): number {
   let firstVisible = groups.length
 
   for (let i = groups.length - 1, weight = 0; i >= 0; i--) {
@@ -381,6 +377,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     renderBudget,
     renderBudget >= RENDER_BUDGET ? MIN_VISIBLE_GROUPS : 0
   )
+
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
 
   // Where the always-rendered live tail begins. Derived from the WEIGHTED

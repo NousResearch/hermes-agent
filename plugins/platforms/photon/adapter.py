@@ -363,6 +363,37 @@ def sidecar_deps_installed() -> bool:
     return (_sidecar_dir() / "node_modules" / "spectrum-ts").exists()
 
 
+def resolve_node_command(command: str) -> str | None:
+    """Resolve ``node``/``npm`` for the sidecar, Hermes-managed install first.
+
+    ``$HERMES_HOME/node`` is never on an arbitrary process's PATH — only
+    generated service units get it prepended — so a bare ``shutil.which()``
+    resolves nothing on an install whose Node *is* the managed one (the
+    installer provisions it precisely when system Node/npm is missing or
+    below the engines floor). check_requirements() then reports photon
+    unavailable, ``install-sidecar`` refuses to run, and the spawn falls back
+    to the literal ``"node"`` and dies with FileNotFoundError on every
+    connect. find_node_executable() checks the managed tree first and keeps
+    PATH as the fallback rung. Shared with cli.py so the CLI and the adapter
+    resolve the same interpreter.
+    """
+    from hermes_constants import find_node_executable
+
+    return find_node_executable(command)
+
+
+def sidecar_node_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return *env* with the managed Node directories ahead on PATH.
+
+    Resolving npm by absolute path is not enough on its own: npm's launcher
+    runs under ``env node`` and the sidecar shells out to node too, so the
+    managed tree has to be reachable by name inside the child as well.
+    """
+    from hermes_constants import with_hermes_node_path
+
+    return with_hermes_node_path(env)
+
+
 def _coerce_float(value: Any, default: float) -> float:
     try:
         return float(value)
@@ -406,10 +437,13 @@ def check_requirements() -> bool:
     if not HTTPX_AVAILABLE:
         logger.warning("photon: httpx not installed — pip install httpx")
         return False
-    if not shutil.which(os.getenv("PHOTON_NODE_BIN") or "node"):
+    node_override = os.getenv("PHOTON_NODE_BIN")
+    if not (
+        shutil.which(node_override) if node_override else resolve_node_command("node")
+    ):
         logger.warning(
-            "photon: node binary '%s' not found on PATH",
-            os.getenv("PHOTON_NODE_BIN") or "node",
+            "photon: node binary '%s' not found",
+            node_override or "node",
         )
         return False
     if not sidecar_deps_installed():
@@ -427,7 +461,7 @@ def check_requirements() -> bool:
         # user has no CLI to run `hermes photon setup`, so the connect path
         # must self-heal). Otherwise keep returning False so
         # `hermes setup` / status surface the missing-deps state.
-        if bool(shutil.which("npm")) and _dir_writable(_sidecar_dir()):
+        if bool(resolve_node_command("npm")) and _dir_writable(_sidecar_dir()):
             return True
         # DEBUG (not WARNING): this is the normal pre-setup state.
         # check_fn() is called from multiple hot paths in the core
@@ -482,9 +516,9 @@ def _reinstall_sidecar_deps() -> None:
     Best-effort — a failure here just leaves the (stale) deps in place and the
     normal ``_start_sidecar`` readiness check reports the real error.
     """
-    npm = shutil.which("npm")
+    npm = resolve_node_command("npm")
     if not npm:
-        logger.warning("[photon] cannot reinstall stale sidecar deps: npm not on PATH")
+        logger.warning("[photon] cannot reinstall stale sidecar deps: no usable npm")
         return
     # Windows: suppress the console flash these short-lived npm runs would
     # otherwise pop (0 elsewhere). Same helper as the sidecar spawn below.
@@ -498,6 +532,7 @@ def _reinstall_sidecar_deps() -> None:
             text=True, encoding="utf-8", errors="replace",
             check=False,
             timeout=_NPM_REINSTALL_TIMEOUT,
+            env=sidecar_node_env(),
             creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
@@ -511,6 +546,7 @@ def _reinstall_sidecar_deps() -> None:
                 text=True, encoding="utf-8", errors="replace",
                 check=False,
                 timeout=_NPM_REINSTALL_TIMEOUT,
+                env=sidecar_node_env(),
                 creationflags=windows_hide_flags(),
             )
     except subprocess.TimeoutExpired:
@@ -736,7 +772,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self._autostart_sidecar = str(
             os.getenv("PHOTON_SIDECAR_AUTOSTART", "true")
         ).lower() not in ("0", "false", "no")
-        self._node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node") or "node"
+        self._node_bin = (
+            os.getenv("PHOTON_NODE_BIN") or resolve_node_command("node") or "node"
+        )
 
         # Presence watchdog. spectrum-ts only reconnects when its inbound
         # iterator throws or ends; a half-open ("zombie") gRPC socket makes the
@@ -1595,7 +1633,7 @@ class PhotonAdapter(BasePlatformAdapter):
             await asyncio.to_thread(_reinstall_sidecar_deps)
         await self._reap_stale_sidecar()
 
-        env = os.environ.copy()
+        env = sidecar_node_env()
         env["PHOTON_PROJECT_ID"] = self._project_id
         env["PHOTON_PROJECT_SECRET"] = self._project_secret
         env["PHOTON_SIDECAR_PORT"] = str(self._sidecar_port)

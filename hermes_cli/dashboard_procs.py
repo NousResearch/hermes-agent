@@ -13,6 +13,8 @@ patches on ``hermes_cli.main`` resolve unchanged.
 """
 
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +25,94 @@ def _m():
     from hermes_cli import main
 
     return main
+
+
+_SUBCOMMANDS = {"dashboard", "serve"}
+_HERMES_EXE_BASENAMES = {"hermes", "hermes.exe", "hermes_cli.main", "main.py"}
+_HERMES_EXE_PREFIXES = ("hermes_cli", "hermes_cli/", "hermes_cli.")
+
+
+def _is_hermes_dashboard_or_serve_cmd(command: str | None) -> bool:
+    """Return True when *command* is a ``hermes dashboard`` or ``hermes serve`` invocation.
+
+    Previous implementation used substring matching (``"hermes dashboard" in cmd``)
+    which failed when profile arguments appeared between the executable and the
+    subcommand (e.g. ``hermes --profile prod dashboard --no-open``).  This
+    tokenises ``shlex``-aware, strips ``--profile``/``-p`` selectors (like
+    ``gateway.status._gateway_command_subcommand``), then checks whether the
+    remaining tokens contain ``dashboard`` or ``serve`` preceded by a hermes
+    executable entry point.
+    """
+    if not command:
+        return False
+
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+
+    tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
+    if not tokens:
+        return False
+
+    # --- Dedicated entrypoints (no subcommand to inspect) ---
+    for token in tokens:
+        basename = token.rsplit("/", 1)[-1]
+        if basename in ("hermes-dashboard", "hermes-dashboard.exe"):
+            return True
+        if token.endswith("/hermes_cli/dashboard.py") or token == "hermes_cli/dashboard.py":
+            return True
+        if token.endswith("/hermes_cli/serve.py") or token == "hermes_cli/serve.py":
+            return True
+
+    # --- First non-Python token must be a hermes executable ---
+    idx = 0
+    if tokens[0].rsplit("/", 1)[-1].startswith("python"):
+        idx = 1
+        if idx < len(tokens) and tokens[idx] == "-m":
+            idx = 2
+
+    if idx >= len(tokens):
+        return False
+
+    exe = tokens[idx]
+    exe_basename = exe.rsplit("/", 1)[-1]
+    is_hermes_exe = (
+        exe_basename in _HERMES_EXE_BASENAMES
+        or any(exe.startswith(pfx) for pfx in _HERMES_EXE_PREFIXES)
+    )
+    if not is_hermes_exe:
+        return False
+
+    # --- Strip profile selectors anywhere in argv ---
+    filtered: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in ("--profile", "-p"):
+            skip_next = True
+            continue
+        if token.startswith("--profile=") or token.startswith("-p="):
+            continue
+        filtered.append(token)
+
+    # --- Check for dashboard/serve subcommand after the exe ---
+    found_exe = False
+    for token in filtered:
+        basename = token.rsplit("/", 1)[-1]
+        if not found_exe:
+            if (
+                basename in _HERMES_EXE_BASENAMES
+                or any(token.startswith(pfx) for pfx in _HERMES_EXE_PREFIXES)
+            ):
+                found_exe = True
+            continue
+        if token in _SUBCOMMANDS:
+            return True
+
+    return False
 
 
 def _scan_dashboard_processes(
@@ -53,17 +143,6 @@ def _scan_dashboard_processes(
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
-    patterns = [
-        "hermes dashboard",
-        "hermes_cli.main dashboard",
-        "hermes_cli/main.py dashboard",
-        # The headless backend (`hermes serve`) is the same long-lived server
-        # under a different command name — the desktop app spawns it. Reap it
-        # on update for the same frontend/backend-mismatch reason.
-        "hermes serve",
-        "hermes_cli.main serve",
-        "hermes_cli/main.py serve",
-    ]
     self_pid = os.getpid()
     dashboard_processes: list[tuple[int, str]] = []
 
@@ -81,15 +160,53 @@ def _scan_dashboard_processes(
             # update, where a bare wmic spawn would pop a console window.
             from hermes_cli._subprocess_compat import windows_hide_flags
 
-            result = subprocess.run(
-                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                encoding="utf-8",
-                errors="ignore",
-                creationflags=windows_hide_flags(),
-            )
+            _no_window = {"creationflags": windows_hide_flags()}
+            # Prefer wmic when present (fast, stable output format).  On
+            # modern Windows 11 25H2+, wmic has been removed as part of the
+            # WMIC deprecation — fall back to PowerShell's Get-CimInstance.
+            # Any OSError here (FileNotFoundError on missing wmic) trips
+            # the fallback.  (#75791)
+            wmic_path = shutil.which("wmic")
+            result = None
+            if wmic_path is not None:
+                try:
+                    result = subprocess.run(
+                        [wmic_path, "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        encoding="utf-8",
+                        errors="ignore",
+                        **_no_window,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    result = None
+            if result is None or result.returncode != 0 or not (result.stdout or ""):
+                # Fallback: PowerShell Get-CimInstance, emit LIST-style output
+                # so the downstream parser doesn't need to branch.
+                powershell = shutil.which("powershell") or shutil.which("pwsh")
+                if powershell is None:
+                    return []
+                ps_cmd = (
+                    "Get-CimInstance Win32_Process | "
+                    "ForEach-Object { "
+                    "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
+                    "  'ProcessId=' + $_.ProcessId; "
+                    "  '' "
+                    "}"
+                )
+                try:
+                    result = subprocess.run(
+                        [powershell, "-NoProfile", "-Command", ps_cmd],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        encoding="utf-8",
+                        errors="ignore",
+                        **_no_window,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    return []
             if result.returncode != 0 or result.stdout is None:
                 return []
             current_cmd = ""
@@ -100,7 +217,7 @@ def _scan_dashboard_processes(
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
                     if (
-                        any(p in current_cmd for p in patterns)
+                        _is_hermes_dashboard_or_serve_cmd(current_cmd)
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -133,7 +250,7 @@ def _scan_dashboard_processes(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if _is_hermes_dashboard_or_serve_cmd(command) and pid != self_pid:
                         dashboard_processes.append((pid, command))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

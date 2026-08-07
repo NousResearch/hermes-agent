@@ -1090,71 +1090,89 @@ class SessionSearchMixin:
         slash command picker, CLI/TUI/gateway ``/undo [N]``, and any other
         caller that needs real user-turn targets.
 
-        Bookkeeping timeline rows (``display_kind`` set — e.g. model_switch,
-        async_delegation_complete, auto_continue, hidden) are excluded. They
-        are durable ``role='user'`` rows for the API transcript, but no client
-        counts them as user turns (desktop demotes them to system / drops them;
-        the CLI already uses ``not m.get("display_kind")``). Including them here
-        made ``/undo`` soft-delete from a marker instead of the last real turn —
-        same class of index skew as the prompt.submit ordinal bug.
+        Bookkeeping timeline rows (e.g. model_switch,
+        async_delegation_complete, auto_continue, and pure hidden handoffs) are
+        excluded through the canonical live-user projection.  A legacy hidden
+        composite carrier is retained when that projection recovers its real
+        embedded ask.  This keeps the returned physical row id aligned with
+        the user turn every client selects.
 
         By default only active messages are returned.
         """
         active_clause = "" if include_inactive else " AND active = 1"
-        # Match CLI/desktop: only real user turns, not timeline bookkeeping.
-        display_clause = " AND (display_kind IS NULL OR display_kind = '')"
-        # Legacy standalone compaction handoffs (persisted pre-#80622) are
-        # durable role='user' rows with NO display_kind — SQL can't see them,
-        # so fetch with headroom and drop them in the decode loop below.
-        # Without this, /undo N and rewind pair an in-memory count that
-        # excludes handoffs with a DB pick that includes them, soft-deleting
-        # the wrong turn.
-        fetch_limit = int(limit) * 2 + 5
-        with self._lock:
-            cursor = self._conn.execute(
-                "SELECT id, timestamp, content FROM messages "
-                "WHERE session_id = ? AND role = 'user'"
-                f"{active_clause}{display_clause} "
-                "ORDER BY id DESC LIMIT ?",
-                (session_id, fetch_limit),
-            )
-            rows = cursor.fetchall()
+        from agent.context_compressor import user_originated_turn_view
 
-        from agent.context_compressor import ContextCompressor
-
+        requested = max(0, int(limit))
+        if requested == 0:
+            return []
+        # Display metadata alone cannot classify a physical summary carrier:
+        # legacy composite rows may be hidden yet still contain a real ask.
+        # Scan in bounded pages until enough canonical turns are found or the
+        # durable user rows are exhausted; a fixed headroom silently loses an
+        # older real ask behind a long synthetic timeline tail.
+        chunk_size = max(32, min(256, requested * 3 + 10))
+        before_id: Optional[int] = None
         result: List[Dict[str, Any]] = []
-        for row in rows:
-            if len(result) >= int(limit):
+        while len(result) < requested:
+            before_clause = "" if before_id is None else " AND id < ?"
+            params: tuple[Any, ...] = (session_id,)
+            if before_id is not None:
+                params += (before_id,)
+            params += (chunk_size,)
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT id, timestamp, content, display_kind, display_metadata "
+                    "FROM messages "
+                    "WHERE session_id = ? AND role = 'user'"
+                    f"{active_clause}{before_clause} "
+                    "ORDER BY id DESC LIMIT ?",
+                    params,
+                ).fetchall()
+            if not rows:
                 break
-            decoded = self._decode_content(row["content"])
-            if ContextCompressor._is_context_summary_content(decoded):
-                # Compaction handoff — never a user-originated turn (#80622).
-                continue
-            if isinstance(decoded, list):
-                # Multimodal — flatten text parts.
-                text_parts = [
-                    p.get("text", "") for p in decoded
-                    if isinstance(p, dict) and p.get("type") == "text"
-                ]
-                preview = " ".join(t for t in text_parts if t).strip()
-                if not preview:
-                    preview = "[multimodal content]"
-            elif isinstance(decoded, str):
-                # A /skill turn embeds the whole skill body; show what the user
-                # typed instead of the skill's opening prose.
-                preview = describe_skill_invocation(decoded) or decoded
-            else:
-                preview = ""
-            preview = " ".join(preview.split())  # collapse whitespace
-            if len(preview) > 80:
-                preview = preview[:77] + "..."
-            result.append(
-                {
-                    "id": row["id"],
-                    "timestamp": row["timestamp"],
-                    "preview": preview,
-                }
-            )
+            before_id = int(rows[-1]["id"])
+
+            for row in rows:
+                live_view = user_originated_turn_view(
+                    {
+                        "role": "user",
+                        "content": self._decode_content(row["content"]),
+                        "display_kind": row["display_kind"],
+                        "display_metadata": self._decode_display_metadata(
+                            row["display_metadata"]
+                        ),
+                    }
+                )
+                if live_view is None:
+                    continue
+                decoded = live_view.get("content")
+                if isinstance(decoded, list):
+                    # Multimodal — flatten text parts.
+                    text_parts = [
+                        p.get("text", "") for p in decoded
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    ]
+                    preview = " ".join(t for t in text_parts if t).strip()
+                    if not preview:
+                        preview = "[multimodal content]"
+                elif isinstance(decoded, str):
+                    # A /skill turn embeds the whole skill body; show what the user
+                    # typed instead of the skill's opening prose.
+                    preview = describe_skill_invocation(decoded) or decoded
+                else:
+                    preview = ""
+                preview = " ".join(preview.split())  # collapse whitespace
+                if len(preview) > 80:
+                    preview = preview[:77] + "..."
+                result.append(
+                    {
+                        "id": row["id"],
+                        "timestamp": row["timestamp"],
+                        "preview": preview,
+                    }
+                )
+                if len(result) >= requested:
+                    break
         return result
 
     @staticmethod

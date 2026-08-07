@@ -125,21 +125,25 @@ class TestAcpPersistPreservesArchives:
 
 
 class TestTuiPromptTruncationPreservesArchives:
-    def test_truncation_source_uses_active_only(self):
-        """The edit/regenerate persistence call must pass active_only=True."""
-        import inspect
-        import tui_gateway.methods_prompt as mp
+    def test_soft_truncation_keeps_preexisting_archive_rows(self, state_db):
+        """The TUI's soft-rewind primitive never deletes compacted history."""
+        sid = "tui-soft-rewind"
+        _seed_compacted_session(state_db, sid)
+        archived_before = {
+            row["id"]
+            for row in state_db.get_messages(sid, include_inactive=True)
+            if not row["active"]
+        }
+        target = state_db.list_recent_user_messages(sid, limit=1)[0]
 
-        src = inspect.getsource(mp)
-        # The truncation write is the only replace_messages call in the module;
-        # it must carry active_only=True.
-        import re
-        calls = re.findall(r"db\.replace_messages\([^)]*\)", src, re.S)
-        assert calls, "expected the truncation replace_messages call"
-        for call in calls:
-            assert "active_only=True" in call, (
-                f"bare replace_messages in methods_prompt — #80216 class: {call}"
-            )
+        state_db.rewind_to_message(sid, target["id"])
+
+        archived_after = {
+            row["id"]
+            for row in state_db.get_messages(sid, include_inactive=True)
+            if not row["active"]
+        }
+        assert archived_before <= archived_after
 
     def test_truncation_write_keeps_archived_rows(self, state_db):
         """Drive the exact write shape methods_prompt now performs against a

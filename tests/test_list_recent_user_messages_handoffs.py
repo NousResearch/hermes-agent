@@ -77,3 +77,36 @@ def test_display_kind_rows_still_excluded(db):
     recents = db.list_recent_user_messages("s3", limit=10)
 
     assert [r["preview"] for r in recents] == ["real question"]
+
+
+def test_scan_reaches_real_ask_behind_more_than_fixed_headroom_synthetics(db):
+    db.create_session(session_id="s4", source="cli", model="m")
+    real_id = db.append_message("s4", role="user", content="real question")
+    for index in range(75):
+        db.append_message(
+            "s4",
+            role="user",
+            content=f"synthetic timeline row {index}",
+            display_kind="auto_continue",
+        )
+
+    recents = db.list_recent_user_messages("s4", limit=10)
+
+    assert len(recents) == 1
+    assert recents[0]["id"] == real_id
+    assert recents[0]["preview"] == "real question"
+
+
+def test_hidden_composite_retains_physical_row_id_and_live_preview(db):
+    db.create_session(session_id="s5", source="cli", model="m")
+    carrier_id = db.append_message(
+        "s5",
+        role="user",
+        content=f"{HANDOFF_CONTENT}\n\nREAL ASK",
+        display_kind="hidden",
+    )
+
+    recents = db.list_recent_user_messages("s5", limit=1)
+
+    assert recents[0]["id"] == carrier_id
+    assert recents[0]["preview"] == "REAL ASK"

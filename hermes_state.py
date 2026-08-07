@@ -1901,6 +1901,10 @@ class SessionCompressionInProgressError(CompressionSessionBusyError):
     """
 
 
+class SessionTranscriptChangedError(RuntimeError):
+    """A guarded transcript mutation no longer matches its read snapshot."""
+
+
 def _connect_tracked_db(path, tracking_path=None, **kwargs):
     """``sqlite3.connect`` that registers the open fd for lock-safety.
 
@@ -7639,6 +7643,98 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         "api_content, display_kind, display_metadata"
     )
 
+    # Exact physical-row projection used by guarded transcript rewinds.  This
+    # deliberately includes fields omitted or normalized by the model-facing
+    # conversation projection (timestamp, token_count, compacted, raw JSON
+    # sidecars, etc.): an in-place writer can otherwise preserve both the
+    # active head and row count while invalidating a caller's validated
+    # snapshot.  Keep the token schema-free and local to this process; it is an
+    # optimistic-concurrency token, not a durable database identifier.
+    _ACTIVE_TRANSCRIPT_REVISION_COLUMNS = (
+        "id",
+        "session_id",
+        "role",
+        "content",
+        "tool_call_id",
+        "tool_calls",
+        "tool_name",
+        "effect_disposition",
+        "timestamp",
+        "token_count",
+        "finish_reason",
+        "reasoning",
+        "reasoning_content",
+        "reasoning_details",
+        "codex_reasoning_items",
+        "codex_message_items",
+        "platform_message_id",
+        "observed",
+        "active",
+        "compacted",
+        "api_content",
+        "display_kind",
+        "display_metadata",
+    )
+
+    @classmethod
+    def _active_transcript_revision(cls, rows) -> str:
+        """Return a stable digest for one ordered active-row snapshot."""
+
+        def _canonical_cell(value: Any) -> Any:
+            # SQLite BLOB columns round-trip as bytes, and _encode_content
+            # intentionally accepts them. JSON has no bytes scalar, so retain
+            # both the storage type and exact payload instead of stringifying
+            # (which could collide with a real text cell).
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                return {"sqlite_blob_hex": bytes(value).hex()}
+            return value
+
+        payload = [
+            [
+                _canonical_cell(row[column])
+                for column in cls._ACTIVE_TRANSCRIPT_REVISION_COLUMNS
+            ]
+            for row in rows
+        ]
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+    def get_active_conversation_snapshot(
+        self,
+        session_id: str,
+        *,
+        repair_alternation: bool = False,
+        include_row_ids: bool = False,
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """Return active conversation rows and their exact CAS revision.
+
+        Both values come from the same SQLite ``SELECT`` snapshot.  Callers
+        that validate a projected conversation before a destructive rewind can
+        pass the returned revision to :meth:`rewind_to_message`; a concurrent
+        append, rewind, restore, compaction, or in-place row update then fails
+        closed inside the write transaction.
+        """
+        columns = ", ".join(self._ACTIVE_TRANSCRIPT_REVISION_COLUMNS)
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                f"SELECT {columns} FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        revision = self._active_transcript_revision(rows)
+        messages = self._rows_to_conversation(
+            rows,
+            session_id=session_id,
+            include_ancestors=False,
+            repair_alternation=repair_alternation,
+            include_row_ids=include_row_ids,
+        )
+        return messages, revision
+
     def _rows_to_conversation(
         self,
         rows,
@@ -7918,8 +8014,36 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # Rewind (soft-delete) — see /rewind slash command + issue #21910
     # =========================================================================
 
+    @staticmethod
+    def _active_transcript_counts(conn, session_id: str) -> tuple[int, int]:
+        """Return active message/tool-call counts inside the caller's txn."""
+        rows = conn.execute(
+            "SELECT tool_calls FROM messages "
+            "WHERE session_id = ? AND active = 1",
+            (session_id,),
+        ).fetchall()
+        tool_call_count = 0
+        for row in rows:
+            raw = row[0]
+            if not raw:
+                continue
+            try:
+                decoded = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(decoded, list):
+                tool_call_count += len(decoded)
+            elif decoded:
+                tool_call_count += 1
+        return len(rows), tool_call_count
+
     def rewind_to_message(
-        self, session_id: str, target_message_id: int
+        self,
+        session_id: str,
+        target_message_id: int,
+        *,
+        preserve_compaction_handoff: bool = False,
+        expected_active_revision: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Soft-delete all messages with id >= ``target_message_id`` in *session_id*.
 
@@ -7938,7 +8062,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             }
 
         Raises ``ValueError`` if the target message does not exist in
-        *session_id* or if its role is not ``"user"``.
+        *session_id* or if its role is not ``"user"``.  With
+        ``preserve_compaction_handoff=True``, a composite summary carrier is
+        split inside the same write transaction: its original row is archived
+        and its canonical hidden handoff scaffold is inserted as the new head.
+        That opt-in result also contains ``replacement_message_id``.
+
+        When ``expected_active_revision`` is supplied, the rewind proceeds only
+        if the complete active physical transcript still matches the revision
+        returned by :meth:`get_active_conversation_snapshot`.  The comparison
+        runs after ``BEGIN IMMEDIATE`` and before any row or counter mutation;
+        a mismatch raises :class:`SessionTranscriptChangedError`.
 
         Always increments ``sessions.rewind_count`` — even when the
         target is already inactive — so the counter accurately reflects
@@ -7947,29 +8081,59 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         target is a no-op on row state but still bumps the counter.
         """
 
-        # 1) Validate target up-front (read-only, outside the write txn).
-        with self._lock:
-            row = self._conn.execute(
+        def _do(conn):
+            # Rewind changes the active transcript and must honor the same
+            # compression ownership/closed-parent guards as append writers.
+            self._check_transcript_write_guards(conn, session_id, None)
+
+            if expected_active_revision is not None:
+                columns = ", ".join(self._ACTIVE_TRANSCRIPT_REVISION_COLUMNS)
+                active_rows = conn.execute(
+                    f"SELECT {columns} FROM messages "
+                    "WHERE session_id = ? AND active = 1 ORDER BY id",
+                    (session_id,),
+                ).fetchall()
+                actual_revision = self._active_transcript_revision(active_rows)
+                if actual_revision != expected_active_revision:
+                    raise SessionTranscriptChangedError(
+                        "session history changed before the rewind could be persisted"
+                    )
+
+            row = conn.execute(
                 "SELECT * FROM messages WHERE id = ? AND session_id = ?",
                 (target_message_id, session_id),
             ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"message {target_message_id} not found in session {session_id}"
-            )
-        target_row = dict(row)
-        if target_row.get("role") != "user":
-            raise ValueError(
-                f"rewind target must be a 'user' message (got role="
-                f"{target_row.get('role')!r}, id={target_message_id})"
-            )
+            if row is None:
+                raise ValueError(
+                    f"message {target_message_id} not found in session {session_id}"
+                )
+            target_row = dict(row)
+            if target_row.get("role") != "user":
+                raise ValueError(
+                    f"rewind target must be a 'user' message (got role="
+                    f"{target_row.get('role')!r}, id={target_message_id})"
+                )
 
-        # Decode content for callers (prefill the prompt buffer).
-        target_row["content"] = self._decode_content(target_row.get("content"))
+            replacement_message_id: Optional[int] = None
+            replacement: Optional[Dict[str, Any]] = None
+            if preserve_compaction_handoff:
+                if not target_row.get("active"):
+                    raise ValueError("compaction carrier rewind target is not active")
+                from agent.context_compressor import split_user_originated_turn
 
-        rewound: List[int] = []
+                split_target = target_row.copy()
+                split_target["content"] = self._decode_content(
+                    split_target.get("content")
+                )
+                split_target["display_metadata"] = self._decode_display_metadata(
+                    split_target.get("display_metadata")
+                )
+                replacement, live_view = split_user_originated_turn(split_target)
+                if replacement is None or live_view is None:
+                    raise ValueError(
+                        "preserve_compaction_handoff requires an active composite carrier"
+                    )
 
-        def _do(conn):
             cursor = conn.execute(
                 "SELECT id FROM messages "
                 "WHERE session_id = ? AND id >= ? AND active = 1",
@@ -7982,28 +8146,48 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
                     ids,
                 )
+            if replacement is not None:
+                self._insert_message_rows(conn, session_id, [replacement])
+                inserted = conn.execute("SELECT last_insert_rowid()").fetchone()
+                replacement_message_id = int(inserted[0])
             conn.execute(
                 "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 "
                 "WHERE id = ?",
                 (session_id,),
             )
-            return ids
-
-        rewound = self._execute_write(_do)
-
-        # 2) Compute new head id (largest still-active row id in session).
-        with self._lock:
-            head_row = self._conn.execute(
+            message_count, tool_call_count = self._active_transcript_counts(
+                conn, session_id
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? "
+                "WHERE id = ?",
+                (message_count, tool_call_count, session_id),
+            )
+            head_row = conn.execute(
                 "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
                 (session_id,),
             ).fetchone()
-        new_head_id = head_row[0] if head_row and head_row[0] is not None else None
+            new_head_id = (
+                head_row[0] if head_row and head_row[0] is not None else None
+            )
+            return target_row, ids, new_head_id, replacement_message_id
 
-        return {
+        target_row, rewound, new_head_id, replacement_message_id = (
+            self._execute_write(_do)
+        )
+
+        # Decode content for callers (prefill the prompt buffer) without a
+        # second fallible database operation after the transaction commits.
+        target_row["content"] = self._decode_content(target_row.get("content"))
+
+        result = {
             "rewound_count": len(rewound),
             "target_message": target_row,
             "new_head_id": new_head_id,
         }
+        if preserve_compaction_handoff:
+            result["replacement_message_id"] = replacement_message_id
+        return result
 
     def restore_rewound(self, session_id: str, since_message_id: int) -> int:
         """Mark inactive messages with id >= *since_message_id* active again.
@@ -8025,6 +8209,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     f"UPDATE messages SET active = 1 WHERE id IN ({placeholders})",
                     ids,
                 )
+            message_count, tool_call_count = self._active_transcript_counts(
+                conn, session_id
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? "
+                "WHERE id = ?",
+                (message_count, tool_call_count, session_id),
+            )
             return len(ids)
 
         return self._execute_write(_do)

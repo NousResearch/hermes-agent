@@ -850,7 +850,7 @@ def _read_project_version() -> str | None:
     try:
         import tomllib
 
-        with open(_m().PROJECT_ROOT / "pyproject.toml", "rb") as fh:
+        with open(_m().PROJECT_ROOT / "pyproject.toml", "rb") as fh:  # windows-footgun: ok — binary mode, tomllib requires bytes
             version = tomllib.load(fh).get("project", {}).get("version")
         return str(version) if version else None
     except Exception:

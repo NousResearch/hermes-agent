@@ -392,6 +392,15 @@ class BuzzAdapter(BasePlatformAdapter):
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
 
+        # Per-channel mention override: channel UUIDs where a mention is
+        # required even when require_mention is globally False. Lets one agent
+        # be free-listening in its own channel while only answering to its
+        # name in shared channels (offices + meeting-room topology).
+        _mc_raw = os.getenv("BUZZ_MENTION_CHANNELS") or extra.get("mention_channels", [])
+        if isinstance(_mc_raw, str):
+            _mc_raw = [c for c in _mc_raw.split(",")]
+        self.mention_channels = {str(c).strip().lower() for c in _mc_raw if str(c).strip()}
+
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
         # or "poll" (CLI polling only). Env (BUZZ_TRANSPORT) overrides
@@ -1032,8 +1041,12 @@ class BuzzAdapter(BasePlatformAdapter):
         is_dm = state["chat_type"] == "dm"
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
-        # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
+        # A channel listed in mention_channels requires a mention regardless
+        # of the global flag. DMs always dispatch.
+        _needs_mention = self.require_mention or (
+            str(channel_id).strip().lower() in self.mention_channels
+        )
+        if not is_dm and _needs_mention and not self._is_mentioned(content):
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /

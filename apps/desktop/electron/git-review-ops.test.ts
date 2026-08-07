@@ -365,3 +365,42 @@ test('reviewRevert does not discard edits to a glob neighbour', async () => {
   assert.equal(fs.readFileSync(path.join(dir, 'weird1.txt'), 'utf8'), 'neighbour MODIFIED\n')
   assert.equal(fs.existsSync(path.join(dir, 'weird[1].txt')), false)
 })
+
+// The `filePath === null` variants take a different argv shape now that
+// LITERAL_PATHSPECS leads every mutation ("stage all" / "unstage all" /
+// "revert all" carry no pathspec at all, or the bare `.`).
+test('reviewStage with no path stages everything', async () => {
+  const dir = makeRepo()
+
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'edited\n')
+  fs.writeFileSync(path.join(dir, 'brand-new.txt'), 'new\n')
+  await reviewStage(dir, null, 'git')
+
+  const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: dir }).toString()
+
+  assert.match(staged, /tracked\.txt/)
+  assert.match(staged, /brand-new\.txt/)
+})
+
+test('reviewUnstage with no path unstages everything', async () => {
+  const dir = makeRepo()
+
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'edited\n')
+  execFileSync('git', ['add', '-A'], { cwd: dir })
+  await reviewUnstage(dir, null, 'git')
+
+  assert.equal(execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: dir }).toString().trim(), '')
+})
+
+test('reviewRevert with no path restores tracked files and removes untracked ones', async () => {
+  const dir = makeRepo()
+
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'edited\n')
+  fs.writeFileSync(path.join(dir, 'brand-new.txt'), 'new\n')
+  await reviewRevert(dir, null, 'git')
+
+  // Checkout re-materializes the file through git's eol filters, so compare
+  // content rather than bytes (core.autocrlf turns this into CRLF on Windows).
+  assert.equal(fs.readFileSync(path.join(dir, 'tracked.txt'), 'utf8').replace(/\r\n/g, '\n'), 'tracked\n')
+  assert.equal(fs.existsSync(path.join(dir, 'brand-new.txt')), false)
+})

@@ -1542,6 +1542,7 @@ def _log_safe_path(path: str) -> str:
 
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
+    ".ics": "text/calendar",
     ".md": "text/markdown",
     ".txt": "text/plain",
     ".csv": "text/csv",
@@ -1647,7 +1648,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Audio (delivered as voice/audio where supported)
     ".mp3", ".m2a", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)
-    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
+    ".pdf", ".ics", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
     # Spreadsheets / data
     ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
     # Geospatial / GIS (#24032)

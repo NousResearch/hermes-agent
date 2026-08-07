@@ -93,12 +93,19 @@ The adapter is a subclass of `BasePlatformAdapter` from `gateway/platforms/base.
 | Method | Purpose |
 |--------|---------|
 | `__init__(self, config)` | Parse config, init state. Call `super().__init__(config, Platform.YOUR_PLATFORM)` |
-| `connect() -> bool` | Connect to the platform, start listeners. Return True on success |
+| `connect(*, is_reconnect=False) -> bool` | Connect to the platform, start listeners. Return True on success |
 | `disconnect()` | Stop listeners, close connections, cancel tasks |
-| `send(chat_id, text, ...) -> SendResult` | Send a text message |
-| `send_typing(chat_id)` | Send typing indicator |
-| `send_image(chat_id, image_url, caption) -> SendResult` | Send an image |
+| `send(chat_id, content, reply_to=None, metadata=None) -> SendResult` | Send a text message |
 | `get_chat_info(chat_id) -> dict` | Return `{name, type, chat_id}` for a chat |
+
+### Recommended capability overrides
+
+These methods have safe base implementations, but adapters should override them for full platform-native behavior:
+
+| Method | Base behavior |
+|--------|---------------|
+| `send_typing(chat_id)` | No-op when the platform does not provide an implementation |
+| `send_image(chat_id, image_url, caption) -> SendResult` | Falls back to sending the image URL as text |
 
 ### Optional methods (have default stubs in base)
 

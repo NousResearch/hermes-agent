@@ -27,6 +27,23 @@ from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
+
+def _consume_detached_handler_exception(task: "asyncio.Task") -> None:
+    """Done-callback retrieving a detached fatal-error handler's exception.
+
+    Prevents "Task exception was never retrieved" warnings for handler tasks
+    we deliberately let finish in the background after their awaiting
+    (carrier) task was cancelled — see ``_notify_fatal_error``.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "Detached fatal-error handler task failed: %s", exc, exc_info=exc
+        )
+
+
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Keep Telegram's narrower attachment/voice sets below separate: formats such
 # as MPEG-2 Layer II are audio to Hermes but unsupported by sendAudio/sendVoice.
@@ -3444,7 +3461,27 @@ class BasePlatformAdapter(ABC):
             return
         result = handler(self)
         if asyncio.iscoroutine(result):
-            await result
+            # Run the handler as a detached, shielded task. The notification
+            # is frequently awaited from inside an adapter-owned task (e.g.
+            # the Telegram ``_polling_error_task``), and the gateway's fatal
+            # handler tears the adapter down via ``disconnect()`` — which
+            # cancels that very task. Without the shield the cancellation
+            # killed the handler mid-flight: the adapter was already popped
+            # from the gateway's adapter map but never queued for background
+            # reconnection, leaving a zombie gateway with no platforms and no
+            # pending retries (#81335).
+            task = asyncio.ensure_future(result)
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # The carrier task was cancelled (typically by our own
+                # teardown running inside the handler). Let the handler
+                # finish detached so reconnect queueing / the shutdown
+                # decision completes, and consume its eventual exception to
+                # avoid "Task exception was never retrieved" noise.
+                if not task.done():
+                    task.add_done_callback(_consume_detached_handler_exception)
+                raise
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
         """Acquire a scoped lock for this adapter. Returns True on success.

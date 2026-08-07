@@ -428,6 +428,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
+        self._split_outgoing_on_blank_lines = str(
+            config.extra.get("split_outgoing_on_blank_lines", "false")
+        ).strip().lower() in {"true", "1", "yes", "on"}
+        self._split_outgoing_delay_seconds = self._coerce_float_extra(
+            "split_outgoing_delay_seconds", 0.6
+        )
+        try:
+            self._split_outgoing_max_parts = int(
+                config.extra.get("split_outgoing_max_parts", 4)
+            )
+        except (TypeError, ValueError):
+            self._split_outgoing_max_parts = 4
+        if self._split_outgoing_max_parts < 1:
+            self._split_outgoing_max_parts = 4
         self._dm_policy = str(config.extra.get("dm_policy") or _wenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         # Prefer config.extra, then the documented WHATSAPP_ALLOWED_USERS env
         # (setup wizard / pairing mirror). Select by key *presence* so an
@@ -939,9 +953,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             import aiohttp
 
-            # Format and chunk the message
+            # Format, optionally split into conversational bubbles, then apply
+            # the existing code-block-aware length chunking to every part.
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
+            chunks = []
+            for part in self._outgoing_message_parts(formatted):
+                chunks.extend(self.truncate_message(part, self._outgoing_chunk_limit()))
 
             sent_message_ids: list[str] = []
             last_message_id = None
@@ -971,7 +988,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
                 # Small delay between chunks to avoid rate limiting
                 if len(chunks) > 1:
-                    await asyncio.sleep(0.3)
+                    delay = 0.3
+                    if getattr(self, "_split_outgoing_on_blank_lines", False):
+                        delay = getattr(self, "_split_outgoing_delay_seconds", 0.6)
+                    await asyncio.sleep(delay)
 
             return SendResult(
                 success=True,
@@ -981,6 +1001,46 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
+
+    def _outgoing_message_parts(self, formatted: str) -> list[str]:
+        """Split on blank lines outside triple-backtick fenced code blocks."""
+        if not getattr(self, "_split_outgoing_on_blank_lines", False):
+            return [formatted]
+
+        parts: list[str] = []
+        current: list[str] = []
+        in_fence = False
+
+        for line in formatted.split("\n"):
+            stripped = line.lstrip()
+            indent = len(line) - len(stripped)
+
+            if indent <= 3 and re.match(r"```(?!`)", stripped):
+                if in_fence:
+                    if re.fullmatch(r"[ \t]{0,3}```[ \t]*", line):
+                        in_fence = False
+                else:
+                    in_fence = True
+
+            if not line.strip() and not in_fence:
+                part = "\n".join(current).strip()
+                if part:
+                    parts.append(part)
+                current = []
+                continue
+
+            current.append(line)
+
+        final_part = "\n".join(current).strip()
+        if final_part:
+            parts.append(final_part)
+        if len(parts) <= 1:
+            return [formatted]
+
+        max_parts = getattr(self, "_split_outgoing_max_parts", 4)
+        if max_parts > 0 and len(parts) > max_parts:
+            return parts[: max_parts - 1] + ["\n\n".join(parts[max_parts - 1 :])]
+        return parts
 
     async def edit_message(
         self,

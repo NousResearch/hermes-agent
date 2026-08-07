@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +44,9 @@ def _make_adapter():
     adapter._bridge_log = None
     adapter._bridge_process = None
     adapter._reply_prefix = None
+    adapter._split_outgoing_on_blank_lines = False
+    adapter._split_outgoing_delay_seconds = 0.6
+    adapter._split_outgoing_max_parts = 4
     adapter._running = True
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -129,6 +132,55 @@ class TestMessageLimits:
         )
 
 
+class TestOutgoingSplitConfig:
+    def test_defaults_are_opt_out_with_documented_values(self):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        adapter = WhatsAppAdapter(PlatformConfig(enabled=True))
+
+        assert adapter._split_outgoing_on_blank_lines is False
+        assert adapter._split_outgoing_delay_seconds == 0.6
+        assert adapter._split_outgoing_max_parts == 4
+
+    def test_values_are_config_backed_and_invalid_values_fall_back_safely(self):
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        configured = WhatsAppAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "split_outgoing_on_blank_lines": "yes",
+                    "split_outgoing_delay_seconds": "1.25",
+                    "split_outgoing_max_parts": "7",
+                },
+            )
+        )
+        invalid = WhatsAppAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "split_outgoing_on_blank_lines": "sometimes",
+                    "split_outgoing_delay_seconds": "nan",
+                    "split_outgoing_max_parts": -2,
+                },
+            )
+        )
+        malformed_max = WhatsAppAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"split_outgoing_max_parts": "many"},
+            )
+        )
+
+        assert configured._split_outgoing_on_blank_lines is True
+        assert configured._split_outgoing_delay_seconds == 1.25
+        assert configured._split_outgoing_max_parts == 7
+        assert invalid._split_outgoing_on_blank_lines is False
+        assert invalid._split_outgoing_delay_seconds == 0.6
+        assert invalid._split_outgoing_max_parts == 4
+        assert malformed_max._split_outgoing_max_parts == 4
+
+
 # ---------------------------------------------------------------------------
 # send() chunking tests
 # ---------------------------------------------------------------------------
@@ -180,6 +232,119 @@ class TestSendChunking:
             payload = call.kwargs.get("json") or call[1].get("json")
             final_text = adapter.DEFAULT_REPLY_PREFIX + payload["message"]
             assert len(final_text) <= adapter.MAX_MESSAGE_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_blank_line_split_is_opt_in(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        await adapter.send("chat1", "one\n\ntwo")
+
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == ["one\n\ntwo"]
+
+    @pytest.mark.asyncio
+    async def test_blank_lines_split_bubbles_but_single_newlines_do_not(self):
+        adapter = _make_adapter()
+        adapter._split_outgoing_on_blank_lines = True
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        await adapter.send("chat1", "one\n\ntwo\nthree")
+
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == ["one", "two\nthree"]
+
+    @pytest.mark.asyncio
+    async def test_blank_line_split_merges_remainder_at_max_parts(self):
+        adapter = _make_adapter()
+        adapter._split_outgoing_on_blank_lines = True
+        adapter._split_outgoing_max_parts = 3
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        await adapter.send("chat1", "one\n\ntwo\n\nthree\n\nfour")
+
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == [
+            "one",
+            "two",
+            "three\n\nfour",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_legacy_chunk_delay_remains_point_three_when_opted_out(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._split_outgoing_delay_seconds = 1.25
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+        sleep = AsyncMock()
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+
+        await adapter.send("chat1", "a " * 3000)
+
+        assert adapter._http_session.post.call_count > 1
+        sleep.assert_awaited()
+        assert {call.args[0] for call in sleep.await_args_list} == {0.3}
+
+    @pytest.mark.asyncio
+    async def test_configured_split_delay_is_used_when_opted_in(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._split_outgoing_on_blank_lines = True
+        adapter._split_outgoing_delay_seconds = 1.25
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+        sleep = AsyncMock()
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+
+        await adapter.send("chat1", "one\n\ntwo")
+
+        sleep.assert_awaited()
+        assert {call.args[0] for call in sleep.await_args_list} == {1.25}
+
+    @pytest.mark.asyncio
+    async def test_blank_lines_inside_fenced_code_stay_in_one_bubble(self):
+        adapter = _make_adapter()
+        adapter._split_outgoing_on_blank_lines = True
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+        content = "intro\n\n```python\nfirst()\n\nsecond()\n```\n\noutro"
+
+        await adapter.send("chat1", content)
+
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == [
+            "intro",
+            "```python\nfirst()\n\nsecond()\n```",
+            "outro",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_length_chunking_still_balances_fences_after_bubble_split(self):
+        adapter = _make_adapter()
+        adapter._split_outgoing_on_blank_lines = True
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+        code = "```python\n" + ("print('hello')\n" * 400) + "\nprint('done')\n```"
+
+        await adapter.send("chat1", f"intro\n\n{code}")
+
+        messages = [
+            call.kwargs["json"]["message"]
+            for call in adapter._http_session.post.call_args_list
+        ]
+        assert messages[0] == "intro"
+        assert len(messages) > 2
+        assert all(message.startswith("```python\n") for message in messages[1:])
+        assert all("```" in message.removeprefix("```python\n") for message in messages[1:])
 
 
 # ---------------------------------------------------------------------------

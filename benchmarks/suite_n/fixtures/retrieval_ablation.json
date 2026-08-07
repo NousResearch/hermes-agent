@@ -1,0 +1,124 @@
+[
+  {
+    "id": "ra_k01",
+    "description": "BM25 advantage: target shares exact keywords; distractors are paraphrases",
+    "retrieval_signal": "keyword",
+    "facts": [
+      "The API rate limit is 100 requests per minute per authenticated user",
+      "Request throttling activates once a caller reaches the ceiling within sixty seconds",
+      "Queries are capped at one hundred per sixty-second rolling window for each account"
+    ],
+    "query": "What is the API rate limit per minute?",
+    "gold_answer": "100 requests per minute",
+    "difficulty": "easy"
+  },
+  {
+    "id": "ra_k02",
+    "description": "BM25 advantage: Redis TTL query with exact Redis/TTL keywords in target",
+    "retrieval_signal": "keyword",
+    "facts": [
+      "Redis session TTL is set to 1800 seconds for authenticated users",
+      "The in-memory cache expiry for login state is half an hour",
+      "Authentication tokens remain alive for thirty minutes in the ephemeral store"
+    ],
+    "query": "What is the Redis TTL for sessions?",
+    "gold_answer": "1800 seconds",
+    "difficulty": "medium"
+  },
+  {
+    "id": "ra_k03",
+    "description": "BM25 advantage: specialized product name PgBouncer exact match needed",
+    "retrieval_signal": "keyword",
+    "facts": [
+      "PgBouncer is configured with a pool size of 50 connections per service instance",
+      "The connection multiplexer limits each backend worker to fifty simultaneous handles",
+      "Database proxy capacity is capped at fifty sessions per replica",
+      "Connection pooling uses transaction mode to reduce backend load",
+      "The proxy daemon holds open a queue of fifty handles for each downstream service"
+    ],
+    "query": "What is the PgBouncer pool size per instance?",
+    "gold_answer": "50 connections",
+    "difficulty": "hard"
+  },
+  {
+    "id": "ra_s01",
+    "description": "Dense advantage: semantic match with no keyword overlap on speed concept",
+    "retrieval_signal": "semantic",
+    "facts": [
+      "Redis in-memory caching delivers sub-millisecond latency for hot data lookups",
+      "Use fast SQL queries for read-heavy relational tables",
+      "Reading from disk is accelerated when using RAID-0 NVMe arrays"
+    ],
+    "query": "What should we use for the fastest possible read operations?",
+    "gold_answer": "Redis in-memory caching",
+    "difficulty": "easy"
+  },
+  {
+    "id": "ra_s02",
+    "description": "Dense advantage: burnout query matched against developer health monitoring fact",
+    "retrieval_signal": "semantic",
+    "facts": [
+      "Monitor for signs of engineer burnout: missed standups, declining review engagement, and lower commit frequency",
+      "Use fast-track promotion paths to reward high performers",
+      "Set quarterly OKRs and track progress with weekly check-ins"
+    ],
+    "query": "How do we detect when developers are experiencing fatigue or morale issues?",
+    "gold_answer": "monitor for burnout: missed standups, declining engagement, lower commit frequency",
+    "difficulty": "medium"
+  },
+  {
+    "id": "ra_s03",
+    "description": "Dense advantage: abstract query about resilience matched to concrete circuit-breaker fact",
+    "retrieval_signal": "semantic",
+    "facts": [
+      "The circuit breaker opens after 50 percent of requests fail within a 10-second window and recovers after 30 seconds",
+      "Load balancers distribute traffic evenly across healthy pods",
+      "Horizontal pod autoscaling adds replicas at 70 percent CPU",
+      "Health checks probe the readiness endpoint every 5 seconds"
+    ],
+    "query": "What mechanism prevents cascading failures when a downstream service degrades?",
+    "gold_answer": "circuit breaker with 50 percent failure threshold and 30-second recovery",
+    "difficulty": "hard"
+  },
+  {
+    "id": "ra_h01",
+    "description": "Hybrid: both Kafka keyword AND consumer lag concept needed to pick correct fact",
+    "retrieval_signal": "hybrid",
+    "facts": [
+      "Kafka consumer lag alert threshold is 10000 messages per partition before paging on-call",
+      "Kafka is used for the core event streaming pipeline between microservices",
+      "When message queue backlog grows beyond 5000 items, the ops team is notified"
+    ],
+    "query": "At what Kafka consumer lag level do we trigger an on-call alert?",
+    "gold_answer": "10000 messages per partition",
+    "difficulty": "easy"
+  },
+  {
+    "id": "ra_h02",
+    "description": "Hybrid: OpenTelemetry keyword AND distributed tracing concept both required",
+    "retrieval_signal": "hybrid",
+    "facts": [
+      "OpenTelemetry traces are exported to Jaeger with a 10 percent sampling rate in production",
+      "OpenTelemetry is the observability standard adopted across all services",
+      "Distributed request tracing is implemented via a proprietary in-house library with full sampling"
+    ],
+    "query": "What sampling rate does our OpenTelemetry distributed tracing use in production?",
+    "gold_answer": "10 percent sampling rate",
+    "difficulty": "medium"
+  },
+  {
+    "id": "ra_h03",
+    "description": "Hybrid hard: Terraform + state-locking concept both needed; two strong distractors",
+    "retrieval_signal": "hybrid",
+    "facts": [
+      "Terraform state is stored in S3 with DynamoDB locking to prevent concurrent modifications",
+      "Terraform modules are versioned in a private registry and pinned per environment",
+      "Infrastructure state management uses a distributed lock backed by the metadata store",
+      "S3 buckets are versioned and replicated to a secondary region for disaster recovery",
+      "DynamoDB tables are provisioned with on-demand capacity for unpredictable workloads"
+    ],
+    "query": "How does Terraform prevent two engineers from modifying infrastructure state simultaneously?",
+    "gold_answer": "DynamoDB locking on S3 state",
+    "difficulty": "hard"
+  }
+]

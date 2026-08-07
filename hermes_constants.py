@@ -349,8 +349,17 @@ def node_tool_runnable(path: str | None) -> bool:
     try:
         from hermes_cli._subprocess_compat import windows_hide_flags
 
+        if sys.platform == "win32" and candidate.suffix.lower() in (".cmd", ".bat"):
+            # A .cmd/.bat shim runs through cmd.exe, whose tokenizer treats
+            # U+00A0 (nbsp) as a plain space. subprocess only auto-quotes args
+            # for ASCII whitespace, so an nbsp in the shim path (e.g. under
+            # %LOCALAPPDATA%) would split the path mid-way. Hand cmd.exe a
+            # pre-quoted command line so the nbsp stays inside a quoted argument.
+            probe = f'"{path}" --version'
+        else:
+            probe = [path, "--version"]
         result = subprocess.run(
-            [path, "--version"],
+            probe,
             capture_output=True,
             timeout=10,
             env=with_hermes_node_path(),

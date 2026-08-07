@@ -329,6 +329,28 @@ class TestFileDedup(unittest.TestCase):
         self.assertIn("unchanged", r2.get("message", ""))
         self.assertFalse(r2.get("content_returned"))
         self.assertNotIn("content", r2)
+        # Actionable guidance: the stub must name the region already read
+        # and the offset of the next unread region (default read covers
+        # lines 1-2000, so the next region starts at offset=2001).
+        self.assertEqual(r2.get("next_offset"), 2001)
+        self.assertIn("lines 1-2000", r2.get("message", ""))
+        self.assertIn("offset=2001", r2.get("message", ""))
+        self.assertIn("has not", r2.get("message", ""))
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_dedup_stub_reports_next_region(self, mock_ops):
+        """Stub guidance is computed from the tracked (offset, limit) region."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+        read_file_tool(self._tmpfile, offset=1, limit=2, task_id="dup")
+        r2 = json.loads(
+            read_file_tool(self._tmpfile, offset=1, limit=2, task_id="dup")
+        )
+        self.assertTrue(r2.get("dedup"))
+        self.assertEqual(r2.get("next_offset"), 3)
+        self.assertIn("lines 1-2", r2.get("message", ""))
+        self.assertIn("offset=3", r2.get("message", ""))
 
     @patch("tools.file_tools._get_file_ops")
     def test_write_rejects_internal_read_status_text(self, mock_ops):
@@ -361,13 +383,20 @@ class TestFileDedup(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Dedup stub-loop guard (issue #15759)
+# Dedup stub-loop guard (issue #15759, revised 2026-08-01)
 # ---------------------------------------------------------------------------
 
 class TestDedupStubLoopGuard(unittest.TestCase):
-    """Repeated dedup stubs must escalate to a hard BLOCKED error so weak
-    tool-following models don't burn iteration budget in an infinite loop
-    of ``read_file → stub → read_file → stub → ...``"""
+    """Repeated dedup stubs escalate to a RE-SERVED full read.
+
+    Original behaviour (issue #15759): read → stub → hard BLOCKED error.
+    That trapped long sessions: once context hygiene trimmed the earlier
+    read from the model's prompt, the model needed the content, was told
+    (falsely) that it already had it, and retried until the tool-loop
+    guardrail hard-stopped the turn (session 20260801_025055_eb38d2).  Now
+    the second stub-hit re-serves the content with a ``re_served`` note;
+    genuine loops stay bounded by the consecutive-read block and the
+    tool-call guardrail's identical-result tracking."""
 
     def setUp(self):
         _read_tracker.clear()
@@ -385,8 +414,8 @@ class TestDedupStubLoopGuard(unittest.TestCase):
             pass
 
     @patch("tools.file_tools._get_file_ops")
-    def test_third_read_is_blocked(self, mock_ops):
-        """read → stub → BLOCKED.  Second stub escalates to hard error."""
+    def test_third_read_is_re_served(self, mock_ops):
+        """read → stub → RE-SERVED content (no hard error)."""
         mock_ops.return_value = _make_fake_ops(
             content="line one\nline two\n", file_size=20,
         )
@@ -394,41 +423,50 @@ class TestDedupStubLoopGuard(unittest.TestCase):
         r1 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
         self.assertNotIn("dedup", r1)
         self.assertNotIn("error", r1)
+        self.assertNotIn("re_served", r1)
 
         # 2. Dedup stub (first hit)
         r2 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
         self.assertTrue(r2.get("dedup"))
         self.assertNotIn("error", r2)
 
-        # 3. Dedup stub (second hit) — escalates to BLOCKED
+        # 3. Second stub-hit — content is served again with a re_served note
         r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
-        self.assertIn("error", r3, "Second dedup stub should be BLOCKED")
-        self.assertIn("BLOCKED", r3["error"])
-        self.assertIn("STOP", r3["error"])
-        self.assertEqual(r3.get("already_read"), 3)
-        # The loop-breaker must NOT be a dedup stub, or the model sees the
-        # same passive message it has been ignoring.
+        self.assertNotIn("error", r3, "Second dedup stub-hit should re-serve, not block")
         self.assertNotIn("dedup", r3)
+        self.assertTrue(r3.get("re_served"))
+        self.assertIn("content", r3)
+        # The note must be actionable: name the region and the next offset.
+        self.assertIn("lines 1-2000", r3["note"])
+        self.assertIn("offset=2001", r3["note"])
 
     @patch("tools.file_tools._get_file_ops")
-    def test_subsequent_reads_stay_blocked(self, mock_ops):
-        """Once blocked, continued hammering keeps returning BLOCKED."""
+    def test_re_serve_cycle_bounded_by_consecutive_block(self, mock_ops):
+        """The stub/re-serve cycle stays bounded: re-served reads increment
+        the consecutive counter, so a truly stuck model still hits the
+        consecutive-read BLOCK — but with content delivered on every other
+        attempt instead of a content-free trap."""
         mock_ops.return_value = _make_fake_ops(
             content="line one\nline two\n", file_size=20,
         )
-        read_file_tool(self._tmpfile, task_id="loop")  # read
-        read_file_tool(self._tmpfile, task_id="loop")  # stub
+        read_file_tool(self._tmpfile, task_id="loop")  # r1 read (consec 1)
+        read_file_tool(self._tmpfile, task_id="loop")  # r2 stub
         r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
-        self.assertIn("error", r3)
-        # 4th, 5th, ... calls must stay blocked, never revert to stub
-        for _ in range(5):
-            rN = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
-            self.assertIn("error", rN)
-            self.assertIn("BLOCKED", rN["error"])
+        self.assertTrue(r3.get("re_served"))           # r3 re-serve (consec 2)
+        r4 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertTrue(r4.get("dedup"))               # r4 stub again
+        r5 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertTrue(r5.get("re_served"))           # r5 re-serve (consec 3)
+        self.assertIn("_warning", r5)
+        r6 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertTrue(r6.get("dedup"))               # r6 stub
+        r7 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
+        self.assertIn("BLOCKED", r7["error"])          # r7 consec 4 → blocked
+        self.assertIn("in a row", r7["error"])
 
     @patch("tools.file_tools._get_file_ops")
-    def test_file_modification_clears_block(self, mock_ops):
-        """Real file change should break out of the block — new content
+    def test_file_modification_serves_fresh_content(self, mock_ops):
+        """Real file change breaks the stub/re-serve cycle — new content
         is legitimately different and the agent should see it."""
         mock_ops.return_value = _make_fake_ops(
             content="line one\nline two\n", file_size=20,
@@ -436,7 +474,7 @@ class TestDedupStubLoopGuard(unittest.TestCase):
         read_file_tool(self._tmpfile, task_id="loop")
         read_file_tool(self._tmpfile, task_id="loop")
         r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
-        self.assertIn("error", r3)
+        self.assertTrue(r3.get("re_served"))
 
         # File changes — mtime updates
         time.sleep(0.05)
@@ -446,6 +484,7 @@ class TestDedupStubLoopGuard(unittest.TestCase):
         r4 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
         self.assertNotIn("error", r4)
         self.assertNotIn("dedup", r4)
+        self.assertNotIn("re_served", r4)
 
     @patch("tools.file_tools._get_file_ops")
     def test_other_tool_call_clears_hits(self, mock_ops):
@@ -462,49 +501,51 @@ class TestDedupStubLoopGuard(unittest.TestCase):
         notify_other_tool_call("loop")
 
         r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
-        # Should be a stub again, NOT blocked
+        # Should be a stub again, NOT re-served
         self.assertTrue(r3.get("dedup"))
         self.assertNotIn("error", r3)
 
     @patch("tools.file_tools._get_file_ops")
     def test_different_ranges_tracked_independently(self, mock_ops):
         """Stub-hit counter is keyed by (path, offset, limit), so hammering
-        one range shouldn't block reads of a different range."""
+        one range shouldn't affect reads of a different range."""
         mock_ops.return_value = _make_fake_ops(
             content="line one\nline two\n", file_size=20,
         )
-        # Burn down one range
+        # Burn down one range to the re-serve stage
         read_file_tool(self._tmpfile, offset=1, limit=100, task_id="loop")
         read_file_tool(self._tmpfile, offset=1, limit=100, task_id="loop")
         r3 = json.loads(read_file_tool(
             self._tmpfile, offset=1, limit=100, task_id="loop",
         ))
-        self.assertIn("error", r3)
+        self.assertTrue(r3.get("re_served"))
 
         # Different range — fresh read, should go through
         r_other = json.loads(read_file_tool(
             self._tmpfile, offset=1, limit=200, task_id="loop",
         ))
         self.assertNotIn("error", r_other)
+        self.assertNotIn("re_served", r_other)
 
     @patch("tools.file_tools._get_file_ops")
     def test_reset_file_dedup_clears_hits(self, mock_ops):
         """Post-compression reset must clear stub-hit counters too,
-        otherwise the agent stays blocked after compression."""
+        so the next read after compression is a fresh full read."""
         mock_ops.return_value = _make_fake_ops(
             content="line one\nline two\n", file_size=20,
         )
         read_file_tool(self._tmpfile, task_id="loop")
         read_file_tool(self._tmpfile, task_id="loop")
         r3 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
-        self.assertIn("error", r3)
+        self.assertTrue(r3.get("re_served"))
 
         reset_file_dedup("loop")
 
-        # Fresh session — real read, no stub, no block
+        # Fresh session — real read, no stub, no re-serve
         r4 = json.loads(read_file_tool(self._tmpfile, task_id="loop"))
         self.assertNotIn("error", r4)
         self.assertNotIn("dedup", r4)
+        self.assertNotIn("re_served", r4)
 
 
 # ---------------------------------------------------------------------------

@@ -1133,6 +1133,27 @@ _READ_DEDUP_STATUS_MESSAGE = (
 )
 
 
+def _read_dedup_guidance(offset: int, limit: int) -> str:
+    """Actionable next-region guidance for dedup stub/block messages.
+
+    The dedup tracker keys on the exact (path, offset, limit) region and
+    read_file pagination is line-based (offset is 1-based), so the region
+    the model already has is lines ``offset`` through
+    ``offset + limit - 1`` and the next unread region starts at
+    ``offset + limit``.  A bare "STOP re-reading" tells a weak model what
+    not to do but not what to do instead — when it wanted a different
+    part of the file it just re-sends the same offset.  Tell it where to
+    go next.
+    """
+    next_offset = offset + limit
+    return (
+        f"That read covered lines {offset}-{offset + limit - 1}. "
+        f"If you need more of this file, call read_file with "
+        f"offset={next_offset} to read the next region. If you expected "
+        "the file to have changed, it has not — proceed with what you have."
+    )
+
+
 def _cap_read_tracker_data(task_data: dict) -> None:
     """Enforce size caps on the per-task read-tracker sub-containers.
 
@@ -1639,40 +1660,42 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
+        re_served = False
         if cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
-                    # Count repeated stub returns so weak tool-followers that
-                    # ignore the "refer to earlier result" hint don't burn
-                    # their iteration budget in an infinite read loop.  After
-                    # 2 stubs for the same key we escalate to a hard block
-                    # mirroring the count>=4 path on real reads.
+                    # Count repeated reads of an unchanged region. The first
+                    # repeat gets the cheap "unchanged" stub (saves context
+                    # tokens). On further repeats we RE-SERVE the full content
+                    # instead of hard-blocking: in long sessions the earlier
+                    # result may have been trimmed from the model's prompt by
+                    # context hygiene, so the old "refer to your earlier read"
+                    # block trapped the model — it needed the content, was
+                    # told (falsely) that it already had it, and retried until
+                    # the tool-loop guardrail hard-stopped the turn.  True
+                    # no-progress loops are still caught by the guardrail's
+                    # idempotent_no_progress tracking (identical result hash),
+                    # so re-serving does not open an infinite loop.
                     with _read_tracker_lock:
                         hits = task_data["dedup_hits"].get(dedup_key, 0) + 1
                         task_data["dedup_hits"][dedup_key] = hits
                         _cap_read_tracker_data(task_data)
 
                     if hits >= 2:
-                        return tool_error(
-                            f"BLOCKED: You have called read_file on this "
-                            f"exact region {hits + 1} times and the file "
-                            "has NOT changed. STOP calling read_file for "
-                            "this path — the content from your earlier "
-                            "read_file result in this conversation is "
-                            "still current. Proceed with your task using "
-                            "the information you already have.",
-                            path=path,
-                            already_read=hits + 1,
-                        )
-
-                    return json.dumps({
-                        "status": "unchanged",
-                        "message": _READ_DEDUP_STATUS_MESSAGE,
-                        "path": path,
-                        "dedup": True,
-                        "content_returned": False,
-                    }, ensure_ascii=False)
+                        re_served = True  # fall through to the full read below
+                    else:
+                        return json.dumps({
+                            "status": "unchanged",
+                            "message": (
+                                _READ_DEDUP_STATUS_MESSAGE + " "
+                                + _read_dedup_guidance(offset, limit)
+                            ),
+                            "path": path,
+                            "dedup": True,
+                            "content_returned": False,
+                            "next_offset": offset + limit,
+                        }, ensure_ascii=False)
             except OSError:
                 pass  # stat failed — fall through to full read
 
@@ -1680,6 +1703,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
+        if re_served:
+            result_dict["re_served"] = True
+            result_dict["note"] = (
+                f"This region (lines {offset}-{offset + limit - 1}) was "
+                "served again — your earlier read of it may no longer be in "
+                "your context. Proceed with this content; do not re-read "
+                "the same region. "
+                + _read_dedup_guidance(offset, limit)
+            )
 
         # ── Populate negative-result cache on not-found ───────────────
         # _suggest_similar_files returns ReadResult(error="File not found: ..").

@@ -234,6 +234,10 @@
 
 .hermes-kanban-card {
   cursor: grab;
+  /* Let the browser own vertical panning over a card and reserve horizontal
+     movement for us. Without this the touch-drag handler and the board's
+     native scroll fight over the same gesture. */
+  touch-action: pan-y;
   transition: transform 100ms ease, box-shadow 100ms ease;
 }
 .hermes-kanban-card:hover {
@@ -1589,4 +1593,34 @@
 
 .hermes-kanban-trash-label {
   font-weight: 500;
+}
+
+/* ---- Narrow viewports (phones) --------------------------------------- */
+
+/* The default board is a horizontal strip of fixed 280px columns. On a phone
+   that shows roughly one and a half columns and buries the rest behind a
+   horizontal pan — which also competes with the touch-drag gesture. Below
+   700px, stack the columns instead: each one full-width, the page scrolling
+   vertically as usual.
+
+   Placed at the end of the file so it wins the cascade over the base column
+   rules above without needing extra specificity. */
+@media (max-width: 700px) {
+  .hermes-kanban-columns {
+    flex-direction: column;
+    overflow-x: visible;
+  }
+
+  .hermes-kanban-column {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 0;
+    max-height: none;
+  }
+
+  /* Each column grows to fit its cards; the page scrolls, not the column.
+     Nested scroll panes on a phone are near-impossible to drive by touch. */
+  .hermes-kanban-column-body {
+    overflow-y: visible;
+  }
 }

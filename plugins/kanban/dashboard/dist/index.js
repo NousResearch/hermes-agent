@@ -395,26 +395,110 @@
   // handler that simulates a drag proxy and fires a custom event on the
   // column under the finger when released. Columns listen for both the
   // standard `drop` event and our `hermes-kanban:drop` event.
+  //
+  // The gesture is *long-press to arm* (not press-to-drag): for the first
+  // 260 ms the page behaves normally, so a swipe that starts on a card still
+  // scrolls the board. Moving more than 8 px before the timer fires cancels
+  // the pending drag outright — that movement was a scroll, not a pick-up.
+  // Only once armed do we start swallowing pointermove.
   // -------------------------------------------------------------------------
+
+  const TOUCH_DRAG_ARM_MS = 260;
+  const TOUCH_DRAG_SLOP_PX = 8;
 
   function attachTouchDrag(el, taskId) {
     if (!el) return;
     function onDown(e) {
       if (e.pointerType !== "touch") return;
-      e.preventDefault();
-      const proxy = el.cloneNode(true);
-      proxy.classList.add("hermes-kanban-touch-proxy");
-      document.body.appendChild(proxy);
+      // Interactive controls inside a card (selection checkbox, action
+      // buttons, links) own their own touch behavior. Arming a drag from
+      // them makes those controls unusable on a phone.
+      // Interactive controls INSIDE the card opt out of drag — but the card
+      // root itself is role="button" (a11y), so only bail when the match is
+      // a descendant control, not the card we were attached to.
+      const ctrl = e.target && e.target.closest &&
+        e.target.closest("input, button, a, textarea, select, [role='button']");
+      if (ctrl && ctrl !== el) return;
+      // Track a single pointer for the life of the gesture. Without this a
+      // second finger landing mid-drag steers the proxy and can drop the
+      // card in the wrong column.
+      const pointerId = e.pointerId;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let proxy = null;
       let lastTarget = null;
+      let dragging = false;
+      const timer = setTimeout(startDrag, TOUCH_DRAG_ARM_MS);
+
+      // Single teardown path: every exit (drop, cancel, scroll-away, stray
+      // pointerup) goes through here, so we can't leak listeners, a floating
+      // proxy node, or a stuck drop-highlight.
+      function cleanup() {
+        clearTimeout(timer);
+        el.draggable = true;
+        el.removeEventListener("dragstart", killNativeDrag);
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", up);
+        document.removeEventListener("pointercancel", cancel);
+        if (lastTarget) lastTarget.classList.remove("hermes-kanban-column--drop");
+        if (proxy) proxy.remove();
+        lastTarget = null;
+        proxy = null;
+      }
+
+      function killNativeDrag(de) { de.preventDefault(); }
+      function startDrag() {
+        dragging = true;
+        // Chrome/Android starts the card's NATIVE HTML5 drag (draggable=true)
+        // at its own ~600ms long-press threshold, firing pointercancel and
+        // killing this gesture. Once we arm, native drag must be off.
+        el.draggable = false;
+        el.addEventListener("dragstart", killNativeDrag);
+        try { el.setPointerCapture(pointerId); } catch (_e) { /* ignore */ }
+        proxy = el.cloneNode(true);
+        proxy.classList.add("hermes-kanban-touch-proxy");
+        document.body.appendChild(proxy);
+        // Kick off proxy at the pointer origin.
+        proxy.style.position = "fixed";
+        proxy.style.pointerEvents = "none";
+        proxy.style.opacity = "0.85";
+        proxy.style.zIndex = "9999";
+        proxy.style.width = `${el.offsetWidth}px`;
+        proxy.style.left = `${startX - el.offsetWidth / 2}px`;
+        proxy.style.top = `${startY - 24}px`;
+      }
+
+      // The trash zone is `pointer-events: none` until an HTML5 dragstart
+      // sets `--active` — which a touch drag never fires — so elementFromPoint
+      // can never return it. Fall back to its rect so the delete branch below
+      // is reachable on touch at all.
+      function trashAt(x, y) {
+        const node = document.querySelector("[data-kanban-trash]");
+        if (!node) return null;
+        const r = node.getBoundingClientRect();
+        const hit = x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        return hit ? node : null;
+      }
 
       function move(ev) {
+        if (ev.pointerId !== pointerId) return;
+        if (!dragging) {
+          if (Math.abs(ev.clientX - startX) > TOUCH_DRAG_SLOP_PX ||
+              Math.abs(ev.clientY - startY) > TOUCH_DRAG_SLOP_PX) {
+            cleanup();
+          }
+          return;
+        }
+        if (!proxy) return;
+        ev.preventDefault();
         proxy.style.left = `${ev.clientX - proxy.offsetWidth / 2}px`;
         proxy.style.top = `${ev.clientY - 24}px`;
         proxy.style.display = "none";
         const under = document.elementFromPoint(ev.clientX, ev.clientY);
         proxy.style.display = "";
         const col = under && under.closest && under.closest("[data-kanban-column]");
-        const trash = under && under.closest && under.closest("[data-kanban-trash]");
+        const trash = (under && under.closest && under.closest("[data-kanban-trash]")) ||
+          trashAt(ev.clientX, ev.clientY);
         const target = col || trash;
         if (target !== lastTarget) {
           if (lastTarget) lastTarget.classList.remove("hermes-kanban-column--drop");
@@ -422,12 +506,15 @@
           lastTarget = target;
         }
       }
-      function up() {
-        document.removeEventListener("pointermove", move);
-        document.removeEventListener("pointerup", up);
-        document.removeEventListener("pointercancel", up);
+      function up(ev) {
+        if (ev.pointerId !== pointerId) return;
+        if (!dragging) {
+          // Never armed: a tap. Let the click handler run untouched.
+          cleanup();
+          return;
+        }
+        ev.preventDefault();
         if (lastTarget) {
-          lastTarget.classList.remove("hermes-kanban-column--drop");
           const status = lastTarget.getAttribute("data-kanban-column");
           const isTrash = lastTarget.hasAttribute("data-kanban-trash");
           if (isTrash) {
@@ -442,21 +529,19 @@
             }));
           }
         }
-        proxy.remove();
+        cleanup();
       }
-      // Kick off proxy at the pointer origin.
-      proxy.style.position = "fixed";
-      proxy.style.pointerEvents = "none";
-      proxy.style.opacity = "0.85";
-      proxy.style.zIndex = "9999";
-      proxy.style.width = `${el.offsetWidth}px`;
-      proxy.style.left = `${e.clientX - el.offsetWidth / 2}px`;
-      proxy.style.top = `${e.clientY - 24}px`;
-      document.addEventListener("pointermove", move);
-      document.addEventListener("pointerup", up);
-      document.addEventListener("pointercancel", up);
+      function cancel(ev) {
+        if (ev.pointerId !== pointerId) return;
+        cleanup();
+      }
+      document.addEventListener("pointermove", move, { passive: false });
+      document.addEventListener("pointerup", up, { passive: false });
+      document.addEventListener("pointercancel", cancel, { passive: false });
     }
-    el.addEventListener("pointerdown", onDown);
+    // Passive: this handler no longer calls preventDefault, so the browser
+    // does not have to block on it before scrolling.
+    el.addEventListener("pointerdown", onDown, { passive: true });
     return function () { el.removeEventListener("pointerdown", onDown); };
   }
 

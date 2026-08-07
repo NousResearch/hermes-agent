@@ -16,23 +16,31 @@ leaked shell variable, so ``scripts/run_tests.sh``'s ``env -i`` was no help:
   4. ``speak_text`` needs no API key to be audible — ``tools/tts_tool.py``
      defaults to the keyless ``edge`` provider.
 
-Two independent defences in ``tests/conftest.py``, one test each below:
+Four independent defences in ``tests/conftest.py``:
 
   * ``_HERMES_BEHAVIORAL_VARS`` now blanks ``HERMES_VOICE`` /
     ``HERMES_VOICE_TTS`` at every test setup, so step 2 cannot cross a test
     boundary.
   * ``_audio_playback_guard`` stubs ``speak_text`` outright, so step 3 stays
     silent even *within* the test that set the flag itself.
+  * the guard wraps Hermes's lazy sounddevice imports so output streams and
+    direct ``play`` calls are blocked without disabling microphone input.
+  * ``_live_system_guard`` blocks system audio-player subprocesses, covering
+    direct ``tools.voice_mode.play_audio_file`` imports that bypass the
+    ``hermes_cli.voice`` bindings.
 
 The second is the load-bearing one: env blanking alone cannot stop code under
 test from re-setting the variable mid-test.
 """
 
 import os
+import subprocess
 import sys
 import types
 
 import pytest
+
+from tests.conftest import _SounddeviceOutputGuard
 
 from tui_gateway import server
 
@@ -113,6 +121,49 @@ def test_guard_can_be_opted_out_of_explicitly():
     import hermes_cli.voice as voice
 
     assert voice.speak_text.__name__ == "_blocked_speak_text"
+
+
+@pytest.mark.parametrize("player", ["afplay", "ffplay", "aplay"])
+def test_guard_blocks_direct_system_audio_players(player):
+    """The shared voice-mode fallback cannot bypass the TTS entry-point stub."""
+    with pytest.raises(RuntimeError, match="audio-playback guard"):
+        subprocess.Popen([f"/definitely-not-installed/{player}", "/tmp/test.mp3"])
+
+
+@pytest.mark.live_system_guard_bypass
+def test_audio_guard_survives_live_system_bypass():
+    """Process-guard opt-out must not double as permission for live audio."""
+    with pytest.raises(RuntimeError, match="audio-playback guard"):
+        subprocess.Popen(["/definitely-not-installed/afplay", "/tmp/test.mp3"])
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["bash", "-c", "afplay /tmp/test.mp3"],
+        "bash -c 'ffplay -nodisp /tmp/test.mp3'",
+    ],
+)
+def test_guard_blocks_quoted_shell_audio_players(command):
+    """A shell payload cannot hide an audio player from the guard."""
+    with pytest.raises(RuntimeError, match="audio-playback guard"):
+        subprocess.run(command, shell=isinstance(command, str), check=False)
+
+
+@pytest.mark.parametrize("primitive", ["play", "OutputStream"])
+def test_guard_blocks_sounddevice_output_primitives(primitive):
+    """sounddevice playback is blocked without hiding input-only APIs."""
+    fake_sounddevice = types.SimpleNamespace(
+        InputStream=object(),
+        play=lambda *args, **kwargs: None,
+        OutputStream=lambda *args, **kwargs: None,
+    )
+    guarded = _SounddeviceOutputGuard(fake_sounddevice)
+
+    with pytest.raises(RuntimeError, match="audio-playback guard"):
+        getattr(guarded, primitive)()
+
+    assert guarded.InputStream is fake_sounddevice.InputStream
 
 
 @pytest.mark.real_audio_playback

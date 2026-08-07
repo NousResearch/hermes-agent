@@ -818,9 +818,16 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
     state = "start"
     num_buf = ""
 
-    for ch in rest:
+    i = 0
+    while i < len(rest):
+        ch = rest[i]
+        nxt = rest[i + 1] if i + 1 < len(rest) else ""
         if state == "start":
             if ch in "vV":
+                state = "in_version"
+            elif ch in "kK" and nxt.isdigit():
+                # Consume Kimi k/K only when it introduces a numeric version
+                # (k3), never a plain suffix (king) or standalone text.
                 state = "in_version"
             elif ch.isdigit():
                 state = "in_version"
@@ -866,6 +873,8 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
                 num_buf = ch
             elif ch in "vV":
                 state = "in_version"
+            elif ch in "kK" and nxt.isdigit():
+                state = "in_version"
             elif ch in "-_.":
                 pass
             else:
@@ -873,6 +882,7 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
                 suffix_buf += ch
         elif state == "in_suffix":
             suffix_buf += ch
+        i += 1
 
     # Flush remaining buffer (strip trailing dots — "5.4." → "5.4")
     if num_buf and state == "in_version":

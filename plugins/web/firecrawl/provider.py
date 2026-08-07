@@ -48,6 +48,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
+from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agent.web_search_provider import WebSearchProvider
@@ -363,6 +365,197 @@ def _extract_scrape_payload(scrape_result: Any) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Direct-HTTP fallback for Firecrawl 4xx responses (local patch 2026-07-22)
+# ---------------------------------------------------------------------------
+#
+# Since 2026-07-05 the Firecrawl API intermittently returns HTTP 400 on
+# plain URLs, which broke web_extract wholesale. When Firecrawl rejects a
+# scrape with a 4xx, we fall back to a bounded direct HTTP fetch of the
+# URL and mark the result with ``metadata.fallback = "direct-http"``.
+# The fallback NEVER runs on a successful Firecrawl response, and never
+# for non-4xx errors (5xx / timeouts keep their original error surface).
+
+_FALLBACK_TIMEOUT_S = 15.0
+_FALLBACK_MAX_BYTES = 2 * 1024 * 1024  # ~2MB cap on fetched content
+_FALLBACK_MAX_REDIRECTS = 3
+_FALLBACK_USER_AGENT = (
+    "Mozilla/5.0 (compatible; Hermes-Agent web_extract direct-http fallback; "
+    "+https://github.com/NousResearch/hermes-agent)"
+)
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_HTTP_4XX_RE = re.compile(r"\b4\d{2}\b")
+
+
+def _is_bad_request_error(exc: BaseException) -> bool:
+    """Return True when an exception message indicates a Firecrawl 4xx.
+
+    The SDK surfaces API errors as plain exceptions with the status code in
+    the message (e.g. ``"400 Bad Request: ..."`` or ``"Bad Request: HTTP
+    400"``), so detection is message-based. Deliberately excludes 5xx —
+    server-side errors should keep their original error surface.
+    """
+    return bool(_HTTP_4XX_RE.search(str(exc)))
+
+
+_BLOCK_TAGS = {
+    "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "ul", "ol",
+    "table", "tr", "td", "th", "section", "article", "header", "footer",
+    "nav", "main", "aside", "blockquote", "pre", "br", "hr", "form",
+}
+_SKIP_TAGS = {"script", "style", "noscript", "template"}
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Minimal stdlib HTML→text: title + block-joined visible text."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._title_parts: List[str] = []
+        self._in_title = False
+        self._skip_depth = 0
+        self._blocks: List[str] = []
+        self._current: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag in _SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag == "title":
+            self._in_title = True
+        elif tag in _BLOCK_TAGS:
+            self._flush_block()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+        elif tag == "title":
+            self._in_title = False
+        elif tag in _BLOCK_TAGS:
+            self._flush_block()
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        if self._in_title:
+            self._title_parts.append(data)
+        else:
+            self._current.append(data)
+
+    def _flush_block(self) -> None:
+        text = " ".join("".join(self._current).split())
+        if text:
+            self._blocks.append(text)
+        self._current = []
+
+    @property
+    def title(self) -> str:
+        return " ".join("".join(self._title_parts).split())
+
+    @property
+    def text(self) -> str:
+        self._flush_block()
+        return "\n\n".join(self._blocks)
+
+
+def _direct_http_extract_fallback(url: str) -> Optional[Dict[str, Any]]:
+    """Bounded direct HTTP fetch used when Firecrawl returns 4xx.
+
+    Safety bounds: 15s timeout, ~2MB content cap, manual redirect
+    following (max 3 hops) with every hop re-checked via
+    :func:`is_safe_url` (which rejects non-http(s) schemes such as
+    ``file://`` and private/internal IPs) and website-access policy.
+
+    Returns a legacy-shaped result dict with
+    ``metadata.fallback = "direct-http"``, or ``None`` when the direct
+    fetch is unsafe, blocked, oversized/binary, or fails — in which case
+    the caller keeps the original Firecrawl error.
+    """
+    import httpx
+
+    if not is_safe_url(url):
+        logger.info("Direct-HTTP fallback refused unsafe URL: %s", url)
+        return None
+    if check_website_access(url):
+        return None
+
+    try:
+        with httpx.Client(
+            timeout=_FALLBACK_TIMEOUT_S,
+            follow_redirects=False,
+            headers={"User-Agent": _FALLBACK_USER_AGENT},
+        ) as client:
+            current_url = url
+            response = None
+            for _ in range(_FALLBACK_MAX_REDIRECTS + 1):
+                response = client.get(current_url)
+                status = getattr(response, "status_code", 200)
+                location = response.headers.get("location")
+                if status in _REDIRECT_STATUSES and location:
+                    next_url = str(httpx.URL(current_url).join(location))
+                    if not is_safe_url(next_url) or check_website_access(next_url):
+                        logger.info(
+                            "Direct-HTTP fallback blocked redirect %s -> %s",
+                            current_url,
+                            next_url,
+                        )
+                        return None
+                    current_url = next_url
+                    continue
+                break
+            else:
+                logger.info("Direct-HTTP fallback: too many redirects for %s", url)
+                return None
+
+            response.raise_for_status()
+
+            content_length = response.headers.get("content-length")
+            if content_length and content_length.isdigit():
+                if int(content_length) > _FALLBACK_MAX_BYTES:
+                    logger.info(
+                        "Direct-HTTP fallback: %s exceeds %d-byte cap", url,
+                        _FALLBACK_MAX_BYTES,
+                    )
+                    return None
+
+            content_type = (response.headers.get("content-type") or "").lower()
+            body = response.text
+            if len(body) > _FALLBACK_MAX_BYTES:
+                body = body[:_FALLBACK_MAX_BYTES]
+
+            final_url = str(getattr(response, "url", current_url))
+
+            if "html" in content_type:
+                extractor = _HTMLTextExtractor()
+                extractor.feed(body)
+                title = extractor.title
+                text = extractor.text
+            elif content_type.startswith("text/") or "json" in content_type or "xml" in content_type:
+                title = ""
+                text = body.strip()
+            else:
+                logger.info(
+                    "Direct-HTTP fallback: unsupported content-type %r for %s",
+                    content_type,
+                    url,
+                )
+                return None
+
+            return {
+                "url": final_url,
+                "title": title,
+                "content": text,
+                "raw_content": text,
+                "metadata": {
+                    "sourceURL": final_url,
+                    "title": title,
+                    "fallback": "direct-http",
+                },
+            }
+    except Exception as exc:  # noqa: BLE001 — fallback is best-effort
+        logger.info("Direct-HTTP fallback failed for %s: %s", url, exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Provider class
 # ---------------------------------------------------------------------------
 
@@ -418,7 +611,16 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             return {"success": True, "data": {"web": web_results}}
         except Exception as exc:  # noqa: BLE001
             logger.warning("Firecrawl search error: %s", exc)
-            return {"success": False, "error": f"Firecrawl search failed: {exc}"}
+            message = f"Firecrawl search failed: {exc}"
+            if _is_bad_request_error(exc):
+                message += (
+                    " — the Firecrawl API answered 400 Bad Request "
+                    "(known-broken since 2026-07-05). The search endpoint "
+                    "has no fallback; if you already know a relevant URL, "
+                    "use web_extract on it instead — it falls back to a "
+                    "direct HTTP fetch on 4xx."
+                )
+            return {"success": False, "error": message}
 
     async def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
         """Extract content from one or more URLs via Firecrawl.
@@ -587,6 +789,19 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                 )
             except Exception as scrape_err:  # noqa: BLE001
                 logger.debug("Firecrawl scrape failed for %s: %s", url, scrape_err)
+                if _is_bad_request_error(scrape_err):
+                    # Firecrawl API 4xx (broken for plain URLs since
+                    # 2026-07-05): try a bounded direct HTTP fetch instead.
+                    fallback_result = _direct_http_extract_fallback(url)
+                    if fallback_result is not None:
+                        logger.warning(
+                            "Firecrawl returned 4xx for %s (%s); "
+                            "served content via direct-http fallback",
+                            url,
+                            scrape_err,
+                        )
+                        results.append(fallback_result)
+                        continue
                 results.append(
                     {
                         "url": url,

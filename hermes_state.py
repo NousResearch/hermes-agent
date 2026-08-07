@@ -75,6 +75,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
 )
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_schema import SessionSchemaMixin
+from hermes_state_gateway_routing import SessionGatewayRoutingMixin
 from hermes_state_search import SessionSearchMixin
 
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
@@ -2089,7 +2090,7 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
             handle.close()
 
 
-class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin):
+class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin, SessionGatewayRoutingMixin):
     """
     SQLite-backed session storage with FTS5 search.
 
@@ -3407,82 +3408,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do)
 
-    # ── Gateway routing index (replaces sessions.json, #9006 follow-up) ────
-
-    def save_gateway_routing_entry(
-        self, session_key: str, entry_json: str, *, scope: str = ""
-    ) -> None:
-        """Upsert one gateway routing entry (session_key -> SessionEntry JSON).
-
-        The gateway_routing table is the durable replacement for
-        sessions.json: one row per routing key, holding the full serialized
-        ``SessionEntry`` so the gateway can rehydrate exactly what it wrote.
-
-        ``scope`` namespaces the index the way separate sessions.json files
-        did (one per sessions_dir) — callers pass their sessions_dir path so
-        two stores with different directories never share routing state.
-        """
-        if not session_key or not entry_json:
-            return
-
-        def _do(conn):
-            conn.execute(
-                """INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(scope, session_key) DO UPDATE SET
-                       entry_json = excluded.entry_json,
-                       updated_at = excluded.updated_at""",
-                (scope, session_key, entry_json, time.time()),
-            )
-
-        self._execute_write(_do)
-
-    def replace_gateway_routing_entries(
-        self, entries: Dict[str, str], *, scope: str = ""
-    ) -> None:
-        """Atomically replace the routing index for *scope* with *entries*.
-
-        Mirrors the sessions.json full-rewrite semantics: keys absent from
-        *entries* are removed (pruned/reset sessions disappear from the
-        index).  Runs as a single write transaction.  Other scopes are
-        untouched.
-        """
-        now = time.time()
-
-        def _do(conn):
-            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
-            if entries:
-                conn.executemany(
-                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    [(scope, k, v, now) for k, v in entries.items() if k and v],
-                )
-
-        self._execute_write(_do)
-
-    def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
-        """Load routing entries for *scope* as {session_key: entry_json}."""
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?",
-                (scope,),
-            ).fetchall()
-        return {r["session_key"]: r["entry_json"] for r in rows}
-
-    def delete_gateway_routing_entries(
-        self, session_keys: List[str], *, scope: str = ""
-    ) -> None:
-        """Remove routing entries for the given session keys in *scope*."""
-        if not session_keys:
-            return
-
-        def _do(conn):
-            conn.executemany(
-                "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
-                [(scope, k) for k in session_keys],
-            )
-
-        self._execute_write(_do)
 
     def list_gateway_sessions(
         self,

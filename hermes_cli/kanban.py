@@ -416,6 +416,20 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_swarm.add_argument("--verifier", required=True, help="Verifier profile")
     p_swarm.add_argument("--synthesizer", required=True, help="Synthesizer/writer profile")
+    p_swarm.add_argument("--workspace", default="scratch",
+                         help="scratch | worktree | worktree:<path> | dir:<path> "
+                              "(default: scratch). For 'worktree', every card in the "
+                              "swarm (worker, verifier, synthesizer) shares the SAME "
+                              "checkout/branch so the verifier reviews the worker's "
+                              "actual changes instead of an empty dir. Only one "
+                              "--worker is allowed with worktree swarms.")
+    p_swarm.add_argument("--branch", default=None,
+                         help="Branch name for worktree swarms, e.g. wt/t6-wire "
+                              "(only valid with --workspace worktree)")
+    p_swarm.add_argument("--project", default=None,
+                         help="Link to a project (id or slug) so the shared worktree "
+                              "is anchored under the project's primary repo with a "
+                              "deterministic branch. See `hermes project list`.")
     p_swarm.add_argument("--tenant", default=None, help="Tenant namespace")
     p_swarm.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
     p_swarm.add_argument("--created-by", default=None, help="Creator/anchor profile")
@@ -1549,18 +1563,35 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
     if not workers:
         print("kanban swarm: at least one --worker is required", file=sys.stderr)
         return 2
-    with kb.connect_closing() as conn:
-        created = ks.create_swarm(
-            conn,
-            goal=args.goal,
-            workers=workers,
-            verifier_assignee=args.verifier,
-            synthesizer_assignee=args.synthesizer,
-            tenant=args.tenant,
-            created_by=args.created_by or _profile_author(),
-            priority=args.priority,
-            idempotency_key=getattr(args, "idempotency_key", None),
-        )
+    try:
+        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+        branch_name = _parse_branch_flag(getattr(args, "branch", None))
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban swarm: {exc}", file=sys.stderr)
+        return 2
+    if branch_name and ws_kind != "worktree":
+        print("kanban swarm: --branch is only valid with --workspace worktree", file=sys.stderr)
+        return 2
+    try:
+        with kb.connect_closing() as conn:
+            created = ks.create_swarm(
+                conn,
+                goal=args.goal,
+                workers=workers,
+                verifier_assignee=args.verifier,
+                synthesizer_assignee=args.synthesizer,
+                tenant=args.tenant,
+                created_by=args.created_by or _profile_author(),
+                workspace_kind=ws_kind,
+                workspace_path=ws_path,
+                project_id=getattr(args, "project", None),
+                branch_name=branch_name,
+                priority=args.priority,
+                idempotency_key=getattr(args, "idempotency_key", None),
+            )
+    except ValueError as exc:
+        print(f"kanban swarm: {exc}", file=sys.stderr)
+        return 2
     if getattr(args, "json", False):
         print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))
     else:

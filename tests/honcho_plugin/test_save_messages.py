@@ -63,3 +63,27 @@ class TestOnSessionEnd:
         p = _provider(save_messages=True)
         p.on_session_end([])
         p._manager.flush_all.assert_called_once()
+
+
+class TestShutdown:
+    """shutdown() joins worker threads then flushes; saveMessages=false must
+    skip the flush (persistence) while still running the joins (cleanup)."""
+
+    def _provider_for_shutdown(self, save_messages: bool) -> HonchoMemoryProvider:
+        p = _provider(save_messages=save_messages)
+        # shutdown() iterates these thread handles; if no turn/session-end ran
+        # they may be unset, so default to None (= "no thread started").
+        p._init_thread = None
+        p._prefetch_thread = None
+        p._sync_thread = None
+        return p
+
+    def test_disabled_skips_flush(self):
+        p = self._provider_for_shutdown(save_messages=False)
+        p.shutdown()
+        p._manager.flush_all.assert_not_called()
+
+    def test_enabled_flushes(self):
+        p = self._provider_for_shutdown(save_messages=True)
+        p.shutdown()
+        p._manager.flush_all.assert_called_once()

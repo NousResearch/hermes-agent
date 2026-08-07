@@ -10,10 +10,62 @@ from __future__ import annotations
 import pytest
 
 
+def test_switch_model_resolves_vertex_profile_alias(monkeypatch):
+    from hermes_cli import model_switch as ms
+    from hermes_cli.model_switch import switch_model
 
+    runtime_calls = []
+    validation_calls = []
 
+    def _resolve_runtime_provider(**kwargs):
+        runtime_calls.append(kwargs)
+        return {
+            "api_key": "oauth-token",
+            "base_url": (
+                "https://us-central1-aiplatform.googleapis.com/"
+                "v1beta1/openapi"
+            ),
+            "api_mode": "chat_completions",
+        }
 
+    def _validate_requested_model(model, provider, **kwargs):
+        validation_calls.append((model, provider, kwargs))
+        return {
+            "accepted": True,
+            "persist": False,
+            "recognized": True,
+            "message": "",
+        }
 
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _resolve_runtime_provider,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        _validate_requested_model,
+    )
+    monkeypatch.setattr(ms, "get_model_capabilities", lambda *_args: None)
+    monkeypatch.setattr(ms, "get_model_info", lambda *_args: None)
+
+    result = switch_model(
+        raw_input="gemini-2.5-pro",
+        current_provider="openrouter",
+        current_model="google/gemini-2.5-flash",
+        explicit_provider="vertex-ai",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "vertex"
+    assert result.provider_changed is True
+    assert result.api_key == "oauth-token"
+    assert result.api_mode == "chat_completions"
+    assert runtime_calls == [
+        {"requested": "vertex", "target_model": "gemini-2.5-pro"}
+    ]
+    assert validation_calls[0][0:2] == ("gemini-2.5-pro", "vertex")
 
 
 def test_resolve_runtime_provider_raises_autherror_when_unresolved(monkeypatch):

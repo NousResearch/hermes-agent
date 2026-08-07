@@ -48,6 +48,50 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+_MODEL_PROBE_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
+
+
+class _ModelProbeResponseTooLarge(ValueError):
+    pass
+
+
+def _bound_model_probe_response(response: Any) -> None:
+    """Cap model-discovery responses before httpx buffers them in memory."""
+    import httpx
+
+    content_length = response.headers.get("content-length")
+    if content_length:
+        try:
+            parsed_content_length = int(content_length)
+        except ValueError:
+            parsed_content_length = None
+        if (
+            parsed_content_length is not None
+            and parsed_content_length > _MODEL_PROBE_RESPONSE_MAX_BYTES
+        ):
+            raise _ModelProbeResponseTooLarge(
+                f"model probe response exceeds {_MODEL_PROBE_RESPONSE_MAX_BYTES} bytes"
+            )
+
+    wrapped = response.stream
+
+    class _LimitedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            total = 0
+            for chunk in wrapped:
+                total += len(chunk)
+                if total > _MODEL_PROBE_RESPONSE_MAX_BYTES:
+                    raise _ModelProbeResponseTooLarge(
+                        f"model probe response exceeds {_MODEL_PROBE_RESPONSE_MAX_BYTES} bytes"
+                    )
+                yield chunk
+
+        def close(self) -> None:
+            wrapped.close()
+
+    response.stream = _LimitedStream()
+
+
 def _resolve_requests_verify() -> bool | str:
     """Resolve SSL verify setting for `requests` calls from env vars.
 
@@ -995,7 +1039,11 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
 
     result: Optional[str] = None
     try:
-        with httpx.Client(timeout=2.0, headers=headers) as client:
+        with httpx.Client(
+            timeout=2.0,
+            headers=headers,
+            event_hooks={"response": [_bound_model_probe_response]},
+        ) as client:
             # LM Studio exposes /api/v1/models — check first (most specific)
             try:
                 r = client.get(f"{lmstudio_url}/api/v1/models")
@@ -1811,7 +1859,11 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     headers = _auth_headers(api_key)
 
     try:
-        with httpx.Client(timeout=3.0, headers=headers) as client:
+        with httpx.Client(
+            timeout=3.0,
+            headers=headers,
+            event_hooks={"response": [_bound_model_probe_response]},
+        ) as client:
             resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
             if resp.status_code != 200:
                 return None
@@ -1869,7 +1921,11 @@ def query_ollama_supports_vision(model: str, base_url: str, api_key: str = "") -
     headers = _auth_headers(api_key)
 
     try:
-        with httpx.Client(timeout=3.0, headers=headers) as client:
+        with httpx.Client(
+            timeout=3.0,
+            headers=headers,
+            event_hooks={"response": [_bound_model_probe_response]},
+        ) as client:
             resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
             if resp.status_code != 200:
                 return None
@@ -1949,7 +2005,11 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
     headers = _auth_headers(api_key)
 
     try:
-        with httpx.Client(timeout=5.0, headers=headers) as client:
+        with httpx.Client(
+            timeout=5.0,
+            headers=headers,
+            event_hooks={"response": [_bound_model_probe_response]},
+        ) as client:
             resp = client.post(f"{server_url}/api/show", json={"name": model})
             if resp.status_code != 200:
                 return None
@@ -2078,7 +2138,11 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
         server_type = None
 
     try:
-        with httpx.Client(timeout=3.0, headers=headers) as client:
+        with httpx.Client(
+            timeout=3.0,
+            headers=headers,
+            event_hooks={"response": [_bound_model_probe_response]},
+        ) as client:
             # Ollama: /api/show returns model details with context info
             if server_type == "ollama":
                 resp = client.post(f"{server_url}/api/show", json={"name": model})

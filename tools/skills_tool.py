@@ -78,6 +78,7 @@ from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, Any, List, Optional, Set, Tuple
 
+from tools.path_security import has_traversal_component, validate_within_dir
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled
@@ -1380,8 +1381,6 @@ def skill_view(
 
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
-            from tools.path_security import validate_within_dir, has_traversal_component
-
             # Security: Prevent path traversal attacks
             if has_traversal_component(file_path):
                 return json.dumps(
@@ -1504,13 +1503,19 @@ def skill_view(
 
         if skill_dir:
             references_dir = skill_dir / "references"
-            if references_dir.exists():
+            if references_dir.exists() and not validate_within_dir(
+                references_dir, skill_dir
+            ):
                 reference_files = [
-                    str(f.relative_to(skill_dir)) for f in references_dir.glob("*.md")
+                    str(f.relative_to(skill_dir))
+                    for f in references_dir.glob("*.md")
+                    if f.is_file() and not validate_within_dir(f, skill_dir)
                 ]
 
             templates_dir = skill_dir / "templates"
-            if templates_dir.exists():
+            if templates_dir.exists() and not validate_within_dir(
+                templates_dir, skill_dir
+            ):
                 for ext in [
                     "*.md",
                     "*.py",
@@ -1524,21 +1529,30 @@ def skill_view(
                         [
                             str(f.relative_to(skill_dir))
                             for f in templates_dir.rglob(ext)
+                            if f.is_file() and not validate_within_dir(f, skill_dir)
                         ]
                     )
 
             # assets/ — agentskills.io standard directory for supplementary files
             assets_dir = skill_dir / "assets"
-            if assets_dir.exists():
+            if assets_dir.exists() and not validate_within_dir(
+                assets_dir, skill_dir
+            ):
                 for f in assets_dir.rglob("*"):
-                    if f.is_file():
+                    if f.is_file() and not validate_within_dir(f, skill_dir):
                         asset_files.append(str(f.relative_to(skill_dir)))
 
             scripts_dir = skill_dir / "scripts"
-            if scripts_dir.exists():
+            if scripts_dir.exists() and not validate_within_dir(
+                scripts_dir, skill_dir
+            ):
                 for ext in ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"]:
                     script_files.extend(
-                        [str(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)]
+                        [
+                            str(f.relative_to(skill_dir))
+                            for f in scripts_dir.glob(ext)
+                            if f.is_file() and not validate_within_dir(f, skill_dir)
+                        ]
                     )
 
         # Read tags/related_skills with backward compat:

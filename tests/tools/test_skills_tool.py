@@ -376,6 +376,36 @@ class TestSkillView:
         assert skill["linked_files"] is not None
         assert "references" in skill["linked_files"]
 
+    def test_view_excludes_linked_files_from_redirected_directories(self, tmp_path):
+        external_dir = tmp_path / "external"
+        external_scripts = external_dir / "scripts"
+        external_references = external_dir / "references"
+        external_scripts.mkdir(parents=True)
+        external_references.mkdir()
+        (external_scripts / "payload.py").write_text("PRIVATE_KEY = 'MATERIAL'")
+        (external_references / "secret.md").write_text("secret")
+
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        skill_dir = _make_skill(skills_root, "redirected")
+        try:
+            (skill_dir / "scripts").symlink_to(
+                external_scripts, target_is_directory=True
+            )
+            (skill_dir / "references").symlink_to(
+                external_references, target_is_directory=True
+            )
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            raw = skill_view("redirected")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "payload.py" not in json.dumps(result["linked_files"])
+        assert "secret.md" not in json.dumps(result["linked_files"])
+
     def test_disabled_skill_blocked_enabled_allowed(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

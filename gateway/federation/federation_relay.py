@@ -390,21 +390,73 @@ class TaskExecutorRelay:
     # ----------------------------------------------------------------
 
     async def _default_handler(self, state: TaskExecutionState) -> dict:
-        """Default task handler — simulates work for testing."""
+        """Bridge a federated task into the local Kanban dispatcher.
+
+        Creates a Kanban task with the same task_id as the federation task
+        (idempotency key ensures no duplicates on relay retry).  The local
+        _kanban_dispatcher_watcher will see the 'ready' task on its next tick
+        and spawn a real worker — this keeps federation and Kanban fully
+        decoupled while still sharing the same execution pool.
+        """
         logger.info(
-            "Federation relay: executing default handler for %s",
-            state.task_id,
+            "Federation relay [%s]: bridging task to Kanban — %s",
+            self.device_id, state.task_id,
         )
 
-        # Simulate work with progress updates
-        steps = 10
-        for i in range(steps):
-            await asyncio.sleep(1)
-            state.progress = (i + 1) / steps
-            state.current_step = f"Step {i + 1}/{steps}"
-            state.progress_note = f"Processing step {i + 1}"
+        try:
+            import sqlite3
+            from pathlib import Path
+            from hermes_cli.kanban_db import create_task, kanban_home
 
-        return {"message": "Task completed by default handler"}
+            # Locate the local Kanban DB for this profile
+            kanban_path = kanban_home() / "kanban" / "kanban.db"
+            if not kanban_path.exists():
+                logger.warning(
+                    "Federation relay [%s]: Kanban DB not found at %s — "
+                    "task %s will not be dispatched",
+                    self.device_id, kanban_path, state.task_id,
+                )
+                return {"error": "kanban_db_not_found", "path": str(kanban_path)}
+
+            conn = sqlite3.connect(kanban_path)
+            try:
+                # Use the federation task_id as idempotency_key so re-relayed
+                # tasks don't create duplicates in Kanban.
+                kanban_task_id = create_task(
+                    conn,
+                    title=state.title or f"[Federation] {state.task_id}",
+                    body=state.description,
+                    priority=state.priority,
+                    initial_status="ready",
+                    board=None,  # use default board
+                    idempotency_key=f"fed:{state.task_id}",
+                    session_id=state.context_snapshot.get("session_id"),
+                )
+                logger.info(
+                    "Federation relay [%s]: task %s → Kanban task %s created",
+                    self.device_id, state.task_id, kanban_task_id,
+                )
+                return {
+                    "kanban_task_id": kanban_task_id,
+                    "federation_task_id": state.task_id,
+                    "status": "bridged_to_kanban",
+                }
+            finally:
+                conn.close()
+
+        except ImportError as exc:
+            logger.warning(
+                "Federation relay [%s]: hermes_cli.kanban_db not importable "
+                "(%s) — task %s will not be dispatched",
+                self.device_id, exc, state.task_id,
+            )
+            return {"error": "kanban_import_failed", "detail": str(exc)}
+        except Exception as exc:
+            logger.error(
+                "Federation relay [%s]: failed to bridge task %s → Kanban: %s",
+                self.device_id, state.task_id, exc, exc_info=True,
+            )
+            return {"error": "kanban_bridge_failed", "detail": str(exc)}
 
     # ----------------------------------------------------------------
     # State queries

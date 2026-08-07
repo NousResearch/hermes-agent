@@ -326,6 +326,41 @@ def _resolve_db_path(db_path_config: Optional[str]) -> Optional[Path]:
     return Path(raw)
 
 
+# Lock file path suffix for single-writer election
+_WRITER_LOCK_SUFFIX = ".writer.lock"
+
+
+def _try_acquire_writer_lock(lock_path: Path) -> bool:
+    """Try to acquire the single-writer advisory lock.
+
+    Uses a separate lock file (not the SQLite DB) so we don't corrupt the DB.
+    Returns True if this device is the writer, False otherwise.
+    The writer writes heartbeats, detects offline peers, and claims tasks.
+    Non-writers only update their own heartbeat row.
+    """
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Use O_CREAT | O_EXCL = atomic create-if-not-exists
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        # Write device_id and timestamp
+        os.write(fd, f"{socket.gethostname()}:{time.time():.0f}".encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        # Another device already holds the lock — check if it's stale (>5min)
+        try:
+            age = time.time() - os.path.getmtime(lock_path)
+            if age > 300:
+                # Stale lock — take over
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644)
+                os.write(fd, f"{socket.gethostname()}:{time.time():.0f}".encode())
+                os.close(fd)
+                return True
+        except Exception:
+            pass
+        return False
+
+
 async def _run_shared_db_loop(
     config: FederationConfig,
     device_id: str,
@@ -333,16 +368,29 @@ async def _run_shared_db_loop(
     db_path: Optional[Path] = None,
     adapter: Optional[Any] = None,
 ) -> None:
-    """v1 shared database heartbeat loop."""
+    """v1 shared database heartbeat loop.
+
+    Single-writer mode: only one device writes to the SQLite.
+    Other devices detect the lock and skip write operations (they still
+    send WebSocket heartbeats in lan/auto modes).  This eliminates
+    SQLite write conflicts (BUSY) when two devices write simultaneously.
+
+    Election is done via an advisory lock file.  If the writer disappears
+    for >5 minutes, any device can seize the lock and become the writer.
+    """
     if db_path is None:
         db_path = _resolve_db_path(config.db_path)
         if not db_path:
             logger.info("Federation: no database path resolved, skipping")
             return
 
+    writer_lock_path = Path(str(db_path) + _WRITER_LOCK_SUFFIX)
+    is_writer = _try_acquire_writer_lock(writer_lock_path)
+
     logger.info(
-        "Federation heartbeat started (shared_db mode, device=%s, db=%s, interval=%ds)",
-        device_id, db_path, tick,
+        "Federation heartbeat started (shared_db mode, device=%s, db=%s, "
+        "writer=%s, interval=%ds)",
+        device_id, db_path, is_writer, tick,
     )
 
     # Track active task executions to avoid duplicate spawns.
@@ -351,6 +399,9 @@ async def _run_shared_db_loop(
     try:
         while True:
             try:
+                # Refresh writer status on each tick (in case we became writer)
+                is_writer = _try_acquire_writer_lock(writer_lock_path)
+
                 conn = _get_connection(db_path)
                 if conn is None:
                     await asyncio.sleep(tick)
@@ -359,44 +410,41 @@ async def _run_shared_db_loop(
                 try:
                     _ensure_schema(conn)
                     _heartbeat(conn, device_id)
-                    relays = _detect_offline(conn, device_id, config.offline_threshold_s)
-                    claimed = _claim_task(conn, device_id)
 
-                    for r in relays:
-                        logger.info(
-                            "Federation relay: %s(%s) → task %s (%s)",
-                            r["device"], r["hostname"], r["task_id"], r["task_title"],
-                        )
-                    if claimed:
-                        task_id = claimed["task_id"]
-                        if task_id not in _active_executions:
-                            _active_executions.add(task_id)
+                    # Only the writer does offline detection and task claiming.
+                    # Non-writers skip these to avoid double-write SQLite conflicts.
+                    if is_writer:
+                        relays = _detect_offline(conn, device_id, config.offline_threshold_s)
+                        claimed = _claim_task(conn, device_id)
+
+                        for r in relays:
                             logger.info(
-                                "Federation: executing claimed task %s (%s)",
-                                claimed["task_id"], claimed["title"],
+                                "Federation relay: %s(%s) → task %s (%s)",
+                                r["device"], r["hostname"], r["task_id"], r["task_title"],
                             )
-                            # Spawn async execution via adapter or direct executor.
-                            if adapter and hasattr(adapter, "claim_and_execute"):
-                                asyncio.create_task(
-                                    adapter.claim_and_execute(
-                                        task_id=task_id,
-                                        title=claimed["title"],
-                                        description=claimed.get("description", ""),
-                                        context_snapshot=claimed.get("context", {}),
-                                    ),
-                                    name=f"fed-exec-{task_id}",
-                                )
-                            else:
-                                # Fallback: mark as in_progress and rely on external executor.
+                        if claimed:
+                            task_id = claimed["task_id"]
+                            if task_id not in _active_executions:
+                                _active_executions.add(task_id)
                                 logger.info(
-                                    "Federation: task %s claimed — awaiting external execution",
-                                    task_id,
+                                    "Federation: executing claimed task %s (%s)",
+                                    claimed["task_id"], claimed["title"],
                                 )
-                        else:
-                            logger.debug(
-                                "Federation: task %s already executing, skipping",
-                                task_id,
-                            )
+                                if adapter and hasattr(adapter, "claim_and_execute"):
+                                    asyncio.create_task(
+                                        adapter.claim_and_execute(
+                                            task_id=task_id,
+                                            title=claimed["title"],
+                                            description=claimed.get("description", ""),
+                                            context_snapshot=claimed.get("context", {}),
+                                        ),
+                                        name=f"fed-exec-{task_id}",
+                                    )
+                    else:
+                        # Non-writer: just broadcast presence via adapter if available.
+                        # In shared_db v1 there is no WebSocket adapter, so this is
+                        # a no-op — the writer's next heartbeat tick will see us.
+                        pass
                 finally:
                     conn.close()
 

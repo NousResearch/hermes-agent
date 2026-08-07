@@ -17,6 +17,9 @@ const COMMIT_CONTEXT_UNTRACKED_MAX = 80
 const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
+// An untracked directory arrives as ONE row, so opening it can mean diffing an
+// unbounded subtree (a build output, a browser profile). Cap the expansion.
+const UNTRACKED_DIR_FILE_CAP = 50
 
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
@@ -325,7 +328,82 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
   }
 }
 
-async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
+// All-add diff for ONE untracked file. `--no-index` exits non-zero by design
+// when the two sides differ, so go around simple-git's reject-on-nonzero with a
+// raw execFile and read stdout.
+function synthesizeAddDiff(cwd, gitBin, filePath): Promise<string> {
+  return new Promise(resolve => {
+    execFile(
+      gitBin || 'git',
+      ['diff', '--no-index', '--', '/dev/null', filePath],
+      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
+      (_err, stdout) => resolve(String(stdout || ''))
+    )
+  })
+}
+
+// The untracked paths git reports under `pathspec`. Resolved through git rather
+// than a filesystem walk so .gitignore is honored and the enumeration can never
+// escape the repo. An untracked FILE resolves to itself; an untracked DIRECTORY
+// resolves to its descendants; a nested git repo stays opaque and resolves to
+// the `dir/` row itself (nothing to expand).
+// `--literal-pathspecs` because these paths come from `git status`, not from a
+// user typing a glob: without it a real filename containing pathspec wildcards
+// (`weird[1].txt`) also matches its neighbours (`weird1.txt`), which would pull
+// files the user never clicked into the payload.
+async function untrackedPathsUnder(git, pathspec): Promise<string[]> {
+  const raw = await git
+    .raw(['--literal-pathspecs', 'ls-files', '--others', '--exclude-standard', '-z', '--', pathspec])
+    .catch(() => '')
+
+  return String(raw || '')
+    .split('\0')
+    .filter(Boolean)
+}
+
+// All-add diff for an untracked row, which may be a file OR a directory.
+// `git status --untracked-files=normal` deliberately collapses an untracked
+// directory into a single `dir/` row (keeping generated trees from flooding the
+// pane), but `git diff --no-index -- /dev/null dir/` can't diff that: it pairs
+// the operands as trees and fails looking for `dir/null`, printing nothing to
+// stdout. That left the pane rendering "No diff to show" under a fully
+// populated header. Expand the row to the files git actually sees underneath
+// and concatenate their all-add diffs into one multi-file payload.
+async function untrackedDiff(cwd, git, gitBin, filePath): Promise<string> {
+  const entries = await untrackedPathsUnder(git, filePath)
+
+  // A plain untracked file resolves to itself — the common case, one diff.
+  if (entries.length === 1 && entries[0] === filePath) {
+    return synthesizeAddDiff(cwd, gitBin, filePath)
+  }
+
+  // Entries that keep a trailing slash are opaque to this repo (a nested git
+  // repo); there is no file to synthesize a diff from.
+  const files = entries.filter(entry => !entry.endsWith('/'))
+
+  if (files.length === 0) {
+    return ''
+  }
+
+  const visible = files.slice(0, UNTRACKED_DIR_FILE_CAP)
+  const diffs = []
+
+  for (let i = 0; i < visible.length; i += UNTRACKED_LINE_COUNT_CONCURRENCY) {
+    diffs.push(
+      ...(await Promise.all(
+        visible.slice(i, i + UNTRACKED_LINE_COUNT_CONCURRENCY).map(entry => synthesizeAddDiff(cwd, gitBin, entry))
+      ))
+    )
+  }
+
+  const omitted = files.length - visible.length
+  const body = diffs.filter(Boolean).join('')
+
+  // Never truncate silently — the reader has to know the view is partial.
+  return omitted > 0 ? `${body}# ${omitted} more file(s) omitted\n` : body
+}
+
+async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin): Promise<string> {
   let cwd
 
   try {
@@ -348,6 +426,17 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
   }
 
   if (staged) {
+    // The row's +/- sums the staged AND unstaged churn for this path, so the
+    // diff has to cover both: HEAD..worktree is the whole story. `--cached`
+    // alone silently dropped the unstaged half of a partially-staged file.
+    // Fall back to the index-only diff in a repo with no commits yet, where
+    // there is no HEAD to diff against.
+    const combined = await safe(['HEAD', '--', filePath])
+
+    if (combined.trim()) {
+      return combined
+    }
+
     return safe(['--cached', '--', filePath])
   }
 
@@ -357,24 +446,14 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
     return worktree
   }
 
-  // Untracked file: no worktree diff exists, so synthesize an all-add diff via
-  // --no-index (exits non-zero by design when files differ, so go around
-  // simple-git's reject-on-nonzero with a raw execFile).
-  return new Promise(resolve => {
-    execFile(
-      gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
-      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
-      (_err, stdout) => resolve(String(stdout || ''))
-    )
-  })
+  return untrackedDiff(cwd, git, gitBin, filePath)
 }
 
 // Working-tree-vs-HEAD diff for ONE file — the "what changed since the last
 // commit" view used by the file preview. Unlike reviewDiff this never synthesizes
 // a full-add for a clean tracked file (so a pristine file shows no diff); it only
 // all-adds a genuinely untracked file.
-async function fileDiffVsHead(repoPath, filePath, gitBin) {
+async function fileDiffVsHead(repoPath, filePath, gitBin): Promise<string> {
   let cwd
 
   try {
@@ -398,14 +477,9 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
     return ''
   }
 
-  return new Promise(resolve => {
-    execFile(
-      gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
-      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
-      (_err, stdout) => resolve(String(stdout || ''))
-    )
-  })
+  // Same directory caveat as reviewDiff: an untracked row can be a collapsed
+  // directory, which --no-index cannot diff against /dev/null.
+  return untrackedDiff(cwd, git, gitBin, filePath)
 }
 
 async function reviewStage(repoPath, filePath, gitBin) {

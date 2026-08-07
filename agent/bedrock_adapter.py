@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import threading
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -56,6 +57,7 @@ except Exception:
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
+_bedrock_client_cache_lock = threading.Lock()
 
 
 _MIN_BOTO3_VERSION = (1, 34, 59)
@@ -113,8 +115,9 @@ def _get_bedrock_control_client(region: str):
 
 def reset_client_cache():
     """Clear cached boto3 clients. Used in tests and profile switches."""
-    _bedrock_runtime_client_cache.clear()
-    _bedrock_control_client_cache.clear()
+    with _bedrock_client_cache_lock:
+        _bedrock_runtime_client_cache.clear()
+        _bedrock_control_client_cache.clear()
 
 
 def invalidate_runtime_client(region: str) -> bool:
@@ -128,8 +131,9 @@ def invalidate_runtime_client(region: str) -> bool:
     Returns True if a cached entry was evicted, False if the region was not
     cached.
     """
-    existed = region in _bedrock_runtime_client_cache
-    _bedrock_runtime_client_cache.pop(region, None)
+    with _bedrock_client_cache_lock:
+        existed = region in _bedrock_runtime_client_cache
+        _bedrock_runtime_client_cache.pop(region, None)
     return existed
 
 

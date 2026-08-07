@@ -114,7 +114,14 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     try:
         os.replace(tmp_str, real_path)
     except OSError as exc:
-        if exc.errno not in (errno.EXDEV, errno.EBUSY):
+        # Windows: os.replace fails with EACCES when the target file is open
+        # in another handle (e.g. the running process has config.yaml
+        # mmap'd or loaded). Fall back to copy+unlink like EXDEV/EBUSY.
+        # On POSIX, EACCES means a genuine permission denial — propagate it
+        # rather than silently broadening the fallback.
+        if exc.errno not in (errno.EXDEV, errno.EBUSY) and not (
+            exc.errno == errno.EACCES and os.name == "nt"
+        ):
             raise
         logger.debug(
             "atomic_replace: %s -> %s failed with %s; falling back to copy",

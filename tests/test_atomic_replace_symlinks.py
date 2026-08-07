@@ -215,6 +215,53 @@ def test_atomic_replace_copy_fallback_preserves_symlink(
     assert not tmp.exists()
 
 
+def test_atomic_replace_eacces_falls_back_to_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows: os.replace fails with EACCES when the target is open in
+    another handle (config migrate after update). Must fall back to the
+    copy+unlink path instead of re-raising (regression for PR #73807).
+
+    ``os.name`` is patched to ``nt`` so the Windows-only fallback path is
+    exercised on Linux CI too.
+    """
+    monkeypatch.setattr(os, "name", "nt")
+    target = tmp_path / "config.yaml"
+    target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
+
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES), src, None, dst)
+
+    monkeypatch.setattr("utils.os.replace", fail_replace)
+
+    assert Path(atomic_replace(tmp, target)) == target
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert not tmp.exists()
+
+
+def test_atomic_replace_eacces_propagates_on_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POSIX: EACCES is a genuine permission denial and must keep
+    propagating — the copy fallback is Windows-only (PR #73807)."""
+    monkeypatch.setattr(os, "name", "posix")
+    target = tmp_path / "config.yaml"
+    target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
+
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES), src, None, dst)
+
+    monkeypatch.setattr("utils.os.replace", fail_replace)
+
+    with pytest.raises(OSError) as excinfo:
+        atomic_replace(tmp, target)
+    assert excinfo.value.errno == errno.EACCES
+    # Nothing was written through the fallback on POSIX.
+    assert target.read_text(encoding="utf-8") == "old\n"
+
+
 
 
 

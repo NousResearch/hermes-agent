@@ -34,6 +34,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from utils import env_var_enabled
+
 logger = logging.getLogger(__name__)
 
 
@@ -160,7 +162,8 @@ def is_trusted_peer(identity: str) -> bool:
     otherwise any *authenticated* identity is allowed (authentication is the
     primary gate — the allow-list is an optional restriction on top).
     """
-    if os.getenv("A2A_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes"):
+    # Shared TRUTHY aliases (1/true/yes/on) — previously omitted "on".
+    if env_var_enabled("A2A_ALLOW_ALL_USERS"):
         return True
     if localhost_only():
         return True

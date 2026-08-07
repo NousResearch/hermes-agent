@@ -136,6 +136,19 @@ class TestTrustedPeers:
         monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice")
         assert security.is_trusted_peer("mallory") is True
 
+    @pytest.mark.parametrize("raw", ["1", "yes", "on", "TRUE", " On "])
+    def test_allow_all_users_truthy_aliases(self, monkeypatch, raw):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
+        monkeypatch.setenv("A2A_ALLOW_ALL_USERS", raw)
+        monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice")
+        assert security.is_trusted_peer("mallory") is True
+
+    def test_allow_all_users_off_keeps_allowlist(self, monkeypatch):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
+        monkeypatch.setenv("A2A_ALLOW_ALL_USERS", "off")
+        monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice")
+        assert security.is_trusted_peer("mallory") is False
+
 
 class TestInjectionFilter:
     def test_chatml_defanged(self):

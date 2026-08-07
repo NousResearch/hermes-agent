@@ -160,16 +160,25 @@ def _poll_readiness(url: str, timeout: float, interval: float = 1.0) -> tuple[bo
 
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
-    """Terminate the started app and its whole process group cleanly."""
+    """Terminate the started app and its whole process group cleanly.
+
+    On POSIX the child is spawned with ``start_new_session=True`` so we can
+    signal the whole group; on Windows (no ``os.killpg``) we fall back to
+    terminating just the direct child.
+    """
     if proc.poll() is not None:
         return
+    killpg = getattr(os, "killpg", None)
+    getpgid = getattr(os, "getpgid", None)
+    pgid = None
+    if killpg is not None and getpgid is not None:
+        try:
+            pgid = getpgid(proc.pid)
+        except (ProcessLookupError, PermissionError):
+            pgid = None
     try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, PermissionError):
-        pgid = None
-    try:
-        if pgid is not None:
-            os.killpg(pgid, signal.SIGTERM)
+        if pgid is not None and killpg is not None:
+            killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX-only branch (killpg checked above)
         else:
             proc.terminate()
     except (ProcessLookupError, PermissionError):
@@ -178,8 +187,8 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         try:
-            if pgid is not None:
-                os.killpg(pgid, signal.SIGKILL)
+            if pgid is not None and killpg is not None:
+                killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only branch (killpg checked above)
             else:
                 proc.kill()
         except (ProcessLookupError, PermissionError):

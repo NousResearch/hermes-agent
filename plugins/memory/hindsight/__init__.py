@@ -1420,14 +1420,29 @@ class HindsightMemoryProvider(MemoryProvider):
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.
 
-        For local_embedded the daemon is on a per-profile dynamic port,
-        so we prefer the running client's URL when available; otherwise
-        fall back to the configured api_url.
+        For local_embedded the daemon is on a per-profile dynamic port, so
+        we prefer the running client's URL when available; otherwise fall
+        back to the configured api_url. Never fall back to the static
+        default (localhost:8888) while the client is still starting — that
+        dead port would fail every probe and lock the process into legacy
+        per-process document_id. The daemon's dynamic port is deterministic
+        per profile, so it can be resolved from the daemon manager or the
+        profile env file without blocking on daemon startup.
         """
-        if self._mode == "local_embedded" and self._client is not None:
-            url = getattr(self._client, "url", None)
-            if url:
-                return str(url)
+        if self._mode == "local_embedded":
+            if self._client is not None:
+                mgr = getattr(self._client, "_manager", None)
+                get_url = getattr(mgr, "get_url", None)
+                profile = getattr(self._client, "profile", None)
+                if get_url is not None and profile:
+                    try:
+                        return str(get_url(profile))
+                    except Exception:
+                        pass
+            env = _load_simple_env(_embedded_profile_env_path(self._config or {}))
+            port = env.get("HINDSIGHT_API_PORT")
+            if port:
+                return f"http://127.0.0.1:{port}"
         return self._api_url or ""
 
     def _resolve_retain_target(self, fallback_document_id: str) -> tuple[str, str | None]:

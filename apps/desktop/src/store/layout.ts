@@ -414,17 +414,32 @@ export function unpinSession(sessionId: string) {
   )
 }
 
-// Replace the whole pinned order at once (drag-reorder hands back the new order
-// rather than a single move). Keep only ids that are actually pinned so a stale
-// row can't smuggle an unpinned id into the store.
+// Apply a new pinned order from a drag. The dragged list only holds the pins
+// that currently RESOLVE to a loaded row, so this is a permutation of a subset:
+// re-slot the ids it names into the positions they already occupied, leaving
+// any pin it doesn't mention (row not loaded yet) exactly where it was.
+// Requiring both lists to be the same length instead let one unresolved pin
+// silently discard the whole reorder.
 export function setPinnedSessionOrder(ids: string[]) {
   const prev = $pinnedSessionIds.get()
   const pinned = new Set(prev)
-  const next = ids.filter(id => pinned.has(id))
+  const moving = ids.filter(id => pinned.has(id))
 
-  if (next.length === prev.length && !arraysEqual(prev, next)) {
-    $pinnedSessionIds.set(next)
+  if (!moving.length) {
+    return
   }
+
+  const movingSet = new Set(moving)
+  const next = [...prev]
+  let cursor = 0
+
+  prev.forEach((id, index) => {
+    if (movingSet.has(id)) {
+      next[index] = moving[cursor++]
+    }
+  })
+
+  setOrderIds($pinnedSessionIds, next)
 }
 
 export function bumpSessionsLimit(step: number = SIDEBAR_SESSIONS_PAGE_SIZE) {

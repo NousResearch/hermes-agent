@@ -33,6 +33,27 @@ class TestSandboxBypass:
         monkeypatch.setattr(bt, "_running_in_docker", lambda: True)
         assert bt._needs_chromium_sandbox_bypass() is True
 
+    def test_k8s_pod_triggers_bypass(self, monkeypatch):
+        monkeypatch.setattr(bt, "_running_in_docker", lambda: False)
+        monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+        assert bt._needs_chromium_sandbox_bypass() is True
+
+    def test_k8s_absent_does_not_trigger(self, monkeypatch):
+        monkeypatch.setattr(bt, "_running_in_docker", lambda: False)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        # Ensure AppArmor sysctl is absent so we don't get a false positive.
+        import builtins
+
+        real_open = builtins.open
+
+        def _open(path, *args, **kwargs):
+            if "apparmor_restrict_unprivileged_userns" in str(path):
+                raise FileNotFoundError(path)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", _open)
+        assert bt._needs_chromium_sandbox_bypass() is False
+
     def test_apparmor_userns_triggers_bypass(self, monkeypatch, tmp_path):
         monkeypatch.setattr(bt, "_running_in_docker", lambda: False)
         sysctl = tmp_path / "apparmor_restrict_unprivileged_userns"

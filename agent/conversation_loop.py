@@ -32,6 +32,7 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE,
+    _cached_prompt_reflects_builtin_memory,
     compression_skipped_due_to_lock,
     conversation_history_after_compression,
 )
@@ -671,7 +672,27 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
-    """Return False when the persisted runtime-identity lines are stale."""
+    """Return False when the persisted prompt is stale for any reason.
+
+    Two classes of drift are detected:
+
+      1. Runtime identity lines (Model / Provider / cwd / Platform) no
+         longer match the agent's current state — handled inline below.
+
+      2. Built-in MEMORY / USER PROFILE block mismatch (issue #74102).
+         A continuing gateway session can restore a stored prompt that
+         predates a mid-session profile/memory write; without this check
+         the prompt would be reused verbatim even when the user/memory
+         block is missing or stale. The check delegates to
+         ``_cached_prompt_reflects_builtin_memory`` in
+         ``agent.conversation_compression`` — the same gate the
+         compression-retention path uses — which requires the CURRENT
+         (post-reload) rendered block to appear verbatim in the cached
+         prompt and rejects leftover block headers when a target's
+         entries have since been emptied or disabled. With no memory
+         store the helper is skipped (the prompt predates the
+         built-in memory contract).
+    """
 
     def line_value(label: str) -> str:
         """Last matching line wins.
@@ -742,6 +763,18 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     current_platform = str(getattr(agent, "platform", "") or "").strip()
     if stored_platform and current_platform and stored_platform != current_platform:
         return False
+
+    # Built-in MEMORY / USER PROFILE block validity (issue #74102).
+    # Delegate to the helper the compression retention path uses: it
+    # requires the CURRENT rendered block to appear verbatim in the
+    # cached prompt (rejecting substring collisions with context files
+    # like AGENTS.md / CLAUDE.md / .cursorrules) and rejects leftover
+    # block headers when a target's entries have since been emptied or
+    # disabled. Without a memory store the contract doesn't apply and
+    # the helper is skipped.
+    if getattr(agent, "_memory_store", None) is not None:
+        if not _cached_prompt_reflects_builtin_memory(agent, prompt):
+            return False
 
     return True
 

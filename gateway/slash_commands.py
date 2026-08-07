@@ -476,8 +476,33 @@ class GatewaySlashCommandsMixin:
 
         is_create = action == "create"
 
+        # ``run_slash`` executes the synchronous CLI implementation in a
+        # worker thread. Bind the gateway conversation's durable session id in
+        # that thread so ``kanban create`` stamps the task for the notifier's
+        # later wake turn. The platform/chat subscription is still written
+        # explicitly below from the event source.
+        origin_session_id = ""
+        if is_create:
+            try:
+                session_entry = await self.async_session_store.get_or_create_session(
+                    event.source
+                )
+                origin_session_id = str(
+                    getattr(session_entry, "session_id", "") or ""
+                ).strip()
+            except Exception as exc:
+                logger.warning("kanban create session binding failed: %s", exc)
+
+        def _run_slash_bound() -> str:
+            if not origin_session_id:
+                return run_slash(text)
+            from gateway.session_context import scoped_current_session_id
+
+            with scoped_current_session_id(origin_session_id):
+                return run_slash(text)
+
         try:
-            output = await asyncio.to_thread(run_slash, text)
+            output = await asyncio.to_thread(_run_slash_bound)
         except Exception as exc:  # pragma: no cover - defensive
             return t("gateway.kanban.error_prefix", error=exc)
 

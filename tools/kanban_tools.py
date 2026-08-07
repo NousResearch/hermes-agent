@@ -1388,90 +1388,11 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
     We never want a notification bookkeeping failure to fail the
     kanban_create that the agent is mid-conversation about.
     """
-    try:
-        cfg = load_config()
-        if not cfg_get(cfg, "kanban", "auto_subscribe_on_create", default=True):
-            return False
-    except Exception:
-        # If config can't load we still default to True — this is the
-        # user-friendly behaviour that mirrors the pre-gate implementation.
-        pass
+    from hermes_cli.kanban_origin import maybe_auto_subscribe
 
-    platform = ""
-    chat_id = ""
-    try:
-        from gateway.session_context import get_session_env
-        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
-        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
-        if not platform or not chat_id:
-            # TUI / desktop fallback: platform/chat_id ContextVars are
-            # cleared for TUI sessions, but the parent process exports
-            # HERMES_SESSION_KEY into the subprocess env. Treat that
-            # as a "tui" subscription so the TUI notification poller
-            # (tui_gateway/server.py) can pick it up.
-            #
-            # HERMES_SESSION_ID is intentionally NOT a fallback here:
-            # it is set by ACP / the agent subprocess for telemetry
-            # regardless of whether the parent is a TUI or a CLI, so
-            # treating it as a notification target would auto-subscribe
-            # every CLI invocation, which is exactly the over-eager
-            # behaviour that got #19718 reverted upstream. The TUI
-            # poller keys on HERMES_SESSION_KEY.
-            session_key = (
-                get_session_env("HERMES_SESSION_KEY", "")
-                or os.environ.get("HERMES_SESSION_KEY", "")
-            )
-            if not session_key:
-                return False  # CLI / cron / test — no persistent channel
-            platform = "tui"
-            chat_id = session_key
-        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
-        user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
-        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
-        message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "") or ""
-        notifier_profile = (
-            get_session_env("HERMES_SESSION_PROFILE", "")
-            or os.environ.get("HERMES_PROFILE")
-        )
-        if not notifier_profile:
-            try:
-                from hermes_cli.profiles import get_active_profile_name
-                notifier_profile = get_active_profile_name() or "default"
-            except Exception:
-                notifier_profile = "default"
-        delivery_metadata: dict[str, Any] = {}
-        if thread_id:
-            delivery_metadata["thread_id"] = thread_id
-        if chat_type:
-            delivery_metadata["chat_type"] = chat_type
-        if (
-            platform.lower() == "telegram"
-            and thread_id
-            and (chat_type or "").lower() in {"dm", "direct", "private"}
-        ):
-            delivery_metadata["telegram_dm_topic_reply_fallback"] = True
-            if str(thread_id) not in {"", "1"}:
-                delivery_metadata["direct_messages_topic_id"] = str(thread_id)
-            if message_id:
-                delivery_metadata["telegram_reply_to_message_id"] = str(message_id)
-
-        # Lazy-import to keep the module-level dependency light
-        from hermes_cli import kanban_db as _kb
-        _kb.add_notify_sub(
-            conn, task_id=task_id,
-            platform=platform, chat_id=chat_id,
-            chat_type=chat_type,
-            thread_id=thread_id, user_id=user_id,
-            notifier_profile=notifier_profile,
-            delivery_metadata=delivery_metadata or None,
-        )
-        return True
-    except Exception as _exc:
-        logger.warning(
-            "_maybe_auto_subscribe failed: %r (platform=%r key_set=%r)",
-            _exc, platform, bool(chat_id),
-        )
-        return False
+    # Keep this private wrapper for callers/tests that already import it while
+    # making CLI and tool task creation share one routing implementation.
+    return maybe_auto_subscribe(conn, task_id)
 
 
 def _handle_unblock(args: dict, **kw) -> str:

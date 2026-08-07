@@ -1495,6 +1495,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    from hermes_cli.kanban_origin import current_session_id, maybe_auto_subscribe
+
+    session_id = current_session_id()
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1519,8 +1522,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            session_id=session_id,
         )
         task = kb.get_task(conn, task_id)
+        maybe_auto_subscribe(conn, task_id, session_id=session_id)
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:

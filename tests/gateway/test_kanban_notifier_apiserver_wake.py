@@ -10,10 +10,13 @@ Covers the wrong-session-wake / silent-loss fixes:
 """
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from gateway.config import Platform
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import GatewayRunner
+from gateway.session import SessionSource
 from hermes_cli import kanban_db as kb
 
 
@@ -71,6 +74,17 @@ def _make_runner(adapters):
     runner._kanban_sub_fail_counts = {}
     runner._kanban_dispatcher_lock_handle = object()
     return runner
+
+
+def _bind_session_store(runner, session_id):
+    store = object()
+    runner.session_store = store
+    runner._async_session_store = SimpleNamespace(
+        _store=store,
+        get_or_create_session=AsyncMock(
+            return_value=SimpleNamespace(session_id=session_id)
+        ),
+    )
 
 
 def _create_completed_subscription(platform, chat_id, session_id=None):
@@ -131,8 +145,61 @@ def test_apiserver_sub_wakes_real_session_via_self_post(tmp_path, monkeypatch):
     assert len(posts) == 1
     assert posts[0]["session_id"] == "raw-sid-123"
     assert tid in posts[0]["text"]
+    assert "done once" in posts[0]["text"]
+    assert "ask what they would like to move to next" in posts[0]["text"]
+    assert "Suggest 2 or 3 concrete candidates" in posts[0]["text"]
     # The wake self-post IS the delivery on this path (no separate text-ping
     # fallback is attempted for stateless api_server subs) — cursor advances
     # once the wake succeeds.
     assert _unseen_terminal_events(tid, "api_server", "raw-sid-123") == []
+
+
+def test_gateway_slash_create_binds_session_and_wakes_it(tmp_path, monkeypatch):
+    """Exercise slash create -> persisted task binding -> completion wake."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "slash-create.db"))
+    kb.init_db()
+
+    adapter = ApiServerLikeAdapter()
+    runner = _make_runner({Platform.API_SERVER: adapter})
+    _bind_session_store(runner, "gateway-durable-session")
+    runner._kanban_notifier_profile = "default"
+    source = SessionSource(
+        platform=Platform.API_SERVER,
+        chat_id="gateway-durable-session",
+        chat_type="dm",
+        thread_id=None,
+        user_id="api-user",
+    )
+    event = MessageEvent(
+        text='/kanban create "slash wake proof" --assignee worker',
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="request-1",
+    )
+
+    output = asyncio.run(runner._handle_kanban_command(event))
+    assert "subscribed" in output.lower()
+
+    conn = kb.connect()
+    try:
+        task = kb.list_tasks(conn)[0]
+        assert task.session_id == "gateway-durable-session"
+        kb.complete_task(conn, task.id, summary="slash path complete")
+    finally:
+        conn.close()
+
+    posts = []
+
+    async def fake_self_post(_adapter, *, text, session_id):
+        posts.append({"text": text, "session_id": session_id})
+
+    import gateway.wake as wake_mod
+
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(posts) == 1
+    assert posts[0]["session_id"] == "gateway-durable-session"
+    assert task.id in posts[0]["text"]
+    assert "slash path complete" in posts[0]["text"]
 

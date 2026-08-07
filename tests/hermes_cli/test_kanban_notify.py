@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import pytest
 
@@ -33,6 +34,108 @@ def _assert_inherited_notify_sub(subs: list[dict]) -> None:
     assert subs[0]["thread_id"] == "topic1"
     assert subs[0]["user_id"] == "user1"
     assert subs[0]["notifier_profile"] == "default"
+
+
+def _parse_create(*argv: str) -> argparse.Namespace:
+    """Build a real CLI create namespace instead of hand-copying defaults."""
+    from hermes_cli import kanban
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    kanban.build_parser(subparsers)
+    return parser.parse_args(["kanban", "create", *argv])
+
+
+def test_cli_create_autosubscribes_current_desktop_session(
+    kanban_home, monkeypatch, capsys
+):
+    """Desktop tool shells must preserve the TUI poller's return address.
+
+    Desktop agent turns commonly create cards through ``hermes kanban create``
+    in the terminal tool.  That path must be delivery-equivalent to the
+    model-facing ``kanban_create`` tool: stamp the durable session id and add a
+    subscription that the Desktop/TUI notification poller can consume.
+    """
+    from gateway.session_context import reset_session_vars
+    from hermes_cli import kanban
+
+    reset_session_vars()
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "desktop")
+    monkeypatch.setenv("HERMES_SESSION_ID", "desktop-session-1")
+    monkeypatch.setenv("HERMES_SESSION_KEY", "desktop-poller-key-1")
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+
+    args = _parse_create("desktop proof", "--assignee", "default", "--json")
+    assert kanban._cmd_create(args) == 0
+    capsys.readouterr()
+
+    conn = kb.connect()
+    try:
+        task = kb.list_tasks(conn)[0]
+        subs = kb.list_notify_subs(conn, task.id)
+    finally:
+        conn.close()
+
+    assert task.session_id == "desktop-session-1"
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "tui"
+    assert subs[0]["chat_id"] == "desktop-poller-key-1"
+    assert subs[0]["notifier_profile"] == "default"
+
+    # Prove the row is addressed to the identity the live Desktop/TUI poller
+    # actually consumes, not merely present in the database.
+    conn = kb.connect()
+    try:
+        kb.complete_task(conn, task.id, summary="desktop delivery proof")
+    finally:
+        conn.close()
+    from tui_gateway.server import _collect_kanban_notifications
+
+    texts = _collect_kanban_notifications(
+        {"session_key": "desktop-poller-key-1"}
+    )
+    assert len(texts) == 1
+    assert task.id in texts[0]
+    assert "desktop delivery proof" in texts[0]
+
+
+def test_cli_create_autosubscribes_exact_buzz_thread(
+    kanban_home, monkeypatch, capsys
+):
+    """A Buzz-origin terminal card retains its channel, thread, and owner."""
+    from gateway.session_context import reset_session_vars
+    from hermes_cli import kanban
+
+    reset_session_vars()
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "buzz")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "buzz")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "buzz-channel-1")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "buzz-thread-7")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "group")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "synthetic-user")
+    monkeypatch.setenv("HERMES_SESSION_ID", "buzz-session-1")
+    monkeypatch.setenv("HERMES_PROFILE", "buzzobserver")
+
+    args = _parse_create("buzz proof", "--assignee", "default", "--json")
+    assert kanban._cmd_create(args) == 0
+    capsys.readouterr()
+
+    conn = kb.connect()
+    try:
+        task = kb.list_tasks(conn)[0]
+        subs = kb.list_notify_subs(conn, task.id)
+    finally:
+        conn.close()
+
+    assert task.session_id == "buzz-session-1"
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "buzz"
+    assert subs[0]["chat_id"] == "buzz-channel-1"
+    assert subs[0]["thread_id"] == "buzz-thread-7"
+    assert subs[0]["chat_type"] == "group"
+    assert subs[0]["user_id"] == "synthetic-user"
+    assert subs[0]["notifier_profile"] == "buzzobserver"
 
 
 

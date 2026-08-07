@@ -3822,7 +3822,7 @@ def install_from_quarantine(
         identifier=bundle.identifier,
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
-        skill_hash=content_hash(install_dir),
+        skill_hash=bundle_content_hash(bundle),
         install_path=str(install_dir.relative_to(_skills_dir())),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,

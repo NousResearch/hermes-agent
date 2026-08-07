@@ -434,6 +434,79 @@ class TestCheckForSkillUpdates:
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
 
+    def test_crlf_install_records_bundle_hash_and_reports_up_to_date(self, tmp_path):
+        """Regression for the Windows CRLF false-update bug.
+
+        On Windows the quarantined/installed text on disk uses CRLF while the
+        in-memory bundle uses LF. install_from_quarantine must record the
+        bundle (LF) hash, not content_hash(install_dir) (CRLF), so that
+        check_for_skill_updates compares like with like and reports
+        up_to_date instead of a permanent update_available.
+        """
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult, content_hash
+
+        skills_dir = tmp_path / "skills"
+        hub_dir = skills_dir / ".hub"
+        quarantine_root = hub_dir / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        # Bundle content is LF in memory (what the source served).
+        lf_md = "---\nname: crlf-skill\n---\nline one\nline two\n"
+        bundle = SkillBundle(
+            name="crlf-skill",
+            files={"SKILL.md": lf_md},
+            source="github",
+            identifier="owner/repo/crlf-skill",
+            trust_level="community",
+        )
+
+        # Quarantine text is CRLF on disk (as on Windows). Written with
+        # write_bytes so the test is platform-independent.
+        q_dir = quarantine_root / "crlf-skill"
+        q_dir.mkdir()
+        crlf = chr(13) + chr(10)
+        (q_dir / "SKILL.md").write_bytes(lf_md.replace(chr(10), crlf).encode("utf-8"))
+
+        scan_result = ScanResult(
+            skill_name="crlf-skill",
+            source="github",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            install_dir = hub.install_from_quarantine(
+                q_dir, "crlf-skill", "", bundle, scan_result,
+            )
+
+            # Sanity: the CRLF-on-disk hash really differs from the LF bundle
+            # hash — otherwise this test would not exercise the bug.
+            assert content_hash(install_dir) != bundle_content_hash(bundle)
+
+            # The recorded hash must be the bundle (LF) hash, i.e. the same
+            # representation check_for_skill_updates compares against.
+            lock = HubLockFile()
+            entry = lock.get_installed("crlf-skill")
+            assert entry["content_hash"] == bundle_content_hash(bundle)
+
+            # A re-fetch of the same bundle must report up_to_date.
+            source = MagicMock()
+            source.source_id.return_value = "github"
+            source.fetch.return_value = bundle
+            results = check_for_skill_updates(lock=lock, sources=[source])
+
+        assert len(results) == 1
+        assert results[0]["name"] == "crlf-skill"
+        assert results[0]["status"] == "up_to_date"
+
+
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
         lock.list_installed.return_value = [{

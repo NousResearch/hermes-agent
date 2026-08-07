@@ -60,8 +60,10 @@ foreach ($f in @("config.yaml", ".env", ".env.secrets", "cron/jobs.json")) {
 if ($symOk) { if (Check "Symlinks (4)" "OK") { $Pass++ } else { $Fail++ } }
 
 # 6. Model correct
+# Phase 2 v3 (2026-06-25): main model is claude-sonnet-4-6 routed via claudish proxy
+# (po-2023), which remaps claude-sonnet-* -> gc@glm-5.2. Legacy glm-5-turbo/zai also valid.
 $model = Invoke-Hermes 'grep "^  default:" /opt/data/.hermes/config.yaml 2>/dev/null | head -1'
-if ($model -match "glm-5-turbo") { if (Check "Model" "OK") { $Pass++ } else { $Fail++ } }
+if ($model -match "glm-5-turbo|claude-sonnet-4-6") { if (Check "Model" "OK") { $Pass++ } else { $Fail++ } }
 else { if (Check "Model" "$model") { $Pass++ } else { $Fail++ } }
 
 # 7. MCP servers in config

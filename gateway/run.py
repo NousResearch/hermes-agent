@@ -14243,6 +14243,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_author_id=event.reply_to_author_id,
                 reply_to_author_name=event.reply_to_author_name,
                 reply_to_is_own_message=event.reply_to_is_own_message,
+                reply_to_author_authorized=event.reply_to_author_authorized,
                 auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt,
                 channel_context=event.channel_context,
@@ -16068,14 +16069,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            # The quote and the author name come from another participant, and
+            # this prefix is prepended raw to the model turn. An embedded
+            # newline would let either break out of the bracketed line and pose
+            # as a fresh markdown section (a fake "## SYSTEM" heading), so both
+            # are collapsed to a single inert line. The 500-char cap below is
+            # the intended bound, so the body is neutralized untruncated.
+            reply_snippet = neutralize_untrusted_inline_text(
+                event.reply_to_text[:500], max_chars=0
+            )
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'
                     f"{message_text}"
                 )
             else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+                # Name the author when the adapter resolved one, so the agent
+                # knows *whose* message is being referenced, not just its text.
+                reply_author = (
+                    getattr(event, "reply_to_author_name", None)
+                    or getattr(event, "reply_to_author_id", None)
+                )
+                # Platforms that fetch the parent rather than receiving it
+                # inline report whether its author is on the allowlist. Off-list
+                # content is labelled so the agent treats it as background
+                # rather than as instructions.
+                trust_tag = ""
+                if getattr(event, "reply_to_author_authorized", None) is False:
+                    trust_tag = "[unverified] "
+                if reply_author:
+                    safe_author = neutralize_untrusted_inline_text(reply_author)
+                    message_text = (
+                        f'[Replying to {trust_tag}{safe_author}: "{reply_snippet}"]\n\n'
+                        f"{message_text}"
+                    )
+                else:
+                    message_text = (
+                        f'[Replying to: {trust_tag}"{reply_snippet}"]\n\n{message_text}'
+                    )
 
         if "@" in message_text:
             try:

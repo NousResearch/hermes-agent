@@ -99,3 +99,122 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("author_name", "author_id", "expected_author"),
+    [
+        ("Bob", "@bob:example.org", "Bob"),
+        (None, "@bob:example.org", "@bob:example.org"),
+    ],
+)
+async def test_reply_prefix_names_the_author(author_name, author_id, expected_author):
+    """A reply to another user's message names that user in the prefix,
+    preferring the display name and falling back to the platform id."""
+    runner = _make_runner()
+    source = _source()
+    quoted = "The meeting is at 3pm."
+    event = MessageEvent(
+        text="which room?",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=quoted,
+        reply_to_author_id=author_id,
+        reply_to_author_name=author_name,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith(f'[Replying to {expected_author}: "{quoted}"]')
+    assert result.endswith("which room?")
+
+
+@pytest.mark.asyncio
+async def test_own_message_reply_prefix_marks_assistant_message():
+    """A reply to the bot's own message says so, even when author fields
+    are populated — 'your previous message' beats naming the bot."""
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="this one",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="Use the direct train.",
+        reply_to_author_id="@bot:example.org",
+        reply_to_author_name="Hermes",
+        reply_to_is_own_message=True,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith('[Replying to your previous message: "Use the direct train."]')
+    assert result.endswith("this one")
+
+
+@pytest.mark.asyncio
+async def test_no_prefix_without_reply_context():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(text="hello", source=source)
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "hello"
+
+
+@pytest.mark.asyncio
+async def test_no_prefix_when_reply_to_text_is_empty():
+    """reply_to_message_id alone without text (e.g. a reply to a media-only
+    message) should not produce an empty `[Replying to: ""]` prefix."""
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="hi",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=None,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "hi"
+
+
+@pytest.mark.asyncio
+async def test_reply_snippet_truncated_to_500_chars():
+    runner = _make_runner()
+    source = _source()
+    long_text = "x" * 800
+    event = MessageEvent(
+        text="follow-up",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=long_text,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
+    assert "x" * 501 not in result

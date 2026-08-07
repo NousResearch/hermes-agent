@@ -2088,6 +2088,10 @@ class MessageEvent:
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+    # Whether the replied-to author is on the allowlist, for platforms that
+    # fetch the parent's content rather than receiving it inline. Tri-state,
+    # mirroring _is_sender_authorized: None means no check was registered.
+    reply_to_author_authorized: Optional[bool] = None
 
     # Structured interactive-prompt reply (relay Phase 3). Present when this
     # event is the user answering a native interactive prompt rendered by the

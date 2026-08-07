@@ -32,6 +32,7 @@ import {
 import nodePty from 'node-pty'
 
 import { classifyActiveRuntime } from './active-runtime-state'
+import { joinBackendApiUrl } from './backend-api-url'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
@@ -7665,7 +7666,7 @@ async function fetchJsonForProfile(profile, path) {
 // Issue an arbitrary method against a profile's resolved backend, parsed JSON.
 async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
-  const url = `${conn.baseUrl}${path}`
+  const url = joinBackendApiUrl(conn.baseUrl, path)
   const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
 
   if (conn.authMode === 'oauth') {
@@ -10271,7 +10272,9 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
   const requestPath = pathWithGlobalRemoteProfile(request.path, profile, profileRouteOptions(profile))
 
-  const url = `${connection.baseUrl}${requestPath}`
+  // Fail closed before fetchJson attaches session / OAuth credentials: a path
+  // like `@evil/` would otherwise retarget the request off connection.baseUrl.
+  const url = joinBackendApiUrl(connection.baseUrl, requestPath)
 
   // OAuth gateways authenticate REST via EITHER a native bearer token
   // (cookieless RFC 8252 flow) OR the HttpOnly session cookie held in the OAuth

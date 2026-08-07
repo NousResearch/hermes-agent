@@ -64,6 +64,12 @@ class TestKnownPrefixes:
         result = redact_sensitive_text(token)
         assert "a" * 14 not in result
 
+    def test_mem0_platform_key(self):
+        token = "m0-" + "A1b2C3d4" * 5
+        result = redact_sensitive_text(f"Mem0 key: {token}")
+        assert token not in result
+        assert "..." in result
+
 
 
 

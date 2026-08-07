@@ -2864,10 +2864,14 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return _realign_tool_result_names(messages)
 
 
-_ACK_FUTURE_RE = re.compile(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b")
+_ACK_FUTURE_RE = re.compile(
+    r"\b(i['’]ll|i will|let me|i can do that|i can help with that"
+    r"|i am now|i'm now|i am currently|i'm currently)\b")
 _ACK_ACTION_MARKERS = (
     "look into", "look at", "inspect", "scan", "check", "analyz", "review", "explore", "read", "open",
     "run", "test", "fix", "debug", "search", "find", "walkthrough", "report back", "summarize",
+    "compiling", "writing", "generating", "creating", "building", "preparing", "assembling",
+    "putting together",
 )
 _ACK_WORKSPACE_MARKERS = (
     "directory", "current directory", "current dir", "cwd", "repo", "repository", "codebase",
@@ -2889,10 +2893,10 @@ def looks_like_codex_intermediate_ack(
         return False
     if not _ACK_FUTURE_RE.search(assistant_text):
         return False
-
     if not any(marker in assistant_text for marker in _ACK_ACTION_MARKERS):
         return False
-    # Opted-in (all-api_mode) path: future-ack + action verb + no prior tool call suffices.    if not require_workspace:
+    # Opted-in (all-api_mode) path: future-ack + action verb + no prior tool call suffices.
+    if not require_workspace:
         return True
     # ``user_message`` may be a multi-part content list (vision via the OpenAI-compat server); a
     # list survives ``or ""`` and ``.strip()`` raises, so flatten first.

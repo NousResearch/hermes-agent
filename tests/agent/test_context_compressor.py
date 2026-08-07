@@ -61,6 +61,57 @@ class TestSummarizeToolResultWebExtract:
         assert summary == "[web_extract] https://example.com/h (500 chars)"
 
 
+class TestSummarizeToolResultClarify:
+    def test_preserves_resolved_user_response_without_metadata(self):
+        content = json.dumps({
+            "question": "When should I deploy?",
+            "choices_offered": ["Friday", "Monday"],
+            "user_response": "Friday",
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: "Friday"'
+
+    def test_preserves_multi_select_user_response(self):
+        content = json.dumps({
+            "question": "Which checks should I run?",
+            "choices_offered": ["lint", "tests", "types"],
+            "user_response": ["lint", "tests"],
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: ["lint", "tests"]'
+
+    def test_long_response_is_bounded_and_survives_repeated_pruning(self):
+        content = json.dumps({
+            "question": "Describe the deployment constraints",
+            "choices_offered": None,
+            "user_response": "A" * 1_000,
+        })
+
+        first_summary = _summarize_tool_result("clarify", "{}", content)
+        second_summary = _summarize_tool_result("clarify", "{}", first_summary)
+
+        assert len(first_summary) == 200
+        assert first_summary.startswith('[clarify] user responded: "AAA')
+        assert first_summary.endswith("...[truncated]")
+        assert second_summary == first_summary
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            json.dumps({"error": "Failed to get user input: internal details"}),
+            json.dumps({"question": "Q?", "user_response": ""}),
+            json.dumps({"question": "Q?", "user_response": {"internal": "value"}}),
+            "not json",
+        ],
+    )
+    def test_does_not_expose_unresolved_or_internal_content(self, content):
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
 
 
 class TestShouldCompress:

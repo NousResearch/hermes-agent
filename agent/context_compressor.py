@@ -1314,6 +1314,41 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
         return "[todo] updated task list"
 
     if tool_name == "clarify":
+        response_prefix = "[clarify] user responded: "
+        max_summary_chars = 200
+        truncation_marker = "...[truncated]"
+
+        # Idempotence: a later pressure-pruning pass may see the summary
+        # produced by an earlier pass. Preserve it instead of trying to parse
+        # the summary text as the original JSON result.
+        if content.startswith(response_prefix):
+            if len(content) <= max_summary_chars:
+                return content
+            return (
+                content[: max_summary_chars - len(truncation_marker)].rstrip()
+                + truncation_marker
+            )
+
+        try:
+            result = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            result = {}
+        response = result.get("user_response") if isinstance(result, dict) else None
+        resolved = (
+            isinstance(response, str) and bool(response)
+        ) or (
+            isinstance(response, list)
+            and bool(response)
+            and all(isinstance(item, str) and item for item in response)
+        )
+        if resolved:
+            summary = response_prefix + json.dumps(response, ensure_ascii=False)
+            if len(summary) > max_summary_chars:
+                summary = (
+                    summary[: max_summary_chars - len(truncation_marker)].rstrip()
+                    + truncation_marker
+                )
+            return summary
         return "[clarify] asked user a question"
 
     if tool_name == "text_to_speech":

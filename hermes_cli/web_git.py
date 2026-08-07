@@ -26,6 +26,9 @@ _GH_TIMEOUT = 30
 _MAX_BUFFER = 32 * 1024 * 1024
 _UNTRACKED_LINE_MAX_BYTES = 1024 * 1024
 _UNTRACKED_SCAN_CAP = 500
+# An untracked directory arrives as ONE row, so opening it can mean diffing an
+# unbounded subtree (a build output, a browser profile). Cap the expansion.
+_UNTRACKED_DIR_FILE_CAP = 50
 _COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 _COMMIT_CONTEXT_UNTRACKED_MAX = 80
 _TRUNK_BRANCHES = ("main", "master")
@@ -39,10 +42,19 @@ def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int
     calls serve authenticated REST requests from the dashboard/desktop, so a
     credential prompt from ``fetch``/``push``/``pull`` could never be answered
     — it would just hang the request until the timeout. Failing fast surfaces
-    the real auth error in the toast instead."""
+    the real auth error in the toast instead.
+
+    ``--literal-pathspecs`` leads every invocation. Every path this module
+    hands git came out of ``git status`` — never a glob a user typed. Without
+    it a real filename containing pathspec wildcards (``weird[1].txt``) also
+    matches its neighbours (``weird1.txt``), so the review pane rendered a
+    different file's diff and, far worse, ``add`` / ``reset`` / ``checkout`` /
+    ``clean`` acted on files the user never selected — ``review_revert`` on
+    ``weird[1].txt`` silently discarded uncommitted edits to ``weird1.txt``.
+    It must precede the subcommand; git rejects it afterwards."""
     try:
         proc = subprocess.run(
-            ["git", *args],
+            ["git", "--literal-pathspecs", *args],
             cwd=cwd,
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
@@ -315,6 +327,52 @@ def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
     return {"files": files, "base": None}
 
 
+def _synthesize_add_diff(cwd: str, file_path: str) -> str:
+    """All-add diff for ONE untracked file. ``--no-index`` exits non-zero by
+    design when the two sides differ, so read stdout and ignore the code."""
+    _, out, _ = _git(cwd, ["diff", "--no-index", "--", os.devnull, file_path])
+    return out
+
+
+def _untracked_paths_under(cwd: str, pathspec: str) -> list[str]:
+    """The untracked paths git reports under ``pathspec``. Resolved through git
+    rather than a filesystem walk so .gitignore is honored and the enumeration
+    cannot escape the repo. An untracked FILE resolves to itself; an untracked
+    DIRECTORY resolves to its descendants; a nested git repo stays opaque and
+    resolves to the ``dir/`` row itself (nothing to expand)."""
+    out = _git_out(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--", pathspec])
+    return [entry for entry in out.split("\0") if entry]
+
+
+def _untracked_diff(cwd: str, file_path: str) -> str:
+    """All-add diff for an untracked row, which may be a file OR a directory.
+
+    ``git status`` collapses an untracked directory into a single ``dir/`` row
+    (so a build output or browser profile can't flood the pane), but
+    ``git diff --no-index -- <devnull> dir/`` cannot diff that: it pairs the
+    operands as trees and fails looking for ``dir/nul``, printing nothing. That
+    left the pane rendering "No diff to show" under a populated header. Expand
+    the row to the files git actually sees underneath instead."""
+    entries = _untracked_paths_under(cwd, file_path)
+
+    # A plain untracked file resolves to itself — the common case, one diff.
+    if entries == [file_path]:
+        return _synthesize_add_diff(cwd, file_path)
+
+    # Entries keeping a trailing slash are opaque to this repo (a nested git
+    # repo); there is no file to synthesize a diff from.
+    files = [entry for entry in entries if not entry.endswith("/")]
+    if not files:
+        return ""
+
+    visible = files[:_UNTRACKED_DIR_FILE_CAP]
+    body = "".join(filter(None, (_synthesize_add_diff(cwd, entry) for entry in visible)))
+    omitted = len(files) - len(visible)
+
+    # Never truncate silently — the reader has to know the view is partial.
+    return f"{body}# {omitted} more file(s) omitted\n" if omitted else body
+
+
 def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool) -> str:
     if not _is_dir(cwd):
         return ""
@@ -324,13 +382,19 @@ def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, stag
     if scope == "lastTurn":
         return _git_out(cwd, ["diff", base_ref, "--", file_path]) if base_ref else ""
     if staged:
+        # The row's +/- sums the staged AND unstaged churn for this path, so the
+        # diff has to cover both: HEAD..worktree is the whole story. `--cached`
+        # alone silently dropped the unstaged half of a partially staged file
+        # (and answered an unmerged path with a hunk-less "* Unmerged path"
+        # stub). Fall back to the index-only diff in a repo with no commits yet.
+        combined = _git_out(cwd, ["diff", "HEAD", "--", file_path])
+        if combined.strip():
+            return combined
         return _git_out(cwd, ["diff", "--cached", "--", file_path])
     worktree = _git_out(cwd, ["diff", "--", file_path])
     if worktree.strip():
         return worktree
-    # Untracked: synthesize an all-add diff (exits non-zero by design).
-    _, out, _ = _git(cwd, ["diff", "--no-index", "--", os.devnull, file_path])
-    return out
+    return _untracked_diff(cwd, file_path)
 
 
 def file_diff_vs_head(cwd: str, file_path: str) -> str:
@@ -344,8 +408,9 @@ def file_diff_vs_head(cwd: str, file_path: str) -> str:
     status = _git_out(cwd, ["status", "--porcelain", "--", file_path])
     if not status.strip().startswith("??"):
         return ""
-    _, out, _ = _git(cwd, ["diff", "--no-index", "--", os.devnull, file_path])
-    return out
+    # Same directory caveat as review_diff: an untracked row can be a collapsed
+    # directory, which --no-index cannot diff against the null device.
+    return _untracked_diff(cwd, file_path)
 
 
 def review_stage(cwd: str, file_path: str | None) -> dict:

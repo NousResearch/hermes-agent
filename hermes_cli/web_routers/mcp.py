@@ -57,15 +57,42 @@ _MAX_PENDING_MCP_OAUTH_FLOWS = LateState("_MAX_PENDING_MCP_OAUTH_FLOWS")
 
 @router.get("/api/mcp/servers")
 async def list_mcp_servers(profile: Optional[str] = None):
+    from hermes_cli.context_usage import compute_context_last_used
     from hermes_cli.mcp_config import _get_mcp_servers
+    from hermes_constants import get_hermes_home
 
-    with _profile_scope(profile):
+    with _profile_scope(profile) as scoped_dir:
         servers = _get_mcp_servers()
+        home = scoped_dir or get_hermes_home()
+    usage = compute_context_last_used(home=home, mcp_server_names=servers.keys())
+    mcp_last_used = usage["mcp"]
     return {
         "servers": [
-            _mcp_server_summary(name, cfg) for name, cfg in sorted(servers.items())
+            _mcp_server_summary(
+                name, cfg, last_used_at=mcp_last_used.get(name)
+            )
+            for name, cfg in sorted(servers.items())
         ]
     }
+
+
+@router.get("/api/context/last-used")
+async def get_context_last_used(profile: Optional[str] = None):
+    """One-shot batch of real last-used times, for mobile pull-to-refresh.
+
+    Wraps :func:`hermes_cli.context_usage.compute_context_last_used` so a
+    client can fetch MCP/channel/key recency in a single round trip instead
+    of hitting ``/api/mcp/servers`` + ``/api/messaging/platforms`` + ``/api/env``
+    separately. Same data, same "never fabricate a timestamp" contract.
+    """
+    from hermes_cli.context_usage import compute_context_last_used
+    from hermes_cli.mcp_config import _get_mcp_servers
+    from hermes_constants import get_hermes_home
+
+    with _profile_scope(profile) as scoped_dir:
+        servers = _get_mcp_servers()
+        home = scoped_dir or get_hermes_home()
+    return compute_context_last_used(home=home, mcp_server_names=servers.keys())
 
 
 @router.post("/api/mcp/servers")

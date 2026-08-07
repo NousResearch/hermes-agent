@@ -2609,7 +2609,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.11.0" },
+    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.11.0,<1" },
     { name = "aiohttp", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==3.14.5" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.14.5" },
     { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.14.5" },

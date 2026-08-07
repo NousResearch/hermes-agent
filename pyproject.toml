@@ -441,7 +441,7 @@ computer-use = [
   "starlette==1.9.0",
 ] # starlette: CVE-2026-48710
 acp = [
-    "agent-client-protocol>=0.11.0",
+    "agent-client-protocol>=0.11.0,<1",
 ]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious

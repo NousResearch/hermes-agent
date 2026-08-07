@@ -36,6 +36,7 @@ Usage:
     content = web_extract_tool(["https://example.com"], format="markdown")
 """
 
+import contextvars
 import json
 import logging
 import os
@@ -421,6 +422,60 @@ def _web_requires_env() -> list[str]:
 # Override via web.extract_char_limit in config.yaml.
 DEFAULT_EXTRACT_CHAR_LIMIT = 15000
 
+# Session-scoped exhaustion tracking: backends that have returned credit/quota
+# errors are skipped for the remainder of the session. Uses a ContextVar so
+# each session gets its own isolated set — /new, /reset, and session transitions
+# automatically get a fresh set without needing explicit lifecycle hooks.
+# The default factory creates a new empty set per session boundary.
+_exhausted_backends: contextvars.ContextVar[set[str]] = contextvars.ContextVar(
+    "_exhausted_backends", default=set()
+)
+
+
+def _reset_exhausted_backends() -> None:
+    """Clear the exhaustion set for the current session."""
+    _exhausted_backends.set(set())
+
+
+def _is_credit_error(response: dict) -> bool:
+    """Return True when a provider response indicates exhausted credits.
+
+    Matches common credit/quota error patterns across Firecrawl, Tavily,
+    Parallel, and Exa. The check is intentionally broad — false positives
+    cause a harmless extra backend attempt; false negatives mean the
+    failover chain is not triggered.
+    """
+    error = response.get("error", "") or ""
+    error_lower = error.lower()
+    return any(
+        phrase in error_lower
+        for phrase in (
+            "insufficient credits",
+            "quota exceeded",
+            "402",
+            "payment required",
+            "credit limit",
+            "out of credits",
+            "no credits remaining",
+            "rate limit exceeded",
+            "too many requests",
+        )
+    )
+
+
+def _get_failover_list() -> list[str]:
+    """Return the ordered failover backend list from config, or empty list."""
+    try:
+        cfg = _load_web_config()
+        raw = cfg.get("failover")
+        if isinstance(raw, list):
+            return [b.strip().lower() for b in raw if b and isinstance(b, str)]
+        if isinstance(raw, str):
+            return [b.strip().lower() for b in raw.split(",") if b.strip()]
+    except Exception:
+        pass
+    return []
+
 # Hard ceiling on the full-text file written to cache/web. The truncate-store
 # path otherwise calls path.write_text(content, encoding="utf-8") with no upper bound, so a
 # multi-MB page (some backends return very large markdown) writes unbounded
@@ -682,28 +737,82 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _disabled_web_plugin_for,
         )
 
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
-            provider = get_active_search_provider()
+        # Build the ordered backend list: primary + failover chain
+        primary_backend = _get_search_backend()
+        failover_backends = _get_failover_list()
+        backend_chain = [primary_backend] + [
+            b for b in failover_backends if b != primary_backend
+        ]
 
-        if provider is None:
-            # A bundled web plugin the user explicitly disabled looks
-            # identical to "no provider" here — point at the real cause
-            # (re-enable the plugin) rather than a generic setup hint.
-            disabled_key = _disabled_web_plugin_for(capability="search")
-            if disabled_key:
-                _vendor = disabled_key.split("/", 1)[-1]
+        response_data = None
+        last_error = None
+        for attempt, backend in enumerate(backend_chain):
+            if backend in _exhausted_backends.get():
+                logger.debug("Skipping exhausted backend '%s'", backend)
+                continue
+            provider = _wsp_get_provider(backend) if backend else None
+            if provider is None or not provider.supports_search():
+                if attempt == 0:
+                    # First attempt: fall back to active provider
+                    provider = get_active_search_provider()
+                    if provider is None:
+                        # A bundled web plugin the user explicitly disabled
+                        # looks identical to "no provider" here — point at the
+                        # real cause (re-enable the plugin) rather than a
+                        # generic setup hint.
+                        disabled_key = _disabled_web_plugin_for(capability="search")
+                        if disabled_key:
+                            _vendor = disabled_key.split("/", 1)[-1]
+                            response_data = {
+                                "success": False,
+                                "error": (
+                                    f"web.search_backend is set to '{_vendor}', but its "
+                                    f"plugin ('{disabled_key}') is disabled in config. "
+                                    f"Re-enable it with `hermes plugins enable {disabled_key}` "
+                                    "(or remove it from plugins.disabled)."
+                                ),
+                            }
+                        else:
+                            response_data = {
+                                "success": False,
+                                "error": (
+                                    "No web search provider configured. "
+                                    "Run `hermes tools` to set one up."
+                                ),
+                            }
+                        break
+                else:
+                    # Failover attempt: skip backends that don't support search
+                    continue
+
+            logger.info(
+                "Web search via %s: '%s' (limit: %d)",
+                provider.name, query, limit,
+            )
+            response_data = provider.search(query, limit)
+
+            if _is_credit_error(response_data):
+                logger.warning(
+                    "Backend '%s' returned credit error; marking exhausted",
+                    provider.name,
+                )
+                _exhausted_backends.get().add(provider.name)
+                last_error = response_data.get("error", "Credit limit reached")
+                response_data = None
+                continue
+
+            # Success — use this result
+            break
+
+        if response_data is None:
+            # All backends exhausted or none available
+            if last_error:
                 response_data = {
                     "success": False,
                     "error": (
-                        f"web.search_backend is set to '{_vendor}', but its "
-                        f"plugin ('{disabled_key}') is disabled in config. "
-                        f"Re-enable it with `hermes plugins enable {disabled_key}` "
-                        "(or remove it from plugins.disabled)."
+                        f"All web search backends exhausted. "
+                        f"Last error: {last_error}. "
+                        f"Run `hermes tools` to configure additional backends."
                     ),
                 }
             else:
@@ -714,12 +823,6 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                         "Run `hermes tools` to set one up."
                     ),
                 }
-        else:
-            logger.info(
-                "Web search via %s: '%s' (limit: %d)",
-                provider.name, query, limit,
-            )
-            response_data = provider.search(query, limit)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -854,15 +957,13 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
-            backend = _get_extract_backend()
+            # Build the ordered backend list: primary + failover chain
+            primary_backend = _get_extract_backend()
+            failover_backends = _get_failover_list()
+            backend_chain = [primary_backend] + [
+                b for b in failover_backends if b != primary_backend
+            ]
 
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
-            # registry lookup + delegation. Some providers' extract() is
-            # async (parallel, firecrawl), others sync (exa, tavily) — we
-            # detect coroutine functions and await; sync functions run
-            # inline (the policy gate, SSRF re-check, etc. live inside the
-            # provider itself for the firecrawl per-URL loop).
             _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
@@ -870,23 +971,121 @@ async def web_extract_tool(
                 _disabled_web_plugin_for,
             )
 
-            provider = _wsp_get_provider(backend) if backend else None
-            if provider is None or not provider.supports_extract():
-                # When the configured name IS registered but doesn't support
-                # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
-                if provider is not None and not provider.supports_extract():
+            results = None
+            last_error = None
+            for attempt, backend in enumerate(backend_chain):
+                if backend in _exhausted_backends.get():
+                    logger.debug("Skipping exhausted backend '%s'", backend)
+                    continue
+
+                provider = _wsp_get_provider(backend) if backend else None
+                if provider is None or not provider.supports_extract():
+                    if attempt == 0:
+                        # First attempt: when the configured name IS registered but
+                        # doesn't support extract (search-only providers like
+                        # brave-free / ddgs / searxng), surface that as a typed
+                        # "search-only" error rather than silently switching backends.
+                        # Only fall through to the active-provider walk when the name
+                        # isn't registered at all (typo / uninstalled plugin).
+                        if provider is not None and not provider.supports_extract():
+                            return json.dumps(
+                                {
+                                    "success": False,
+                                    "error": (
+                                        f"{provider.display_name} is a search-only "
+                                        "backend and cannot extract URL content. "
+                                        "Set web.extract_backend to firecrawl, "
+                                        "tavily, exa, or parallel."
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            )
+                        provider = get_active_extract_provider()
+                        if provider is None:
+                            return json.dumps(
+                                {
+                                    "success": False,
+                                    "error": (
+                                        "No web extract provider configured. "
+                                        "Set web.extract_backend to firecrawl, "
+                                        "tavily, exa, or parallel."
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            )
+                    else:
+                        # Failover attempt: skip backends that don't support extract
+                        continue
+
+                logger.info(
+                    "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
+                )
+
+                # Async-or-sync dispatch: parallel + firecrawl have async
+                # extract(); exa + tavily are sync.
+                import inspect
+                try:
+                    if inspect.iscoroutinefunction(provider.extract):
+                        results = await provider.extract(safe_urls, format=format)
+                    else:
+                        # Run sync extract() in a thread so we don't block the
+                        # event loop on network I/O.
+                        results = await asyncio.to_thread(
+                            provider.extract, safe_urls, format=format
+                        )
+                except Exception as exc:
+                    error_msg = str(exc).lower()
+                    if any(
+                        phrase in error_msg
+                        for phrase in (
+                            "insufficient credits",
+                            "quota exceeded",
+                            "402",
+                            "payment required",
+                            "credit limit",
+                            "out of credits",
+                            "no credits remaining",
+                            "rate limit exceeded",
+                            "too many requests",
+                        )
+                    ):
+                        logger.warning(
+                            "Backend '%s' raised credit error; marking exhausted: %s",
+                            provider.name, exc,
+                        )
+                        _exhausted_backends.get().add(provider.name)
+                        last_error = str(exc)
+                        results = None
+                        continue
+                    raise
+
+                # Check if all results are credit errors (per-URL failure pattern)
+                if results and all(
+                    r.get("error") and _is_credit_error({"error": r["error"]})
+                    for r in results
+                ):
+                    logger.warning(
+                        "Backend '%s' returned credit errors on all URLs; marking exhausted",
+                        provider.name,
+                    )
+                    _exhausted_backends.get().add(provider.name)
+                    last_error = results[0].get("error", "Credit limit reached")
+                    results = None
+                    continue
+
+                # Success — use this result
+                break
+
+            if results is None:
+                # All backends exhausted
+                if last_error:
                     return json.dumps(
                         {
                             "success": False,
                             "error": (
-                                f"{provider.display_name} is a search-only "
-                                "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                f"All web extract backends exhausted. "
+                                f"Last error: {last_error}. "
+                                f"Run `hermes tools` to configure additional backends."
                             ),
                         },
                         ensure_ascii=False,
@@ -926,21 +1125,45 @@ async def web_extract_tool(
                         ensure_ascii=False,
                     )
 
-            logger.info(
-                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
-            )
-
-            # Async-or-sync dispatch: parallel + firecrawl have async
-            # extract(); exa + tavily are sync.
-            import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
-            else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
+                # Provider resolved via the active-provider walk — dispatch it.
+                logger.info(
+                    "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
                 )
+                import inspect
+                try:
+                    if inspect.iscoroutinefunction(provider.extract):
+                        results = await provider.extract(safe_urls, format=format)
+                    else:
+                        results = await asyncio.to_thread(
+                            provider.extract, safe_urls, format=format
+                        )
+                except Exception as exc:
+                    error_msg = str(exc).lower()
+                    if any(
+                        phrase in error_msg
+                        for phrase in (
+                            "insufficient credits",
+                            "quota exceeded",
+                            "402",
+                            "payment required",
+                            "credit limit",
+                            "out of credits",
+                            "no credits remaining",
+                            "rate limit exceeded",
+                            "too many requests",
+                        )
+                    ):
+                        logger.warning(
+                            "Backend '%s' raised credit error: %s", provider.name, exc
+                        )
+                        return json.dumps(
+                            {
+                                "success": False,
+                                "error": str(exc),
+                            },
+                            ensure_ascii=False,
+                        )
+                    raise
 
         # Reconstruct the original input order across invalid, blocked, and
         # provider-processed entries. Providers are expected to preserve the
@@ -1059,10 +1282,30 @@ def check_web_api_key() -> bool:
     # ``or ""``: a null ``web.backend`` value yields None from ``.get``, and
     # ``None.lower()`` would raise. Mirrors ``_get_backend``.
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured and _is_backend_available(configured):
-        return True
-    # Any built-in backend with credentials present. This is a boolean OR, so
-    # unlike _get_backend() the probe order is irrelevant.
+    if configured:
+        # When a specific backend is configured, only check that backend.
+        # Do NOT fall through to all legacy backends — the user explicitly
+        # chose this backend; if it's unavailable, the tools should stay
+        # gated (regression from the failover PR, issue #59013).
+        if configured in _LEGACY_WEB_BACKENDS:
+            return _is_backend_available(configured)
+        # Non-legacy name: delegate to the registry.
+        try:
+            from agent.web_search_registry import (
+                get_active_search_provider,
+                get_active_extract_provider,
+            )
+
+            return (
+                get_active_search_provider() is not None
+                or get_active_extract_provider() is not None
+            )
+        except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
+            logger.debug("web provider registry availability check failed: %s", exc)
+            return False
+    # No specific backend configured: check any built-in backend with
+    # credentials present. This is a boolean OR, so unlike _get_backend()
+    # the probe order is irrelevant.
     if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
         return True
     # Any plugin-registered provider the registry considers active for either

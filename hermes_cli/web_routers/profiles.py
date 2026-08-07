@@ -76,6 +76,25 @@ _write_profile_mcp_servers = late("_write_profile_mcp_servers")
 _write_profile_model = late("_write_profile_model")
 
 
+def _isolated_profile_scope(profiles_mod) -> Optional[str]:
+    """Return the profile an isolated server is scoped to, or None.
+
+    ``hermes -p <name> serve --isolated`` runs with HERMES_HOME pointing at
+    that profile's directory, and ``get_active_profile_name()`` then returns
+    the real profile name. Such a server must advertise and serve ONLY its own
+    profile's sessions (privacy leak #76932). ``"default"`` (unified
+    ``~/.hermes`` home) and ``"custom"`` (unrecognized HERMES_HOME) do NOT
+    denote an isolated profile server, so unified-server behavior is preserved.
+    """
+    try:
+        name = profiles_mod.get_active_profile_name()
+    except Exception:
+        return None
+    if name and name not in ("default", "custom"):
+        return name
+    return None
+
+
 @sessions_router.get("/api/profiles/sessions")
 def get_profiles_sessions(
     # ``le=500`` caps the per-request page size (idea from #39200) — this
@@ -255,15 +274,20 @@ def get_profiles_sessions_sidebar(
     from hermes_cli import profiles as profiles_mod
 
     # cron + messaging are cross-profile; recents is scoped to recents_profile.
-    # Scan every profile once regardless (each DB opened a single time).
+    # Scan every profile once regardless (each DB opened a single time). An
+    # isolated server (HERMES_HOME inside a named profile dir) scans only that
+    # profile's DB so its sessions never leak to authenticated clients (#76932).
+    scope = _isolated_profile_scope(profiles_mod)
     try:
         infos = profiles_mod.list_profiles()
+        if scope is not None:
+            infos = [info for info in infos if info.name == scope]
         targets: List[Tuple[str, Path]] = [(info.name, info.path) for info in infos]
     except Exception:
         _log.exception("GET /api/profiles/sessions/sidebar: list_profiles failed")
         targets = []
     if not targets:
-        targets.append(("default", profiles_mod.get_profile_dir("default")))
+        targets.append((scope or "default", profiles_mod.get_profile_dir(scope or "default")))
 
     recents_scope = (recents_profile or "all").strip() or "all"
     recents_exclude_list = [s for s in (recents_exclude or "").split(",") if s.strip()]
@@ -373,13 +397,19 @@ def get_profiles_sessions_sidebar(
 @router.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
+    scope = _isolated_profile_scope(profiles_mod)
     try:
         loop = asyncio.get_running_loop()
         profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
+        if scope is not None:
+            profiles = [p for p in profiles if p.name == scope]
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+        fallback = _fallback_profile_dicts(profiles_mod)
+        if scope is not None:
+            fallback = [p for p in fallback if p.get("name") == scope]
+        return {"profiles": fallback}
 
 
 @router.post("/api/profiles")

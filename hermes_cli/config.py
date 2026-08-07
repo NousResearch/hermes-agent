@@ -2432,6 +2432,45 @@ def _merge_partial_save(raw: dict, override: dict) -> dict:
     return result
 
 
+def _merge_mcp_servers(base: dict, override: dict) -> dict:
+    """Merge two ``mcp_servers`` config dicts, enforcing transport exclusivity.
+
+    ``mcp_servers`` children are special because a single server is *either*
+    stdio (``command``/``args``/``env``) *or* HTTP (``url``/``headers``). The
+    generic ``_deep_merge`` would recurse per-field and leave both transports in
+    a server that an override switches from one to the other, producing a config
+    with ``url`` and ``command`` side by side, which registers duplicate tool
+    instances. See #78606.
+
+    When an override switches a server's transport, the opposite transport's
+    fields are dropped from the base before the normal field-level merge:
+
+    * override has ``url`` and no ``command`` -> drop ``command``/``args``/``env``
+    * override has ``command`` and no ``url`` -> drop ``url``/``headers``
+
+    Servers present in only one side, or keeping the same transport, merge as
+    usual via ``_deep_merge``.
+    """
+    result = base.copy()
+    for name, server_override in override.items():
+        if (
+            name not in result
+            or not isinstance(result[name], dict)
+            or not isinstance(server_override, dict)
+        ):
+            result[name] = server_override
+            continue
+        base_server = dict(result[name])
+        if "url" in server_override and "command" not in server_override:
+            for field in ("command", "args", "env"):
+                base_server.pop(field, None)
+        elif "command" in server_override and "url" not in server_override:
+            for field in ("url", "headers"):
+                base_server.pop(field, None)
+        result[name] = _deep_merge(base_server, server_override)
+    return result
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge *override* into *base*, preserving nested defaults.
 
@@ -2444,6 +2483,10 @@ def _deep_merge(base: dict, override: dict) -> dict:
     default dict with ``None`` and crash every downstream consumer that
     expects a mapping (#58277). A ``None`` override of a dict default is
     ignored — same as the key being absent.
+
+    The ``mcp_servers`` key is special-cased so a server that an override
+    switches between stdio and HTTP transport does not end up with both
+    transports merged together (see ``_merge_mcp_servers`` / #78606).
     """
     result = base.copy()
     for key, value in override.items():
@@ -2452,7 +2495,10 @@ def _deep_merge(base: dict, override: dict) -> dict:
             and isinstance(result[key], dict)
             and isinstance(value, dict)
         ):
-            result[key] = _deep_merge(result[key], value)
+            if key == "mcp_servers":
+                result[key] = _merge_mcp_servers(result[key], value)
+            else:
+                result[key] = _deep_merge(result[key], value)
         elif key in result and isinstance(result[key], dict) and value is None:
             continue
         else:

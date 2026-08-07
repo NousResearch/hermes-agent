@@ -1352,6 +1352,13 @@ def _finalize_single_query(cli) -> None:
     try:
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)
+        # The quiet path never enters run()'s interactive loop, whose finally
+        # closes the SQLite session. Without agent.close() here, kanban
+        # workers / cron pipes / `hermes chat -q` exit with ended_at NULL.
+        agent = getattr(cli, "agent", None)
+        close = getattr(agent, "close", None)
+        if callable(close):
+            close()
     finally:
         cli._release_active_session()
 

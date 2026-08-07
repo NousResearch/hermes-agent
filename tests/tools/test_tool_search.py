@@ -174,6 +174,78 @@ class TestRetrieval:
 
 
 # ---------------------------------------------------------------------------
+# CJK tokenization — the BM25 tokenizer must handle Chinese/Japanese/Korean
+# queries, not just ASCII alphanumerics (#78985). Mirrors the repo's existing
+# CJK strategy (native/fts5_cjk.c bigram tokenizer, trigram session search).
+# ---------------------------------------------------------------------------
+
+
+class TestCjkTokenization:
+    def test_ascii_behavior_unchanged(self):
+        from tools.tool_search import _tokenize
+        assert _tokenize("GitHub API v2") == ["github", "api", "v2"]
+        assert _tokenize("snake_case-name.v2") == ["snake", "case", "name", "v2"]
+        assert _tokenize("") == []
+
+    def test_cjk_run_emits_full_run_and_bigrams(self):
+        from tools.tool_search import _tokenize
+        # 3-char word: full run + both bigrams.
+        assert _tokenize("公众号") == ["公众号", "公众", "众号"]
+
+    def test_two_char_word_is_single_token(self):
+        from tools.tool_search import _tokenize
+        # The bigram of a 2-char word equals its full-run token; it must be
+        # emitted once so term frequency stays honest.
+        assert _tokenize("周报") == ["周报"]
+
+    def test_mixed_ascii_cjk_query(self):
+        from tools.tool_search import _tokenize
+        toks = _tokenize("周报 python 自动化")
+        assert "python" in toks
+        assert "周报" in toks
+        assert "自动" in toks and "动化" in toks
+
+    def test_kana_and_hangul_runs(self):
+        from tools.tool_search import _tokenize
+        assert "こん" in _tokenize("こんにちは")
+        assert "안녕" in _tokenize("안녕하세요")
+
+    def _cjk_catalog(self):
+        from tools.tool_search import CatalogEntry, _tokenize
+
+        def mk(name, desc):
+            e = CatalogEntry(
+                name=name, description=desc, schema={},
+                source="plugin", source_name="cjk-test",
+            )
+            e._tokens = _tokenize(f"{name.replace('_', ' ')} {desc}")
+            return e
+
+        return [
+            mk("weekly_report", "自动生成每周周报并发送到群聊"),
+            mk("image_gen", "Generate images with FLUX"),
+            mk("wechat_article", "生成微信公众号文章"),
+        ]
+
+    def test_search_catalog_cjk_query_hits_chinese_description(self):
+        from tools.tool_search import search_catalog
+        for query, expected in [
+            ("周报", "weekly_report"),
+            ("公众号", "wechat_article"),
+            ("文章", "wechat_article"),
+            ("每周", "weekly_report"),
+        ]:
+            hits = search_catalog(self._cjk_catalog(), query, limit=5)
+            assert hits, f"no hits for query {query!r}"
+            assert hits[0].name == expected, f"{query!r} -> {hits[0].name}"
+
+    def test_english_query_unchanged_alongside_cjk_docs(self):
+        from tools.tool_search import search_catalog
+        hits = search_catalog(self._cjk_catalog(), "images", limit=5)
+        assert hits and hits[0].name == "image_gen"
+
+
+# ---------------------------------------------------------------------------
 # Assembly — the full passthrough/activate decision.
 # ---------------------------------------------------------------------------
 

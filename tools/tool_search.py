@@ -333,11 +333,40 @@ class CatalogEntry:
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 
+# CJK ranges: CJK Unified Ideographs (U+4E00–U+9FFF), Extension A
+# (U+3400–U+4DBF), Compatibility Ideographs (U+F900–U+FAFF), Hiragana +
+# Katakana (U+3040–U+30FF), Hangul syllables (U+AC00–U+D7AF). Disjoint from
+# ``_TOKEN_RE`` so a character can never be emitted by both tokenizers.
+# Mirrors the repo's existing CJK strategy: native/fts5_cjk.c is "unicode61 +
+# CJK bigrams", and session search uses the same trigram/bigram approach.
+_CJK_RUN_RE = re.compile(
+    r"[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]+"
+)
+
 
 def _tokenize(text: str) -> List[str]:
+    """Tokenize *text* for BM25 indexing and queries.
+
+    ASCII behavior is unchanged: ``[A-Za-z0-9]+`` runs, lowercased — existing
+    callers and tests depend on it. CJK runs additionally emit the whole run
+    (so exact-phrase and single-character queries match) plus every sliding
+    bigram inside the run (so a multi-character query matches documents that
+    share any adjacent pair, the standard CJK retrieval strategy). Bigrams
+    are deduplicated within a run so term frequency stays honest.
+    """
     if not text:
         return []
-    return [t.lower() for t in _TOKEN_RE.findall(text)]
+    tokens = [t.lower() for t in _TOKEN_RE.findall(text)]
+    for run in _CJK_RUN_RE.findall(text):
+        if len(run) >= 2:
+            # Full run first (exact-phrase / single-char match), then each
+            # sliding bigram. One ordered dedupe so a 2-char word (whose
+            # bigram equals its run token) is counted once — tf stays honest.
+            bigrams = (run[i : i + 2] for i in range(len(run) - 1))
+            tokens.extend(dict.fromkeys([run, *bigrams]))
+        else:
+            tokens.append(run)
+    return tokens
 
 
 def _entry_search_text(td: Dict[str, Any]) -> str:

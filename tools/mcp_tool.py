@@ -727,7 +727,7 @@ def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
         "--ppid", str(my_pid),
         "--",
         command,
-        *args,
+        *(args or []),
     ]
     return sys.executable, watchdog_args
 

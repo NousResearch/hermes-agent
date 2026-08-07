@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { composerPanelCard } from '@/components/chat/composer-dock'
@@ -17,10 +18,19 @@ import { Kbd } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText, Pencil, Plus, Trash2 } from '@/lib/icons'
+import {
+  Clipboard,
+  FileText,
+  FolderOpen,
+  type IconComponent,
+  ImageIcon,
+  Link,
+  MessageSquareText,
+  Pencil,
+  Plus,
+  Trash2
+} from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { useStore } from '@nanostores/react'
-
 import {
   $promptTemplates,
   addTemplate,
@@ -28,9 +38,9 @@ import {
   ensureSeeded,
   moveTemplateDown,
   moveTemplateUp,
+  type PromptTemplate,
   resetToBuiltins,
-  updateTemplate,
-  type PromptTemplate
+  updateTemplate
 } from '@/store/prompt-templates'
 
 import { useComposerAttachmentProviders } from './contrib'
@@ -321,12 +331,7 @@ function TemplateEditor({ onCancel, onSave, template }: TemplateEditorProps) {
         placeholder={c.templateDescPlaceholder}
         value={description}
       />
-      <Textarea
-        onChange={e => setText(e.target.value)}
-        placeholder={c.templateTextPlaceholder}
-        rows={3}
-        value={text}
-      />
+      <Textarea onChange={e => setText(e.target.value)} placeholder={c.templateTextPlaceholder} rows={3} value={text} />
       <div className="flex justify-end gap-2">
         <Button onClick={onCancel} size="sm" type="button" variant="ghost">
           {c.templateCancel}

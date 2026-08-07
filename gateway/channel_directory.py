@@ -377,18 +377,20 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
             seen_ids.add(eid)
 
     # Resolve remaining raw-ID entries (DMs, private channels not in bot scope)
-    # by calling conversations.info + users.info once per base conversation.
+    # by calling conversations.info + users.info once per base conversation,
+    # with all base-ID lookups running concurrently.
     unresolved = [ch for ch in channels if ch.get("name", "").startswith(("C0", "D0", "G0"))]
     if unresolved and team_clients:
         client = next(iter(team_clients.values()))
         unresolved_by_base = {}
         for entry in unresolved:
             unresolved_by_base.setdefault(slack_lookup_id(entry["id"]), []).append(entry)
-        for base_id, entries in unresolved_by_base.items():
+
+        async def _resolve_base(base_id: str, entries: list) -> None:
             try:
                 resp = await client.conversations_info(channel=base_id)
                 if not resp.get("ok"):
-                    continue
+                    return
                 ch_info = resp.get("channel", {})
                 resolved_name = None
                 resolved_type = None
@@ -413,7 +415,10 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
                             entry["type"] = resolved_type
             except Exception as e:
                 logger.debug("Channel directory: failed to resolve %s: %s", base_id, e)
-                continue
+
+        await asyncio.gather(
+            *[_resolve_base(bid, ents) for bid, ents in unresolved_by_base.items()]
+        )
 
     return channels
 

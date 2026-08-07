@@ -439,8 +439,15 @@ def _handle_send(args):
     # JPGs where Telegram's sendPhoto recompresses to 1280px).
     force_document_attachments = "[[as_document]]" in message
 
-    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    extracted_media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(extracted_media_files)
+    if extracted_media_files and not media_files:
+        rejected = [path for path, _is_voice in extracted_media_files]
+        return json.dumps({
+            "error": "All MEDIA attachments were rejected by the delivery path policy",
+            "rejected_media": rejected,
+            "hint": "Write deliverable files under $HERMES_HOME/cache/documents/ or another configured MEDIA allow directory.",
+        }, ensure_ascii=False)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -1266,6 +1273,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             text_kwargs["disable_web_page_preview"] = True
 
         last_msg = None
+        text_message_ids = []
+        media_receipts = []
         warnings = []
 
         # MEDIA:<path> caption: when a single captionable file is accompanied
@@ -1340,6 +1349,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         )
                     else:
                         raise
+                text_message_ids.append(str(last_msg.message_id))
 
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
@@ -1467,6 +1477,19 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                 )
                         else:
                             raise
+                    media_kind = (
+                        "photo" if ext in _IMAGE_EXTS and not force_document
+                        else "video" if ext in _VIDEO_EXTS
+                        else "voice" if ext in _VOICE_EXTS and is_voice
+                        else "audio" if ext in _TELEGRAM_SEND_AUDIO_EXTS
+                        else "document"
+                    )
+                    media_receipts.append({
+                        "message_id": str(last_msg.message_id),
+                        "kind": media_kind,
+                        "file_name": os.path.basename(media_path),
+                        "file_size": os.path.getsize(media_path),
+                    })
             except Exception as e:
                 warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
                 logger.error(warning)
@@ -1483,6 +1506,9 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             "platform": "telegram",
             "chat_id": chat_id,
             "message_id": str(last_msg.message_id),
+            "text_message_ids": text_message_ids,
+            "media_receipts": media_receipts,
+            "attachments_sent": len(media_receipts),
         }
         if warnings:
             result["warnings"] = warnings

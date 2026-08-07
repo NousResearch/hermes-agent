@@ -339,16 +339,12 @@ class TestSendMessageTool:
                 )
             )
 
-        assert result["success"] is True
-        send_mock.assert_awaited_once_with(
-            Platform.TELEGRAM,
-            telegram_cfg,
-            "12345",
-            "hello",
-            thread_id=None,
-            media_files=[],
-            force_document=False,
-        )
+        # A stripped MEDIA directive must not degrade into a successful
+        # text-only send when its only attachment is rejected by policy.
+        assert "error" in result
+        assert "rejected" in result["error"].lower()
+        assert str(secret) in result["rejected_media"]
+        send_mock.assert_not_awaited()
 
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()

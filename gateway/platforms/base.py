@@ -5889,8 +5889,21 @@ class BasePlatformAdapter(ABC):
                 _response_pre_extract = response
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
-                media_files, response = self.extract_media(response)
-                media_files = self.filter_media_delivery_paths(media_files)
+                _extracted_media_files, response = self.extract_media(response)
+                media_files = self.filter_media_delivery_paths(_extracted_media_files)
+                if _extracted_media_files and not media_files:
+                    logger.warning(
+                        "[%s] response_delivery_blocked: all %d MEDIA attachment(s) "
+                        "were rejected by delivery path policy for %s",
+                        self.name, len(_extracted_media_files), event.source.chat_id,
+                    )
+                    if not response.strip():
+                        response = (
+                            "⚠️ The file was generated, but its path is not authorized "
+                            "for attachment delivery, so it was not uploaded.\n"
+                            "Write the file under $HERMES_HOME/cache/documents/ "
+                            "or a configured MEDIA allow directory and try again."
+                        )
 
                 # Do NOT deduplicate MEDIA tags against prior turns here.
                 # The auto-append path in GatewayRunner._run_agent_inner already

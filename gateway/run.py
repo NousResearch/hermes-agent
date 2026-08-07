@@ -19700,8 +19700,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
-            media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            extracted_media_files, cleaned = adapter.extract_media(response)
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(extracted_media_files)
+            if extracted_media_files and not media_files:
+                logger.warning(
+                    "[%s] post_stream_delivery_blocked: all %d MEDIA attachment(s) "
+                    "were rejected by delivery path policy for %s",
+                    adapter.name, len(extracted_media_files), event.source.chat_id,
+                )
+                notice = (
+                    "⚠️ The attachment was not uploaded because its path is not "
+                    "authorized for MEDIA delivery. Write the file under "
+                    "$HERMES_HOME/cache/documents/ or a configured MEDIA allow "
+                    "directory and try again."
+                )
+                await adapter.send(
+                    chat_id=event.source.chat_id,
+                    content=notice,
+                    metadata=self._thread_metadata_for_source(
+                        event.source, self._reply_anchor_for_event(event)
+                    ),
+                )
+                return
             # Do NOT deduplicate explicit MEDIA tags against prior turns here
             # (#73771). This rescan is already EXPLICIT-ONLY (see docstring):
             # a MEDIA: directive in the final streamed reply is the model

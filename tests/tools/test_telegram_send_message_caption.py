@@ -99,3 +99,43 @@ def test_multi_file_keeps_separate_text(monkeypatch: pytest.MonkeyPatch) -> None
     finally:
         os.unlink(img)
         os.unlink(img2)
+
+
+def test_chinese_pdf_name_returns_document_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+    pdf = tmp_path / "中文报价合同.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n% test\n")
+
+    res = asyncio.run(
+        _send_telegram("tok", "123", "合同附件", media_files=[(str(pdf), False)])
+    )
+
+    assert res["success"] is True
+    assert res["attachments_sent"] == 1
+    assert res["media_receipts"] == [{
+        "message_id": "4",
+        "kind": "document",
+        "file_name": "中文报价合同.pdf",
+        "file_size": pdf.stat().st_size,
+    }]
+    bot.send_document.assert_awaited_once()
+
+
+def test_text_success_is_not_reported_as_attachment_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+
+    res = asyncio.run(_send_telegram("tok", "123", "只有文件名称", media_files=[]))
+
+    assert res["success"] is True
+    assert res["attachments_sent"] == 0
+    assert res["media_receipts"] == []
+    assert res["text_message_ids"] == ["1"]
+    bot.send_document.assert_not_awaited()

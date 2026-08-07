@@ -51,6 +51,7 @@ def _adapter():
         extract_media=BasePlatformAdapter.extract_media,
         extract_images=BasePlatformAdapter.extract_images,
         extract_local_files=BasePlatformAdapter.extract_local_files,
+        send=AsyncMock(return_value=SendResult(success=True, message_id="notice")),
         send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
         send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
         send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
@@ -109,5 +110,56 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     images_kwargs = adapter.send_multiple_images.await_args.kwargs
     assert images_kwargs["chat_id"] == "C123CHAN"
     assert str(media_file) in images_kwargs["images"][0][0]
+
+
+@pytest.mark.asyncio
+async def test_all_rejected_explicit_media_sends_post_stream_notice(tmp_path, monkeypatch):
+    """A streamed MEDIA directive must not disappear silently when policy rejects it."""
+    blocked_file = tmp_path / "blocked" / "report.pdf"
+    blocked_file.parent.mkdir(parents=True)
+    blocked_file.write_bytes(b"pdf")
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    monkeypatch.setattr(
+        "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+        (allowed_root,),
+    )
+    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+    monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+    adapter = _adapter()
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "thread-1"}),
+        f"MEDIA:{blocked_file.resolve()}",
+        _event(),
+        adapter,
+    )
+
+    adapter.send.assert_awaited_once()
+    notice_kwargs = adapter.send.await_args.kwargs
+    assert notice_kwargs["chat_id"] == "C123CHAN"
+    assert "$HERMES_HOME/cache/documents/" in notice_kwargs["content"]
+    adapter.send_document.assert_not_awaited()
+    adapter.send_multiple_images.assert_not_awaited()
+
+
+def test_cache_documents_allowed_in_strict_mode_without_recency(tmp_path, monkeypatch):
+    """The remediation path must remain valid in pure-allowlist strict mode."""
+    documents = tmp_path / "cache" / "documents"
+    document = documents / "report.pdf"
+    documents.mkdir(parents=True)
+    document.write_bytes(b"pdf")
+    monkeypatch.setattr(
+        "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+        (documents,),
+    )
+    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+    monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+    accepted = BasePlatformAdapter.filter_media_delivery_paths(
+        [(str(document.resolve()), False)]
+    )
+
+    assert accepted == [(str(document.resolve()), False)]
 
 

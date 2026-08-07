@@ -324,9 +324,39 @@ class TestPluginLlmFacade:
         assert captured["provider_override"] == "anthropic"
         assert captured["model_override"] == "claude-3-opus"
         assert captured["profile_override"] == "work"
+        # agent_id must actually reach the caller — not just be recorded on the
+        # result. Regression: eff_agent was validated + written to result.agent_id
+        # but never forwarded, so the completion ran against the default agent.
+        assert captured["agent_id_override"] == "ada"
+        assert result.agent_id == "ada"
         assert captured["temperature"] == 0.0
         assert captured["max_tokens"] == 128
         assert captured["timeout"] == 10.0
+
+    def test_complete_threads_agent_id_into_call_llm_metadata(self, monkeypatch):
+        # Without an injected caller (real call_llm path), agent_id is threaded
+        # into request metadata the same way auth_profile is.
+        captured: dict = {}
+
+        def fake_call_llm(**kwargs):
+            captured.update(kwargs)
+            return _fake_response("ok")
+
+        monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
+
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin",
+            policy=_trusted_policy("my-plugin"),
+        )
+        llm.complete(
+            [{"role": "user", "content": "hi"}],
+            agent_id="ada",
+            profile="work",
+            temperature=0.0,
+        )
+        metadata = (captured.get("extra_body") or {}).get("metadata") or {}
+        assert metadata.get("agent_id") == "ada"
+        assert metadata.get("auth_profile") == "work"
 
     def test_complete_structured_returns_parsed_json(self):
         def fake_caller(**_kwargs):

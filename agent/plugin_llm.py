@@ -654,6 +654,7 @@ class PluginLlm:
             provider_override=eff_provider,
             model_override=eff_model,
             profile_override=eff_profile,
+            agent_id_override=eff_agent,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
@@ -739,6 +740,7 @@ class PluginLlm:
             provider_override=eff_provider,
             model_override=eff_model,
             profile_override=eff_profile,
+            agent_id_override=eff_agent,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
@@ -801,6 +803,7 @@ class PluginLlm:
             provider_override=eff_provider,
             model_override=eff_model,
             profile_override=eff_profile,
+            agent_id_override=eff_agent,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
@@ -866,6 +869,7 @@ class PluginLlm:
             provider_override=eff_provider,
             model_override=eff_model,
             profile_override=eff_profile,
+            agent_id_override=eff_agent,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
@@ -923,6 +927,7 @@ class PluginLlm:
         provider_override: Optional[str],
         model_override: Optional[str],
         profile_override: Optional[str],
+        agent_id_override: Optional[str] = None,
         temperature: Optional[float],
         max_tokens: Optional[int],
         timeout: Optional[float],
@@ -937,6 +942,7 @@ class PluginLlm:
                 provider_override=provider_override,
                 model_override=model_override,
                 profile_override=profile_override,
+                agent_id_override=agent_id_override,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
@@ -946,6 +952,8 @@ class PluginLlm:
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
+        if agent_id_override:
+            merged_extra.setdefault("metadata", {})["agent_id"] = agent_id_override
         response = call_llm(
             task=None,
             provider=provider_override,
@@ -970,6 +978,7 @@ class PluginLlm:
         provider_override: Optional[str],
         model_override: Optional[str],
         profile_override: Optional[str],
+        agent_id_override: Optional[str] = None,
         temperature: Optional[float],
         max_tokens: Optional[int],
         timeout: Optional[float],
@@ -981,6 +990,7 @@ class PluginLlm:
                 provider_override=provider_override,
                 model_override=model_override,
                 profile_override=profile_override,
+                agent_id_override=agent_id_override,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
@@ -990,6 +1000,8 @@ class PluginLlm:
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
+        if agent_id_override:
+            merged_extra.setdefault("metadata", {})["agent_id"] = agent_id_override
         response = await async_call_llm(
             task=None,
             provider=provider_override,

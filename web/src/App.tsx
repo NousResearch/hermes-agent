@@ -48,6 +48,7 @@ import {
   Shield,
   ShieldCheck,
   Sparkles,
+  Square,
   Star,
   Terminal,
   Users,
@@ -985,6 +986,25 @@ function SidebarSystemActions({
       spin: true,
     },
   ];
+  if (status) {
+    if (status.gateway_running) {
+      items.push({
+        action: "stop",
+        icon: Square,
+        label: t.status.stopGateway ?? "Stop Gateway",
+        runningLabel: t.status.stoppingGateway ?? "Stopping gateway…",
+        spin: true,
+      });
+    } else {
+      items.push({
+        action: "start",
+        icon: Zap,
+        label: t.status.startGateway ?? "Start Gateway",
+        runningLabel: t.status.startingGateway ?? "Starting gateway…",
+        spin: true,
+      });
+    }
+  }
   if (canUpdateHermes) {
     items.push({
       action: "update",

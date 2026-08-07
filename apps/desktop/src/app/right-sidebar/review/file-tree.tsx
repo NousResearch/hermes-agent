@@ -20,7 +20,7 @@ import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { displayPath } from '@/lib/display-path'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
-import { $renamingPath, copyFilePath, revealFile, toRelativePath } from '@/store/file-actions'
+import { $renamingPath, copyFileContent, copyFilePath, revealFile, toRelativePath } from '@/store/file-actions'
 import { $sidebarWorkspaceNodeOpen, revealFileInTree, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
@@ -514,6 +514,7 @@ function ReviewFileContextMenu({
             {m.copyRelativePath}
           </ContextMenuItem>
         )}
+        <ContextMenuItem onSelect={() => void copyFileContent(dragPath)}>{m.copyContent}</ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   )

@@ -1281,6 +1281,19 @@ def resolve_gateway_liveness(
             health_body=health_body,
         )
 
+    # Rung 4: trust the runtime state file when it claims "running" and is
+    # fresh — covers cross-container Docker where the PID namespace is
+    # separate and all PID-based probes fail (issue #73796).
+    if runtime is not None and isinstance(runtime, dict):
+        state = runtime.get("gateway_state")
+        if state in {"running", "draining"} and not runtime_status_is_stale(runtime):
+            return GatewayLiveness(
+                running=True,
+                pid=None,
+                source="runtime_state",
+                health_body=health_body,
+            )
+
     return GatewayLiveness(
         running=False,
         pid=None,

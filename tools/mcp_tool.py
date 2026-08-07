@@ -202,6 +202,45 @@ def _write_stderr_log_header(server_name: str) -> None:
     except Exception:
         pass
 
+
+def _capture_stderr_since(offset: int, max_bytes: int = 4096) -> str:
+    """Return up to ``max_bytes`` of stderr the child wrote after ``offset``.
+
+    Called from the stdio exception path so a failed MCP spawn surfaces the
+    child's own error message (e.g. ``Cannot find module 'express'``,
+    ``SyntaxError`` at parse, ``EADDRINUSE``) instead of a generic
+    ``Connection closed`` (#73299). Returns ``""`` when the log file is
+    unreadable or no new bytes were written. The return is plain text
+    intended to be appended to an exception's repr by the caller.
+    """
+    if offset < 0:
+        return ""
+    # Resolve the log path via the hermes_constants module object so tests
+    # can ``monkeypatch.setattr(hermes_constants, 'get_hermes_home', ...)``
+    # without us re-binding the name at import time. Function-local imports
+    # still go through the standard import system, so the test patch sticks.
+    import hermes_constants
+
+    log_path = hermes_constants.get_hermes_home() / "logs" / "mcp-stderr.log"
+    try:
+        if not log_path.exists():
+            return ""
+        # ``a``-mode fd from ``_get_mcp_stderr_log`` may still hold the
+        # inode, but reading the file via a fresh handle is portable.
+        size = log_path.stat().st_size
+        if size <= offset:
+            return ""
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(offset)
+            data = f.read(max_bytes)
+        if not data.strip():
+            return ""
+        # Trim trailing header line (we wrote one *before* offset was taken,
+        # so the header is part of the new tail — keep it as context).
+        return data.rstrip("\n")
+    except Exception:
+        return ""
+
 # ---------------------------------------------------------------------------
 # Graceful import -- MCP SDK is an optional dependency
 # ---------------------------------------------------------------------------
@@ -1993,6 +2032,30 @@ class MCPServerTask:
         # nor reconnect-loop. Reset on each fresh transport connection.
         self._ping_unsupported: bool = False
 
+    def _attach_child_stderr(self, exc: BaseException, offset: int) -> None:
+        """Append child stderr captured since ``offset`` to ``exc`` as notes.
+
+        Avoids touching the original exception's args (which would change
+        ``repr(exc)`` and break auth/permanence classifiers downstream) by
+        using ``add_note()`` on the exception — Python 3.11+'s standard hook
+        for attaching context. Older Python fallbacks store it on a private
+        attribute so a single defensive ``getattr`` pulls it back for the
+        operator-visible log path (#73299).
+        """
+        tail = _capture_stderr_since(offset)
+        if not tail:
+            return
+        note = f"child stderr (tail, ~/.hermes/logs/mcp-stderr.log):\n{tail}"
+        try:
+            exc.add_note(note)
+        except AttributeError:
+            # Python < 3.11 — stash on a private attribute so the warning
+            # log path can still surface it without rewriting ``str(exc)``.
+            try:
+                exc._hermes_child_stderr = tail  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
         return "url" in self._config
@@ -2560,6 +2623,18 @@ class MCPServerTask:
         # ~/.hermes/logs/mcp-stderr.log.
         _write_stderr_log_header(self.name)
         _errlog = _get_mcp_stderr_log()
+        # Snapshot the stderr log offset *after* the session header has been
+        # written so the tail captured on failure includes the header as
+        # context but not any unrelated earlier-server output (#73299).
+        _stderr_log_offset = 0
+        try:
+            import hermes_constants
+
+            _stderr_log_offset = (
+                hermes_constants.get_hermes_home() / "logs" / "mcp-stderr.log"
+            ).stat().st_size
+        except Exception:
+            _stderr_log_offset = 0
         try:
             async with stdio_client(server_params, errlog=_errlog) as (
                 read_stream,
@@ -2630,6 +2705,14 @@ class MCPServerTask:
                     # _reconnect_event (e.g. future manual /mcp refresh) for
                     # consistency with _run_http.
                     return await self._wait_for_lifecycle_event()
+        except Exception as exc:
+            # Surface the child's own stderr so a failed stdio spawn stops
+            # being a silent "Connection closed" — operators can see *why*
+            # the server died (missing module, syntax error, EADDRINUSE,
+            # Windows-specific heavy-import handshake timeout, etc.) without
+            # manually tailing ~/.hermes/logs/mcp-stderr.log (#73299).
+            self._attach_child_stderr(exc, _stderr_log_offset)
+            raise
         finally:
             # Runs on clean exit, exceptions, AND asyncio cancellation.
             # If any of the spawned PIDs are still alive, the SDK's

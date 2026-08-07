@@ -5201,24 +5201,43 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     from hermes_cli.gateway import (
                         launchd_restart,
                         get_launchd_label,
-                        get_launchd_plist_path,
+                        list_launchd_gateway_labels,
+                        _launchd_domain,
                     )
 
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True,
-                            text=True, encoding="utf-8", errors="replace",
-                            timeout=5,
-                        )
-                        if check.returncode == 0:
-                            try:
+                    # A shared-checkout code update affects every profile's
+                    # gateway, so restart the whole launchd-managed fleet —
+                    # the default label plus every loaded
+                    # ``ai.hermes.gateway-<profile>`` label. Mirrors the
+                    # systemd ``hermes-gateway*`` unit sweep above; previously
+                    # only the current profile's label was restarted, leaving
+                    # every other profile gateway running stale code.
+                    current_label = get_launchd_label()
+                    for label in list_launchd_gateway_labels():
+                        try:
+                            if label == current_label:
+                                # Current profile: graceful drain + kickstart
+                                # (also verifies the plist exists / is loaded).
                                 launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
+                            else:
+                                # Other profiles: kickstart -k stops the job
+                                # and launches it again against the freshly
+                                # updated checkout.  launchd's KeepAlive
+                                # respawns it with the new code.
+                                subprocess.run(
+                                    [
+                                        "launchctl",
+                                        "kickstart",
+                                        "-k",
+                                        f"{_launchd_domain()}/{label}",
+                                    ],
+                                    check=True,
+                                    timeout=90,
+                                )
+                            restarted_services.append(label)
+                        except subprocess.CalledProcessError as e:
+                            stderr = (getattr(e, "stderr", "") or "").strip()
+                            print(f"  ⚠ Gateway restart failed ({label}): {stderr}")
                 except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
                     pass
 

@@ -146,33 +146,33 @@ def _get_service_pids() -> set:
 
     # --- launchd (macOS) ---
     if is_macos():
-        try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=5,
-            )
-            if result.returncode == 0:
-                # Try plist format first (macOS 26+): "PID" = <N>;
-                pid = _parse_launchd_pid_from_list_output(result.stdout)
-                if pid is not None and pid > 0:
-                    pids.add(pid)
-                else:
-                    # Fall back to legacy tab-separated format:
-                    # "PID\tStatus\tLabel"
-                    for line in result.stdout.strip().splitlines():
-                        parts = line.split()
-                        if len(parts) >= 3 and parts[2] == label:
-                            try:
-                                pid = int(parts[0])
-                                if pid > 0:
-                                    pids.add(pid)
-                            except ValueError:
-                                pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        for label in list_launchd_gateway_labels():
+            try:
+                result = subprocess.run(
+                    ["launchctl", "list", label],
+                    capture_output=True,
+                    text=True, encoding='utf-8', errors='replace',
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    # Try plist format first (macOS 26+): "PID" = <N>;
+                    pid = _parse_launchd_pid_from_list_output(result.stdout)
+                    if pid is not None and pid > 0:
+                        pids.add(pid)
+                    else:
+                        # Fall back to legacy tab-separated format:
+                        # "PID\tStatus\tLabel"
+                        for line in result.stdout.strip().splitlines():
+                            parts = line.split()
+                            if len(parts) >= 3 and parts[2] == label:
+                                try:
+                                    pid = int(parts[0])
+                                    if pid > 0:
+                                        pids.add(pid)
+                                except ValueError:
+                                    pass
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
 
     return pids
 
@@ -354,6 +354,38 @@ def _append_unique_pid(
     pids.append(pid)
 
 
+def _run_ps_gateway_scan() -> str | None:
+    """Return ``ps -o pid=,command=`` output, or ``None`` when unusable.
+
+    The historical invocation ``ps -A eww -o pid=,command=`` uses the SysV
+    ``-A``/``eww`` flag combination, which macOS 26 removed (``ps: illegal
+    argument: eww`` — the BSD ``ps`` accepts ``a``/``x``/``w``, not ``e``).
+    On that platform the old command exits non-zero with no output, which
+    made every ``_scan_gateway_pids`` fall silent (no gateway PIDs found),
+    so ``hermes update`` could not restart the manual gateway fleet.
+
+    Try the historical form first for older systems, then fall back to the
+    BSD ``-axww`` form that works on both macOS and Linux.
+    """
+    candidates = (
+        ["ps", "-A", "eww", "-o", "pid=,command="],
+        ["ps", "-axww", "-o", "pid=,command="],
+    )
+    for cmd in candidates:
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout
+    return None
+
+
 def _scan_gateway_pids(
     exclude_pids: set[int],
     all_profiles: bool = False,
@@ -522,15 +554,10 @@ def _scan_gateway_pids(
                     pass
 
             if not _found_via_proc:
-                result = subprocess.run(
-                    ["ps", "-A", "eww", "-o", "pid=,command="],
-                    capture_output=True,
-                    text=True, encoding='utf-8', errors='replace',
-                    timeout=10,
-                )
-                if result.returncode != 0:
+                ps_stdout = _run_ps_gateway_scan()
+                if ps_stdout is None:
                     return []
-                for line in result.stdout.split("\n"):
+                for line in ps_stdout.split("\n"):
                     stripped = line.strip()
                     if not stripped or "grep" in stripped:
                         continue
@@ -2530,6 +2557,42 @@ def get_launchd_plist_path() -> Path:
     suffix = _profile_suffix()
     name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
     return _launchd_user_home() / "Library" / "LaunchAgents" / f"{name}.plist"
+
+
+def list_launchd_gateway_labels() -> list[str]:
+    """Return all loaded ``ai.hermes.gateway*`` launchd labels.
+
+    Enumerates the launchd job list (``launchctl list``) and returns every
+    label that belongs to a Hermes gateway service — the default
+    ``ai.hermes.gateway`` plus per-profile ``ai.hermes.gateway-<profile>``.
+    ``hermes update`` uses this to restart the whole gateway fleet after a
+    code update (mirroring the systemd ``hermes-gateway*`` unit sweep),
+    because a shared checkout update affects every profile's gateway.
+
+    Returns an empty list when launchctl is unavailable or nothing Hermes
+    manages is loaded.
+    """
+    labels: list[str] = []
+    try:
+        result = subprocess.run(
+            ["launchctl", "list"],
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return labels
+    if result.returncode != 0:
+        return labels
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        label = parts[-1]
+        if label == "ai.hermes.gateway" or label.startswith("ai.hermes.gateway-"):
+            if label not in labels:
+                labels.append(label)
+    return labels
 
 
 def _detect_venv_dir() -> Path | None:

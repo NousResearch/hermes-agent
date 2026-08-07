@@ -2966,6 +2966,16 @@ _TOPOLOGY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None, "fn": None}
 _TOPOLOGY_CACHE_LOCK = threading.Lock()
 _TOPOLOGY_CACHE_TTL = 10.0
 
+# Serializes read-modify-write cycles over config.yaml for handlers that run
+# in worker threads (asyncio.to_thread). config.py's _CONFIG_LOCK covers each
+# load_config()/save_config() call individually, not the span between them —
+# when these handlers ran on the event loop the loop itself serialized the
+# whole cycle, but off-loop two concurrent updates could interleave
+# load→mutate→save and silently drop one another's writes. Held only in
+# worker threads, so it can never block the event loop. RLock so a locked
+# section that calls helpers which also take it can't self-deadlock.
+_CONFIG_MUTATION_LOCK = threading.RLock()
+
 
 def _topology_cache_get(fn: Any) -> Optional[Dict[str, Any]]:
     if (
@@ -6959,9 +6969,10 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
             # is not sent in the PUT body. A full-replace save would silently
             # drop those keys. Deep-merge incoming over what's on disk so the
             # frontend can only overwrite what it explicitly sends.
-            existing = read_raw_config()
-            incoming = _denormalize_config_from_web(body.config)
-            save_config(_deep_merge(existing, incoming))
+            with _CONFIG_MUTATION_LOCK:
+                existing = read_raw_config()
+                incoming = _denormalize_config_from_web(body.config)
+                save_config(_deep_merge(existing, incoming))
         return {"ok": True}
 
     try:
@@ -12924,11 +12935,12 @@ async def set_memory_provider(body: MemoryProviderSelect):
     def _run():
         _require_memory_provider_ready(provider)
 
-        cfg = load_config()
-        if not isinstance(cfg.get("memory"), dict):
-            cfg["memory"] = {}
-        cfg["memory"]["provider"] = provider
-        save_config(cfg)
+        with _CONFIG_MUTATION_LOCK:
+            cfg = load_config()
+            if not isinstance(cfg.get("memory"), dict):
+                cfg["memory"] = {}
+            cfg["memory"]["provider"] = provider
+            save_config(cfg)
         return {"ok": True, "active": provider}
 
     return await asyncio.to_thread(_run)
@@ -13237,23 +13249,24 @@ async def create_hook(body: HookCreate):
         pass
 
     def _run():
-        cfg = load_config()
-        hooks_cfg = cfg.get("hooks")
-        if not isinstance(hooks_cfg, dict):
-            hooks_cfg = {}
-            cfg["hooks"] = hooks_cfg
-        entries = hooks_cfg.get(event)
-        if not isinstance(entries, list):
-            entries = []
-            hooks_cfg[event] = entries
+        with _CONFIG_MUTATION_LOCK:
+            cfg = load_config()
+            hooks_cfg = cfg.get("hooks")
+            if not isinstance(hooks_cfg, dict):
+                hooks_cfg = {}
+                cfg["hooks"] = hooks_cfg
+            entries = hooks_cfg.get(event)
+            if not isinstance(entries, list):
+                entries = []
+                hooks_cfg[event] = entries
 
-        new_entry: Dict[str, Any] = {"command": command}
-        if body.matcher:
-            new_entry["matcher"] = body.matcher
-        if body.timeout is not None:
-            new_entry["timeout"] = int(body.timeout)
-        entries.append(new_entry)
-        save_config(cfg)
+            new_entry: Dict[str, Any] = {"command": command}
+            if body.matcher:
+                new_entry["matcher"] = body.matcher
+            if body.timeout is not None:
+                new_entry["timeout"] = int(body.timeout)
+            entries.append(new_entry)
+            save_config(cfg)
 
         approved = False
         if body.approve:
@@ -13279,21 +13292,22 @@ async def delete_hook(body: HookDelete):
         raise HTTPException(status_code=400, detail="event and command are required")
 
     def _run():
-        cfg = load_config()
-        hooks_cfg = cfg.get("hooks")
         removed = False
-        if isinstance(hooks_cfg, dict) and isinstance(hooks_cfg.get(event), list):
-            before = len(hooks_cfg[event])
-            hooks_cfg[event] = [
-                e for e in hooks_cfg[event]
-                if not (isinstance(e, dict) and e.get("command") == command)
-            ]
-            removed = len(hooks_cfg[event]) < before
-            if not hooks_cfg[event]:
-                del hooks_cfg[event]
-            if not hooks_cfg:
-                cfg.pop("hooks", None)
-            save_config(cfg)
+        with _CONFIG_MUTATION_LOCK:
+            cfg = load_config()
+            hooks_cfg = cfg.get("hooks")
+            if isinstance(hooks_cfg, dict) and isinstance(hooks_cfg.get(event), list):
+                before = len(hooks_cfg[event])
+                hooks_cfg[event] = [
+                    e for e in hooks_cfg[event]
+                    if not (isinstance(e, dict) and e.get("command") == command)
+                ]
+                removed = len(hooks_cfg[event]) < before
+                if not hooks_cfg[event]:
+                    del hooks_cfg[event]
+                if not hooks_cfg:
+                    cfg.pop("hooks", None)
+                save_config(cfg)
 
         # Revoke consent regardless so a re-add re-prompts.
         try:
@@ -16683,11 +16697,12 @@ async def get_dashboard_themes():
 async def set_dashboard_theme(body: ThemeSetBody):
     """Set the active dashboard theme (persists to config.yaml)."""
     def _run():
-        config = load_config()
-        if "dashboard" not in config:
-            config["dashboard"] = {}
-        config["dashboard"]["theme"] = body.name
-        save_config(config)
+        with _CONFIG_MUTATION_LOCK:
+            config = load_config()
+            if "dashboard" not in config:
+                config["dashboard"] = {}
+            config["dashboard"]["theme"] = body.name
+            save_config(config)
         return {"ok": True, "theme": body.name}
 
     return await asyncio.to_thread(_run)
@@ -16732,11 +16747,12 @@ async def set_dashboard_font(body: FontSetBody):
     font = body.font if body.font in _FONT_CHOICES else _FONT_DEFAULT_ID
 
     def _run():
-        config = load_config()
-        if "dashboard" not in config:
-            config["dashboard"] = {}
-        config["dashboard"]["font"] = font
-        save_config(config)
+        with _CONFIG_MUTATION_LOCK:
+            config = load_config()
+            if "dashboard" not in config:
+                config["dashboard"] = {}
+            config["dashboard"]["font"] = font
+            save_config(config)
         return {"ok": True, "font": font}
 
     return await asyncio.to_thread(_run)
@@ -17288,20 +17304,21 @@ async def post_plugin_visibility(request: Request, name: str, body: _PluginVisib
     name = _validate_plugin_name(name)
 
     def _run():
-        config = load_config()
-        if "dashboard" not in config or not isinstance(config.get("dashboard"), dict):
-            config["dashboard"] = {}
-        hidden_list: list = config["dashboard"].get("hidden_plugins") or []
-        if not isinstance(hidden_list, list):
-            hidden_list = []
+        with _CONFIG_MUTATION_LOCK:
+            config = load_config()
+            if "dashboard" not in config or not isinstance(config.get("dashboard"), dict):
+                config["dashboard"] = {}
+            hidden_list: list = config["dashboard"].get("hidden_plugins") or []
+            if not isinstance(hidden_list, list):
+                hidden_list = []
 
-        if body.hidden and name not in hidden_list:
-            hidden_list.append(name)
-        elif not body.hidden and name in hidden_list:
-            hidden_list.remove(name)
+            if body.hidden and name not in hidden_list:
+                hidden_list.append(name)
+            elif not body.hidden and name in hidden_list:
+                hidden_list.remove(name)
 
-        config["dashboard"]["hidden_plugins"] = hidden_list
-        save_config(config)
+            config["dashboard"]["hidden_plugins"] = hidden_list
+            save_config(config)
         _invalidate_plugins_hub_cache()
         return {"ok": True, "name": name, "hidden": body.hidden}
 

@@ -146,7 +146,7 @@ async def cron_fire_webhook(request: Request):
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
 
-    cfg = load_config()
+    cfg = await asyncio.to_thread(load_config)
     claims = get_fire_verifier()(
         token=token,
         expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),

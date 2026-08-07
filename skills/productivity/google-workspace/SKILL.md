@@ -1,7 +1,7 @@
 ---
 name: google-workspace
 description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
-version: 1.1.0
+version: 1.2.0
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
@@ -196,7 +196,22 @@ $GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "T
 $GAPI gmail labels
 $GAPI gmail modify MESSAGE_ID --add-labels LABEL_ID
 $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
+
+# Filters
+$GAPI gmail filter-list
+$GAPI gmail filter-get FILTER_ID
+$GAPI gmail filter-create --from alerts@example.com --add-labels LABEL_ID --remove-labels INBOX
+$GAPI gmail filter-create --query 'list:team@example.com has:attachment' --add-labels LABEL_ID
+$GAPI gmail filter-delete FILTER_ID
 ```
+
+If `$GSETUP --check` reports `AUTHENTICATED (partial)`, the existing token
+predates the Gmail settings scope. Run `$GSETUP --revoke`, then repeat Steps
+3–5 above to authorize the updated scope before using filters.
+
+Before creating a filter, run the same criteria through `gmail search` and show
+the matching messages to the user. Filter creation and deletion require
+confirmation. Forwarding actions are intentionally unsupported by this wrapper.
 
 ### Calendar
 
@@ -293,6 +308,8 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Gmail search**: `[{id, threadId, from, to, subject, date, snippet, labels}]`
 - **Gmail get**: `{id, threadId, from, to, subject, date, labels, body}`
 - **Gmail send/reply**: `{status: "sent", id, threadId}`
+- **Gmail filter list/get**: Filter objects with `id`, `criteria`, and `action`
+- **Gmail filter create/delete**: `{status: "created" | "deleted", ...}`
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
 - **Calendar create**: `{status: "created", id, summary, htmlLink}`
 - **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
@@ -310,7 +327,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 
 ## Rules
 
-1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
+1. **Never send email, create/delete Gmail filters or calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, filter criteria/actions, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
 2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
 3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
 4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).

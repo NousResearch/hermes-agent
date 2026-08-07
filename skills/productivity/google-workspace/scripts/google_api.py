@@ -10,6 +10,8 @@ Usage:
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
+  python google_api.py gmail filter-list
+  python google_api.py gmail filter-create --from sender@example.com --add-labels LABEL_ID
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
@@ -46,6 +48,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/contacts.readonly",
@@ -454,6 +457,87 @@ def gmail_modify(args):
     service = build_service("gmail", "v1")
     result = service.users().messages().modify(userId="me", id=args.message_id, body=body).execute()
     print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
+
+
+def gmail_filter_list(args):
+    if _gws_binary():
+        result = _run_gws(
+            ["gmail", "users", "settings", "filters", "list"],
+            params={"userId": "me"},
+        )
+    else:
+        service = build_service("gmail", "v1")
+        result = service.users().settings().filters().list(userId="me").execute()
+    print(json.dumps(result.get("filter", []), indent=2, ensure_ascii=False))
+
+
+def gmail_filter_get(args):
+    params = {"userId": "me", "id": args.filter_id}
+    if _gws_binary():
+        result = _run_gws(
+            ["gmail", "users", "settings", "filters", "get"],
+            params=params,
+        )
+    else:
+        service = build_service("gmail", "v1")
+        result = service.users().settings().filters().get(**params).execute()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+def gmail_filter_create(args):
+    criteria = {
+        key: value
+        for key, value in {
+            "from": args.from_address,
+            "to": args.to,
+            "subject": args.subject,
+            "query": args.query,
+            "negatedQuery": args.negated_query,
+            "hasAttachment": args.has_attachment,
+            "excludeChats": args.exclude_chats,
+        }.items()
+        if value
+    }
+    action = {}
+    if args.add_labels:
+        action["addLabelIds"] = [
+            label.strip() for label in args.add_labels.split(",") if label.strip()
+        ]
+    if args.remove_labels:
+        action["removeLabelIds"] = [
+            label.strip() for label in args.remove_labels.split(",") if label.strip()
+        ]
+    if not criteria:
+        raise SystemExit("ERROR: filter-create requires at least one matching criterion")
+    if not action:
+        raise SystemExit("ERROR: filter-create requires --add-labels or --remove-labels")
+
+    body = {"criteria": criteria, "action": action}
+    if _gws_binary():
+        result = _run_gws(
+            ["gmail", "users", "settings", "filters", "create"],
+            params={"userId": "me"},
+            body=body,
+        )
+    else:
+        service = build_service("gmail", "v1")
+        result = (
+            service.users().settings().filters().create(userId="me", body=body).execute()
+        )
+    print(json.dumps({"status": "created", "filter": result}, indent=2, ensure_ascii=False))
+
+
+def gmail_filter_delete(args):
+    params = {"userId": "me", "id": args.filter_id}
+    if _gws_binary():
+        _run_gws(
+            ["gmail", "users", "settings", "filters", "delete"],
+            params=params,
+        )
+    else:
+        service = build_service("gmail", "v1")
+        service.users().settings().filters().delete(**params).execute()
+    print(json.dumps({"status": "deleted", "filterId": args.filter_id}, indent=2))
 
 
 # =========================================================================
@@ -1092,6 +1176,35 @@ def main():
     p.add_argument("--add-labels", default="", help="Comma-separated label IDs to add")
     p.add_argument("--remove-labels", default="", help="Comma-separated label IDs to remove")
     p.set_defaults(func=gmail_modify)
+
+    p = gmail_sub.add_parser("filter-list")
+    p.set_defaults(func=gmail_filter_list)
+
+    p = gmail_sub.add_parser("filter-get")
+    p.add_argument("filter_id")
+    p.set_defaults(func=gmail_filter_get)
+
+    p = gmail_sub.add_parser("filter-create")
+    p.add_argument(
+        "--from", dest="from_address", default="", help="Sender address or expression"
+    )
+    p.add_argument("--to", default="", help="Recipient address or expression")
+    p.add_argument("--subject", default="", help="Subject expression")
+    p.add_argument("--query", default="", help="Gmail search expression that must match")
+    p.add_argument(
+        "--negated-query",
+        default="",
+        help="Gmail search expression that must not match",
+    )
+    p.add_argument("--has-attachment", action="store_true")
+    p.add_argument("--exclude-chats", action="store_true")
+    p.add_argument("--add-labels", default="", help="Comma-separated label IDs to add")
+    p.add_argument("--remove-labels", default="", help="Comma-separated label IDs to remove")
+    p.set_defaults(func=gmail_filter_create)
+
+    p = gmail_sub.add_parser("filter-delete")
+    p.add_argument("filter_id")
+    p.set_defaults(func=gmail_filter_delete)
 
     # --- Calendar ---
     cal = sub.add_parser("calendar")

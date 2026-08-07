@@ -354,16 +354,36 @@ def _audit_path() -> Path:
     return base / "a2a_audit.jsonl"
 
 
-def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
-    """Append an audit record. Best-effort — never raises into the caller."""
+def audit(
+    direction: str,
+    peer: str | None,
+    task_id: str | None,
+    summary: str,
+    *,
+    decision: str | None = None,
+    status: int | None = None,
+    ip: str | None = None,
+) -> None:
+    """Append an audit record. Best-effort — never raises into the caller.
+
+    ``decision`` and ``status`` capture auth/rejection outcomes so the audit
+    log can record 401/403 rejections alongside accepted inbound/outbound
+    traffic. ``ip`` is the caller's address when known.
+    """
     try:
-        rec = {
+        rec: dict[str, object] = {
             "ts": time.time(),
             "direction": direction,  # "inbound" | "outbound" | "push"
             "peer": peer,
             "task_id": task_id,
             "summary": (summary or "")[:500],
         }
+        if decision is not None:
+            rec["decision"] = decision
+        if status is not None:
+            rec["status"] = status
+        if ip is not None:
+            rec["ip"] = ip
         path = _audit_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:

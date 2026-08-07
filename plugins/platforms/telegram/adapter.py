@@ -307,6 +307,14 @@ from plugins.platforms.telegram.telegram_network import (
 )
 from utils import atomic_replace, env_float, env_int
 
+
+class _TelegramRichMessageFilter(filters.MessageFilter if TELEGRAM_AVAILABLE else object):
+    """Match top-level Bot API rich-message updates omitted by ``filters.TEXT``."""
+
+    def filter(self, message: Any) -> bool:
+        return TelegramAdapter._is_rich_message_update(message)
+
+
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
     "image/png": ".png",
@@ -3894,6 +3902,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_text_message
             ))
             self._app.add_handler(TelegramMessageHandler(
+                _TelegramRichMessageFilter(),
+                self._handle_rich_message,
+            ))
+            self._app.add_handler(TelegramMessageHandler(
                 filters.COMMAND,
                 self._handle_command
             ))
@@ -4024,6 +4036,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         self._app.add_handler(TelegramMessageHandler(
                             filters.TEXT & ~filters.COMMAND,
                             self._handle_text_message
+                        ))
+                        self._app.add_handler(TelegramMessageHandler(
+                            _TelegramRichMessageFilter(),
+                            self._handle_rich_message,
                         ))
                         self._app.add_handler(TelegramMessageHandler(
                             filters.COMMAND,
@@ -8906,6 +8922,44 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
 
+    async def _handle_rich_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Normalize a top-level Bot API rich message into ordinary text ingress."""
+        msg = self._effective_update_message(update)
+        if not msg:
+            return
+        payload = self._rich_message_payload(msg)
+        getter = getattr(payload, "get", None)
+        text = self._flatten_rich_blocks(getter("blocks") if callable(getter) else None).strip()
+        if not text:
+            return
+        if not self._is_user_authorized_from_message(msg):
+            return
+        if not self._should_process_message(msg):
+            return
+        await self._ensure_forum_commands(msg)
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        event.text = self._clean_bot_trigger_text(text)
+        await self._cache_replied_media(msg, event)
+        event = self._apply_telegram_group_observe_attribution(event)
+        self._enqueue_text_event(event)
+
+    @classmethod
+    def _rich_message_payload(cls, message: Any) -> Any:
+        rich_message = getattr(message, "rich_message", None)
+        if rich_message is not None:
+            return rich_message
+        api_kwargs = getattr(message, "api_kwargs", None)
+        getter = getattr(api_kwargs, "get", None)
+        return getter("rich_message") if callable(getter) else None
+
+    @classmethod
+    def _is_rich_message_update(cls, message: Any) -> bool:
+        payload = cls._rich_message_payload(message)
+        getter = getattr(payload, "get", None)
+        return bool(callable(getter) and getter("blocks") is not None)
+
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
         msg = self._effective_update_message(update)
@@ -9661,13 +9715,21 @@ class TelegramAdapter(BasePlatformAdapter):
             return ""
         if isinstance(value, str):
             return value
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return "".join(cls._flatten_rich_inline_text(item) for item in value)
-        if isinstance(value, dict):
-            text = value.get("text")
+        getter = getattr(value, "get", None)
+        if callable(getter):
+            text = getter("text")
             if text is not None:
-                return cls._flatten_rich_inline_text(text)
-            children = value.get("children")
+                rendered = cls._flatten_rich_inline_text(text)
+                node_type = str(getter("type") or "").lower()
+                url = getter("url") or getter("href")
+                if url and node_type in {
+                    "url", "text_url", "anchor_link", "reference_link", "link"
+                }:
+                    return f"{rendered} ({url})" if rendered else str(url)
+                return rendered
+            children = getter("children") or getter("parts")
             if children is not None:
                 return cls._flatten_rich_inline_text(children)
         return ""
@@ -9675,36 +9737,45 @@ class TelegramAdapter(BasePlatformAdapter):
     @classmethod
     def _flatten_rich_blocks(cls, blocks: Any) -> str:
         """Best-effort plaintext flattener for Bot API rich-message blocks."""
-        if not isinstance(blocks, list):
+        if not isinstance(blocks, (list, tuple)):
             return ""
 
         lines: List[str] = []
         for block in blocks:
-            if not isinstance(block, dict):
+            getter = getattr(block, "get", None)
+            if not callable(getter):
                 continue
 
-            block_type = block.get("type")
-            if block_type == "list":
-                for item in block.get("items", []):
-                    if not isinstance(item, dict):
+            if getter("type") == "list":
+                for item in getter("items") or []:
+                    item_getter = getattr(item, "get", None)
+                    if not callable(item_getter):
                         continue
-                    item_text = cls._flatten_rich_blocks(item.get("blocks"))
+                    item_text = cls._flatten_rich_blocks(item_getter("blocks"))
+                    if not item_text:
+                        item_text = cls._flatten_rich_inline_text(item_getter("text"))
                     if not item_text:
                         continue
-                    label = item.get("label")
                     item_lines = item_text.splitlines()
-                    if not item_lines:
-                        continue
-                    first_line = item_lines[0]
-                    if label:
-                        first_line = f"{label} {first_line}".strip()
-                    lines.append(first_line)
+                    label = item_getter("label")
+                    lines.append(f"{label} {item_lines[0]}".strip() if label else item_lines[0])
                     lines.extend(item_lines[1:])
                 continue
 
-            text = cls._flatten_rich_inline_text(block.get("text"))
+            text = cls._flatten_rich_inline_text(getter("text"))
             if text:
                 lines.extend(text.splitlines())
+            title = cls._flatten_rich_inline_text(getter("title"))
+            if title:
+                lines.extend(title.splitlines())
+            nested = getter("blocks") or getter("children")
+            nested_text = (
+                cls._flatten_rich_blocks(nested)
+                if isinstance(nested, (list, tuple))
+                else cls._flatten_rich_inline_text(nested)
+            )
+            if nested_text:
+                lines.extend(nested_text.splitlines())
 
         return "\n".join(line.rstrip() for line in lines if line)
 
@@ -9712,11 +9783,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _extract_rich_reply_text(cls, reply_to_message: Any) -> Optional[str]:
         """Return plaintext echoed by Telegram's rich_message reply payload."""
         try:
-            api_kwargs = getattr(reply_to_message, "api_kwargs", None)
-            getter = getattr(api_kwargs, "get", None)
-            if not callable(getter):
-                return None
-            rich_message = getter("rich_message")
+            rich_message = cls._rich_message_payload(reply_to_message)
             rich_getter = getattr(rich_message, "get", None)
             if not callable(rich_getter):
                 return None
@@ -9940,10 +10007,47 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            forward_origin=self._extract_forward_origin(message),
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,
         )
+
+    @staticmethod
+    def _telegram_forward_origin_type(origin: Any) -> str:
+        origin_type = getattr(origin, "type", None)
+        return str(getattr(origin_type, "name", origin_type) or "unknown").lower()
+
+    @staticmethod
+    def _telegram_forward_origin_date(origin: Any) -> Optional[str]:
+        date = getattr(origin, "date", None)
+        if date is None:
+            return None
+        return date.isoformat() if hasattr(date, "isoformat") else str(date)
+
+    def _extract_forward_origin(self, message: Message) -> Optional[Dict[str, str]]:
+        """Normalize Telegram forwarded-message metadata for agent context."""
+        origin = getattr(message, "forward_origin", None)
+        if origin is None or not isinstance(getattr(origin, "type", None), str):
+            return None
+        result: Dict[str, str] = {"type": self._telegram_forward_origin_type(origin)}
+        date = self._telegram_forward_origin_date(origin)
+        if date:
+            result["date"] = date
+        sender_user = getattr(origin, "sender_user", None)
+        if sender_user is not None:
+            name = getattr(sender_user, "full_name", None) or getattr(sender_user, "username", None)
+            if name:
+                result["sender_name"] = str(name)
+        hidden_name = getattr(origin, "sender_user_name", None)
+        if hidden_name:
+            result["sender_name"] = str(hidden_name)
+        chat = getattr(origin, "chat", None)
+        if chat is not None:
+            name = getattr(chat, "title", None) or getattr(chat, "username", None)
+            if name:
+                result["chat_name"] = str(name)
+        return result
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 

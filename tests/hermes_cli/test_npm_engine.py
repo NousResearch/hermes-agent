@@ -16,6 +16,7 @@ from hermes_cli.npm_engine import (
     is_ebadengine,
     managed_npm_prefix,
     maybe_repair_npm_engine,
+    npm_satisfies_range,
     required_npm_range,
 )
 
@@ -82,6 +83,24 @@ class TestDetection:
             "npm error notsup Required: {not json}\n"
         )
         assert required_npm_range(broken) is None
+
+
+class TestNpmSatisfiesRange:
+    """The probe-fallback matcher must evaluate the engines.npm shapes we ship."""
+
+    def test_or_alternatives_and_and_clauses(self):
+        # Current-style excluded band: npm 11.16.0 is out; 11.9 / 11.17 are in.
+        spec = "<11.10.0 || >=11.17.0"
+        assert npm_satisfies_range("11.9.0", spec)
+        assert npm_satisfies_range("11.17.0", spec)
+        assert npm_satisfies_range("12.0.0", spec)
+        assert not npm_satisfies_range("11.16.0", spec)
+        assert not npm_satisfies_range("11.10.0", spec)
+
+    def test_empty_or_garbage_is_not_a_match(self):
+        assert not npm_satisfies_range("", ">=12.0.0")
+        assert not npm_satisfies_range("11.0.0", "")
+        assert not npm_satisfies_range("not-a-version", ">=12.0.0")
 
 
 class TestManagedDetection:
@@ -248,12 +267,90 @@ class TestRepairDecision:
         err = capsys.readouterr().err
         assert 'npm install -g npm@"<11.10.0 || >=12.0.0"' in err
 
-    def test_non_engine_failure_never_repairs(self, managed_npm, monkeypatch):
+    def test_non_engine_failure_with_in_range_npm_never_repairs(
+        self, managed_npm, monkeypatch
+    ):
+        """A lockfile mismatch must not trigger repair when npm is already
+        inside engines.npm — the probe fallback must not over-fire."""
+        import hermes_cli.npm_engine as npm_engine
+
+        monkeypatch.setattr(npm_engine, "_probe_version", lambda _npm: "11.17.0")
+        # Force the repo range to something 11.17.0 satisfies regardless of
+        # whatever the checkout currently pins.
+        monkeypatch.setattr(
+            npm_engine, "_repo_npm_range", lambda: "<11.10.0 || >=11.17.0"
+        )
+
         def explode(cmd, **kwargs):  # pragma: no cover - must not be reached
             raise AssertionError("a lockfile mismatch must not trigger a repair")
 
         monkeypatch.setattr(subprocess, "run", explode)
-        assert not maybe_repair_npm_engine(str(managed_npm), ELOCK_OUTPUT, quiet=True)
+        assert not maybe_repair_npm_engine(
+            str(managed_npm), ELOCK_OUTPUT, quiet=True
+        )
+
+    def test_opaque_failure_repairs_when_npm_outside_repo_range(
+        self, managed_npm, monkeypatch
+    ):
+        """#78826: ``npm install --silent`` exits 1 with empty stdout/stderr,
+        so there is no EBADENGINE text to parse. The repair must still fire
+        by probing ``npm --version`` against the repo engines.npm range."""
+        import hermes_cli.npm_engine as npm_engine
+
+        monkeypatch.setattr(npm_engine, "_probe_version", lambda _npm: "11.16.0")
+        monkeypatch.setattr(
+            npm_engine, "_repo_npm_range", lambda: "<11.10.0 || >=11.17.0"
+        )
+
+        upgrades = []
+        monkeypatch.setattr(
+            npm_engine,
+            "upgrade_managed_npm",
+            lambda npm, rng, *, prefix, quiet=False: upgrades.append(rng) or True,
+        )
+
+        repaired = maybe_repair_npm_engine(str(managed_npm), "", quiet=True)
+        assert repaired == str(managed_npm)
+        assert upgrades == ["<11.10.0 || >=11.17.0"]
+
+    def test_opaque_failure_provisions_foreign_npm_outside_range(
+        self, tmp_path, monkeypatch
+    ):
+        """Same silent-output path, but the failing npm is the user's — we
+        provision a managed runtime instead of touching theirs."""
+        home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        system_npm = tmp_path / "usr-bin-npm"
+        system_npm.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        managed = home / "node" / "bin" / "npm"
+
+        import hermes_cli.npm_engine as npm_engine
+
+        def fake_bootstrap():
+            managed.parent.mkdir(parents=True, exist_ok=True)
+            managed.write_text("#!/bin/sh\n", encoding="utf-8")
+            managed.chmod(0o755)
+            return str(managed)
+
+        monkeypatch.setattr(npm_engine, "_probe_version", lambda _npm: "11.16.0")
+        monkeypatch.setattr(
+            npm_engine, "_repo_npm_range", lambda: "<11.10.0 || >=11.17.0"
+        )
+        monkeypatch.setattr(
+            npm_engine, "bootstrap_hermes_managed_node", fake_bootstrap
+        )
+        upgrades = []
+        monkeypatch.setattr(
+            npm_engine,
+            "upgrade_managed_npm",
+            lambda npm, rng, *, prefix, quiet=False: upgrades.append((npm, rng))
+            or True,
+        )
+
+        repaired = maybe_repair_npm_engine(str(system_npm), "\n", quiet=True)
+        assert repaired == str(managed)
+        assert upgrades == [(str(managed), "<11.10.0 || >=11.17.0")]
 
     def test_node_only_mismatch_on_foreign_npm_still_provisions(
         self, tmp_path, monkeypatch

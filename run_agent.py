@@ -3461,12 +3461,21 @@ class AIAgent:
         ``HERMES_FILE_MUTATION_VERIFIER`` env var overrides config.  Exposed
         as a method so tests can patch a single seam without reaching into
         the private ``_turn_failed_file_mutations`` state dict.
+
+        The config lookup is read once per agent and cached (mirroring
+        ``_credits_notices_enabled``) — the footer gate runs at the end of
+        every turn, and a config flip applying on the next session is fine.
+        The env-var override stays authoritative on every call and is never
+        cached, so tests and operators can still flip it at runtime.
         """
         try:
             import os as _os
             env = _os.environ.get("HERMES_FILE_MUTATION_VERIFIER")
             if env is not None:
                 return env.strip().lower() not in {"0", "false", "no", "off"}
+            cached = getattr(self, "_file_mutation_verifier_enabled_cache", None)
+            if cached is not None:
+                return cached
             # Read from the persisted config.yaml so gateway and CLI share
             # the same setting.  Import lazily to avoid a startup-time cycle.
             try:
@@ -3476,7 +3485,11 @@ class AIAgent:
                 _cfg = {}
             _display = _cfg.get("display") if isinstance(_cfg, dict) else None
             if isinstance(_display, dict) and "file_mutation_verifier" in _display:
-                return bool(_display.get("file_mutation_verifier"))
+                enabled = bool(_display.get("file_mutation_verifier"))
+            else:
+                enabled = True  # safe default: verifier on
+            self._file_mutation_verifier_enabled_cache = enabled
+            return enabled
         except Exception:
             pass
         return True  # safe default: verifier on
@@ -3558,12 +3571,21 @@ class AIAgent:
         True).  ``HERMES_TURN_COMPLETION_EXPLAINER`` env var overrides
         config.  Exposed as a method so tests can patch a single seam,
         mirroring ``_file_mutation_verifier_enabled``.
+
+        The config lookup is read once per agent and cached (mirroring
+        ``_credits_notices_enabled``) — the gate runs at the end of every
+        turn, and a config flip applying on the next session is fine.
+        The env-var override stays authoritative on every call and is never
+        cached, so tests and operators can still flip it at runtime.
         """
         try:
             import os as _os
             env = _os.environ.get("HERMES_TURN_COMPLETION_EXPLAINER")
             if env is not None:
                 return env.strip().lower() not in {"0", "false", "no", "off"}
+            cached = getattr(self, "_turn_completion_explainer_enabled_cache", None)
+            if cached is not None:
+                return cached
             # Read from the persisted config.yaml so gateway and CLI share
             # the same setting.  Import lazily to avoid a startup-time cycle.
             try:
@@ -3573,7 +3595,11 @@ class AIAgent:
                 _cfg = {}
             _display = _cfg.get("display") if isinstance(_cfg, dict) else None
             if isinstance(_display, dict) and "turn_completion_explainer" in _display:
-                return bool(_display.get("turn_completion_explainer"))
+                enabled = bool(_display.get("turn_completion_explainer"))
+            else:
+                enabled = True  # safe default: explainer on
+            self._turn_completion_explainer_enabled_cache = enabled
+            return enabled
         except Exception:
             pass
         return True  # safe default: explainer on

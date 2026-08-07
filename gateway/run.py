@@ -645,22 +645,22 @@ def _format_exec_approval_fallback(
 
 
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
+    """Map raw provider/API errors to a clear, business-safe chat reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
         return (
-            "⚠️ Provider authentication failed. Check the configured credentials; "
-            "raw provider details are in the gateway logs."
+            "⚠️ I couldn't complete this request because the AI service connection needs attention. "
+            "Nothing was changed. Please retry after the connection is restored."
         )
     if _GATEWAY_PROVIDER_POLICY_RE.search(text):
         return (
-            "⚠️ The model provider rejected the request. I kept the raw provider "
-            "error out of chat; check gateway logs for details or try rephrasing."
+            "⚠️ I couldn't complete this request because the AI service rejected it. "
+            "Nothing was changed. Try rephrasing the request; if it fails again, technical support should review it."
         )
     if _GATEWAY_RATE_LIMIT_RE.search(text):
-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+        return "⏱️ The AI service is temporarily busy. Nothing was changed. Please try again shortly."
     return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics."
+        "⚠️ I couldn't complete this request because the AI service is temporarily unavailable. "
+        "Nothing was changed. Please try again shortly."
     )
 
 
@@ -682,23 +682,15 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
 def _looks_like_gateway_provider_error(text: str) -> bool:
     """True when text is infrastructure/provider failure, not normal content.
 
-    Two heuristics combined so the rewrite only fires on actual provider
-    error envelopes, not on assistant prose that happens to mention an
-    HTTP status code:
-
-    1. The text is short — real provider errors are 1–3 lines of envelope
-       text; assistant answers are usually longer.
-    2. AND the error marker appears at the start of the message (optionally
-       behind a punctuation/symbol prefix), not buried mid-paragraph in an
-       explanation like "HTTP 404 means 'not found' — ...".
+    The error marker must appear at the start of the message (optionally behind
+    a punctuation/symbol prefix), not buried in normal assistant prose. Do not
+    impose a length or line-count limit: provider/authentication envelopes can
+    contain verbose diagnostics, and those are the most important responses to
+    sanitize and suppress on governed chat routes.
     """
     if not text:
         return False
     body = str(text).strip()
-    # Provider failure envelopes are short. Assistant answers that happen
-    # to mention HTTP status codes ("HTTP 404 means...") tend to be longer.
-    if len(body) > 400 or body.count("\n") > 4:
-        return False
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
@@ -3551,6 +3543,26 @@ def _normalize_empty_agent_response(
     return response
 
 
+def _is_gateway_failure_delivery(
+    agent_result: dict,
+    *,
+    response_was_empty: bool,
+    normalized_response: str,
+) -> bool:
+    """Identify failure/retry text produced by the gateway rather than the agent."""
+    return bool(
+        agent_result.get("failed")
+        or (response_was_empty and normalized_response)
+        or _looks_like_gateway_provider_error(normalized_response)
+        or str(normalized_response or "").startswith(
+            (
+                "⚠️ I couldn't complete this request because the AI service",
+                "⏱️ The AI service is temporarily busy.",
+            )
+        )
+    )
+
+
 def _is_gateway_hidden_reasoning_incomplete_turn(agent_result: dict) -> bool:
     """Detect retry-exhausted turns with hidden reasoning but no visible answer.
 
@@ -4396,6 +4408,22 @@ class TurnRunner:
                 ctx.source.platform.value if ctx.source.platform else "unknown",
                 event_type,
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
+            )
+            return
+        error_policy = getattr(ctx.source, "_gateway_error_policy", None)
+        if (
+            isinstance(error_policy, dict)
+            and error_policy.get("suppress_reply") is True
+            and _is_gateway_failure_delivery(
+                {},
+                response_was_empty=False,
+                normalized_response=prepared_message,
+            )
+        ):
+            logger.warning(
+                "governed status failure suppressed for %s/%s",
+                ctx.source.platform.value if ctx.source.platform else "unknown",
+                event_type,
             )
             return
         _fut = safe_schedule_threadsafe(
@@ -5607,6 +5635,7 @@ class TurnRunner:
                 "messages": result.get("messages", []),
                 "api_calls": result.get("api_calls", 0),
                 "failed": result.get("failed", False),
+                "gateway_generated_failure_response": bool(final_response),
                 # Sibling of the non-empty-response return below (#64686):
                 # the classifier's failure_reason must survive the
                 # empty-response normalization path too, or downstream
@@ -14600,6 +14629,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
         #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
+        #   {"action": "allow", "error_policy": {...}} -> normal dispatch
+        #       with an optional per-event fail-silent policy
         #   {"action": "allow"}   /   None          -> normal dispatch
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
@@ -14638,6 +14669,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source = event.source
                     break
                 if _action == "allow":
+                    _error_policy = _result.get("error_policy")
+                    if (
+                        isinstance(_error_policy, dict)
+                        and _error_policy.get("suppress_reply") is True
+                    ):
+                        _event_metadata = dict(getattr(event, "metadata", None) or {})
+                        _event_metadata["gateway_error_policy"] = {
+                            "suppress_reply": True,
+                            "alert_chat_id": str(
+                                _error_policy.get("alert_chat_id") or ""
+                            ).strip(),
+                            "alert_message": str(
+                                _error_policy.get("alert_message") or ""
+                            ).strip()[:1000],
+                        }
+                        event.metadata = _event_metadata
+                        setattr(
+                            event.source,
+                            "_gateway_error_policy",
+                            _event_metadata["gateway_error_policy"],
+                        )
                     break
 
         if is_internal:
@@ -17989,7 +18041,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
+            _response_was_empty = False
             if not _intentional_silence:
+                _response_was_empty = not bool(response)
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
@@ -18449,6 +18503,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 response = ""
 
+            if _is_gateway_failure_delivery(
+                agent_result,
+                response_was_empty=_response_was_empty,
+                normalized_response=response,
+            ):
+                _error_adapter = self._adapter_for_source(source)
+                _handle_governed_error = getattr(
+                    _error_adapter, "_handle_governed_error", None
+                )
+                if callable(_handle_governed_error) and await _handle_governed_error(event):
+                    return None
+
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
             # Skip when streaming TTS already delivered audio for this turn (#60671).
@@ -18565,6 +18631,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
             except Exception:
                 logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
+            _error_adapter = self._adapter_for_source(source)
+            _handle_governed_error = getattr(
+                _error_adapter, "_handle_governed_error", None
+            )
+            if callable(_handle_governed_error) and await _handle_governed_error(event):
+                return None
             # Log full details server-side only; never expose raw exception
             # types or messages to end users (info-leakage risk).
             status_hint = ""
@@ -26124,6 +26196,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _delivery_result = response if isinstance(response, dict) else (result or {})
                     _previewed = bool(_delivery_result.get("response_previewed"))
                     first_response = _delivery_result.get("final_response", "")
+                    _queued_failure_delivery = _is_gateway_failure_delivery(
+                        _delivery_result,
+                        response_was_empty=bool(
+                            _delivery_result.get("gateway_generated_failure_response")
+                        ),
+                        normalized_response=first_response,
+                    )
+                    if _queued_failure_delivery:
+                        _handle_governed_error = getattr(
+                            adapter, "_handle_governed_error", None
+                        )
+                        if callable(_handle_governed_error):
+                            _governed_error_handler = cast(
+                                Callable[[Any], Awaitable[bool]],
+                                _handle_governed_error,
+                            )
+                            if await _governed_error_handler(source):
+                                first_response = ""
                     _already_streamed = _stream_confirmed_final_delivery(
                         _sc,
                         first_response,

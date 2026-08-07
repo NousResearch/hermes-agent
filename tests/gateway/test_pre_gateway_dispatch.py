@@ -118,3 +118,38 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     # Hook actually fired (skip short-circuited before auth) with a None store.
     assert seen == {"session_store": None}
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_allow_hook_can_attach_a_fail_silent_error_policy(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    error_policy = {
+        "suppress_reply": True,
+        "alert_chat_id": "control-room@g.us",
+        "alert_message": "Retry this management request in the control room.",
+    }
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            return [{"action": "allow", "error_policy": error_policy}]
+        return []
+
+    captured = {}
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        captured["metadata"] = event.metadata
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    monkeypatch.setattr(runner, "_handle_message_with_agent", _capture)
+
+    inbound = _make_event("Nova, fix this")
+    result = await runner._handle_message(inbound)
+
+    assert result == "ok"
+    assert captured["metadata"]["gateway_error_policy"] == error_policy
+    assert inbound.metadata["gateway_error_policy"] == error_policy
+    assert getattr(inbound.source, "_gateway_error_policy") == error_policy

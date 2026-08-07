@@ -4978,6 +4978,57 @@ class BasePlatformAdapter(ABC):
         except Exception as e:
             logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
 
+    async def _handle_governed_error(self, event: Any) -> bool:
+        """Apply a per-event fail-silent policy supplied by a gateway plugin.
+
+        Returns ``True`` when the source-chat error reply must be suppressed.
+        An optional fixed alert may be sent to a different administrative chat;
+        failures in that alert path remain server-side only.
+        """
+        metadata = getattr(event, "metadata", None)
+        policy = metadata.get("gateway_error_policy") if isinstance(metadata, dict) else None
+        source = getattr(event, "source", event)
+        if not isinstance(policy, dict):
+            policy = getattr(source, "_gateway_error_policy", None)
+        if not isinstance(policy, dict) or policy.get("suppress_reply") is not True:
+            return False
+
+        source_chat_id = str(getattr(source, "chat_id", "") or "")
+        alert_chat_id = str(policy.get("alert_chat_id") or "").strip()
+        alert_message = str(policy.get("alert_message") or "").strip()
+        logger.warning(
+            "[%s] Suppressing governed error reply for chat=%s",
+            self.name,
+            source_chat_id or "unknown",
+        )
+        already_alerted = bool(policy.get("alerted")) or bool(
+            getattr(source, "_gateway_error_alerted", False)
+        )
+        policy["alerted"] = True
+        setattr(source, "_gateway_error_alerted", True)
+        if (
+            not already_alerted
+            and alert_chat_id
+            and alert_message
+            and alert_chat_id != source_chat_id
+        ):
+            try:
+                alert_result = await self.send(chat_id=alert_chat_id, content=alert_message)
+                if getattr(alert_result, "success", True) is False:
+                    logger.error(
+                        "[%s] Governed error alert delivery failed: %s",
+                        self.name,
+                        getattr(alert_result, "error", None) or "platform returned success=False",
+                    )
+            except Exception as alert_error:
+                logger.error(
+                    "[%s] Failed to send governed error alert: %s",
+                    self.name,
+                    alert_error,
+                    exc_info=True,
+                )
+        return True
+
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
         """Return True if the error string looks like a transient network failure."""
@@ -6361,6 +6412,8 @@ class BasePlatformAdapter(ABC):
         except Exception as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
+            if await self._handle_governed_error(event):
+                return
             # Send the error to the user so they aren't left with radio silence
             try:
                 error_type = type(e).__name__

@@ -350,6 +350,31 @@ class TestLoadGatewayConfig:
 
         assert os.getenv("SLACK_IGNORED_CHANNELS") == "C0123456789,C0987654321"
 
+    @pytest.mark.parametrize(
+        "yaml_text",
+        [
+            "matrix:\n  mention_mode: strict\n",
+            "platforms:\n  matrix:\n    mention_mode: strict\n",
+        ],
+    )
+    def test_matrix_mention_mode_seeds_platform_extra(
+        self,
+        tmp_path,
+        monkeypatch,
+        yaml_text,
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            yaml_text,
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.MATRIX].extra["mention_mode"] == "strict"
+
 
     def test_typing_status_text_from_nested_platforms_block(self, tmp_path, monkeypatch):
         """``platforms.slack.typing_status_text`` reaches PlatformConfig via

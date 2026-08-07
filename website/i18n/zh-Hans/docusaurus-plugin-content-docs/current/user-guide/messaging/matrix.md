@@ -59,6 +59,7 @@ group_sessions_per_user: false
 ```yaml
 matrix:
   require_mention: true           # 在房间中要求 @提及（默认：true）
+  mention_mode: loose             # loose 接受裸机器人名称；strict 要求显式提及
   free_response_rooms:            # 免除提及要求的房间
     - "!abc123:matrix.org"
   auto_thread: true               # 自动为响应创建线程（默认：true）
@@ -74,6 +75,11 @@ MATRIX_AUTO_THREAD=true
 MATRIX_DM_MENTION_THREADS=false
 MATRIX_REACTIONS=true          # 默认：true——处理过程中发送 emoji 反应
 ```
+
+`mention_mode` 仅通过配置文件设置。向后兼容的 `loose` 模式接受 `hermes`
+这样的裸机器人 localpart，但会先排除 Matrix 链接、其他用户的 MXID 和机器人
+homeserver。设为 `strict` 后，只接受 `m.mentions`、机器人的 Matrix pill 或完整
+MXID，以及显式的 `@localpart`。
 
 :::tip 禁用反应
 `MATRIX_REACTIONS=false` 会关闭机器人在收到消息时发布的处理生命周期 emoji 反应（👀/✅/❌）。适用于反应事件较为嘈杂或部分参与客户端不支持的房间。

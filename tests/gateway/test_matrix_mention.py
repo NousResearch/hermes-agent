@@ -15,17 +15,19 @@ from gateway.config import PlatformConfig
 # needing real mautrix APIs mock them individually.
 
 
-def _make_adapter(tmp_path=None):
+def _make_adapter(**extra_overrides):
     """Create a MatrixAdapter with mocked config."""
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
+    extra = {
+        "homeserver": "https://matrix.example.org",
+        "user_id": "@hermes:example.org",
+    }
+    extra.update(extra_overrides)
     config = PlatformConfig(
         enabled=True,
         token="syt_test_token",
-        extra={
-            "homeserver": "https://matrix.example.org",
-            "user_id": "@hermes:example.org",
-        },
+        extra=extra,
     )
     adapter = MatrixAdapter(config)
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
@@ -92,6 +94,54 @@ class TestIsBotMentioned:
 
     def test_localpart_in_body(self):
         assert self.adapter._is_bot_mentioned("hermes can you help?")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "@alice:example.com",
+            "https://matrix.to/#/@alice:example.com",
+            "please check example.com",
+        ],
+    )
+    def test_loose_mode_ignores_identifiers_from_same_named_homeserver(self, body):
+        adapter = _make_adapter(user_id="@example:example.com")
+
+        assert not adapter._is_bot_mentioned(body)
+
+    def test_loose_mode_still_accepts_bare_localpart(self):
+        adapter = _make_adapter(user_id="@example:example.com")
+
+        assert adapter._is_bot_mentioned("we should ask example about this")
+
+    def test_strict_mode_rejects_bare_localpart(self):
+        adapter = _make_adapter(
+            user_id="@example:example.com",
+            mention_mode="strict",
+        )
+
+        assert not adapter._is_bot_mentioned("we should ask example about this")
+
+    def test_strict_mode_accepts_explicit_localpart(self):
+        adapter = _make_adapter(
+            user_id="@example:example.com",
+            mention_mode="strict",
+        )
+
+        assert adapter._is_bot_mentioned("@example can you help?")
+
+    def test_strict_mode_accepts_structured_mention(self):
+        adapter = _make_adapter(mention_mode="strict")
+
+        assert adapter._is_bot_mentioned(
+            "please reply",
+            mention_user_ids=["@hermes:example.org"],
+        )
+
+    def test_invalid_mention_mode_falls_back_to_loose(self, caplog):
+        adapter = _make_adapter(mention_mode="typo")
+
+        assert adapter._is_bot_mentioned("hermes can you help?")
+        assert "invalid mention_mode" in caplog.text
 
 
     def test_matrix_pill_in_formatted_body(self):
@@ -213,6 +263,31 @@ async def test_require_mention_m_mentions_other_user_ignored(monkeypatch):
     )
 
     await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_require_mention_ignores_other_user_on_same_named_homeserver(monkeypatch):
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+    adapter = _make_adapter(user_id="@example:example.com")
+    event = _make_event("@alice:example.com")
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_require_mention_strict_mode_ignores_bare_localpart(monkeypatch):
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+    adapter = _make_adapter(
+        user_id="@example:example.com",
+        mention_mode="strict",
+    )
+    event = _make_event("we should ask example about this")
+
+    await adapter._on_room_message(event)
+
     adapter.handle_message.assert_not_awaited()
 
 
@@ -382,5 +457,3 @@ class TestMatrixConfigBridge:
             == "!room1:example.org,!room2:example.org"
         )
         assert os.getenv("MATRIX_AUTO_THREAD") == "false"
-
-

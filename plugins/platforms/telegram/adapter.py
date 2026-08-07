@@ -3727,6 +3727,28 @@ class TelegramAdapter(BasePlatformAdapter):
 
             # Build the application
             builder = Application.builder().token(self.config.token)
+            # PTB processes updates sequentially unless told otherwise: the next
+            # update is only picked up after the previous handler returns. In a
+            # forum group, where every topic is a separate conversation, this
+            # serialises unrelated chats — a turn started in one topic blocks the
+            # start of a turn in another. Opt-in via
+            # ``platforms.<name>.extra.concurrent_updates``; the default of 1
+            # keeps the current behaviour unchanged.
+            concurrent_updates_raw = self.config.extra.get("concurrent_updates", 1)
+            try:
+                concurrent_updates = int(concurrent_updates_raw)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "[%s] Ignoring non-numeric concurrent_updates=%r, using 1",
+                    self.name, concurrent_updates_raw,
+                )
+                concurrent_updates = 1
+            if concurrent_updates > 1:
+                builder = builder.concurrent_updates(concurrent_updates)
+                logger.info(
+                    "[%s] Telegram concurrent_updates=%s",
+                    self.name, concurrent_updates,
+                )
             custom_base_url = self.config.extra.get("base_url")
             if custom_base_url:
                 builder = builder.base_url(custom_base_url)

@@ -1597,6 +1597,7 @@ def _apply_main_model_assignment(
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
+_GATEWAY_HEALTH_API_KEY = os.getenv("API_SERVER_KEY", "")
 _GATEWAY_HEALTH_TIMEOUT_MAX = 1.0
 _GATEWAY_HEALTH_ROUTE_TIMEOUT = 1.0
 try:
@@ -1664,6 +1665,8 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     for path in (f"{base}/health/detailed", f"{base}/health"):
         try:
             req = urllib.request.Request(path, method="GET")
+            if _GATEWAY_HEALTH_API_KEY:
+                req.add_header("Authorization", f"Bearer {_GATEWAY_HEALTH_API_KEY}")
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
                     body = json.loads(resp.read())

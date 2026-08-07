@@ -2776,6 +2776,23 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+
+def _resolve_cron_skip_memory(cfg: dict) -> bool:
+    """Whether cron runs should skip memory providers/tools.
+
+    Defaults to True. Operators can set ``cron.skip_memory: false`` so
+    external memory providers (e.g. mem0) become usable in cron jobs (#9763).
+
+    Local MEMORY.md / USER.md injection stays off even when this returns
+    False: ``run_job`` always passes ``skip_local_memory=True`` so cron
+    system prompts cannot corrupt on-disk user representations (005e0ec).
+    """
+    cron_cfg = cfg.get("cron") if isinstance(cfg, dict) else None
+    if not isinstance(cron_cfg, dict):
+        return True
+    return bool(cron_cfg.get("skip_memory", True))
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -3550,7 +3567,11 @@ def run_job(
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Default True. ``cron.skip_memory: false`` enables *provider-only*
+            # memory (mem0/Honcho/etc.). Local MEMORY.md/USER.md stays skipped
+            # so cron prompts cannot corrupt disk identity (005e0ec / #52897).
+            skip_memory=_resolve_cron_skip_memory(_cfg),
+            skip_local_memory=True,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

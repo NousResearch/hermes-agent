@@ -12608,9 +12608,16 @@ def main():
     # ``hermes egress start`` refusing when credential_source=bitwarden
     # is misconfigured) actually exit non-zero.  Handlers that return
     # None are treated as success (exit 0).
+    #
+    # ``bool`` is a subclass of ``int``, so a bare ``isinstance(rc, int)``
+    # would map a handler returning ``True`` to ``sys.exit(True)`` -> exit
+    # status 1.  ``args.func`` handlers are unconstrained ``Callable``s
+    # (notably external-plugin CLI handlers) that routinely return
+    # ``True``/``False`` to signal success, so only an *exact* ``int`` counts
+    # as a status code here.
     if hasattr(args, "func"):
         rc = args.func(args)
-        if isinstance(rc, int) and rc != 0:
+        if type(rc) is int and rc != 0:
             sys.exit(rc)
     else:
         parser.print_help()

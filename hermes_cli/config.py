@@ -29,10 +29,13 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Tuple, Set, TYPE_CHECKING
 
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
+
+if TYPE_CHECKING:
+    from hermes_cli.plugin_activation import PluginActivationState
 
 logger = logging.getLogger(__name__)
 
@@ -3150,6 +3153,35 @@ def load_config_readonly() -> Dict[str, Any]:
     safety guarantee is purely documented, not enforced — be careful.
     """
     return _load_config_impl(want_deepcopy=False)
+
+
+def load_plugin_activation_state() -> "PluginActivationState":
+    """Derive plugin activation from the canonical loaded configuration.
+
+    This accessor deliberately performs no parsing of its own.  Environment
+    expansion, managed-scope precedence, cache invalidation, and
+    last-known-good behavior all remain owned by :func:`load_config_readonly`.
+    An unexpected loader failure uses an empty allow-list, which keeps
+    non-bundled plugins fail-closed while bundled defaults remain available.
+    """
+    from hermes_cli.plugin_activation import PluginActivationState
+    from utils import env_var_enabled
+
+    safe_mode = env_var_enabled("HERMES_SAFE_MODE")
+    if safe_mode:
+        # Safe mode is a recovery boundary, not merely another config flag.
+        # Do not let an unreadable or user-controlled plugins section disable
+        # the bundled model providers needed to recover the installation.
+        return PluginActivationState(safe_mode=True)
+
+    try:
+        config = load_config_readonly()
+    except Exception:
+        config = {}
+    return PluginActivationState.from_config(
+        config,
+        safe_mode=False,
+    )
 
 
 def write_platform_config_field(

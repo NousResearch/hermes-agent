@@ -785,6 +785,361 @@ class TestConfigSupportFloor:
         assert (tmp_path / ".env").read_text(encoding="utf-8") == expected_env
 
 
+class TestPluginActivationGrandfatherMigration:
+    """Activation migrations preserve only plugins installed at upgrade time."""
+
+    @staticmethod
+    def _write_provider(
+        tmp_path,
+        name: str,
+        *,
+        manifest_name: str | None = None,
+        with_init: bool = True,
+    ):
+        plugin_dir = tmp_path / "plugins" / "model-providers" / name
+        plugin_dir.mkdir(parents=True)
+        if with_init:
+            (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+        if manifest_name is not None:
+            (plugin_dir / "plugin.yaml").write_text(
+                f"name: {manifest_name}\nkind: model-provider\n",
+                encoding="utf-8",
+            )
+
+    @staticmethod
+    def _write_plugin(
+        root: Path,
+        *parts: str,
+        manifest_name: str | None,
+        kind: str,
+    ) -> Path:
+        plugin_dir = root.joinpath(*parts)
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        if manifest_name is not None:
+            (plugin_dir / "plugin.yaml").write_text(
+                f"name: {manifest_name}\nkind: {kind}\n",
+                encoding="utf-8",
+            )
+        (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+        return plugin_dir
+
+    @staticmethod
+    def _write_activation_config(tmp_path, *, version=34, enabled=(), disabled=()):
+        lines = [f"_config_version: {version}"]
+        if enabled or disabled:
+            lines.append("plugins:")
+        if enabled:
+            lines.append(f"  enabled: [{', '.join(enabled)}]")
+        if disabled:
+            lines.append(f"  disabled: [{', '.join(disabled)}]")
+        contents = "\n".join(lines) + "\n"
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(contents, encoding="utf-8")
+        return config_path, contents
+
+    @staticmethod
+    def _run_activation_migrations(tmp_path, bundled, *, entrypoint_error=None):
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HERMES_HOME": str(tmp_path),
+                    "HERMES_BUNDLED_PLUGINS": str(bundled),
+                    "HERMES_ENABLE_PROJECT_PLUGINS": "0",
+                },
+            ),
+            patch(
+                "hermes_cli.plugins_cmd._discover_entrypoint_plugins",
+                return_value=[],
+                side_effect=entrypoint_error,
+            ),
+        ):
+            return migrate_config(interactive=False, quiet=True)
+
+    def test_grandfathers_nested_and_manifestless_model_providers(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 20\n",
+            encoding="utf-8",
+        )
+        self._write_provider(tmp_path, "gmi", manifest_name="GMI override")
+        self._write_provider(tmp_path, "legacy-local")
+        self._write_provider(
+            tmp_path,
+            "manifest-only",
+            manifest_name="not-installed",
+            with_init=False,
+        )
+        self._write_provider(tmp_path, ".hidden")
+
+        flat_plugin = tmp_path / "plugins" / "flat-user"
+        flat_plugin.mkdir(parents=True)
+        (flat_plugin / "plugin.yaml").write_text(
+            "name: flat-user\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["plugins"]["enabled"] == [
+            "flat-user",
+            "model-providers/gmi",
+            "model-providers/legacy-local",
+        ]
+
+    def test_disabled_identity_is_not_grandfathered_and_rerun_is_idempotent(
+        self,
+        tmp_path,
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 20\n"
+            "plugins:\n"
+            '  disabled: [" GMI override ", model-providers/legacy-local]\n',
+            encoding="utf-8",
+        )
+        self._write_provider(tmp_path, "gmi", manifest_name="GMI override")
+        self._write_provider(tmp_path, "legacy-local")
+        self._write_provider(tmp_path, "already-installed")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            self._write_provider(tmp_path, "installed-later")
+
+            # The version marker makes the grandfather pass one-shot; newly
+            # appearing files are never auto-authorized on later startups.
+            migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["plugins"]["enabled"] == [
+            "model-providers/already-installed"
+        ]
+
+    def test_v33_upgrade_grandfathers_existing_provider_once(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 33\n"
+            "plugins:\n"
+            "  enabled: [existing-plugin, gmi, legacy-local]\n",
+            encoding="utf-8",
+        )
+        self._write_provider(tmp_path, "gmi", manifest_name="gmi-provider")
+        self._write_provider(tmp_path, "legacy-local")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            self._write_provider(tmp_path, "installed-later")
+            migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["plugins"]["enabled"] == [
+            "existing-plugin",
+            "gmi",
+            "legacy-local",
+            "model-providers/gmi",
+            "model-providers/legacy-local",
+        ]
+
+    @pytest.mark.parametrize(
+        "case",
+        (
+            # Specs are source:path:manifest:kind; "_" means manifestless.
+            # Sources are bundled/user/project; kinds are backend/model/standalone.
+            (
+                "b:web/firecrawl:bundled-firecrawl:b b:manual:manual-plugin:s "
+                "u:web/firecrawl:user-firecrawl:b",
+                34,
+                "web/firecrawl bundled-firecrawl manual-plugin",
+                "",
+                "web/firecrawl manual-plugin",
+                ("config_added", "legacy bundled-default grant(s) removed"),
+                False,
+            ),
+            (
+                "b:model-providers/gmi:gmi-provider:m "
+                "u:model-providers/gmi:_:m",
+                33,
+                "",
+                "",
+                "model-providers/gmi",
+                None,
+                False,
+            ),
+            (
+                "b:model-providers/gmi:gmi-provider:m "
+                "b:model-providers/project-local:project-local-provider:m "
+                "u:model-providers/gmi:_:m p:model-providers/project-local:_:m",
+                34,
+                "model-providers/gmi model-providers/project-local",
+                "model-providers/gmi",
+                "model-providers/gmi model-providers/project-local",
+                None,
+                False,
+            ),
+            (
+                "b:web/firecrawl:shared-name:b u:tools/other:shared-name:s",
+                34,
+                "shared-name",
+                "",
+                "shared-name",
+                ("warnings", "shared-name"),
+                False,
+            ),
+            (
+                "b:web/firecrawl:web-firecrawl:b "
+                "b:browser/firecrawl:web-firecrawl:b",
+                34,
+                "web/firecrawl web-firecrawl keep-me",
+                "",
+                "keep-me",
+                ("config_added", "legacy bundled-default grant(s) removed"),
+                True,
+            ),
+        ),
+        ids=(
+            "external-and-bundled-opt-in",
+            "legacy-manifestless-provider",
+            "disabled-user-and-inactive-project",
+            "shared-external-identity",
+            "future-project-does-not-inherit",
+        ),
+    )
+    def test_v35_preserves_consent_consumers(
+        self,
+        tmp_path,
+        monkeypatch,
+        case,
+    ):
+        candidates, version, enabled, disabled, expected, result_check, future = case
+        bundled = tmp_path / "bundled"
+        roots = {
+            "b": bundled,
+            "u": tmp_path / "plugins",
+            "p": tmp_path / ".hermes" / "plugins",
+        }
+        kinds = {"b": "backend", "m": "model-provider", "s": "standalone"}
+        for candidate in candidates.split():
+            source, relative_path, name, kind = candidate.split(":")
+            self._write_plugin(
+                roots[source],
+                *relative_path.split("/"),
+                manifest_name=None if name == "_" else name,
+                kind=kinds[kind],
+            )
+        config_path, _ = self._write_activation_config(
+            tmp_path,
+            version=version,
+            enabled=tuple(enabled.split()),
+            disabled=tuple(disabled.split()),
+        )
+        monkeypatch.chdir(tmp_path)
+        results = self._run_activation_migrations(tmp_path, bundled)
+
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert raw["plugins"]["enabled"] == expected.split()
+        assert raw["plugins"].get("disabled", []) == disabled.split()
+        if result_check:
+            bucket, marker = result_check
+            assert any(marker in item for item in results[bucket])
+        if future:
+            from hermes_cli import plugins_cmd
+            from hermes_cli.plugin_activation import PluginActivationState
+
+            self._write_plugin(
+                tmp_path / ".hermes" / "plugins",
+                "web",
+                "firecrawl",
+                manifest_name="project-firecrawl",
+                kind="backend",
+            )
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "HERMES_HOME": str(tmp_path),
+                        "HERMES_BUNDLED_PLUGINS": str(bundled),
+                        "HERMES_ENABLE_PROJECT_PLUGINS": "1",
+                    },
+                ),
+                patch(
+                    "hermes_cli.plugins_cmd._discover_entrypoint_plugins",
+                    return_value=[],
+                ),
+            ):
+                candidates = plugins_cmd._discover_plugin_candidates()
+
+            winner, status = next(
+                selection
+                for selection in plugins_cmd._resolve_plugin_entry_winners(
+                    candidates,
+                    PluginActivationState.from_config(raw),
+                )
+                if selection[0][5] == "web/firecrawl"
+            )
+            assert status == "enabled"
+            assert winner[0] == "web-firecrawl"
+            assert winner[3] == "bundled"
+
+    @pytest.mark.parametrize(
+        "inventory_failure",
+        ("entrypoint", "missing-bundled", "empty-bundled"),
+    )
+    def test_v35_inventory_failure_leaves_v34_unchanged(
+        self, tmp_path, inventory_failure
+    ):
+        bundled = tmp_path / "bundled"
+        if inventory_failure == "entrypoint":
+            self._write_plugin(
+                bundled,
+                "web",
+                "firecrawl",
+                manifest_name="web-firecrawl",
+                kind="backend",
+            )
+        elif inventory_failure == "empty-bundled":
+            bundled.mkdir()
+        grant = "web/firecrawl" if inventory_failure == "entrypoint" else "legacy-grant"
+        config_path, original = self._write_activation_config(
+            tmp_path,
+            enabled=(grant,),
+        )
+        error = RuntimeError("metadata unavailable") if inventory_failure == "entrypoint" else None
+        with pytest.raises(RuntimeError, match="version was not advanced"):
+            self._run_activation_migrations(
+                tmp_path,
+                bundled,
+                entrypoint_error=error,
+            )
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_safe_mode_still_blocks_grandfathered_user_provider(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "_config_version: 20\n",
+            encoding="utf-8",
+        )
+        self._write_provider(tmp_path, "legacy-local")
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "HERMES_SAFE_MODE": "1"},
+        ):
+            migrate_config(interactive=False, quiet=True)
+            from hermes_cli.config import load_plugin_activation_state
+
+            state = load_plugin_activation_state()
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["plugins"]["enabled"] == ["model-providers/legacy-local"]
+        assert state.safe_mode is True
+        assert not state.is_active(
+            name="model-providers/legacy-local",
+            key="model-providers/legacy-local",
+            source="user",
+            kind="model-provider",
+        )
+
+
 class TestCustomProviderCompatibility:
     """Custom provider compatibility across legacy and v12+ config schemas.
 

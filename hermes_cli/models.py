@@ -8,6 +8,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import copy
+import contextvars
 import json
 import logging
 import os
@@ -17,9 +18,11 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import time
+from collections.abc import Set as AbstractSet
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from types import MappingProxyType
+from typing import Any, Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
@@ -1150,29 +1153,317 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (Multi-model aggregator)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
 ]
+_STATIC_CANONICAL_PROVIDERS = tuple(CANONICAL_PROVIDERS)
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
 # that is not already in the list above.  Adding plugins/model-providers/<name>/
 # is sufficient to expose a new provider in the model picker, /model, and all
 # downstream consumers — no edits to this file needed.
-_canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
-try:
-    from providers import list_providers as _list_providers_for_canonical
-    for _pp in _list_providers_for_canonical():
-        if _pp.name in _canonical_slugs:
+_canonical_slugs: set[str] = set()
+_PROVIDER_METADATA_LOCK = threading.RLock()
+_PROVIDER_METADATA_VIEWS_INSTALLED = False
+
+
+class _ProviderMetadataSnapshot(NamedTuple):
+    """One immutable, context-scoped view of provider-derived metadata."""
+
+    canonical_providers: tuple[ProviderEntry, ...]
+    canonical_slugs: frozenset[str]
+    provider_aliases: Mapping[str, str]
+    provider_labels: Mapping[str, str]
+    known_provider_names: frozenset[str]
+
+
+_PROVIDER_METADATA_BY_SCOPE: dict[
+    tuple[str, str], _ProviderMetadataSnapshot
+] = {}
+
+
+def _path_scope_identity(path: Path) -> str:
+    """Normalize a scope path without touching the filesystem."""
+    return os.path.normcase(
+        os.path.abspath(os.path.expanduser(str(path)))
+    )
+
+
+def _provider_metadata_scope_key() -> tuple[str, str]:
+    """Return the lightweight profile/project identity for this context.
+
+    Provider activation changes arrive through the registered refresh hook,
+    so hot readers must not call ``get_provider_discovery_identity()`` here.
+    That API performs provider discovery and config freshness checks; using it
+    for every alias lookup turned ``normalize_provider()`` into a filesystem
+    and callback-heavy operation and made compatibility-view materialization
+    repeat the same work once per item.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = _path_scope_identity(get_hermes_home())
+    except Exception:
+        home = ""
+
+    project = ""
+    if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        try:
+            project = _path_scope_identity(Path.cwd())
+        except (OSError, RuntimeError):
+            project = ""
+    return home, project
+
+
+def _build_provider_metadata(profiles: list[Any]) -> _ProviderMetadataSnapshot:
+    """Build fresh containers without mutating any published metadata."""
+    active_provider_ids = {profile.name for profile in profiles}
+    canonical_providers = [
+        entry
+        for entry in _STATIC_CANONICAL_PROVIDERS
+        if (
+            not _provider_id_is_plugin_managed(entry.slug)
+            or entry.slug in active_provider_ids
+        )
+    ]
+    canonical_slugs = {entry.slug for entry in canonical_providers}
+
+    for profile in profiles:
+        if profile.name in canonical_slugs:
             continue
-        if _pp.auth_type in {"oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex"}:
-            continue  # non-api-key flows need bespoke picker UX; skip auto-inject
-        _label = _pp.display_name or _pp.name
-        _desc = _pp.description or f"{_label} (direct API)"
-        CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _desc))
-        _canonical_slugs.add(_pp.name)
-except Exception:
-    pass
+        if profile.auth_type in {
+            "oauth_device_code",
+            "oauth_external",
+            "external_process",
+            "aws_sdk",
+            "copilot",
+            "vertex",
+        }:
+            continue
+        label = profile.display_name or profile.name
+        description = profile.description or f"{label} (direct API)"
+        canonical_providers.append(
+            ProviderEntry(profile.name, label, description)
+        )
+        canonical_slugs.add(profile.name)
+
+    static_aliases = globals().get("_STATIC_PROVIDER_ALIASES", {})
+    provider_aliases = (
+        dict(static_aliases) if isinstance(static_aliases, dict) else {}
+    )
+    for profile in profiles:
+        for alias in profile.aliases:
+            # Existing Hermes aliases remain authoritative.
+            provider_aliases.setdefault(alias, profile.name)
+
+    provider_labels = {
+        entry.slug: entry.label for entry in canonical_providers
+    }
+    try:
+        from providers import is_provider_plugin_active
+
+        if is_provider_plugin_active("custom"):
+            provider_labels["custom"] = "Custom endpoint"
+    except Exception:
+        pass
+
+    known_provider_names = set(canonical_slugs)
+    known_provider_names.update(
+        alias
+        for alias, canonical in provider_aliases.items()
+        if canonical in canonical_slugs
+    )
+    if "custom" in provider_labels:
+        known_provider_names.add("custom")
+
+    return _ProviderMetadataSnapshot(
+        canonical_providers=tuple(canonical_providers),
+        canonical_slugs=frozenset(canonical_slugs),
+        provider_aliases=MappingProxyType(provider_aliases),
+        provider_labels=MappingProxyType(provider_labels),
+        known_provider_names=frozenset(known_provider_names),
+    )
+
+
+def _refresh_canonical_providers_from_plugins() -> None:
+    """Publish an immutable provider snapshot for the current scope."""
+    with _PROVIDER_METADATA_LOCK:
+        try:
+            from providers import list_providers
+
+            profiles = list_providers()
+        except Exception:
+            logger.debug(
+                "Provider metadata refresh failed; keeping last snapshot",
+                exc_info=True,
+            )
+            return
+
+        scope_key = _provider_metadata_scope_key()
+        snapshot = _build_provider_metadata(profiles)
+
+        # One dict-slot assignment publishes the complete immutable snapshot.
+        # Other profile scopes keep their own entry and therefore cannot be
+        # overwritten by this refresh.
+        _PROVIDER_METADATA_BY_SCOPE[scope_key] = snapshot
+
+        # During module initialization the legacy globals are still concrete
+        # containers. Replace them wholesale (never clear/update in place).
+        # Once compatibility views are installed below, they resolve the
+        # current scope directly and no further rebinding is needed.
+        if not _PROVIDER_METADATA_VIEWS_INSTALLED:
+            globals()["CANONICAL_PROVIDERS"] = list(
+                snapshot.canonical_providers
+            )
+            globals()["_canonical_slugs"] = set(snapshot.canonical_slugs)
+            globals()["_PROVIDER_ALIASES"] = dict(snapshot.provider_aliases)
+            globals()["_PROVIDER_LABELS"] = dict(snapshot.provider_labels)
+            globals()["_KNOWN_PROVIDER_NAMES"] = set(
+                snapshot.known_provider_names
+            )
+
+
+def _provider_metadata_snapshot() -> _ProviderMetadataSnapshot:
+    """Return the immutable metadata snapshot for the current scope."""
+    scope_key = _provider_metadata_scope_key()
+    with _PROVIDER_METADATA_LOCK:
+        snapshot = _PROVIDER_METADATA_BY_SCOPE.get(scope_key)
+    if snapshot is not None:
+        return snapshot
+
+    _refresh_canonical_providers_from_plugins()
+    scope_key = _provider_metadata_scope_key()
+    with _PROVIDER_METADATA_LOCK:
+        snapshot = _PROVIDER_METADATA_BY_SCOPE.get(scope_key)
+        if snapshot is not None:
+            return snapshot
+
+        # Discovery is best-effort. Keep callers functional even if an
+        # out-of-tree provider raised while the current scope was loading.
+        snapshot = _build_provider_metadata([])
+        _PROVIDER_METADATA_BY_SCOPE[scope_key] = snapshot
+        return snapshot
+
+
+class _ProviderSequenceView(Sequence[ProviderEntry]):
+    """Direct-import-compatible sequence bound to the current scope."""
+
+    def _values(self) -> tuple[ProviderEntry, ...]:
+        return _provider_metadata_snapshot().canonical_providers
+
+    def __getitem__(self, index: Any) -> Any:
+        return self._values()[index]
+
+    def __iter__(self) -> Iterator[ProviderEntry]:
+        return iter(self._values())
+
+    def __len__(self) -> int:
+        return len(self._values())
+
+    def __repr__(self) -> str:
+        return repr(list(self._values()))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Sequence):
+            return NotImplemented
+        return self._values() == tuple(other)
+
+    def copy(self) -> list[ProviderEntry]:
+        return list(self._values())
+
+
+class _ProviderMappingView(Mapping[str, str]):
+    """Direct-import-compatible mapping bound to the current scope."""
+
+    def __init__(self, attribute: str):
+        self._attribute = attribute
+
+    def _values(self) -> Mapping[str, str]:
+        return getattr(_provider_metadata_snapshot(), self._attribute)
+
+    def __getitem__(self, key: str) -> str:
+        return self._values()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values())
+
+    def __len__(self) -> int:
+        return len(self._values())
+
+    def __repr__(self) -> str:
+        return repr(dict(self._values()))
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._values().get(key, default)
+
+    def items(self):
+        return self._values().items()
+
+    def keys(self):
+        return self._values().keys()
+
+    def values(self):
+        return self._values().values()
+
+    def copy(self) -> dict[str, str]:
+        return dict(self._values())
+
+
+class _ProviderSetView(AbstractSet[str]):
+    """Direct-import-compatible set bound to the current scope."""
+
+    def __init__(self, attribute: str):
+        self._attribute = attribute
+
+    def _values(self) -> frozenset[str]:
+        return getattr(_provider_metadata_snapshot(), self._attribute)
+
+    def __contains__(self, value: object) -> bool:
+        return value in self._values()
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values())
+
+    def __len__(self) -> int:
+        return len(self._values())
+
+    def __repr__(self) -> str:
+        return repr(set(self._values()))
+
+    @classmethod
+    def _from_iterable(cls, values: Iterable[str]) -> set[str]:
+        # ``collections.abc.Set`` normally constructs ``cls(values)`` for
+        # union/intersection results.  Our constructor takes a snapshot
+        # attribute name, so materialized set operations should return a
+        # normal concrete set instead.
+        return set(values)
+
+    def copy(self) -> set[str]:
+        return set(self._values())
+
+
+def _provider_id_is_plugin_managed(provider_id: str) -> bool:
+    try:
+        from providers import is_plugin_managed_provider_id
+
+        return is_plugin_managed_provider_id(provider_id)
+    except Exception:
+        return False
+
+
+_refresh_canonical_providers_from_plugins()
 
 # Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
-_PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
+try:
+    from providers import is_provider_plugin_active
+
+    if is_provider_plugin_active("custom"):
+        _PROVIDER_LABELS["custom"] = "Custom endpoint"
+except Exception:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -1367,6 +1658,7 @@ _PROVIDER_ALIASES = {
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
 }
+_STATIC_PROVIDER_ALIASES = dict(_PROVIDER_ALIASES)
 
 
 # In-repo fallback for the model Hermes silently lands on when the user never
@@ -2129,11 +2421,25 @@ def _fetch_novita_pricing(
 
 
 # All provider IDs and aliases that are valid for the provider:model syntax.
-_KNOWN_PROVIDER_NAMES: set[str] = (
-    set(_PROVIDER_LABELS.keys())
-    | set(_PROVIDER_ALIASES.keys())
-    | {"openrouter", "custom"}
-)
+_KNOWN_PROVIDER_NAMES: set[str] = set()
+_refresh_canonical_providers_from_plugins()
+
+# Keep direct imports live across ContextVar profile switches. These views
+# preserve the read operations callers historically used on list/dict/set
+# globals while resolving every operation against the current scope's single
+# immutable snapshot.
+_PROVIDER_METADATA_VIEWS_INSTALLED = True
+CANONICAL_PROVIDERS = _ProviderSequenceView()
+_canonical_slugs = _ProviderSetView("canonical_slugs")
+_PROVIDER_ALIASES = _ProviderMappingView("provider_aliases")
+_PROVIDER_LABELS = _ProviderMappingView("provider_labels")
+_KNOWN_PROVIDER_NAMES = _ProviderSetView("known_provider_names")
+try:
+    from providers import register_provider_refresh_hook
+
+    register_provider_refresh_hook(_refresh_canonical_providers_from_plugins)
+except Exception:
+    pass
 
 
 def list_available_providers() -> list[dict[str, str]]:
@@ -2145,17 +2451,19 @@ def list_available_providers() -> list[dict[str, str]]:
     Derives the provider list from :data:`CANONICAL_PROVIDERS` (single
     source of truth shared with ``hermes model``, ``/model``, etc.).
     """
-    # Derive display order from canonical list + custom
-    provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
+    metadata = _provider_metadata_snapshot()
+    provider_order = [p.slug for p in metadata.canonical_providers]
+    if "custom" in metadata.provider_labels and "custom" not in provider_order:
+        provider_order.append("custom")
 
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
-    for alias, canonical in _PROVIDER_ALIASES.items():
+    for alias, canonical in metadata.provider_aliases.items():
         aliases_for.setdefault(canonical, []).append(alias)
 
     result = []
     for pid in provider_order:
-        label = _PROVIDER_LABELS.get(pid, pid)
+        label = metadata.provider_labels.get(pid, pid)
         alias_list = aliases_for.get(pid, [])
         # Check if this provider has credentials available
         has_creds = False
@@ -2202,7 +2510,10 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
-        if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
+        known_provider_names = (
+            _provider_metadata_snapshot().known_provider_names
+        )
+        if provider_part and model_part and provider_part in known_provider_names:
             # Support custom:name:model triple syntax for named custom
             # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
             # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
@@ -2325,6 +2636,15 @@ _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
 )
 
 
+def _provider_is_routable(provider: str) -> bool:
+    try:
+        from hermes_cli.auth import is_runtime_provider_routable
+
+        return is_runtime_provider_routable(provider)
+    except Exception:
+        return False
+
+
 def _resolve_static_model_alias(
     name_lower: str,
     current_keys: set[str],
@@ -2343,6 +2663,8 @@ def _resolve_static_model_alias(
     family = identity.family
 
     def _match(provider: str) -> Optional[str]:
+        if not _provider_is_routable(provider):
+            return None
         models = _PROVIDER_MODELS.get(provider, [])
         if not models:
             return None
@@ -2410,11 +2732,12 @@ def detect_static_provider_for_model(
     # provider switch and pick the first model from that provider's catalog.
     # Skip "custom" and "openrouter" — custom has no model catalog, and
     # openrouter requires an explicit model name to be useful.
-    resolved_provider = _PROVIDER_ALIASES.get(name_lower, name_lower)
+    metadata = _provider_metadata_snapshot()
+    resolved_provider = metadata.provider_aliases.get(name_lower, name_lower)
     if resolved_provider not in {"custom", "openrouter"}:
         default_models = _PROVIDER_MODELS.get(resolved_provider, [])
         if (
-            resolved_provider in _PROVIDER_LABELS
+            resolved_provider in metadata.provider_labels
             and default_models
             and resolved_provider not in current_keys
         ):
@@ -2454,6 +2777,8 @@ def detect_static_provider_for_model(
             continue
         if _is_custom_current:
             continue
+        if not _provider_is_routable(pid):
+            continue
         if any(name_lower == m.lower() for m in _provider_catalog_names(pid)):
             return (pid, name)
 
@@ -2461,6 +2786,8 @@ def detect_static_provider_for_model(
     # native-vendor catalog, and only when one is the current provider.
     for pid in _BORROWED_MODEL_PROVIDERS:
         if pid in current_keys:
+            continue
+        if not _provider_is_routable(pid):
             continue
         if any(name_lower == m.lower() for m in _provider_catalog_names(pid)):
             return (pid, name)
@@ -2542,7 +2869,8 @@ def normalize_provider(provider: Optional[str]) -> str:
     provider based on credentials and environment.
     """
     normalized = (provider or "openrouter").strip().lower()
-    return _PROVIDER_ALIASES.get(normalized, normalized)
+    aliases = _provider_metadata_snapshot().provider_aliases
+    return aliases.get(normalized, normalized)
 
 
 def provider_label(provider: Optional[str]) -> str:
@@ -2551,8 +2879,9 @@ def provider_label(provider: Optional[str]) -> str:
     normalized = original.lower()
     if normalized == "auto":
         return "Auto"
-    normalized = normalize_provider(normalized)
-    return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
+    metadata = _provider_metadata_snapshot()
+    normalized = metadata.provider_aliases.get(normalized, normalized)
+    return metadata.provider_labels.get(normalized, original or "OpenRouter")
 
 
 # Models that support OpenAI Priority Processing (service_tier="priority").
@@ -2825,6 +3154,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     on the platform appear in ``/model`` without a Hermes release.
     """
     normalized = normalize_provider(provider)
+    # Never let static fallbacks or a previous profile's cache make a disabled
+    # provider look selectable. ``openai`` is a legacy catalog alias whose
+    # runtime identity is ``openai-api`` and is not plugin-managed.
+    if normalized != "openai" and not _provider_is_routable(normalized):
+        return []
     if normalized == "openrouter":
         return model_ids(force_refresh=force_refresh)
     if normalized == "openai-codex":
@@ -3099,24 +3433,27 @@ _PROVIDER_MODELS_CACHE_TTL = 3600  # 1h
 # better than stalling every picker surface (CLI, TUI, dashboard, gateway).
 _PROVIDER_MODELS_STALE_SERVE_MAX = 7 * 24 * 3600  # 7d
 
-# Providers with a background SWR refresh currently in flight — dedupes
-# concurrent refreshes so repeated picker opens during one refresh don't
-# stack threads or duplicate network calls.
-_swr_refresh_inflight: set = set()
+# Provider scopes with a background SWR refresh currently in flight —
+# dedupes repeated picker opens without conflating two ContextVar profiles
+# that happen to use the same provider slug.
+_swr_refresh_inflight: set[tuple[tuple[str, str], str]] = set()
 _swr_refresh_lock = threading.Lock()
 
 
 def _spawn_swr_refresh(provider: str) -> None:
     """Kick a background refresh of *provider*'s model-id cache entry.
 
-    Fire-and-forget daemon thread; at most one in flight per provider.
+    Fire-and-forget daemon thread; at most one in flight per provider/scope.
     Failures are swallowed — the stale entry stays served until a later
     refresh succeeds (same degradation the blocking path already had).
     """
+    refresh_context = contextvars.copy_context()
+    scope_key = refresh_context.run(_provider_metadata_scope_key)
+    inflight_key = (scope_key, provider)
     with _swr_refresh_lock:
-        if provider in _swr_refresh_inflight:
+        if inflight_key in _swr_refresh_inflight:
             return
-        _swr_refresh_inflight.add(provider)
+        _swr_refresh_inflight.add(inflight_key)
 
     def _refresh() -> None:
         try:
@@ -3133,10 +3470,15 @@ def _spawn_swr_refresh(provider: str) -> None:
             logger.debug("SWR refresh failed for %s", provider, exc_info=True)
         finally:
             with _swr_refresh_lock:
-                _swr_refresh_inflight.discard(provider)
+                _swr_refresh_inflight.discard(inflight_key)
+
+    def _refresh_in_context() -> None:
+        refresh_context.run(_refresh)
 
     threading.Thread(
-        target=_refresh, daemon=True, name=f"model-cache-swr-{provider}"
+        target=_refresh_in_context,
+        daemon=True,
+        name=f"model-cache-swr-{provider}",
     ).start()
 
 
@@ -3162,6 +3504,28 @@ def _credential_fingerprint(provider: str) -> str:
     import os as _os
 
     parts: list[str] = []
+
+    # Provider roots and activation are part of discovery identity. This
+    # prevents profile/home/project switches from reusing another winner's
+    # on-disk model catalog when the canonical provider name is unchanged.
+    try:
+        from providers import (
+            get_provider_discovery_identity,
+            get_provider_profile,
+        )
+
+        parts.append(f"discovery={get_provider_discovery_identity()!r}")
+        profile = get_provider_profile(provider)
+        if profile is not None:
+            parts.append(
+                "profile="
+                f"{profile.name!r}|{profile.api_mode!r}|{profile.auth_type!r}|"
+                f"{profile.base_url!r}|{profile.models_url!r}|"
+                f"{profile.env_vars!r}|{profile.aliases!r}|"
+                f"{profile.fallback_models!r}"
+            )
+    except Exception:
+        parts.append("discovery=unavailable")
 
     # Env vars from PROVIDER_REGISTRY for this slug
     try:
@@ -3264,6 +3628,8 @@ def cached_provider_model_ids(
     """
     normalized = normalize_provider(provider) or (provider or "")
     if not normalized:
+        return []
+    if normalized != "openai" and not _provider_is_routable(normalized):
         return []
 
     cache = _load_provider_models_cache()
@@ -5274,7 +5640,9 @@ def validate_requested_model(
     # Without this block, validate_requested_model would reject every model
     # on such providers, switch_model() would return success=False, and
     # the gateway would never write to _session_model_overrides.
-    provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+    provider_label = _provider_metadata_snapshot().provider_labels.get(
+        normalized, normalized
+    )
     try:
         catalog_models = provider_model_ids(normalized)
     except Exception:

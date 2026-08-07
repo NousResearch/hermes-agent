@@ -6,14 +6,37 @@ from types import SimpleNamespace
 
 from hermes_cli import web_server
 from hermes_cli import plugins_cmd
+from hermes_cli.plugin_activation import PluginActivationState
 from tools import registry as tools_registry
 
 
-_PLUGIN_ROW = [("demo", "1.0.0", "demo plugin", "user", "/tmp/demo-plugin", "demo")]
+_PLUGIN_ROW = [
+    (
+        "demo",
+        "1.0.0",
+        "demo plugin",
+        "user",
+        "/tmp/demo-plugin",
+        "category/demo",
+        "standalone",
+    )
+]
 
 
 def _patch_minimal_hub_dependencies(monkeypatch, *, check_fn, discover_all_plugins=None):
     monkeypatch.setattr(web_server, "_get_dashboard_plugins", lambda force_rescan=False: [])
+    monkeypatch.setattr(
+        web_server,
+        "_discover_dashboard_runtime_entries",
+        lambda: list(_PLUGIN_ROW),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_load_dashboard_plugin_activation_state",
+        lambda: PluginActivationState(
+            enabled=frozenset({"category/demo"})
+        ),
+    )
     monkeypatch.setattr(web_server, "_discover_memory_provider_statuses", lambda: [])
     monkeypatch.setattr(web_server, "get_hermes_home", lambda: Path("/tmp/hermes-home"))
     monkeypatch.setattr(web_server, "load_config", lambda: {"dashboard": {"hidden_plugins": []}})
@@ -58,6 +81,8 @@ def test_plugins_hub_does_not_probe_cold_check_fns(monkeypatch):
     # happens on a background warmer thread, never inline.
     assert payload["plugins"][0]["auth_required"] is False
     assert payload["plugins"][0]["auth_command"] == ""
+    assert payload["plugins"][0]["name"] == "demo"
+    assert payload["plugins"][0]["key"] == "category/demo"
     assert threading.current_thread() not in calls["threads"]
 
 
@@ -138,6 +163,67 @@ def test_plugins_hub_short_ttl_cache_collapses_duplicate_fetches(monkeypatch):
 
     assert calls["discover"] == 1
     assert first is second
+
+
+def test_plugins_hub_reports_active_bundled_fallback(monkeypatch, tmp_path):
+    tools_registry.invalidate_check_fn_cache()
+    web_server._invalidate_plugins_hub_cache()
+
+    bundled_dir = tmp_path / "bundled" / "shared"
+    user_dir = tmp_path / "user" / "shared"
+    bundled_dir.mkdir(parents=True)
+    user_dir.mkdir(parents=True)
+    bundled = (
+        "shared",
+        "1.0.0",
+        "bundled fallback",
+        "bundled",
+        bundled_dir,
+        "shared",
+        "backend",
+    )
+    user = (
+        "shared",
+        "9.0.0",
+        "inactive override",
+        "user",
+        user_dir,
+        "shared",
+        "backend",
+    )
+    monkeypatch.setattr(
+        plugins_cmd,
+        "_discover_plugin_candidates",
+        lambda **_kwargs: [bundled, user],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_plugin_activation_state",
+        lambda: PluginActivationState(),
+    )
+    _patch_minimal_hub_dependencies(
+        monkeypatch,
+        check_fn=lambda: True,
+        discover_all_plugins=plugins_cmd._discover_all_plugins,
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_discover_dashboard_runtime_entries",
+        lambda: [bundled],
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_load_dashboard_plugin_activation_state",
+        lambda: PluginActivationState(),
+    )
+    monkeypatch.setattr(plugins_cmd, "_read_manifest", lambda _path: {})
+
+    payload = web_server._merged_plugins_hub(force_refresh=True)
+
+    assert len(payload["plugins"]) == 1
+    row = payload["plugins"][0]
+    assert row["source"] == "bundled"
+    assert row["runtime_status"] == "enabled"
+    assert row["can_remove"] is False
 
 
 def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):

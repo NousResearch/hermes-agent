@@ -5,9 +5,16 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+from unittest.mock import MagicMock
+
 import hermes_cli.providers as providers_mod
 import pytest
-from hermes_cli.model_switch import list_authenticated_providers, switch_model
+from hermes_cli.auth import AuthError
+from hermes_cli.model_switch import (
+    list_authenticated_providers,
+    list_picker_providers,
+    switch_model,
+)
 from hermes_cli.providers import resolve_provider_full
 
 
@@ -17,6 +24,31 @@ _MOCK_VALIDATION = {
     "recognized": True,
     "message": None,
 }
+
+
+def _raise_runtime(error):
+    def _raise(**_kwargs):
+        raise error
+
+    return _raise
+
+
+def _disable_custom_runtime(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        lambda provider_id: provider_id != "custom",
+    )
+
+
+def _forbid_endpoint_probe(monkeypatch):
+    probe = MagicMock(
+        side_effect=AssertionError("disabled provider endpoint was probed")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider._auto_detect_local_model",
+        probe,
+    )
+    return probe
 
 
 @pytest.fixture(autouse=True)
@@ -59,8 +91,376 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     )
 
 
+def test_disabled_custom_plugin_hides_configured_endpoints(monkeypatch):
+    """Picker rows must not offer endpoints the runtime will reject."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    _disable_custom_runtime(monkeypatch)
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://current.example/v1",
+        current_model="current-model",
+        user_providers={
+            "configured-relay": {
+                "name": "Configured Relay",
+                "base_url": "https://configured.example/v1",
+                "models": {"configured-model": {}},
+            }
+        },
+        custom_providers=[
+            {
+                "name": "Saved Relay",
+                "base_url": "https://saved.example/v1",
+                "model": "saved-model",
+            }
+        ],
+        probe_custom_providers=False,
+    )
+
+    assert not any(
+        row.get("slug") in {"custom", "configured-relay", "custom:saved-relay"}
+        for row in providers
+    )
 
 
+def test_disabled_custom_plugin_hides_builtin_slug_with_endpoint_override(
+    monkeypatch,
+):
+    """The picker must not advertise a built-in row that switching rejects."""
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "deepseek": {
+                "env": ["DEEPSEEK_API_KEY"],
+                "name": "DeepSeek",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.PROVIDER_TO_MODELS_DEV",
+        {"deepseek": "deepseek"},
+    )
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    _disable_custom_runtime(monkeypatch)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    user_providers = {
+        "deepseek": {
+            "base_url": "https://proxy.example/v1",
+            "models": {"proxy-model": {}},
+        }
+    }
+
+    rows = list_picker_providers(
+        current_provider="openrouter",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+    metadata_only_rows = list_picker_providers(
+        current_provider="openrouter",
+        user_providers={"deepseek": {"models": {"proxy-model": {}}}},
+        custom_providers=[],
+    )
+    switched = switch_model(
+        raw_input="proxy-model",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="deepseek",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    assert not any(row.get("slug") == "deepseek" for row in rows)
+    assert any(
+        row.get("slug") == "deepseek" and "proxy-model" in row.get("models", [])
+        for row in metadata_only_rows
+    )
+    assert switched.success is False
+    assert "model-providers/custom" in switched.error_message
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "raw_input", "denial_source", "same_provider"),
+    [
+        pytest.param("deepseek", "proxy-model", "plugin", False, id="explicit-plugin"),
+        pytest.param("deepseek", "new-model", "plugin", True, id="same-plugin"),
+        pytest.param("corp", "corp-model", "config", False, id="explicit-config"),
+        pytest.param("deepseek", "new-model", "config", True, id="same-config"),
+        pytest.param("corp", "corp-model", "unknown", False, id="unknown-fallback"),
+    ],
+)
+def test_runtime_activation_denial_is_terminal(
+    monkeypatch,
+    provider_id,
+    raw_input,
+    denial_source,
+    same_provider,
+):
+    """Only activation denials block endpoint fallback and credential refresh."""
+    if denial_source == "plugin":
+        error = AuthError(
+            f"Provider '{provider_id}' is disabled by plugin configuration.",
+            code="invalid_provider",
+        )
+        expected = "disabled by plugin configuration"
+    elif denial_source == "config":
+        error = ValueError(
+            f"provider '{provider_id}' is disabled in config "
+            f"(providers.{provider_id}.enabled: false)"
+        )
+        expected = "disabled in config"
+    else:
+        error = AuthError(f"Unknown provider '{provider_id}'.", code="invalid_provider")
+        expected = None
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _raise_runtime(error),
+    )
+    if same_provider:
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda *_args, **_kwargs: None,
+        )
+        result = switch_model(
+            raw_input=raw_input,
+            current_provider=provider_id,
+            current_model="old-model",
+            current_base_url="https://api.deepseek.com/v1",
+            current_api_key=(
+                "old-key" if denial_source == "plugin" else "must-not-be-used"
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            "hermes_cli.auth.is_runtime_provider_routable",
+            lambda _provider_id: True,
+        )
+        if denial_source == "config":
+            monkeypatch.setattr(
+                "providers.get_provider_identity_provenance",
+                lambda _provider_id: None,
+            )
+        monkeypatch.setattr(
+            "hermes_cli.models.validate_requested_model",
+            lambda *_args, **_kwargs: _MOCK_VALIDATION,
+        )
+        endpoint_name = "proxy" if provider_id == "deepseek" else "corp"
+        result = switch_model(
+            raw_input=raw_input,
+            current_provider="openrouter",
+            current_model="old-model",
+            explicit_provider=provider_id,
+            user_providers={
+                provider_id: {
+                    "base_url": f"https://{endpoint_name}.example/v1",
+                    "api_key": {
+                        "plugin": "proxy-key",
+                        "config": "must-not-be-used",
+                        "unknown": "corp-key",
+                    }[denial_source],
+                    "models": {raw_input: {}},
+                }
+            },
+            custom_providers=[],
+        )
+
+    if denial_source == "unknown":
+        assert result.success is True
+        assert result.target_provider == provider_id
+        assert result.base_url == "https://corp.example/v1"
+        assert result.api_key == "corp-key"
+    else:
+        assert result.success is False
+        assert expected in result.error_message
+        assert result.base_url == ""
+
+
+@pytest.mark.parametrize(
+    "denial_source",
+    ["canonical-config", "inactive-alias"],
+    ids=["same-provider-canonical-config", "explicit-inactive-alias"],
+)
+def test_alias_activation_denial_survives_normalization(monkeypatch, denial_source):
+    runtime = MagicMock(side_effect=AssertionError("runtime must stay gated"))
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", runtime)
+    if denial_source == "canonical-config":
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("providers.is_provider_plugin_active", lambda _: True)
+        monkeypatch.setattr(
+            "providers.is_provider_canonical_identity_active", lambda _: True
+        )
+        switch_kwargs = {
+            "raw_input": "new-model",
+            "current_provider": "claude",
+            "user_providers": {"anthropic": {"enabled": False}},
+        }
+        expected = "providers.anthropic.enabled: false"
+    else:
+        monkeypatch.setattr(
+            "hermes_cli.auth.is_runtime_provider_routable",
+            lambda provider_id: provider_id != "claude",
+        )
+        monkeypatch.setattr(
+            "providers.get_provider_identity_provenance",
+            lambda provider_id: "alias" if provider_id == "claude" else None,
+        )
+        switch_kwargs = {
+            "raw_input": "claude-test-model",
+            "current_provider": "openrouter",
+            "explicit_provider": "claude",
+            "user_providers": {},
+        }
+        expected = "Provider 'claude' is disabled"
+
+    result = switch_model(
+        current_model="old-model",
+        custom_providers=[],
+        **switch_kwargs,
+    )
+
+    assert result.success is False
+    assert expected in result.error_message
+    runtime.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "denial_source"),
+    [("corp", "config"), ("deepseek", "plugin")],
+    ids=["config-disabled", "plugin-inactive"],
+)
+def test_explicit_provider_denial_rejects_before_endpoint_probe(
+    monkeypatch,
+    provider_id,
+    denial_source,
+):
+    endpoint_probe = _forbid_endpoint_probe(monkeypatch)
+    if denial_source == "config":
+        user_providers = {
+            provider_id: {
+                "enabled": False,
+                "base_url": "https://corp.example/v1",
+            }
+        }
+        expected = "disabled in config"
+    else:
+        monkeypatch.setattr(
+            "hermes_cli.auth.is_runtime_provider_routable",
+            lambda candidate: candidate != provider_id,
+        )
+        monkeypatch.setattr(
+            "providers.get_provider_identity_provenance",
+            lambda candidate: "canonical" if candidate == provider_id else None,
+        )
+        user_providers = {}
+        expected = "disabled by plugin configuration"
+
+    result = switch_model(
+        raw_input="",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider=provider_id,
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    assert result.success is False
+    assert expected in result.error_message
+    endpoint_probe.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("endpoint_source", "raw_input"),
+    [("saved", "saved-model"), ("saved", ""), ("configured", "relay-model")],
+    ids=["saved-model", "saved-before-probe", "providers-endpoint"],
+)
+def test_disabled_custom_plugin_rejects_configured_endpoints(
+    monkeypatch,
+    endpoint_source,
+    raw_input,
+):
+    _disable_custom_runtime(monkeypatch)
+    endpoint_probe = _forbid_endpoint_probe(monkeypatch)
+    if endpoint_source == "saved":
+        saved_provider = {
+            "name": "Saved Relay",
+            "base_url": "https://saved.example/v1",
+        }
+        if raw_input:
+            saved_provider["model"] = raw_input
+        explicit_provider = "custom:saved-relay"
+        user_providers = {}
+        custom_providers = [saved_provider]
+    else:
+        explicit_provider = "configured-relay"
+        user_providers = {
+            explicit_provider: {
+                "base_url": "https://configured.example/v1",
+                "models": {raw_input: {}},
+            }
+        }
+        custom_providers = []
+
+    result = switch_model(
+        raw_input=raw_input,
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider=explicit_provider,
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+    )
+
+    assert result.success is False
+    assert "model-providers/custom" in result.error_message
+    endpoint_probe.assert_not_called()
+
+
+def test_disabled_custom_plugin_keeps_builtin_model_overrides_routable(monkeypatch):
+    """A built-in ``providers:`` metadata row is not a custom endpoint."""
+    _disable_custom_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_provider_full",
+        lambda *_args, **_kwargs: providers_mod.ProviderDef(
+            id="deepseek",
+            name="DeepSeek",
+            transport="openai_chat",
+            api_key_env_vars=("DEEPSEEK_API_KEY",),
+            base_url="https://api.deepseek.com",
+        ),
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.resolve_alias", lambda *_args: None)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "test-key",
+            "base_url": "https://api.deepseek.com",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *_args, **_kwargs: _MOCK_VALIDATION,
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities",
+        lambda *_a, **_k: None,
+    )
+
+    result = switch_model(
+        raw_input="deepseek-chat",
+        current_provider="openrouter",
+        current_model="old-model",
+        explicit_provider="deepseek",
+        user_providers={"deepseek": {"models": {"deepseek-chat": {}}}},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "deepseek"
 
 
 def test_resolve_provider_full_finds_named_custom_provider():

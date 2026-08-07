@@ -73,6 +73,127 @@ def _cfg():
     return config
 
 
+def _plugin_manifest_identity(
+    plugin_dir,
+    fast_safe_load,
+) -> tuple[bool, str | None]:
+    """Return whether a plugin manifest exists and its declared name."""
+    manifest_file = plugin_dir / "plugin.yaml"
+    if not manifest_file.exists():
+        manifest_file = plugin_dir / "plugin.yml"
+    if not manifest_file.exists():
+        return False, None
+    try:
+        with open(manifest_file, encoding="utf-8") as manifest_stream:
+            manifest = fast_safe_load(manifest_stream) or {}
+    except Exception:
+        manifest = {}
+    if not isinstance(manifest, dict):
+        manifest = {}
+    name = manifest.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return True, None
+    return True, name.strip()
+
+
+def _installed_user_model_provider_grants(
+    user_plugins_dir,
+    disabled: set[str],
+    fast_safe_load,
+) -> list[tuple[str, frozenset[str]]]:
+    """Return canonical grants and accepted identities for installed providers."""
+    provider_root = user_plugins_dir / "model-providers"
+    if not provider_root.is_dir():
+        return []
+
+    grants: list[tuple[str, frozenset[str]]] = []
+    for child in sorted(provider_root.iterdir()):
+        if (
+            not child.is_dir()
+            or child.name.startswith(("_", "."))
+            or not (child / "__init__.py").is_file()
+        ):
+            continue
+        has_manifest, manifest_name = _plugin_manifest_identity(
+            child,
+            fast_safe_load,
+        )
+        key = f"model-providers/{child.name}"
+        runtime_name = manifest_name if has_manifest and manifest_name else key
+        disabled_identities = frozenset({key, child.name, runtime_name})
+        if disabled_identities & disabled:
+            continue
+        # Runtime activation accepts only the canonical key and the manifest
+        # name.  A directory-name entry by itself is a historical alias, so it
+        # must not prevent this migration from adding the canonical grant.
+        grants.append((key, frozenset({key, runtime_name})))
+    return grants
+
+
+def _scope_legacy_bundled_default_grants(
+    enabled: list[Any],
+    candidates: list[tuple],
+) -> tuple[list[Any], list[str], list[str]]:
+    """Remove bundled-default identities with no consent-requiring consumer.
+
+    Old management paths persisted source-agnostic keys or manifest names for
+    bundled plugins that are now enabled by policy.  Leaving those grants in
+    place would authorize an external plugin installed later under the same
+    runtime identity.  A specific identity is retained whenever any currently
+    installed external or bundled standalone candidate consumes it, regardless
+    of whether that consumer shares the same canonical key.
+    """
+    from hermes_cli.plugin_activation import PluginActivationState
+
+    default_state = PluginActivationState()
+
+    def _identities(entry: tuple) -> frozenset[str]:
+        return PluginActivationState.identities(
+            name=entry[0],
+            key=entry[5],
+        )
+
+    def _enabled_by_default(entry: tuple) -> bool:
+        return default_state.status(
+            source=entry[3],
+            kind=entry[6],
+        ) == "enabled"
+
+    default_identities: set[str] = set()
+    consent_identities: set[str] = set()
+    for entry in candidates:
+        identities = _identities(entry)
+        if _enabled_by_default(entry):
+            default_identities.update(identities)
+        else:
+            consent_identities.update(identities)
+
+    removable_identities = default_identities - consent_identities
+
+    migrated: list[Any] = []
+    removed: list[str] = []
+    unresolved: list[str] = []
+    for raw_identity in enabled:
+        if not isinstance(raw_identity, str) or not raw_identity.strip():
+            migrated.append(raw_identity)
+            continue
+        identity = raw_identity.strip()
+        if identity not in default_identities:
+            migrated.append(raw_identity)
+            continue
+
+        if identity not in removable_identities:
+            migrated.append(raw_identity)
+            if identity not in unresolved:
+                unresolved.append(identity)
+            continue
+
+        if identity not in removed:
+            removed.append(identity)
+
+    return migrated, removed, unresolved
+
+
 def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 11 → 12: migrate custom_providers list → providers dict ──
     _c = _cfg()
@@ -316,9 +437,9 @@ def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
     # those setups on upgrade, populate ``plugins.enabled`` with the set of
     # currently-installed user plugins that aren't already disabled.
     #
-    # Bundled plugins (shipped in the repo itself) are NOT grandfathered —
-    # they ship off for everyone, including existing users, so any user who
-    # wants one has to opt in explicitly.
+    # Bundled plugins (shipped in the repo itself) are NOT grandfathered.
+    # Their source/kind policy decides whether they are default-on; bundled
+    # standalone plugins remain explicit opt-ins.
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -334,7 +455,11 @@ def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
         disabled = plugins_cfg.get("disabled", []) or []
         if not isinstance(disabled, list):
             disabled = []
-        disabled_set = set(disabled)
+        disabled_set = {
+            item.strip()
+            for item in disabled
+            if isinstance(item, str) and item.strip()
+        }
 
         # Scan ``$HERMES_HOME/plugins/`` for currently installed user plugins.
         grandfathered: List[str] = []
@@ -344,22 +469,36 @@ def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
                 for child in sorted(user_plugins_dir.iterdir()):
                     if not child.is_dir():
                         continue
-                    manifest_file = child / "plugin.yaml"
-                    if not manifest_file.exists():
-                        manifest_file = child / "plugin.yml"
-                    if not manifest_file.exists():
+                    has_manifest, manifest_name = _plugin_manifest_identity(
+                        child,
+                        fast_safe_load,
+                    )
+                    if not has_manifest:
                         continue
-                    try:
-                        with open(manifest_file, encoding="utf-8") as _mf:
-                            manifest = fast_safe_load(_mf) or {}
-                    except Exception:
-                        manifest = {}
-                    name = manifest.get("name") or child.name
+                    name = manifest_name or child.name
                     if name in disabled_set:
                         continue
                     grandfathered.append(name)
+
+                # Historical user model providers live one level deeper at
+                # ``plugins/model-providers/<provider>/``.  The old provider
+                # loader also accepted directories with only ``__init__.py``
+                # (no manifest), so preserve those already-installed plugins
+                # under the canonical activation key used by the new loader.
+                grandfathered.extend(
+                    key
+                    for key, _identities in _installed_user_model_provider_grants(
+                        user_plugins_dir,
+                        disabled_set,
+                        fast_safe_load,
+                    )
+                )
         except Exception:
             grandfathered = []
+
+        # A flat manifest name can theoretically match a nested canonical
+        # key. Keep the persisted allow-list deterministic and duplicate-free.
+        grandfathered = list(dict.fromkeys(grandfathered))
 
         plugins_cfg["enabled"] = grandfathered
         config["plugins"] = plugins_cfg
@@ -644,6 +783,112 @@ def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
             )
 
 
+def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
+    """Grandfather installed user model providers into the activation gate."""
+    _c = _cfg()
+    config = _c.read_raw_config()
+    plugins_cfg = config.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        plugins_cfg = {}
+
+    raw_enabled = plugins_cfg.get("enabled")
+    enabled = list(raw_enabled) if isinstance(raw_enabled, list) else []
+    enabled_identities = {
+        item.strip()
+        for item in enabled
+        if isinstance(item, str) and item.strip()
+    }
+    raw_disabled = plugins_cfg.get("disabled")
+    disabled: set[str] = set()
+    if isinstance(raw_disabled, list):
+        disabled = {
+            item.strip()
+            for item in raw_disabled
+            if isinstance(item, str) and item.strip()
+        }
+
+    user_plugins_dir = _c.get_hermes_home() / "plugins"
+    added: list[str] = []
+    try:
+        grants = _installed_user_model_provider_grants(
+            user_plugins_dir,
+            disabled,
+            _c.fast_safe_load,
+        )
+    except Exception:
+        grants = []
+    for key, identities in grants:
+        if identities & enabled_identities:
+            continue
+        enabled.append(key)
+        enabled_identities.add(key)
+        added.append(key)
+
+    if not added:
+        return
+    plugins_cfg["enabled"] = enabled
+    config["plugins"] = plugins_cfg
+    _c._persist_migration(config)
+    results["config_added"].append(
+        f"plugins.enabled ({len(added)} existing model provider(s) grandfathered)"
+    )
+    if not quiet:
+        print(
+            "  ✓ Preserved existing user model-provider activation: "
+            + ", ".join(added)
+        )
+
+
+def _migrate_to_35(results: Dict[str, Any], quiet: bool) -> None:
+    """Remove redundant legacy grants for bundled default plugins."""
+    _c = _cfg()
+    config = _c.read_raw_config()
+    plugins_cfg = config.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        return
+    raw_enabled = plugins_cfg.get("enabled")
+    if not isinstance(raw_enabled, list) or not raw_enabled:
+        return
+
+    try:
+        from hermes_cli.plugins_cmd import _discover_plugin_activation_candidates
+
+        candidates = _discover_plugin_activation_candidates(
+            include_inactive_project=True,
+            strict=True,
+        )
+        migrated, removed, unresolved = _scope_legacy_bundled_default_grants(
+            raw_enabled,
+            candidates,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not safely inventory plugin activation grants; "
+            "configuration version was not advanced; retry migration"
+        ) from exc
+
+    if migrated != raw_enabled:
+        plugins_cfg["enabled"] = migrated
+        config["plugins"] = plugins_cfg
+        _c._persist_migration(config)
+        results["config_added"].append(
+            "plugins.enabled "
+            f"({len(removed)} legacy bundled-default grant(s) removed)"
+        )
+        if not quiet:
+            print(
+                "  ✓ Removed redundant bundled-plugin activation grants: "
+                + ", ".join(removed)
+            )
+
+    if unresolved:
+        results["warnings"].append(
+            "Preserved shared plugin activation grant(s) used by installed "
+            "external or bundled opt-in candidates: "
+            + ", ".join(unresolved)
+        )
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: version captured before the ladder started. Order matters: later steps may
@@ -665,6 +910,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (31, _migrate_to_31),
     (32, _migrate_to_32),
     (33, _migrate_to_33),
+    (34, _migrate_to_34),
+    (35, _migrate_to_35),
 )
 
 

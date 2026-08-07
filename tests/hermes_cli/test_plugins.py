@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from hermes_cli.plugin_activation import PluginActivationState
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
@@ -20,6 +21,7 @@ from hermes_cli.plugins import (
     get_pre_tool_call_block_message,
     get_pre_verify_continue_message,
     has_middleware,
+    resolve_plugin_candidate_winner,
     resolve_plugin_command_result,
 )
 from hermes_cli.middleware import (
@@ -230,6 +232,111 @@ class TestPluginDiscovery:
         assert mgr._plugin_skills == {}
         assert mgr._aux_tasks == {}
         assert mgr._slack_action_handlers == []
+
+
+class TestActivePluginWinnerResolution:
+    """Canonical-key collisions choose among active candidates only."""
+
+    @staticmethod
+    def _candidate(source: str, *, name: str = "shared", kind: str = "backend"):
+        return PluginManifest(
+            name=name,
+            key="shared",
+            source=source,
+            kind=kind,
+        )
+
+    @staticmethod
+    def _resolve(state: PluginActivationState, *candidates: PluginManifest):
+        return resolve_plugin_candidate_winner(
+            candidates,
+            lambda candidate: state.status(
+                name=candidate.name,
+                key=candidate.key,
+                source=candidate.source,
+                kind=candidate.kind,
+            ),
+        )
+
+    def test_manager_loads_bundled_fallback_for_inactive_user_collision(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        plugin_name = "active-winner-fallback"
+        bundled_root = tmp_path / "bundled"
+        hermes_home = tmp_path / "home"
+        manifest_extra = {"kind": "backend"}
+        _make_plugin_dir(
+            bundled_root,
+            plugin_name,
+            manifest_extra=manifest_extra,
+            auto_enable=False,
+        )
+        _make_plugin_dir(
+            hermes_home / "plugins",
+            plugin_name,
+            manifest_extra=manifest_extra,
+            auto_enable=False,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_bundled_plugins_dir",
+            lambda: bundled_root,
+        )
+        monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda _self: [])
+
+        manager = PluginManager()
+        manager.discover_and_load()
+
+        loaded = manager._plugins[plugin_name]
+        assert loaded.enabled is True
+        assert loaded.manifest.source == "bundled"
+
+    def test_inactive_user_candidate_falls_back_to_bundled(self):
+        bundled = self._candidate("bundled")
+        user = self._candidate("user")
+
+        winner, status = self._resolve(PluginActivationState(), bundled, user)
+
+        assert winner is bundled
+        assert status == "enabled"
+
+    def test_enabled_user_candidate_overrides_bundled(self):
+        bundled = self._candidate("bundled")
+        user = self._candidate("user")
+        state = PluginActivationState(enabled=frozenset({"shared"}))
+
+        winner, status = self._resolve(state, bundled, user)
+
+        assert winner is user
+        assert status == "enabled"
+
+    def test_explicit_disable_on_any_candidate_blocks_whole_key(self):
+        bundled = self._candidate("bundled", name="bundled-name")
+        user = self._candidate("user", name="user-name")
+        state = PluginActivationState(
+            enabled=frozenset({"user-name"}),
+            disabled=frozenset({"bundled-name"}),
+        )
+
+        winner, status = self._resolve(state, bundled, user)
+
+        assert winner is user
+        assert status == "disabled"
+
+    def test_safe_mode_keeps_bundled_provider_over_enabled_user_override(self):
+        bundled = self._candidate("bundled", kind="model-provider")
+        user = self._candidate("user", kind="model-provider")
+        state = PluginActivationState(
+            enabled=frozenset({"shared"}),
+            safe_mode=True,
+        )
+
+        winner, status = self._resolve(state, bundled, user)
+
+        assert winner is bundled
+        assert status == "enabled"
 
 
 # ── TestPluginLoading ──────────────────────────────────────────────────────

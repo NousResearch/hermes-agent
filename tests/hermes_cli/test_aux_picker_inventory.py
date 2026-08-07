@@ -157,3 +157,29 @@ def test_aux_pickers_route_through_the_shared_substrate(configured_home):
         "route through hermes_cli.inventory.build_aux_picker_rows so custom "
         "providers, exclusions, and picker visibility stay consistent"
     )
+
+
+def test_aux_task_picker_hides_manual_custom_when_plugin_disabled(configured_home):
+    import hermes_cli.main as main
+
+    captured = []
+
+    def _capture_and_cancel(labels, default=0, title=None):
+        captured.extend(labels)
+        return None
+
+    with (
+        patch("hermes_cli.inventory.build_aux_picker_rows", return_value=[]),
+        patch(
+            "hermes_cli.auth.is_runtime_provider_routable",
+            side_effect=lambda provider_id: provider_id != "custom",
+        ),
+        patch(
+            "hermes_cli.main._prompt_provider_choice",
+            side_effect=_capture_and_cancel,
+        ),
+    ):
+        main._aux_select_for_task("compression")
+
+    assert captured
+    assert not any("Custom endpoint" in label for label in captured)

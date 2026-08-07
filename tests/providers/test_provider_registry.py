@@ -14,6 +14,10 @@ def isolate_provider_registry():
         else list(providers._PROVIDER_LIST_CACHE)
     )
     discovered = providers._discovered
+    fingerprint = providers._DISCOVERY_FINGERPRINT
+    runtime_registry = providers._RUNTIME_REGISTRY.copy()
+    runtime_aliases = providers._RUNTIME_ALIASES.copy()
+    runtime_generation = providers._RUNTIME_REGISTRATION_GENERATION
 
     yield
 
@@ -23,6 +27,12 @@ def isolate_provider_registry():
     providers._ALIASES.update(aliases)
     providers._PROVIDER_LIST_CACHE = provider_list_cache
     providers._discovered = discovered
+    providers._DISCOVERY_FINGERPRINT = fingerprint
+    providers._RUNTIME_REGISTRY.clear()
+    providers._RUNTIME_REGISTRY.update(runtime_registry)
+    providers._RUNTIME_ALIASES.clear()
+    providers._RUNTIME_ALIASES.update(runtime_aliases)
+    providers._RUNTIME_REGISTRATION_GENERATION = runtime_generation
 
 
 def _profile(name: str, *aliases: str) -> ProviderProfile:
@@ -32,8 +42,11 @@ def _profile(name: str, *aliases: str) -> ProviderProfile:
 def _reset_registry() -> None:
     providers._REGISTRY.clear()
     providers._ALIASES.clear()
+    providers._RUNTIME_REGISTRY.clear()
+    providers._RUNTIME_ALIASES.clear()
     providers._PROVIDER_LIST_CACHE = None
     providers._discovered = True
+    providers._DISCOVERY_FINGERPRINT = None
 
 
 def test_list_providers_reuses_cached_snapshot_until_registration_changes():

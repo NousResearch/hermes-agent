@@ -26,6 +26,7 @@ from hermes_cli.auth import (
     DEFAULT_QWEN_BASE_URL,
     DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY,
+    get_provider_implementation_config,
     _agent_key_is_usable,
     _nous_inference_env_override,
     format_auth_error,
@@ -503,7 +504,10 @@ def _resolve_runtime_from_pool_entry(
             getattr(entry, "runtime_api_key", ""),
             target_model=effective_model,
         )
-        base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
+        base_url = (
+            base_url
+            or get_provider_implementation_config("copilot").inference_base_url
+        )
     elif provider == "azure-foundry":
         # Azure Foundry: read api_mode and base_url from config
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -1178,6 +1182,42 @@ def _resolve_named_custom_runtime(
     return result
 
 
+def _runtime_provider_activation_id(
+    requested_provider: str,
+    *,
+    default_provider: str,
+) -> tuple[str, bool, bool]:
+    """Return ``(provider_id, use_custom_runtime, exact_canonical)``."""
+    requested_norm = (requested_provider or "").strip().lower()
+    if not requested_norm:
+        return default_provider, False, False
+    if default_provider in {"auto", "moa"}:
+        return default_provider, False, False
+    if requested_norm == "custom" or requested_norm.startswith("custom:"):
+        return "custom", True, True
+
+    try:
+        from providers import get_provider_identity_provenance
+        provenance = get_provider_identity_provenance(requested_norm)
+        if provenance == "canonical":
+            return requested_norm, False, True
+        has_named_custom = _get_named_custom_provider(requested_norm) is not None
+    except Exception:
+        return (
+            default_provider,
+            default_provider == "custom",
+            default_provider == "custom",
+        )
+
+    if has_named_custom:
+        return "custom", True, True
+    return (
+        default_provider,
+        default_provider == "custom",
+        default_provider == "custom",
+    )
+
+
 def _resolve_openrouter_runtime(
     *,
     requested_provider: str,
@@ -1681,6 +1721,67 @@ def resolve_runtime_provider(
     """
     requested_provider = resolve_requested_provider(requested)
 
+    def require_plugin_provider(
+        provider_id: str,
+        *,
+        exact_canonical: bool = False,
+    ) -> None:
+        from providers import (
+            is_provider_canonical_identity_active,
+            is_provider_plugin_active,
+        )
+
+        is_active = (
+            is_provider_canonical_identity_active(provider_id)
+            if exact_canonical
+            else is_provider_plugin_active(provider_id)
+        )
+        if not is_active:
+            raise AuthError(
+                f"Provider '{provider_id}' is disabled by plugin configuration.",
+                code="invalid_provider",
+            )
+
+    shortcut_provider = requested_provider
+    if requested_provider.startswith("custom:") or requested_provider in {
+        "custom",
+        "local",
+        "ollama",
+        "vllm",
+        "llamacpp",
+        "llama.cpp",
+        "llama-cpp",
+    }:
+        shortcut_provider = "custom"
+    elif requested_provider in {
+        "vertex",
+        "google-vertex",
+        "vertex-ai",
+        "gcp-vertex",
+        "vertexai",
+    }:
+        shortcut_provider = "vertex"
+    elif requested_provider in {
+        "azure-foundry",
+        "azure",
+        "azure-ai-foundry",
+        "azure-ai",
+    }:
+        shortcut_provider = "azure-foundry"
+    (
+        activation_provider,
+        use_custom_runtime,
+        exact_canonical_activation,
+    ) = _runtime_provider_activation_id(
+        requested_provider,
+        default_provider=shortcut_provider,
+    )
+    if activation_provider not in {"auto", "moa"}:
+        require_plugin_provider(
+            activation_provider,
+            exact_canonical=exact_canonical_activation,
+        )
+
     # Honour ``providers.<name>.enabled: false`` for BOTH user-defined
     # custom providers and the built-in ones (openai / anthropic /
     # openrouter / gemini / ...). The earlier ``_get_named_custom_provider``
@@ -1695,12 +1796,21 @@ def resolve_runtime_provider(
     _full_cfg = load_config()
     _provs_cfg = _full_cfg.get("providers") if isinstance(_full_cfg, dict) else None
     if isinstance(_provs_cfg, dict):
-        _block = _provs_cfg.get(requested_provider)
-        if isinstance(_block, dict) and not is_provider_enabled(_block):
-            raise ValueError(
-                f"provider {requested_provider!r} is disabled in config "
-                f"(providers.{requested_provider}.enabled: false)"
-            )
+        _config_provider_ids = [requested_provider]
+        if not use_custom_runtime and requested_provider not in {"auto", "moa"}:
+            try:
+                _canonical_provider = resolve_provider(requested_provider)
+                if _canonical_provider not in _config_provider_ids:
+                    _config_provider_ids.append(_canonical_provider)
+            except AuthError:
+                pass
+        for _config_provider_id in _config_provider_ids:
+            _block = _provs_cfg.get(_config_provider_id)
+            if isinstance(_block, dict) and not is_provider_enabled(_block):
+                raise ValueError(
+                    f"provider {requested_provider!r} is disabled in config "
+                    f"(providers.{_config_provider_id}.enabled: false)"
+                )
 
     if requested_provider == "moa":
         return {
@@ -1757,7 +1867,11 @@ def resolve_runtime_provider(
     # the project ID + region. The token is re-minted per call (5-min refresh
     # margin) by get_vertex_config(); mid-session expiry is additionally
     # recovered on 401 by run_agent._try_refresh_vertex_client_credentials().
-    if requested_provider in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
+    if (
+        activation_provider != "custom"
+        and requested_provider
+        in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai")
+    ):
         from agent.vertex_adapter import get_vertex_config
 
         token, base_url = get_vertex_config()
@@ -1780,12 +1894,15 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
-    custom_runtime = _resolve_named_custom_runtime(
-        requested_provider=requested_provider,
-        explicit_api_key=explicit_api_key,
-        explicit_base_url=explicit_base_url,
-    )
+    custom_runtime = None
+    if use_custom_runtime:
+        custom_runtime = _resolve_named_custom_runtime(
+            requested_provider=requested_provider,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
     if custom_runtime:
+        require_plugin_provider("custom", exact_canonical=True)
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
@@ -1818,6 +1935,7 @@ def resolve_runtime_provider(
                 base_url_host_matches(cfg_base_url, host)
                 for host in _known_cloud_hosts
             ):
+                require_plugin_provider("custom", exact_canonical=True)
                 runtime = _resolve_openrouter_runtime(
                     requested_provider=requested_provider,
                     explicit_api_key=explicit_api_key,
@@ -1843,7 +1961,13 @@ def resolve_runtime_provider(
     if explicit_runtime:
         return explicit_runtime
 
-    should_use_pool = provider != "openrouter"
+    # An explicit custom endpoint must not be replaced by the legacy bare
+    # ``custom`` credential pool. Endpoint-scoped custom pools are resolved
+    # later by ``_resolve_openrouter_runtime`` only when their configured URL
+    # actually matches this request.
+    should_use_pool = provider != "openrouter" and not (
+        provider == "custom" and bool(explicit_api_key or explicit_base_url)
+    )
     if provider == "openrouter":
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = str(model_cfg.get("base_url") or "").strip()
@@ -2284,7 +2408,7 @@ def resolve_runtime_provider(
         }
 
     runtime = _resolve_openrouter_runtime(
-        requested_provider=requested_provider,
+        requested_provider=("custom" if provider == "custom" else requested_provider),
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )

@@ -16,14 +16,16 @@ plugins/model-providers/
 
 ## How discovery works
 
-`providers/__init__.py._discover_providers()` scans this directory (and
-`$HERMES_HOME/plugins/model-providers/`) the first time anything calls
-`get_provider_profile()` or `list_providers()`. Each `__init__.py` is
-imported and expected to call `providers.register_provider(profile)`.
+`providers/__init__.py._discover_providers()` scans this directory,
+`$HERMES_HOME/plugins/model-providers/`, and (when explicitly enabled)
+`./.hermes/plugins/model-providers/` the first time anything calls
+`get_provider_profile()` or `list_providers()`. It reads each manifest and
+checks the canonical plugin activation policy before importing `__init__.py`.
+User and project providers are opt-in through `plugins.enabled`; bundled
+providers are enabled by default and still respect `plugins.disabled`.
 
-User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override
-bundled plugins of the same name — last-writer-wins in
-`register_provider()`. Drop a file there to replace a built-in.
+An active user/project plugin with the same canonical key overrides the
+bundled plugin. Merely installing third-party code does not import it.
 
 ## Adding a new provider
 
@@ -55,6 +57,13 @@ bundled plugins of the same name — last-writer-wins in
    version: 1.0.0
    description: Short sentence about the provider
    author: Your Name
+   ```
+
+   If one manifest registers multiple provider IDs, declare them so disabling
+   the plugin removes every derived identity:
+
+   ```yaml
+   provider_ids: [your-provider, your-provider-cn]
    ```
 
 Nothing else needs to change. `auth.py`, `config.py`, `models.py`,

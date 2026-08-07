@@ -145,7 +145,58 @@ class TestProviderModelsSWR:
             mod._spawn_swr_refresh("openrouter")
 
         assert saved["openrouter"]["models"] == ["fresh1", "fresh2"]
-        assert "openrouter" not in mod._swr_refresh_inflight  # cleared on completion
+        assert not mod._swr_refresh_inflight  # cleared on completion
+
+    def test_swr_refresh_inherits_context_and_dedupes_per_profile(self, tmp_path):
+        import hermes_cli.models as mod
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        targets = []
+        observed_homes = []
+
+        class DeferredThread:
+            def __init__(self, target=None, daemon=None, name=None):
+                targets.append(target)
+
+            def start(self):
+                pass
+
+        def scope_key():
+            return (str(get_hermes_home()), "")
+
+        def live_models(provider, *, force_refresh=False):
+            observed_homes.append(get_hermes_home())
+            return [f"{get_hermes_home().name}-model"]
+
+        def spawn_from(home):
+            token = set_hermes_home_override(home)
+            try:
+                mod._spawn_swr_refresh("openrouter")
+            finally:
+                reset_hermes_home_override(token)
+
+        with patch.object(mod.threading, "Thread", DeferredThread), \
+             patch.object(mod, "_provider_metadata_scope_key", side_effect=scope_key), \
+             patch.object(mod, "provider_model_ids", side_effect=live_models), \
+             patch.object(mod, "_credential_fingerprint", return_value="fp"), \
+             patch.object(mod, "_load_provider_models_cache", return_value={}), \
+             patch.object(mod, "_save_provider_models_cache"):
+            spawn_from(home_a)
+            spawn_from(home_a)  # same provider + same profile is deduped
+            spawn_from(home_b)  # same provider + different profile is not
+
+            assert len(targets) == 2
+            for target in targets:
+                target()
+
+        assert observed_homes == [home_a, home_b]
+        assert not mod._swr_refresh_inflight
 
 
 class TestCatalogSWR:

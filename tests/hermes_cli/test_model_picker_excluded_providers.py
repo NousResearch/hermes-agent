@@ -117,3 +117,38 @@ def test_cli_picker_hides_excluded_provider_by_alias(config_home):
     )
 
 
+def test_cli_picker_hides_disabled_custom_endpoints_but_keeps_cleanup(config_home):
+    _write_config(
+        config_home,
+        model={
+            "provider": "custom",
+            "default": "saved-model",
+            "base_url": "https://saved.example/v1",
+        },
+        custom_providers=[
+            {
+                "name": "Saved Relay",
+                "base_url": "https://saved.example/v1",
+                "model": "saved-model",
+            }
+        ],
+    )
+
+    with patch(
+        "hermes_cli.auth.is_runtime_provider_routable",
+        side_effect=lambda provider_id: provider_id != "custom",
+    ):
+        labels = _capture_provider_labels(config_home)
+
+    assert not any("Saved Relay" in label for label in labels)
+    assert not any(label.lower().startswith("custom") for label in labels)
+    assert any("Remove a saved custom provider" in label for label in labels)
+
+
+def test_cli_picker_has_one_custom_endpoint_entry(config_home):
+    labels = _capture_provider_labels(config_home)
+
+    custom_rows = [label for label in labels if label.lower().startswith("custom")]
+    assert custom_rows == ["Custom endpoint (enter URL manually)"]
+
+

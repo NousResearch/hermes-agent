@@ -35,6 +35,16 @@ def _make_category_plugin(
     return _make_plugin_dir(parent / category, name, manifest)
 
 
+def _manifest(name: str, *, version="1.0.0", kind="standalone", **extra) -> dict:
+    return {"name": name, "version": version, "kind": kind, **extra}
+
+
+def _list_args(**overrides):
+    options = {"json": False, "plain": False, "no_bundled": False, "user": False, "enabled": False}
+    options.update(overrides)
+    return MagicMock(**options)
+
+
 # ---------------------------------------------------------------------------
 # _read_manifest_info
 # ---------------------------------------------------------------------------
@@ -49,11 +59,12 @@ class TestReadManifestInfo:
         })
         result = _read_manifest_info(d, "")
         assert result is not None
-        name, version, description, key = result
+        name, version, description, key, kind = result
         assert name == "my-plugin"
         assert version == "1.0.0"
         assert description == "test"
         assert key == "my-plugin"  # flat: key == name
+        assert kind == "standalone"
 
 
     def test_no_manifest(self, tmp_path):
@@ -81,6 +92,51 @@ class TestReadManifestInfo:
 
 
 class TestDiscoverAllPlugins:
+    @pytest.mark.parametrize("external_source", ["user", "project"])
+    def test_inactive_external_collision_reports_active_bundled_winner(
+        self, tmp_path, monkeypatch, capsys, external_source
+    ):
+        from hermes_cli import plugins_cmd
+
+        bundled = tmp_path / "bundled"
+        hermes_home = tmp_path / "home"
+        user_plugins = hermes_home / "plugins"
+        user_plugins.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(
+            "plugins:\n  enabled: []\n  disabled: []\n", encoding="utf-8"
+        )
+        _make_plugin_dir(bundled, "shared", _manifest("shared", kind="backend"))
+
+        if external_source == "user":
+            external_root = user_plugins
+            monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
+        else:
+            project = tmp_path / "project"
+            project.mkdir()
+            monkeypatch.chdir(project)
+            monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+            external_root = project / ".hermes" / "plugins"
+        _make_plugin_dir(
+            external_root, "shared", _manifest("shared", version="9.0.0", kind="backend")
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
+        monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: bundled)
+        monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user_plugins)
+        monkeypatch.setattr(plugins_cmd, "_discover_entrypoint_plugins", lambda: [])
+
+        entries = plugins_cmd._discover_all_plugins()
+        shared = [entry for entry in entries if entry[5] == "shared"]
+
+        assert [(entry[3], entry[1]) for entry in shared] == [("bundled", "1.0.0")]
+
+        plugins_cmd.cmd_list(_list_args(json=True))
+        payload = json.loads(capsys.readouterr().out)
+        listed = next(plugin for plugin in payload if plugin["key"] == "shared")
+        assert listed["source"] == "bundled"
+        assert listed["status"] == "enabled"
+
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     def test_flat_plugins_still_discovered(self, mock_user_dir, mock_bundled_dir, tmp_path):
@@ -146,6 +202,31 @@ class TestDiscoverAllPlugins:
         assert "web/tavily" in keys
         assert "a/b/c" not in keys
 
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_bundled_platform_key_matches_runtime_loader(
+        self,
+        mock_user_dir,
+        mock_bundled_dir,
+        tmp_path,
+    ):
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        bundled = tmp_path / "bundled"
+        user = tmp_path / "user"
+        user.mkdir()
+        _make_category_plugin(
+            bundled, "platforms", "buzz", _manifest("buzz-platform", kind="platform")
+        )
+        mock_bundled_dir.return_value = bundled
+        mock_user_dir.return_value = user
+
+        entries = _discover_all_plugins()
+        buzz = next(entry for entry in entries if entry[0] == "buzz-platform")
+
+        assert buzz[5] == "buzz-platform"
+        assert buzz[6] == "platform"
+
 
 # ---------------------------------------------------------------------------
 # _plugin_status — key-aware status
@@ -174,8 +255,16 @@ class TestFilterPluginEntries:
         from hermes_cli.plugins_cmd import _filter_plugin_entries
 
         entries = [
-            ("web-tavily", "1.0.0", "search", "user", Path("/tmp"), "web/tavily"),
-            ("disk-cleanup", "1.0.0", "cleanup", "bundled", Path("/tmp"), "disk-cleanup"),
+            ("web-tavily", "1.0.0", "search", "user", Path("/tmp"), "web/tavily", "standalone"),
+            (
+                "disk-cleanup",
+                "1.0.0",
+                "cleanup",
+                "bundled",
+                Path("/tmp"),
+                "disk-cleanup",
+                "standalone",
+            ),
         ]
         args = MagicMock()
         args.no_bundled = False
@@ -207,19 +296,14 @@ class TestCmdListJson:
         mock_user_dir.return_value = tmp_path
         mock_bundled_dir.return_value = tmp_path / "nonexistent"
 
-        args = MagicMock()
-        args.json = True
-        args.plain = False
-        args.no_bundled = False
-        args.user = False
-        args.enabled = False
-
-        cmd_list(args)
+        cmd_list(_list_args(json=True))
         captured = capsys.readouterr()
         payload = json.loads(captured.out)
         names = [p["name"] for p in payload]
         assert "web-tavily" in names
         assert "disk-cleanup" in names
+        by_name = {p["name"]: p for p in payload}
+        assert by_name["web-tavily"]["key"] == "web/tavily"
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -234,14 +318,7 @@ class TestCmdListJson:
 
         # Patch config to return web/tavily as enabled
         with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"web/tavily"}):
-            args = MagicMock()
-            args.json = True
-            args.plain = False
-            args.no_bundled = False
-            args.user = False
-            args.enabled = False
-
-            cmd_list(args)
+            cmd_list(_list_args(json=True))
             captured = capsys.readouterr()
             payload = json.loads(captured.out)
             assert len(payload) == 1

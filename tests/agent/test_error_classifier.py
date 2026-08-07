@@ -274,6 +274,43 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
 
+    def test_structured_server_overload_code_without_overload_status_or_text(self):
+        error = MockAPIError(
+            "Request rejected",
+            status_code=400,
+            body={"error": {"code": "server_is_overloaded"}},
+        )
+
+        result = classify_api_error(error, provider="sudo")
+
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+        assert result.should_compress is False
+        assert result.should_fallback is False
+
+    @pytest.mark.parametrize(
+        "outer_body",
+        [
+            {},
+            {"error": {"message": "wrapper rejected request"}},
+            {"error": {"code": "wrapper_error"}},
+        ],
+    )
+    def test_structured_server_overload_code_survives_wrapper_body(self, outer_body):
+        inner = MockAPIError(
+            "inner provider error",
+            status_code=400,
+            body={"error": {"code": "server_is_overloaded"}},
+        )
+        outer = MockAPIError("wrapper error", status_code=400, body=outer_body)
+        outer.__cause__ = inner
+
+        result = classify_api_error(outer, provider="sudo")
+
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
 
     def test_408_request_timeout_is_retryable_timeout(self):
         """HTTP 408 Request Timeout is a transient timing failure the server

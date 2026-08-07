@@ -660,7 +660,7 @@ def classify_api_error(
     if status_code is None and error_type == "RateLimitError":
         status_code = 429
     body = _extract_error_body(error)
-    error_code = _extract_error_code(body)
+    error_code = _extract_error_code_from_error(error)
 
     # Build a comprehensive error message string for pattern matching.
     # str(error) alone may not include the body message (e.g. OpenAI SDK's
@@ -715,6 +715,12 @@ def classify_api_error(
         }
         defaults.update(overrides)
         return ClassifiedError(**defaults)
+
+    # Some OpenAI-compatible providers report overload only through this
+    # structured code, without an overload status or human-readable message.
+    # The code is authoritative and must win before status classification.
+    if error_code == "server_is_overloaded":
+        return _result(FailoverReason.overloaded, retryable=True)
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
 
@@ -1768,6 +1774,42 @@ def _extract_error_code(body: dict) -> str:
         if text and text != "400":
             return text
     return ""
+
+
+def _extract_error_code_from_error(error: Exception) -> str:
+    """Find a structured error code across an exception cause/context chain.
+
+    Wrapper exceptions commonly expose an empty or generic ``body`` while the
+    provider SDK exception carrying the authoritative code is attached as the
+    cause. Do not let the wrapper body mask that inner structured signal.
+    """
+    current = error
+    first_code = ""
+    for _ in range(5):  # Match the other exception-chain extractors.
+        body = getattr(current, "body", None)
+        if isinstance(body, dict):
+            code = _extract_error_code(body)
+            if code == "server_is_overloaded":
+                return code
+            first_code = first_code or code
+        response = getattr(current, "response", None)
+        if response is not None:
+            try:
+                json_body = response.json()
+            except Exception:
+                json_body = None
+            if isinstance(json_body, dict):
+                code = _extract_error_code(json_body)
+                if code == "server_is_overloaded":
+                    return code
+                first_code = first_code or code
+        cause = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
+        if cause is None or cause is current:
+            break
+        current = cause
+    return first_code
 
 
 def _extract_message(error: Exception, body: dict) -> str:

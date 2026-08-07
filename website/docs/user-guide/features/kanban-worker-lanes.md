@@ -58,13 +58,14 @@ The kanban kernel enforces that exactly one of these terminates each run. A work
 
 ## Outputs and the review-required convention
 
-For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a human reviewer. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
+For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a technical review. The convention uses a machine-readable reason prefix:
 
-- **Block instead of complete**, with `reason` prefixed `review-required: ` so the dashboard / `hermes kanban show` surfaces the row as awaiting review.
+- **Request review instead of completing**, by calling `kanban_block` with `reason` prefixed `review-required: ` and no `kind`.
 - **Drop structured metadata into a `kanban_comment` first** since `kanban_block` only carries the human-readable `reason`. Comments are the durable annotation channel — every audit-relevant field (changed_files, tests_run, diff_path or PR url, decisions) belongs there.
-- **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
+- **The kernel routes the card to `review`**, preferring the dedicated Reviewer profile when it exists and retaining the current assignee as a non-stranding fallback. This route does not emit a human `blocked` or `TRIAGE` notification.
+- **Reviewer either accepts or requests changes** using the review lane's verdict path.
 
-The injected `KANBAN_GUIDANCE` covers both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
+The injected `KANBAN_GUIDANCE` covers both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` technical-review pattern. Use `kind=needs_input` only for a genuine human decision or answer.
 
 ## Logs and audit trail
 

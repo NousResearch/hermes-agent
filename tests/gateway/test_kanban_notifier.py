@@ -516,3 +516,56 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     finally:
         conn.close()
     assert remaining == []
+
+
+def test_notifier_silences_technical_review_but_delivers_human_block(
+    tmp_path, monkeypatch
+):
+    """Technical review is internal; genuine human input remains actionable."""
+    db_path = tmp_path / "technical-review-routing.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        review_tid = kb.create_task(
+            conn, title="implementation ready", assignee="worker"
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=review_tid,
+            platform="telegram",
+            chat_id="chat-1",
+        )
+        kb.block_task(
+            conn,
+            review_tid,
+            reason="review-required: focused tests and diff are ready",
+            kind="needs_input",
+        )
+
+        human_tid = kb.create_task(
+            conn, title="human decision required", assignee="worker"
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=human_tid,
+            platform="telegram",
+            chat_id="chat-1",
+        )
+        kb.block_task(
+            conn,
+            human_tid,
+            reason="Choose the public API name",
+            kind="needs_input",
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert human_tid in adapter.sent[0]["text"]
+    assert "Choose the public API name" in adapter.sent[0]["text"]
+    assert review_tid not in adapter.sent[0]["text"]

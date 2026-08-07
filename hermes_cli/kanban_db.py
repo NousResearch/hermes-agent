@@ -124,6 +124,27 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
+_TECHNICAL_REVIEW_PREFIX = "review-required:"
+
+
+def is_technical_review_request(reason: Optional[str]) -> bool:
+    """Return whether ``reason`` invokes the internal review handoff contract."""
+    return str(reason or "").strip().casefold().startswith(
+        _TECHNICAL_REVIEW_PREFIX
+    )
+
+
+def _technical_review_assignee(current_assignee: Optional[str]) -> Optional[str]:
+    """Prefer the dedicated Reviewer profile without stranding other installs."""
+    try:
+        from hermes_cli.profiles import profile_exists
+
+        if profile_exists("reviewer"):
+            return "reviewer"
+    except Exception:
+        pass
+    return current_assignee
+
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
 # unblocker (usually a cron) and routes the task to ``triage`` instead of back
@@ -5629,6 +5650,10 @@ def block_task(
     un-typed block) drives routing instead of every block landing in one
     undifferentiated ``blocked`` bucket:
 
+    * ``review-required:`` reason prefix — the implementation is ready for an
+      internal technical gate. It goes to ``review`` and prefers the dedicated
+      Reviewer profile. It never enters the human block/triage recurrence loop.
+
     * ``dependency`` — the task is only waiting on another task. It does NOT
       sit in ``blocked`` (where a cron would keep "unblocking" it); it goes to
       ``todo`` so the existing parent-gating / ``recompute_ready`` machinery
@@ -5647,8 +5672,8 @@ def block_task(
       can use it to signal "this might clear on its own"; it still participates
       in the loop breaker so a forever-flaky task eventually escalates.
 
-    Returns True on any successful transition (to ``blocked``, ``todo``, or
-    ``triage``), False when the task wasn't in a blockable state.
+    Returns True on any successful transition (to ``review``, ``blocked``,
+    ``todo``, or ``triage``), False when the task wasn't in a blockable state.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
@@ -5657,7 +5682,8 @@ def block_task(
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, assignee, block_kind, block_recurrences "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
@@ -5669,6 +5695,81 @@ def block_task(
             and cur_row["block_recurrences"] is not None
             else 0
         )
+
+        # ``review-required:`` is the documented worker handoff convention for
+        # a technical gate.  Historically workers had to label it
+        # ``needs_input`` to pass the goal-mode exit gate, which put a routine
+        # code review into the human block recurrence counter.  A second review
+        # phase then became ``block_loop_detected`` and the notifier told the
+        # task subscriber that a human decision was required.  Route this
+        # machine-readable contract before any block-kind handling so it can
+        # never emit ``blocked`` / ``block_loop_detected``.
+        if is_technical_review_request(reason):
+            implementation_assignee = cur_row["assignee"]
+            reviewer_assignee = _technical_review_assignee(
+                implementation_assignee
+            )
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status        = 'review',
+                           assignee      = ?,
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL,
+                           block_kind    = NULL,
+                           block_recurrences = 0
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                    """,
+                    (reviewer_assignee, task_id),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status        = 'review',
+                           assignee      = ?,
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL,
+                           block_kind    = NULL,
+                           block_recurrences = 0
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                       AND current_run_id = ?
+                    """,
+                    (reviewer_assignee, task_id, int(expected_run_id)),
+                )
+            if cur.rowcount != 1:
+                return False
+            run_id = _end_run(
+                conn,
+                task_id,
+                outcome="review_requested",
+                status="released",
+                summary=reason,
+            )
+            if run_id is None and reason:
+                run_id = _synthesize_ended_run(
+                    conn,
+                    task_id,
+                    outcome="review_requested",
+                    summary=reason,
+                )
+            _append_event(
+                conn,
+                task_id,
+                "review_requested",
+                {
+                    "reason": reason,
+                    "implementation_assignee": implementation_assignee,
+                    "reviewer_assignee": reviewer_assignee,
+                },
+                run_id=run_id,
+            )
+            return True
 
         # Dependency blocks never enter the human ``blocked`` bucket — they
         # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing

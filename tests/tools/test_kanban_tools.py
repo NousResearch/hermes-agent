@@ -295,6 +295,32 @@ def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
         conn.close()
 
 
+def test_block_goal_mode_allows_internal_technical_review(monkeypatch, tmp_path):
+    """The documented review-required convention is not a goal-loop escape.
+
+    It hands the finished implementation to the technical reviewer lane and
+    must not force workers to mislabel the gate as human ``needs_input``.
+    """
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    out = kt._handle_block({"reason": "review-required: tests and diff are ready"})
+    payload = json.loads(out)
+
+    assert payload["ok"] is True
+    assert payload["status"] == "review"
+    assert payload["block_kind"] is None
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "review"
+    finally:
+        conn.close()
+
+
 def test_heartbeat_extends_claim_expires(worker_env):
     """The kanban_heartbeat tool MUST extend claim_expires, not just
     update last_heartbeat_at — otherwise long-running workers loop the

@@ -842,13 +842,16 @@ def _handle_block(args: dict, **kw) -> str:
         # this, a worker that learns kanban_complete is gated can just call
         # kanban_block(reason="anything") to escape the loop instead.
         # Restrict goal_mode tasks to the kinds that represent a genuine
-        # external blocker the worker cannot resolve itself; `capability`
-        # and `transient` (or an unset kind) route back through
-        # kanban_complete, which the judge now gates.
+        # external blocker the worker cannot resolve itself. The documented
+        # `review-required:` handoff is a separate internal-review terminal
+        # route. `capability` and `transient` (or any other unset kind) route
+        # back through kanban_complete, which the judge now gates.
         task = kb.get_task(conn, tid)
+        technical_review = kb.is_technical_review_request(reason)
         if (
             task
             and task.goal_mode
+            and not technical_review
             and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS
         ):
             conn.close()
@@ -1725,6 +1728,9 @@ KANBAN_BLOCK_SCHEMA = {
     "name": "kanban_block",
     "description": (
         "Stop work on this task and route it according to WHY you're stuck. "
+        "For the documented internal technical-review handoff, prefix reason "
+        "with 'review-required:' and omit kind; it routes to review rather "
+        "than asking a human. "
         "Set ``kind`` to say which: 'dependency' (waiting on another task — "
         "goes to todo and auto-resumes when that task finishes, no human "
         "needed), 'needs_input' (you need a human decision/answer), "

@@ -35,6 +35,11 @@ def test_compress_calls_gc_collect(compressor, monkeypatch):
     mock_collect = MagicMock()
     monkeypatch.setattr(gc, "collect", mock_collect)
 
+    # The post-compression memory trim calls gc.collect() on Linux/glibc, which
+    # would double-count here. It is tested independently in mem_trim tests;
+    # disable it so this test measures only the explicit collect in compress().
+    monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", lambda **_: None)
+
     # Force a successful compression path without needing a real aux model.
     compressor._generate_summary = lambda *args, **kwargs: "summary"
     messages = _make_long_messages(12)

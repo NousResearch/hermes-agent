@@ -30,6 +30,8 @@ Config keys this provider responds to::
       search_backend: "firecrawl"     # explicit per-capability
       extract_backend: "firecrawl"    # explicit per-capability
       backend: "firecrawl"            # shared fallback (default)
+      firecrawl:
+        scrape_max_age_ms: 604800000   # optional Firecrawl scrape cache TTL
       use_gateway: false              # prefer managed gateway when both
                                       # direct + gateway credentials exist
 
@@ -108,6 +110,36 @@ class _FirecrawlProxy:
 
 
 Firecrawl = _FirecrawlProxy()
+
+
+def _get_scrape_max_age_ms() -> Optional[int]:
+    """Return configured Firecrawl scrape cache max age in milliseconds.
+
+    Firecrawl's Python SDK accepts ``max_age`` for scrape cache reuse. Hermes
+    keeps provider-specific web settings under ``web.firecrawl``.
+    """
+    try:
+        import tools.web_tools as _wt
+
+        cfg = _wt._load_web_config()
+    except Exception:  # noqa: BLE001 - config lookup should not break scraping
+        return None
+
+    firecrawl_cfg = cfg.get("firecrawl") if isinstance(cfg, dict) else {}
+    if not isinstance(firecrawl_cfg, dict):
+        return None
+
+    raw = firecrawl_cfg.get("scrape_max_age_ms")
+    if raw in (None, ""):
+        return None
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid web.firecrawl.scrape_max_age_ms=%r", raw)
+        return None
+
+    return value if value > 0 else None
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +481,8 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         else:
             formats = ["markdown", "html"]
 
+        max_age_ms = _get_scrape_max_age_ms()
+
         # check_website_access is the legacy policy gate; imported at
         # module level (lazy-friendly because the website_policy import is
         # cheap) so monkeypatching it in tests works as expected.
@@ -485,12 +519,17 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
 
             try:
                 logger.info("Firecrawl scraping: %s", url)
+                scrape_kwargs: Dict[str, Any] = {
+                    "url": url,
+                    "formats": formats,
+                }
+                if max_age_ms is not None:
+                    scrape_kwargs["max_age"] = max_age_ms
                 try:
                     scrape_result = await asyncio.wait_for(
                         asyncio.to_thread(
                             _get_firecrawl_client().scrape,
-                            url=url,
-                            formats=formats,
+                            **scrape_kwargs,
                         ),
                         timeout=60,
                     )

@@ -616,3 +616,117 @@ class TestDeferredCallSchemaProbe:
         ))
         assert result.get("ok") is True
         assert result.get("doc") == "abc"
+
+    @staticmethod
+    def _register_renamed_required(name: str, toolset: str):
+        """Register a deferred tool whose required property key is sanitized.
+
+        Mirrors Cloudflare-style filter params (e.g. ``issue_class~neq``) that
+        get renamed for provider schema compatibility before the model sees
+        them via tool_describe / the tools array.
+
+        Schema shape matches MCP registration (flat name/description/parameters),
+        which is what coerce_tool_args + unrename_tool_args expect at dispatch.
+        """
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({
+                "ok": True,
+                "issue_class_neq": args.get("issue_class~neq"),
+                "zone_id": args.get("zone_id"),
+            })
+
+        params = {
+            "type": "object",
+            "properties": {
+                "issue_class~neq": {
+                    "type": "string",
+                    "description": "Exclude this issue class",
+                },
+                "zone_id": {"type": "string", "description": "Zone id"},
+            },
+            "required": ["issue_class~neq", "zone_id"],
+        }
+        registry.register(
+            name=name,
+            handler=_handler,
+            schema={
+                "name": name,
+                "description": f"desc {name}",
+                "parameters": params,
+            },
+            toolset=toolset,
+        )
+
+    def test_validator_accepts_sanitized_required_keys(self):
+        """Model-facing keys from tool_describe must pass the probe.
+
+        Regression: the probe used to check registry wire names only, so a
+        complete call with sanitized keys (issue_class_neq) was rejected as
+        missing issue_class~neq and never reached unrename/dispatch.
+        """
+        from tools.tool_search import validate_deferred_call_args
+
+        self._register_renamed_required("mcp_probe_cf_accept", "mcp-probe-cf")
+        # Model args match the sanitized schema (tool_describe / tools array).
+        assert validate_deferred_call_args(
+            "mcp_probe_cf_accept",
+            {"issue_class_neq": "bug", "zone_id": "z1"},
+        ) is None
+        # Wire names still work too (identity path / unrename no-op).
+        assert validate_deferred_call_args(
+            "mcp_probe_cf_accept",
+            {"issue_class~neq": "bug", "zone_id": "z1"},
+        ) is None
+
+    def test_validator_still_blocks_missing_after_unrename(self):
+        """Sanitized keys do not hide a genuinely missing required field."""
+        from tools.tool_search import validate_deferred_call_args
+
+        self._register_renamed_required("mcp_probe_cf_missing", "mcp-probe-cf")
+        err = validate_deferred_call_args(
+            "mcp_probe_cf_missing",
+            {"issue_class_neq": "bug"},  # zone_id missing
+        )
+        assert err is not None
+        parsed = json.loads(err)
+        assert "zone_id" in parsed["error"]
+        assert "NOT invoked" in parsed["error"]
+        # Error schema matches model-facing names (sanitized).
+        assert "issue_class_neq" in parsed["parameters"]["properties"]
+        assert "issue_class~neq" not in parsed["parameters"]["properties"]
+        assert parsed["parameters"]["required"] == ["issue_class_neq", "zone_id"]
+
+    def test_handle_function_call_dispatches_sanitized_required_keys(self):
+        """End-to-end: tool_call with sanitized args invokes the tool."""
+        import model_tools
+
+        self._register_renamed_required("mcp_probe_cf_dispatch", "mcp-probe-cf-d")
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={
+                "name": "mcp_probe_cf_dispatch",
+                "arguments": {"issue_class_neq": "bug", "zone_id": "z1"},
+            },
+            enabled_toolsets=["mcp-probe-cf-d"],
+        ))
+        assert result.get("ok") is True
+        assert result.get("issue_class_neq") == "bug"
+        assert result.get("zone_id") == "z1"
+        assert "missing required" not in json.dumps(result)
+
+    def test_blind_tool_call_error_uses_model_facing_required_names(self):
+        """Probe error lists sanitized required names when keys are renamed."""
+        import model_tools
+
+        self._register_renamed_required("mcp_probe_cf_blind", "mcp-probe-cf-b")
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": "mcp_probe_cf_blind", "arguments": {}},
+            enabled_toolsets=["mcp-probe-cf-b"],
+        ))
+        assert "error" in result
+        assert "issue_class_neq" in result["error"]
+        assert "issue_class~neq" not in result["error"]
+        assert result["parameters"]["required"] == ["issue_class_neq", "zone_id"]

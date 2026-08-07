@@ -963,6 +963,32 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     return frozenset(names)
 
 
+def _model_facing_parameters(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the parameter schema the model actually sees (sanitized).
+
+    Provider-illegal property keys are renamed before tools leave
+    ``get_tool_definitions`` / ``tool_describe``. Probe errors must teach the
+    same names so a repair round-trip matches ``tool_describe``.
+    """
+    try:
+        from tools.schema_sanitizer import sanitize_tool_schemas
+        sanitized = sanitize_tool_schemas([{
+            "type": "function",
+            "function": {
+                "name": "_probe",
+                "description": "",
+                "parameters": params,
+            },
+        }])
+        if not sanitized:
+            return params
+        fn = (sanitized[0].get("function") or {})
+        out = fn.get("parameters")
+        return out if isinstance(out, dict) else params
+    except Exception:
+        return params
+
+
 def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
     """Probe-validate ``tool_call`` arguments against the deferred tool's schema.
 
@@ -984,6 +1010,13 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
     tool's own business, and ``coerce_tool_args`` already handles type repair
     downstream. Returns a JSON error string when invalid, ``None`` when the
     call should dispatch.
+
+    Model-facing property keys may differ from the registry wire names when
+    the schema sanitizer renames provider-illegal characters (e.g. Cloudflare
+    ``issue_class~neq`` -> ``issue_class_neq``). Args are reverse-mapped with
+    the same ``unrename_tool_args`` path ``coerce_tool_args`` uses before the
+    key-absence check, so a call that matches ``tool_describe`` is never
+    rejected as missing required fields.
     """
     try:
         from tools.registry import registry as _registry
@@ -999,13 +1032,48 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         required = params.get("required")
         if not isinstance(required, list) or not required:
             return None
-        missing = [r for r in required if isinstance(r, str) and r not in args]
-        if not missing:
+
+        # Model args use the SANITIZED keys from tool_describe / the tools
+        # array. Map them back to wire names before checking required fields,
+        # matching coerce_tool_args. Fail open if unrename itself errors.
+        check_args: Dict[str, Any] = args if isinstance(args, dict) else {}
+        try:
+            from tools.schema_sanitizer import unrename_tool_args
+            unrenamed = unrename_tool_args(params, check_args)
+            if isinstance(unrenamed, dict):
+                check_args = unrenamed
+        except Exception:
+            logger.debug(
+                "validate_deferred_call_args unrename failed for %s",
+                name, exc_info=True,
+            )
+
+        missing_wire = [
+            r for r in required if isinstance(r, str) and r not in check_args
+        ]
+        if not missing_wire:
             return None
+        # Teach the model the same names it already sees from tool_describe.
+        display_params = _model_facing_parameters(params)
+        wire_to_display: Dict[str, str] = {}
+        try:
+            from tools.schema_sanitizer import unrename_tool_args as _unrename
+            for display_key in (display_params.get("properties") or {}):
+                if not isinstance(display_key, str):
+                    continue
+                mapped = _unrename(params, {display_key: True})
+                if isinstance(mapped, dict):
+                    for wire_key in mapped:
+                        if isinstance(wire_key, str):
+                            wire_to_display[wire_key] = display_key
+        except Exception:
+            wire_to_display = {}
+        missing_display = [wire_to_display.get(r, r) for r in missing_wire]
+
         return tool_error(
             f"tool_call to '{name}' is missing required argument(s): "
-            f"{', '.join(missing)}. The tool was NOT invoked.",
-            parameters=params,
+            f"{', '.join(missing_display)}. The tool was NOT invoked.",
+            parameters=display_params,
             hint=(
                 "Retry tool_call with 'arguments' matching the parameters "
                 "schema above."

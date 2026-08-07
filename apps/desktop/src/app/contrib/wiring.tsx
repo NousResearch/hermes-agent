@@ -22,6 +22,7 @@ import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import { FloatingPet } from '@/components/pet/floating-pet'
+import { Avatar3DMascot } from '@/components/avatar'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
 import { getSessionMessages, triggerCronJob } from '@/hermes'
@@ -1113,8 +1114,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* Toasts above everything. */}
       <NotificationStack />
 
-      {/* Petdex floating mascot — renders nothing unless installed + enabled. */}
-      <FloatingPet />
+      {/* 3D Commander mascot — replaces 2D petdex floating pet. */}
+      <Avatar3DMascot />
 
       {/* Single persistent xterm host chasing the terminal pane's slot rect. */}
       <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />

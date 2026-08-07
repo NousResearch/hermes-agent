@@ -328,6 +328,21 @@ Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The
 ledger is included in quick backups.
 
+### Repeated-failure review nudge
+
+Each job tracks a `failure_streak` — consecutive runs where the agent failed
+(delivery failures don't count). When a *recurring* job's streak reaches the
+threshold, the failure message delivered to chat gains a review nudge telling
+you the job has failed N runs in a row and suggesting you fix, pause
+(`hermes cron pause <job>`), or remove it. Any successful run resets the
+streak, and `hermes cron list` shows the streak alongside a failing job's last
+run. One-shot jobs never nudge.
+
+```yaml
+cron:
+  failure_nudge_threshold: 3   # default; 0 disables the nudge
+```
+
 ## Delivery options
 
 When scheduling jobs, you specify where the output goes:

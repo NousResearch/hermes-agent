@@ -182,6 +182,9 @@ def cron_list(show_all: bool = False):
                 status_display = color("ok", Colors.GREEN)
             else:
                 status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
+                streak = int(job.get("failure_streak") or 0)
+                if streak >= 2:
+                    status_display += color(f"  ({streak} failures in a row)", Colors.RED)
             print(f"    Last run:  {last_run}  {status_display}")
 
         latest_execution = job.get("latest_execution")

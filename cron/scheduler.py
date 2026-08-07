@@ -148,6 +148,48 @@ def _fallback_chain_phrase() -> str:
     )
 
 
+def _failure_streak_nudge(job: dict) -> str:
+    """Return a review nudge when a recurring job keeps failing, else "".
+
+    Inspired by Poke (poke.com), which "encourages users to review recurring
+    automations that haven't been acted upon": once a recurring job has failed
+    several runs in a row, the per-run failure ping stops being information and
+    starts being noise — the useful message is "this automation needs your
+    attention (fix, pause, or remove it)".
+
+    The streak counter (``failure_streak``) is persisted by
+    ``cron.jobs.mark_job_run`` and reset on any successful run. Because the
+    failure message is delivered BEFORE ``mark_job_run`` records this run, the
+    prospective streak for the current failure is stored+1.
+
+    Threshold config: ``cron.failure_nudge_threshold`` (default 3, ``0``
+    disables the nudge). One-shot jobs never nudge — they don't recur.
+    """
+    schedule_kind = (job.get("schedule") or {}).get("kind")
+    if schedule_kind not in {"cron", "interval"}:
+        return ""
+    try:
+        cfg = load_config() or {}
+        threshold = int(
+            ((cfg.get("cron") or {}) if isinstance(cfg, dict) else {}).get(
+                "failure_nudge_threshold", 3
+            )
+        )
+    except Exception:
+        threshold = 3
+    if threshold <= 0:
+        return ""
+    streak = int(job.get("failure_streak") or 0) + 1  # +1 = this run
+    if streak < threshold:
+        return ""
+    job_ref = job.get("name") or job.get("id") or "this job"
+    return (
+        f"\nThis job has failed {streak} runs in a row — worth a review. "
+        f"Fix its prompt/config, or pause it with `hermes cron pause {job_ref}` "
+        "(resume/remove also available) to stop the noise."
+    )
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -6070,7 +6112,10 @@ def _run_one_job_body(
                     "the configuration is fixed."
                 )
             else:
-                deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+                deliver_content = final_response if success else (
+                    _summarize_cron_failure_for_delivery(job, error)
+                    + _failure_streak_nudge(job)
+                )
                 if drift_skip and not success:
                     # Drift-skip alert: bypass the generic summarizer's
                     # 180-char truncation (it would eat the remediation

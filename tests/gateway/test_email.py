@@ -611,7 +611,13 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertEqual(result["platform"], "email")
             _, kwargs = mock_server.starttls.call_args
-            self.assertIsInstance(kwargs["context"], ssl.SSLContext)
+            # This path builds its TLS context inline (it runs out-of-process and
+            # cannot import _smtp_ssl_context), so assert the policy here too.
+            tls_ctx = kwargs["context"]
+            self.assertIsInstance(tls_ctx, ssl.SSLContext)
+            self.assertFalse(tls_ctx.verify_flags & ssl.VERIFY_X509_STRICT)
+            self.assertEqual(tls_ctx.verify_mode, ssl.CERT_REQUIRED)
+            self.assertTrue(tls_ctx.check_hostname)
             send_call = mock_server.send_message.call_args[0][0]
             self.assertEqual(send_call["Subject"], "Hermes Agent")
             self.assertIn("Date", send_call)
@@ -905,6 +911,66 @@ class TestSenderAuthentication(unittest.TestCase):
             authserv_id="mx.ourserver.com",
         )
         self.assertFalse(ok, reason)
+
+
+class TestSmtpTlsContext(unittest.TestCase):
+    """SMTP TLS contexts must not use VERIFY_X509_STRICT (Python 3.13 default).
+
+    Python 3.13 enables ssl.VERIFY_X509_STRICT in create_default_context(),
+    which rejects cert chains still common at mail providers (e.g. smtp.163.com's
+    CA lacks a critical Basic Constraints extension), breaking all SMTP sending
+    with CERTIFICATE_VERIFY_FAILED. Chain verification and hostname checking
+    must stay enabled — only the strict flag is cleared.
+    """
+
+    def test_strict_flag_cleared(self):
+        import ssl
+        from plugins.platforms.email.adapter import _smtp_ssl_context
+        ctx = _smtp_ssl_context()
+        self.assertFalse(ctx.verify_flags & ssl.VERIFY_X509_STRICT)
+
+    def test_verification_still_enabled(self):
+        import ssl
+        from plugins.platforms.email.adapter import _smtp_ssl_context
+        ctx = _smtp_ssl_context()
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(ctx.check_hostname)
+
+    def _make_adapter(self, port):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_SMTP_PORT": port,
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def _assert_relaxed(self, ctx):
+        """The context must skip only VERIFY_X509_STRICT, not verification."""
+        import ssl
+        self.assertIsInstance(ctx, ssl.SSLContext)
+        self.assertFalse(ctx.verify_flags & ssl.VERIFY_X509_STRICT)
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(ctx.check_hostname)
+
+    def test_connect_smtp_passes_relaxed_context_on_port_465(self):
+        adapter = self._make_adapter("465")
+        with patch("smtplib.SMTP_SSL") as mock_smtp_ssl:
+            adapter._connect_smtp()
+        self._assert_relaxed(mock_smtp_ssl.call_args.kwargs["context"])
+
+    def test_connect_smtp_passes_relaxed_context_on_starttls(self):
+        """Port 587 upgrades in-band, so STARTTLS gets the context — not the
+        constructor. Without this the relaxed context is only proven for 465."""
+        adapter = self._make_adapter("587")
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            adapter._connect_smtp()
+        self._assert_relaxed(mock_server.starttls.call_args.kwargs["context"])
 
 
 if __name__ == "__main__":

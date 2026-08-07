@@ -838,14 +838,22 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if user_block:
                 volatile_parts.append(user_block)
 
-    # External memory provider system prompt block (additive to built-in)
+    # External memory provider system prompt block (additive to built-in).
+    # Gated on the same check ``inject_memory_provider_tools`` uses so we
+    # never advertise provider tools that the agent's toolset configuration
+    # has already gated off (#81014).
     if agent._memory_manager:
         try:
-            _ext_mem_block = agent._memory_manager.build_system_prompt()
-            if _ext_mem_block:
-                volatile_parts.append(_ext_mem_block)
+            from agent.memory_manager import memory_provider_tools_exposed as _mem_exposed
         except Exception:
-            pass
+            _mem_exposed = None
+        if _mem_exposed is None or _mem_exposed(agent):
+            try:
+                _ext_mem_block = agent._memory_manager.build_system_prompt()
+                if _ext_mem_block:
+                    volatile_parts.append(_ext_mem_block)
+            except Exception:
+                pass
 
     # Plugin sections are intentionally confined to one coarse anchor in the
     # volatile tail. This preserves deterministic ordering and lets a resumed

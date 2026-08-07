@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import asdict
@@ -45,11 +46,26 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
+
+# Boardd broker shim is optional in some test/standalone layouts; it is
+# vendored in hermes_cli for canonical fleet custody.
+try:
+    from hermes_cli import boardd_shim
+except ImportError:
+    if os.environ.get("HERMES_KANBAN_BROKER") == "1":
+        raise
+    boardd_shim = None  # type: ignore
+
+# Install the broker-aware connection delegates while the process declares
+# boardd custody.  This covers nested helpers such as kanban_specify and
+# kanban_decompose, which open their own connections instead of using _conn().
+if boardd_shim is not None and boardd_shim.enabled():
+    boardd_shim.install_rebind(kanban_db)
 
 log = logging.getLogger(__name__)
 
@@ -116,23 +132,133 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
     return normed
 
 
-def _conn(board: Optional[str] = None):
-    """Open a kanban_db connection, creating the schema on first use.
+def _default_boardd_sock() -> str:
+    """Return the canonical boardd Unix socket path."""
+    return os.environ.get(
+        "BOARDD_SOCK",
+        os.path.join(
+            os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
+            "kanban", "boardd-run", "boardd.sock",
+        ),
+    )
 
-    Every handler that mutates the DB goes through this so the plugin
-    self-heals on a fresh install (no user-visible "no such table"
-    error if somebody hits POST /tasks before GET /board).
-    ``init_db`` is idempotent.
 
-    ``board`` is the query-param slug (already normalised by
-    :func:`_resolve_board`). When ``None`` the active board is used
-    via the resolution chain (env var → ``current`` file → ``default``).
+def _boardd_active(board: Optional[str] = None) -> bool:
+    """Check if boardd broker custody is active for the requested board.
+
+    Custody is active only when the process-level broker flag is enabled and
+    the requested board resolves to the canonical fleet DB.  When custody is
+    active, the broker must be reachable; otherwise we fail closed rather than
+    silently opening the local mirror.
     """
+    if boardd_shim is None or not boardd_shim.enabled():
+        return False
+
+    try:
+        is_fleet, _req, _fleet = boardd_shim.routes_to_fleet(board=board)
+    except Exception as exc:
+        raise boardd_shim.BoarddUnavailableError(
+            f"boardd custody routing could not be resolved: {exc}"
+        ) from exc
+
+    if not is_fleet:
+        return False
+
+    sock_path = _default_boardd_sock()
+    if not os.path.exists(sock_path):
+        raise boardd_shim.BoarddUnavailableError(
+            f"boardd custody active but broker socket missing: {sock_path}"
+        )
+    try:
+        from hermes_cli import kb_client
+
+        client = kb_client.Client(sock_path=sock_path)
+        client.ping()
+        # BrokerConnection resolves through the thread-local client. Pin the
+        # exact socket that passed the liveness probe for _conn() and nested
+        # helper opens alike.
+        old_client = getattr(kb_client._tl, "client", None)
+        if old_client is not None and old_client is not client:
+            try:
+                old_client.close()
+            except Exception:
+                pass
+        kb_client._tl.client = client
+        return True
+    except Exception as exc:
+        raise boardd_shim.BoarddUnavailableError(
+            f"boardd custody active but broker unreachable ({sock_path}): {exc}"
+        ) from exc
+
+
+def _conn(board: Optional[str] = None) -> Any:
+    """Open a kanban connection, routing through boardd when broker custody is active.
+
+    When boardd is active, all reads and mutations go through the broker
+    via ``hermes_cli.boardd_shim.BrokerConnection``. The shim's interactive
+    transaction support lets the existing ``kanban_db`` write helpers run
+    unchanged through the single writer.
+
+    In standalone mode (no broker socket), this keeps the previous behavior:
+    initialise the local DB and open a direct SQLite connection.
+    """
+    if _boardd_active(board=board):
+        from hermes_cli.boardd_shim import BrokerConnection
+        return BrokerConnection()
+
+    # Standalone path: direct SQLite on a writable local board.
     try:
         kanban_db.init_db(board=board)
     except Exception as exc:
         log.warning("kanban init_db failed: %s", exc)
     return kanban_db.connect(board=board)
+
+
+# ---------------------------------------------------------------------------
+# Boardd fail-closed boundary
+# ---------------------------------------------------------------------------
+
+def _boardd_unavailable_handler(request: Any, exc: Exception):
+    """Return HTTP 503 when the fleet broker is authoritative but unreachable.
+
+    This is the fail-closed boundary: an active boardd custody claim that cannot
+    be fulfilled must not degrade to a direct SQLite open of the read-only
+    mirror.
+    """
+    log.error("boardd broker unavailable for %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "boardd broker unavailable for fleet board"},
+    )
+
+
+def register_boardd_exception_handlers(app: Any) -> None:
+    """Register the 503 handler on a FastAPI app.
+
+    Called automatically when the plugin is loaded from the dashboard web
+    server; tests that mount the router into a fresh app should call this too.
+    """
+    if boardd_shim is None:
+        return
+    app.add_exception_handler(
+        boardd_shim.BoarddUnavailableError, _boardd_unavailable_handler
+    )
+    unavailable = getattr(boardd_shim.kb_client, "BoarddUnavailable", None)
+    if isinstance(unavailable, type):
+        app.add_exception_handler(
+            unavailable, _boardd_unavailable_handler
+        )
+
+
+# Auto-register on the production dashboard app if we are being loaded from it.
+try:
+    from hermes_cli import web_server as _web_server
+
+    _app = getattr(_web_server, "app", None)
+    if _app is not None:
+        register_boardd_exception_handlers(_app)
+except Exception:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -2303,7 +2429,7 @@ def _board_counts(slug: str) -> dict[str, int]:
         path = kanban_db.kanban_db_path(board=slug)
         if not path.exists():
             return {}
-        conn = kanban_db.connect(board=slug)
+        conn = _conn(board=slug)
         try:
             rows = conn.execute(
                 "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
@@ -2813,7 +2939,7 @@ async def stream_events(ws: WebSocket):
             ws_board = None
 
         def _fetch_new(cursor_val: int) -> tuple[int, list[dict]]:
-            conn = kanban_db.connect(board=ws_board)
+            conn = _conn(board=ws_board)
             try:
                 rows = conn.execute(
                     "SELECT id, task_id, run_id, kind, payload, created_at "

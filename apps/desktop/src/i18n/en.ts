@@ -843,6 +843,280 @@ export const en: Translations = {
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
+      },
+      moaTitle: 'Mixture of Agents',
+      moaDesc:
+        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
+      moaEnabled: 'Enabled',
+      moaPreset: 'Preset',
+      moaSetDefault: 'Set default',
+      moaDelete: 'Delete',
+      moaNewPreset: 'new preset',
+      moaAddPreset: 'Add preset',
+      moaDefault: name => `Default: ${name}`,
+      moaReference: n => `Reference ${n}`,
+      moaRemove: 'Remove',
+      moaAddRefModel: 'Add reference model',
+      moaAggregator: 'Aggregator',
+      moaDisableRef: index => `Disable reference ${index}`,
+      moaEnableRef: index => `Enable reference ${index}`
+    },
+    customEndpoints: {
+      title: 'Custom Endpoints',
+      emptyTitle: 'No custom endpoints',
+      emptyDescription: 'Add an OpenAI-compatible endpoint below.',
+      addTitle: 'Add Endpoint',
+      editTitle: 'Edit Endpoint',
+      active: 'Active',
+      apiKeySet: 'API key set',
+      use: 'Use',
+      deleteEndpoint: 'Delete endpoint',
+      deleteConfirm: name => `Delete ${name}?`,
+      newEndpoint: 'New endpoint',
+      couldNotLoad: 'Could not load custom endpoints',
+      endpointSaved: 'Custom endpoint saved.',
+      saveFailed: 'Save failed',
+      validationFailed: 'Validation failed',
+      activationFailed: 'Activation failed',
+      deleteFailed: 'Delete failed',
+      endpointReachable: 'Endpoint is reachable.',
+      endpointReachableModels: n => `Endpoint is reachable. Found ${n} models.`,
+      endpointValidationFailed: 'Endpoint validation failed.',
+      test: 'Test',
+      save: 'Save',
+      fields: {
+        name: 'Name',
+        providerId: 'Provider ID',
+        endpointUrl: 'Endpoint URL',
+        defaultModel: 'Default Model',
+        context: 'Context',
+        apiKey: 'API Key',
+        apiKeyPlaceholder: 'Optional',
+        apiKeyNewPlaceholder: 'Leave blank to keep current key',
+        useNewChats: 'Use for new chats',
+        discoverModels: 'Discover models'
+      }
+    },
+    billing: {
+      title: 'Billing',
+      preview: 'preview',
+      summary: {
+        balance: 'Balance',
+        plan: 'Plan',
+        autoRefill: 'Auto-refill'
+      },
+      sections: {
+        plan: 'Plan',
+        paymentAndCredits: 'Payment & credits',
+        usage: 'Usage'
+      },
+      usage: {
+        title: 'Usage'
+      },
+      buyCredits: {
+        title: 'Buy credits now',
+        buyButton: 'Buy',
+        processing: 'Processing… checking settlement',
+        added: amount => `${amount} added. Balance is refreshing.`,
+        retry: 'Retry',
+        openPortal: 'Open portal'
+      },
+      plan: {
+        title: 'Plans',
+        changePlan: 'Change plan',
+        viewPlans: 'View plans',
+        backAria: 'Back to billing',
+        current: 'Current plan',
+        scheduled: 'Scheduled',
+        empty: 'No plans are available to change to right now.',
+        undo: 'Undo',
+        undoing: 'Undoing…',
+        downgrade: 'Downgrade',
+        confirmDowngrade: 'Confirm downgrade',
+        tryAgain: 'Try again',
+        checkingChange: 'Checking this change…',
+        cannotChange: 'That change cannot be made here.',
+        alreadyOn: name => `You are already on ${name} — nothing to change.`,
+        notScheduleable: 'This change cannot be scheduled here.',
+        scheduling: 'Scheduling…',
+        cancel: 'Cancel',
+        effectScheduled: (targetName, effectiveAt, creditsDelta) =>
+          `Change to ${targetName} — takes effect ${effectiveAt}. No charge now; you keep your current plan until then.${creditsDelta ? ` Monthly credits change: ${creditsDelta}.` : ''}`
+      },
+      autoReload: {
+        threshold: 'Threshold',
+        thresholdAria: 'Auto-refill threshold',
+        reloadTo: 'Reload to',
+        reloadToAria: 'Auto-refill reload-to amount',
+        turnOffConfirm: 'Turn off auto-refill?',
+        turnOff: 'Turn off',
+        disable: 'Disable',
+        updated: 'Auto-refill updated.',
+        turnedOff: 'Auto-refill turned off.',
+        manage: 'Manage',
+        save: 'Save',
+        saving: 'Saving…',
+        cancel: 'Cancel'
+      },
+      state: {
+        notice: {
+          loggedOut: {
+            title: 'Connect your Nous account',
+            message: 'Run /portal in the TUI or open the Nous portal to connect your account.',
+            action: 'Open portal ↗'
+          },
+          noCard: {
+            title: 'No payment method on file',
+            message:
+              'Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.',
+            action: 'Add card ↗'
+          }
+        },
+        paymentMethod: {
+          title: 'Payment method',
+          description: 'Manage the card used for top-ups and subscription renewals.',
+          addAction: 'Add payment method',
+          updateAction: 'Update',
+          provenance: {
+            autoRefill: 'auto-refill card',
+            customerDefault: 'customer default',
+            subPin: 'subscription card',
+            suffix: label => ` - ${label}`
+          }
+        },
+        buyCredits: {
+          description: 'A single charge on your card, added to your balance today.'
+        },
+        autoRefill: {
+          title: 'Refill when low',
+          genericDescription: 'Keep your balance topped up when it drops below your threshold.',
+          offPill: 'Off',
+          enabledPill: 'Enabled',
+          notAvailablePill: '—',
+          manageCaption: 'Manage auto-refill from the portal.',
+          turnOnCaption: 'Turn on auto-refill from the portal',
+          chargesDescription: (reloadTo: string, threshold: string) =>
+            `Charges ${reloadTo} automatically when your balance falls below ${threshold}.`,
+          distinctCardCaption: (cardLabel: string) =>
+            `Auto-refill charges ${cardLabel} — reconcile on the portal`,
+          distinctCardFallback: 'a different card',
+          reconcileAction: 'Reconcile ↗'
+        },
+        usage: {
+          subscriptionCredits: {
+            title: 'Subscription credits',
+            barLabel: 'Subscription credits remaining',
+            captionResets: (date: string) => `Resets ${date}`,
+            valueOf: (remaining: string, monthly: string) => `${remaining} of ${monthly} left`,
+            valueOver: (remaining: string, monthly: string, over: string) =>
+              `${remaining} of ${monthly} left · ${over} over`
+          },
+          topupCredits: {
+            title: 'Top-up credits',
+            caption: 'Does not expire'
+          },
+          monthlyCap: {
+            title: 'Monthly spend cap',
+            barLabel: 'Monthly spend cap used',
+            captionDefault: 'Default ceiling',
+            captionSpending: 'Monthly remote spending',
+            valueUsed: (spent: string, limit: string) => `${spent} of ${limit} used`
+          }
+        },
+        planCard: {
+          freeTier: 'Free',
+          chooseAction: 'Choose ↗',
+          adjustPlanAction: 'Adjust plan ↗',
+          unavailableCaption: 'Subscription details are unavailable; opening the portal is still available.',
+          downgradeCaption: (tierName: string, when: string) => `Changes to ${tierName} on ${when}.`,
+          cancellationCaption: (when: string) => `Cancels on ${when}.`,
+          renewsCaption: (date: string) => `Renews ${date}`,
+          noSubscriptionCaption: 'No active subscription — paid models draw down top-up credits.'
+        }
+      },
+      errors: {
+        consentRequired: {
+          title: 'Card confirmation needed',
+          message: 'Confirm this card for terminal charges in the portal'
+        },
+        insufficientScope: {
+          title: 'Remote Spending needs approval',
+          message: 'This needs Remote Spending allowed. Start a top-up to allow it, then retry.'
+        },
+        remoteSpendingRevoked: {
+          title: 'Remote spending was stopped',
+          messageByAdmin: 'An admin stopped remote spending for this terminal.',
+          messageBySelf: 'You stopped remote spending for this terminal.'
+        },
+        remoteSpendingReconnect: who =>
+          `${who} Reconnect from Settings -> Gateway to re-authorize this device.`,
+        sessionRevoked: {
+          title: 'Session logged out',
+          message: 'Your session was logged out. Sign in again from Settings → Gateway.'
+        },
+        cliBillingDisabled: {
+          title: 'Remote spending is off',
+          message:
+            "Remote spending is off for this account — a billing admin can turn it on from the portal's Hermes Agent page."
+        },
+        roleRequired: {
+          title: 'Admin role required',
+          message: 'Adding funds needs an org admin/owner. Ask an admin, or manage on the portal.'
+        },
+        idempotencyConflict: {
+          title: 'Start a fresh top-up',
+          message: '🔴 That charge key was already used for a different amount. Start a fresh top-up.'
+        },
+        noPaymentMethod: {
+          title: 'No saved card',
+          message:
+            '💳 No saved card for terminal charges yet. Set one up on the portal ' +
+            "(one-time credit buys don't save a reusable card)."
+        },
+        orgAccessDenied: {
+          title: 'Org access denied',
+          message: "This token isn't bound to an org you can manage"
+        },
+        monthlyCapExceeded: {
+          title: 'Monthly spend cap reached',
+          messageReached: '🔴 Monthly spend cap reached.',
+          messageHeadroom: (remaining: string) => `🔴 Monthly spend cap reached — $${remaining} headroom left.`
+        },
+        rateLimited: {
+          title: 'Too many charges right now',
+          message: (mins: number) =>
+            mins > 0
+              ? `🟡 Too many charges right now (try again in ~${mins} min). This isn't a payment failure.`
+              : "🟡 Too many charges right now. This isn't a payment failure."
+        },
+        stripeUnavailable: {
+          title: 'Stripe is having trouble',
+          message: (mins: number) =>
+            mins > 0
+              ? `Stripe is having trouble — try again in ~${mins} min`
+              : 'Stripe is having trouble — try again shortly'
+        },
+        upgradeCapExceeded: {
+          title: 'Daily plan-change limit reached',
+          message: 'Daily plan-change limit reached — try again tomorrow'
+        },
+        endpointUnavailable: {
+          title: 'Billing endpoint unavailable',
+          message:
+            'Billing endpoint returned a non-JSON response (it may not be available on this deployment).'
+        },
+        timeout: {
+          title: 'Billing request timed out',
+          message: 'Billing request timed out.'
+        },
+        transport: {
+          title: 'Billing connection failed',
+          message: 'Billing request failed before reaching the gateway.'
+        },
+        default: {
+          title: 'Billing request failed',
+          message: 'Billing request failed.'
+        }
       }
     },
     providers: {

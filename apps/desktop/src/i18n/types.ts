@@ -718,6 +718,216 @@ export interface Translations {
       fallbackEmpty: string
       notInCatalog: string
       tasks: Record<string, AuxTaskCopy>
+      moaTitle: string
+      moaDesc: string
+      moaEnabled: string
+      moaPreset: string
+      moaSetDefault: string
+      moaDelete: string
+      moaNewPreset: string
+      moaAddPreset: string
+      moaDefault: (name: string) => string
+      moaReference: (n: number) => string
+      moaRemove: string
+      moaAddRefModel: string
+      moaAggregator: string
+      moaDisableRef: (index: number) => string
+      moaEnableRef: (index: number) => string
+    }
+    customEndpoints: {
+      title: string
+      emptyTitle: string
+      emptyDescription: string
+      addTitle: string
+      editTitle: string
+      active: string
+      apiKeySet: string
+      use: string
+      deleteEndpoint: string
+      deleteConfirm: (name: string) => string
+      newEndpoint: string
+      couldNotLoad: string
+      endpointSaved: string
+      saveFailed: string
+      validationFailed: string
+      activationFailed: string
+      deleteFailed: string
+      endpointReachable: string
+      endpointReachableModels: (n: number) => string
+      endpointValidationFailed: string
+      test: string
+      save: string
+      fields: {
+        name: string
+        providerId: string
+        endpointUrl: string
+        defaultModel: string
+        context: string
+        apiKey: string
+        apiKeyPlaceholder: string
+        apiKeyNewPlaceholder: string
+        useNewChats: string
+        discoverModels: string
+      }
+    }
+    billing: {
+      title: string
+      preview: string
+      summary: {
+        balance: string
+        plan: string
+        autoRefill: string
+      }
+      sections: {
+        plan: string
+        paymentAndCredits: string
+        usage: string
+      }
+      usage: {
+        title: string
+      }
+      buyCredits: {
+        title: string
+        buyButton: string
+        processing: string
+        added: (amount: string) => string
+        retry: string
+        openPortal: string
+      }
+      plan: {
+        title: string
+        changePlan: string
+        viewPlans: string
+        backAria: string
+        current: string
+        scheduled: string
+        empty: string
+        undo: string
+        undoing: string
+        downgrade: string
+        confirmDowngrade: string
+        tryAgain: string
+        checkingChange: string
+        cannotChange: string
+        alreadyOn: (name: string) => string
+        notScheduleable: string
+        scheduling: string
+        cancel: string
+        effectScheduled: (targetName: string, effectiveAt: string, creditsDelta: string) => string
+      }
+      autoReload: {
+        threshold: string
+        thresholdAria: string
+        reloadTo: string
+        reloadToAria: string
+        turnOffConfirm: string
+        turnOff: string
+        disable: string
+        updated: string
+        turnedOff: string
+        manage: string
+        save: string
+        saving: string
+        cancel: string
+      }
+      state: {
+        notice: {
+          loggedOut: { title: string; message: string; action: string }
+          noCard: { title: string; message: string; action: string }
+        }
+        paymentMethod: {
+          title: string
+          description: string
+          addAction: string
+          updateAction: string
+          provenance: {
+            autoRefill: string
+            customerDefault: string
+            subPin: string
+            suffix: (label: string) => string
+          }
+        }
+        buyCredits: {
+          description: string
+        }
+        autoRefill: {
+          title: string
+          genericDescription: string
+          offPill: string
+          enabledPill: string
+          notAvailablePill: string
+          manageCaption: string
+          turnOnCaption: string
+          chargesDescription: (reloadTo: string, threshold: string) => string
+          distinctCardCaption: (cardLabel: string) => string
+          distinctCardFallback: string
+          reconcileAction: string
+        }
+        usage: {
+          subscriptionCredits: {
+            title: string
+            barLabel: string
+            captionResets: (date: string) => string
+            valueOf: (remaining: string, monthly: string) => string
+            valueOver: (remaining: string, monthly: string, over: string) => string
+          }
+          topupCredits: {
+            title: string
+            caption: string
+          }
+          monthlyCap: {
+            title: string
+            barLabel: string
+            captionDefault: string
+            captionSpending: string
+            valueUsed: (spent: string, limit: string) => string
+          }
+        }
+        planCard: {
+          freeTier: string
+          chooseAction: string
+          adjustPlanAction: string
+          unavailableCaption: string
+          downgradeCaption: (tierName: string, when: string) => string
+          cancellationCaption: (when: string) => string
+          renewsCaption: (date: string) => string
+          noSubscriptionCaption: string
+        }
+      }
+      errors: {
+        consentRequired: { title: string; message: string }
+        insufficientScope: { title: string; message: string }
+        remoteSpendingRevoked: {
+          title: string
+          messageByAdmin: string
+          messageBySelf: string
+        }
+        remoteSpendingReconnect: (who: string) => string
+        sessionRevoked: { title: string; message: string }
+        cliBillingDisabled: { title: string; message: string }
+        roleRequired: { title: string; message: string }
+        idempotencyConflict: { title: string; message: string }
+        noPaymentMethod: { title: string; message: string }
+        orgAccessDenied: { title: string; message: string }
+        monthlyCapExceeded: {
+          title: string
+          messageReached: string
+          messageHeadroom: (remaining: string) => string
+        }
+        rateLimited: {
+          title: string
+          message: (mins: number) => string
+        }
+        stripeUnavailable: {
+          title: string
+          message: (mins: number) => string
+        }
+        upgradeCapExceeded: { title: string; message: string }
+        endpointUnavailable: { title: string; message: string }
+        timeout: { title: string; message: string }
+        transport: { title: string; message: string }
+        default: { title: string; message: string }
+      }
     }
     providers: {
       connectAccount: string

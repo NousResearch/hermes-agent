@@ -1047,6 +1047,264 @@ export const zh: Translations = {
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '标题生成', hint: '会话标题' },
         curator: { label: '维护器', hint: '技能使用审查' }
+      },
+      moaTitle: '混合代理',
+      moaDesc: '配置显示为混合代理提供方下模型的命名预设。聚合器是实际使用的模型。',
+      moaEnabled: '已启用',
+      moaPreset: '预设',
+      moaSetDefault: '设为默认',
+      moaDelete: '删除',
+      moaNewPreset: '新预设',
+      moaAddPreset: '添加预设',
+      moaDefault: name => `默认：${name}`,
+      moaReference: n => `引用 ${n}`,
+      moaRemove: '移除',
+      moaAddRefModel: '添加引用模型',
+      moaAggregator: '聚合器',
+      moaDisableRef: index => `禁用引用 ${index}`,
+      moaEnableRef: index => `启用引用 ${index}`
+    },
+    customEndpoints: {
+      title: '自定义端点',
+      emptyTitle: '无自定义端点',
+      emptyDescription: '在下方添加 OpenAI 兼容端点。',
+      addTitle: '添加端点',
+      editTitle: '编辑端点',
+      active: '活跃',
+      apiKeySet: '已设置 API 密钥',
+      use: '使用',
+      deleteEndpoint: '删除端点',
+      deleteConfirm: name => `删除 ${name}？`,
+      newEndpoint: '新端点',
+      couldNotLoad: '无法加载自定义端点',
+      endpointSaved: '自定义端点已保存。',
+      saveFailed: '保存失败',
+      validationFailed: '验证失败',
+      activationFailed: '激活失败',
+      deleteFailed: '删除失败',
+      endpointReachable: '端点可访问。',
+      endpointReachableModels: n => `端点可访问。找到 ${n} 个模型。`,
+      endpointValidationFailed: '端点验证失败。',
+      test: '测试',
+      save: '保存',
+      fields: {
+        name: '名称',
+        providerId: '提供方 ID',
+        endpointUrl: '端点 URL',
+        defaultModel: '默认模型',
+        context: '上下文',
+        apiKey: 'API 密钥',
+        apiKeyPlaceholder: '输入 API 密钥',
+        apiKeyNewPlaceholder: '输入新的 API 密钥（留空则保留现有密钥）',
+        useNewChats: '在新对话中使用',
+        discoverModels: '发现模型'
+      }
+    },
+    billing: {
+      title: '账单',
+      preview: '账单预览',
+      summary: {
+        balance: '余额',
+        plan: '套餐',
+        autoRefill: '自动充值'
+      },
+      sections: {
+        plan: '套餐',
+        paymentAndCredits: '支付与额度',
+        usage: '用量'
+      },
+      usage: {
+        title: '用量'
+      },
+      buyCredits: {
+        title: '购买额度',
+        buyButton: '购买额度',
+        processing: '处理中…',
+        added: amount => `已添加 ${amount} 额度。`,
+        retry: '重试',
+        openPortal: '打开账单门户'
+      },
+      plan: {
+        title: '套餐',
+        changePlan: '更改套餐',
+        viewPlans: '查看套餐',
+        backAria: '返回账单',
+        current: '当前',
+        scheduled: '已计划',
+        empty: '无活跃套餐。',
+        undo: '撤销',
+        undoing: '撤销中…',
+        downgrade: '降级',
+        confirmDowngrade: '确认降级',
+        tryAgain: '重试',
+        checkingChange: '检查中…',
+        cannotChange: '当前无法更改套餐。',
+        alreadyOn: name => `你已经是 ${name} 套餐。`,
+        notScheduleable: '此套餐无法计划。',
+        scheduling: '计划中…',
+        cancel: '取消',
+        effectScheduled: (targetName, effectiveAt, creditsDelta) =>
+          `${targetName} 将于 ${effectiveAt} 生效（${creditsDelta} 额度）。`
+      },
+      autoReload: {
+        threshold: '阈值',
+        thresholdAria: '自动充值阈值',
+        reloadTo: '充值至',
+        reloadToAria: '自动充值金额',
+        turnOffConfirm: '关闭自动充值？',
+        turnOff: '关闭',
+        disable: '禁用',
+        updated: '自动充值已更新。',
+        turnedOff: '自动充值已关闭。',
+        manage: '管理',
+        save: '保存',
+        saving: '保存中…',
+        cancel: '取消'
+      },
+      state: {
+        notice: {
+          loggedOut: {
+            title: '登录以管理账单',
+            message: '你需要登录才能查看和管理账单。',
+            action: '登录'
+          },
+          noCard: {
+            title: '添加支付方式',
+            message: '添加银行卡以启用自动充值和购买。',
+            action: '添加支付方式'
+          }
+        },
+        paymentMethod: {
+          title: '支付方式',
+          description: '管理用于购买和自动充值的银行卡。',
+          addAction: '添加支付方式',
+          updateAction: '更新支付方式',
+          provenance: {
+            autoRefill: '自动充值卡',
+            customerDefault: '客户默认',
+            subPin: '订阅卡',
+            suffix: label => ` - ${label}`
+          }
+        },
+        buyCredits: {
+          description: '购买的额度永不过期。'
+        },
+        autoRefill: {
+          title: '自动充值',
+          genericDescription: '余额不足时自动充值额度。',
+          offPill: '关',
+          enabledPill: '开',
+          notAvailablePill: '不可用',
+          manageCaption: '管理自动充值',
+          turnOnCaption: '开启自动充值',
+          chargesDescription: (reloadTo, threshold) => `余额低于 ${threshold} 时充值至 ${reloadTo}。`,
+          distinctCardCaption: cardLabel => `使用 ${cardLabel} 扣费。`,
+          distinctCardFallback: '使用单独的银行卡扣费。',
+          reconcileAction: '核对'
+        },
+        usage: {
+          subscriptionCredits: {
+            title: '订阅额度',
+            barLabel: '订阅',
+            captionResets: date => `${date} 重置。`,
+            valueOf: (remaining, monthly) => `${remaining} / ${monthly}`,
+            valueOver: (remaining, monthly, over) => `${remaining} / ${monthly} · 超出 ${over}`
+          },
+          topupCredits: {
+            title: '充值额度',
+            caption: '购买的额度永不过期。'
+          },
+          monthlyCap: {
+            title: '月度上限',
+            barLabel: '上限',
+            captionDefault: '限制每月支出。',
+            captionSpending: '按月度上限支出。',
+            valueUsed: (spent, limit) => `${spent} / ${limit}`
+          }
+        },
+        planCard: {
+          freeTier: '免费版',
+          chooseAction: '选择套餐',
+          adjustPlanAction: '调整套餐',
+          unavailableCaption: '套餐管理不可用。',
+          downgradeCaption: (tierName, when) => `${when} 降级为 ${tierName}。`,
+          cancellationCaption: when => `${when} 取消。`,
+          renewsCaption: date => `${date} 续费。`,
+          noSubscriptionCaption: '无活跃订阅。'
+        }
+      },
+      errors: {
+        consentRequired: {
+          title: '需要同意',
+          message: '继续之前需要你的同意。'
+        },
+        insufficientScope: {
+          title: '权限不足',
+          message: '你的会话缺少所需的账单权限。'
+        },
+        remoteSpendingRevoked: {
+          title: '远程支出已撤销',
+          messageByAdmin: '管理员撤销了此设备的远程支出。',
+          messageBySelf: '你撤销了此设备的远程支出。'
+        },
+        remoteSpendingReconnect: who => `${who} 从"设置 → 网关"重新连接以重新授权此设备。`,
+        sessionRevoked: {
+          title: '会话已撤销',
+          message: '你的账单会话已被撤销。'
+        },
+        cliBillingDisabled: {
+          title: '账单已禁用',
+          message: '此版本未启用账单。'
+        },
+        roleRequired: {
+          title: '需要角色权限',
+          message: '你的账号角色无权执行此操作。'
+        },
+        idempotencyConflict: {
+          title: '重复请求',
+          message: '此请求已提交。'
+        },
+        noPaymentMethod: {
+          title: '无支付方式',
+          message: '添加支付方式以继续。'
+        },
+        orgAccessDenied: {
+          title: '访问被拒',
+          message: '你的组织拒绝了账单访问。'
+        },
+        monthlyCapExceeded: {
+          title: '超出月度上限',
+          messageReached: '你已达到月度支出上限。',
+          messageHeadroom: remaining => `本月剩余 ${remaining} 余量。`
+        },
+        rateLimited: {
+          title: '请求过于频繁',
+          message: mins => (mins > 0 ? `请求过多。请在 ${mins} 分钟后重试。` : '请求过多。请稍后重试。')
+        },
+        stripeUnavailable: {
+          title: '账单不可用',
+          message: mins => (mins > 0 ? `账单暂时不可用。请在 ${mins} 分钟后重试。` : '账单暂时不可用。请稍后重试。')
+        },
+        upgradeCapExceeded: {
+          title: '超出升级上限',
+          message: '你已超出允许的最高套餐。'
+        },
+        endpointUnavailable: {
+          title: '端点不可用',
+          message: '账单端点不可用。'
+        },
+        timeout: {
+          title: '请求超时',
+          message: '请求耗时过长。请重试。'
+        },
+        transport: {
+          title: '连接错误',
+          message: '无法连接账单服务。'
+        },
+        default: {
+          title: '出现问题',
+          message: '发生了意外错误。'
+        }
       }
     },
     providers: {

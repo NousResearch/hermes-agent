@@ -4,6 +4,8 @@ import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n/context'
+
 import {
   billingDevFixtures,
   loggedOutBillingState,
@@ -53,7 +55,9 @@ function renderBilling(initialEntries: string[] = ['/settings?tab=billing']) {
   render(
     <MemoryRouter initialEntries={initialEntries}>
       <QueryClientProvider client={client}>
-        <BillingSettings />
+        <I18nProvider configClient={null}>
+          <BillingSettings />
+        </I18nProvider>
       </QueryClientProvider>
     </MemoryRouter>
   )

@@ -9,15 +9,21 @@ test_chronos_verify.py.
 
 import asyncio
 import threading
+import warnings
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.web_exceptions import NotAppKeyWarning
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter, cors_middleware
+from gateway.platforms.api_server import (
+    APIServerAdapter,
+    _API_SERVER_ADAPTER_KEY,
+    cors_middleware,
+)
 
 _MOD = "gateway.platforms.api_server"
 
@@ -28,9 +34,17 @@ def _make_adapter() -> APIServerAdapter:
 
 def _create_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application(middlewares=[cors_middleware])
-    app["api_server_adapter"] = adapter
+    app[_API_SERVER_ADAPTER_KEY] = adapter
     app.router.add_post("/api/cron/fire", adapter._handle_cron_fire)
     return app
+
+
+def test_create_app_uses_appkey_without_warning():
+    adapter = _make_adapter()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", NotAppKeyWarning)
+        app = _create_app(adapter)
+    assert app[_API_SERVER_ADAPTER_KEY] is adapter
 
 
 @pytest.fixture

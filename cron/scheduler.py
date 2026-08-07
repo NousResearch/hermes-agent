@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -42,7 +43,10 @@ from typing import Any, List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    windows_detach_flags_without_breakaway,
+    windows_hide_flags,
+)
 from hermes_cli.config import (
     _expand_env_vars,
     cron_model_drift_guard_enabled,
@@ -2345,6 +2349,38 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     return str(interpreter), env_overlay
 
 
+def _terminate_cron_script_tree(proc: subprocess.Popen) -> None:
+    """Best-effort hard stop for a timed-out cron script and descendants."""
+    if sys.platform == "win32":
+        try:
+            result = subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+                creationflags=windows_hide_flags(),
+            )
+            if result.returncode == 0:
+                return
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
@@ -2450,13 +2486,19 @@ def _run_job_script(
     try:
         from tools.environments.local import build_subprocess_env
 
-        popen_kwargs = {}
+        popen_kwargs = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+        }
         if sys.platform == "win32":
-            popen_kwargs = {
-                "creationflags": windows_hide_flags(),
+            popen_kwargs.update({
+                "creationflags": windows_detach_flags_without_breakaway(),
                 "encoding": "utf-8",
                 "errors": "replace",
-            }
+            })
+        else:
+            popen_kwargs["start_new_session"] = True
         env = build_subprocess_env()
         env.update(env_overlay)
         # Use the job's workdir as the subprocess cwd when configured,
@@ -2464,17 +2506,24 @@ def _run_job_script(
         # NEVER mutate the Python process cwd — that would leak into
         # concurrent gateway sessions (#69396).
         _script_cwd = workdir or str(path.parent)
-        result = subprocess.run(
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
-            text=True,
-            timeout=script_timeout,
             cwd=_script_cwd,
             env=env,
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        try:
+            raw_stdout, raw_stderr = proc.communicate(timeout=script_timeout)
+        except subprocess.TimeoutExpired:
+            _terminate_cron_script_tree(proc)
+            try:
+                proc.communicate(timeout=1.0)
+            except (subprocess.TimeoutExpired, ValueError, OSError):
+                pass
+            return False, f"Script timed out after {script_timeout}s: {path}"
+
+        stdout = (raw_stdout or "").strip()
+        stderr = (raw_stderr or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2486,8 +2535,8 @@ def _run_job_script(
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if proc.returncode != 0:
+            parts = [f"Script exited with code {proc.returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
@@ -2496,8 +2545,6 @@ def _run_job_script(
 
         return True, stdout
 
-    except subprocess.TimeoutExpired:
-        return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
 

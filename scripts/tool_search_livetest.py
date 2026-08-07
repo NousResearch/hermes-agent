@@ -298,6 +298,11 @@ def setup_isolated_home(enabled: bool, listing: str = "off",
     return hermes_home
 
 
+def cleanup_isolated_home(hermes_home: Path) -> None:
+    """Remove the temporary root that produced ``hermes_home``."""
+    shutil.rmtree(hermes_home.parent, ignore_errors=True)
+
+
 def _yaml_dump(obj: Any) -> str:
     try:
         import yaml
@@ -443,8 +448,7 @@ def run_one_scenario(scenario: Dict[str, Any], enabled: bool, out_dir: Path) -> 
     out_path = out_dir / f"{scenario['id']}__{suffix}.json"
     out_path.write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
 
-    # Cleanup
-    shutil.rmtree(home.parent, ignore_errors=True)
+    cleanup_isolated_home(home)
     return record
 
 

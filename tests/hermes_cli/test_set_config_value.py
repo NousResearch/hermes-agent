@@ -493,6 +493,7 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "kanban.auto_subscribe_on_create",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key

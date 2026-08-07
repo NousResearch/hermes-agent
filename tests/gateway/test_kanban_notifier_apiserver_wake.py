@@ -130,7 +130,11 @@ def test_apiserver_sub_wakes_real_session_via_self_post(tmp_path, monkeypatch):
     )
     assert len(posts) == 1
     assert posts[0]["session_id"] == "raw-sid-123"
-    assert tid in posts[0]["text"]
+    wake_text = posts[0]["text"]
+    assert tid in wake_text
+    assert "done once" in wake_text, "creator wake must carry the worker handoff"
+    assert "not a request to decompose" in wake_text.lower()
+    assert "do not recreate" in wake_text.lower()
     # The wake self-post IS the delivery on this path (no separate text-ping
     # fallback is attempted for stateless api_server subs) — cursor advances
     # once the wake succeeds.

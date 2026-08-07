@@ -419,6 +419,7 @@ class GatewayKanbanWatchersMixin:
                         sub["task_id"], sub["platform"],
                         sub["chat_id"], sub.get("thread_id") or "",
                     )
+                    wake_handoff = ""
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
@@ -440,10 +441,12 @@ class GatewayKanbanWatchersMixin:
                                 lines = payload_summary.strip().splitlines()
                                 h = lines[0][:200] if lines else payload_summary[:200]
                                 handoff = f"\n{h}"
+                                wake_handoff = h
                             elif task and task.result:
                                 lines = task.result.strip().splitlines()
                                 r = lines[0][:160] if lines else task.result[:160]
                                 handoff = f"\n{r}"
+                                wake_handoff = r
                             msg = (
                                 f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
                                 f" — {title}{handoff}"
@@ -660,6 +663,14 @@ class GatewayKanbanWatchersMixin:
                                 title=_title,
                                 assignee=_assignee,
                                 board=board_slug,
+                            )
+                            if wake_handoff:
+                                _synth += "\n" + t(
+                                    "gateway.kanban.wake.handoff",
+                                    summary=wake_handoff,
+                                )
+                            _synth += "\n\n" + t(
+                                "gateway.kanban.wake.guidance"
                             )
 
                         if not _is_push_adapter and _wake_kinds and _session_key:

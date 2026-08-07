@@ -677,9 +677,11 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
                 status_code=400,
                 detail="Nothing to update; provide 'title', 'archived', and/or 'pinned'.",
             )
+        title_sid = sid
         if body.title is not None:
+            title_sid = db.get_compression_tip(sid) or sid
             try:
-                db.set_session_title(sid, body.title or "")
+                db.set_session_title(title_sid, body.title or "")
             except ValueError as e:
                 # Title too long, invalid characters, or already in use.
                 raise HTTPException(status_code=400, detail=str(e))
@@ -687,7 +689,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
             db.set_session_archived(sid, body.archived)
         if body.pinned is not None:
             db.set_session_pinned(sid, body.pinned)
-        result = {"ok": True, "title": db.get_session_title(sid) or ""}
+        result = {"ok": True, "title": db.get_session_title(title_sid) or ""}
         if body.archived is not None:
             result["archived"] = bool(body.archived)
         if body.pinned is not None:

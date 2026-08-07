@@ -1023,6 +1023,79 @@ class TestWebServerEndpoints:
             {"index": 0, "error": "session id is required"}
         ]
 
+    def test_rename_compression_root_updates_visible_tip_only(self):
+        """A title PATCH follows compression continuity, not arbitrary children."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="rename-root", source="desktop")
+            db.set_session_title("rename-root", "Generated root title")
+            db.end_session("rename-root", "compression")
+            db.create_session(
+                session_id="rename-compression-tip",
+                source="desktop",
+                parent_session_id="rename-root",
+            )
+            db.set_session_title("rename-compression-tip", "Generated visible title")
+
+            # A normal descendant must not be treated as part of the
+            # compression lineage, even when it is newer than the tip.
+            db.create_session(
+                session_id="rename-ordinary-child",
+                source="desktop",
+                parent_session_id="rename-compression-tip",
+            )
+            db.set_session_title("rename-ordinary-child", "Ordinary child title")
+        finally:
+            db.close()
+
+        resp = self.client.patch(
+            "/api/sessions/rename-root", json={"title": "Manual session title"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "title": "Manual session title"}
+
+        db = SessionDB()
+        try:
+            assert db.get_session_title("rename-root") == "Generated root title"
+            assert db.get_session_title("rename-compression-tip") == "Manual session title"
+            assert db.get_session_title("rename-ordinary-child") == "Ordinary child title"
+        finally:
+            db.close()
+
+    def test_rename_root_does_not_follow_non_compression_child(self):
+        """An ordinary child is not a title-write continuation."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="ordinary-root", source="desktop")
+            db.set_session_title("ordinary-root", "Generated root title")
+            db.create_session(
+                session_id="ordinary-child",
+                source="desktop",
+                parent_session_id="ordinary-root",
+            )
+            db.set_session_title("ordinary-child", "Ordinary child title")
+        finally:
+            db.close()
+
+        resp = self.client.patch(
+            "/api/sessions/ordinary-root", json={"title": "Manual root title"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "title": "Manual root title"}
+
+        db = SessionDB()
+        try:
+            assert db.get_session_title("ordinary-root") == "Manual root title"
+            assert db.get_session_title("ordinary-child") == "Ordinary child title"
+        finally:
+            db.close()
+
 
 
 

@@ -201,8 +201,13 @@ def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeyp
     """Incremental hydration owns the profile handle until its read completes."""
     history_started = threading.Event()
     release_history = threading.Event()
+    close_completed = threading.Event()
 
     class _BlockingDB(_RecordingDB):
+        def close(self):
+            super().close()
+            close_completed.set()
+
         def get_resume_conversations(self, _target):
             history_started.set()
             assert release_history.wait(timeout=2.0)
@@ -229,6 +234,7 @@ def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeyp
 
         release_history.set()
         assert server._sessions[sid]["resume_history_ready"].wait(timeout=1.0)
+        assert close_completed.wait(timeout=1.0)
         assert db.closed == 1
     finally:
         release_history.set()

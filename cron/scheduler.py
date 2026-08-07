@@ -363,6 +363,35 @@ def get_running_job_ids() -> "frozenset[str]":
         return frozenset(_running_job_ids)
 
 
+def try_register_running_job(job_id: str) -> bool:
+    """Atomically add ``job_id`` to the in-flight running set.
+
+    Returns False (without registering) when the job is already mid-run —
+    the caller must skip the fire. This is the single dedupe owner shared by
+    the ticker's ``_submit_with_guard`` and manual runs
+    (``tools/cronjob_tools``): the fire claim alone cannot prevent a
+    double-fire because its TTL (300s) is routinely outlived by real jobs,
+    after which a manual ``cronjob(action='run')`` would claim successfully
+    and run the same job concurrently (idea from #53395 by @izumi0uu).
+
+    Registration also makes the run visible to ``get_running_job_ids`` (the
+    gateway shutdown drain, #60432) and ``mark_running_jobs_interrupted``.
+    Callers MUST pair a successful registration with
+    ``release_running_job`` in a ``finally`` block.
+    """
+    with _running_lock:
+        if job_id in _running_job_ids:
+            return False
+        _running_job_ids.add(job_id)
+        return True
+
+
+def release_running_job(job_id: str) -> None:
+    """Remove ``job_id`` from the in-flight running set (idempotent)."""
+    with _running_lock:
+        _running_job_ids.discard(job_id)
+
+
 def mark_running_jobs_interrupted(reason: str) -> list:
     """Best-effort: mark every currently in-flight cron job interrupted.
 
@@ -4288,11 +4317,9 @@ def tick(
                     job.get("name", job_id),
                 )
                 return None
-            with _running_lock:
-                if job_id in _running_job_ids:
-                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
-                    return None
-                _running_job_ids.add(job_id)
+            if not try_register_running_job(job_id):
+                logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+                return None
             # Record the attempt before executor dispatch. Recovery classifies
             # abandoned records as unknown; it never automatically retries them.
             execution = create_execution(job_id, source="builtin")
@@ -4303,14 +4330,12 @@ def tick(
                 try:
                     return ctx.run(_process_job, j)
                 finally:
-                    with _running_lock:
-                        _running_job_ids.discard(j["id"])
+                    release_running_job(j["id"])
 
             try:
                 return pool.submit(_run_and_release)
             except Exception as submit_err:
-                with _running_lock:
-                    _running_job_ids.discard(job_id)
+                release_running_job(job_id)
                 finish_execution(
                     execution["id"],
                     success=False,

@@ -643,8 +643,31 @@ def _run_claimed_job(job: Dict[str, Any]) -> Dict[str, Any]:
     Returns {"claimed": True, "success": bool, "error": str|None}.
     """
     job_id = job["id"]
+    _registered = False
     try:
-        from cron.scheduler import run_one_job
+        from cron.scheduler import (
+            release_running_job,
+            run_one_job,
+            try_register_running_job,
+        )
+
+        # In-flight dedupe (idea from #53395 by @izumi0uu): the fire claim's
+        # TTL (300s) is routinely outlived by real jobs, so it alone cannot
+        # stop a manual run from double-firing a job the ticker (or another
+        # manual run) is still executing. Register in the scheduler's shared
+        # running set — the same guard _submit_with_guard uses — which also
+        # makes this run visible to the gateway shutdown drain
+        # (get_running_job_ids, #60432) and mark_running_jobs_interrupted.
+        if not try_register_running_job(job_id):
+            return {
+                "claimed": True,
+                "success": False,
+                "error": (
+                    "Job is already running (a scheduler tick or another "
+                    "manual run is executing it); not started again."
+                ),
+            }
+        _registered = True
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
@@ -707,11 +730,15 @@ def _run_claimed_job(job: Dict[str, Any]) -> Dict[str, Any]:
             _heartbeat_thread.start()
 
         try:
-            processed = run_one_job(job)
+            try:
+                processed = run_one_job(job)
+            finally:
+                _heartbeat_stop.set()
+                if _heartbeat_thread is not None:
+                    _heartbeat_thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
         finally:
-            _heartbeat_stop.set()
-            if _heartbeat_thread is not None:
-                _heartbeat_thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
+            _registered = False
+            release_running_job(job_id)
         refreshed = get_job(job_id) or {}
         ok = refreshed.get("last_status") == "ok"
         return {
@@ -722,6 +749,17 @@ def _run_claimed_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
+        if _registered:
+            # Registration succeeded but we raised before the run's own
+            # release ran (e.g. heartbeat setup) — don't leave the job
+            # permanently marked in-flight. Only release registrations WE
+            # took: a bare discard here could erase a ticker-owned entry.
+            try:
+                from cron.scheduler import release_running_job as _release
+
+                _release(job_id)
+            except Exception:
+                pass
         try:
             mark_job_run(job_id, False, str(e))
         except Exception:
@@ -827,6 +865,25 @@ def _try_dispatch_background_run(
 
     # ---- synchronous claim (same semantics as _execute_job_now) ----
     try:
+        # Best-effort early dedupe so a mid-run job reports in THIS tool
+        # response instead of as a delayed error completion event. The
+        # authoritative (atomic) check is try_register_running_job inside
+        # _run_claimed_job on the worker.
+        try:
+            from cron.scheduler import get_running_job_ids
+
+            if job_id in get_running_job_ids():
+                return {
+                    "claimed": False,
+                    "success": False,
+                    "error": (
+                        "Job is already running (a scheduler tick or another "
+                        "manual run is executing it); not started again."
+                    ),
+                }
+        except Exception:
+            pass
+
         if not claim_job_for_fire(job_id):
             refreshed = get_job(job_id)
             if refreshed is None:

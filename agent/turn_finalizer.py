@@ -124,6 +124,26 @@ def finalize_turn(
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         iteration_limit_fallback = True
         preserved_verification_fallback = True
+    # ── Restore pending answer when verification produced only a receipt ──
+    # When verify-on-stop fired, the original answer was saved in
+    # _pending_verification_response.  The continuation_budget_exhausted
+    # path above only restores it when budget ran out.  This path handles
+    # the normal case: verification passed, model replied, but the reply
+    # is a short receipt (e.g. "tests pass") rather than a substantive
+    # new answer.  Use relative length: if the new response is <25% the
+    # length of the pending, treat it as a receipt and merge.
+    elif (
+        final_response is not None
+        and bool(_pending_verification_response)
+        and getattr(agent, "_verification_stop_nudges", 0) > 0
+        and len(final_response) < len(_pending_verification_response) * 0.25
+    ):
+        final_response = (
+            f"{_pending_verification_response}\n\n---\n{final_response}"
+        )
+        preserved_verification_fallback = True
+        if _pending_verification_response_previewed:
+            agent._response_was_previewed = True
     elif final_response is None and budget_fallback_eligible:
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a

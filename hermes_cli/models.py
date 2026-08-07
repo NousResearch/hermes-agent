@@ -2818,7 +2818,12 @@ def _openai_discovery_base_url(provider: str) -> str:
     return "https://api.openai.com/v1"
 
 
-def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
+def provider_model_ids(
+    provider: Optional[str],
+    *,
+    force_refresh: bool = False,
+    _provenance: Optional[dict] = None,
+) -> list[str]:
     """Return the best known model catalog for a provider.
 
     Tries live API endpoints for providers that support them (Codex, Nous),
@@ -2826,6 +2831,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     (opencode-go/zen, xiaomi, deepseek, smaller inference providers, etc.),
     models.dev entries are merged on top of curated so new models released
     on the platform appear in ``/model`` without a Hermes release.
+
+    ``_provenance`` is an optional out-dict for the disk-cache layer. When a
+    branch returns a static *emergency* fallback rather than a live result
+    (currently only Bedrock, when live discovery fails), it sets
+    ``_provenance["fallback"] = True`` so :func:`cached_provider_model_ids`
+    can serve the stub without pinning it to disk for the full TTL (#74151).
+    Callers that don't pass it are unaffected.
     """
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
@@ -3004,6 +3016,12 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 return ids
         except Exception:
             pass
+        # Live discovery failed (expired SSO, throttle, no creds yet). We fall
+        # through to the static curated list below, but flag it as a fallback
+        # so the cache layer serves it in-memory only rather than freezing the
+        # offline stub for an hour after credentials recover (#74151).
+        if _provenance is not None:
+            _provenance["fallback"] = True
 
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".
@@ -3299,14 +3317,27 @@ def cached_provider_model_ids(
             return list(entry["models"])
 
     # Cache miss / stale / forced refresh — call the live path.
-    live = provider_model_ids(normalized, force_refresh=force_refresh)
-    if live:
+    provenance: dict = {}
+    live = provider_model_ids(
+        normalized, force_refresh=force_refresh, _provenance=provenance
+    )
+    if live and not provenance.get("fallback"):
         cache[normalized] = {
             "fp": fp,
             "at": now,
             "models": list(live),
         }
         _save_provider_models_cache(cache)
+        return list(live)
+    if live:
+        # A provider signalled this is a static emergency fallback, not a live
+        # result (e.g. Bedrock discovery failed). Correct to return right now,
+        # but it must NOT be persisted with the live TTL: doing so froze the
+        # 10-item offline list in provider_models_cache.json for a full hour
+        # even after SSO recovered, hiding the real catalog from /model
+        # (#74151). Return it in-memory only so the next picker open retries
+        # discovery. A previously-cached live result (fresh entry) already
+        # short-circuited above, so it is never shadowed by this stub.
         return list(live)
 
     # Live fetch returned nothing. If we have a stale entry with the

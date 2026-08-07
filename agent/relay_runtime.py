@@ -267,7 +267,10 @@ class _ProcessRelayPluginConfiguration:
 
             try:
                 plugin_mod = getattr(relay, "plugin", None)
-                plugin_config, dynamic_plugins = _configured_plugin_inputs(relay)
+                configured_inputs = _configured_plugin_inputs(relay)
+                if configured_inputs is None:
+                    return False
+                plugin_config, dynamic_plugins = configured_inputs
                 if dynamic_plugins:
                     initialize_dynamic = getattr(
                         plugin_mod,
@@ -285,19 +288,14 @@ class _ProcessRelayPluginConfiguration:
                                     "returned no activation handle"
                                 )
                             self._activation = activation
-                        except Exception:
-                            logger.warning(
-                                "Hermes Relay dynamic plugin activation failed; "
-                                "continuing with configured and discovered "
-                                "static plugins",
-                                exc_info=True,
-                            )
+                        except Exception as exc:
+                            raise RuntimeError(
+                                "Hermes Relay dynamic plugin activation failed"
+                            ) from exc
                     else:
-                        logger.warning(
+                        raise RuntimeError(
                             "Hermes Relay dynamic plugins require a binding that "
-                            "exposes plugin.initialize_with_dynamic_plugins; "
-                            "continuing with configured and discovered static "
-                            "plugins"
+                            "exposes plugin.initialize_with_dynamic_plugins"
                         )
 
                 if self._activation is None:
@@ -307,8 +305,9 @@ class _ProcessRelayPluginConfiguration:
                             "installed NeMo Relay binding does not expose "
                             "plugin.initialize"
                         )
-                    # Relay owns ambient file discovery and precedence. An explicit
-                    # Hermes file, when configured, is supplied as the final overlay.
+                    # Hermes only enters Relay's initialization path after an
+                    # explicit opt-in. Relay currently owns any subsequent ambient
+                    # layering; a future discovery=False API can make this exact.
                     _resolve_plugin_awaitable(initialize(plugin_config))
             except Exception as exc:
                 self._activation = None
@@ -1904,11 +1903,13 @@ def _load_nemo_relay() -> Any:
     return importlib.import_module("nemo_relay")
 
 
-def _configured_plugin_inputs(relay: Any) -> tuple[dict[str, Any], list[Any]]:
-    """Load one explicit static overlay and dynamic host specs."""
+def _configured_plugin_inputs(
+    relay: Any,
+) -> tuple[dict[str, Any], list[Any]] | None:
+    """Load environment-selected plugin inputs, or leave plugins disabled."""
     configured = os.environ.get(RELAY_PLUGINS_CONFIG_ENV, "").strip()
     if not configured:
-        return {}, []
+        return None
 
     config_path = Path(configured).expanduser()
     try:
@@ -1943,11 +1944,11 @@ def _configured_plugin_inputs(relay: Any) -> tuple[dict[str, Any], list[Any]]:
     except Exception:
         logger.warning(
             "Hermes Relay plugin configuration could not be loaded from %s; "
-            "continuing with discovered static plugins",
+            "continuing without Relay plugins",
             config_path,
             exc_info=True,
         )
-        return {}, []
+        return None
 
 
 def _dynamic_plugin_specs(

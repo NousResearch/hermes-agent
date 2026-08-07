@@ -1100,6 +1100,14 @@ def _emit_post_tool_call_hook(
                 function_name,
                 result,
             )
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
         invoke_hook(
             "post_tool_call",
             tool_name=function_name,
@@ -1115,6 +1123,7 @@ def _emit_post_tool_call_hook(
             error_type=error_type,
             error_message=error_message,
             middleware_trace=list(middleware_trace or []),
+            agent_id=_agent_id,
         )
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
@@ -1489,6 +1498,14 @@ def handle_function_call(
                     function_name,
                     result,
                 )
+                _agent_id = None
+                try:
+                    from agent.profile import get_active_profile
+                    _p = get_active_profile()
+                    if _p:
+                        _agent_id = _p.id
+                except Exception:
+                    pass
                 hook_results = invoke_hook(
                     "transform_tool_result",
                     tool_name=function_name,
@@ -1503,6 +1520,7 @@ def handle_function_call(
                     status=status,
                     error_type=error_type,
                     error_message=error_message,
+                    agent_id=_agent_id,
                 )
                 for hook_result in hook_results:
                     if isinstance(hook_result, str):

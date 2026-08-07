@@ -248,9 +248,45 @@ def _resolve_cli_path(configured: str = "") -> str:
 def _resolve_private_key(extra: Optional[dict] = None) -> str:
     """Resolve the Nostr private key: env first, then a credentials JSON.
 
+    Per-agent mode (multi-agent gateway): when ``extra["private_key_env"]``
+    is set it NAMES the variable that holds this connection's key.  The name
+    is resolved via the gateway secret scope / process environment first and
+    then the agent's own ``.env`` file (``extra["env_file"]``).  Resolution is
+    fail-closed: if the named variable cannot be resolved the adapter must
+    NOT fall back to the shared ``BUZZ_PRIVATE_KEY`` — connecting one agent
+    with another identity's key is strictly worse than not connecting.
+
     NEVER log the return value.
     """
-    key = _get_scoped_secret("BUZZ_PRIVATE_KEY", "").strip()
+    env_name = str((extra or {}).get("private_key_env") or "").strip()
+    if env_name:
+        value = ""
+        get_secret = load_env_file = None
+        try:
+            from agent.secret_scope import get_secret, load_env_file  # type: ignore
+        except Exception:
+            pass
+        if get_secret is not None:
+            try:
+                value = (get_secret(env_name, "") or "").strip()
+            except Exception:
+                # Unscoped-read refusal under multiplex (or any scope error):
+                # fall through to the agent's own env file only.
+                value = ""
+        else:
+            value = os.getenv(env_name, "").strip()
+        if not value:
+            env_file = str((extra or {}).get("env_file") or "").strip()
+            if env_file and load_env_file is not None:
+                try:
+                    value = (
+                        load_env_file(Path(env_file).expanduser()).get(env_name) or ""
+                    ).strip()
+                except Exception:
+                    value = ""
+        return value
+
+    key = (_get_scoped_secret("BUZZ_PRIVATE_KEY", "") or "").strip()
     if key:
         return key
     configured = os.getenv("BUZZ_CREDENTIALS_FILE", "").strip() or (extra or {}).get("credentials_file", "")
@@ -411,6 +447,52 @@ class BuzzAdapter(BasePlatformAdapter):
             if isinstance(entry, str) and (normalized := _normalize_user_ref(entry))
         }
 
+        # ── Per-agent scoping (multi-agent gateway) ──────────────────────
+        # ``extra["agent_id"]`` marks this instance as one agent's dedicated
+        # connection (see gateway/agent_platforms.py).  In that mode the
+        # agent's own config block wins over process-wide BUZZ_* env vars:
+        # one process hosts N Buzz connections, so a global env var can only
+        # be a shared default, never an override of a specific agent's block.
+        # Legacy single-connection behavior (env > extra) is untouched when
+        # agent_id is absent.
+        self.agent_id: str = str(extra.get("agent_id") or "").strip()
+        if self.agent_id:
+            if str(extra.get("relay_url") or "").strip():
+                self.relay_url = str(extra["relay_url"]).strip()
+            raw = extra.get("channels")
+            if raw not in (None, ""):
+                if isinstance(raw, str):
+                    raw = raw.split(",")
+                self.channels = [
+                    c.strip() for c in raw if isinstance(c, str) and c.strip()
+                ]
+            home = extra.get("home_channel")
+            if isinstance(home, dict):
+                home = home.get("chat_id")
+            if str(home or "").strip():
+                self.home_channel = str(home).strip()
+            if extra.get("poll_interval") is not None:
+                try:
+                    self.poll_interval = max(
+                        _MIN_POLL_INTERVAL, float(extra["poll_interval"])
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if extra.get("require_mention") is not None:
+                self.require_mention = str(
+                    extra["require_mention"]
+                ).strip().lower() not in ("false", "0", "no", "off")
+            raw_allowed = extra.get("allowed_users")
+            if raw_allowed not in (None, ""):
+                if isinstance(raw_allowed, str):
+                    raw_allowed = raw_allowed.split(",")
+                self._allowed_pubkeys = {
+                    normalized
+                    for entry in raw_allowed
+                    if isinstance(entry, str)
+                    and (normalized := _normalize_user_ref(entry))
+                }
+
         # Secret — resolved lazily (never at import/registration time and
         # never logged).  connect() re-resolves it to fail fast with a clear
         # error when it is missing.
@@ -439,7 +521,9 @@ class BuzzAdapter(BasePlatformAdapter):
 
     @property
     def name(self) -> str:
-        return "Buzz"
+        # Per-agent connections carry the owning agent in the log prefix so
+        # N concurrent Buzz connections stay distinguishable.
+        return f"Buzz:{self.agent_id}" if self.agent_id else "Buzz"
 
     # ── buzz-cli plumbing ─────────────────────────────────────────────────
 
@@ -468,6 +552,18 @@ class BuzzAdapter(BasePlatformAdapter):
             return False
         self._private_key = _resolve_private_key(self._extra)
         if not self._private_key:
+            key_env = str(self._extra.get("private_key_env") or "").strip()
+            if key_env:
+                # Names only — never values. Fail-closed: a per-agent
+                # connection never borrows the shared BUZZ_PRIVATE_KEY.
+                logger.error(
+                    "%s: no private key (env var %r not resolvable)",
+                    self.name, key_env,
+                )
+                self._set_fatal_error(
+                    "config_missing", f"{key_env} must be set", retryable=False
+                )
+                return False
             logger.error("Buzz: no private key (set BUZZ_PRIVATE_KEY or a credentials file)")
             self._set_fatal_error("config_missing", "BUZZ_PRIVATE_KEY must be set", retryable=False)
             return False

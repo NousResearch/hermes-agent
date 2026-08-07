@@ -147,6 +147,22 @@ class GatewayAuthorizationMixin:
             # fail and suppress streamed delivery for those profiles.
             adapters = getattr(self, "adapters", None) or {}
             return adapters.get(Platform.RELAY)
+        # Per-agent platform identities: when the routed agent owns its own
+        # connection on this platform (agents.<id>.<platform> binding), use
+        # it — replies must leave from the workspace member the message was
+        # addressed to. Fail closed while a DECLARED binding has no live
+        # adapter: falling back to the shared platform adapter would reply
+        # as the wrong member identity.
+        agent_id = getattr(source, "agent_id", None)
+        platform = getattr(source, "platform", None)
+        if agent_id and platform is not None:
+            agent_maps = getattr(self, "_agent_adapters", None) or {}
+            agent_map = agent_maps.get(agent_id)
+            if agent_map is not None and platform in agent_map:
+                return agent_map[platform]
+            bindings = getattr(self, "_agent_bindings", None) or {}
+            if (agent_id, platform) in bindings:
+                return None
         # ``getattr`` guards test fixtures that build a bare source via
         # SimpleNamespace and omit ``profile`` (see AGENTS.md pitfall #17).
         return self._authorization_adapter(
@@ -174,6 +190,10 @@ class GatewayAuthorizationMixin:
         profile_maps = getattr(self, "_profile_adapters", None) or {}
         for profile_adapters in profile_maps.values():
             if adapter is profile_adapters.get(platform):
+                return adapter
+        agent_maps = getattr(self, "_agent_adapters", None) or {}
+        for agent_adapters in agent_maps.values():
+            if adapter is agent_adapters.get(platform):
                 return adapter
         return None
 

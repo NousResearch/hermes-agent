@@ -275,7 +275,9 @@ class PlatformRegistry:
         # from triggering a heavy import.
         return name in self._entries or name in self._deferred
 
-    def create_adapter(self, name: str, config: Any) -> Optional[Any]:
+    def create_adapter(
+        self, name: str, config: Any, skip_check_fn: bool = False
+    ) -> Optional[Any]:
         """Create an adapter instance for the given platform name.
 
         Returns None if:
@@ -283,6 +285,14 @@ class PlatformRegistry:
         - check_fn() returns False (missing deps)
         - validate_config() returns False (misconfigured)
         - The factory raises an exception
+
+        ``skip_check_fn`` is for callers that have already proven the
+        instance is configured (per-agent platform bindings resolve the
+        credential by name before asking for an adapter): plugin
+        ``check_fn`` hooks are no-arg and read PROCESS-WIDE env config, so
+        a platform configured only through per-agent bindings would fail
+        that gate despite being fully configured. ``validate_config`` still
+        runs — it receives the instance config and stays fail-closed.
         """
         if name not in self._entries:
             self._resolve(name)
@@ -290,7 +300,7 @@ class PlatformRegistry:
         if entry is None:
             return None
 
-        if not entry.check_fn():
+        if not skip_check_fn and not entry.check_fn():
             hint = f" ({entry.install_hint})" if entry.install_hint else ""
             logger.warning(
                 "Platform '%s' requirements not met%s",

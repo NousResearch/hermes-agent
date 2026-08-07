@@ -3627,6 +3627,27 @@ def _compress_context_via_codex_app_server(
             existing_prompt = agent._build_system_prompt(system_message)
         return messages, existing_prompt
 
+    # Honor the compressor-owned failure cooldown so a previous interrupted
+    # compaction does not retry every turn.  ``force=True`` (explicit
+    # ``/compress``) bypasses the cooldown.
+    if not force:
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor is not None:
+            _refresh_persisted_compression_guards(compressor)
+            cd = compressor.get_active_compression_failure_cooldown()
+            if cd:
+                logger.info(
+                    "codex app-server compaction skipped: failure cooldown "
+                    "active (session=%s remaining=%.0fs error=%s)",
+                    getattr(agent, "session_id", None) or "none",
+                    cd["remaining_seconds"],
+                    cd.get("error"),
+                )
+                existing_prompt = getattr(agent, "_cached_system_prompt", None)
+                if not existing_prompt:
+                    existing_prompt = agent._build_system_prompt(system_message)
+                return messages, existing_prompt
+
     codex_session = getattr(agent, "_codex_session", None)
     if codex_session is None:
         logger.info(
@@ -3690,6 +3711,14 @@ def _compress_context_via_codex_app_server(
             )
         except Exception:
             pass
+        # Arm the failure cooldown so the next turn does not retry immediately.
+        # Transcript returned unchanged → still above threshold; without a
+        # brake the compaction loop repeats every turn.
+        _cc = getattr(agent, "context_compressor", None)
+        if _cc is not None:
+            _rec = getattr(_cc, "_record_compression_failure_cooldown", None)
+            if callable(_rec):
+                _rec(600, str(result.error or "interrupted"))
         existing_prompt = getattr(agent, "_cached_system_prompt", None)
         if not existing_prompt:
             existing_prompt = agent._build_system_prompt(system_message)

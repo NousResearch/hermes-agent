@@ -199,3 +199,171 @@ class TestWecomCallbackBodySizeLimit:
         assert response.status == 413
 
 
+
+
+class TestStandaloneSend:
+    """Out-of-process delivery for ``wecom_callback``.
+
+    ``send_message(platform="wecom_callback")`` and ``deliver=wecom_callback``
+    cron jobs route through the registry's ``standalone_sender_fn``. The
+    callback platform registered none, so those sends had nothing to call.
+
+    The sender must NOT go through ``connect()``: callback delivery is
+    outbound-only, while ``connect()`` binds the callback port — and refuses
+    outright when the gateway already holds it, which is precisely when an
+    out-of-process send happens.
+    """
+
+    def test_registered_on_the_callback_platform(self):
+        import plugins.platforms.wecom.adapter as wecom_adapter
+
+        registered = {}
+
+        class _Ctx:
+            def register_platform(self, **kwargs):
+                registered[kwargs["name"]] = kwargs
+
+        wecom_adapter.register(_Ctx())
+
+        assert registered["wecom"].get("standalone_sender_fn") is not None
+        assert registered["wecom_callback"].get("standalone_sender_fn") is not None, (
+            "deliver=wecom_callback has no sender to call"
+        )
+
+    def test_send_succeeds_without_binding_the_callback_port(self, monkeypatch):
+        import plugins.platforms.wecom.adapter as wecom_adapter
+        from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+
+        sent = {}
+
+        class _Result:
+            success = True
+            message_id = "msg-1"
+            error = None
+
+        async def _fake_send(self, chat_id, content, **_kw):
+            sent["chat_id"] = chat_id
+            sent["content"] = content
+            return _Result()
+
+        def _explode(self, *a, **k):
+            raise AssertionError(
+                "connect() must not run — it binds the callback port"
+            )
+
+        monkeypatch.setattr(WecomCallbackAdapter, "send", _fake_send)
+        monkeypatch.setattr(WecomCallbackAdapter, "connect", _explode)
+        monkeypatch.setattr(
+            wecom_adapter, "_build_callback_adapter",
+            lambda cfg: WecomCallbackAdapter(cfg),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.wecom.callback_adapter.check_wecom_callback_requirements",
+            lambda: True,
+        )
+
+        result = asyncio.run(
+            wecom_adapter._callback_standalone_send(_config(), "app:user1", "hello")
+        )
+
+        assert result == {
+            "success": True,
+            "platform": "wecom_callback",
+            "chat_id": "app:user1",
+            "message_id": "msg-1",
+        }
+        assert sent == {"chat_id": "app:user1", "content": "hello"}
+
+    def test_http_client_is_opened_and_closed(self, monkeypatch):
+        """The outbound client is the only resource the sender may hold."""
+        import plugins.platforms.wecom.adapter as wecom_adapter
+        from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+
+        seen = {}
+
+        class _Result:
+            success = True
+            message_id = "m"
+            error = None
+
+        async def _fake_send(self, chat_id, content, **_kw):
+            seen["client_during_send"] = self._http_client is not None
+            return _Result()
+
+        adapter_holder = {}
+
+        def _build(cfg):
+            adapter = WecomCallbackAdapter(cfg)
+            adapter_holder["a"] = adapter
+            return adapter
+
+        monkeypatch.setattr(WecomCallbackAdapter, "send", _fake_send)
+        monkeypatch.setattr(wecom_adapter, "_build_callback_adapter", _build)
+        monkeypatch.setattr(
+            "plugins.platforms.wecom.callback_adapter.check_wecom_callback_requirements",
+            lambda: True,
+        )
+
+        asyncio.run(
+            wecom_adapter._callback_standalone_send(_config(), "app:user1", "hi")
+        )
+
+        assert seen["client_during_send"] is True
+        assert adapter_holder["a"]._http_client is None, "client was left open"
+
+    def test_send_failure_is_reported(self, monkeypatch):
+        import plugins.platforms.wecom.adapter as wecom_adapter
+        from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+
+        class _Result:
+            success = False
+            message_id = None
+            error = "errcode 40013"
+
+        async def _fake_send(self, chat_id, content, **_kw):
+            return _Result()
+
+        monkeypatch.setattr(WecomCallbackAdapter, "send", _fake_send)
+        monkeypatch.setattr(
+            wecom_adapter, "_build_callback_adapter",
+            lambda cfg: WecomCallbackAdapter(cfg),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.wecom.callback_adapter.check_wecom_callback_requirements",
+            lambda: True,
+        )
+
+        result = asyncio.run(
+            wecom_adapter._callback_standalone_send(_config(), "app:user1", "hi")
+        )
+
+        assert "errcode 40013" in result["error"]
+        assert "success" not in result
+
+    def test_missing_requirements_reported_not_raised(self, monkeypatch):
+        import plugins.platforms.wecom.adapter as wecom_adapter
+
+        monkeypatch.setattr(
+            "plugins.platforms.wecom.callback_adapter.check_wecom_callback_requirements",
+            lambda: False,
+        )
+
+        result = asyncio.run(
+            wecom_adapter._callback_standalone_send(_config(), "app:user1", "hi")
+        )
+
+        assert "requirements not met" in result["error"].lower()
+
+
+class TestEnsureHttpClientSeam:
+    def test_idempotent_and_closes(self):
+        adapter = WecomCallbackAdapter(_config())
+        adapter._ensure_http_client()
+        first = adapter._http_client
+        adapter._ensure_http_client()
+
+        assert adapter._http_client is first, "must not replace a live client"
+
+        asyncio.run(adapter.aclose_http_client())
+        assert adapter._http_client is None
+        asyncio.run(adapter.aclose_http_client())  # second close is harmless

@@ -5990,6 +5990,27 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
     assert emitted[0][2]["approval_mode"] == "manual"
 
 
+def test_config_get_reasoning_quoted_false_hides_display(tmp_path, monkeypatch):
+    """display.show_reasoning: "false" (quoted) must report display=hide.
+
+    The old check was bool(value) — bool('false') is True, so a hand-edited
+    quoted YAML value kept reasoning visible in the TUI against the
+    operator's explicit intent.
+    """
+    import yaml
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"display": {"show_reasoning": "false"}})
+    )
+
+    response = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "reasoning"}}
+    )
+    assert response["result"]["display"] == "hide"
+
+
 def test_desktop_contract_includes_approval_mode_rpc():
     assert server.DESKTOP_BACKEND_CONTRACT >= 3
 

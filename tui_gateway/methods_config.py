@@ -8,6 +8,7 @@ are rebound onto server.py's globals at install time — see method_ctx.py.
 """
 
 from .method_ctx import HandlerRegistry
+from utils import is_truthy_value
 
 from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
 
@@ -245,7 +246,9 @@ def _(rid, params: dict) -> dict:
                 effort = str(raw_effort or "medium")
         display = (
             "show"
-            if bool((cfg.get("display") or {}).get("show_reasoning", True))
+            if is_truthy_value(
+                (cfg.get("display") or {}).get("show_reasoning"), default=True
+            )
             else "hide"
         )
         return _ok(rid, {"value": effort, "display": display})

@@ -226,3 +226,69 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
         "holographic": "delete",
         "response_store": "delete",
     }
+
+
+# --- database.busy_timeout_seconds ------------------------------------------
+
+
+def _configure_busy_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, value: object
+) -> None:
+    _write_config(
+        monkeypatch, tmp_path, {"database": {"busy_timeout_seconds": value}}
+    )
+
+
+def test_database_busy_timeout_default_matches_the_resolver_fallback():
+    """The shipped config and the resolver must agree on the default.
+
+    Asserted as a relationship, not a literal, so tuning the default is a
+    one-line change instead of a test-churn exercise.
+    """
+    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_state import DEFAULT_BUSY_TIMEOUT_SECONDS
+
+    assert (
+        DEFAULT_CONFIG["database"]["busy_timeout_seconds"]
+        == DEFAULT_BUSY_TIMEOUT_SECONDS
+    )
+
+
+def test_default_busy_timeout_is_a_usable_wait_budget():
+    """Guards the relationship tests above from passing vacuously.
+
+    Every fallback assertion compares against this constant, so a default of
+    0 or a negative would satisfy all of them while leaving writers with no
+    wait budget at all.
+    """
+    from hermes_state import DEFAULT_BUSY_TIMEOUT_SECONDS
+
+    assert DEFAULT_BUSY_TIMEOUT_SECONDS > 0
+
+
+def test_resolve_busy_timeout_uses_real_database_config(monkeypatch, tmp_path):
+    from hermes_state import resolve_busy_timeout_seconds
+
+    _configure_busy_timeout(monkeypatch, tmp_path, 90)
+    assert resolve_busy_timeout_seconds() == 90.0
+
+
+def test_resolve_busy_timeout_defaults_when_unset(monkeypatch, tmp_path):
+    from hermes_state import resolve_busy_timeout_seconds
+
+    from hermes_state import DEFAULT_BUSY_TIMEOUT_SECONDS
+
+    _write_config(monkeypatch, tmp_path, {"database": {}})
+    assert resolve_busy_timeout_seconds() == DEFAULT_BUSY_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("bad", ["nonsense", -5, 0, None, {"a": 1}])
+def test_resolve_busy_timeout_rejects_unusable_values(monkeypatch, tmp_path, bad):
+    """A malformed operator setting must not leave writers with no wait budget."""
+    from hermes_state import (
+        DEFAULT_BUSY_TIMEOUT_SECONDS,
+        resolve_busy_timeout_seconds,
+    )
+
+    _configure_busy_timeout(monkeypatch, tmp_path, bad)
+    assert resolve_busy_timeout_seconds() == DEFAULT_BUSY_TIMEOUT_SECONDS

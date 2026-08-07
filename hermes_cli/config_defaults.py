@@ -15,6 +15,11 @@ DEFAULT_CONFIG = {
     # not crash-safe (for example macOS virtiofs, NFS, or SMB).
     "database": {
         "journal_mode": "wal",
+        # How long a writer waits for a busy state.db before giving up. A
+        # long-lived gateway with a large WAL and several concurrent writers
+        # (sessions, delegations, delivery) routinely exceeds a few seconds;
+        # every such timeout surfaces as a failed durable write.
+        "busy_timeout_seconds": 30,
         # Optional WAL sizing pragmas, applied when set to integers.
         # None = SQLite defaults (autocheckpoint 1000 pages, no size limit).
         "wal_autocheckpoint": None,

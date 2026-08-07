@@ -763,6 +763,35 @@ def resolve_journal_mode() -> str:
     return mode if mode in ("wal", "delete") else "wal"
 
 
+DEFAULT_BUSY_TIMEOUT_SECONDS = 30.0
+
+
+def resolve_busy_timeout_seconds() -> float:
+    """Return the configured SQLite busy timeout, in seconds.
+
+    ``database.busy_timeout_seconds`` in config.yaml is the canonical operator
+    setting: how long a writer waits for a contended state.db before raising
+    ``database is locked``. Operators with a large WAL or many concurrent
+    writers may need to raise it. Missing, malformed, or non-positive values
+    fail safely to the default rather than leaving writers with no wait
+    budget at all.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+        database = config.get("database", {})
+        if not isinstance(database, dict):
+            return DEFAULT_BUSY_TIMEOUT_SECONDS
+        raw = database.get("busy_timeout_seconds", DEFAULT_BUSY_TIMEOUT_SECONDS)
+    except Exception:
+        return DEFAULT_BUSY_TIMEOUT_SECONDS
+
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return DEFAULT_BUSY_TIMEOUT_SECONDS
+    return float(raw) if raw > 0 else DEFAULT_BUSY_TIMEOUT_SECONDS
+
+
 class WalUnsupportedError(sqlite3.OperationalError):
     """Raised by :func:`apply_wal_with_fallback` when ``require_wal=True`` and
     the filesystem cannot provide WAL journal mode.

@@ -8,6 +8,7 @@ formatting, capacity rejection, and crash handling.
 import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -761,3 +762,122 @@ def test_gateway_cli_origin_event_left_unrouted():
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
 
+
+
+# --- Stale-monitor resilience to durable-store failures (#76xxx) -------------
+#
+# Regression guard for a production hang: a `database is locked` raised by
+# _persist_completion inside _finalize_stalled propagated out of
+# _stale_monitor_loop and killed the monitor thread. Because
+# _persist_completion runs BEFORE the queue put, the owning session never
+# heard the terminal event either — the delegation stayed 'running' forever
+# and the parent blocked on a child that would never report.
+
+
+def test_stalled_finalization_survives_persistence_failure(monkeypatch):
+    """A locked durable store must not swallow the terminal stall event.
+
+    Persistence is best-effort bookkeeping; the in-memory completion queue is
+    what unblocks the waiting parent. If the DB write fails, the event must
+    still be delivered.
+    """
+    _fast_stale_monitor(monkeypatch)
+
+    def _boom(event, result):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ad, "_persist_completion", _boom)
+
+    gate = threading.Event()
+
+    def stuck_runner():
+        gate.wait(timeout=10)
+        return {"status": "completed", "summary": "too late"}
+
+    res = ad.dispatch_async_delegation(
+        goal="stuck child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=stuck_runner,
+        max_async_children=1,
+        progress_fn=lambda: ((0, None), False),
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    try:
+        assert evt is not None, (
+            "terminal stall event was lost because the durable write failed"
+        )
+        assert evt["status"] == "stalled"
+        assert evt["delegation_id"] == res["delegation_id"]
+    finally:
+        gate.set()
+
+
+def test_stale_monitor_keeps_sweeping_after_persistence_failure(monkeypatch):
+    """One failing finalization must not kill the monitor for everyone else.
+
+    The monitor is a single module-level thread shared by every dispatch. An
+    exception escaping the sweep loop takes down stall detection for all
+    in-flight delegations, not just the one that failed.
+    """
+    _fast_stale_monitor(monkeypatch)
+
+    real_persist = ad._persist_completion
+    calls = {"n": 0}
+
+    def _boom_once(event, result):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_persist(event, result)
+
+    monkeypatch.setattr(ad, "_persist_completion", _boom_once)
+
+    gate = threading.Event()
+
+    def stuck_runner():
+        gate.wait(timeout=10)
+        return {"status": "completed", "summary": "too late"}
+
+    first = ad.dispatch_async_delegation(
+        goal="first stuck child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=stuck_runner,
+        max_async_children=2,
+        progress_fn=lambda: ((0, None), False),
+    )
+    assert _drain_for(first["delegation_id"], timeout=5.0) is not None
+
+    # Second delegation stalls after the monitor already hit the DB error.
+    second = ad.dispatch_async_delegation(
+        goal="second stuck child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=stuck_runner,
+        max_async_children=2,
+        progress_fn=lambda: ((0, None), False),
+    )
+    try:
+        evt = _drain_for(second["delegation_id"], timeout=5.0)
+        assert evt is not None, (
+            "monitor thread died on the first failure; the second stalled "
+            "delegation was never finalized"
+        )
+        assert evt["status"] == "stalled"
+    finally:
+        gate.set()
+
+
+def test_connect_applies_configured_busy_timeout(tmp_path, monkeypatch):
+    """Writers must wait out a busy store instead of failing in seconds.
+
+    A gateway with a large WAL and several concurrent writers exhausts a
+    short budget routinely, and every such timeout costs a completion. The
+    budget is an operator setting (database.busy_timeout_seconds), so
+    _connect must read it rather than hardcode one.
+    """
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
+    monkeypatch.setattr(ad, "resolve_busy_timeout_seconds", lambda: 45.0)
+    conn = ad._connect()
+    try:
+        busy_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    finally:
+        conn.close()
+    assert busy_ms == 45_000

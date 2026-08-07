@@ -47,6 +47,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_state import resolve_busy_timeout_seconds
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 
@@ -123,8 +124,13 @@ def _db_path():
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
+    busy_timeout = resolve_busy_timeout_seconds()
+    conn = sqlite3.connect(path, timeout=busy_timeout)
     try:
+        # connect(timeout=) already seeds busy_timeout, but stating the pragma
+        # keeps the wait budget greppable next to the other state.db openers
+        # and survives any future connection-factory swap.
+        conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout * 1000)}")
         _initialize_schema(conn)
     except Exception:
         # A PRAGMA/DDL failure after a successful connect() must not leak the
@@ -279,6 +285,28 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
                WHERE delegation_id=?""",
             (event.get("status", "completed"), event.get("completed_at", now), now,
              json.dumps(event), json.dumps(result), event["delegation_id"]),
+        )
+
+
+def _persist_durable_completion(
+    event: Dict[str, Any], result: Dict[str, Any], delegation_id: Any
+) -> None:
+    """Persist a completion, degrading to in-memory-only if the store fails.
+
+    The durable row is a redelivery aid; the completion QUEUE is what actually
+    unblocks the waiting parent. Letting a store failure propagate inverts
+    that priority — it aborts the queue put that follows, so a transient
+    ``database is locked`` costs the session its result entirely and the
+    delegation is left looking permanently ``running``.
+    """
+    try:
+        _persist_completion(event, result)
+    except Exception as exc:  # noqa: BLE001 — durable store is best-effort
+        logger.error(
+            "Async delegation %s: durable completion write failed (%s); "
+            "delivering in-memory only — the result reaches the session but "
+            "will not survive a gateway restart.",
+            delegation_id, exc,
         )
 
 
@@ -918,7 +946,7 @@ def _push_completion_event(
     ):
         if _k in result:
             evt[_k] = result[_k]
-    _persist_completion(evt, result)
+    _persist_durable_completion(evt, result, record.get("delegation_id"))
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -1127,7 +1155,7 @@ def _push_batch_completion_event(
     ):
         if _k in combined:
             evt[_k] = combined[_k]
-    _persist_completion(evt, combined)
+    _persist_durable_completion(evt, combined, event_record.get("delegation_id"))
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -1176,78 +1204,94 @@ def _stale_monitor_loop() -> None:
       runner return after that is ignored by ``_begin_finalization``.
     """
     while not _monitor_stop.wait(_STALE_CHECK_INTERVAL):
-        now = time.time()
-        stalled: List[tuple] = []  # (delegation_id, is_batch, quiet_for, in_tool)
-        expired: List[str] = []  # stalling past grace → force-finalize
-        any_monitorable = False
-        with _records_lock:
-            for record in _records.values():
-                status = record.get("status")
-                if status == "stalling":
-                    any_monitorable = True
-                    interrupted_at = record.get("_interrupted_at") or now
-                    if now - interrupted_at >= _STALL_GRACE_SECONDS:
-                        expired.append(record["delegation_id"])
-                    continue
-                if status != "running":
-                    continue
-                progress_fn = record.get("progress_fn")
-                if progress_fn is None:
-                    continue
-                any_monitorable = True
-                try:
-                    token, in_tool = progress_fn()
-                except Exception:
-                    # An unreadable child must not look permanently healthy —
-                    # keep the last timestamp running instead of refreshing it.
-                    token, in_tool = record.get("_progress_token"), False
-                if token != record.get("_progress_token"):
-                    record["_progress_token"] = token
-                    record["_progress_ts"] = now
-                    continue
-                quiet_for = now - (record.get("_progress_ts") or now)
-                limit = (
-                    _STALE_IN_TOOL_SECONDS if in_tool else _STALE_IDLE_SECONDS
-                )
-                if quiet_for >= limit:
-                    record["status"] = "stalling"
-                    record["_interrupted_at"] = now
-                    # Structured stall context for the terminal event and
-                    # status listings (#51690): how long progress was frozen,
-                    # which threshold applied, and whether the child was
-                    # inside a tool when it went quiet.
-                    record["_stall_quiet_seconds"] = round(quiet_for, 2)
-                    record["_stall_threshold_seconds"] = limit
-                    record["_stall_in_tool"] = bool(in_tool)
-                    stalled.append(
-                        (
-                            record["delegation_id"],
-                            bool(record.get("is_batch")),
-                            quiet_for,
-                            in_tool,
-                        )
-                    )
-        for delegation_id, _is_batch, quiet_for, in_tool in stalled:
-            logger.warning(
-                "Async delegation %s made no progress for %.0fs "
-                "(in_tool=%s) — interrupting; grace window %.0fs",
-                delegation_id, quiet_for, in_tool, _STALL_GRACE_SECONDS,
+        try:
+            any_monitorable = _stale_monitor_sweep()
+        except Exception:  # noqa: BLE001 — the monitor must outlive any sweep
+            # One monitor thread serves every dispatch, so an escaping
+            # exception disables stall detection process-wide: in-flight
+            # delegations that later wedge are never force-finalized and
+            # their parents wait forever. Log and keep sweeping instead.
+            logger.exception(
+                "Stale-delegation sweep failed; monitor continues"
             )
-            with _records_lock:
-                record = _records.get(delegation_id)
-                fn = record.get("interrupt_fn") if record else None
-            if callable(fn):
-                try:
-                    fn()
-                except Exception as exc:
-                    logger.debug(
-                        "Async delegation %s stall interrupt failed: %s",
-                        delegation_id, exc,
-                    )
-        for delegation_id in expired:
-            _finalize_stalled(delegation_id)
+            continue
         if not any_monitorable:
             return
+
+
+def _stale_monitor_sweep() -> bool:
+    """Run one sweep. Returns whether any record is still worth monitoring."""
+    now = time.time()
+    stalled: List[tuple] = []  # (delegation_id, is_batch, quiet_for, in_tool)
+    expired: List[str] = []  # stalling past grace → force-finalize
+    any_monitorable = False
+    with _records_lock:
+        for record in _records.values():
+            status = record.get("status")
+            if status == "stalling":
+                any_monitorable = True
+                interrupted_at = record.get("_interrupted_at") or now
+                if now - interrupted_at >= _STALL_GRACE_SECONDS:
+                    expired.append(record["delegation_id"])
+                continue
+            if status != "running":
+                continue
+            progress_fn = record.get("progress_fn")
+            if progress_fn is None:
+                continue
+            any_monitorable = True
+            try:
+                token, in_tool = progress_fn()
+            except Exception:
+                # An unreadable child must not look permanently healthy —
+                # keep the last timestamp running instead of refreshing it.
+                token, in_tool = record.get("_progress_token"), False
+            if token != record.get("_progress_token"):
+                record["_progress_token"] = token
+                record["_progress_ts"] = now
+                continue
+            quiet_for = now - (record.get("_progress_ts") or now)
+            limit = (
+                _STALE_IN_TOOL_SECONDS if in_tool else _STALE_IDLE_SECONDS
+            )
+            if quiet_for >= limit:
+                record["status"] = "stalling"
+                record["_interrupted_at"] = now
+                # Structured stall context for the terminal event and
+                # status listings (#51690): how long progress was frozen,
+                # which threshold applied, and whether the child was
+                # inside a tool when it went quiet.
+                record["_stall_quiet_seconds"] = round(quiet_for, 2)
+                record["_stall_threshold_seconds"] = limit
+                record["_stall_in_tool"] = bool(in_tool)
+                stalled.append(
+                    (
+                        record["delegation_id"],
+                        bool(record.get("is_batch")),
+                        quiet_for,
+                        in_tool,
+                    )
+                )
+    for delegation_id, _is_batch, quiet_for, in_tool in stalled:
+        logger.warning(
+            "Async delegation %s made no progress for %.0fs "
+            "(in_tool=%s) — interrupting; grace window %.0fs",
+            delegation_id, quiet_for, in_tool, _STALL_GRACE_SECONDS,
+        )
+        with _records_lock:
+            record = _records.get(delegation_id)
+            fn = record.get("interrupt_fn") if record else None
+        if callable(fn):
+            try:
+                fn()
+            except Exception as exc:
+                logger.debug(
+                    "Async delegation %s stall interrupt failed: %s",
+                    delegation_id, exc,
+                )
+    for delegation_id in expired:
+        _finalize_stalled(delegation_id)
+    return any_monitorable
 
 
 def _finalize_stalled(delegation_id: str) -> None:

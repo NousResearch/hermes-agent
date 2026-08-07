@@ -3539,12 +3539,18 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
         db = await self._ensure_session_db_async()
+        # A compression lineage is one user-visible conversation: resolve to
+        # the live tip (forward), then serve the FULL lineage display history
+        # (backward, ancestors → tip). get_resume_conversations() reconciles
+        # overlap copied into continuation children (#79565).
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
-        messages = await asyncio.to_thread(db.get_messages, resolved_id)
+        _, display_history = await asyncio.to_thread(
+            db.get_resume_conversations, resolved_id
+        )
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": [self._message_response(m) for m in display_history],
         })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":

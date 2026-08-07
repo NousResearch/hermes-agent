@@ -611,7 +611,20 @@ async def get_session_messages(
             sid = db.resolve_resume_session_id(sid)
             # Clamp limit to prevent abuse (max 500 per page)
             _limit = min(limit, 500) if limit is not None else None
-            return sid, _limit, db.get_messages(sid, limit=_limit, offset=offset)
+            # Serve the FULL compression lineage, not just the tip session's
+            # rows (#79565): the desktop shows long chats as one conversation,
+            # and get_messages(sid) only returned the latest compression
+            # segment, so earlier dialogue silently disappeared after a
+            # compression fork. Pagination is applied in Python over the
+            # lineage projection (one SELECT over a handful of segments).
+            lineage = db.get_messages_as_conversation(
+                sid, include_ancestors=True, include_row_ids=True
+            )
+            if _limit is not None:
+                lineage = lineage[offset : offset + _limit]
+            elif offset:
+                lineage = lineage[offset:]
+            return sid, _limit, lineage
         finally:
             db.close()
 

@@ -135,3 +135,57 @@ class TestQuerySessionListingLaneScope:
         )
 
         assert [row["id"] for row in rows] == ["foreign_59"]
+
+
+class TestQuerySessionListingLimitClamp:
+    def test_negative_limit_does_not_fetch_unbounded(self, monkeypatch):
+        calls: list[dict] = []
+
+        class StubDB:
+            def list_sessions_rich(self, **kwargs):
+                calls.append(kwargs)
+                return [
+                    {"id": f"s{i}", "title": f"T{i}", "preview": "", "source": "cli"}
+                    for i in range(20)
+                ]
+
+        rows = query_session_listing(StubDB(), source="cli", limit=-5)
+        assert len(rows) == 1
+        assert calls[0]["limit"] == 4  # max(1 * 4, 1)
+
+    def test_excessive_limit_is_capped(self, monkeypatch):
+        calls: list[dict] = []
+
+        class StubDB:
+            def list_sessions_rich(self, **kwargs):
+                calls.append(kwargs)
+                return [
+                    {"id": f"s{i}", "title": f"T{i}", "preview": "", "source": "cli"}
+                    for i in range(600)
+                ]
+
+        rows = query_session_listing(StubDB(), source="cli", limit=10_000_000)
+        assert len(rows) == 500
+        assert calls[0]["limit"] == 2000  # max(500 * 4, 500)
+
+    def test_zero_limit_floors_to_one(self):
+        class StubDB:
+            def list_sessions_rich(self, **kwargs):
+                return [
+                    {"id": "s1", "title": "A", "preview": "", "source": "cli"},
+                    {"id": "s2", "title": "B", "preview": "", "source": "cli"},
+                ]
+
+        rows = query_session_listing(StubDB(), source="cli", limit=0)
+        assert len(rows) == 1
+
+    def test_invalid_limit_uses_default(self):
+        calls: list[dict] = []
+
+        class StubDB:
+            def list_sessions_rich(self, **kwargs):
+                calls.append(kwargs)
+                return [{"id": "s1", "title": "A", "preview": "", "source": "cli"}]
+
+        query_session_listing(StubDB(), source="cli", limit="nope")
+        assert calls[0]["limit"] == 40  # max(10 * 4, 10)

@@ -65,8 +65,15 @@ def query_session_listing(
     ``SessionDB.list_sessions_rich``) and ordered by most-recent activity;
     unnamed sessions stay visible since an id match may be the only handle.
     """
+    try:
+        limit_n = int(limit)
+    except (TypeError, ValueError):
+        limit_n = 10
+    # Cap before fetch_limit = limit * 4 — negative SQL LIMIT is unbounded in
+    # SQLite, and a huge positive can force expensive compression-chain CTEs.
+    limit_n = max(1, min(limit_n, 500))
     query_source = None if include_all_sources else source
-    fetch_limit = max(limit * 4, limit)
+    fetch_limit = max(limit_n * 4, limit_n)
     search = (search_query or "").strip()
     rows = session_db.list_sessions_rich(
         source=query_source,
@@ -83,7 +90,7 @@ def query_session_listing(
         if not include_unnamed and not row.get("title") and not search:
             continue
         result.append(row)
-        if len(result) >= limit:
+        if len(result) >= limit_n:
             break
     return result
 

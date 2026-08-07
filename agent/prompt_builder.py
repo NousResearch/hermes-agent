@@ -1051,6 +1051,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     if cached is not None:
         return cached or None
 
+    env = None
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
         # non-local backend is actually configured.
@@ -1115,6 +1116,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
             container_config=container_config,
             task_id="prompt-backend-probe",
             host_cwd=config.get("host_cwd"),
+            probe_only=env_type == "ssh",
         )
         # Single-line POSIX probe — works on any Unixy backend. Wrapped in
         # `2>/dev/null` so a missing binary doesn't pollute the output.
@@ -1137,6 +1139,12 @@ def _probe_remote_backend(env_type: str) -> str | None:
         logger.debug("Backend probe failed: %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
         return None
+    finally:
+        if env_type == "ssh" and env is not None:
+            try:
+                env.cleanup()
+            except Exception as e:
+                logger.debug("Backend probe cleanup failed: %s", e)
 
     # Parse key=value lines back into a tidy summary.
     parsed: dict[str, str] = {}

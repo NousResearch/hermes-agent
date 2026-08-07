@@ -172,6 +172,64 @@ class TestSSHPreflight:
         assert env.user == "alice"
 
 
+@pytest.fixture
+def _mock_ssh_runtime(monkeypatch, tmp_path):
+    hooks = {
+        "_establish_connection": MagicMock(),
+        "_detect_remote_home": MagicMock(return_value="/home/alice"),
+        "_ensure_remote_dirs": MagicMock(),
+        "init_session": MagicMock(),
+    }
+    monkeypatch.setattr(ssh_env.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+    for name, hook in hooks.items():
+        monkeypatch.setattr(ssh_env.SSHEnvironment, name, hook)
+    hooks["sync_factory"] = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr(ssh_env, "FileSyncManager", hooks["sync_factory"])
+    return hooks
+
+
+class TestSSHProbeOnly:
+    def test_probe_only_skips_state_sync_and_session_setup(self, _mock_ssh_runtime):
+        env = ssh_env.SSHEnvironment(host="example.com", user="alice", probe_only=True)
+        env._before_execute()
+        env.cleanup()
+
+        _mock_ssh_runtime["_establish_connection"].assert_called_once_with()
+        _mock_ssh_runtime["_detect_remote_home"].assert_not_called()
+        _mock_ssh_runtime["_ensure_remote_dirs"].assert_not_called()
+        _mock_ssh_runtime["sync_factory"].assert_not_called()
+        _mock_ssh_runtime["init_session"].assert_not_called()
+        assert env._sync_manager is None
+
+    def test_probe_only_control_socket_is_isolated(self, monkeypatch, _mock_ssh_runtime):
+        control_exit_calls = []
+
+        def _fake_run(*args, **kwargs):
+            control_exit_calls.append(args[0])
+            return subprocess.CompletedProcess([], 0)
+
+        monkeypatch.setattr(ssh_env.subprocess, "run", _fake_run)
+
+        normal = ssh_env.SSHEnvironment(host="example.com", user="alice")
+        first_probe = ssh_env.SSHEnvironment(host="example.com", user="alice", probe_only=True)
+        second_probe = ssh_env.SSHEnvironment(host="example.com", user="alice", probe_only=True)
+
+        assert first_probe.control_socket != normal.control_socket
+        assert second_probe.control_socket != first_probe.control_socket
+        assert len(first_probe.control_socket.name) == len(normal.control_socket.name)
+
+        normal.control_socket.touch()
+        first_probe.control_socket.touch()
+        first_probe.cleanup()
+        first_probe.cleanup()
+
+        assert normal.control_socket.exists()
+        assert not first_probe.control_socket.exists()
+        assert len(control_exit_calls) == 1
+        normal.cleanup()
+
+
 def _setup_ssh_env(monkeypatch, persistent: bool):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", _SSH_HOST)

@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -738,6 +739,7 @@ class TestEnvironmentHints:
 
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         _pb._clear_backend_probe_cache()
+        cleanup_calls = []
 
         class _FakeEnv:
             def execute(self, cmd, timeout=None):
@@ -748,6 +750,9 @@ class TestEnvironmentHints:
                         "cwd=/workspace\nuser=root\n"
                     ),
                 }
+
+            def cleanup(self):
+                cleanup_calls.append(True)
 
         created = {}
 
@@ -765,7 +770,67 @@ class TestEnvironmentHints:
         assert line is not None
         assert "Linux 6.8.0" in line
         assert "root" in line
+        assert cleanup_calls == []
 
+    def test_ssh_probe_uses_probe_only_environment_and_cleans_up(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool as _tt
+
+        monkeypatch.setenv("TERMINAL_SSH_HOST", "example.com")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "alice")
+        _pb._clear_backend_probe_cache()
+
+        env = MagicMock()
+        env.execute.return_value = {
+            "returncode": 0,
+            "output": "os=Linux\nkernel=6.8.0\nhome=/home/alice\ncwd=/workspace\nuser=alice\n",
+        }
+        created = {}
+
+        def _fake_ssh_environment(**kwargs):
+            created.update(kwargs)
+            return env
+
+        monkeypatch.setattr(_tt, "_SSHEnvironment", _fake_ssh_environment)
+
+        line = _pb._probe_remote_backend("ssh")
+
+        assert created.get("probe_only") is True
+        env.cleanup.assert_called_once_with()
+        assert line is not None
+        assert "Linux 6.8.0" in line
+        assert "alice" in line
+
+    @pytest.mark.parametrize(
+        ("returncode", "execute_error", "cleanup_error", "has_result"),
+        [
+            (23, None, None, False),
+            (0, RuntimeError("probe failed"), None, False),
+            (0, None, RuntimeError("cleanup failed"), True),
+        ],
+        ids=("nonzero", "execute-error", "cleanup-error"),
+    )
+    def test_ssh_probe_cleanup_paths(
+        self, monkeypatch, returncode, execute_error, cleanup_error, has_result
+    ):
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool as _tt
+
+        monkeypatch.setenv("TERMINAL_SSH_HOST", "example.com")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "alice")
+        _pb._clear_backend_probe_cache()
+
+        env = MagicMock()
+        env.execute.return_value = {"returncode": returncode, "output": "os=Linux\n"}
+        env.execute.side_effect = execute_error
+        env.cleanup.side_effect = cleanup_error
+
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kwargs: env)
+
+        line = _pb._probe_remote_backend("ssh")
+
+        assert (line is not None) is has_result
+        env.cleanup.assert_called_once_with()
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""

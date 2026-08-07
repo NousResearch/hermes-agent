@@ -44,15 +44,19 @@ class SSHEnvironment(BaseEnvironment):
     Session snapshot preserves env vars across calls.
     CWD persists via in-band stdout markers.
     Uses SSH ControlMaster for connection reuse.
+    Probe-only instances use an isolated connection without sync or session state.
     """
 
     def __init__(self, host: str, user: str, cwd: str = "~",
-                 timeout: int = 60, port: int = 22, key_path: str = ""):
+                 timeout: int = 60, port: int = 22, key_path: str = "",
+                 probe_only: bool = False):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host = host
         self.user = user
         self.port = port
         self.key_path = key_path
+        self._probe_only = probe_only
+        self._sync_manager = None
 
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
@@ -64,12 +68,17 @@ class SSHEnvironment(BaseEnvironment):
         # deeply-nested $TMPDIR (e.g. /var/folders/xx/yy/T/). Hashing the
         # triple keeps the path stable across reconnects so ControlMaster
         # reuse still works.
-        _socket_id = hashlib.sha256(
-            f"{user}@{host}:{port}".encode()
-        ).hexdigest()[:16]
+        socket_key = f"{user}@{host}:{port}"
+        if self._probe_only:
+            socket_key = f"{socket_key}:probe:{self._session_id}"
+        _socket_id = hashlib.sha256(socket_key.encode()).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
         _ensure_ssh_available()
         self._establish_connection()
+        if self._probe_only:
+            self._remote_home = ""
+            return
+
         self._remote_home = self._detect_remote_home()
 
         self._ensure_remote_dirs()
@@ -385,7 +394,8 @@ class SSHEnvironment(BaseEnvironment):
 
     def _before_execute(self) -> None:
         """Sync files to remote via FileSyncManager (rate-limited internally)."""
-        self._sync_manager.sync()
+        if self._sync_manager is not None:
+            self._sync_manager.sync()
 
     # ------------------------------------------------------------------
     # Execution

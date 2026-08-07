@@ -239,12 +239,12 @@ Subcommands:
 | Subcommand | Description |
 |------------|-------------|
 | `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
-| `start` | Start the installed systemd/launchd background service. |
+| `start` | Start the installed systemd, OpenRC, or launchd background service. |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
 | `status` | Show service status. |
 | `list` | List **all profiles** and whether each profile's gateway is currently running (with PID where available). Handy when you run multiple profiles side-by-side and want a single overview. |
-| `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
+| `install` | Install as a systemd or OpenRC (Linux) or launchd (macOS) background service. |
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
 | `migrate-legacy` | Remove legacy `hermes.service` units left over from pre-rename installs. Profile units (`hermes-gateway-<profile>.service`) and unrelated services are never touched. Flags: `--dry-run`, `-y`/`--yes`. |
@@ -265,6 +265,22 @@ relaunch the gateway after that nonzero exit. For systemd, use
 `RestartPreventExitStatus`; for launchd, configure `KeepAlive` to relaunch after
 unsuccessful exits. Without that policy, a requested restart leaves the gateway
 stopped.
+
+### Alpine Linux / OpenRC
+
+On Alpine Linux, install the system service as root and select the account that
+owns the gateway configuration:
+
+```bash
+sudo hermes gateway install --system --run-as-user alice
+sudo hermes gateway status
+sudo hermes gateway restart
+```
+
+Hermes writes an OpenRC init script and runs the gateway with that account's
+home directory and `HERMES_HOME`. The generated script is enabled for the
+default OpenRC runlevel; use the regular `hermes gateway` lifecycle commands
+or `rc-service hermes-gateway {start|stop|restart|status}` to operate it.
 
 `hermes gateway enroll` accepts `--token`, `--connector-url`, `--gateway-id`, and `--wake-url`. It exchanges the enrollment token with the connector and writes the resulting `GATEWAY_RELAY_ID`, `GATEWAY_RELAY_SECRET`, `GATEWAY_RELAY_DELIVERY_KEY`, optional `GATEWAY_RELAY_URL`, and (when `--wake-url` is given) `GATEWAY_RELAY_WAKE_URL` values to the active profile's `.env`.
 

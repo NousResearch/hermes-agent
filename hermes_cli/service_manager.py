@@ -20,7 +20,7 @@ import re
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
-ServiceManagerKind = Literal["systemd", "launchd", "windows", "s6", "none"]
+ServiceManagerKind = Literal["systemd", "launchd", "windows", "openrc", "s6", "none"]
 
 # Profile name → service directory mapping. Profile names must be safe
 # as filesystem directory names because the s6 backend creates a service
@@ -92,6 +92,7 @@ def detect_service_manager() -> ServiceManagerKind:
         "windows" — native Windows host
         "launchd" — macOS host
         "systemd" — Linux host with a working user/system bus
+        "openrc" — Linux host with OpenRC's rc-service available
         "none" — anything else (Termux, sandbox shells, etc.)
 
     This function does NOT replace ``supports_systemd_services()`` —
@@ -106,6 +107,7 @@ def detect_service_manager() -> ServiceManagerKind:
         is_macos,
         is_windows,
         supports_systemd_services,
+        supports_openrc_services,
     )
 
     # Gate on _s6_running() alone (PID 1 comm == s6-svscan AND /run/s6/basedir),
@@ -123,6 +125,8 @@ def detect_service_manager() -> ServiceManagerKind:
         return "launchd"
     if supports_systemd_services():
         return "systemd"
+    if supports_openrc_services():
+        return "openrc"
     return "none"
 
 
@@ -300,6 +304,32 @@ class WindowsServiceManager(_RegistrationUnsupportedMixin):
         return bool(find_gateway_pids())
 
 
+class OpenRCServiceManager(_RegistrationUnsupportedMixin):
+    """Thin wrapper around the ``openrc_*`` functions in hermes_cli.gateway.
+    Only supports lifecycle operations (start/stop/restart/is_running).
+    Runtime registration not implemented.
+    """
+
+    kind: ServiceManagerKind = "openrc"
+
+    def start(self, name: str) -> None:
+        from hermes_cli.gateway import openrc_start
+        openrc_start()
+
+    def stop(self, name: str) -> None:
+        from hermes_cli.gateway import openrc_stop
+        openrc_stop()
+
+    def restart(self, name: str) -> None:
+        from hermes_cli.gateway import openrc_restart
+        openrc_restart()
+
+    def is_running(self, name: str) -> bool:
+        from hermes_cli.gateway import openrc_is_running
+        return openrc_is_running()
+
+
+
 def get_service_manager() -> ServiceManager:
     """Return the ServiceManager instance for the current environment.
 
@@ -313,6 +343,8 @@ def get_service_manager() -> ServiceManager:
         return LaunchdServiceManager()
     if kind == "windows":
         return WindowsServiceManager()
+    if kind == "openrc":
+        return OpenRCServiceManager()
     if kind == "s6":
         return S6ServiceManager()
     raise RuntimeError("no supported service manager detected")

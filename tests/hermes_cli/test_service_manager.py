@@ -11,6 +11,7 @@ import pytest
 
 from hermes_cli.service_manager import (
     LaunchdServiceManager,
+    OpenRCServiceManager,
     S6ServiceManager,
     ServiceManager,
     ServiceManagerKind,
@@ -36,6 +37,12 @@ from hermes_cli.service_manager import (
 # ---------------------------------------------------------------------------
 
 
+def test_detect_service_manager_returns_known_value() -> None:
+    """Without mocking, the function must still return one of the
+    advertised literals — anything else means a new platform branch
+    was added without updating ServiceManagerKind."""
+    result = detect_service_manager()
+    assert result in ("systemd", "launchd", "windows", "openrc", "s6", "none")
 
 
 
@@ -141,6 +148,45 @@ def test_windows_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) ->
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "kind,cls",
+    [
+        ("systemd", SystemdServiceManager),
+        ("launchd", LaunchdServiceManager),
+        ("windows", WindowsServiceManager),
+        ("openrc", OpenRCServiceManager),
+    ],
+)
+def test_get_service_manager_returns_correct_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: ServiceManagerKind,
+    cls: type,
+) -> None:
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager", lambda: kind,
+    )
+    assert isinstance(get_service_manager(), cls)
+
+
+def test_get_service_manager_raises_when_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager", lambda: "none",
+    )
+    with pytest.raises(RuntimeError, match="no supported service manager"):
+        get_service_manager()
+
+
+def test_get_service_manager_returns_s6_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The s6 backend ships in Phase 3 — the factory must return an
+    S6ServiceManager when running inside a container."""
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager", lambda: "s6",
+    )
+    assert isinstance(get_service_manager(), S6ServiceManager)
 
 
 # ---------------------------------------------------------------------------
@@ -487,5 +533,4 @@ def test_s6_log_run_never_invokes_chown_with_symlinked_log_dir(tmp_path) -> None
     assert after.st_gid == before.st_gid
     assert (victim / "marker").read_text(encoding="utf-8") == "keep"
     assert (victim / "lock").read_text(encoding="utf-8") == "keep-lock"
-
 

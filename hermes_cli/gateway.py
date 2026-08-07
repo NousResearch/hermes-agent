@@ -1378,6 +1378,15 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
             service_scope=scope_label,
         )
 
+    if supports_openrc_services():
+        return GatewayRuntimeSnapshot(
+            manager="OpenRC",
+            service_installed=get_openrc_init_path().exists(),
+            service_running=openrc_is_running(),
+            gateway_pids=gateway_pids,
+            service_scope="system",
+        )
+
     if is_macos():
         return GatewayRuntimeSnapshot(
             manager="launchd",
@@ -5866,6 +5875,8 @@ def _is_service_installed() -> bool:
         from hermes_cli import gateway_windows
 
         return gateway_windows.is_installed()
+    elif supports_openrc_services():
+        return get_openrc_init_path().exists()
     return False
 
 
@@ -5904,6 +5915,8 @@ def _is_service_running() -> bool:
                 pass
 
         return False
+    elif supports_openrc_services() and get_openrc_init_path().exists():
+        return openrc_is_running()
     elif is_macos() and get_launchd_plist_path().exists():
         try:
             result = subprocess.run(
@@ -6495,12 +6508,16 @@ def gateway_setup():
         print_success("Gateway service is installed and running.")
     elif service_installed:
         print_warning("Gateway service is installed but not running.")
-        if supports_systemd_services() and _system_scope_wizard_would_need_root():
+        if supports_openrc_services() and os.geteuid() != 0:
+            print_info("  OpenRC services require root. Run: sudo hermes gateway start")
+        elif supports_systemd_services() and _system_scope_wizard_would_need_root():
             _print_system_scope_remediation("start")
         elif prompt_yes_no("  Start it now?", True):
             try:
                 if supports_systemd_services():
                     systemd_start()
+                elif supports_openrc_services():
+                    openrc_start()
                 elif is_macos():
                     launchd_start()
             except UserSystemdUnavailableError as e:
@@ -6561,12 +6578,16 @@ def gateway_setup():
         service_running = _is_service_running()
 
         if service_running:
-            if supports_systemd_services() and _system_scope_wizard_would_need_root():
+            if supports_openrc_services() and os.geteuid() != 0:
+                print_info("  OpenRC services require root. Run: sudo hermes gateway restart")
+            elif supports_systemd_services() and _system_scope_wizard_would_need_root():
                 _print_system_scope_remediation("restart")
             elif prompt_yes_no("  Restart the gateway to pick up changes?", True):
                 try:
                     if supports_systemd_services():
                         systemd_restart()
+                    elif supports_openrc_services():
+                        openrc_restart()
                     elif is_macos():
                         launchd_restart()
                     elif is_windows():
@@ -6586,12 +6607,16 @@ def gateway_setup():
                 except subprocess.CalledProcessError as e:
                     print_error(f"  Restart failed: {e}")
         elif service_installed:
-            if supports_systemd_services() and _system_scope_wizard_would_need_root():
+            if supports_openrc_services() and os.geteuid() != 0:
+                print_info("  OpenRC services require root. Run: sudo hermes gateway start")
+            elif supports_systemd_services() and _system_scope_wizard_would_need_root():
                 _print_system_scope_remediation("start")
             elif prompt_yes_no("  Start the gateway service?", True):
                 try:
                     if supports_systemd_services():
                         systemd_start()
+                    elif supports_openrc_services():
+                        openrc_start()
                     elif is_macos():
                         launchd_start()
                     elif is_windows():
@@ -6609,9 +6634,15 @@ def gateway_setup():
                     print_error(f"  Start failed: {e}")
         else:
             print()
-            if supports_systemd_services() or is_macos() or is_windows():
+            if supports_openrc_services() and os.geteuid() != 0:
+                print_warning("  OpenRC services require root to install.")
+                print_info("  Re-run setup with sudo, or install directly:")
+                print_info("  sudo hermes gateway install --system")
+            elif supports_systemd_services() or supports_openrc_services() or is_macos() or is_windows():
                 if supports_systemd_services():
                     platform_name = "systemd"
+                elif supports_openrc_services():
+                    platform_name = "OpenRC"
                 elif is_macos():
                     platform_name = "launchd"
                 else:
@@ -6631,6 +6662,9 @@ def gateway_setup():
                                 force=False,
                                 enable_on_startup=start_on_login,
                             )
+                        elif supports_openrc_services():
+                            openrc_install(force=False, start_now=False)
+                            did_install = True
                         elif is_macos():
                             launchd_install(force=False)
                             did_install = True
@@ -6644,6 +6678,8 @@ def gateway_setup():
                             try:
                                 if supports_systemd_services():
                                     systemd_start(system=installed_scope == "system")
+                                elif supports_openrc_services():
+                                    openrc_start()
                                 elif is_macos():
                                     launchd_start()
                                 elif is_windows():
@@ -7066,6 +7102,13 @@ def _gateway_command_inner(args):
             print()
             print("To run the gateway: hermes gateway run")
             sys.exit(0)
+        elif supports_openrc_services():
+            openrc_install(
+                force=force,
+                start_now=args.start_now,
+                system=system,
+                run_as_user=run_as_user,
+            )
         else:
             print("Service installation not supported on this platform.")
             print("Run manually: hermes gateway run")
@@ -7090,6 +7133,8 @@ def _gateway_command_inner(args):
             from hermes_cli import gateway_windows
 
             gateway_windows.uninstall()
+        elif supports_openrc_services():
+            openrc_uninstall()
         elif is_container():
             from hermes_cli.service_manager import detect_service_manager
             if detect_service_manager() == "s6":
@@ -7143,6 +7188,8 @@ def _gateway_command_inner(args):
             from hermes_cli import gateway_windows
 
             gateway_windows.start()
+        elif supports_openrc_services():
+            openrc_start()
         elif is_wsl():
             print("WSL detected but systemd is not available.")
             print("Run the gateway in foreground mode instead:")
@@ -7214,6 +7261,12 @@ def _gateway_command_inner(args):
                     service_available = True
                 except subprocess.CalledProcessError:
                     pass
+            elif supports_openrc_services() and get_openrc_init_path().exists():
+                try:
+                    openrc_stop()
+                    service_available = True
+                except subprocess.CalledProcessError:
+                    pass
             elif is_macos() and get_launchd_plist_path().exists():
                 try:
                     launchd_stop()
@@ -7244,6 +7297,12 @@ def _gateway_command_inner(args):
             ):
                 try:
                     systemd_stop(system=system)
+                    service_available = True
+                except subprocess.CalledProcessError:
+                    pass
+            elif supports_openrc_services() and get_openrc_init_path().exists():
+                try:
+                    openrc_stop()
                     service_available = True
                 except subprocess.CalledProcessError:
                     pass
@@ -7311,6 +7370,12 @@ def _gateway_command_inner(args):
                     service_stopped = True
                 except subprocess.CalledProcessError:
                     pass
+            elif supports_openrc_services() and get_openrc_init_path().exists():
+                try:
+                    openrc_stop()
+                    service_stopped = True
+                except subprocess.CalledProcessError:
+                    pass
             elif is_macos() and get_launchd_plist_path().exists():
                 try:
                     launchd_stop()
@@ -7339,6 +7404,8 @@ def _gateway_command_inner(args):
                 or get_systemd_unit_path(system=True).exists()
             ):
                 systemd_start(system=system)
+            elif supports_openrc_services() and get_openrc_init_path().exists():
+                openrc_start()
             elif is_macos() and get_launchd_plist_path().exists():
                 launchd_start()
             elif is_windows():
@@ -7362,6 +7429,13 @@ def _gateway_command_inner(args):
             service_configured = True
             try:
                 systemd_restart(system=system)
+                service_available = True
+            except subprocess.CalledProcessError:
+                pass
+        elif supports_openrc_services() and get_openrc_init_path().exists():
+            service_configured = True
+            try:
+                openrc_restart()
                 service_available = True
             except subprocess.CalledProcessError:
                 pass
@@ -7447,6 +7521,9 @@ def _gateway_command_inner(args):
             or get_systemd_unit_path(system=True).exists()
         ):
             systemd_status(deep, system=system, full=full)
+            _print_gateway_process_mismatch(snapshot)
+        elif supports_openrc_services() and get_openrc_init_path().exists():
+            openrc_status(deep, full=full)
             _print_gateway_process_mismatch(snapshot)
         elif is_macos() and get_launchd_plist_path().exists():
             launchd_status(deep)
@@ -7537,3 +7614,169 @@ def _gateway_command_inner(args):
             print("Legacy unit migration only applies to systemd-based Linux hosts.")
             return
         remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)
+
+# --- OpenRC support -------------------------------------------------------
+
+def supports_openrc_services() -> bool:
+    """Return True when OpenRC’s rc-service is available."""
+    try:
+        return shutil.which("rc-service") is not None
+    except Exception:
+        return False
+
+
+def get_openrc_init_path() -> Path:
+    """Return the current profile's OpenRC init-script path."""
+    return Path("/etc/init.d") / get_service_name()
+
+
+def get_openrc_confd_path() -> Path:
+    """Return the current profile's OpenRC configuration path."""
+    return Path("/etc/conf.d") / get_service_name()
+
+
+def _require_openrc_service_installed(action: str) -> None:
+    if get_openrc_init_path().exists():
+        return
+    print("✗ Gateway OpenRC service is not installed")
+    print(f"  Run: sudo hermes gateway install --system  # before {action}")
+    sys.exit(1)
+
+
+def openrc_is_running() -> bool:
+    """Check whether the current profile's OpenRC service is up."""
+    if not supports_openrc_services() or not get_openrc_init_path().exists():
+        return False
+    try:
+        result = subprocess.run(
+            ["rc-service", get_service_name(), "status"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def openrc_start() -> None:
+    _require_root_for_system_service("start")
+    _require_openrc_service_installed("start")
+    subprocess.run(["rc-service", get_service_name(), "start"], check=True, timeout=30)
+    print("✓ OpenRC gateway service started")
+
+
+def openrc_stop() -> None:
+    _require_root_for_system_service("stop")
+    _require_openrc_service_installed("stop")
+    subprocess.run(["rc-service", get_service_name(), "stop"], check=True, timeout=90)
+    print("✓ OpenRC gateway service stopped")
+
+
+def openrc_restart() -> None:
+    _require_root_for_system_service("restart")
+    _require_openrc_service_installed("restart")
+    subprocess.run(["rc-service", get_service_name(), "restart"], check=True, timeout=90)
+    print("✓ OpenRC gateway service restarted")
+
+
+def openrc_status(deep: bool = False, full: bool = False) -> None:
+    """Display the OpenRC service status for the current profile."""
+    del deep, full  # OpenRC's status output is already the complete service view.
+    _require_openrc_service_installed("status")
+    result = subprocess.run(
+        ["rc-service", get_service_name(), "status"],
+        check=False,
+        timeout=10,
+    )
+    if result.returncode == 0:
+        print("✓ OpenRC gateway service is running")
+    else:
+        print("✗ OpenRC gateway service is not running")
+
+
+def openrc_uninstall() -> None:
+    """Stop, disable, and remove the current profile's OpenRC service."""
+    _require_root_for_system_service("uninstall")
+    init_path = get_openrc_init_path()
+    if not init_path.exists():
+        print("✗ Gateway OpenRC service is not installed")
+        return
+    service_name = get_service_name()
+    subprocess.run(["rc-service", service_name, "stop"], check=False, timeout=90)
+    subprocess.run(["rc-update", "del", service_name, "default"], check=False, timeout=30)
+    init_path.unlink()
+    print(f"✓ Removed {init_path}")
+    print("✓ OpenRC gateway service uninstalled")
+
+
+def openrc_install(
+    force: bool = False,
+    start_now: bool | None = None,
+    system: bool = False,
+    run_as_user: str | None = None,
+) -> None:
+    """Install a system-scoped OpenRC init script for the Hermes gateway."""
+    del system  # OpenRC services installed here are always system-scoped.
+    _require_root_for_system_service("install")
+
+    init_path = get_openrc_init_path()
+    confd_path = get_openrc_confd_path()
+
+    if init_path.exists() and not force:
+        print(
+            f"Error: {init_path} already exists. Use --force to overwrite.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    username, group_name, home_dir = _system_service_identity(run_as_user)
+    hermes_home = _hermes_home_for_target_user(home_dir)
+    profile_arg = _profile_arg_for_target_user(hermes_home, home_dir)
+    python_path = _remap_path_for_user(get_python_path(), home_dir)
+    detected_venv = _detect_venv_dir()
+    venv_dir = _remap_path_for_user(str(detected_venv), home_dir) if detected_venv else ""
+
+    init_script = f"""#!/sbin/openrc-run
+description="Hermes Gateway"
+supervisor=supervise-daemon
+# Load config if present
+[ -f "{confd_path}" ] && . "{confd_path}"
+: ${{HERMES_HOME:="{hermes_home}"}}
+export HERMES_HOME
+[ -n "${{VIRTUAL_ENV}}" ] && export VIRTUAL_ENV
+command="{python_path}"
+command_args="-m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run"
+command_user="{username}:{group_name}"
+command_chdir="${{HERMES_HOME}}"
+
+depend() {{
+    need net
+}}
+"""
+
+    init_path.write_text(init_script, encoding="utf-8")
+    init_path.chmod(0o755)
+
+    # Preserve an operator-maintained conf.d override if one already exists.
+    if not confd_path.exists():
+        confd_path.write_text(
+            f"""# Hermes Gateway OpenRC configuration
+HERMES_HOME="{hermes_home}"
+VIRTUAL_ENV="{venv_dir}"
+""",
+            encoding="utf-8",
+        )
+
+    subprocess.run(
+        ["rc-update", "add", get_service_name(), "default"],
+        check=True,
+        timeout=30,
+    )
+
+    if start_now is not False:
+        openrc_start()
+
+    print("OpenRC gateway service installed and enabled.")
+    print(f"Configured to run as: {username}")
+    print(f"Manage with: rc-service {get_service_name()} {{start|stop|restart|status}}")

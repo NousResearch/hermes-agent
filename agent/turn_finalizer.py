@@ -233,6 +233,17 @@ def finalize_turn(
         )
     )
 
+    # ``completed`` is a strict success metric, not a persistence contract.
+    # Iteration-limit summaries and their visible exception fallbacks are
+    # accepted user-facing responses even though they intentionally report
+    # ``completed=False``. Any accepted response must durably close the turn so
+    # restart cannot replay its user input or deferred background context.
+    accepted_closing_response = (
+        final_response is not None
+        and not interrupted
+        and not failed
+    )
+
     # Preflight can seed the display count before the provider receives the
     # request. Roll that estimate back only when an interrupt wins the race
     # before any successful provider response. Compaction state remains owned
@@ -337,7 +348,7 @@ def finalize_turn(
         # Compare content (not just role) so a verification candidate that
         # matches the final response is not duplicated at budget
         # exhaustion. (#65919 §7)
-        if final_response and not interrupted:
+        if accepted_closing_response:
             try:
                 _tail = messages[-1] if messages else None
             except Exception:
@@ -385,6 +396,21 @@ def finalize_turn(
                 # filled row is re-examined instead of skipped.
                 agent._db_flush_scan_prefix = None
 
+        # Commit deferred-completion adoption with the closing assistant row.
+        # The inbound user row is persisted before the model call for crash
+        # resilience, so stamping it would acknowledge work before a response
+        # exists. SessionDB records these identities atomically with this final
+        # assistant INSERT; restart recovery can then close a pending ledger row
+        # without replaying its payload after a process dies before gateway ack.
+        _adoption_message = None
+        _adopted_ids = tuple(
+            getattr(agent, "_deferred_notification_ids", ()) or ()
+        )
+        if accepted_closing_response and _adopted_ids:
+            if messages and messages[-1].get("role") == "assistant":
+                messages[-1]["_deferred_notification_ids"] = list(_adopted_ids)
+                _adoption_message = messages[-1]
+
         # The model has completed its request, so replace API-local
         # voice/model/skill guidance with the clean user input before writing the
         # final durable snapshot and returning the continuation history. Earlier
@@ -394,7 +420,6 @@ def finalize_turn(
         _apply_override = getattr(agent, "_apply_persist_user_message_override", None)
         if callable(_apply_override):
             _apply_override(messages)
-
         # ── Post-turn micro-compaction ────────────────────────────
         # After the assistant response is finalized but before the session is
         # persisted, run micro-compaction to absorb the oldest uncompacted
@@ -446,7 +471,11 @@ def finalize_turn(
             except Exception as _mc_err:
                 logger.info("Micro-compaction failed: %s", _mc_err)
 
-        agent._persist_session(messages, conversation_history)
+        try:
+            agent._persist_session(messages, conversation_history)
+        finally:
+            if _adoption_message is not None:
+                _adoption_message.pop("_deferred_notification_ids", None)
     except Exception as _persist_err:
         _cleanup_errors.append(f"persist_session: {_persist_err}")
         logger.error("finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True)

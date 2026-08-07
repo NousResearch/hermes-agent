@@ -418,6 +418,29 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claimed_at REAL
 );
 
+CREATE TABLE IF NOT EXISTS deferred_notifications (
+    event_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    event_json TEXT,
+    delivery_state TEXT NOT NULL DEFAULT 'pending',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    delivered_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS deferred_notification_adoptions (
+    event_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    adopted_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deferred_notifications_session
+    ON deferred_notifications(session_id, delivery_state, created_at, event_id);
+CREATE INDEX IF NOT EXISTS idx_deferred_notification_adoptions_session
+    ON deferred_notification_adoptions(session_id, adopted_at);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);

@@ -604,13 +604,13 @@ def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeyp
             "drain-b",
             "sid",
             "B",
-            {"image_paths": ["/tmp/b.png"], "queued_prompt_generation": 0},
+            {"image_paths": ["/tmp/b.png"], "queued_prompt_generation": 0, "origin": "user"},
         ),
         (
             "drain-c",
             "sid",
             "C",
-            {"image_paths": ["/tmp/c.png"], "queued_prompt_generation": 0},
+            {"image_paths": ["/tmp/c.png"], "queued_prompt_generation": 0, "origin": "user"},
         ),
     ]
 
@@ -621,12 +621,14 @@ def test_drain_fires_queued_prompt_and_claims_running(monkeypatch):
     fired = {}
     monkeypatch.setattr(
         server, "_run_prompt_submit",
-        lambda rid, sid, session, text, **kwargs: fired.update(rid=rid, sid=sid, text=text),
+        lambda rid, sid, session, text, *, origin, **_: fired.update(
+            rid=rid, sid=sid, text=text, origin=origin
+        ),
     )
     session = _session(queued_prompt={"text": "go", "transport": "ws-9"})
 
     assert server._drain_queued_prompt("r1", "sid", session) is True
-    assert fired == {"rid": "r1", "sid": "sid", "text": "go"}
+    assert fired == {"rid": "r1", "sid": "sid", "text": "go", "origin": "user"}
     assert session["running"] is True
     assert session["queued_prompt"] is None
     assert session["transport"] == "ws-9"

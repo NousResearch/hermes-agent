@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
+import { reconcileClientTurnState } from '@/app/session/turn-state'
 import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -114,33 +116,46 @@ describe('applyRuntimeInfo credential warnings', () => {
   })
 })
 
-describe('applyRuntimeInfo foreground scoping', () => {
-  beforeEach(() => {
-    setCurrentCwd('/main-repo')
-    setCurrentBranch('main')
+describe('resume turn-state reconciliation', () => {
+  it('rejects a stale active response after the same generation settles', () => {
+    const initial = createClientSessionState()
+
+    const active = reconcileClientTurnState(
+      initial,
+      { running: true, turn_generation: 9, turn_origin: 'notification', turn_state_revision: 40 },
+      'snapshot'
+    )
+
+    const settled = reconcileClientTurnState(
+      active.state,
+      { running: false, turn_generation: 9, turn_origin: null, turn_state_revision: 41 },
+      'snapshot'
+    )
+
+    const staleResponse = reconcileClientTurnState(
+      settled.state,
+      { running: true, turn_generation: 9, turn_origin: 'notification', turn_state_revision: 40 },
+      'snapshot'
+    )
+
+    expect(staleResponse.accepted).toBe(false)
+    expect(staleResponse.state).toMatchObject({
+      busy: false,
+      turnGeneration: 9,
+      turnOrigin: null,
+      turnStateRevision: 41
+    })
   })
 
-  afterEach(() => {
-    setCurrentCwd('')
-    setCurrentBranch('')
-  })
+  it('keeps generation-only snapshots compatible with older backends', () => {
+    const active = reconcileClientTurnState(
+      createClientSessionState(),
+      { running: true, turn_generation: 3, turn_origin: 'notification' },
+      'snapshot'
+    )
 
-  it('publishes a foreground runtime into the composer atoms', () => {
-    const patch = applyRuntimeInfo({ branch: 'bb/feature', cwd: '/main-repo/worktree' })
-
-    expect($currentCwd.get()).toBe('/main-repo/worktree')
-    expect($currentBranch.get()).toBe('bb/feature')
-    expect(patch).toMatchObject({ branch: 'bb/feature', cwd: '/main-repo/worktree' })
-  })
-
-  it('keeps a background runtime out of the composer atoms but still returns its patch', () => {
-    const patch = applyRuntimeInfo({ branch: 'bb/tile', cwd: '/other-worktree' }, { foreground: false })
-
-    // The main pane's rail must stay on its own tree.
-    expect($currentCwd.get()).toBe('/main-repo')
-    expect($currentBranch.get()).toBe('main')
-    // ...while the caller still gets everything it needs for its own session.
-    expect(patch).toMatchObject({ branch: 'bb/tile', cwd: '/other-worktree' })
+    expect(active.accepted).toBe(true)
+    expect(active.state).toMatchObject({ busy: true, turnGeneration: 3, turnOrigin: 'notification' })
   })
 
   // #71254: `if (info.cwd)` treated '' as "no opinion", so a detached session

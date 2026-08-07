@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
+import type { CancelRunOptions } from '@/app/types'
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
@@ -21,7 +22,7 @@ import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/st
 import { $hudMode } from '@/store/hud'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
-import { $gatewayState } from '@/store/session'
+import { $gatewayState, $turnOrigin } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
@@ -208,6 +209,7 @@ export function ChatBar({
 
   const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
+  const turnOrigin = useStore($turnOrigin)
   const reconnecting = gatewayState === 'closed' || gatewayState === 'error'
   const inputDisabled = disabled && !reconnecting
 
@@ -315,11 +317,16 @@ export function ChatBar({
   // only trace). Interrupts that exist to advance the queue (send-now-while-
   // busy) call the raw onCancel and keep draining on settle. Parked entries
   // stay in the panel until resumed, sent, edited, or deleted.
-  const haltRun = useCallback(() => {
-    parkQueuedPrompts(activeQueueSessionKeyRef.current)
+  const haltRun = useCallback(
+    (options?: CancelRunOptions) => {
+      if (!options?.preserveBusyUntilSettled) {
+        parkQueuedPrompts(activeQueueSessionKeyRef.current)
+      }
 
-    return onCancel()
-  }, [activeQueueSessionKeyRef, onCancel])
+      return onCancel(options)
+    },
+    [activeQueueSessionKeyRef, onCancel]
+  )
 
   const { compactPill, foldVoice, minimal, stacked } = useComposerMetrics({
     composerDockRef,
@@ -373,7 +380,8 @@ export function ChatBar({
     queuedPrompts,
     sessionId,
     setComposerText,
-    stashAt
+    stashAt,
+    turnOrigin
   })
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real

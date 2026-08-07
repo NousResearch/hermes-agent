@@ -1,7 +1,7 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 import { type BillingBlock } from '@hermes/shared'
 
-import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
+import type { MessageReaction, SessionMessage, TurnOrigin, UsageStats } from '@/types/hermes'
 
 export interface TimelinePartMetadata {
   /** Unix seconds when this visible activity segment began. Fractional values
@@ -164,4 +164,7 @@ export type GatewayEventPayload = {
   // with FailoverReason.billing (shape mirrors @hermes/shared BillingBlock).
   billing?: BillingBlock
   failure_reason?: string
+  turn_origin?: TurnOrigin | null
+  turn_generation?: number
+  turn_state_revision?: number
 }

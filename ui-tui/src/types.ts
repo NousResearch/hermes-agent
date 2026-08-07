@@ -155,6 +155,7 @@ export interface Msg {
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
+export type TurnOrigin = 'goal' | 'notification' | 'user'
 export type DetailsMode = 'hidden' | 'collapsed' | 'expanded'
 export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 
@@ -191,6 +192,7 @@ export interface SessionInfo {
   model: string
   profile_name?: string
   project?: null | ProjectInfo
+  running?: boolean
   reasoning_effort?: string
   release_date?: string
   service_tier?: string
@@ -201,6 +203,9 @@ export interface SessionInfo {
   update_command?: string
   usage?: Usage
   version?: string
+  turn_origin?: TurnOrigin | null
+  turn_generation?: number
+  turn_state_revision?: number
 }
 
 export interface Usage {

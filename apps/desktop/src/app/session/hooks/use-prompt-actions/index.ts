@@ -42,6 +42,7 @@ import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
 import type {
+  CancelRunOptions,
   ClientSessionState,
   FileAttachResponse,
   HandoffFailResponse,
@@ -634,7 +635,7 @@ export function usePromptActions({
     [copy.sttDisabled, sttEnabled]
   )
 
-  const cancelRun = useCallback(async () => {
+  const cancelRun = useCallback(async (options?: CancelRunOptions) => {
     // Read from the ref, not the closure-captured `activeSessionId`. The
     // actions bag is a stable ref mutated in place (Object.assign on each
     // ContribWiring render), and ChatRoutesSurface is memoized on that stable
@@ -649,6 +650,10 @@ export function usePromptActions({
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
       setBusy(false)
+
+      if (sessionId) {
+        updateSessionState(sessionId, state => (state.busy ? { ...state, busy: false } : state))
+      }
     }
 
     setAwaitingResponse(false)
@@ -672,7 +677,7 @@ export function usePromptActions({
       return {
         ...state,
         messages,
-        busy: false,
+        busy: options?.preserveBusyUntilSettled ? state.busy : false,
         awaitingResponse: false,
         streamId: null,
         pendingBranchGroup: null,
@@ -707,7 +712,11 @@ export function usePromptActions({
           }
         }
       )
-      releaseBusy()
+      // A notification preemption holds the busy flag until the preempting
+      // turn settles; only release eagerly for a direct user stop.
+      if (!options?.preserveBusyUntilSettled) {
+        releaseBusy()
+      }
     } catch (err) {
       releaseBusy()
       notifyError(err, copy.stopFailed)

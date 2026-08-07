@@ -1432,6 +1432,20 @@ def init_agent(
     # Get available tools with filtering. Capture the registry generation this
     # snapshot is derived from FIRST, so a later concurrent refresh can tell
     # whether it holds a newer or staler view (see refresh_agent_mcp_tools).
+    #
+    # Wait for any in-flight background MCP discovery to finish (bounded by
+    # mcp_discovery_timeout) BEFORE snapshotting.  Without this, the snapshot
+    # races against the discovery thread: npx/stdio servers that take longer
+    # than the timeout are absent from the tool list.  The tool_search bridge
+    # masks this (it re-queries the registry at call time), but with
+    # tool_search disabled the one-shot path never re-fetches (#73739).
+    # No-op when no background thread was started (gateway/cron/ACP own their
+    # own startup paths).
+    try:
+        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+        wait_for_mcp_discovery()
+    except Exception:
+        pass
     try:
         from tools.registry import registry as _snapshot_registry
         agent._tool_snapshot_generation = _snapshot_registry._generation

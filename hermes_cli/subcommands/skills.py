@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from typing import Callable
 
+# Import from skill_meta to keep confidence levels in one place
+from tools.skill_meta import CONFIDENCE_ORDER
+
 
 def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     """Attach the ``skills`` subcommand to ``subparsers``."""
@@ -306,6 +309,35 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     tap_add.add_argument("repo", help="GitHub repo (e.g. owner/repo)")
     tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
     tap_rm.add_argument("name", help="Tap name to remove")
+
+    # ── grade sub-action: confidence management for local skills ──
+    skills_grade = skills_subparsers.add_parser(
+        "grade",
+        help="Manage skill confidence levels and default pool",
+    )
+    grade_sub = skills_grade.add_subparsers(dest="grade_action", help="Grade action")
+    
+    # grade list
+    grade_list = grade_sub.add_parser("list", help="Show all skills and their confidence")
+    grade_list.add_argument("--by-confidence", choices=CONFIDENCE_ORDER, default=None,
+                            help="Filter by confidence level")
+    
+    # grade set
+    grade_set = grade_sub.add_parser("set", help="Set or upgrade a skill's confidence")
+    grade_set.add_argument("skill", help="Skill name")
+    grade_set.add_argument("level", choices=CONFIDENCE_ORDER, help="New confidence level")
+    grade_set.add_argument("--reason", default="", help="Reason for grade change")
+    
+    # grade report
+    grade_sub.add_parser("report", help="Print full confidence report")
+    
+    # grade pool sub-actions
+    grade_pool = grade_sub.add_parser("pool", help="Manage default skill pool")
+    pool_sub = grade_pool.add_subparsers(dest="pool_action", help="Pool action")
+    pool_add = pool_sub.add_parser("add", help="Add skill to default pool (auto-loaded)")
+    pool_add.add_argument("skill", help="Skill name")
+    pool_rm = pool_sub.add_parser("remove", help="Remove skill from default pool")
+    pool_rm.add_argument("skill", help="Skill name")
 
     # config sub-action: interactive enable/disable
     skills_subparsers.add_parser(

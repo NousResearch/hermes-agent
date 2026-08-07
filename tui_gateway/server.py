@@ -6020,6 +6020,18 @@ def _parse_tui_skills_env() -> list[str]:
         if item and item not in seen:
             seen.add(item)
             skills.append(item)
+
+    # Merge skills in the default confidence pool (auto-loaded)
+    try:
+        from tools.skill_meta import SkillMetaDB
+        meta_db = SkillMetaDB()
+        for name in meta_db.list_default_pool():
+            if name not in seen:
+                skills.append(name)
+                seen.add(name)
+    except Exception:
+        pass  # Non-critical — default pool is optional
+
     return skills
 
 

@@ -11161,10 +11161,77 @@ def cmd_skills(args):
         from hermes_cli.skills_config import skills_command as skills_config_command
 
         skills_config_command(args)
+    # Route 'grade' action to local skill confidence management
+    elif getattr(args, "skills_action", None) == "grade":
+        _handle_skills_grade(args)
     else:
         from hermes_cli.skills_hub import skills_command
 
         skills_command(args)
+
+
+def _handle_skills_grade(args):
+    """Handle `hermes skills grade` subcommand."""
+    from tools.skill_meta import SkillMetaDB, CONFIDENCE_ORDER
+
+    grade_action = getattr(args, "grade_action", None) or "report"
+    db = SkillMetaDB()
+
+    if grade_action == "list":
+        by_conf = getattr(args, "by_confidence", None)
+        if by_conf:
+            skills = db.list_by_confidence(by_conf)
+        else:
+            skills = db.list_all()
+        if not skills:
+            print("No skills registered.")
+            return
+        for name, meta in skills:
+            pool = " [DEFAULT]" if meta.default_skill_pool else ""
+            print(f"  {name:30s} confidence={meta.confidence:10s} uses={meta.usage_count:3d} last={meta.last_used or 'never'}{pool}")
+
+    elif grade_action == "set":
+        skill_name = getattr(args, "skill", "").strip()
+        level = getattr(args, "level", "").strip()
+        reason = getattr(args, "reason", "") or ""
+        if not skill_name:
+            print("Error: skill name required. Usage: hermes skills grade set <name> <level>")
+            return
+        if not reason:
+            reason = f"User promoted {skill_name} to {level}"
+        try:
+            meta = db.grade(skill_name, level, reason=reason)
+            print(f"✓ {skill_name} → {level}")
+            print(f"  confidence={meta.confidence}  default_pool={meta.default_skill_pool}")
+            # Show grade history
+            if meta.grade_history:
+                print(f"  history:")
+                for entry in meta.grade_history[-5:]:  # last 5
+                    print(f"    {entry['timestamp'][:19]} {entry['from']} → {entry['to']} ({entry['reason']})")
+        except ValueError as e:
+            print(f"Error: {e}")
+
+    elif grade_action == "pool" and hasattr(args, "pool_action"):
+        # pool add/remove
+        pool_action = getattr(args, "pool_action", "")
+        skill_name = getattr(args, "skill", "").strip() if hasattr(args, "skill") else ""
+        if not skill_name:
+            print("Usage: hermes skills grade pool (add|remove) <skill>")
+            return
+        try:
+            if pool_action == "add":
+                meta = db.add_to_default_pool(skill_name)
+                print(f"✓ Added {skill_name} to default pool")
+            elif pool_action == "remove":
+                meta = db.remove_from_default_pool(skill_name)
+                print(f"✓ Removed {skill_name} from default pool")
+            else:
+                print(f"Unknown pool action: {pool_action}")
+        except KeyError as e:
+            print(f"Error: {e}")
+
+    else:  # "report" or default
+        print(db.report())
 
 
 def cmd_pairing(args):

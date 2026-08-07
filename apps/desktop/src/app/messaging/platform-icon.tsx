@@ -15,7 +15,7 @@ import {
 import type { ComponentPropsWithoutRef, ComponentType, SVGProps } from 'react'
 import { forwardRef, memo } from 'react'
 
-import { Globe, Link as LinkIcon, MessageSquareText } from '@/lib/icons'
+import { Globe, Link as LinkIcon, MessageSquareText, NotebookTabs } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------
@@ -63,6 +63,7 @@ const PLATFORM_ICONS: Record<string, PlatformIconSpec> = {
   bluebubbles: { Icon: SiApple, color: '#0BD318', kind: 'brand' },
   photon: { Icon: PhotonIcon, color: '#6366F1', kind: 'brand' },
   homeassistant: { Icon: SiHomeassistant, color: '#18BCF2', kind: 'brand' },
+  kindle: { Icon: NotebookTabs, color: '#6B6455', kind: 'generic' },
   email: { Icon: SiGmail, color: '#EA4335', kind: 'brand' },
   sms: { Icon: MessageSquareText, color: '#F43F5E', kind: 'generic' },
   webhook: { Icon: LinkIcon, color: '#71717A', kind: 'generic' },

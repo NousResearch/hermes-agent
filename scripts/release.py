@@ -1118,6 +1118,7 @@ LEGACY_AUTHOR_MAP = {
     "shannon@nousresearch.com": "shannonsands",
     "abdi.moya@gmail.com": "AxDSan",
     "eri@plasticlabs.ai": "Erosika",
+    "fix@local": "Tranquil-Flow",
     "hjcpuro@gmail.com": "hjc-puro",
     "xaydinoktay@gmail.com": "aydnOktay",
     "abdullahfarukozden@gmail.com": "Farukest",

@@ -2316,6 +2316,16 @@ _AGGREGATOR_PROVIDERS = frozenset(
 # away from the model's native vendor). None are currently defined.
 _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 
+# Virtual routing modes: entries in _PROVIDER_MODELS that are not real
+# providers with real model catalogs. Their "models" are user-defined preset
+# names, so they must never win static auto-detection — a preset name that
+# happens to collide with something the user typed would silently reroute the
+# session into that mode. ``_PROVIDER_MODELS["moa"]`` ships ``["default"]``,
+# which made ``/model default`` — a user asking for their default model —
+# switch into MoA on a stock install. Selecting one stays possible; it just
+# has to be deliberate (an exact configured-preset match, or --provider moa).
+_VIRTUAL_ROUTING_PROVIDERS = frozenset({"moa"})
+
 # Providers whose live /v1/models endpoint is the authoritative catalog, so the
 # curated list is a discovery-only fallback. For these, the picker merges
 # live-first (live entries lead, curated-only entries append). Every OTHER
@@ -2453,6 +2463,7 @@ def detect_static_provider_for_model(
             pid in current_keys
             or pid in _AGGREGATOR_PROVIDERS
             or pid in _BORROWED_MODEL_PROVIDERS
+            or pid in _VIRTUAL_ROUTING_PROVIDERS
         ):
             continue
         if _is_custom_current:

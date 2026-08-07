@@ -605,7 +605,7 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # current provider (handled above) or the user explicitly wrote an
             # enabled MoA preset into config.yaml. Use raw config so the
             # DEFAULT_CONFIG preset does not make every desktop picker show MoA.
-            if _raw_config_has_enabled_moa_preset():
+            if raw_config_has_enabled_moa_preset():
                 kept.append(row)
             continue
         if is_provider_explicitly_configured(slug):
@@ -613,7 +613,7 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
     return kept
 
 
-def _raw_config_has_enabled_moa_preset() -> bool:
+def raw_config_has_enabled_moa_preset() -> bool:
     """Return True when the user's raw config explicitly enables MoA.
 
     ``load_config()`` includes ``DEFAULT_CONFIG["moa"].presets.default`` for

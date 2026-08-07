@@ -296,7 +296,7 @@ auxiliary:
 
 当你设置了显式的辅助提供商（例如 `auxiliary.vision.provider: glm`）时，Hermes 将其视为首选——但若该提供商因**容量错误**（HTTP 402 付款要求、HTTP 429 每日配额耗尽、连接失败）而无法处理请求，Hermes 会通过分层链进行备用，而不是静默失败：
 
-1. **主辅助提供商** — 你配置的那个（始终优先尝试）
+1. **主辅助提供商** — 你配置的提供商（始终优先尝试）
 2. **`auxiliary.<task>.fallback_chain`** — 你的每任务覆盖列表（若已配置）
 3. **主 Agent 提供商 + 模型** — 最后的安全网（始终尝试，即使未配置链）
 4. **警告 + 重新抛出** — 若所有层均失败，Hermes 以 WARNING 级别记录 `Auxiliary <task>: ... all fallbacks exhausted` 并重新抛出原始错误

@@ -103,7 +103,7 @@ Socket Mode 让机器人通过 WebSocket 连接，无需公开 URL。
 
 ## 第四步：订阅事件
 
-此步骤至关重要——它控制机器人能看到哪些消息。
+这一步很重要——它控制机器人能看到哪些消息。
 
 1. 在侧边栏前往 **Features → Event Subscriptions**
 2. 将 **Enable Events** 切换为开启

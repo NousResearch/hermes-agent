@@ -180,7 +180,7 @@ hermes-agent/
 4. **[Provider 运行时解析](./provider-runtime.md)** — provider 的选择方式
 5. **[添加 Provider](./adding-providers.md)** — 新增 provider 的实践指南
 6. **[工具运行时](./tools-runtime.md)** — 工具注册表、分发、环境
-7. **[会话存储](./session-storage.md)** — SQLite schema、FTS5、会话血缘
+7. **[会话存储](./session-storage.md)** — SQLite schema、FTS5、会话继承链
 8. **[Gateway 内部机制](./gateway-internals.md)** — 消息平台 gateway
 9. **[上下文压缩与 Prompt 缓存](./context-compression-and-caching.md)** — 压缩与缓存
 10. **[ACP 内部机制](./acp-internals.md)** — IDE 集成
@@ -235,7 +235,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 
 ### Cron
 
-一等公民的 agent 任务（非 shell 任务）。任务以 JSON 存储，支持多种调度格式，可附加 skill 和脚本，并可向任意平台投递。
+原生支持的 agent 任务（非 shell 任务）。任务以 JSON 存储，支持多种调度格式，可附加 skill 和脚本，并可向任意平台投递。
 
 → [Cron 内部机制](./cron-internals.md)
 

@@ -22,7 +22,7 @@ hermes setup --portal
 
 ### 300+ 前沿模型，统一账单
 
-Portal 代理了来自整个生态系统的精选 agentic 模型目录——统一计入你的 Nous 订阅，而非每个厂商单独充值。
+Portal 汇集了一批适合智能体任务的模型，并统一计入你的 Nous 订阅，不用给每个厂商单独充值。
 
 | 系列 | 模型 |
 |--------|--------|
@@ -75,7 +75,7 @@ Nous Research 自家的 **Hermes 4** 系列（Hermes-4-70B、Hermes-4-405B）通
 但**不建议在 Hermes Agent 内部使用它们**。Hermes 4 针对对话和推理进行了调优，而非 agent 所依赖的高频工具调用循环。请将它们用于研究工作流，或通过[订阅代理](/user-guide/features/subscription-proxy)从其他工具调用——但在 agent 场景下，请从目录中选择前沿 agentic 模型：
 
 ```bash
-/model anthropic/claude-sonnet-4.6     # 最佳通用 agentic 模型
+/model anthropic/claude-sonnet-4.6     # 最适合通用智能体任务的模型
 /model openai/gpt-5.4                  # 强推理 + 工具调用
 /model google/gemini-2.5-pro           # 超大上下文窗口
 /model deepseek/deepseek-v3.2          # 高性价比代码模型
@@ -102,7 +102,7 @@ hermes setup --portal
 
 如果还没有订阅，请先在 [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) 注册。
 
-### 已有安装——在现有提供商旁添加 Portal
+### 已有安装——将 Portal 添加为另一个提供商
 
 如果你已经配置了 OpenRouter、Anthropic 或其他提供商，想在此基础上添加 Portal：
 
@@ -265,7 +265,7 @@ Portal 会为每个模型选择合适的后端——部分模型通过 OpenRoute
 ## 另请参阅
 
 - **[Tool Gateway](/user-guide/features/tool-gateway)** —— 每个 gateway 工具的完整详情、每工具配置及定价
-- **[订阅代理](/user-guide/features/subscription-proxy)** —— 在非 Hermes 工具（其他 agent、脚本、第三方客户端）中使用你的 Portal 订阅
+- **[订阅代理](/user-guide/features/subscription-proxy)** —— 在非 Hermes 工具（其他智能体、脚本、第三方客户端）中使用你的 Portal 订阅
 - **[语音模式](/user-guide/features/voice-mode)** —— 使用 Portal 的 OpenAI TTS 进行语音对话
 - **[AI 提供商](/integrations/providers)** —— 完整提供商目录，供对比参考
 - **[OAuth over SSH](/guides/oauth-over-ssh)** —— 从远程主机或纯浏览器环境登录

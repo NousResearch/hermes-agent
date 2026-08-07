@@ -127,6 +127,32 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_session_fork_rejects_path_unsafe_and_oversized_session_id(adapter, session_db):
+    """Fork body id must match create: reject path-unsafe / control / over-long
+    ids before branching the source or creating a child session.
+
+    Path-shaped ids later become agent task_id and are joined under Docker /
+    Singularity sandbox roots - without this guard they escape the sandbox.
+    """
+    source_id = session_db.create_session("source-session", "api_server", model="test-model")
+    session_db.append_message(source_id, "user", "first path")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        for bad_id in ("../../evil-sandbox", "..\\evil", "x" * 1000, "bad\nid"):
+            resp = await cli.post(
+                f"/api/sessions/{source_id}/fork",
+                json={"id": bad_id, "title": "Should fail"},
+            )
+            assert resp.status == 400, f"{bad_id!r} should be rejected"
+            payload = await resp.json()
+            assert payload["error"]["code"] == "invalid_session_id"
+            assert session_db.get_session(bad_id) is None
+
+    assert session_db.get_session(source_id).get("end_reason") != "branched"
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter, session_db):
     """run.completed must include the full interleaved turn transcript so a
     client that lost intermediate (pre-tool-call) assistant text from the live

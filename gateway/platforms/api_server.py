@@ -2156,6 +2156,27 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return raw, None
 
+    def _reject_unsafe_session_id(self, session_id: str) -> Optional["web.Response"]:
+        """Reject caller-supplied session ids that are empty, control-laden,
+        path-unsafe, or over-long.
+
+        Shared by create, fork, and ``X-Hermes-Session-Id`` continuation so
+        the same bounds apply before an id becomes a SessionDB key / agent
+        ``task_id`` (Docker/Singularity sandboxes join ``task_id`` under the
+        sandbox root). Returns a 400 response on failure, else ``None``.
+        """
+        from gateway.session import _is_path_unsafe
+
+        if not session_id or re.search(r'[\r\n\x00]', session_id) or _is_path_unsafe(session_id):
+            return web.json_response(
+                _openai_error("Invalid session ID", code="invalid_session_id"), status=400
+            )
+        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
+            return web.json_response(
+                _openai_error("Session ID too long", code="invalid_session_id"), status=400
+            )
+        return None
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -3377,11 +3398,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         raw_id = body.get("id") or body.get("session_id")
         session_id = str(raw_id).strip() if raw_id else f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        from gateway.session import _is_path_unsafe
-        if not session_id or re.search(r'[\r\n\x00]', session_id) or _is_path_unsafe(session_id):
-            return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
-        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
-            return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
+        id_err = self._reject_unsafe_session_id(session_id)
+        if id_err:
+            return id_err
 
         model = body.get("model") or self._model_name
         system_prompt = body.get("system_prompt")
@@ -3561,8 +3580,9 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = await self._ensure_session_db_async()
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
-        if not fork_id or re.search(r'[\r\n\x00]', fork_id):
-            return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
+        id_err = self._reject_unsafe_session_id(fork_id)
+        if id_err:
+            return id_err
         if await asyncio.to_thread(db.get_session, fork_id):
             return web.json_response(_openai_error(f"Session already exists: {fork_id}", code="session_exists"), status=409)
 
@@ -4054,22 +4074,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=403,
                 )
-            # Sanitize: reject control characters that could enable header
-            # injection, and path-traversal-shaped IDs that would escape the
-            # sessions directory when interpolated into on-disk artifact
-            # filenames (session snapshots, request dumps). Mirrors the native
-            # gateway's entry-boundary guard (gateway.session._is_path_unsafe).
-            from gateway.session import _is_path_unsafe
-            if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
-                return web.json_response(
-                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
-                    status=400,
-                )
-            if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
-                return web.json_response(
-                    {"error": {"message": "Session ID too long", "type": "invalid_request_error"}},
-                    status=400,
-                )
+            # Sanitize: control chars, path-unsafe ids, and length - same
+            # bounds as create/fork (see _reject_unsafe_session_id).
+            id_err = self._reject_unsafe_session_id(provided_session_id)
+            if id_err:
+                return id_err
             session_id = provided_session_id
             try:
                 db = await self._ensure_session_db_async()

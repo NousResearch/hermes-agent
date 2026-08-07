@@ -52,21 +52,57 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
-def _normalize_messages(messages: Any) -> list[dict[str, str]]:
+def _normalize_messages(messages: Any) -> list[dict[str, Any]]:
     if not isinstance(messages, list) or not messages:
         raise HermesLlmBridgeError("messages must be a non-empty array")
 
-    normalized: list[dict[str, str]] = []
+    normalized: list[dict[str, Any]] = []
     for message in messages:
         if not isinstance(message, dict):
             raise HermesLlmBridgeError("each message must be an object")
         role = message.get("role")
         if not isinstance(role, str) or not role.strip():
             raise HermesLlmBridgeError("each message must have a role")
-        normalized.append({
-            "role": role.strip(),
+        role = role.strip()
+        normalized_message: dict[str, Any] = {
+            "role": role,
             "content": _content_to_text(message.get("content")),
-        })
+        }
+
+        raw_tool_calls = message.get("tool_calls")
+        if role == "assistant" and isinstance(raw_tool_calls, list) and raw_tool_calls:
+            tool_calls: list[dict[str, Any]] = []
+            for raw_call in raw_tool_calls:
+                if not isinstance(raw_call, dict):
+                    raise HermesLlmBridgeError("assistant tool calls must be objects")
+                function = raw_call.get("function")
+                if not isinstance(function, dict):
+                    raise HermesLlmBridgeError("assistant tool calls must include a function")
+                call_id = raw_call.get("id")
+                name = function.get("name")
+                if not isinstance(call_id, str) or not call_id:
+                    raise HermesLlmBridgeError("assistant tool calls must include an id")
+                if not isinstance(name, str) or not name:
+                    raise HermesLlmBridgeError("assistant tool calls must include a function name")
+                arguments = function.get("arguments", "{}")
+                if not isinstance(arguments, str):
+                    arguments = json.dumps(arguments, ensure_ascii=False)
+                tool_calls.append({
+                    "id": call_id,
+                    "type": raw_call.get("type") or "function",
+                    "function": {"name": name, "arguments": arguments},
+                })
+            normalized_message["tool_calls"] = tool_calls
+            if message.get("content") is None:
+                normalized_message["content"] = None
+
+        if role == "tool":
+            tool_call_id = message.get("tool_call_id")
+            if not isinstance(tool_call_id, str) or not tool_call_id:
+                raise HermesLlmBridgeError("tool messages must include tool_call_id")
+            normalized_message["tool_call_id"] = tool_call_id
+
+        normalized.append(normalized_message)
     return normalized
 
 
@@ -274,6 +310,8 @@ class HermesLlmBridge:
             max_tokens=_coerce_optional_number(
                 payload.get("max_completion_tokens", payload.get("max_tokens")), integer=True
             ),
+            tools=payload.get("tools") if isinstance(payload.get("tools"), list) else None,
+            tool_choice=payload.get("tool_choice"),
             purpose="hindsight",
         )
 
@@ -324,6 +362,13 @@ class HermesLlmBridge:
         completion_tokens = int(getattr(usage, "output_tokens", 0) or 0)
         total_tokens = int(getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or 0)
         model = getattr(result, "model", None) or payload.get("model") or "hermes-inherited"
+        tool_calls = getattr(result, "tool_calls", None) or []
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": None if tool_calls else text,
+        }
+        if tool_calls:
+            message["tool_calls"] = tool_calls
         return {
             "id": f"chatcmpl-hermes-{uuid.uuid4().hex}",
             "object": "chat.completion",
@@ -332,8 +377,8 @@ class HermesLlmBridge:
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": text},
-                    "finish_reason": "stop",
+                    "message": message,
+                    "finish_reason": "tool_calls" if tool_calls else "stop",
                 }
             ],
             "usage": {

@@ -103,6 +103,119 @@ def test_bridge_routes_plain_completion_to_host_facade():
     assert llm.complete_calls[0][0][1]["content"] == "Remember this"
 
 
+def test_bridge_forwards_native_tools_and_returns_openai_tool_calls():
+    class ToolCallingLlm(_FakeLlm):
+        def complete(self, messages, **kwargs):
+            self.complete_calls.append((messages, kwargs))
+            return SimpleNamespace(
+                text="",
+                tool_calls=[
+                    {
+                        "id": "call-reflect-1",
+                        "type": "function",
+                        "function": {
+                            "name": "recall",
+                            "arguments": '{"query":"timezone"}',
+                        },
+                    }
+                ],
+                provider="openai-codex",
+                model="gpt-5.6-sol",
+                usage=SimpleNamespace(input_tokens=9, output_tokens=2, total_tokens=11),
+            )
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "recall",
+                "description": "Search memory",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+    llm = ToolCallingLlm()
+    bridge = HermesLlmBridge(llm)
+    bridge.start()
+    try:
+        status, response = _post(
+            f"{bridge.base_url}/chat/completions",
+            bridge.api_key,
+            {
+                "model": "hermes-inherited",
+                "messages": [{"role": "user", "content": "Use memory tools"}],
+                "tools": tools,
+                "tool_choice": "auto",
+            },
+        )
+    finally:
+        bridge.close()
+
+    assert status == 200
+    choice = response["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["content"] is None
+    assert choice["message"]["tool_calls"][0]["function"] == {
+        "name": "recall",
+        "arguments": '{"query":"timezone"}',
+    }
+    call_kwargs = llm.complete_calls[0][1]
+    assert call_kwargs["tools"] == tools
+    assert call_kwargs["tool_choice"] == "auto"
+
+
+def test_bridge_preserves_tool_call_transcript_for_next_agent_iteration():
+    llm = _FakeLlm()
+    bridge = HermesLlmBridge(llm)
+    bridge.start()
+    messages = [
+        {"role": "user", "content": "Use memory"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-reflect-1",
+                    "type": "function",
+                    "function": {
+                        "name": "recall",
+                        "arguments": '{"query":"timezone"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-reflect-1",
+            "content": '{"results":["WIB"]}',
+        },
+    ]
+    try:
+        status, _ = _post(
+            f"{bridge.base_url}/chat/completions",
+            bridge.api_key,
+            {
+                "model": "hermes-inherited",
+                "messages": messages,
+                "tools": [],
+            },
+        )
+    finally:
+        bridge.close()
+
+    assert status == 200
+    forwarded = llm.complete_calls[0][0]
+    assert forwarded[1]["tool_calls"] == messages[1]["tool_calls"]
+    assert forwarded[1]["content"] is None
+    assert forwarded[2]["role"] == "tool"
+    assert forwarded[2]["tool_call_id"] == "call-reflect-1"
+    assert forwarded[2]["content"] == '{"results":["WIB"]}'
+
+
 def test_bridge_is_compatible_with_openai_sdk_client():
     llm = _FakeLlm()
     bridge = HermesLlmBridge(llm)

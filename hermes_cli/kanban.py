@@ -250,6 +250,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     # --- init ---
     sub.add_parser("init", help="Create kanban.db if missing (idempotent)")
 
+    # --- reconcile (atomic external projection mutations) ---
+    p_reconcile = sub.add_parser(
+        "reconcile",
+        help="Apply one schema-versioned atomic task reconciliation request",
+    )
+    p_reconcile.add_argument(
+        "--input",
+        default="-",
+        metavar="PATH|-",
+        help="Canonical JSON request file, or '-' for stdin (default)",
+    )
+
     # --- boards (new in v2: multi-project support) ---
     p_boards = sub.add_parser(
         "boards",
@@ -980,6 +992,9 @@ def kanban_command(args: argparse.Namespace) -> int:
     # Fast-fail for clearer CLI UX only. The durable trust boundary is lower in
     # hermes_cli.kanban_db, because children can import DB mutators directly.
     if _is_delegated_child_cli_mutation(args):
+        if action == "reconcile":
+            print('{"outcome":"permission-denied","schema_version":1}')
+            return 1
         print(
             "kanban: delegate_task child contexts cannot mutate Kanban tasks via the CLI",
             file=sys.stderr,
@@ -1043,6 +1058,7 @@ def kanban_command(args: argparse.Namespace) -> int:
 
         handlers = {
             "init":     _cmd_init,
+            "reconcile": _cmd_reconcile,
             "create":   _cmd_create,
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
@@ -1115,6 +1131,7 @@ def _profile_author() -> str:
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init",
+    "reconcile",
     "create",
     "swarm",
     "assign",
@@ -1435,6 +1452,40 @@ def _cmd_init(args: argparse.Namespace) -> int:
         "by default (config: kanban.dispatch_interval_seconds). Without a\n"
         "running gateway, tasks stay in 'ready' forever."
     )
+    return 0
+
+
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    """Apply one canonical JSON request and emit one canonical JSON result."""
+    limit = 1024 * 1024
+    try:
+        source = getattr(args, "input", "-")
+        if source == "-":
+            raw = sys.stdin.read(limit + 1)
+        else:
+            with Path(source).open("r", encoding="utf-8") as handle:
+                raw = handle.read(limit + 1)
+        if len(raw.encode("utf-8")) > limit:
+            raise ValueError("request too large")
+        request = json.loads(raw)
+        if not isinstance(request, dict):
+            raise ValueError("request must be an object")
+        canonical = json.dumps(
+            request, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ) + "\n"
+        if raw != canonical:
+            raise ValueError("request must be canonical JSON")
+        with kb.connect_closing() as conn:
+            result = kb.reconcile_task(conn, request)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        print('{"outcome":"invalid-input","schema_version":1}')
+        return 2
+    except Exception:
+        # The contract intentionally does not reflect DB paths, task bodies,
+        # exception strings, or subprocess details to stdout/stderr.
+        print('{"outcome":"internal-error","schema_version":1}')
+        return 1
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
     return 0
 
 

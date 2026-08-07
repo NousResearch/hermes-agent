@@ -1300,6 +1300,31 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at INTEGER NOT NULL
 );
 
+-- Current authoritative projection for an external reconciliation lineage.
+-- Raw task bodies and source payloads deliberately never enter this table.
+CREATE TABLE IF NOT EXISTS kanban_reconcile_state (
+    lineage          TEXT PRIMARY KEY,
+    task_id           TEXT,
+    source_revision   TEXT NOT NULL,
+    active            INTEGER NOT NULL CHECK (active IN (0, 1)),
+    updated_at        INTEGER NOT NULL
+);
+
+-- Durable replay ledger. A request key always returns the exact same bounded
+-- JSON result; a reused key with different input fails closed.
+CREATE TABLE IF NOT EXISTS kanban_reconcile_requests (
+    request_key      TEXT PRIMARY KEY,
+    lineage          TEXT NOT NULL,
+    request_digest   TEXT NOT NULL,
+    result_json      TEXT NOT NULL,
+    created_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_reconcile_state_task
+    ON kanban_reconcile_state(task_id);
+CREATE INDEX IF NOT EXISTS idx_reconcile_requests_lineage
+    ON kanban_reconcile_requests(lineage);
+
 -- Historical attempt record. Each time the dispatcher claims a task, a
 -- new row is created here; claim state, PID, heartbeat, runtime cap,
 -- and structured summary all live on the run, not the task. Multiple
@@ -2906,6 +2931,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    _within_transaction: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3116,21 +3142,6 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
-    if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
-
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
@@ -3157,7 +3168,24 @@ def create_task(
     for attempt in range(2):
         task_id = _new_task_id()
         try:
-            with write_txn(conn):
+            transaction = (
+                contextlib.nullcontext()
+                if _within_transaction
+                else write_txn(conn)
+            )
+            with transaction:
+                # Serialize lookup and insert under the same writer lock. This
+                # closes the historical duplicate-create race without a
+                # legacy-breaking unique-index migration.
+                if idempotency_key:
+                    row = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        "AND status != 'archived' "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if row:
+                        return row["id"]
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -3278,6 +3306,365 @@ def create_task(
             # Retry with a fresh id.
             continue
     raise RuntimeError("unreachable")
+
+
+_RECONCILE_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_RECONCILE_REVISION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_RECONCILE_UNCLAIMED = {"triage", "todo", "ready"}
+
+
+def _reconcile_json(value: Mapping[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _reconcile_result(
+    *,
+    operation: str,
+    outcome: str,
+    lineage: str,
+    source_revision: str,
+    task_id: Optional[str] = None,
+    replaced_task_id: Optional[str] = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "operation": operation,
+        "outcome": outcome,
+        "idempotency_lineage": lineage,
+        "source_revision": source_revision,
+    }
+    if task_id is not None:
+        result["task_id"] = task_id
+    if replaced_task_id is not None:
+        result["replaced_task_id"] = replaced_task_id
+    return result
+
+
+def _validate_reconcile_request(request: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    operation = request.get("operation")
+    lineage = request.get("idempotency_lineage")
+    request_key = request.get("idempotency_key")
+    source_revision = request.get("source_revision")
+    if request.get("schema_version") != 1:
+        raise ValueError("unsupported reconcile schema_version")
+    if operation not in {"create-if-absent", "replace-unclaimed", "cancel-unclaimed"}:
+        raise ValueError("unsupported reconcile operation")
+    if not isinstance(lineage, str) or not _RECONCILE_HASH_RE.fullmatch(lineage):
+        raise ValueError("idempotency_lineage must be a sha256 digest")
+    if not isinstance(request_key, str) or not _RECONCILE_HASH_RE.fullmatch(request_key):
+        raise ValueError("idempotency_key must be a sha256 digest")
+    if not isinstance(source_revision, str) or not _RECONCILE_REVISION_RE.fullmatch(source_revision):
+        raise ValueError("source_revision must be an RFC3339 UTC timestamp")
+    try:
+        time.strptime(source_revision, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise ValueError("source_revision must be a valid RFC3339 UTC timestamp") from exc
+
+    base_fields = {
+        "schema_version", "operation", "canonical_ref", "idempotency_key",
+        "idempotency_lineage", "source_revision",
+    }
+    required_fields = base_fields | ({"task"} if operation == "create-if-absent" else {"expected"})
+    if operation == "replace-unclaimed":
+        required_fields.add("task")
+    if set(request) != required_fields:
+        raise ValueError("reconcile request fields do not match schema_version 1")
+    canonical_ref = request.get("canonical_ref")
+    if not isinstance(canonical_ref, str) or not re.fullmatch(
+        r"[a-z0-9_.-]+/[a-z0-9_.-]+#[1-9][0-9]*", canonical_ref
+    ):
+        raise ValueError("canonical_ref must use owner/repo#number")
+    if operation in {"create-if-absent", "replace-unclaimed"}:
+        task = request.get("task")
+        task_fields = {
+            "title", "body", "assignee", "project", "parents", "canonical_ref",
+            "source_status", "source_revision", "idempotency_lineage", "idempotency_key",
+        }
+        if not isinstance(task, Mapping) or set(task) != task_fields:
+            raise ValueError("task fields do not match schema_version 1")
+        title = task.get("title")
+        body = task.get("body")
+        assignee = task.get("assignee")
+        project = task.get("project")
+        parents = task.get("parents")
+        if (
+            not isinstance(title, str) or not title.strip()
+            or not isinstance(body, str)
+            or not isinstance(assignee, str) or not assignee
+            or not isinstance(project, str) or not project
+            or not isinstance(parents, list)
+            or any(not isinstance(parent, str) or not parent for parent in (parents or []))
+            or task.get("canonical_ref") != canonical_ref
+            or task.get("source_status") != "Ready"
+            or task.get("source_revision") != source_revision
+            or task.get("idempotency_lineage") != lineage
+            or task.get("idempotency_key") != request_key
+        ):
+            raise ValueError("task values do not match reconcile request")
+    if operation in {"replace-unclaimed", "cancel-unclaimed"}:
+        expected = request.get("expected")
+        expected_fields = {
+            "task_id", "status", "source_revision", "idempotency_lineage",
+            "idempotency_key", "claim_lock", "run_id",
+        }
+        if not isinstance(expected, Mapping) or set(expected) != expected_fields:
+            raise ValueError("expected fields do not match schema_version 1")
+    return operation, lineage, request_key, source_revision
+
+
+def reconcile_task(conn: sqlite3.Connection, request: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply one external task projection mutation in a single transaction.
+
+    The durable replay ledger stores only a request digest and bounded result;
+    raw task bodies never enter reconciliation metadata or audit payloads.
+    Dispatcher claims and this operation serialize on ``BEGIN IMMEDIATE``.
+    """
+    _assert_not_delegated_child_mutation()
+    operation, lineage, request_key, source_revision = _validate_reconcile_request(request)
+    request_json = _reconcile_json(request)
+    request_digest = "sha256:" + hashlib.sha256(request_json.encode("utf-8")).hexdigest()
+    now = int(time.time())
+
+    def persist(result: dict[str, Any]) -> dict[str, Any]:
+        conn.execute(
+            "INSERT INTO kanban_reconcile_requests "
+            "(request_key, lineage, request_digest, result_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (request_key, lineage, request_digest, _reconcile_json(result), now),
+        )
+        return result
+
+    with write_txn(conn):
+        replay = conn.execute(
+            "SELECT request_digest, result_json FROM kanban_reconcile_requests "
+            "WHERE request_key = ?",
+            (request_key,),
+        ).fetchone()
+        if replay is not None:
+            if replay["request_digest"] != request_digest:
+                return _reconcile_result(
+                    operation=operation,
+                    outcome="conflict",
+                    lineage=lineage,
+                    source_revision=source_revision,
+                )
+            result = json.loads(replay["result_json"])
+            if not isinstance(result, dict):  # pragma: no cover - DB corruption guard
+                raise RuntimeError("invalid reconcile replay row")
+            return result
+
+        state = conn.execute(
+            "SELECT task_id, source_revision, active "
+            "FROM kanban_reconcile_state WHERE lineage = ?",
+            (lineage,),
+        ).fetchone()
+        if state is not None:
+            current_revision = str(state["source_revision"])
+            if source_revision < current_revision:
+                return persist(_reconcile_result(
+                    operation=operation,
+                    outcome="stale-source-revision",
+                    lineage=lineage,
+                    source_revision=source_revision,
+                    task_id=state["task_id"],
+                ))
+            if source_revision == current_revision:
+                return persist(_reconcile_result(
+                    operation=operation,
+                    outcome="conflict",
+                    lineage=lineage,
+                    source_revision=source_revision,
+                    task_id=state["task_id"],
+                ))
+
+        if operation == "create-if-absent":
+            if state is not None and int(state["active"]):
+                return persist(_reconcile_result(
+                    operation=operation,
+                    outcome="precondition-failed",
+                    lineage=lineage,
+                    source_revision=source_revision,
+                    task_id=state["task_id"],
+                ))
+            task = request.get("task")
+            if not isinstance(task, Mapping):
+                raise ValueError("create-if-absent requires task")
+            task_id = create_task(
+                conn,
+                title=str(task.get("title") or ""),
+                body=task.get("body") if isinstance(task.get("body"), str) else None,
+                assignee=task.get("assignee") if isinstance(task.get("assignee"), str) else None,
+                created_by="reconciler",
+                parents=tuple(
+                    parent for parent in task.get("parents", ())
+                    if isinstance(parent, str) and parent
+                ),
+                idempotency_key=request_key,
+                project_id=task.get("project") if isinstance(task.get("project"), str) else None,
+                _within_transaction=True,
+            )
+            conn.execute(
+                "INSERT INTO kanban_reconcile_state "
+                "(lineage, task_id, source_revision, active, updated_at) "
+                "VALUES (?, ?, ?, 1, ?) "
+                "ON CONFLICT(lineage) DO UPDATE SET task_id=excluded.task_id, "
+                "source_revision=excluded.source_revision, active=1, updated_at=excluded.updated_at",
+                (lineage, task_id, source_revision, now),
+            )
+            result = _reconcile_result(
+                operation=operation,
+                outcome="created",
+                lineage=lineage,
+                source_revision=source_revision,
+                task_id=task_id,
+            )
+            _append_event(conn, task_id, "reconcile_created", {
+                "operation": operation,
+                "idempotency_lineage": lineage,
+                "idempotency_key": request_key,
+                "source_revision": source_revision,
+            })
+            return persist(result)
+
+        expected = request.get("expected")
+        if not isinstance(expected, Mapping):
+            raise ValueError(f"{operation} requires expected state")
+        expected_task_id = expected.get("task_id")
+        expected_status = expected.get("status")
+        if (
+            not isinstance(expected_task_id, str)
+            or expected_status not in _RECONCILE_UNCLAIMED
+            or expected.get("source_revision") != (state["source_revision"] if state is not None else None)
+            or expected.get("idempotency_lineage") != lineage
+            or expected.get("claim_lock") is not None
+            or expected.get("run_id") is not None
+            or state is None
+            or not int(state["active"])
+            or state["task_id"] != expected_task_id
+        ):
+            return persist(_reconcile_result(
+                operation=operation,
+                outcome="precondition-failed",
+                lineage=lineage,
+                source_revision=source_revision,
+                task_id=state["task_id"] if state is not None else None,
+            ))
+
+        row = conn.execute(
+            "SELECT status, idempotency_key, claim_lock, current_run_id, worker_pid "
+            "FROM tasks WHERE id = ?",
+            (expected_task_id,),
+        ).fetchone()
+        if row is None:
+            return persist(_reconcile_result(
+                operation=operation,
+                outcome="precondition-failed",
+                lineage=lineage,
+                source_revision=source_revision,
+            ))
+        if (
+            row["status"] != expected_status
+            or row["idempotency_key"] != expected.get("idempotency_key")
+            or row["claim_lock"] is not None
+            or row["current_run_id"] is not None
+            or row["worker_pid"] is not None
+        ):
+            outcome = "claimed" if (
+                row["status"] in {"running", "blocked"}
+                or row["claim_lock"] is not None
+                or row["current_run_id"] is not None
+                or row["worker_pid"] is not None
+            ) else "precondition-failed"
+            return persist(_reconcile_result(
+                operation=operation,
+                outcome=outcome,
+                lineage=lineage,
+                source_revision=source_revision,
+                task_id=expected_task_id,
+            ))
+
+        changed = conn.execute(
+            "UPDATE tasks SET status='archived', completed_at=?, "
+            "claim_lock=NULL, claim_expires=NULL, current_run_id=NULL, worker_pid=NULL "
+            "WHERE id=? AND status=? AND claim_lock IS NULL "
+            "AND current_run_id IS NULL AND worker_pid IS NULL",
+            (now, expected_task_id, expected_status),
+        ).rowcount
+        if changed != 1:  # pragma: no cover - same transaction, defensive CAS
+            return persist(_reconcile_result(
+                operation=operation,
+                outcome="precondition-failed",
+                lineage=lineage,
+                source_revision=source_revision,
+                task_id=expected_task_id,
+            ))
+
+        if operation == "cancel-unclaimed":
+            conn.execute(
+                "UPDATE kanban_reconcile_state SET source_revision=?, active=0, updated_at=? "
+                "WHERE lineage=?",
+                (source_revision, now, lineage),
+            )
+            result = _reconcile_result(
+                operation=operation,
+                outcome="cancelled",
+                lineage=lineage,
+                source_revision=source_revision,
+                task_id=expected_task_id,
+            )
+            _append_event(conn, expected_task_id, "reconcile_cancelled", {
+                "operation": operation,
+                "idempotency_lineage": lineage,
+                "idempotency_key": request_key,
+                "source_revision": source_revision,
+            })
+            return persist(result)
+
+        task = request.get("task")
+        if not isinstance(task, Mapping):
+            raise ValueError("replace-unclaimed requires task")
+        new_task_id = create_task(
+            conn,
+            title=str(task.get("title") or ""),
+            body=task.get("body") if isinstance(task.get("body"), str) else None,
+            assignee=task.get("assignee") if isinstance(task.get("assignee"), str) else None,
+            created_by="reconciler",
+            parents=tuple(
+                    parent for parent in task.get("parents", ())
+                    if isinstance(parent, str) and parent
+                ),
+            idempotency_key=request_key,
+            project_id=task.get("project") if isinstance(task.get("project"), str) else None,
+            _within_transaction=True,
+        )
+        conn.execute(
+            "UPDATE kanban_reconcile_state SET task_id=?, source_revision=?, active=1, updated_at=? "
+            "WHERE lineage=?",
+            (new_task_id, source_revision, now, lineage),
+        )
+        result = _reconcile_result(
+            operation=operation,
+            outcome="replaced",
+            lineage=lineage,
+            source_revision=source_revision,
+            task_id=new_task_id,
+            replaced_task_id=expected_task_id,
+        )
+        _append_event(conn, expected_task_id, "reconcile_superseded", {
+            "operation": operation,
+            "idempotency_lineage": lineage,
+            "idempotency_key": request_key,
+            "source_revision": source_revision,
+            "replacement_task_id": new_task_id,
+        })
+        _append_event(conn, new_task_id, "reconcile_replaced", {
+            "operation": operation,
+            "idempotency_lineage": lineage,
+            "idempotency_key": request_key,
+            "source_revision": source_revision,
+            "replaced_task_id": expected_task_id,
+        })
+        return persist(result)
 
 
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:

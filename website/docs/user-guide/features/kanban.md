@@ -690,6 +690,7 @@ This is the surface **you** (or scripts, cron, the dashboard) use to drive the b
 
 ```
 hermes kanban init                                     # create kanban.db + print daemon hint
+hermes kanban --board <slug> reconcile --input -       # atomic external projection mutation
 hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--parent <id>]... [--tenant <name>]
                                 [--workspace scratch|worktree|worktree:<path>|dir:<path>]
@@ -750,6 +751,16 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
+
+### Atomic external reconciliation
+
+Automation that projects an authoritative source into Kanban should use `reconcile`, not a read-then-create/archive sequence. The command accepts one strict canonical JSON request on stdin and implements `create-if-absent`, `replace-unclaimed`, and `cancel-unclaimed` under the same SQLite writer transaction used by dispatcher claims.
+
+```bash
+canonical_request_generator | hermes kanban --board delivery reconcile --input -
+```
+
+Requests carry a stable SHA-256 lineage, event-specific SHA-256 idempotency key, monotonic UTC source revision, and (for replacement/cancellation) the expected task/status plus null claim/run ownership. Identical retries return the stored prior result. Stale revisions, changed expectations, and claimed work produce bounded non-mutating outcomes. Raw task bodies are excluded from reconciliation metadata and audit events. See [the protocol contract](https://github.com/NousResearch/hermes-agent/blob/main/docs/kanban/atomic-reconciliation.md) for the complete schema and outcome semantics.
 
 ### Concurrency, scheduling, and child promotion config
 

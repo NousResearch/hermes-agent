@@ -377,15 +377,23 @@ else
     fi
 
     if [ -n "$SHELL_CONFIG" ]; then
-        # Touch the file just in case it doesn't exist yet but was selected
-        touch "$SHELL_CONFIG" 2>/dev/null || true
-
         if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
             if ! grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
-                echo "" >> "$SHELL_CONFIG"
-                echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG"
-                echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_CONFIG"
-                echo -e "${GREEN}✓${NC} Added ~/.local/bin to PATH in $SHELL_CONFIG"
+                # Try to write, handling permission errors gracefully
+                if {
+                    echo "" >> "$SHELL_CONFIG" 2>/dev/null && \
+                    echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG" 2>/dev/null && \
+                    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_CONFIG" 2>/dev/null
+                }; then
+                    echo -e "${GREEN}✓${NC} Added ~/.local/bin to PATH in $SHELL_CONFIG"
+                else
+                    echo -e "${YELLOW}⚠${NC} Could not write to $SHELL_CONFIG (not writable?)"
+                    echo ""
+                    echo -e "${CYAN}→${NC} Add ~/.local/bin to your PATH manually:"
+                    echo ""
+                    echo -e "    ${CYAN}export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}"
+                    echo ""
+                fi
             else
                 echo -e "${GREEN}✓${NC} ~/.local/bin already in $SHELL_CONFIG"
             fi

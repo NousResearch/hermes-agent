@@ -594,13 +594,24 @@ def _run_agent_tool_execution_middleware(
             )
             return result
 
-        if function_name == "memory":
-            agent._turns_since_memory = 0
-        elif function_name == "skill_manage":
-            agent._iters_since_skill = 0
-
         _advance_start_order(_begin)
-        return execute(final_args)
+        _dispatch_result = execute(final_args)
+        # Reset nudge counters only on a non-blocked, non-error result.
+        # This dispatch path only reaches here when NOT blocked (the block
+        # check above returns early), but a call that executes and then
+        # fails must not reset the nudge either -- only genuine success
+        # does. Checked post-execution rather than before execute() (as an
+        # earlier revision of this fix did, prior to Relay centralizing
+        # concurrent and sequential dispatch into this shared middleware)
+        # so an execution error is correctly accounted for (issue #38863).
+        if function_name in ("memory", "skill_manage"):
+            _reset_is_error, _ = _detect_tool_failure(function_name, _dispatch_result)
+            if not _reset_is_error:
+                if function_name == "memory":
+                    agent._turns_since_memory = 0
+                else:
+                    agent._iters_since_skill = 0
+        return _dispatch_result
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(

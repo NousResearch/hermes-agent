@@ -186,9 +186,50 @@ def test_stdio_command_and_data_cwd_containment(tmp_path: Path) -> None:
     assert package.mcp_servers["valid"]["cwd"] == str(
         (tmp_path / "data" / "state").resolve()
     )
+    assert (tmp_path / "data" / "state").is_dir()
+    assert "agent_plugin" not in package.mcp_servers["valid"]
     assert package.mcp_servers["opaque-command"]["command"] == str(
         (root / "${PLUGIN_ROOT}").resolve()
     )
+
+
+def test_stdio_cwd_directory_failure_isolated_to_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_json(tmp_path / "plugin.json", _manifest())
+    _write_json(
+        tmp_path / "mcp.json",
+        {
+            "$schema": MCP_SCHEMA_V1,
+            "mcpServers": {
+                "broken": {
+                    "type": "stdio",
+                    "command": "python",
+                    "cwd": "${PLUGIN_DATA}/broken",
+                },
+                "valid": {
+                    "type": "stdio",
+                    "command": "python",
+                    "cwd": "${PLUGIN_DATA}/valid",
+                },
+            },
+        },
+    )
+    data_root = (tmp_path / "data").resolve()
+    original_mkdir = Path.mkdir
+
+    def fail_broken(path: Path, *args: object, **kwargs: object) -> None:
+        if path == data_root / "broken":
+            raise PermissionError("broken cwd")
+        original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_broken)
+
+    package = load_agent_plugin(tmp_path, data_root)
+
+    assert set(package.mcp_servers) == {"valid"}
+    assert (data_root / "valid").is_dir()
+    assert any(d.scope == "mcp:broken" for d in package.diagnostics)
 
 
 def test_malformed_skill_yaml_is_skipped(tmp_path: Path) -> None:

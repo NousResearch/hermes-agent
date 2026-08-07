@@ -184,6 +184,7 @@ class TestLoadMCPConfig:
         assert server["cwd"] == str(plugin.resolve())
         assert server["env"]["PLUGIN_ROOT"] == str(plugin.resolve())
         assert server["env"]["PLUGIN_DATA"].startswith(str(home / "plugin-data"))
+        assert "agent_plugin" not in server
 
 
 class TestMCPParallelSafetyProvenance:

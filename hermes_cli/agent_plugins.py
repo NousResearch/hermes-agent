@@ -362,7 +362,6 @@ def _translate_stdio(
         "args": [_expand(value, plugin_root, data_root) for value in args],
         "env": translated_env,
         "cwd": str(cwd_value),
-        "agent_plugin": True,
     }
 
 
@@ -415,6 +414,17 @@ def _discover_mcp(
                 translated_server = _translate_stdio(server, root, data_root)
                 if create_data:
                     data_root.mkdir(parents=True, exist_ok=True)
+                    cwd_path = Path(translated_server["cwd"])
+                    try:
+                        cwd_path.relative_to(data_root)
+                    except ValueError:
+                        pass
+                    else:
+                        # The MCP client starts stdio servers with this cwd.
+                        # Create only data-root descendants; plugin-root paths
+                        # remain package-owned and are never made writable as a
+                        # side effect of discovery.
+                        cwd_path.mkdir(parents=True, exist_ok=True)
                 translated[name] = translated_server
             except (OSError, ValueError) as exc:
                 diagnostics.append(AgentPluginDiagnostic(scope, str(exc)))
@@ -476,81 +486,13 @@ def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPlug
 
 
 def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
-    """Cheaply detect an enabled portable package with a root ``mcp.json``.
+    """Compatibility wrapper for the shared PluginManager MCP probe.
 
-    This probe intentionally does not import or register native plugins. Full
-    validation remains in the background MCP discovery path.
+    Directory scanning belongs to :mod:`hermes_cli.plugins` so startup gating
+    and full plugin discovery cannot drift apart. Keep this import-compatible
+    entry point for callers that used the original helper.
     """
 
-    plugins_config = raw_config.get("plugins")
-    if not isinstance(plugins_config, dict):
-        return False
-    enabled_value = plugins_config.get("enabled")
-    if not isinstance(enabled_value, list):
-        return False
-    enabled = {value for value in enabled_value if isinstance(value, str)}
-    disabled_value = plugins_config.get("disabled", [])
-    disabled = (
-        {value for value in disabled_value if isinstance(value, str)}
-        if isinstance(disabled_value, list)
-        else set()
-    )
-    if not enabled:
-        return False
+    from hermes_cli.plugins import has_enabled_agent_plugin_mcp as _probe
 
-    from hermes_constants import get_hermes_home
-    from utils import env_var_enabled
-
-    if env_var_enabled("HERMES_SAFE_MODE"):
-        return False
-
-    bundled = Path(
-        os.getenv("HERMES_BUNDLED_PLUGINS", Path(__file__).resolve().parent.parent / "plugins")
-    )
-    search_roots: list[tuple[Path, set[str]]] = [
-        (
-            bundled,
-            {"memory", "context_engine", "platforms", "model-providers"},
-        ),
-        (bundled / "platforms", set()),
-        (get_hermes_home() / "plugins", set()),
-    ]
-    if env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
-        search_roots.append((Path.cwd() / ".hermes" / "plugins", set()))
-
-    winners: dict[str, tuple[str, Path]] = {}
-
-    def scan(directory: Path, *, prefix: str, depth: int, skip: set[str]) -> None:
-        try:
-            children = sorted(directory.iterdir(), key=lambda path: path.name)
-        except OSError:
-            return
-        for child in children:
-            if not child.is_dir() or (depth == 0 and child.name in skip):
-                continue
-            if (child / "plugin.yaml").exists() or (child / "plugin.yml").exists():
-                continue
-            portable_file = child / "plugin.json"
-            if portable_file.exists() or portable_file.is_symlink():
-                try:
-                    manifest, _ = read_agent_plugin_manifest(child)
-                except (AgentPluginError, OSError, RuntimeError):
-                    continue
-                key = f"{prefix}/{child.name}" if prefix else manifest["name"]
-                winners[key] = (manifest["name"], child)
-                continue
-            if depth == 0:
-                nested_prefix = f"{prefix}/{child.name}" if prefix else child.name
-                scan(child, prefix=nested_prefix, depth=1, skip=set())
-
-    for search_root, skip_names in search_roots:
-        scan(search_root, prefix="", depth=0, skip=skip_names)
-
-    for key, (name, root) in winners.items():
-        if key in disabled or name in disabled:
-            continue
-        if key not in enabled and name not in enabled:
-            continue
-        if _discover_mcp(root, get_hermes_home() / "plugin-data" / name, [], create_data=False):
-            return True
-    return False
+    return _probe(raw_config)

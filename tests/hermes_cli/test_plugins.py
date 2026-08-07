@@ -190,6 +190,60 @@ class TestPluginDiscovery:
         assert manager.list_plugin_skill_metadata() == []
         assert manager.get_portable_mcp_servers() == {}
 
+    def test_portable_author_object_is_normalized_to_stable_string(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / "home"
+        plugin = home / "plugins" / "portable"
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "$schema": PLUGIN_SCHEMA_V1,
+                    "name": "portable.test",
+                    "author": {
+                        "url": "https://example.test",
+                        "name": "Ada Lovelace",
+                        "email": "ada@example.test",
+                    },
+                }
+            )
+        )
+        bundled = tmp_path / "bundled"
+        bundled.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+
+        manager = PluginManager()
+        manifests = manager._collect_directory_manifests()
+
+        [manifest] = [item for item in manifests if item.portable]
+        assert manifest.author == (
+            "Ada Lovelace, ada@example.test, https://example.test"
+        )
+        assert isinstance(manifest.author, str)
+
+        empty_author = home / "plugins" / "empty-author"
+        empty_author.mkdir()
+        (empty_author / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "$schema": PLUGIN_SCHEMA_V1,
+                    "name": "empty-author",
+                    "author": {},
+                }
+            )
+        )
+        [empty] = [
+            item
+            for item in manager._collect_directory_manifests()
+            if item.name == "empty-author"
+        ]
+        assert empty.author == ""
+
 
     def test_plugin_can_register_and_invoke_middleware(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"

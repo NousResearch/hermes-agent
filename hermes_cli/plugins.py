@@ -293,6 +293,17 @@ def _portable_skill_namespace(key: str) -> str:
     return f"agent-plugin-{slug}-{digest}"
 
 
+def _display_author(value: object) -> str:
+    """Normalize a manifest author value for the string PluginManifest field."""
+    if isinstance(value, Mapping):
+        return ", ".join(
+            str(value[field])
+            for field in ("name", "email", "url")
+            if value.get(field)
+        )
+    return "" if value is None else str(value)
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -300,7 +311,7 @@ class PluginManifest:
     name: str
     version: str = ""
     description: str = ""
-    author: Any = ""
+    author: str = ""
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
@@ -1368,56 +1379,11 @@ class PluginManager:
 
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
-        manifests: List[PluginManifest] = []
+        manifests: List[PluginManifest] = self._collect_directory_manifests()
 
-        # 1. Bundled plugins (<repo>/plugins/<name>/)
-        #
-        # Repo-shipped plugins live next to hermes_cli/. Two layouts are
-        # supported (see ``_scan_directory`` for details):
-        #
-        #   - flat: ``plugins/disk-cleanup/plugin.yaml`` (standalone)
-        #   - category: ``plugins/image_gen/openai/plugin.yaml`` (backend)
-        #
-        # ``memory/``, ``context_engine/``, and ``model-providers/`` are
-        # skipped at the top level — they have their own discovery systems
-        # (plugins/memory/__init__.py, providers/__init__.py). ``platforms/``
-        # is a category holding platform adapters (scanned one level deeper
-        # below).
-        repo_plugins = get_bundled_plugins_dir()
-        logger.debug("Scanning bundled plugins: %s", repo_plugins)
-        bundled = self._scan_directory(
-            repo_plugins,
-            source="bundled",
-            skip_names={"memory", "context_engine", "platforms", "model-providers"},
-        )
-        logger.debug("  bundled (top-level): %d manifest(s)", len(bundled))
-        manifests.extend(bundled)
-        bundled_platforms = self._scan_directory(
-            repo_plugins / "platforms", source="bundled"
-        )
-        logger.debug("  bundled/platforms: %d manifest(s)", len(bundled_platforms))
-        manifests.extend(bundled_platforms)
-
-        # 2. User plugins (~/.hermes/plugins/)
-        user_dir = get_hermes_home() / "plugins"
-        logger.debug("Scanning user plugins: %s", user_dir)
-        user_manifests = self._scan_directory(user_dir, source="user")
-        logger.debug("  user: %d manifest(s)", len(user_manifests))
-        manifests.extend(user_manifests)
-
-        # 3. Project plugins (./.hermes/plugins/)
-        if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
-            project_dir = Path.cwd() / ".hermes" / "plugins"
-            logger.debug("Scanning project plugins: %s", project_dir)
-            project_manifests = self._scan_directory(project_dir, source="project")
-            logger.debug("  project: %d manifest(s)", len(project_manifests))
-            manifests.extend(project_manifests)
-        else:
-            logger.debug(
-                "Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)"
-            )
-
-        # 4. Pip / entry-point plugins
+        # Directory plugins are collected above. Pip / entry-point plugins
+        # are intentionally separate: portable packages are directory-only
+        # and the startup MCP probe must not import or register entry points.
         ep_manifests = self._scan_entry_points()
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)
@@ -1527,6 +1493,113 @@ class PluginManager:
                 sum(1 for p in self._plugins.values() if p.enabled),
             )
 
+    def _collect_directory_manifests(self) -> List[PluginManifest]:
+        """Collect directory manifests in the same order as full discovery.
+
+        This method only reads manifests. It does not load native plugin
+        modules, register deferred platforms, or otherwise mutate manager
+        registries. Keeping the source ordering and scanner calls here lets
+        startup probes share the exact precedence and containment rules used
+        by :meth:`_discover_and_load_inner`.
+        """
+        manifests: List[PluginManifest] = []
+
+        # 1. Bundled plugins (<repo>/plugins/<name>/). The excluded top-level
+        # categories have their own discovery systems; bundled platforms are
+        # scanned explicitly one level below.
+        repo_plugins = get_bundled_plugins_dir()
+        logger.debug("Scanning bundled plugins: %s", repo_plugins)
+        bundled = self._scan_directory(
+            repo_plugins,
+            source="bundled",
+            skip_names={"memory", "context_engine", "platforms", "model-providers"},
+        )
+        logger.debug("  bundled (top-level): %d manifest(s)", len(bundled))
+        manifests.extend(bundled)
+        bundled_platforms = self._scan_directory(
+            repo_plugins / "platforms", source="bundled"
+        )
+        logger.debug("  bundled/platforms: %d manifest(s)", len(bundled_platforms))
+        manifests.extend(bundled_platforms)
+
+        # 2. User plugins (~/.hermes/plugins/)
+        user_dir = get_hermes_home() / "plugins"
+        logger.debug("Scanning user plugins: %s", user_dir)
+        user_manifests = self._scan_directory(user_dir, source="user")
+        logger.debug("  user: %d manifest(s)", len(user_manifests))
+        manifests.extend(user_manifests)
+
+        # 3. Project plugins (./.hermes/plugins/), only when explicitly opted
+        # in. This must match the full discovery gate exactly.
+        if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+            project_dir = Path.cwd() / ".hermes" / "plugins"
+            logger.debug("Scanning project plugins: %s", project_dir)
+            project_manifests = self._scan_directory(project_dir, source="project")
+            logger.debug("  project: %d manifest(s)", len(project_manifests))
+            manifests.extend(project_manifests)
+        else:
+            logger.debug(
+                "Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)"
+            )
+
+        return manifests
+
+    def has_enabled_portable_mcp(self, raw_config: Mapping[str, Any]) -> bool:
+        """Probe enabled portable MCP packages without loading plugins.
+
+        The directory manifest collection is shared with full discovery, so
+        native ``plugin.yaml`` precedence, source ordering, depth limits, and
+        project-plugin gating cannot diverge between startup and runtime.
+        """
+        if _env_enabled("HERMES_SAFE_MODE"):
+            return False
+
+        plugins_config = raw_config.get("plugins")
+        if not isinstance(plugins_config, dict):
+            return False
+        enabled_value = plugins_config.get("enabled")
+        if not isinstance(enabled_value, list):
+            return False
+        enabled = {value for value in enabled_value if isinstance(value, str)}
+        disabled_value = plugins_config.get("disabled", [])
+        disabled = (
+            {value for value in disabled_value if isinstance(value, str)}
+            if isinstance(disabled_value, list)
+            else set()
+        )
+        if not enabled:
+            return False
+
+        winners: Dict[str, PluginManifest] = {}
+        for manifest in self._collect_directory_manifests():
+            winners[manifest.key or manifest.name] = manifest
+
+        for manifest in winners.values():
+            if not manifest.portable:
+                continue
+            lookup_key = manifest.key or manifest.name
+            if lookup_key in disabled or manifest.name in disabled:
+                continue
+            if lookup_key not in enabled and manifest.name not in enabled:
+                continue
+            try:
+                from hermes_cli.agent_plugins import _discover_mcp
+
+                if _discover_mcp(
+                    Path(manifest.path),
+                    get_hermes_home()
+                    / "plugin-data"
+                    / (manifest.skill_namespace or lookup_key),
+                    [],
+                    create_data=False,
+                ):
+                    return True
+            except (OSError, RuntimeError, ValueError):
+                # Full discovery will report component diagnostics. Startup
+                # probing should fail closed for an unreadable package.
+                continue
+        return False
+
     # -----------------------------------------------------------------------
     # Directory scanning
     # -----------------------------------------------------------------------
@@ -1610,7 +1683,7 @@ class PluginManager:
                             name=data["name"],
                             version=data.get("version", ""),
                             description=data.get("description", ""),
-                            author=data.get("author", ""),
+                            author=_display_author(data.get("author", "")),
                             source=source,
                             path=str(child),
                             key=key,
@@ -1718,7 +1791,7 @@ class PluginManager:
                 name=name,
                 version=str(data.get("version", "")),
                 description=data.get("description", ""),
-                author=data.get("author", ""),
+                author=_display_author(data.get("author", "")),
                 requires_env=data.get("requires_env", []),
                 provides_tools=data.get("provides_tools", []),
                 provides_hooks=data.get("provides_hooks", []),
@@ -2197,6 +2270,15 @@ def get_plugin_manager() -> PluginManager:
     if _plugin_manager is None:
         _plugin_manager = PluginManager()
     return _plugin_manager
+
+
+def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
+    """Return whether config enables a portable package with MCP servers.
+
+    A fresh manager performs manifest-only scanning, so this startup gate does
+    not mutate the process-wide plugin registry or import native plugin code.
+    """
+    return PluginManager().has_enabled_portable_mcp(raw_config)
 
 
 def discover_plugins(force: bool = False) -> None:

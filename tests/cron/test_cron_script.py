@@ -14,7 +14,6 @@ import textwrap
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-
 import pytest
 
 # Ensure project root is importable
@@ -129,6 +128,55 @@ class TestRunJobScript:
         success, output = _run_job_script("env_probe.py")
         assert success is True
         assert output == "ABSENT"
+
+    def test_script_subprocess_env_path_normalised(self, cron_env, monkeypatch):
+        """Cron script subprocess PATH receives Hermes bin dir prepend + sane entries."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+        from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ok")\n')
+
+        # Drive PATH down to the bare systemd default to simulate the gap.
+        monkeypatch.setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        # Pin a blocked secret so we can assert the normalize_path step did NOT
+        # accidentally leak it (the scrub step must still run first).
+        blocked_var = sorted(_HERMES_PROVIDER_ENV_BLOCKLIST)[0]
+        monkeypatch.setenv(blocked_var, "must_not_survive_normalize_path")
+
+        captured_env = {}
+
+        def fake_run(argv, **kwargs):
+            captured_env.update(kwargs.get("env") or {})
+            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+        monkeypatch.setattr(sched_mod.sys, "platform", "linux")
+        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+        # Force _resolve_hermes_bin_dir to a sentinel so the prepend
+        # assertion is unconditional (real env may lack a 'hermes' on PATH).
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_resolve_hermes_bin_dir", lambda: "/fake/hermes/bin")
+
+        success, output = _run_job_script("probe.py")
+
+        assert success is True
+        assert output == "ok"
+
+        # Credential stripping must still work — normalize_path must not
+        # accidentally map the force-prefixed blocked var back in.
+        assert blocked_var not in captured_env, (
+            f"blocked var {blocked_var!r} leaked into subprocess env after normalize_path"
+        )
+
+        env_path = captured_env.get("PATH", "")
+        # Sanity: the minimal PATH we set must still flow through.
+        assert "/usr/local/bin" in env_path
+        # The sentinel hermes bin dir must be prepended.
+        assert env_path.startswith("/fake/hermes/bin:"), (
+            f"sentinel hermes bin dir not first in PATH: {env_path!r}"
+        )
 
     def test_windows_uv_venv_python_script_bypasses_launcher(self, cron_env, tmp_path, monkeypatch):
         from cron import scheduler as sched_mod

@@ -661,6 +661,7 @@ def build_subprocess_env(
     *,
     inherit_profile_home: bool = True,
     scrub_secrets: bool = True,
+    normalize_path: bool = False,
     extra: "Mapping[str, str] | None" = None,
 ) -> dict[str, str]:
     """Single factory for building a child-process environment.
@@ -695,6 +696,13 @@ def build_subprocess_env(
       subprocess HOME contract (``hermes_constants.apply_subprocess_home_env``).
       Pass False to keep the inherited env untouched (exact legacy
       ``os.environ.copy()`` behavior).
+    * ``normalize_path=False`` — when True, prepend the Hermes install
+      directory and append missing sane system entries to ``PATH`` so that
+      CLI tools installed in ``~/.local/bin``, venvs, nix, or pipx are
+      reachable even when the parent process was launched by systemd or
+      another service manager with a minimal ``PATH``.  Only opt in at call
+      sites where the PATH gap matters (cron scripts, background watchers);
+      most sites should keep the default so the legacy env shape is preserved.
     * ``extra`` — applied **last** on the non-scrub path so explicit caller
       overrides (e.g. a session-scoped ``HERMES_HOME``) always win.  On the
       scrub path it is forwarded as ``_sanitize_subprocess_env``'s
@@ -704,18 +712,25 @@ def build_subprocess_env(
         # _sanitize_subprocess_env already performs HERMES_HOME override
         # bridging + apply_subprocess_home_env unconditionally; delegating
         # wholesale keeps one owner and zero drift.
-        return _sanitize_subprocess_env(
+        env = _sanitize_subprocess_env(
             dict(base) if base is not None else os.environ.copy(),
             dict(extra) if extra else None,
         )
+    else:
+        env = dict(base) if base is not None else os.environ.copy()
+        if inherit_profile_home:
+            _inject_context_hermes_home(env)
+            from hermes_constants import apply_subprocess_home_env
+            apply_subprocess_home_env(env)
+        if extra:
+            env.update(extra)
 
-    env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
-    if inherit_profile_home:
-        _inject_context_hermes_home(env)
-        from hermes_constants import apply_subprocess_home_env
-        apply_subprocess_home_env(env)
-    if extra:
-        env.update(extra)
+    if normalize_path:
+        path_key = _path_env_key(env)
+        if path_key is not None:
+            new_path = _append_missing_sane_path_entries(env.get(path_key, ""))
+            env[path_key] = _prepend_hermes_bin_dir(new_path)
+
     return env
 
 

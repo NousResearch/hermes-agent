@@ -1,5 +1,7 @@
 """Behavior contracts for Anthropic-native web search and fetch."""
 
+import logging
+import textwrap
 from types import SimpleNamespace
 
 import pytest
@@ -253,3 +255,162 @@ def test_tools_picker_exposes_anthropic_without_requesting_a_second_key():
 
     assert anthropic["env_vars"] == []
     assert "already configured" in anthropic["tag"]
+
+
+# ---------------------------------------------------------------------------
+# The selected backend must match what the active model can actually execute.
+#
+# These drive the real config file under the per-test HERMES_HOME rather than
+# patching the loaders, because the bug they cover was a resolution bug: the
+# backend was "available" on evidence (an API key) that says nothing about
+# whether the model can run the tool.
+# ---------------------------------------------------------------------------
+
+def _write_hermes_config(body: str) -> None:
+    from hermes_cli.config import get_config_path
+
+    path = get_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
+
+
+@pytest.fixture()
+def anthropic_key(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api-test")
+
+
+def test_anthropic_backend_is_unavailable_on_a_non_anthropic_model(anthropic_key):
+    """A model credential must not advertise web access the model cannot use.
+
+    The tools only execute inside Anthropic's Messages API, so on any other
+    transport every request drops them.  Reporting the backend as available
+    would light the whole ``web`` toolset up — banner, ``hermes tools``,
+    ``valid_tool_names`` — for an agent with no web capability at all.
+    """
+    from tools import web_tools
+
+    _write_hermes_config("""
+        model:
+          provider: openrouter
+          base_url: https://openrouter.ai/api/v1
+        web:
+          backend: anthropic
+    """)
+
+    assert web_tools._is_backend_available("anthropic") is False
+    assert web_tools.check_web_api_key() is False
+
+
+def test_anthropic_backend_stays_available_on_anthropic_models(anthropic_key):
+    from tools import web_tools
+
+    _write_hermes_config("""
+        model:
+          provider: anthropic
+        web:
+          backend: anthropic
+    """)
+
+    assert web_tools._is_backend_available("anthropic") is True
+    assert web_tools.check_web_api_key() is True
+
+
+def test_compatible_third_party_endpoint_does_not_advertise_web_tools(anthropic_key):
+    """A ``…/anthropic`` proxy speaks the protocol but does not host the tools."""
+    from tools import web_tools
+
+    _write_hermes_config("""
+        model:
+          provider: minimax
+          base_url: https://api.minimax.io/anthropic
+          api_mode: anthropic_messages
+        web:
+          backend: anthropic
+    """)
+
+    assert web_tools._is_backend_available("anthropic") is False
+    assert web_tools.check_web_api_key() is False
+
+
+def test_unclassifiable_model_config_keeps_web_available(anthropic_key):
+    """Never strip a capability on a config this cannot read as non-Anthropic."""
+    from tools import web_tools
+
+    _write_hermes_config("""
+        web:
+          backend: anthropic
+    """)
+
+    assert web_tools._is_backend_available("anthropic") is True
+    assert web_tools.check_web_api_key() is True
+
+
+def test_unexecutable_selection_keeps_the_tool_shaped_so_it_can_explain(
+    anthropic_key, monkeypatch
+):
+    """When another backend keeps ``web`` alive, the tool must stay callable.
+
+    Attaching the server-only binding here would strip ``web_search`` from
+    every request while ``hermes tools`` still lists it — the handler's own
+    "cannot run locally" error is unreachable for a tool nobody can call.
+    """
+    from tools import web_tools
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+
+    _write_hermes_config("""
+        model:
+          provider: openrouter
+          base_url: https://openrouter.ai/api/v1
+        web:
+          backend: anthropic
+          extract_backend: tavily
+    """)
+
+    assert web_tools.check_web_api_key() is True
+    assert web_tools._get_search_backend() == "anthropic"
+    assert web_tools._anthropic_web_search_schema_overrides() == {}
+    assert web_tools._anthropic_web_fetch_schema_overrides() == {}
+    assert "hermes tools" in web_tools.web_search_tool("anything")
+
+
+def test_dropping_a_server_only_tool_is_reported_once(caplog):
+    """The projection must not remove a user-visible capability in silence.
+
+    The tool name is unique to this test so the report's once-per-process
+    suppression is exercised here rather than pre-consumed by another case.
+    """
+    tools = [_tool("projection_probe_tool", {
+        "type": "web_search_20250305", "name": "web_search", "max_uses": 5,
+    })]
+
+    with caplog.at_level(logging.WARNING, logger="agent.transports.base"):
+        assert ChatCompletionsTransport().project_tools(tools) == []
+        assert ChatCompletionsTransport().project_tools(tools) == []
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "projection_probe_tool" in message
+    assert "anthropic_messages" in message
+    assert "chat_completions" in message
+    assert "hermes tools" in message
+
+
+def test_third_party_endpoint_drop_is_reported_once(caplog):
+    tools = [_tool("third_party_probe_tool", {
+        "type": "web_search_20250305", "name": "web_search", "max_uses": 5,
+    })]
+
+    with caplog.at_level(logging.WARNING, logger="agent.anthropic_adapter"):
+        for _ in range(2):
+            assert convert_tools_to_anthropic(
+                tools, base_url="https://api.minimax.io/anthropic"
+            ) == []
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "third_party_probe_tool" in message
+    assert "api.minimax.io" in message
+    assert "hermes tools" in message

@@ -1684,6 +1684,28 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     return normalized
 
 
+# Server-only tools already reported as withheld from a compatible
+# third-party endpoint, as ``(tool_name, base_url)``. Tool conversion runs on
+# every request, so the diagnosis is emitted once per process rather than once
+# per turn. A duplicate line from a benign race is harmless.
+_reported_third_party_server_tool_drops: set = set()
+
+
+def _report_third_party_server_tool_drop(name: str, base_url: str | None) -> None:
+    """Log, once per process, a server-only tool withheld from a proxy endpoint."""
+    key = (name, str(base_url or ""))
+    if key in _reported_third_party_server_tool_drops:
+        return
+    _reported_third_party_server_tool_drops.add(key)
+    logger.warning(
+        "Tool %r only runs inside Anthropic's own Messages API; %s is a "
+        "compatible third-party endpoint, so the tool is omitted from these "
+        "requests and the model cannot call it. Select a backend this "
+        "endpoint supports (`hermes tools`) to restore this capability.",
+        name, base_url or "the configured endpoint",
+    )
+
+
 def convert_tools_to_anthropic(
     tools: List[Dict], base_url: str | None = None
 ) -> List[Dict]:
@@ -1710,22 +1732,26 @@ def convert_tools_to_anthropic(
                 and server_binding.get("api_mode") == "anthropic_messages"
                 else None
             )
-            if (
-                isinstance(server_spec, dict)
-                and server_spec.get("type")
-                and not _is_third_party_anthropic_endpoint(base_url)
-            ):
-                server_name = server_spec.get("name", "")
-                if server_name and server_name in seen_names:
-                    logger.warning(
-                        "convert_tools_to_anthropic: duplicate tool name '%s' "
-                        "— dropping second occurrence",
-                        server_name,
-                    )
+            if isinstance(server_spec, dict) and server_spec.get("type"):
+                if _is_third_party_anthropic_endpoint(base_url):
+                    # The endpoint speaks the Messages API but is not assumed
+                    # to host Anthropic's server-side tools, so the tool is
+                    # withheld. Say so: the operator enabled this capability
+                    # and would otherwise watch it vanish from the request
+                    # with no diagnosis anywhere.
+                    _report_third_party_server_tool_drop(name, base_url)
                 else:
-                    result.append(copy.deepcopy(server_spec))
-                    if server_name:
-                        seen_names.add(server_name)
+                    server_name = server_spec.get("name", "")
+                    if server_name and server_name in seen_names:
+                        logger.warning(
+                            "convert_tools_to_anthropic: duplicate tool name '%s' "
+                            "— dropping second occurrence",
+                            server_name,
+                        )
+                    else:
+                        result.append(copy.deepcopy(server_spec))
+                        if server_name:
+                            seen_names.add(server_name)
             # Server-only bindings never degrade to local function tools. A
             # third-party Anthropic-compatible endpoint cannot execute the
             # native definition, while the selected local backend is also

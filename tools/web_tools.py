@@ -156,6 +156,64 @@ def _load_web_config() -> dict:
         return {}
 
 
+def _load_model_config() -> dict:
+    """Load the ``model:`` section from ~/.hermes/config.yaml.
+
+    Legacy configs store ``model`` as a bare string (the model name), so the
+    isinstance guard keeps the ``-> dict`` contract for every caller.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        model_cfg = load_config().get("model")
+        return model_cfg if isinstance(model_cfg, dict) else {}
+    except (ImportError, Exception):
+        return {}
+
+
+def _anthropic_native_endpoint_selected() -> bool:
+    """Return True when the configured model is served by Anthropic itself.
+
+    Anthropic's ``web_search`` / ``web_fetch`` are not credentials — they run
+    *inside* the Messages API request.  Hermes can therefore only offer them
+    when the active model is reached through Anthropic's own endpoint: every
+    other transport strips the server-only binding
+    (``agent.transports.base.project_tools_for_transport``) and a compatible
+    third-party Messages endpoint is not assumed to host the tools either
+    (``agent.anthropic_adapter.convert_tools_to_anthropic``).  Without this
+    gate an ANTHROPIC_API_KEY kept for some other purpose lit the whole ``web``
+    toolset up on an OpenRouter (or any non-Anthropic) model, while both tools
+    were silently removed from every request — the agent was told it could
+    search the web and then had no web capability at all.
+
+    Resolved from persisted model config only.  This runs while tool schemas
+    are assembled and on every ``hermes tools`` repaint, so it must stay a
+    cheap, network-free read: no runtime provider resolution, no models.dev
+    lookup.  Config that identifies no endpoint at all is treated as reachable
+    so an install this cannot classify never loses web access silently — the
+    request-time projection stays the authority on what reaches the wire.
+    """
+    model_cfg = _load_model_config()
+    base_url = str(model_cfg.get("base_url") or "").strip()
+    if base_url:
+        # An explicit endpoint decides on its own: Azure, Bedrock, a proxy, or
+        # a ``…/anthropic`` compatible endpoint may speak the protocol without
+        # hosting the tools.  Hostname matching (never substring) so a
+        # lookalike host cannot pose as the real API.
+        from utils import base_url_host_matches
+
+        return base_url_host_matches(base_url, "anthropic.com")
+    provider = str(model_cfg.get("provider") or "").strip()
+    if provider:
+        from hermes_cli.providers import normalize_provider
+
+        return normalize_provider(provider) == "anthropic"
+    api_mode = str(model_cfg.get("api_mode") or "").strip().lower()
+    if api_mode:
+        return api_mode == "anthropic_messages"
+    return True
+
+
 # The built-in web backends whose availability is driven by hardcoded
 # env-var / package / OAuth probes below. Any name NOT in this set is a
 # candidate plugin-registered provider and must be resolved through the
@@ -354,10 +412,14 @@ def _is_backend_available(backend: str) -> bool:
             return False
     if backend == "anthropic":
         # Native server-side web tools execute inside the Anthropic Messages
-        # API request.  Availability must stay a cheap credential probe: this
-        # function runs while schemas are assembled and while `hermes tools`
-        # paints.  get_env_value() (via _has_env) covers both the process env
-        # and ~/.hermes/.env, including the API key collected at setup.
+        # API request, so a credential alone does not make them usable — the
+        # active model must also be reached through Anthropic's own endpoint.
+        # Both probes stay cheap (config read + env lookup): this function runs
+        # while schemas are assembled and while `hermes tools` paints.
+        # get_env_value() (via _has_env) covers both the process env and
+        # ~/.hermes/.env, including the API key collected at setup.
+        if not _anthropic_native_endpoint_selected():
+            return False
         return _has_env("ANTHROPIC_API_KEY") or _has_env("CLAUDE_CODE_OAUTH_TOKEN")
     return False
 
@@ -699,8 +761,9 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if backend == "anthropic":
             return tool_error(
                 "Anthropic web search is a server-side Messages API tool and "
-                "cannot be executed by Hermes locally. Use an Anthropic model "
-                "with api_mode=anthropic_messages, or select another web.search_backend."
+                "cannot be executed by Hermes locally. Use a model served by "
+                "Anthropic's own Messages API, or select another web search "
+                "backend with `hermes tools`."
             )
         provider = _wsp_get_provider(backend) if backend else None
         if provider is None or not provider.supports_search():
@@ -877,8 +940,9 @@ async def web_extract_tool(
             if backend == "anthropic":
                 return tool_error(
                     "Anthropic web fetch is a server-side Messages API tool and "
-                    "cannot be executed by Hermes locally. Use an Anthropic model "
-                    "with api_mode=anthropic_messages, or select another web.extract_backend."
+                    "cannot be executed by Hermes locally. Use a model served by "
+                    "Anthropic's own Messages API, or select another web extract "
+                    "backend with `hermes tools`."
                 )
 
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
@@ -1091,6 +1155,15 @@ def check_web_api_key() -> bool:
     configured_backends.discard("")
     if any(_is_backend_available(backend) for backend in configured_backends):
         return True
+    # A shared ``web.backend`` is honored unconditionally by ``_get_backend()``,
+    # so once an explicit Anthropic selection is unusable no credential
+    # elsewhere can serve either capability: every dispatch resolves back to
+    # "anthropic" and fails. Reporting the toolset as available here would
+    # advertise web access the agent does not have. The per-capability
+    # overrides are already covered by the check above — they fall back to
+    # another backend on their own when unavailable.
+    if str(config.get("backend") or "").lower().strip() == "anthropic":
+        return False
     # Any built-in backend with credentials present. This is a boolean OR, so
     # unlike _get_backend() the probe order is irrelevant.
     # Anthropic is deliberately explicit-only.  Its credential is primarily
@@ -1256,6 +1329,13 @@ def _anthropic_web_search_schema_overrides() -> dict:
     """
     if _get_search_backend() != "anthropic":
         return {}
+    if not _anthropic_native_endpoint_selected():
+        # The configured model cannot execute the server tool, and a binding
+        # it cannot execute is stripped from the request without a trace.
+        # Leaving the schema function-shaped keeps ``web_search`` dispatchable
+        # so its handler can tell the agent why the call fails and what to
+        # change, instead of the capability vanishing silently.
+        return {}
     return {
         "_hermes_server_tool": {
             "api_mode": "anthropic_messages",
@@ -1271,6 +1351,10 @@ def _anthropic_web_search_schema_overrides() -> dict:
 def _anthropic_web_fetch_schema_overrides() -> dict:
     """Expose Anthropic web_fetch in place of Hermes web_extract when selected."""
     if _get_extract_backend() != "anthropic":
+        return {}
+    if not _anthropic_native_endpoint_selected():
+        # See _anthropic_web_search_schema_overrides: stay function-shaped so
+        # the handler can report the mismatch instead of disappearing.
         return {}
     return {
         "_hermes_server_tool": {

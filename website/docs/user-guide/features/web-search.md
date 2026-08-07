@@ -36,12 +36,15 @@ When Anthropic is selected, Hermes maps its existing `web_search` and
 `web_extract` capabilities to Anthropic's server-side `web_search` and
 `web_fetch` tools. The tools run inside the Messages API request, use the same
 Anthropic credential as the model, and return source citations in Claude's
-response. Compatible third-party Anthropic endpoints are not assumed to host
-these tools, so Hermes omits them from those requests entirely. They cannot
-fall back to client-side execution either — these tools only ever run inside
-Anthropic's API. With `anthropic` selected on such an endpoint, `web_search`
-and `web_extract` report that the tool is unavailable; pick another backend
-to keep web access there.
+response. They only ever execute there: there is no client-side fallback, no
+other transport carries them, and compatible third-party Anthropic endpoints
+are not assumed to host them. Hermes therefore counts `anthropic` as a usable
+backend only while the model is served by Anthropic itself — on any other
+model the `web` toolset reports as unconfigured instead of advertising tools
+no request can carry, and `hermes tools` asks you to pick another backend.
+Should a second backend keep `web` enabled while `anthropic` stays selected
+for one capability, that tool remains callable and reports that it cannot run
+locally.
 
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. New installs can run `hermes setup --portal` to log in and turn on all gateway tools at once; existing installs can flip just web via `hermes tools`.
@@ -108,10 +111,11 @@ web:
 ```
 
 No additional credential is required when `ANTHROPIC_API_KEY` was already
-configured for the model. Search uses `web_search_20250305`; fetch uses
-`web_fetch_20250910` with citations enabled. Both are capped at five uses per
-model request. Anthropic web search has a per-search charge in addition to
-normal token usage.
+configured for the model, but the model itself must be served by Anthropic's
+own API — the key alone does not enable this backend elsewhere. Search uses
+`web_search_20250305`; fetch uses `web_fetch_20250910` with citations enabled.
+Both are capped at five uses per model request. Anthropic web search has a
+per-search charge in addition to normal token usage.
 
 ---
 

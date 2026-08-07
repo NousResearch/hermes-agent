@@ -4821,6 +4821,65 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     return True, None
 
 
+def persist_config_key(dotted_key: str, value: Any) -> bool:
+    """Surgical single-key write that bypasses the DEFAULT_CONFIG merge.
+
+    Used by runtime triggers (``persist_home_channel``, ``ensure_install_id``,
+    monitoring) that need to persist ONE key without round-tripping the full
+    DEFAULT_CONFIG-merged dict back to disk. The full round-trip via
+    ``load_config()`` → ``save_config()`` was the root cause of #77513:
+    ``load_config()`` deep-merges DEFAULT_CONFIG, and ``save_config()`` then
+    re-strips them — but in the process it can overwrite user-set leaves like
+    ``model.default``, ``model.api_key``, and ``model.provider`` that got
+    normalized during load, leaving custom OpenAI-compatible providers
+    silently swapped to the default model/key and breaking the gateway.
+
+    This helper reads the RAW config.yaml (no DEFAULT_CONFIG merge), sets the
+    dotted key via ``_set_nested``, and writes it back atomically. User-set
+    values elsewhere in the document are byte-preserved because no merge/strip
+    step touches them.
+
+    Fail-open by design: if anything goes wrong (read-only home, managed
+    scope, parse error), the helper logs at debug level and returns False. The
+    runtime callers that use it (`persist_home_channel`, `ensure_install_id`)
+    are themselves fail-open and previously swallowed ``save_config`` failures
+    the same way, so this preserves the existing contract — a non-fatal write
+    is not a reason to abort gateway startup.
+
+    Args:
+        dotted_key: dotted config path (e.g. ``monitoring.install_id`` or
+            ``platforms.telegram.home_channel``).
+        value: the value to persist (any YAML-serializable Python object:
+            scalar, dict, or list).
+
+    Returns:
+        True on success, False on any failure (never raises).
+    """
+    if is_managed():
+        # Managed scope owns the config file; runtime single-key writes are
+        # not allowed there. Callers fall back to their ephemeral behavior.
+        return False
+    try:
+        from utils import atomic_yaml_write
+        config_path = get_config_path()
+        require_readable_config_before_write(config_path)
+        ensure_hermes_home()
+        raw: Dict[str, Any] = {}
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as fh:
+                raw = fast_safe_load(fh) or {}
+        _set_nested(raw, dotted_key, value)
+        atomic_yaml_write(config_path, raw, sort_keys=False)
+        _RAW_CONFIG_CACHE.pop(str(config_path), None)
+        return True
+    except Exception:
+        logger.debug(
+            "persist_config_key(%r) failed; caller remains fail-open",
+            dotted_key, exc_info=True,
+        )
+        return False
+
+
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value.
 

@@ -34,14 +34,9 @@ def ensure_install_id(config: Dict[str, Any]) -> str:
 
     minted = str(uuid.uuid4())
     try:
-        from hermes_cli.config import load_config, save_config
+        from hermes_cli.config import persist_config_key
 
-        fresh = load_config()
-        if isinstance(fresh, dict):
-            slot = fresh.setdefault("monitoring", {})
-            if isinstance(slot, dict) and not str(slot.get("install_id") or "").strip():
-                slot["install_id"] = minted
-                save_config(fresh)
+        persist_config_key("monitoring.install_id", minted)
     except Exception:
         logger.debug("install_id persist failed; using ephemeral id", exc_info=True)
     # Keep the in-memory config consistent for this process either way.

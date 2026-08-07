@@ -464,22 +464,30 @@ class HomeChannel:
 
 
 def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> None:
-    """Persist a logical home without falsely enabling a Relay-fronted adapter."""
-    from hermes_cli.config import load_config, save_config
+    """Persist a logical home without falsely enabling a Relay-fronted adapter.
 
-    config = load_config()
-    platforms = config.setdefault("platforms", {})
-    if not isinstance(platforms, dict):
-        platforms = {}
-        config["platforms"] = platforms
-    platform_config = platforms.setdefault(home.platform.value, {})
-    if not isinstance(platform_config, dict):
-        platform_config = {}
-        platforms[home.platform.value] = platform_config
+    Surgical single-key write into the raw config.yaml via
+    ``persist_config_key``. The previous implementation called
+    ``load_config()`` then ``save_config(merged)`` — that round-trip through
+    DEFAULT_CONFIG deep-merge was the #77513 vector: normalized leaves like
+    ``model.default``, ``model.api_key`` and ``model.provider`` got
+    overwritten on every gateway start that detected a home channel,
+    silently swapping the user's custom OpenAI-compatible provider config to
+    the default model/key.
+
+    ``persist_config_key`` reads the raw file (no DEFAULT_CONFIG merge) and
+    writes only the ``platforms.<name>`` subtree atomically, so everything
+    else in the user's config survives byte-for-byte. Fail-open: if the write
+    is rejected (managed scope, read-only home), the in-memory state still
+    drives this boot and the caller is the one emitting the warning.
+    """
+    from hermes_cli.config import persist_config_key
+
+    platform_config: Dict[str, Any] = {}
     if enabled_if_new:
         platform_config.setdefault("enabled", True)
     platform_config["home_channel"] = home.to_dict()
-    save_config(config)
+    persist_config_key(f"platforms.{home.platform.value}", platform_config)
 
 
 @dataclass

@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v1"
+SCANNER_VERSION = "skills-guard-v2"
 
 
 
@@ -89,6 +89,11 @@ class ScanResult:
     trust_level: str    # "builtin" | "trusted" | "community"
     verdict: str        # "safe" | "caution" | "dangerous"
     findings: List[Finding] = field(default_factory=list)
+    # Findings from files a skill excluded via .skillignore. Kept out of
+    # `findings` and out of the verdict, so honouring an ignore list still
+    # means what it has always meant, but no longer means the scanner forgets
+    # what it saw.
+    ignored_findings: List[Finding] = field(default_factory=list)
     scanned_at: str = ""
     summary: str = ""
     scan_provenance: dict = field(default_factory=dict)
@@ -665,6 +670,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     trust_level = _resolve_trust_level(source)
 
     all_findings: List[Finding] = []
+    ignored_findings: List[Finding] = []
 
     if skill_path.is_dir():
         ignore = _load_skill_ignore(skill_path)
@@ -677,6 +683,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
             if f.is_file():
                 rel = str(f.relative_to(skill_path))
                 if ignore(rel):
+                    ignored_findings.extend(scan_file(f, rel))
                     continue
                 all_findings.extend(scan_file(f, rel))
     elif skill_path.is_file():
@@ -691,6 +698,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         trust_level=trust_level,
         verdict=verdict,
         findings=all_findings,
+        ignored_findings=ignored_findings,
         scanned_at=datetime.now(timezone.utc).isoformat(),
         summary=summary,
     )
@@ -746,6 +754,7 @@ def scan_skill_cached(
             skill_name=skill_path.name, source=source,
             trust_level=cached["trust_level"], verdict=cached["verdict"],
             findings=[Finding(**item) for item in cached.get("findings", [])],
+            ignored_findings=[Finding(**item) for item in cached.get("ignored_findings", [])],
             scanned_at=cached["scanned_at"], summary=cached.get("summary", ""),
         )
         provenance = dict(cached)
@@ -759,6 +768,7 @@ def scan_skill_cached(
         "source": source, "source_url": source_url, "bundle_hash": bundle_hash,
         "scanner_version": SCANNER_VERSION, "verdict": result.verdict,
         "trust_level": result.trust_level, "findings": findings,
+        "ignored_findings": [_finding_dict(f) for f in result.ignored_findings],
         "rules": sorted({item["pattern_id"] for item in findings}),
         "scanned_at": result.scanned_at, "summary": result.summary, "fresh": True,
     }
@@ -769,6 +779,21 @@ def scan_skill_cached(
         pass
     result.scan_provenance = provenance
     return result, provenance
+
+
+# A skill may exclude its own files from the scan, which exists so that
+# development leftovers do not drive the verdict. It was never meant to let a
+# bundle decide that its own payload goes unexamined. Excluded findings are
+# therefore weighed as though they had not been excluded: the same policy that
+# governs a visible verdict governs the concealed one, so concealment yields
+# the outcome the skill would have received anyway.
+def _concealed_decision(result: ScanResult) -> str:
+    """Policy decision the excluded findings would have produced on their own."""
+    if not result.ignored_findings:
+        return "allow"
+    policy = INSTALL_POLICY.get(result.trust_level, INSTALL_POLICY["community"])
+    shadow = _determine_verdict(result.ignored_findings)
+    return policy[VERDICT_INDEX.get(shadow, 2)]
 
 
 def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool, str]:
@@ -787,6 +812,15 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
     decision = policy[vi]
 
     if decision == "allow":
+        concealed = _concealed_decision(result)
+        if concealed != "allow":
+            names = ", ".join(sorted({f.pattern_id for f in result.ignored_findings}))
+            return (None if concealed == "ask" else False), (
+                f"{'Requires confirmation' if concealed == 'ask' else 'Blocked'} "
+                f"({result.trust_level} source: .skillignore conceals "
+                f"{len(result.ignored_findings)} finding(s) rated "
+                f"{_determine_verdict(result.ignored_findings)}: {names})"
+            )
         return True, f"Allowed ({result.trust_level} source, {result.verdict} verdict)"
 
     if force and not (result.verdict == "dangerous" and result.trust_level in ("community", "trusted")):

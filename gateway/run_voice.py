@@ -180,9 +180,15 @@ class GatewayVoiceMixin:
         adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
         if hasattr(adapter, "_voice_sources"):
             adapter._voice_sources[guild_id] = event.source.to_dict()
-        self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
-                               event.source.chat_id, "all")
-        return t("gateway.voice.channel_joined", name=voice_channel.name)
+        # Joining must not replace an operator's explicit reply policy (#81041).
+        voice_key = self._voice_key_for_source(event.source)
+        mode = self._voice_mode.get(voice_key, "all")
+        self._apply_voice_mode(adapter, voice_key, event.source.chat_id, mode)
+        reply_key = {
+            "voice_only": "gateway.voice.channel_joined_voice_only",
+            "off": "gateway.voice.channel_joined_off",
+        }.get(mode, "gateway.voice.channel_joined")
+        return t(reply_key, name=voice_channel.name)
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         adapter = self._delivery_adapter_for(event.source)

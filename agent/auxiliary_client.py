@@ -7486,11 +7486,12 @@ def _resolve_task_provider_model(
         try:
             from hermes_cli.providers import get_provider
 
-            return get_provider(normalized) is not None
+            if get_provider(normalized) is not None:
+                return True
         except Exception:
             # Keep the high-risk provider-backed routes safe even if provider
             # catalog loading is unavailable during early import/test paths.
-            return normalized in {
+            if normalized in {
                 "anthropic",
                 "copilot",
                 "copilot-acp",
@@ -7499,7 +7500,22 @@ def _resolve_task_provider_model(
                 "openai-codex",
                 "qwen-oauth",
                 "xai-oauth",
-            }
+            }:
+                return True
+        # Not a built-in: the provider may be a user-defined custom provider
+        # from the config ``providers:`` table (or the legacy
+        # ``custom_providers:`` list). Those entries carry their own
+        # base_url/key_env, so the identity must be preserved — otherwise the
+        # name is rewritten to bare "custom" below, the named-custom recovery
+        # in resolve_provider_client() can no longer find the entry, and the
+        # key_env is never resolved (request goes out with the placeholder
+        # "no-key-required" → 401). Issue #76760.
+        try:
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+
+            return _get_named_custom_provider(normalized) is not None
+        except Exception:
+            return False
 
     if provider:
         provider, base_url = _expand_direct_api_alias(provider, base_url)

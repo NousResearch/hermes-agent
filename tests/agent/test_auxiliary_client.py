@@ -4231,6 +4231,102 @@ class TestCustomEndpointApiKeyInheritance:
         assert captured.get("api_key") == "no-key-required"
 
 
+class TestNamedCustomProviderKeyPreservation:
+    """Issue #76760: a custom provider from the config ``providers:`` table
+    (base_url + key_env) must keep its identity when an auxiliary task pairs
+    it with a base_url. ``_preserve_provider_with_base_url()`` previously only
+    checked the built-in PROVIDER_REGISTRY, so the name was rewritten to bare
+    "custom", the named-custom recovery in resolve_provider_client() could no
+    longer find the entry, and the request went out with the placeholder
+    ``no-key-required`` key → 401.
+    """
+
+    def test_preserve_provider_recognizes_providers_table_entry(self, monkeypatch):
+        """_resolve_task_provider_model must keep a providers: table entry's
+        identity when a base_url is present (not downgrade it to custom)."""
+        import agent.auxiliary_client as ac
+
+        fake_config = {
+            "providers": {
+                "myprovider": {
+                    "base_url": "https://api.myprovider.example/v1",
+                    "key_env": "MY_PROVIDER_API_KEY",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
+             patch("hermes_cli.runtime_provider.load_config", return_value=fake_config):
+            provider, model, base_url, api_key, api_mode = ac._resolve_task_provider_model(
+                "vision", provider="myprovider", base_url="https://api.myprovider.example/v1"
+            )
+        assert provider == "myprovider", (
+            "providers: table entry must keep identity, got: " + repr(provider)
+        )
+
+    def test_unknown_provider_still_not_preserved(self, monkeypatch):
+        """A provider name that is neither built-in nor in providers: must
+        keep the old behavior (False → downgrade to custom)."""
+        import agent.auxiliary_client as ac
+
+        with patch("hermes_cli.config.load_config", return_value={}), \
+             patch("hermes_cli.config.load_config_readonly", return_value={}), \
+             patch("hermes_cli.runtime_provider.load_config", return_value={}):
+            provider, model, base_url, api_key, api_mode = ac._resolve_task_provider_model(
+                "vision", provider="no-such-provider", base_url="https://example.com/v1"
+            )
+        assert provider == "custom"
+
+    def test_vision_resolves_key_env_for_providers_table_entry(self, monkeypatch):
+        """Full vision flow: auxiliary.vision.provider + base_url with a
+        providers: table entry must send the key_env-resolved key, not the
+        no-key-required placeholder."""
+        import agent.auxiliary_client as ac
+
+        monkeypatch.setenv("MY_PROVIDER_API_KEY", "sk-provider-table-key")
+        fake_config = {
+            "providers": {
+                "myprovider": {
+                    "base_url": "https://api.myprovider.example/v1",
+                    "key_env": "MY_PROVIDER_API_KEY",
+                }
+            },
+            "auxiliary": {
+                "vision": {
+                    "provider": "myprovider",
+                    "base_url": "https://api.myprovider.example/v1",
+                }
+            },
+        }
+        captured: dict = {}
+
+        def _capture_create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
+             patch("hermes_cli.runtime_provider.load_config", return_value=fake_config), \
+             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            requested, model, base_url, api_key, api_mode = ac._resolve_task_provider_model(
+                "vision", None, None, None, None
+            )
+            provider, client, final_model = resolve_vision_provider_client(
+                provider=requested,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                async_mode=True,
+            )
+
+        assert provider == "myprovider", (
+            "provider identity must be preserved, got: " + repr(provider)
+        )
+        assert captured.get("api_key") == "sk-provider-table-key", (
+            "key_env-resolved key must be sent, got: " + repr(captured.get("api_key"))
+        )
+
+
 class TestMoaAggregatorStreamingBypass:
     def test_moa_aggregator_stream_bypasses_relay_for_codex_auxiliary_client(self, monkeypatch):
         """The MoA facade owns the streaming contract. For Codex Responses-shim

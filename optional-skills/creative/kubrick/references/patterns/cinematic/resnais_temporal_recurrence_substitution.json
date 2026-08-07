@@ -1,0 +1,23 @@
+{
+  "pattern_id": "resnais_temporal_recurrence_substitution",
+  "title": "Temporal Recurrence / Substitution Across Memory",
+  "version": "0.11.1",
+  "domain": "cinematic",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Alain Resnais","title":"Hiroshima mon amour; Last Year at Marienbad","date":"1959-1961","cultural_context":"French modernist cinema"}],
+  "observed_structure": ["a composition or action recurs across uncertain temporal layers", "one participant, object, or causal detail changes", "the substitution alters the viewer's model of memory without erasing event clarity"],
+  "dramatic_operations": ["destabilize temporal ownership", "make memory revise present action", "expose contradiction through recurrence"],
+  "transformation_grammars": ["recurrence-with-substitution", "memory-to-present-pressure"],
+  "cinematic_affordances": ["same framing with changed occupant", "voiceover crossing incompatible images", "matched movement across nonidentical spaces", "repeated dialogue with altered object evidence"],
+  "applicable_genres": ["drama", "mystery", "romance", "psychological thriller"],
+  "applicable_formats": ["feature", "pilot", "short"],
+  "cultural_scope": ["film-derived formal pattern; cite Resnais and avoid copying specific tableaux"],
+  "misuse_risks": ["timeline confusion without relational purpose", "surface imitation of Marienbad", "repetition without changed evidence"],
+  "mutation_requirements": {"required":true,"variables":["occupant","object evidence","voice source","temporal certainty","camera distance"]},
+  "transferable_structure": "a repeated formal structure changes one evidentiary variable so memory actively revises present interpretation",
+  "non_transferable_surface": "ornate hotel corridors, statues, costumes, or direct recreation of Resnais compositions",
+  "production_cost": {"location_dependency":0.5,"prop_dependency":0.3,"lighting_dependency":0.4,"VFX_dependency":0.1},
+  "lexicon_links": ["anamnesis", "eternal_return", "recapitulation"],
+  "confidence": 0.82
+}

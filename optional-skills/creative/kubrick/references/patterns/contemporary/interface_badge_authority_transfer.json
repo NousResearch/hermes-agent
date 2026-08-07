@@ -1,0 +1,23 @@
+{
+  "pattern_id": "interface_badge_authority_transfer",
+  "title": "Interface Badge / Authority Transfer",
+  "version": "0.11.0",
+  "domain": "contemporary",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Contemporary platform interfaces","title":"Verification, status, and notification badge artifacts","date":"21st century","cultural_context":"networked platform culture"}],
+  "observed_structure": ["a small interface mark changes how a person, message, or object is treated", "social authority migrates from behavior to a platform-owned indicator", "removal, duplication, or contradiction of the mark changes access or credibility"],
+  "dramatic_operations": ["externalize legitimacy", "transfer authority to infrastructure", "destabilize social proof"],
+  "transformation_grammars": ["badge acquisition", "status revocation", "interface contamination"],
+  "cinematic_affordances": ["badge appears peripherally before affecting behavior", "same face framed differently after status change", "notification rhythm interrupts human cadence", "physical environment echoes interface hierarchy without copying UI"],
+  "applicable_genres": ["satire", "drama", "thriller", "science fiction", "comedy"],
+  "applicable_formats": ["feature", "pilot", "short", "vertical video", "single-frame"],
+  "cultural_scope": ["time-sensitive contemporary platform culture; verify current interface conventions before literal use"],
+  "misuse_risks": ["dated platform parody", "logo dependence", "screen graphics explaining the entire conflict", "brand-specific defamation"],
+  "mutation_requirements": {"required":true,"variables":["badge ownership","visibility","platform context","human response","physical echo"]},
+  "transferable_structure": "a minimal system-owned marker redistributes social authority and changes access, trust, or behavior",
+  "non_transferable_surface": "specific current logos, proprietary interface copies, or meme references without provenance",
+  "production_cost": {"location_dependency":0.1,"prop_dependency":0.2,"lighting_dependency":0.1,"VFX_dependency":0.4},
+  "lexicon_links": ["egregore", "glamour", "true_name"],
+  "confidence": 0.76
+}

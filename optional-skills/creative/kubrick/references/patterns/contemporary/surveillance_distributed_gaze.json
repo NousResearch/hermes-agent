@@ -1,0 +1,23 @@
+{
+  "pattern_id": "surveillance_distributed_gaze",
+  "title": "Distributed Gaze / Observation Without a Single Observer",
+  "version": "0.11.2",
+  "domain": "contemporary",
+  "source_tier": "SCHOLARLY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Michel Foucault and surveillance-studies scholarship","title":"Discipline and Punish; distributed surveillance research","date":"1975-present","cultural_context":"Modern institutional and digital surveillance"}],
+  "observed_structure": ["observation is distributed across devices, people, or records", "no single watcher controls the entire field", "behavior changes because visibility may persist after the observer leaves"],
+  "dramatic_operations": ["externalize self-monitoring", "distribute antagonistic agency", "make visibility alter behavior"],
+  "transformation_grammars": ["observer-to-network", "visibility-to-self-regulation"],
+  "cinematic_affordances": ["repeated partial sightlines", "screens or reflections showing incomplete coverage", "camera position inherited by another object", "behavior changes after an indicator activates"],
+  "applicable_genres": ["thriller", "satire", "science fiction", "drama"],
+  "applicable_formats": ["feature", "pilot", "episode", "single-frame"],
+  "cultural_scope": ["surveillance context must specify institution, technology, and affected population"],
+  "misuse_risks": ["omniscient camera cliché", "technology treated as magic", "paranoia without observable evidence"],
+  "mutation_requirements": {"required":true,"variables":["observer node","coverage gap","record persistence","indicator state","behavioral response"]},
+  "transferable_structure": "observation becomes a networked condition that persists beyond any one observer and changes conduct through uncertain visibility",
+  "non_transferable_surface": "generic CCTV montages, glowing red camera lights, or unsupported claims of total surveillance",
+  "production_cost": {"location_dependency":0.3,"prop_dependency":0.4,"lighting_dependency":0.2,"VFX_dependency":0.2},
+  "lexicon_links": ["archons", "scrying", "egregore", "offscreen_space"],
+  "confidence": 0.84
+}

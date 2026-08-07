@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NarrativeAffordance",
+  "type": "object",
+  "required": ["name", "compatible_patterns", "cinematic_functions"],
+  "properties": {
+    "name": { "type": "string" },
+    "compatible_patterns": { "type": "array", "items": { "type": "string" } },
+    "scene_functions": { "type": "array", "items": { "type": "string" } },
+    "character_functions": { "type": "array", "items": { "type": "string" } },
+    "sequence_functions": { "type": "array", "items": { "type": "string" } },
+    "cinematic_functions": { "type": "array", "items": { "type": "string" } },
+    "setup_requirements": { "type": "string" },
+    "payoff_requirements": { "type": "string" },
+    "incompatibilities": { "type": "array", "items": { "type": "string" } }
+  }
+}

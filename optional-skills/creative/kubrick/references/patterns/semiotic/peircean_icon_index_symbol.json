@@ -1,0 +1,23 @@
+{
+  "pattern_id": "peircean_icon_index_symbol",
+  "title": "Peircean Icon / Index / Symbol Triad",
+  "version": "0.11.5",
+  "domain": "semiotic",
+  "source_tier": "PRIMARY",
+  "source_refs": [{"author": "Charles Sanders Peirce", "title": "Collected Papers on Signs", "date": "late 19th–early 20th century"}],
+  "observed_structure": [
+    "A sign may resemble its referent, bear a causal trace of it, or depend on a learned convention.",
+    "Dramatic information changes when a sign shifts between resemblance, evidence, and convention."
+  ],
+  "dramatic_operations": ["representation", "hidden connection", "evidentiary shift"],
+  "cinematic_affordances": ["graphic match", "material trace", "institutional badge or code", "misread sign"],
+  "misuse_risks": ["abstract semiotic lecture", "fixed one-to-one symbolism", "sign categories without causal stakes"],
+  "mutation_requirements": {
+    "required": true,
+    "variables": ["sign mode", "observer knowledge", "causal trace", "conventional rule", "misreading consequence"]
+  },
+  "transferable_structure": "Change how an observable sign connects to its referent—through resemblance, trace, or convention—and make that change alter action or belief.",
+  "non_transferable_surface": "Do not copy a famous emblem, coded symbol system, or culturally protected sign without provenance and context.",
+  "production_cost": "low",
+  "confidence": 0.75
+}

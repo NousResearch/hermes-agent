@@ -1,0 +1,51 @@
+suite: corpus-wave1-batch3
+runtime: standalone-hermes
+cases:
+  - id: discontinuity_residue
+    brief:
+      dramatic_problem: identity changes across a hard break but one electrical rhythm and gesture persist
+      desired_state_change: contradiction becomes causally active without full explanation
+      observable_evidence: [changed performer, retained gesture, electrical rhythm]
+    expected_primary: lynch_causal_discontinuity_residue
+  - id: gesture_transfer
+    brief:
+      dramatic_problem: agency must change through the handling of a key before dialogue acknowledges it
+      desired_state_change: intention becomes visible through object transfer
+      observable_evidence: [hand contact, changed ownership, lock sound]
+    expected_primary: bresson_gesture_object_transfer
+  - id: material_memory
+    brief:
+      dramatic_problem: an abandoned room must reveal prior action through moisture and surface wear
+      desired_state_change: absent history becomes materially present
+      observable_evidence: [water line, worn surface, altered function]
+    expected_primary: tarkovsky_material_memory_weathering
+  - id: corporate_grid
+    brief:
+      dramatic_problem: one employee deviates from a repeated workflow after the manager leaves
+      desired_state_change: personal authority becomes institutional compliance pressure
+      observable_evidence: [repeated cells, empty authority position, one misaligned body]
+    expected_primary: corporate_grid_enclosure_compliance
+  - id: meme_role_mutation
+    brief:
+      dramatic_problem: a familiar social template must invert who is mocked and who controls the frame
+      desired_state_change: reuse becomes commentary on prior circulation
+      observable_evidence: [repeated pose, changed role, repost chain]
+    expected_primary: meme_template_role_mutation
+  - id: distributed_gaze
+    brief:
+      dramatic_problem: behavior changes after the visible guard leaves because devices and records remain
+      desired_state_change: observation becomes a persistent network condition
+      observable_evidence: [coverage gaps, indicator state, changed conduct]
+    expected_primary: surveillance_distributed_gaze
+  - id: object_residue
+    brief:
+      dramatic_problem: a broken cup must continue shaping later action after the argument ends
+      desired_state_change: completed action leaves persistent material consequence
+      observable_evidence: [crack, changed placement, another character handles it]
+    expected_primary: object_residue_continuity_after_use
+fail_closed_cases:
+  - id: generic_surreal_style
+    brief:
+      dramatic_problem: make it weird like a dream
+      observable_evidence: []
+    expected_status: NOT_COMPUTABLE

@@ -1,0 +1,23 @@
+{
+  "pattern_id": "occlusion_relational_denial",
+  "title": "Occlusion / Relational Denial",
+  "version": "0.11.4",
+  "domain": "spatial-geometric",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Comparative composition and blocking analysis","title":"Occlusion as relational evidence","date":"cross-period","cultural_context":"Cinema, photography, and stage composition"}],
+  "observed_structure": ["a person, object, or relation is repeatedly blocked by another motivated element", "the obstruction belongs to the scene's causal space", "visibility changes when the denied relation becomes behaviorally unavoidable"],
+  "dramatic_operations": ["make denial spatially visible", "withhold relational recognition without obscuring events", "convert obstruction into confrontation"],
+  "transformation_grammars": ["occlusion-to-recognition", "denial-to-exposure"],
+  "cinematic_affordances": ["architecture or bodies blocking line of relation", "partial object visibility recurring with increased exposure", "camera position changing after acknowledgment", "foreground obstruction removed by consequential action"],
+  "applicable_genres": ["drama", "thriller", "romance", "mystery"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "single-frame"],
+  "cultural_scope": ["general compositional pattern; interpretation must derive from established relations"],
+  "misuse_risks": ["arbitrary hidden faces", "mystery by obscurity", "foreground clutter treated as depth"],
+  "mutation_requirements": {"required":true,"variables":["occluding element","denied relation","exposure amount","camera position","recognition consequence"]},
+  "transferable_structure": "motivated obstruction repeatedly denies a relation until action changes visibility and forces recognition",
+  "non_transferable_surface": "generic silhouettes, blinds, doorframes, or obscured faces without causal function",
+  "production_cost": {"location_dependency":0.2,"prop_dependency":0.2,"lighting_dependency":0.3,"VFX_dependency":0.0},
+  "lexicon_links": ["veil", "concealment", "threshold", "gnosis"],
+  "confidence": 0.85
+}

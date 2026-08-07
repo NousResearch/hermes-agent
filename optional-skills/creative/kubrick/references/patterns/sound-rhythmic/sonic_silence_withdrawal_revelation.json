@@ -1,0 +1,23 @@
+{
+  "pattern_id": "sonic_silence_withdrawal_revelation",
+  "title": "Silence Withdrawal / Revelation Through Removed Sound",
+  "version": "0.11.1",
+  "domain": "sound-rhythmic",
+  "source_tier": "SCHOLARLY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Michel Chion","title":"Audio-Vision","date":"1990","cultural_context":"film sound theory"}],
+  "observed_structure": ["a stable sound layer establishes environmental or institutional presence", "the layer is removed at a consequential threshold", "the absence changes perception before dialogue explains anything"],
+  "dramatic_operations": ["reveal false normality", "withdraw environmental authority", "make acceptance or danger perceptible"],
+  "transformation_grammars": ["presence-to-absence", "withdrawal-to-revelation"],
+  "cinematic_affordances": ["ambient system drops while image continues", "room tone disappears after a choice", "mechanical pulse ceases one beat before visual recognition", "silence leaves one bodily sound exposed"],
+  "applicable_genres": ["thriller", "horror", "drama", "science fiction"],
+  "applicable_formats": ["feature", "pilot", "short", "audio drama"],
+  "cultural_scope": ["film-sound formal pattern; no sacred or universal claims assigned to silence"],
+  "misuse_risks": ["silence used as generic suspense", "inaudibility mistaken for subtlety", "removal without an established baseline"],
+  "mutation_requirements": {"required":true,"variables":["removed layer","remaining bodily sound","threshold timing","spatial field","return condition"]},
+  "transferable_structure": "removing an established sound layer at a threshold reveals a changed relation or hidden condition",
+  "non_transferable_surface": "signature sound design copied from a specific film or silence treated as mystical by default",
+  "production_cost": {"location_dependency":0.0,"prop_dependency":0.0,"lighting_dependency":0.0,"VFX_dependency":0.0},
+  "lexicon_links": ["silence", "banishing", "apophatic_knowledge"],
+  "confidence": 0.85
+}

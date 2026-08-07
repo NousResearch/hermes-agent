@@ -237,6 +237,16 @@ ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCH
 class HonchoMemoryProvider(MemoryProvider):
     """Honcho AI-native memory with dialectic Q&A and persistent user modeling."""
 
+    def _on_peer_card_updated(self) -> None:
+        """Invalidate the formatted base context cache after a peer card update.
+
+        Registered as a callback on HonchoSessionManager so that the next
+        injected context block reflects the corrected card rather than the
+        stale cached version.
+        """
+        with self._base_context_lock:
+            self._base_context_cache = None
+
     def backup_paths(self) -> List[str]:
         """Honcho keeps its peer/session config under ~/.honcho when no
         profile-local honcho.json exists (see client.resolve_config_path)."""
@@ -477,6 +487,8 @@ class HonchoMemoryProvider(MemoryProvider):
             runtime_user_peer_name=kwargs.get("user_id") or None,
             runtime_user_peer_name_alt=kwargs.get("user_id_alt") or None,
         )
+        if hasattr(self._manager, "register_card_update_callback"):
+            self._manager.register_card_update_callback(self._on_peer_card_updated)
 
         self._session_key = self._resolve_session_key(cfg, session_id, **kwargs)
         logger.debug("Honcho session key resolved: %s", self._session_key)
@@ -729,6 +741,7 @@ class HonchoMemoryProvider(MemoryProvider):
             if _first_base_fetch and self._manager:
                 _ctx_holder: dict[str, dict] = {}
 
+                _fetch_gen = self._manager.get_context_generation() if hasattr(self._manager, "get_context_generation") else -1
                 def _fetch_base() -> None:
                     try:
                         ctx = self._manager.get_prefetch_context(
@@ -736,7 +749,9 @@ class HonchoMemoryProvider(MemoryProvider):
                         ) or {}
                         _ctx_holder["ctx"] = ctx
                         if ctx:
-                            self._manager.set_context_result(self._session_key, ctx)
+                            self._manager.set_context_result(
+                                self._session_key, ctx, generation=_fetch_gen
+                            )
                     except Exception as e:
                         logger.debug("Honcho first-turn base context failed: %s", e)
 

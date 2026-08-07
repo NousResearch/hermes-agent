@@ -116,6 +116,11 @@ class HonchoSessionManager:
         # one source of truth; see __init__.py _do_session_init for the prewarm.
         self._context_cache: dict[str, dict] = {}
         self._prefetch_cache_lock = threading.Lock()
+        # Card-mutation generation counter: incremented in set_peer_card so that
+        # in-flight prefetch workers can detect and discard stale results.
+        self._context_generation: int = 0
+        # Callbacks registered by the provider to invalidate formatted caches.
+        self._card_update_callbacks: list = []
         self._dialectic_reasoning_level: str = (
             config.dialectic_reasoning_level if config else "low"
         )
@@ -701,11 +706,31 @@ class HonchoSessionManager:
         t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
         t.start()
 
-    def set_context_result(self, session_key: str, result: dict[str, str]) -> None:
-        """Store a prefetched context result in a thread-safe way."""
+    def get_context_generation(self) -> int:
+        """Return the current card-mutation generation counter (thread-safe)."""
+        with self._prefetch_cache_lock:
+            return self._context_generation
+
+    def register_card_update_callback(self, cb) -> None:
+        """Register a zero-argument callable invoked after every set_peer_card()."""
+        self._card_update_callbacks.append(cb)
+
+    def set_context_result(self, session_key: str, result: dict[str, str], *, generation: int = -1) -> None:
+        """Store a prefetched context result in a thread-safe way.
+
+        If *generation* is provided and no longer matches the current
+        card-mutation generation the result is discarded — it was fetched
+        before a set_peer_card() call and would inject a stale card.
+        """
         if not result:
             return
         with self._prefetch_cache_lock:
+            if generation >= 0 and generation != self._context_generation:
+                logger.debug(
+                    "Dropping stale prefetch for %s (gen %d != current %d)",
+                    session_key, generation, self._context_generation,
+                )
+                return
             self._context_cache[session_key] = result
 
     def pop_context_result(self, session_key: str) -> dict[str, str]:
@@ -1363,6 +1388,17 @@ class HonchoSessionManager:
                 target_peer_id or observer_peer_id,
                 len(card),
             )
+            # Evict stale caches so the next turn injects the updated card.
+            with self._prefetch_cache_lock:
+                self._context_cache.pop(session_key, None)
+                self._context_generation += 1
+            with self._cache_lock:
+                self._peers_cache.pop(observer_peer_id, None)
+            for _cb in self._card_update_callbacks:
+                try:
+                    _cb()
+                except Exception:  # noqa: BLE001
+                    pass
             return result
         except Exception as e:
             logger.error("Failed to set peer card: %s", e)

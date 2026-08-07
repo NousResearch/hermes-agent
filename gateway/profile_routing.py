@@ -102,6 +102,18 @@ class ProfileRoute:
         return True
 
 
+def _coerce_route_id(value: Any) -> Optional[str]:
+    """Normalize a route discriminator to str for strict equality matching.
+
+    PyYAML loads unquoted numeric IDs (Discord snowflakes, Telegram negative
+    chat ids) as ``int``. Inbound ``SessionSource`` fields are always ``str``
+    via ``build_source``, so leaving ints here makes ``matches()`` fail silently.
+    """
+    if value is None:
+        return None
+    return str(value)
+
+
 def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRoute]:
     """Parse profile_routes from config.yaml into ProfileRoute objects.
 
@@ -139,9 +151,9 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
                 name=name,
                 platform=platform,
                 profile=profile,
-                guild_id=entry.get("guild_id"),
-                chat_id=entry.get("chat_id"),
-                thread_id=entry.get("thread_id"),
+                guild_id=_coerce_route_id(entry.get("guild_id")),
+                chat_id=_coerce_route_id(entry.get("chat_id")),
+                thread_id=_coerce_route_id(entry.get("thread_id")),
                 enabled=entry.get("enabled", True),
             )
         )

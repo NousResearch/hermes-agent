@@ -1084,6 +1084,48 @@ class ShellFileOperations(FileOperations):
         )
         return self._exec(script, stdin_data=content)
 
+    def _explain_write_failure(self, path: str, raw_stderr: str) -> str:
+        """Turn a raw shell write failure into an actionable message.
+
+        The atomic-write path streams into a ``.hermes-tmp.XXXXXX`` file
+        beside the target, so a plain permission error surfaces as e.g.
+        ``/usr/local/sbin/.hermes-tmp.38704: Permission denied`` — a temp
+        path the caller never named. That reads like an internal Hermes
+        bug, hides the fact that the *directory* is the thing we can't
+        write, and gives no hint at the fix. Rewrite it to name the real
+        target and the actual remedy; anything we don't recognise is
+        passed through untouched.
+        """
+        raw = (raw_stderr or "").strip()
+        if "Permission denied" not in raw:
+            return raw or "unknown error"
+
+        parent = os.path.dirname(path) or "."
+        # Whether the blocked write is on the file itself or on its
+        # directory changes the remedy, so probe before advising.
+        probe = self._exec(
+            f"if [ -e {self._escape_shell_arg(path)} ]; then echo exists; fi; "
+            f"if [ -w {self._escape_shell_arg(parent)} ]; then echo dir-writable; fi"
+        )
+        flags = (probe.stdout or "").split()
+        target_exists = "exists" in flags
+        dir_writable = "dir-writable" in flags
+
+        if target_exists and not dir_writable:
+            reason = f"the directory {parent} is not writable by the current user"
+        elif target_exists:
+            reason = f"{path} is not writable by the current user"
+        else:
+            reason = f"cannot create files in {parent} (directory not writable)"
+
+        return (
+            f"permission denied — {reason}. "
+            f"This path needs elevated privileges: write the content to a temp "
+            f"location first, then install it with the terminal tool "
+            f"(e.g. `sudo install -m <mode> -o <owner> /tmp/<file> {path}`). "
+            f"Editing it directly with the file tools will keep failing."
+        )
+
     def _detect_file_line_ending(self, path: str, pre_content: Optional[str] = None) -> Optional[str]:
         """Detect the dominant line ending of a file on disk.
 
@@ -1585,7 +1627,9 @@ class ShellFileOperations(FileOperations):
         write_result = self._atomic_write(path, content)
 
         if write_result.exit_code != 0:
-            return WriteResult(error=f"Failed to write file: {write_result.stdout}")
+            return WriteResult(
+                error=f"Failed to write file: {self._explain_write_failure(path, write_result.stdout)}"
+            )
 
         # Get bytes written — compute from the content we just wrote
         # (len of the UTF-8 encoding matches wc -c) instead of spawning a

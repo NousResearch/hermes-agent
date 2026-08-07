@@ -4901,8 +4901,30 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Preserve values for string-typed settings.  In particular, enum members
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
+    #
+    # ``skills.external_dirs`` is list-typed, but older versions persisted a
+    # JSON-looking CLI value as one YAML scalar.  Parse that narrow setting
+    # explicitly so ``config set`` writes the canonical YAML sequence and
+    # rejects malformed JSON-looking input before it can become a fake path.
     coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
+    if key == "skills.external_dirs":
+        from agent.skill_utils import (
+            ExternalSkillsConfigError,
+            normalize_external_skills_dirs,
+        )
+
+        try:
+            coerced_value = normalize_external_skills_dirs(value)
+        except ExternalSkillsConfigError as exc:
+            print(
+                f"✗ Cannot set skills.external_dirs: {exc}.\n"
+                "  Use a JSON array of path strings, for example:\n"
+                "    hermes config set skills.external_dirs "
+                "'[\"/path/one\",\"/path/two\"]'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    elif not isinstance(_default_value_for_key(key), str):
         if value.lower() in {'true', 'yes', 'on'}:
             coerced_value = True
         elif value.lower() in {'false', 'no', 'off'}:

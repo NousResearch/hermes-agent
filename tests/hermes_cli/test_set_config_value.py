@@ -97,6 +97,58 @@ class TestConfigYamlRouting:
         assert "gpt-4o" in config
         assert "model" not in _read_env(_isolated_hermes_home)
 
+    def test_external_dirs_json_array_is_persisted_as_yaml_list(
+        self, _isolated_hermes_home
+    ):
+        first = _isolated_hermes_home / "external-one"
+        second = _isolated_hermes_home / "external-two"
+        first.mkdir()
+        second.mkdir()
+        args = argparse.Namespace(
+            config_command="set",
+            key="skills.external_dirs",
+            value=json.dumps([str(first), str(second)]),
+            force=False,
+        )
+
+        config_command(args)
+
+        import yaml
+
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["skills"]["external_dirs"] == [str(first), str(second)]
+        assert isinstance(reloaded["skills"]["external_dirs"], list)
+
+    def test_external_dirs_plain_scalar_is_canonicalized_to_yaml_list(
+        self, _isolated_hermes_home
+    ):
+        set_config_value("skills.external_dirs", "/shared/team-skills")
+
+        import yaml
+
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["skills"]["external_dirs"] == ["/shared/team-skills"]
+
+    def test_external_dirs_malformed_json_is_rejected_before_write(
+        self, _isolated_hermes_home, capsys
+    ):
+        args = argparse.Namespace(
+            config_command="set",
+            key="skills.external_dirs",
+            value='["/path/one",]',
+            force=False,
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            config_command(args)
+
+        assert exc_info.value.code == 1
+        assert not (_isolated_hermes_home / "config.yaml").exists()
+        err = capsys.readouterr().err
+        assert "Cannot set skills.external_dirs" in err
+        assert "not valid JSON" in err
+        assert "JSON array of path strings" in err
+
 
     def test_terminal_image_goes_to_config(self, _isolated_hermes_home):
         """TERMINAL_DOCKER_IMAGE doesn't match _API_KEY or _TOKEN, so config.yaml."""

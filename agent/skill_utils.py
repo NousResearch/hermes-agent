@@ -5,6 +5,7 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import json
 import logging
 import os
 import re
@@ -481,6 +482,98 @@ def _normalize_string_set(values) -> Set[str]:
 
 # ── External skills directories ──────────────────────────────────────────
 
+
+class ExternalSkillsConfigError(ValueError):
+    """Raised when ``skills.external_dirs`` is not a supported path list."""
+
+
+def normalize_external_skills_dirs(raw_dirs: Any) -> List[str]:
+    """Normalize ``skills.external_dirs`` into a validated list of strings.
+
+    A YAML sequence is canonical.  For compatibility with values written by
+    older ``hermes config set`` versions, a scalar that looks like a JSON array
+    is decoded as that array.  A plain scalar remains a supported shorthand for
+    one directory.  Malformed JSON-looking values and non-string list entries
+    are rejected instead of being treated as literal path names.
+    """
+    if raw_dirs is None:
+        return []
+
+    if isinstance(raw_dirs, str):
+        stripped = raw_dirs.strip()
+        if not stripped:
+            return []
+        if stripped.startswith(("[", "{")):
+            try:
+                raw_dirs = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ExternalSkillsConfigError(
+                    "JSON-looking scalar is not valid JSON "
+                    f"({exc.msg} at character {exc.pos})"
+                ) from exc
+            if not isinstance(raw_dirs, list):
+                raise ExternalSkillsConfigError(
+                    "JSON-looking scalar must decode to an array of path strings"
+                )
+        else:
+            raw_dirs = [stripped]
+
+    if not isinstance(raw_dirs, list):
+        raise ExternalSkillsConfigError(
+            "expected a YAML list of path strings or a JSON array string, "
+            f"got {type(raw_dirs).__name__}"
+        )
+
+    normalized: List[str] = []
+    for index, entry in enumerate(raw_dirs):
+        if not isinstance(entry, str):
+            raise ExternalSkillsConfigError(
+                f"entry {index + 1} must be a path string, "
+                f"got {type(entry).__name__}"
+            )
+        entry = entry.strip()
+        if entry:
+            normalized.append(entry)
+    return normalized
+
+
+def resolve_external_skills_dirs(
+    raw_dirs: Any,
+    *,
+    existing_only: bool = True,
+) -> List[Path]:
+    """Resolve configured external skill paths with runtime path semantics.
+
+    ``~`` and environment variables are expanded, relative paths are anchored
+    to ``HERMES_HOME``, the local skills directory is excluded, and duplicate
+    resolved paths are removed.  Set ``existing_only=False`` for diagnostics
+    that need to report missing directories separately from malformed config.
+    """
+    from hermes_constants import get_hermes_home
+
+    hermes_home = get_hermes_home()
+    local_skills = get_skills_dir().resolve()
+    seen: Set[Path] = set()
+    result: List[Path] = []
+
+    for entry in normalize_external_skills_dirs(raw_dirs):
+        expanded = os.path.expanduser(os.path.expandvars(entry))
+        path = Path(expanded)
+        if not path.is_absolute():
+            path = (hermes_home / path).resolve()
+        else:
+            path = path.resolve()
+        if path == local_skills or path in seen:
+            continue
+        seen.add(path)
+        if existing_only and not path.is_dir():
+            logger.debug("External skills dir does not exist, skipping: %s", path)
+            continue
+        result.append(path)
+
+    return result
+
+
 # (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by
 # mtime_ns so a config.yaml edit mid-run is picked up automatically;
 # otherwise every call would re-read + re-YAML-parse the 15KB config,
@@ -488,25 +581,30 @@ def _normalize_string_set(values) -> Set[str]:
 # each trigger a category lookup during banner construction (10+ seconds
 # of pure waste).
 _EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
+_EXTERNAL_DIRS_ERROR_CACHE: Set[Tuple[str, int]] = set()
 
 
 def _external_dirs_cache_clear() -> None:
     """Test hook — drop the in-process cache."""
     _EXTERNAL_DIRS_CACHE.clear()
+    _EXTERNAL_DIRS_ERROR_CACHE.clear()
     _raw_config_cache_clear()
 
 
 def get_external_skills_dirs() -> List[Path]:
-    """Read ``skills.external_dirs`` from config.yaml and return validated paths.
+    """Read ``skills.external_dirs`` from config.yaml and return existing paths.
 
-    Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
-    path.  Only directories that actually exist are returned.  Duplicates and
-    paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
+    Valid YAML lists and legacy JSON-array scalar strings are supported.  Each
+    entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute path.
+    Only directories that actually exist are returned.  Duplicates and paths
+    that resolve to the local ``~/.hermes/skills/`` are silently skipped.
+    Invalid values emit one actionable error per config revision rather than
+    silently becoming a nonexistent literal directory.
 
-    Cached in-process, keyed on ``config.yaml`` mtime — the function is
-    called once per skill during banner / tool-registry scans, and YAML
-    parsing a non-trivial config dominates ``hermes`` cold-start time
-    when the cache is absent.
+    Cached in-process, keyed on ``config.yaml`` mtime — the function is called
+    once per skill during banner / tool-registry scans, and YAML parsing a
+    non-trivial config dominates ``hermes`` cold-start time when the cache is
+    absent.
     """
     config_path = get_config_path()
     if not config_path.exists():
@@ -535,44 +633,21 @@ def get_external_skills_dirs() -> List[Path]:
         return []
 
     raw_dirs = skills_cfg.get("external_dirs")
-    if not raw_dirs:
-        result: List[Path] = []
-        if cache_key is not None:
-            _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
-        return result
-    if isinstance(raw_dirs, str):
-        raw_dirs = [raw_dirs]
-    if not isinstance(raw_dirs, list):
-        return []
-
-    from hermes_constants import get_hermes_home
-
-    hermes_home = get_hermes_home()
-    local_skills = get_skills_dir().resolve()
-    seen: Set[Path] = set()
-    result = []
-
-    for entry in raw_dirs:
-        entry = str(entry).strip()
-        if not entry:
-            continue
-        # Expand ~ and environment variables
-        expanded = os.path.expanduser(os.path.expandvars(entry))
-        p = Path(expanded)
-        # Resolve relative paths against HERMES_HOME, not cwd
-        if not p.is_absolute():
-            p = (hermes_home / p).resolve()
-        else:
-            p = p.resolve()
-        if p == local_skills:
-            continue
-        if p in seen:
-            continue
-        if p.is_dir():
-            seen.add(p)
-            result.append(p)
-        else:
-            logger.debug("External skills dir does not exist, skipping: %s", p)
+    try:
+        result = resolve_external_skills_dirs(raw_dirs)
+    except ExternalSkillsConfigError as exc:
+        should_report = cache_key is None or cache_key not in _EXTERNAL_DIRS_ERROR_CACHE
+        if should_report:
+            print(
+                f"Invalid skills.external_dirs in {config_path}: {exc}. "
+                "Use a YAML list of paths or run "
+                "`hermes config set skills.external_dirs "
+                "'[\"/path/one\",\"/path/two\"]'`.",
+                file=sys.stderr,
+            )
+            if cache_key is not None:
+                _EXTERNAL_DIRS_ERROR_CACHE.add(cache_key)
+        result = []
 
     if cache_key is not None:
         _EXTERNAL_DIRS_CACHE[cache_key] = list(result)

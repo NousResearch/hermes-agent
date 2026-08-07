@@ -228,6 +228,49 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     issues.append(fix)
 
 
+def _check_external_skills_dirs_config(config: dict, issues: list[str]) -> None:
+    """Diagnose malformed and missing ``skills.external_dirs`` entries."""
+    skills_config = config.get("skills")
+    if not isinstance(skills_config, dict) or "external_dirs" not in skills_config:
+        return
+
+    from agent.skill_utils import (
+        ExternalSkillsConfigError,
+        normalize_external_skills_dirs,
+        resolve_external_skills_dirs,
+    )
+
+    raw_dirs = skills_config.get("external_dirs")
+    try:
+        entries = normalize_external_skills_dirs(raw_dirs)
+        resolved = resolve_external_skills_dirs(entries, existing_only=False)
+    except ExternalSkillsConfigError as exc:
+        fix = (
+            "Replace skills.external_dirs with a YAML list of path strings, "
+            "or run `hermes config set skills.external_dirs "
+            "'[\"/path/one\",\"/path/two\"]'`."
+        )
+        _fail_and_issue(
+            "skills.external_dirs is malformed",
+            f"({exc})",
+            fix,
+            issues,
+        )
+        check_info(f"Fix: {fix}")
+        return
+
+    existing = [path for path in resolved if path.is_dir()]
+    missing = [path for path in resolved if not path.is_dir()]
+    if existing:
+        noun = "directory" if len(existing) == 1 else "directories"
+        check_ok(f"{len(existing)} external skills {noun} available")
+    for path in missing:
+        check_warn("External skills directory does not exist", str(path))
+        issues.append(
+            f"Create or remove the missing skills.external_dirs path: {path}"
+        )
+
+
 # Deprecated / legacy config keys still read for back-compat. Doctor surfaces
 # them as non-failing warnings with the modern replacement — it does not
 # auto-migrate or delete (migrations live in config.py version steps).
@@ -964,6 +1007,7 @@ def run_doctor(args):
             # Raw-file diagnostic: inspects what the user actually wrote.
             from hermes_cli.config import read_user_config_raw
             cfg = read_user_config_raw(config_path)
+            _check_external_skills_dirs_config(cfg, issues)
             model_section = cfg.get("model") or {}
             provider_raw = (model_section.get("provider") or "").strip()
             provider = provider_raw.lower()

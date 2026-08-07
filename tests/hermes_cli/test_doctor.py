@@ -1410,3 +1410,55 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+class TestDoctorExternalSkillsDirs:
+    def _run_config_section(self, monkeypatch, tmp_path, config_yaml):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+        (hermes_home / ".env").write_text(
+            "OPENAI_API_KEY=sk-test\n", encoding="utf-8"
+        )
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+        monkeypatch.setattr(doctor_mod, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_flags_malformed_json_scalar_with_actionable_remediation(
+        self, monkeypatch, tmp_path
+    ):
+        out = self._run_config_section(
+            monkeypatch,
+            tmp_path,
+            "skills:\n  external_dirs: '[\"/path/one\",]'\n",
+        )
+
+        assert "skills.external_dirs is malformed" in out
+        assert "not valid JSON" in out
+        assert "hermes config set skills.external_dirs" in out
+
+    def test_distinguishes_valid_nonexistent_path_from_malformed_config(
+        self, monkeypatch, tmp_path
+    ):
+        missing = tmp_path / "missing-external-skills"
+        out = self._run_config_section(
+            monkeypatch,
+            tmp_path,
+            f"skills:\n  external_dirs:\n    - {missing}\n",
+        )
+
+        assert "External skills directory does not exist" in out
+        assert str(missing.resolve()) in out
+        assert "skills.external_dirs is malformed" not in out

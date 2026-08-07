@@ -47,9 +47,124 @@ class TestGetExternalSkillsDirs:
         assert len(result) == 1
         assert result[0] == external_skills_dir.resolve()
 
+    def test_json_array_scalar_loads_multiple_dirs(self, hermes_home, tmp_path):
+        first = tmp_path / "external-one"
+        second = tmp_path / "external-two"
+        first.mkdir()
+        second.mkdir()
+        encoded = json.dumps([str(first), str(second)])
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs: '{encoded}'\n"
+        )
 
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import (
+                _external_dirs_cache_clear,
+                get_external_skills_dirs,
+            )
 
+            _external_dirs_cache_clear()
+            result = get_external_skills_dirs()
 
+        assert result == [first.resolve(), second.resolve()]
+
+    def test_malformed_json_scalar_reports_once(self, hermes_home, capsys):
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n  external_dirs: '[\"/tmp/one\",]'\n"
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import (
+                _external_dirs_cache_clear,
+                get_external_skills_dirs,
+            )
+
+            _external_dirs_cache_clear()
+            assert get_external_skills_dirs() == []
+            assert get_external_skills_dirs() == []
+
+        err = capsys.readouterr().err
+        assert err.count("Invalid skills.external_dirs") == 1
+        assert "not valid JSON" in err
+        assert "hermes config set skills.external_dirs" in err
+
+    def test_non_list_type_reports_configuration_error(self, hermes_home, capsys):
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n  external_dirs:\n    unexpected: mapping\n"
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import (
+                _external_dirs_cache_clear,
+                get_external_skills_dirs,
+            )
+
+            _external_dirs_cache_clear()
+            assert get_external_skills_dirs() == []
+
+        err = capsys.readouterr().err
+        assert "Invalid skills.external_dirs" in err
+        assert "got dict" in err
+
+    def test_expansion_relative_paths_and_duplicates_are_preserved(
+        self, hermes_home, tmp_path
+    ):
+        relative_dir = hermes_home / "relative-skills"
+        env_dir = tmp_path / "environment-skills"
+        fake_home = tmp_path / "user-home"
+        tilde_dir = fake_home / "shared-skills"
+        for path in (relative_dir, env_dir, tilde_dir):
+            path.mkdir(parents=True)
+
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n"
+            "  external_dirs:\n"
+            "    - relative-skills\n"
+            "    - ${EXTERNAL_SKILLS_TEST_DIR}\n"
+            "    - ~/shared-skills\n"
+            "    - relative-skills\n"
+            f"    - {hermes_home / 'skills'}\n"
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(hermes_home),
+                "EXTERNAL_SKILLS_TEST_DIR": str(env_dir),
+                "HOME": str(fake_home),
+            },
+        ):
+            from agent.skill_utils import (
+                _external_dirs_cache_clear,
+                get_external_skills_dirs,
+            )
+
+            _external_dirs_cache_clear()
+            result = get_external_skills_dirs()
+
+        assert result == [
+            relative_dir.resolve(),
+            env_dir.resolve(),
+            tilde_dir.resolve(),
+        ]
+
+    def test_valid_nonexistent_path_is_not_reported_as_malformed(
+        self, hermes_home, capsys
+    ):
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n  external_dirs:\n    - missing-skills\n"
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import (
+                _external_dirs_cache_clear,
+                get_external_skills_dirs,
+            )
+
+            _external_dirs_cache_clear()
+            assert get_external_skills_dirs() == []
+
+        assert "Invalid skills.external_dirs" not in capsys.readouterr().err
 
 
 class TestGetAllSkillsDirs:

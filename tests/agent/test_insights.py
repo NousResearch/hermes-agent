@@ -364,6 +364,101 @@ class TestInsightsPopulated:
         assert activity["busiest_hour"] is not None
 
 
+# =========================================================================
+# Cost buckets (estimated / included / unknown) — #77223
+# =========================================================================
+
+class TestCostBuckets:
+
+    def test_overview_buckets_included_sessions(self, db):
+        """Subscription-included sessions land in the included bucket with
+        token counts, and never inflate estimated_cost."""
+        db.create_session(session_id="inc", source="cli", model="gpt-5.2-codex")
+        db.update_token_counts(
+            "inc", input_tokens=2_000_000, output_tokens=500_000,
+            billing_provider="openai-codex",
+        )
+        db.create_session(session_id="est", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "est", input_tokens=100_000, output_tokens=50_000,
+            billing_provider="openai",
+        )
+        db.create_session(session_id="unk", source="cli", model="my-custom-model")
+        db.update_token_counts("unk", input_tokens=10_000, output_tokens=5_000)
+        db._conn.commit()
+
+        overview = InsightsEngine(db).generate(days=30)["overview"]
+
+        assert overview["included_cost_sessions"] == 1
+        assert overview["included_cost_tokens"] == 2_500_000
+        assert overview["estimated_cost_sessions"] == 1
+        assert overview["unknown_cost_sessions"] == 1
+        # gpt-4o: $2.50/M in + $10.00/M out → 0.25 + 0.50
+        assert overview["estimated_cost"] == pytest.approx(0.75, abs=0.01)
+        # gpt-5.2-codex has no market entry → hypothetical figure is 0
+        # (the count/token buckets still surface the usage).
+        assert overview["included_cost"] == 0.0
+        assert overview["unknown_cost"] == 0.0
+
+    def test_included_bucket_prices_known_models_at_market(self, db):
+        """When the underlying model has market pricing, the included bucket
+        carries a hypothetical at-market figure (#77223)."""
+        db.create_session(session_id="inc", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "inc", input_tokens=1_000_000, output_tokens=1_000_000,
+            billing_provider="openai-codex",
+        )
+        db._conn.commit()
+
+        overview = InsightsEngine(db).generate(days=30)["overview"]
+
+        assert overview["included_cost_sessions"] == 1
+        assert overview["estimated_cost"] == 0.0
+        # $2.50/M in + $10.00/M out
+        assert overview["included_cost"] == pytest.approx(12.50, abs=0.01)
+
+    def test_terminal_format_renders_cost_buckets(self, db):
+        db.create_session(session_id="inc", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "inc", input_tokens=1_000_000, output_tokens=1_000_000,
+            billing_provider="openai-codex",
+        )
+        db.create_session(session_id="est", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "est", input_tokens=100_000, output_tokens=50_000,
+            billing_provider="openai",
+        )
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        text = engine.format_terminal(engine.generate(days=30))
+
+        assert "💰 Cost" in text
+        assert "Estimated:" in text
+        assert "Included:" in text
+        assert "subscription" in text
+        assert "at market rates (hypothetical)" in text
+        assert "2,000,000 tokens" in text
+
+    def test_gateway_format_renders_cost_buckets(self, db):
+        db.create_session(session_id="inc", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "inc", input_tokens=1_000_000, output_tokens=1_000_000,
+            billing_provider="openai-codex",
+        )
+        db.create_session(session_id="unk", source="cli", model="my-custom-model")
+        db.update_token_counts("unk", input_tokens=10_000, output_tokens=5_000)
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        text = engine.format_gateway(engine.generate(days=30))
+
+        assert "**Cost:**" in text
+        assert "1 included" in text
+        assert "at market (hypothetical)" in text
+        assert "1 unknown (no pricing signal)" in text
+
+
 
 
 
@@ -545,8 +640,8 @@ class TestTerminalFormatting:
 
 
 
-    def test_terminal_format_hides_cost_for_custom_models(self, db):
-        """Cost display is hidden entirely — custom models no longer show 'N/A' either."""
+    def test_terminal_format_flags_unknown_cost_for_custom_models(self, db):
+        """Custom/self-hosted models surface as an 'unknown' cost bucket with no fake dollar figure."""
         db.create_session(session_id="s1", source="cli", model="my-custom-model")
         db.update_token_counts("s1", input_tokens=1000, output_tokens=500)
         db._conn.commit()
@@ -557,7 +652,9 @@ class TestTerminalFormatting:
 
         assert "N/A" not in text
         assert "custom/self-hosted" not in text
-        assert "Cost" not in text
+        # The unknown bucket is counted and flagged, never priced.
+        assert "Unknown:" in text
+        assert "no pricing signal" in text
 
 
 class TestGatewayFormatting:
@@ -570,13 +667,14 @@ class TestGatewayFormatting:
         assert len(gateway_text) < len(terminal_text)
 
 
-    def test_gateway_format_hides_cost(self, populated_db):
-        """Gateway format omits dollar figures and internal cache details."""
+    def test_gateway_format_surfaces_cost_buckets(self, populated_db):
+        """Gateway format surfaces cost buckets but omits internal cache details."""
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
-        assert "$" not in text
+        assert "**Cost:**" in text
+        assert "estimated $" in text
         assert "cache" not in text.lower()
 
 

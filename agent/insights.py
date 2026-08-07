@@ -72,6 +72,39 @@ def _estimate_cost(
     return float(result.amount_usd or 0.0), result.status
 
 
+def _estimate_included_market_cost(session: Dict) -> float:
+    """At-market USD value of a subscription-included session (hypothetical).
+
+    ``estimate_usage_cost`` prices subscription-included routes (e.g.
+    ``openai-codex``) at zero — correct for per-session billing, but the
+    aggregate view wants to know what the same token load would cost at
+    market rates. Re-run the estimate against the underlying market route
+    (``openai-codex`` → ``openai``) using the same price table; returns
+    0.0 when no market price is computable (the count/token buckets still
+    surface the usage).
+    """
+    model = session.get("model") or ""
+    usage = CanonicalUsage(
+        input_tokens=session.get("input_tokens") or 0,
+        output_tokens=session.get("output_tokens") or 0,
+        cache_read_tokens=session.get("cache_read_tokens") or 0,
+        cache_write_tokens=session.get("cache_write_tokens") or 0,
+    )
+    provider = session.get("billing_provider")
+    base_url = session.get("billing_base_url")
+    if (provider or "").strip().lower() == "openai-codex" or model.lower().startswith(
+        "openai-codex/"
+    ):
+        # resolve_billing_route short-circuits this provider to the
+        # zero-priced subscription route; price it off the official docs
+        # snapshot like any other openai model instead.
+        provider = "openai"
+    result = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
+    if result.status == "estimated" and result.amount_usd is not None:
+        return float(result.amount_usd)
+    return 0.0
+
+
 
 
 def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
@@ -485,9 +518,15 @@ class InsightsEngine:
         total_tool_calls = sum(s.get("tool_call_count") or 0 for s in sessions)
         total_messages = sum(s.get("message_count") or 0 for s in sessions)
 
-        # Cost estimation (weighted by model)
+        # Cost estimation (weighted by model). Sessions are bucketed by
+        # cost_status semantics: subscription-included usage prices at zero
+        # (correct per-session) but is surfaced separately so the aggregate
+        # ledger doesn't silently collapse to $0 (#77223).
         total_cost = 0.0
         actual_cost = 0.0
+        included_cost = 0.0
+        included_cost_tokens = 0
+        estimated_cost_sessions = 0
         models_with_pricing = set()
         models_without_pricing = set()
         unknown_cost_sessions = 0
@@ -500,8 +539,17 @@ class InsightsEngine:
             display = model.split("/")[-1] if "/" in model else (model or "unknown")
             if status == "included":
                 included_cost_sessions += 1
+                included_cost += _estimate_included_market_cost(s)
+                included_cost_tokens += (
+                    (s.get("input_tokens") or 0)
+                    + (s.get("output_tokens") or 0)
+                    + (s.get("cache_read_tokens") or 0)
+                    + (s.get("cache_write_tokens") or 0)
+                )
             elif status == "unknown":
                 unknown_cost_sessions += 1
+            else:
+                estimated_cost_sessions += 1
             if has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url")):
                 models_with_pricing.add(display)
             else:
@@ -548,7 +596,14 @@ class InsightsEngine:
             "total_cache_write_tokens": total_cache_write,
             "total_tokens": total_tokens,
             "estimated_cost": total_cost,
+            "estimated_cost_sessions": estimated_cost_sessions,
             "actual_cost": actual_cost,
+            "included_cost": included_cost,
+            "included_cost_tokens": included_cost_tokens,
+            # No pricing signal exists for the unknown bucket — the dollar
+            # figure is not computable; consumers should treat the count as
+            # the signal (formatters render "n/a", never "$0.00").
+            "unknown_cost": 0.0,
             "total_hours": total_hours,
             "avg_session_duration": avg_duration,
             "avg_messages_per_session": total_messages / len(sessions) if sessions else 0,
@@ -1000,6 +1055,32 @@ class InsightsEngine:
         lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
         lines.append("")
 
+        # Cost buckets (estimated / included / unknown). Subscription-included
+        # usage prices at zero per-session but is surfaced here so the ledger
+        # doesn't collapse to $0; the included figure is a hypothetical
+        # at-market comparison, clearly labeled as such (#77223).
+        lines.append("  💰 Cost")
+        lines.append("  " + "─" * 56)
+        est_cost = f"${o['estimated_cost']:.2f}"
+        if o.get("estimated_cost_sessions"):
+            est_cost += f"  ({o['estimated_cost_sessions']} sessions)"
+        lines.append(f"  Estimated:       {est_cost}")
+        if o.get("included_cost_sessions"):
+            if o.get("included_cost") > 0:
+                market = f"~${o['included_cost']:.2f} at market rates (hypothetical)"
+            else:
+                market = "market price unavailable"
+            lines.append(
+                f"  Included:        {o['included_cost_tokens']:,} tokens "
+                f"({o['included_cost_sessions']} sessions, subscription) — {market}"
+            )
+        if o.get("unknown_cost_sessions"):
+            lines.append(
+                f"  Unknown:         {o['unknown_cost_sessions']} sessions "
+                f"(no pricing signal)"
+            )
+        lines.append("")
+
         # Model breakdown
         if report["models"]:
             lines.append("  🤖 Models Used")
@@ -1110,6 +1191,25 @@ class InsightsEngine:
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
         lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
+
+        # Cost buckets (estimated / included / unknown). Subscription-included
+        # usage prices at zero per-session but is surfaced here so the ledger
+        # doesn't collapse to $0; the included figure is a hypothetical
+        # at-market comparison, clearly labeled as such (#77223).
+        cost_parts = [f"estimated ${o['estimated_cost']:.2f}"]
+        if o.get("included_cost_sessions"):
+            if o.get("included_cost") > 0:
+                market = f"~${o['included_cost']:.2f} at market (hypothetical)"
+            else:
+                market = "market price unavailable"
+            cost_parts.append(
+                f"{o['included_cost_sessions']} included / "
+                f"{o['included_cost_tokens']:,} tokens ({market})"
+            )
+        if o.get("unknown_cost_sessions"):
+            cost_parts.append(f"{o['unknown_cost_sessions']} unknown (no pricing signal)")
+        lines.append(f"**Cost:** {' | '.join(cost_parts)}")
+
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{format_duration_compact(o['total_hours'] * 3600)} | **Avg session:** ~{format_duration_compact(o['avg_session_duration'])}")
         lines.append("")

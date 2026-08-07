@@ -16663,10 +16663,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Fail-closed on timeout: never enter the transcript region without a
         # lease. Outer dispatch returns a bounded rejection/resend notice rather
         # than recreating the exact concurrent-turn corruption this lease exists
-        # to prevent. Released
-        # in _handle_message's finally via _release_turn_lease — granted per
-        # (routing key, run generation) so a stale unwind can't release a
-        # newer turn's lease.
+        # to prevent. Released in _handle_message's finally via
+        # _release_turn_lease — granted per (routing key, run generation) so a
+        # stale unwind can't release a newer turn's lease.
         _lease_registry = getattr(self, "_turn_leases", None)
         if _lease_registry is not None:
             try:

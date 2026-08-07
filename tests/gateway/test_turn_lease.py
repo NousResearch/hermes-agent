@@ -48,7 +48,7 @@ def test_alias_key_turn_waits_and_order_is_preserved():
             token = await registry.acquire(
                 "sess-1", owner_key=owner_key, generation=generation, timeout=5
             )
-            assert token is not None and not token.degraded
+            assert token is not None
             events.append(f"load:{owner_key}")
             await asyncio.sleep(hold)  # simulate run + flush
             events.append(f"flush:{owner_key}")
@@ -394,9 +394,7 @@ def test_rebind_moves_serialization_to_new_session_id():
 
     async def scenario():
         registry = SessionTurnLeaseRegistry()
-        token = await registry.acquire(
-            "parent", owner_key="key-a", generation=1, timeout=5
-        )
+        token = await registry.acquire("parent", owner_key="key-a", generation=1, timeout=5)
         assert registry.rebind(token, "child") is True
         assert token is not None and token.session_id == "child"
 
@@ -409,7 +407,7 @@ def test_rebind_moves_serialization_to_new_session_id():
 
         assert registry.release(token) is True
         t2 = await waiter
-        assert t2 is not None and not t2.degraded
+        assert t2 is not None
         registry.release(t2)
 
     _run(scenario())

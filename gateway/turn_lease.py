@@ -97,32 +97,29 @@ class TurnLeaseTimeoutError(TimeoutError):
 class TurnLeaseToken:
     """Handle returned by :meth:`SessionTurnLeaseRegistry.acquire`.
 
-    ``degraded`` is retained for compatibility with older callers and test
-    doubles, but :meth:`acquire` no longer returns degraded tokens: a timeout
-    raises :class:`TurnLeaseTimeoutError` instead. ``released`` makes release
-    idempotent.
+    A timeout raises :class:`TurnLeaseTimeoutError` instead of returning a
+    token, so every token handed out is a held lease. ``released`` makes
+    release idempotent.
     """
 
-    __slots__ = ("session_id", "owner_key", "generation", "degraded", "released")
+    __slots__ = ("session_id", "owner_key", "generation", "released")
 
     def __init__(
         self,
         session_id: str,
         owner_key: str,
         generation: int,
-        degraded: bool = False,
     ) -> None:
         self.session_id = session_id
         self.owner_key = owner_key
         self.generation = generation
-        self.degraded = degraded
         self.released = False
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
         return (
             f"TurnLeaseToken(session_id={self.session_id!r}, "
             f"owner_key={self.owner_key!r}, generation={self.generation}, "
-            f"degraded={self.degraded}, released={self.released})"
+            f"released={self.released})"
         )
 
 
@@ -291,7 +288,6 @@ class SessionTurnLeaseRegistry:
         """
         if (
             token is None
-            or token.degraded
             or token.released
             or not new_session_id
             or new_session_id == token.session_id
@@ -329,11 +325,11 @@ class SessionTurnLeaseRegistry:
         """Release ``token``'s lease. Idempotent; ownership-checked.
 
         Returns True only when this exact token was the current holder and
-        the lock was freed. A degraded token, a re-release, or a stale token
-        whose slot has since been granted to a newer turn are all safe
-        no-ops — a stale unwind can never release a newer turn's lease.
+        the lock was freed. A re-release or a stale token whose slot has
+        since been granted to a newer turn are both safe no-ops — a stale
+        unwind can never release a newer turn's lease.
         """
-        if token is None or token.degraded or token.released:
+        if token is None or token.released:
             return False
         token.released = True
         lease = self._leases.get(token.session_id)

@@ -3367,7 +3367,28 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # ownership of closing the underlying provider stream.
             _set_request_stream_handle(stream)
         for chunk in stream:
-            last_chunk_time["t"] = time.time()
+            # Only refresh the stale-stream timer for chunks with actual
+            # content.  Heartbeat / keep-alive SSE frames carry empty
+            # choices (or choices whose deltas have no payload) and must
+            # NOT reset the detector — otherwise a provider that sends
+            # pings but never delivers content will keep the stream
+            # alive indefinitely.  We still touch activity so the
+            # gateway knows the process is alive.
+            _has_content = False
+            if chunk.choices:
+                for _c in chunk.choices:
+                    _d = getattr(_c, "delta", None)
+                    if _d and (
+                        getattr(_d, "content", None)
+                        or getattr(_d, "tool_calls", None)
+                        or getattr(_d, "function_call", None)
+                        or getattr(_d, "reasoning_content", None)
+                        or getattr(_d, "reasoning", None)
+                    ):
+                        _has_content = True
+                        break
+            if _has_content:
+                last_chunk_time["t"] = time.time()
             agent._touch_activity("receiving stream response")
 
             # Update per-attempt diagnostic counters.  Best-effort —
@@ -3839,7 +3860,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         try:
             for event in stream:
                 saw_stream_event = True
-                last_chunk_time["t"] = time.time()
+                # Only refresh the stale-stream timer for content-bearing
+                # events.  Anthropic ``ping`` frames must not reset the
+                # detector — otherwise a provider that heartbeats without
+                # delivering content keeps the stream alive forever.
+                _evt_type = getattr(event, "type", None)
+                _is_content = _evt_type in (
+                    "content_block_start",
+                    "content_block_delta",
+                    "content_block_stop",
+                    "message_start",
+                    "message_delta",
+                )
+                if _is_content:
+                    last_chunk_time["t"] = time.time()
                 agent._touch_activity("receiving stream response")
                 try:
                     _diag["chunks"] = int(_diag.get("chunks", 0)) + 1

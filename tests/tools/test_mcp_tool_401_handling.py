@@ -7,6 +7,7 @@ httpx.HTTPStatusError(401), the handler should:
   3. If no, return a structured needs_reauth error so the model stops
      hallucinating manual refresh attempts.
 """
+import asyncio
 import json
 from unittest.mock import MagicMock
 
@@ -104,3 +105,51 @@ def test_call_tool_handler_non_auth_error_still_generic(monkeypatch, tmp_path):
     finally:
         mcp_tool._servers.pop("srv", None)
         mcp_tool._server_error_counts.pop("srv", None)
+
+
+def test_auth_retry_returns_completed_tool_error_without_reauth(monkeypatch, tmp_path):
+    """A tool error after auth reconnect proves both auth and transport worked."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from mcp.client.auth import OAuthFlowError
+    from tools import mcp_tool
+    from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    manager = get_manager()
+
+    async def _handle_401(name, token=None):
+        return True
+
+    def _run_immediately(coroutine_factory, timeout=None):
+        return asyncio.run(coroutine_factory())
+
+    monkeypatch.setattr(manager, "handle_401", _handle_401)
+    monkeypatch.setattr(mcp_tool, "_run_on_mcp_loop", _run_immediately)
+    monkeypatch.setattr(
+        mcp_tool,
+        "_signal_reconnect_and_wait",
+        lambda *args, **kwargs: True,
+    )
+
+    server = MagicMock()
+    server._reconnect_event = MagicMock()
+    mcp_tool._servers["srv"] = server
+    mcp_tool._server_error_counts["srv"] = 2
+    tool_error_result = json.dumps({"error": "domain validation failed"})
+
+    try:
+        result = mcp_tool._handle_auth_error_and_retry(
+            "srv",
+            OAuthFlowError("expired"),
+            lambda: tool_error_result,
+            "tools/call example",
+        )
+
+        assert result == tool_error_result
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        mcp_tool._servers.pop("srv", None)
+        mcp_tool._server_error_counts.pop("srv", None)
+        mcp_tool._server_breaker_opened_at.pop("srv", None)
+        reset_manager_for_tests()

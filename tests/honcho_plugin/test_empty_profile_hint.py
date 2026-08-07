@@ -20,7 +20,7 @@ def _make_provider(**cfg_overrides) -> HonchoMemoryProvider:
     # Defaults match HonchoClientConfig defaults
     cfg.user_observe_me = cfg_overrides.get("user_observe_me", True)
     cfg.user_observe_others = cfg_overrides.get("user_observe_others", True)
-    cfg.ai_observe_me = cfg_overrides.get("ai_observe_me", True)
+    cfg.ai_observe_me = cfg_overrides.get("ai_observe_me", False)
     cfg.ai_observe_others = cfg_overrides.get("ai_observe_others", True)
     cfg.message_max_chars = 25000
     provider._config = cfg

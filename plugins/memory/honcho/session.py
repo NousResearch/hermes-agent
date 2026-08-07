@@ -131,7 +131,7 @@ class HonchoSessionManager:
         # Per-peer observation booleans (granular, from config)
         self._user_observe_me: bool = config.user_observe_me if config else True
         self._user_observe_others: bool = config.user_observe_others if config else True
-        self._ai_observe_me: bool = config.ai_observe_me if config else True
+        self._ai_observe_me: bool = config.ai_observe_me if config else False
         self._ai_observe_others: bool = config.ai_observe_others if config else True
         self._message_max_chars: int = (
             config.message_max_chars if config else 25000

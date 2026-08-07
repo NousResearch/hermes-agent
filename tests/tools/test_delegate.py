@@ -716,6 +716,105 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIn("no API key", str(ctx.exception))
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_path_honors_explicit_api_mode(self, mock_resolve):
+        """delegation.api_mode is documented alongside delegation.provider; the provider
+        branch must honor it just like the base_url branch does ("always wins")."""
+        mock_resolve.return_value = {
+            "provider": "minimax",
+            "base_url": "https://api.minimax.io/v1",
+            "api_key": "k",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "m", "provider": "minimax", "api_mode": "anthropic_messages"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_path_invalid_api_mode_keeps_runtime_value(self, mock_resolve):
+        """An unsupported delegation.api_mode keeps the provider-resolved transport and
+        warns — never a silent drop, never an incoherent transport."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "k",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "m", "provider": "openrouter", "api_mode": "garbage"}
+        with self.assertLogs("tools.delegate_tool", level="WARNING") as logs:
+            creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "chat_completions")
+        self.assertTrue(any("not a supported override" in m for m in logs.output))
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_path_native_sdk_ignores_api_mode(self, mock_resolve):
+        """A native-SDK provider's wire protocol is fixed by its bundle; an explicit
+        delegation.api_mode cannot break it (mirrors the base_url-branch exclusion)."""
+        mock_resolve.return_value = {
+            "provider": "bedrock",
+            "base_url": None,
+            "api_key": "k",
+            "api_mode": "bedrock_converse",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "m", "provider": "bedrock", "api_mode": "chat_completions"}
+        with self.assertLogs("tools.delegate_tool", level="WARNING") as logs:
+            creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "bedrock_converse")
+        self.assertTrue(any("native-SDK" in m for m in logs.output))
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_path_bedrock_alias_still_excluded(self, mock_resolve):
+        """A registered alias (aws -> bedrock) resolves to a canonical native-SDK
+        provider; the api_mode exclusion keys on the RESOLVED provider, so an override
+        cannot become valid merely because an alias spelling was configured."""
+        mock_resolve.return_value = {
+            "provider": "bedrock",       # canonical, resolved from the "aws" alias
+            "base_url": None,
+            "api_key": "k",
+            "api_mode": "bedrock_converse",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "m", "provider": "aws", "api_mode": "chat_completions"}
+        with self.assertLogs("tools.delegate_tool", level="WARNING") as logs:
+            creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "bedrock_converse")
+        self.assertTrue(any("native-SDK" in m for m in logs.output))
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_path_vertex_alias_still_excluded(self, mock_resolve):
+        """Same for vertex aliases (google-vertex -> vertex): resolved-canonical
+        exclusion, override ignored, loud warning."""
+        mock_resolve.return_value = {
+            "provider": "vertex",        # canonical, resolved from the "google-vertex" alias
+            "base_url": "https://aiplatform.googleapis.com",
+            "api_key": "k",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "m", "provider": "google-vertex", "api_mode": "anthropic_messages"}
+        with self.assertLogs("tools.delegate_tool", level="WARNING") as logs:
+            creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "chat_completions")
+        self.assertTrue(any("native-SDK" in m for m in logs.output))
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_path_no_api_mode_unchanged(self, mock_resolve):
+        """Without delegation.api_mode the provider-resolved transport flows through
+        untouched — zero behavior change for existing configs."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "k",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "m", "provider": "openrouter"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "codex_responses")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_named_custom_provider_preserves_provider_name(self, mock_resolve):
         """Named custom provider (e.g. crof.ai) resolves to 'custom' at runtime level
         but the subagent must retain the original provider identity so that

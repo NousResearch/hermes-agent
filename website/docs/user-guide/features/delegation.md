@@ -375,7 +375,7 @@ delegation:
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
-  api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints
+  api_mode: anthropic_messages                       # Optional wire-protocol override ("chat_completions", "codex_responses", or "anthropic_messages"); overrides the provider-resolved transport. Ignored for native-SDK providers (bedrock/vertex/google).
 
 # Or use a direct custom endpoint instead of provider:
 delegation:

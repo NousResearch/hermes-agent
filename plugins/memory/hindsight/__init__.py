@@ -719,6 +719,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
+        self._prefetch_query = ""
+        self._prefetch_done = False
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         # Single-writer model for retain. sync_turn() enqueues; the writer
@@ -1717,9 +1719,19 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
             self._prefetch_thread.join(timeout=3.0)
+        # Truncate identically to queue_prefetch so the query match below works.
+        if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
+            query = query[:self._recall_max_input_chars]
         with self._prefetch_lock:
-            result = self._prefetch_result
-            self._prefetch_result = ""
+            # Only consume a result produced for the current query. A slow
+            # background lookup from an earlier turn must never leak into a
+            # later turn's context.
+            if self._prefetch_query != query or not self._prefetch_done:
+                result = ""
+            else:
+                result = self._prefetch_result
+                self._prefetch_result = ""
+                self._prefetch_done = False
         if not result:
             logger.debug("Prefetch: no results available")
             return ""
@@ -1778,10 +1790,16 @@ class HindsightMemoryProvider(MemoryProvider):
                     text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
                 if text:
                     with self._prefetch_lock:
-                        self._prefetch_result = text
+                        if self._prefetch_query == query:
+                            self._prefetch_result = text
+                            self._prefetch_done = True
             except Exception as e:
                 logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)
 
+        with self._prefetch_lock:
+            self._prefetch_query = query
+            self._prefetch_result = ""
+            self._prefetch_done = False
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()
 
@@ -1956,8 +1974,81 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_queue.put(_do_retain)
         # Advance the append watermark only after the delta is queued, so a
         # later retain doesn't re-ship turns we've already handed to the writer.
+        # Advance the watermark for both modes: append uses it to ship only
+        # the delta, while legacy overwrite relies on it to detect "nothing
+        # new since the last flush" at session end / shutdown.
+        self._last_retained_turn_count = len(self._session_turns)
+
+    def _flush_pending_turns(self, *, reason: str) -> bool:
+        """Queue turns not yet handed to the retain writer.
+
+        Append-capable servers receive only their new delta; legacy servers
+        overwrite a document, so they receive the complete session whenever
+        there is any newly buffered turn. The append watermark prevents
+        duplicate flushes at shutdown.
+        """
+        if not self._auto_retain or self._shutting_down.is_set():
+            return False
+        if not self._session_turns:
+            return False
+
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
+        if len(self._session_turns) <= self._last_retained_turn_count:
+            logger.debug("Hindsight retain (%s): no newly buffered turns", reason)
+            return False
         if update_mode == "append":
-            self._last_retained_turn_count = len(self._session_turns)
+            turns_to_retain = self._session_turns[self._last_retained_turn_count:]
+        else:
+            turns_to_retain = list(self._session_turns)
+
+        content = "[" + ",".join(turns_to_retain) + "]"
+        lineage_tags: list[str] = []
+        if self._session_id:
+            lineage_tags.append(f"session:{self._session_id}")
+        if self._parent_session_id:
+            lineage_tags.append(f"parent:{self._parent_session_id}")
+
+        metadata_snapshot = self._build_metadata(
+            message_count=len(turns_to_retain) * 2,
+            turn_index=self._turn_index,
+        )
+        num_turns = len(turns_to_retain)
+        bank_id = self._bank_id
+        retain_async_flag = self._retain_async
+        retain_context = self._retain_context
+
+        def _do_retain() -> None:
+            item = self._build_retain_kwargs(
+                content,
+                context=retain_context,
+                metadata=metadata_snapshot,
+                tags=lineage_tags or None,
+            )
+            item.pop("bank_id", None)
+            item.pop("retain_async", None)
+            if update_mode is not None:
+                item["update_mode"] = update_mode
+            logger.debug(
+                "Hindsight retain (%s): bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
+                reason, bank_id, document_id, update_mode, retain_async_flag, len(content), num_turns,
+            )
+            resp = self._run_hindsight_operation(
+                lambda client: client.aretain_batch(
+                    bank_id=bank_id,
+                    items=[item],
+                    document_id=document_id,
+                    retain_async=retain_async_flag,
+                )
+            )
+            if retain_async_flag:
+                self._track_retain_ops(resp, bank_id)
+            logger.debug("Hindsight retain (%s) succeeded", reason)
+
+        self._ensure_writer()
+        self._register_atexit()
+        self._retain_queue.put(_do_retain)
+        self._last_retained_turn_count = len(self._session_turns)
+        return True
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
@@ -2168,6 +2259,10 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
+        # Flush any buffered turns not yet handed to the retain writer before
+        # we stop accepting new work, so a session that ends below the retain
+        # cadence does not lose its last turns.
+        self._flush_pending_turns(reason="shutdown")
         # Stop accepting new retain jobs first so anyone still calling
         # sync_turn() during teardown is dropped, not enqueued.
         self._shutting_down.set()

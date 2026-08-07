@@ -124,7 +124,33 @@ def _reset_runtime():
     relay_runtime._reset_for_tests()
 
 
-def test_relay_discovers_plugins_before_first_session_scope():
+@pytest.fixture
+def explicit_static_config(tmp_path, monkeypatch):
+    config = tmp_path / "plugins.toml"
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    return config
+
+
+def test_unset_config_disables_plugin_initialization(monkeypatch):
+    monkeypatch.delenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, raising=False)
+    relay = _FakeRelay()
+    host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+
+    try:
+        assert not host.managed_execution_enabled()
+        host.ensure_session({"session_id": "session"})
+        assert relay.events[0][0:2] == ("scope.push", relay_runtime.SESSION_SCOPE)
+        assert not any(event[0].startswith("plugin.") for event in relay.events)
+    finally:
+        host.shutdown()
+
+    assert not any(event[0] == "subscribers.flush" for event in relay.events)
+
+
+def test_relay_initializes_explicit_plugins_before_first_session_scope(
+    explicit_static_config,
+):
     relay = _FakeRelay()
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
 
@@ -137,7 +163,7 @@ def test_relay_discovers_plugins_before_first_session_scope():
         host.shutdown()
 
 
-def test_initialization_failure_is_fail_open(caplog):
+def test_initialization_failure_is_fail_open(explicit_static_config, caplog):
     relay = _FakeRelay(initialize_error=RuntimeError("rejected config"))
 
     with caplog.at_level("WARNING"):
@@ -150,7 +176,7 @@ def test_initialization_failure_is_fail_open(caplog):
         host.shutdown()
 
 
-def test_later_host_retries_after_initialization_failure():
+def test_later_host_retries_after_initialization_failure(explicit_static_config):
     relay = _FakeRelay(initialize_error=RuntimeError("transient failure"))
     failed_host = relay_runtime.RelayRuntime(relay=relay, profile_key="failed")
     assert not failed_host.managed_execution_enabled()
@@ -168,7 +194,7 @@ def test_later_host_retries_after_initialization_failure():
         recovered_host.shutdown()
 
 
-def test_missing_initialize_api_is_fail_open(caplog):
+def test_missing_initialize_api_is_fail_open(explicit_static_config, caplog):
     relay = _FakeRelay()
     del relay.plugin.initialize
 
@@ -182,7 +208,31 @@ def test_missing_initialize_api_is_fail_open(caplog):
         host.shutdown()
 
 
-def test_two_profile_hosts_initialize_once_and_clear_after_final_shutdown():
+def test_missing_explicit_config_does_not_fall_back_to_discovery(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    missing_config = tmp_path / "missing" / "plugins.toml"
+    monkeypatch.setenv(
+        relay_runtime.RELAY_PLUGINS_CONFIG_ENV,
+        str(missing_config),
+    )
+    relay = _FakeRelay()
+
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    try:
+        assert not host.managed_execution_enabled()
+        assert relay.events == []
+        assert "continuing without Relay plugins" in caplog.text
+    finally:
+        host.shutdown()
+
+
+def test_two_profile_hosts_initialize_once_and_clear_after_final_shutdown(
+    explicit_static_config,
+):
     relay = _FakeRelay()
     host_a = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-a")
     host_b = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-b")
@@ -208,7 +258,7 @@ def test_two_profile_hosts_initialize_once_and_clear_after_final_shutdown():
     assert pop_index < relay.events.index(("plugin.clear",))
 
 
-def test_plugin_initialization_inside_running_event_loop():
+def test_plugin_initialization_inside_running_event_loop(explicit_static_config):
     relay = _FakeRelay()
 
     async def construct_host() -> relay_runtime.RelayRuntime:
@@ -222,7 +272,9 @@ def test_plugin_initialization_inside_running_event_loop():
         host.shutdown()
 
 
-def test_static_plugin_cleanup_uses_async_apis_inside_running_event_loop():
+def test_static_plugin_cleanup_uses_async_apis_inside_running_event_loop(
+    explicit_static_config,
+):
     relay = _AsyncCleanupRelay()
 
     async def run_lifecycle() -> None:
@@ -333,7 +385,7 @@ environment_ref = "environments/worker"
     assert pop_index < relay.events.index(("plugin.activation.close",))
 
 
-def test_dynamic_activation_failure_falls_back_to_discovered_static_plugins(
+def test_dynamic_activation_failure_disables_plugins(
     tmp_path,
     monkeypatch,
     caplog,
@@ -357,19 +409,16 @@ environment_ref = "environment"
     with caplog.at_level("WARNING"):
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
-        assert host.managed_execution_enabled()
+        assert not host.managed_execution_enabled()
         assert [event[0] for event in relay.events] == [
             "plugin.initialize_dynamic",
-            "plugin.initialize",
         ]
-        assert "configured and discovered static plugins" in caplog.text
+        assert "dynamic plugin activation failed" in caplog.text
     finally:
         host.shutdown()
 
-    assert relay.events[-2:] == [
-        ("subscribers.flush",),
-        ("plugin.clear",),
-    ]
+    assert ("subscribers.flush",) not in relay.events
+    assert ("plugin.clear",) not in relay.events
 
 
 def test_dynamic_activation_lifecycle_inside_running_event_loop(
@@ -453,7 +502,9 @@ environment_ref = "environment"
     )
 
 
-def test_session_close_does_not_flush_during_concurrent_managed_publication():
+def test_session_close_does_not_flush_during_concurrent_managed_publication(
+    explicit_static_config,
+):
     relay = _ConcurrentPublicationRelay()
     completed = threading.Event()
     errors: list[BaseException] = []
@@ -574,7 +625,7 @@ environment_ref = "environment"
         relay_runtime._PLUGIN_CONFIGURATION.reset_for_tests()
 
 
-def test_missing_dynamic_initializer_falls_back_to_static_plugins(
+def test_missing_dynamic_initializer_disables_plugins(
     tmp_path,
     monkeypatch,
     caplog,
@@ -596,8 +647,8 @@ manifest_ref = "relay-plugin.toml"
     with caplog.at_level("WARNING"):
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
-        assert host.managed_execution_enabled()
-        assert relay.events == [("plugin.initialize", {})]
+        assert not host.managed_execution_enabled()
+        assert relay.events == []
         assert "require a binding" in caplog.text
     finally:
         host.shutdown()
@@ -667,9 +718,10 @@ manifest_ref = "worker/relay-plugin.toml"
     with caplog.at_level("WARNING"):
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
-        assert host.managed_execution_enabled()
-        assert relay.events == [("plugin.initialize", {})]
+        assert not host.managed_execution_enabled()
+        assert relay.events == []
         assert "dynamic_plugins[1].plugin_id is required" in caplog.text
+        assert "continuing without Relay plugins" in caplog.text
     finally:
         host.shutdown()
 
@@ -719,7 +771,61 @@ mode = "strict"
     ]
 
 
-def test_real_binding_discovers_project_config_and_exports_native_activity(
+def test_real_binding_ignores_project_config_without_explicit_opt_in(
+    tmp_path,
+    monkeypatch,
+):
+    relay = pytest.importorskip("nemo_relay")
+    if getattr(relay, "_native", None) is None:
+        pytest.skip("NeMo Relay native binding is unavailable on this platform")
+
+    project_root = tmp_path / "project"
+    working_directory = project_root / "workspace"
+    config_directory = project_root / ".nemo-relay"
+    atof_dir = tmp_path / "atof"
+    working_directory.mkdir(parents=True)
+    config_directory.mkdir()
+    (config_directory / "plugins.toml").write_text(
+        f"""
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 3
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+output_directory = "{atof_dir}"
+filename = "events.jsonl"
+mode = "overwrite"
+""".strip(),
+        encoding="utf-8",
+    )
+    xdg_config_home = tmp_path / "xdg"
+    xdg_config_home.mkdir()
+    monkeypatch.chdir(working_directory)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
+    monkeypatch.delenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, raising=False)
+    relay.plugin.clear()
+
+    host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    try:
+        assert not host.managed_execution_enabled()
+        host.ensure_session({"session_id": "native-no-plugins"})
+    finally:
+        host.shutdown()
+        relay_runtime._reset_for_tests()
+
+    assert not (atof_dir / "events.jsonl").exists()
+
+
+def test_real_binding_loads_explicit_config_and_exports_native_activity(
     tmp_path,
     monkeypatch,
 ):
@@ -735,7 +841,8 @@ def test_real_binding_discovers_project_config_and_exports_native_activity(
     atif_dir = tmp_path / "atif"
     working_directory.mkdir(parents=True)
     config_directory.mkdir()
-    (config_directory / "plugins.toml").write_text(
+    config_path = config_directory / "plugins.toml"
+    config_path.write_text(
         f"""
 version = 1
 
@@ -768,6 +875,7 @@ agent_version = "test"
     xdg_config_home.mkdir()
     monkeypatch.chdir(working_directory)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config_path))
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: relay)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
     relay.plugin.clear()

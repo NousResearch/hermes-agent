@@ -6,7 +6,10 @@ import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
-import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
+
+import type { MessageReaction, SessionMessage, TurnOrigin, UsageStats } from '@/types/hermes'
+
+
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number]
 
@@ -123,6 +126,9 @@ export type GatewayEventPayload = {
   // with FailoverReason.billing (shape mirrors @hermes/shared BillingBlock).
   billing?: BillingBlock
   failure_reason?: string
+  turn_origin?: TurnOrigin | null
+  turn_generation?: number
+  turn_state_revision?: number
 }
 
 export function textPart(text: string): ChatMessagePart {

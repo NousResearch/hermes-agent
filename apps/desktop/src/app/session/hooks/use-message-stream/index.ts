@@ -536,7 +536,11 @@ export function useMessageStream({
   )
 
   const completeAssistantMessage = useCallback(
-    (sessionId: string, text: string, responsePreviewed?: boolean, failure?: { error: string; partial: boolean }) => {
+    (
+      sessionId: string,
+      text: string,
+      { responsePreviewed, suppressFeedback }: { responsePreviewed?: boolean; suppressFeedback?: boolean } = {}
+    ) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
@@ -693,12 +697,14 @@ export function useMessageStream({
         void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
       }
 
-      dispatchNativeNotification({
-        body: text.slice(0, 140) || translateNow('notifications.native.turnDoneBody'),
-        kind: 'turnDone',
-        sessionId,
-        title: translateNow('notifications.native.turnDoneTitle')
-      })
+      if (!suppressFeedback) {
+        dispatchNativeNotification({
+          body: text.slice(0, 140) || translateNow('notifications.native.turnDoneBody'),
+          kind: 'turnDone',
+          sessionId,
+          title: translateNow('notifications.native.turnDoneTitle')
+        })
+      }
     },
     [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
   )

@@ -361,6 +361,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             pendingBranchGroup: null,
             sawAssistantPayload: false,
             streamId: null,
+            turnOrigin: 'user',
             // Fresh submit = new turn — clear any leftover interrupt flag, else
             // mutateStream/completeAssistantMessage drop every delta of this turn
             // (what made drained-after-interrupt sends go silent).

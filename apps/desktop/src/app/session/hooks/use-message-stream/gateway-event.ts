@@ -7,6 +7,7 @@ import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
+import { reconcileClientTurnState } from '@/app/session/turn-state'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
@@ -64,7 +65,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { dropSessionState } from '@/store/session-states'
-import { pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
+import { clearSessionSubagents, pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -209,8 +210,7 @@ interface GatewayEventDeps {
   completeAssistantMessage: (
     sessionId: string,
     text: string,
-    responsePreviewed?: boolean,
-    failure?: { error: string; partial: boolean }
+    disposition?: { responsePreviewed?: boolean; suppressFeedback?: boolean }
   ) => void
   failAssistantMessage: (sessionId: string, errorMessage: string) => void
   flushQueuedDeltas: (sessionId?: string) => void
@@ -485,60 +485,54 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
         }
 
-        if (sessionId && hasStatePatch) {
-          updateSessionState(
-            sessionId,
-            state => ({
-              ...state,
-              ...statePatch,
-              branch: statePatch.branch ?? state.branch,
-              cwd: statePatch.cwd ?? state.cwd
-            }),
-            payload?.stored_session_id || undefined
-          )
-        }
-
-        // The running→busy transition must reach EVERY session, not just the
-        // active one. The `apply` gate above correctly scopes view-only side
-        // effects (setCurrentCwd, etc.) to the focused chat,
-        // but the per-session busy state is what drives the sidebar working
-        // indicator — a background session's turn start/finish must update
-        // its dot without the user opening it. updateSessionState only
-        // mutates the per-runtime cache entry, and syncSessionStateToView
-        // guards the view publish to the active session, so this is safe.
-        if (runningChanged && sessionId) {
+        if (
+          sessionId &&
+          (hasStatePatch ||
+            runningChanged ||
+            payload?.turn_generation !== undefined ||
+            payload?.turn_state_revision !== undefined ||
+            Object.hasOwn(payload ?? {}, 'turn_origin'))
+        ) {
           updateSessionState(
             sessionId,
             state => {
-              const busy = Boolean(payload!.running)
-
-              if (state.busy === busy && (busy || !state.awaitingResponse)) {
+              if (runningChanged && payload?.running && state.interrupted) {
                 return state
               }
 
-              if (busy) {
-                // Don't re-arm busy from a stale session.info if the user
-                // just clicked Stop (interrupted=true). The backend's
-                // cooperative interrupt may not have propagated yet, so
-                // running is still true in the heartbeat. The turn's
-                // finally block will emit running=false to clear busy.
-                if (state.interrupted) {
-                  return state
-                }
+              const reconciled = reconcileClientTurnState(state, payload, 'snapshot')
+              const turnState = reconciled.accepted ? reconciled.state : state
 
+              const next = {
+                ...turnState,
+                ...statePatch,
+                branch: statePatch.branch ?? turnState.branch,
+                cwd: statePatch.cwd ?? turnState.cwd
+              }
+
+              if (!reconciled.accepted || !runningChanged) {
+                return next
+              }
+
+              const busy = reconciled.state.busy
+
+              if (state.busy === busy && (busy || !state.awaitingResponse)) {
+                return next
+              }
+
+              if (busy) {
                 return {
-                  ...state,
-                  busy,
+                  ...next,
                   turnStartedAt: state.turnStartedAt ?? Date.now()
                 }
               }
 
               if (state.awaitingResponse && !state.sawAssistantPayload) {
-                return state
+                return { ...next, busy: state.busy }
               }
 
               return {
-                ...state,
+                ...next,
                 awaitingResponse: false,
                 busy,
                 // The turn is over but its streaming bubble may still say
@@ -586,18 +580,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           return
         }
 
-        flushQueuedDeltas(sessionId)
-        pruneFinishedSessionSubagents(sessionId)
-        setSessionCompacting(sessionId, false)
-        compactedTurnRef.current.delete(sessionId)
-        nativeSubagentSessionsRef.current.delete(sessionId)
-        // A fresh turn on this session optimistically clears its billing wall;
-        // if credits are still exhausted the next failure re-raises it.
-        clearBillingBlock(sessionId)
-
-        if (isActiveEvent) {
-          triggerHaptic('streamStart')
-        }
+        const startedAt = Date.now()
+        let accepted = false
 
         updateSessionState(sessionId, state => {
           // If the user clicked Stop (cancelRun set interrupted=true), don't
@@ -611,19 +595,44 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             return state
           }
 
+          const reconciled = reconcileClientTurnState(state, payload, 'start')
+
+          if (!reconciled.accepted) {
+            return state
+          }
+
+          accepted = true
+
           return {
-            ...state,
-            busy: true,
+            ...reconciled.state,
             awaitingResponse: true,
             sawAssistantPayload: false,
             interrupted: false,
             interimBoundaryPending: false,
-            turnStartedAt: Date.now()
+            turnStartedAt: startedAt
           }
         })
 
+        if (!accepted) {
+          return
+        }
+
+        flushQueuedDeltas(sessionId)
+        clearSessionSubagents(sessionId)
+        setSessionCompacting(sessionId, false)
+        compactedTurnRef.current.delete(sessionId)
+        nativeSubagentSessionsRef.current.delete(sessionId)
+        // A fresh turn on this session optimistically clears its billing wall;
+        // if credits are still exhausted the next failure re-raises it.
+        clearBillingBlock(sessionId)
+
         if (isActiveEvent) {
-          setTurnStartedAt(Date.now())
+          triggerHaptic('streamStart')
+        }
+
+
+        if (isActiveEvent) {
+          setTurnStartedAt(startedAt)
         }
       } else if (event.type === 'message.delta') {
         if (sessionId) {
@@ -748,6 +757,29 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           return
         }
 
+        const completedOrigin =
+          payload?.turn_origin === 'notification' || payload?.turn_origin === 'goal' || payload?.turn_origin === 'user'
+            ? payload.turn_origin
+            : null
+
+        let accepted = false
+
+        updateSessionState(sessionId, state => {
+          const reconciled = reconcileClientTurnState(state, payload, 'settle')
+
+          if (!reconciled.accepted) {
+            return state
+          }
+
+          accepted = true
+
+          return reconciled.state
+        })
+
+        if (!accepted) {
+          return
+        }
+
         // Turn ended — drop any blocking prompt still open for THIS session
         // (e.g. interrupted, or the approval already resolved). Scoped to the
         // session so a background turn finishing can't wipe the active chat's
@@ -762,23 +794,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         flushQueuedDeltas(sessionId)
 
-        // Keyed by session so only one window beeps when several are open.
-        playCompletionSound(sessionId)
+        const suppressFeedback = sessionInterrupted(sessionId) && completedOrigin === 'notification'
+
+        if (!suppressFeedback) {
+          // Keyed by session so only one window beeps when several are open.
+          playCompletionSound(sessionId)
+        }
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
-
-        // Terminal error frames (status "error") carry the failure in
-        // structured fields: `error` is the message, and `partial` marks
-        // `text` as streamed output to keep rather than the error string.
-        const failure =
-          payload?.status === 'error'
-            ? {
-                error: coerceGatewayText(payload.error).trim() || finalText || 'Hermes reported an error',
-                partial: Boolean(payload.partial)
-              }
-            : undefined
-
-        completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure)
+        completeAssistantMessage(sessionId, finalText, {
+          responsePreviewed: payload?.response_previewed,
+          suppressFeedback
+        })
 
         // Structured billing wall forwarded by the gateway (out of credits /
         // payment required) — cache it + raise a billing-specific toast.
@@ -794,12 +821,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           // toolRunning/reasoning AND sets celebrate together) so no stray "run"
           // frame leaks to the sprite — including the popped-out overlay, which
           // mirrors each activity change. The jump runs ~2 loops, then settles.
-          flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
+          if (!suppressFeedback) {
+            flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
+          }
 
           // Light up the pet's mail icon if the user wasn't looking when the turn
           // finished — a glanceable "new message" hint on the popped-out overlay.
           // Cleared when they open the app via the mail icon or refocus the window.
-          if (typeof document !== 'undefined' && !document.hasFocus()) {
+          if (!suppressFeedback && typeof document !== 'undefined' && !document.hasFocus()) {
             markPetUnread()
           }
         }

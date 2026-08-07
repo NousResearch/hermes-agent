@@ -5,8 +5,9 @@ import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/ov
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import type { GatewayEvent } from '../gatewayTypes.js'
 import { estimateTokensRough } from '../lib/text.js'
-import type { Msg } from '../types.js'
+import type { Msg, SessionInfo } from '../types.js'
 
 // Mock the external-URL opener so the billing.step_up.verification test can
 // assert it's invoked without spawning a real browser process.
@@ -57,6 +58,13 @@ const buildCtx = (appended: Msg[]) =>
     }
   }) as any
 
+const sessionInfo = (overrides: Partial<SessionInfo>): SessionInfo => ({
+  model: 'test-model',
+  skills: {},
+  tools: {},
+  ...overrides
+})
+
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
     resetOverlayState()
@@ -64,6 +72,165 @@ describe('createGatewayEventHandler', () => {
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+  })
+
+  it('reconciles reconnect origin and rejects older turn events', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    const reconnect = {
+      payload: sessionInfo({ running: true, turn_generation: 4, turn_origin: 'notification' }),
+      type: 'session.info'
+    } satisfies GatewayEvent
+
+    onEvent(reconnect)
+
+    expect(getTurnState()).toMatchObject({ turnGeneration: 4, turnOrigin: 'notification' })
+    expect(getUiState().busy).toBe(true)
+
+    const nextStart = {
+      payload: { turn_generation: 5, turn_origin: 'user' },
+      type: 'message.start'
+    } satisfies GatewayEvent
+
+    onEvent(nextStart)
+
+    const staleSnapshot = {
+      payload: sessionInfo({ running: false, turn_generation: 4, turn_origin: null }),
+      type: 'session.info'
+    } satisfies GatewayEvent
+
+    onEvent(staleSnapshot)
+
+    const staleComplete = {
+      payload: { text: 'stale answer', turn_generation: 4, turn_origin: 'notification' },
+      type: 'message.complete'
+    } satisfies GatewayEvent
+
+    onEvent(staleComplete)
+
+    expect(getTurnState()).toMatchObject({ turnGeneration: 5, turnOrigin: 'user' })
+    expect(getUiState().busy).toBe(true)
+    expect(appended).not.toContainEqual(expect.objectContaining({ text: 'stale answer' }))
+
+    const currentComplete = {
+      payload: { text: 'current answer', turn_generation: 5, turn_origin: 'user' },
+      type: 'message.complete'
+    } satisfies GatewayEvent
+
+    onEvent(currentComplete)
+
+    const settledReconnect = {
+      payload: sessionInfo({ running: false, turn_generation: 5, turn_origin: null }),
+      type: 'session.info'
+    } satisfies GatewayEvent
+
+    onEvent(settledReconnect)
+
+    expect(appended).toContainEqual(expect.objectContaining({ text: 'current answer' }))
+    expect(getTurnState()).toMatchObject({ turnGeneration: 5, turnOrigin: null })
+    expect(getUiState().busy).toBe(false)
+  })
+
+  it('rejects a stale active snapshot after the same generation settles', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    const staleActive = {
+      payload: sessionInfo({
+        running: true,
+        turn_generation: 7,
+        turn_origin: 'notification',
+        turn_state_revision: 30
+      }),
+      type: 'session.info'
+    } satisfies GatewayEvent
+
+    onEvent(staleActive)
+    onEvent({
+      payload: {
+        text: 'done',
+        turn_generation: 7,
+        turn_origin: 'notification',
+        turn_state_revision: 31
+      },
+      type: 'message.complete'
+    } satisfies GatewayEvent)
+    onEvent(staleActive)
+
+    expect(getTurnState()).toMatchObject({ turnGeneration: 7, turnOrigin: 'notification' })
+    expect(getTurnState().turnStateRevision).toBe(31)
+    expect(getUiState().busy).toBe(false)
+  })
+
+  it('keeps other sessions from replacing the current turn fence', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchUiState({ sid: 'session-b' })
+    turnController.reconcileTurn('notification', 1, true, 1)
+
+    onEvent({
+      payload: sessionInfo({
+        running: false,
+        turn_generation: 50,
+        turn_origin: null,
+        turn_state_revision: 99
+      }),
+      session_id: 'session-a',
+      type: 'session.info'
+    })
+    onEvent({
+      payload: {
+        text: 'wrong session',
+        turn_generation: 50,
+        turn_origin: 'notification',
+        turn_state_revision: 100
+      },
+      session_id: 'session-a',
+      type: 'message.complete'
+    })
+
+    expect(getTurnState()).toMatchObject({
+      turnGeneration: 1,
+      turnOrigin: 'notification',
+      turnStateRevision: 1
+    })
+    expect(getUiState().busy).toBe(true)
+    expect(appended).not.toContainEqual(expect.objectContaining({ text: 'wrong session' }))
+
+    onEvent({
+      payload: {
+        text: 'initial turn settled',
+        turn_generation: 1,
+        turn_origin: 'notification',
+        turn_state_revision: 2
+      },
+      session_id: 'session-b',
+      type: 'message.complete'
+    })
+    onEvent({
+      payload: { turn_generation: 2, turn_origin: 'user', turn_state_revision: 3 },
+      session_id: 'session-b',
+      type: 'message.start'
+    })
+    onEvent({
+      payload: { text: 'next turn settled', turn_generation: 2, turn_origin: 'user', turn_state_revision: 4 },
+      session_id: 'session-b',
+      type: 'message.complete'
+    })
+    onEvent({
+      payload: sessionInfo({ running: false, turn_generation: 2, turn_origin: null, turn_state_revision: 4 }),
+      session_id: 'session-b',
+      type: 'session.info'
+    })
+
+    expect(appended).toEqual([
+      expect.objectContaining({ text: 'initial turn settled' }),
+      expect.objectContaining({ text: 'next turn settled' })
+    ])
+    expect(getTurnState()).toMatchObject({ turnGeneration: 2, turnOrigin: null, turnStateRevision: 4 })
+    expect(getUiState().busy).toBe(false)
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

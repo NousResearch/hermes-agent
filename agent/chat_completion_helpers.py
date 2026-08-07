@@ -1538,6 +1538,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             request_overrides=agent.request_overrides,
             session_id=getattr(agent, "session_id", None),
             provider_profile=_profile,
+            system_prompt_mode=getattr(agent, "_system_prompt_mode", "system"),
             ollama_num_ctx=agent._ollama_num_ctx,
             # Context forwarded to profile hooks:
             provider_preferences=_prefs or None,
@@ -1570,6 +1571,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         request_overrides=agent.request_overrides,
         session_id=getattr(agent, "session_id", None),
         model_lower=(agent.model or "").lower(),
+        system_prompt_mode=getattr(agent, "_system_prompt_mode", "system"),
         is_openrouter=_is_or,
         is_nous=_is_nous,
         is_qwen_portal=_is_qwen,

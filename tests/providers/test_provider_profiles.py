@@ -219,5 +219,81 @@ class TestQwenProfile:
         assert "metadata" not in eb
 
 
+class TestSystemPromptMode:
+    """system_prompt_mode compatibility modes (#76783)."""
+
+    @staticmethod
+    def _profile(mode):
+        return ProviderProfile(name="test-relay", system_prompt_mode=mode)
+
+    def test_default_is_system_pass_through(self):
+        p = ProviderProfile(name="plain")
+        msgs = [{"role": "system", "content": "You are Hermes Agent."},
+                {"role": "user", "content": "hi"}]
+        assert p.prepare_messages(msgs) is msgs
+
+    def test_user_mode_moves_prompt_into_first_user_message(self):
+        p = self._profile("user")
+        runtime = "You are Hermes Agent, an intelligent AI assistant.\nLots of rules."
+        msgs = [
+            {"role": "system", "content": runtime},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"},
+        ]
+        out = p.prepare_messages(msgs)
+        # system keeps a short identity marker
+        assert out[0]["role"] == "system"
+        assert out[0]["content"] == "You are Hermes Agent, an intelligent AI assistant."
+        # full prompt prepended to first user message
+        assert out[1]["role"] == "user"
+        assert "[Hermes runtime instructions]" in out[1]["content"]
+        assert runtime in out[1]["content"]
+        assert out[1]["content"].endswith("Hello")
+        # input not mutated
+        assert msgs[0]["content"] == runtime
+        assert msgs[1]["content"] == "Hello"
+
+    def test_user_mode_multimodal_user_content(self):
+        p = self._profile("user")
+        msgs = [
+            {"role": "system", "content": "You are Hermes Agent."},
+            {"role": "user",
+             "content": [{"type": "text", "text": "describe"},
+                         {"type": "image_url", "image_url": {"url": "data:x"}}]},
+        ]
+        out = p.prepare_messages(msgs)
+        assert isinstance(out[1]["content"], list)
+        assert out[1]["content"][0]["type"] == "text"
+        assert "[Hermes runtime instructions]" in out[1]["content"][0]["text"]
+        # original parts preserved in order after the prepended wrapper
+        assert out[1]["content"][1] == {"type": "text", "text": "describe"}
+        assert out[1]["content"][2]["type"] == "image_url"
+
+    def test_user_mode_no_user_message_is_noop(self):
+        p = self._profile("user")
+        msgs = [{"role": "system", "content": "You are Hermes Agent."}]
+        out = p.prepare_messages(msgs)
+        assert out == msgs
+
+    def test_developer_mode_swaps_role(self):
+        p = self._profile("developer")
+        msgs = [{"role": "system", "content": "You are Hermes Agent."},
+                {"role": "user", "content": "hi"}]
+        out = p.prepare_messages(msgs)
+        assert out[0]["role"] == "developer"
+        assert out[0]["content"] == "You are Hermes Agent."
+        assert msgs[0]["role"] == "system"  # input not mutated
+
+    def test_user_mode_requires_leading_system_message(self):
+        p = self._profile("user")
+        msgs = [{"role": "user", "content": "hi"}]
+        assert p.prepare_messages(msgs) == msgs
+
+    def test_empty_system_content_is_noop(self):
+        p = self._profile("user")
+        msgs = [{"role": "system", "content": ""}, {"role": "user", "content": "hi"}]
+        assert p.prepare_messages(msgs) == msgs
+
+
 
 

@@ -1326,7 +1326,7 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify",
+        "ssl_ca_cert", "ssl_verify", "system_prompt_mode",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -1446,6 +1446,16 @@ def _normalize_custom_provider_entry(
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
 
+    # system_prompt_mode: how the system prompt is represented on the wire
+    # ("system" | "developer" | "user").  "user" is an opt-in workaround for
+    # OpenAI-compatible relays backed by Gemini that reject long system
+    # content with HTTP 429 RESOURCE_EXHAUSTED (#76783).
+    system_prompt_mode = entry.get("system_prompt_mode")
+    if isinstance(system_prompt_mode, str) and system_prompt_mode.strip():
+        _spm = system_prompt_mode.strip().lower()
+        if _spm in ("system", "developer", "user"):
+            normalized["system_prompt_mode"] = _spm
+
     discover_models = entry.get("discover_models")
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
@@ -1501,6 +1511,7 @@ def _custom_provider_entry_to_provider_config(
         "extra_headers",
         "ssl_ca_cert",
         "ssl_verify",
+        "system_prompt_mode",
     ):
         if field in normalized:
             provider_entry[field] = normalized[field]
@@ -1780,6 +1791,70 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_system_prompt_mode(
+    model: str,
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return the ``system_prompt_mode`` for a matching custom provider entry.
+
+    Resolves ``custom_providers[i].system_prompt_mode`` (or the equivalent
+    ``providers.<key>`` entry) for the entry whose normalized route identity
+    equals ``base_url``.  Model-scoped entries (``models.<model>``) take
+    precedence over provider-level ones.  Returns ``"system"`` (the default)
+    when no override applies.
+
+    ``"user"`` moves Hermes's full runtime prompt from the ``system`` message
+    into the first ``user`` message — an opt-in workaround for OpenAI-
+    compatible relays backed by Gemini that return HTTP 429 RESOURCE_EXHAUSTED
+    for long system content while accepting identical user content (#76783).
+    """
+    if not base_url:
+        return "system"
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return "system"
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return "system"
+
+    target_url = normalize_route_base_url(base_url)
+    if not target_url:
+        return "system"
+
+    fallback = "system"
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = normalize_route_base_url(entry.get("base_url"))
+        if not entry_url or entry_url != target_url:
+            continue
+        raw_mode = entry.get("system_prompt_mode")
+        if isinstance(raw_mode, str) and raw_mode.strip().lower() in (
+            "system",
+            "developer",
+            "user",
+        ):
+            fallback = raw_mode.strip().lower()
+        # Model-scoped override wins over the provider-level mode.
+        models = entry.get("models")
+        if model and isinstance(models, dict):
+            model_cfg = models.get(model)
+            if isinstance(model_cfg, dict):
+                model_mode = model_cfg.get("system_prompt_mode")
+                if (
+                    isinstance(model_mode, str)
+                    and model_mode.strip().lower() in ("system", "developer", "user")
+                ):
+                    return model_mode.strip().lower()
+    return fallback
+
+
 def _coerce_config_version(value: Any) -> int:
     """Return a safe integer config version, treating invalid values as legacy."""
     if isinstance(value, bool):
@@ -1885,6 +1960,7 @@ _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
     "ssl_ca_cert", "ssl_verify",
+    "system_prompt_mode",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",

@@ -1271,7 +1271,7 @@ providers:
     transport: anthropic_messages  # for Anthropic-compatible proxies
 ```
 
-Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key`, `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `ssl_ca_cert` / `ssl_verify`, and `enabled: false` to hide an entry without deleting it.
+Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key`, `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `ssl_ca_cert` / `ssl_verify`, `system_prompt_mode`, and `enabled: false` to hide an entry without deleting it.
 
 :::note Legacy format
 Older configs used a top-level `custom_providers:` list instead. It still works — Hermes reads both — and `hermes update` auto-migrates it to the `providers:` dict (config v12). Field names differ slightly in the dict format: legacy `model` is `default_model`, and legacy `api_mode` is `transport`.
@@ -1304,6 +1304,22 @@ extra_body:
   chat_template_kwargs:
     enable_thinking: false
 ```
+
+### Gemini-backed relays: `system_prompt_mode: user`
+
+Some OpenAI-compatible relays backed by Gemini/Antigravity reject Hermes's full runtime prompt when it is sent as the `system` message, returning `HTTP 429 RESOURCE_EXHAUSTED` — even though the *identical* content succeeds when moved into the first `user` message. This appears to be a role-specific `systemInstruction` compatibility problem, not ordinary quota exhaustion. See [NousResearch/hermes-agent#76783](https://github.com/NousResearch/hermes-agent/issues/76783).
+
+For those endpoints, set `system_prompt_mode: user` on the matching custom provider (or on a specific model under `models.<id>`):
+
+```yaml
+providers:
+  gemini-relay:
+    api: http://localhost:9876/v1
+    default_model: gemini-3.1-pro-low
+    system_prompt_mode: user   # system | developer | user (default: system)
+```
+
+When set to `user`, Hermes keeps a short system identity marker and prepends the full runtime prompt (wrapped in `[Hermes runtime instructions]` / `[End runtime instructions]`) to the first user message. Multimodal user content (image parts) is preserved, and persisted conversation history is never mutated. `developer` swaps the first system message role to `developer` (equivalent to the model-name-based swap for GPT-5/Codex models). The default `system` leaves requests unchanged for full backward compatibility.
 
 The `hermes model` → Custom Endpoint wizard now prompts for the API mode explicitly and persists your answer to `config.yaml` (as `transport` on the provider entry). URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 

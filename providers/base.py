@@ -20,6 +20,110 @@ logger = logging.getLogger(__name__)
 # Sentinel for "omit temperature entirely" (Kimi: server manages it)
 OMIT_TEMPERATURE = object()
 
+# Valid values for ProviderProfile.system_prompt_mode.
+VALID_SYSTEM_PROMPT_MODES = ("system", "developer", "user")
+
+
+def _extract_text_content(content: Any) -> str:
+    """Flatten a message ``content`` value (string or multimodal part list) to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return ""
+
+
+def _short_system_identity(text: str, max_len: int = 200) -> str:
+    """Return a short system identity marker (first non-empty line of the prompt).
+
+    Some OpenAI-compatible relays (notably Gemini-backed ones, see #76783)
+    reject long ``systemInstruction`` content with HTTP 429 RESOURCE_EXHAUSTED
+    even when identical content as a user message succeeds.  When the runtime
+    prompt is moved to the first user message we still keep a brief real
+    system message so the model keeps its identity framing.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            if len(line) <= max_len:
+                return line
+            cut = line[:max_len]
+            idx = cut.rfind(".")
+            if idx > 40:
+                return cut[: idx + 1]
+            return cut
+    return text[:max_len]
+
+
+def apply_system_prompt_mode(
+    messages: list[dict[str, Any]], mode: str | None
+) -> list[dict[str, Any]]:
+    """Apply a system-prompt compatibility mode to a message list.
+
+    Returns a new list; input messages are never mutated.  ``mode``:
+
+    * ``"system"`` (or None) — pass-through, full backward compatibility.
+    * ``"developer"`` — swap the first system message role to ``developer``
+      (equivalent to the model-name-based swap used for GPT-5/Codex).
+    * ``"user"`` — keep a short system identity marker and prepend the full
+      system prompt to the first user message.  Workaround for
+      OpenAI-compatible relays backed by Gemini that cannot reliably accept
+      Hermes's full runtime prompt as ``system`` content but accept the
+      identical content as a ``user`` message (#76783).  Handles both string
+      user content and multimodal part lists.
+
+    No-op (returns ``messages`` unchanged) when there is no leading system
+    message, the system content is empty, or there is no user message to
+    absorb the prompt into.
+    """
+    if mode not in VALID_SYSTEM_PROMPT_MODES or mode == "system":
+        return messages
+    if not messages:
+        return messages
+    first = messages[0]
+    if not isinstance(first, dict) or first.get("role") != "system":
+        return messages
+
+    out = list(messages)
+
+    if mode == "developer":
+        out[0] = {**first, "role": "developer"}
+        return out
+
+    # mode == "user"
+    sys_text = _extract_text_content(first.get("content", ""))
+    if not sys_text.strip():
+        return messages
+
+    out[0] = {**first, "content": _short_system_identity(sys_text)}
+    wrapper = (
+        "[Hermes runtime instructions]\n"
+        f"{sys_text}\n"
+        "[End runtime instructions]"
+    )
+    for i, msg in enumerate(out[1:], start=1):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        user_content = msg.get("content", "")
+        if isinstance(user_content, str):
+            new_content = wrapper if not user_content else f"{wrapper}\n\n{user_content}"
+        elif isinstance(user_content, list):
+            new_content = [{"type": "text", "text": wrapper}, *list(user_content)]
+        else:
+            continue
+        out[i] = {**msg, "content": new_content}
+        return out
+
+    return messages
+
 
 def _profile_user_agent() -> str:
     """Return a ``hermes-cli/<version>`` UA string, with a stable fallback.
@@ -99,6 +203,17 @@ class ProviderProfile:
     )
     # empty = use main model
 
+    # How the system prompt is represented on the wire:
+    #   "system"    (default) — first message role stays "system"
+    #   "developer" — first system message role becomes "developer"
+    #   "user"      — keep a short system identity marker, prepend the full
+    #                 system prompt to the first user message.  Opt-in
+    #                 workaround for OpenAI-compatible relays backed by Gemini
+    #                 that reject long systemInstruction content with HTTP 429
+    #                 RESOURCE_EXHAUSTED while identical user content succeeds
+    #                 (#76783).
+    system_prompt_mode: str = "system"
+
     # ── Hooks (override in subclass for complex providers) ───
 
     def get_hostname(self) -> str:
@@ -118,8 +233,13 @@ class ProviderProfile:
         """Provider-specific message preprocessing.
 
         Called AFTER codex field sanitization, BEFORE developer role swap.
-        Default: pass-through.
+        Default: pass-through, unless ``system_prompt_mode`` is set to a
+        non-default value, in which case the compatibility transformation
+        (developer role swap, or moving the system prompt into the first
+        user message for Gemini-backed relays, #76783) is applied here.
         """
+        if self.system_prompt_mode and self.system_prompt_mode != "system":
+            return apply_system_prompt_mode(messages, self.system_prompt_mode)
         return messages
 
     def build_extra_body(

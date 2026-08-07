@@ -66,7 +66,7 @@ under `$HERMES_HOME/plugins/model-providers/` for a private plugin).
 | Hook | Purpose |
 |------|---------|
 | `get_hostname()` | URL-based detection — default derives from `base_url`. |
-| `prepare_messages(msgs)` | Provider-specific message preprocessing (Qwen normalises to list-of-parts, injects `cache_control`). |
+| `prepare_messages(msgs)` | Provider-specific message preprocessing (Qwen normalises to list-of-parts, injects `cache_control`; `system_prompt_mode` applies the developer-role swap or the #76783 Gemini-relay user-message transform). |
 | `build_extra_body(**ctx)` | Provider-specific `extra_body` (OpenRouter provider prefs, Gemini `thinking_config`). |
 | `build_api_kwargs_extras(**ctx)` | `(extra_body_additions, top_level_kwargs)` — Kimi puts reasoning_effort top-level, Qwen splits `enable_thinking`/`thinking_budget`. |
 | `fetch_models(*, api_key)` | Live catalog fetch — default hits `{models_url or base_url}/models` with Bearer auth. Override for no-REST providers (Bedrock), OAuth catalogs (Anthropic), or public catalogs (OpenRouter). |

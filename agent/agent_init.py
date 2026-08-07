@@ -2327,6 +2327,22 @@ def init_agent(
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
 
+    # system_prompt_mode compatibility option (#76783): custom providers
+    # backed by Gemini relays may reject long system content with HTTP 429
+    # RESOURCE_EXHAUSTED; "user" moves the runtime prompt into the first
+    # user message. Resolved once here and consumed by the chat-completions
+    # transport via agent._system_prompt_mode.
+    try:
+        from hermes_cli.config import get_custom_provider_system_prompt_mode
+
+        agent._system_prompt_mode = get_custom_provider_system_prompt_mode(
+            model=agent.model,
+            base_url=agent.base_url,
+            custom_providers=_custom_providers,
+        )
+    except Exception:
+        agent._system_prompt_mode = "system"
+
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:
         try:

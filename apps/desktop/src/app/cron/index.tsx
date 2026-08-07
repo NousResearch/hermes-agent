@@ -74,7 +74,7 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, initialBlueprintValues } from './blueprints'
 import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
-import { jobState, jobTitle, STATE_DOT } from './job-state'
+import { jobState, jobTitle, STATE_DOT, truncateText } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -106,7 +106,7 @@ const STATE_TONE: Record<string, PanelPillTone> = {
   completed: 'muted'
 }
 
-const truncate = (value: string, max = 80): string => (value.length > max ? `${value.slice(0, max)}…` : value)
+const truncate = (value: string, max = 80): string => truncateText(value, max)
 
 function jobName(job: CronJob): string {
   return asText(job.name).trim()

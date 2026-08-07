@@ -38,11 +38,48 @@ export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
 }
 
-export async function refreshProfiles(): Promise<ProfileInfo[]> {
-  const { profiles } = await getProfiles()
-  $profiles.set(profiles)
+// Single-flight guard: on gateway open both useBackgroundSync and the
+// activeGatewayProfile-change effect call refreshActiveProfile() at once, and
+// the Manage Profiles panel can join mid-flight. Dedupe so concurrent callers
+// share one retry chain instead of stampeding /api/profiles.
+let refreshInFlight: Promise<ProfileInfo[]> | null = null
 
-  return profiles
+export function refreshProfiles(): Promise<ProfileInfo[]> {
+  if (refreshInFlight) {
+    return refreshInFlight
+  }
+
+  refreshInFlight = (async () => {
+    const MAX_RETRIES = 2
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const { profiles } = await getProfiles()
+        $profiles.set(profiles)
+
+        return profiles
+      } catch (error) {
+        if (attempt === MAX_RETRIES) {
+          // Surface the failure so it's visible in the console — the prior silent
+          // catch in refreshActiveProfile() hid global-remote timing races (#70679).
+          console.error(`[profiles] refreshProfiles failed after ${MAX_RETRIES + 1} attempts:`, error)
+
+          throw error
+        }
+
+        // Back off before retrying: 500ms, then 1000ms. Gives the remote proxy a
+        // window to finish routing after WebSocket-ready but pre-HTTP-proxy states.
+        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)))
+      }
+    }
+
+    // Unreachable — satisfies TypeScript.
+    return []
+  })().finally(() => {
+    refreshInFlight = null
+  })
+
+  return refreshInFlight
 }
 
 // ── Rail order ─────────────────────────────────────────────────────────────

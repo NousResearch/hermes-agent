@@ -18,6 +18,7 @@ Type `@` followed by a reference to inject content directly into your message. H
 | `@folder:path/to/dir` | Inject directory tree listing with file metadata |
 | `@diff` | Inject `git diff` (unstaged working tree changes) |
 | `@staged` | Inject `git diff --staged` (staged changes) |
+| `@status` | Inject `git status` (working tree state: untracked, modified, staged) |
 | `@git:5` | Inject last N commits with patches (max 10) |
 | `@url:https://example.com` | Fetch and inject web page content |
 
@@ -27,6 +28,8 @@ Type `@` followed by a reference to inject content directly into your message. H
 Review @file:src/main.py and suggest improvements
 
 What changed? @diff
+
+Check the working tree before committing: @status
 
 Compare @file:old_config.yaml and @file:new_config.yaml
 
@@ -47,7 +50,7 @@ Trailing punctuation (`,`, `.`, `;`, `!`, `?`) is automatically stripped from re
 
 In the interactive CLI, typing `@` triggers autocomplete:
 
-- `@` shows all reference types (`@diff`, `@staged`, `@file:`, `@folder:`, `@git:`, `@url:`)
+- `@` shows all reference types (`@diff`, `@staged`, `@status`, `@file:`, `@folder:`, `@git:`, `@url:`)
 - `@file:` and `@folder:` trigger filesystem path completion with file size metadata
 - Bare `@` followed by partial text shows matching files and folders from the current directory
 

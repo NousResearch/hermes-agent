@@ -451,6 +451,10 @@ def _normalize_observation_scopes(value: Any) -> Any:
       * ``None`` — nothing configured; Hindsight applies its ``combined`` default.
       * a keyword string — ``"per_tag"`` / ``"combined"`` / ``"all_combinations"``.
       * ``list[list[str]]`` — custom scopes, one inner list per consolidation pass.
+        An explicit empty inner list (``[[]]``) is Hindsight's documented
+        equivalent of the ``shared`` scope — one global consolidation pass that
+        ignores volatile per-session tags — and is preserved, not discarded
+        (#74933).
 
     Accepts a keyword string, a JSON-encoded list, a flat list of tags (treated as
     a single scope), or a list of tag-lists. Anything unrecognized yields ``None``
@@ -481,8 +485,14 @@ def _normalize_observation_scopes(value: Any) -> Any:
         scopes: list[list[str]] = []
         for entry in value:
             if isinstance(entry, (list, tuple)):
+                # Keep explicitly-empty inner lists: [[]] is Hindsight's
+                # documented equivalent of the "shared" scope. Dropping it
+                # silently reverted the config to the "combined" default,
+                # fragmenting observations by session tag (#74933). Inner
+                # lists that only become empty after stripping whitespace
+                # tags are still malformed and still dropped.
                 inner = [str(tag).strip() for tag in entry if str(tag).strip()]
-                if inner:
+                if inner or not entry:
                     scopes.append(inner)
             elif isinstance(entry, str) and entry.strip():
                 scopes.append([entry.strip()])

@@ -2518,10 +2518,35 @@ class ContextCompressor(ContextEngine):
         self._compression_telemetry_seed: Optional[Dict[str, Any]] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
-        """Update tracked token usage from API response."""
-        self.last_prompt_tokens = usage.get("prompt_tokens", 0)
+        """Update tracked token usage from API response.
+
+        IMPORTANT: ``last_prompt_tokens`` and ``last_real_prompt_tokens`` must
+        exclude ``cache_read_tokens``.  The API reports ``prompt_tokens`` as
+        ``input_tokens + cache_read_tokens + cache_write_tokens``.  Cache-hit
+        tokens are constant for a given system prompt — they do NOT shrink when
+        conversation messages are compressed.  If we include them in
+        ``last_prompt_tokens``, the compressor sees the same high value after
+        every compaction, thinks compression failed to reduce the context, and
+        fires again, forever (the "compression deadlock" bug).
+        """
+        raw_prompt = usage.get("prompt_tokens", 0)
+        cache_read = usage.get("cache_read_tokens", 0)
+        # Non-cached prompt tokens = the variable portion that actually changes
+        # when messages are compressed.  Clamp to 0 to avoid negatives from
+        # rounding or unexpected usage shapes.
+        self.last_prompt_tokens = max(0, raw_prompt - cache_read)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
-        self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
+        # Exclude ``cache_read_tokens`` from ``total_tokens`` too.
+        # ``total_tokens`` = ``prompt_tokens + completion_tokens``, and
+        # ``prompt_tokens`` = ``input_tokens + cache_read_tokens +
+        # cache_write_tokens``.  Since ``last_prompt_tokens`` already excludes
+        # ``cache_read_tokens``, ``last_total_tokens`` must do the same for
+        # consistency — otherwise the inflated total still exceeds
+        # ``threshold_tokens`` and re-triggers compression after a successful
+        # compaction (the \"compression deadlock\" bug, issue #40803).
+        if "total_tokens" in usage:
+            self.last_total_tokens = max(0, usage["total_tokens"] - cache_read)
+        # else: preserve existing last_total_tokens (provider may omit total_tokens)
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
             if self.last_prompt_tokens < self.threshold_tokens:

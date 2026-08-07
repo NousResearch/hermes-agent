@@ -4923,13 +4923,21 @@ def run_conversation(
                         )
                         local_available_out = old_ctx - request_input_estimate
                         if local_available_out > 0:
-                            safe_out = max(1, min(available_out, local_available_out) - 64)
+                            _total_budget = min(available_out, local_available_out)
+                            # Safety margin: 512 tokens covers estimation
+                            # error (±1-2%), vLLM "at least" semantics,
+                            # meta-token overhead from tools/schemas, and
+                            # retry overhead (additional continuation
+                            # messages in context).  Also enforce a 1% floor
+                            # so extremely small budgets don't round to
+                            # negative after margin subtraction.
+                            safe_out = max(1, min(int(_total_budget * 0.99), _total_budget - 512))
                         else:
                             # The rough local estimate can overshoot the real
                             # request size.  Fall back to the provider-reported
                             # budget, which is authoritative for the failed
-                            # request.
-                            safe_out = max(1, available_out - 64)
+                            # request.  Apply the same safety margin.
+                            safe_out = max(1, min(int(available_out * 0.99), available_out - 512))
                         agent._ephemeral_max_output_tokens = safe_out
                         agent._buffer_vprint(
                             f"⚠️  Output cap too large for current prompt — "

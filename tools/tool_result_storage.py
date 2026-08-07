@@ -43,6 +43,10 @@ HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
+DEFAULT_TOOL_RESULTS_DIR = "~/.hermes/tool-results"
+_DEFAULT_HEAD_TAIL_LINES = 5
+_DEFAULT_CLEANUP_AGE_HOURS = 24
+_DEFAULT_CLEANUP_MAX_MB = 100
 
 
 def _resolve_storage_dir(env) -> str:
@@ -90,6 +94,41 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     return truncated, True
 
 
+def generate_head_tail_preview(
+    content: str,
+    head_lines: int = _DEFAULT_HEAD_TAIL_LINES,
+    tail_lines: int = _DEFAULT_HEAD_TAIL_LINES,
+) -> tuple[str, str, str, bool]:
+    """Generate a head + tail preview from content.
+
+    Args:
+        content: The full tool result string.
+        head_lines: Number of leading lines to include.
+        tail_lines: Number of trailing lines to include.
+
+    Returns:
+        (head, tail, separator_message, has_overlap):
+        - head: first ``head_lines`` lines (or fewer if content is shorter).
+        - tail: last ``tail_lines`` lines (or fewer).
+        - separator_message: Human-readable indicator like
+          ``"[... 1234 lines omitted ...]"``.
+        - has_overlap: True when the head and tail regions overlap,
+          meaning the full content fits within head+tail lines.
+    """
+    lines = content.splitlines()
+    total_lines = len(lines)
+
+    if total_lines <= head_lines + tail_lines:
+        # Content fits entirely in the preview — show it all.
+        return content, "", "", False
+
+    head = "\n".join(lines[:head_lines])
+    tail = "\n".join(lines[-tail_lines:])
+    omitted = total_lines - head_lines - tail_lines
+    sep = f"[... {omitted} lines omitted. Full result saved to disk ...]"
+    return head, tail, sep, False
+
+
 def _heredoc_marker(content: str) -> str:
     """Return a heredoc delimiter that doesn't collide with content."""
     if HEREDOC_MARKER not in content:
@@ -117,12 +156,13 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
 
 
 def _build_persisted_message(
-    preview: str,
-    has_more: bool,
+    head: str,
+    tail: str,
+    separator: str,
     original_size: int,
     file_path: str,
 ) -> str:
-    """Build the <persisted-output> replacement block."""
+    """Build the <persisted-output> replacement block with head/tail preview."""
     size_kb = original_size / 1024
     if size_kb >= 1024:
         size_str = f"{size_kb / 1024:.1f} MB"
@@ -132,11 +172,13 @@ def _build_persisted_message(
     msg = f"{PERSISTED_OUTPUT_TAG}\n"
     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
     msg += f"Full output saved to: {file_path}\n"
-    msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
-    msg += f"Preview (first {len(preview)} chars):\n"
-    msg += preview
-    if has_more:
-        msg += "\n..."
+    msg += "Use the read_file tool to access the full output.\n\n"
+    msg += "HEAD:\n"
+    msg += head.rstrip("\n")
+    if separator:
+        msg += f"\n{separator}\n"
+    if tail:
+        msg += f"\nTAIL:\n{tail}"
     msg += f"\n{PERSISTED_OUTPUT_CLOSING_TAG}"
     return msg
 
@@ -176,7 +218,7 @@ def maybe_persist_tool_result(
 
     storage_dir = _resolve_storage_dir(env)
     remote_path = f"{storage_dir}/{_safe_result_filename(tool_use_id)}"
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    head, tail, sep, _ = generate_head_tail_preview(content)
 
     if env is not None:
         try:
@@ -185,7 +227,7 @@ def maybe_persist_tool_result(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), remote_path)
+                return _build_persisted_message(head, tail, sep, len(content), remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
 
@@ -194,7 +236,9 @@ def maybe_persist_tool_result(
         tool_name, len(content),
     )
     return (
-        f"{preview}\n\n"
+        f"{head}\n"
+        f"{sep}\n"
+        f"\nTAIL:\n{tail}\n\n"
         f"[Truncated: tool response was {len(content):,} chars. "
         f"Full output could not be saved to sandbox.]"
     )
@@ -252,3 +296,76 @@ def enforce_turn_budget(
             )
 
     return tool_messages
+
+
+def cleanup_old_results(
+    storage_dir: str | None = None,
+    max_age_hours: int = _DEFAULT_CLEANUP_AGE_HOURS,
+    max_total_mb: int = _DEFAULT_CLEANUP_MAX_MB,
+) -> int:
+    """Remove tool result files older than ``max_age_hours`` and, if the total
+    disk usage still exceeds ``max_total_mb`` MB, remove the oldest results
+    first until under budget.
+
+    Args:
+        storage_dir: Directory to clean. Defaults to ``DEFAULT_TOOL_RESULTS_DIR``.
+        max_age_hours: Remove files older than this many hours.
+        max_total_mb: Maximum total size in MB before oldest files are evicted.
+
+    Returns:
+        Number of files removed.
+    """
+    import glob
+    import time
+
+    if storage_dir is None:
+        storage_dir = os.path.expanduser(DEFAULT_TOOL_RESULTS_DIR)
+
+    if not os.path.isdir(storage_dir):
+        return 0
+
+    removed = 0
+    now = time.time()
+    cutoff = now - max_age_hours * 3600
+
+    files: list[tuple[str, float, int]] = []
+    pattern = os.path.join(storage_dir, "*.txt")
+    for fpath in glob.glob(pattern):
+        try:
+            st = os.stat(fpath)
+            age_seconds = now - st.st_mtime
+            if age_seconds > cutoff:
+                os.remove(fpath)
+                removed += 1
+                logger.debug("Cleaned old tool result: %s (age=%.1fh)", fpath, age_seconds / 3600)
+                continue
+            files.append((fpath, st.st_mtime, st.st_size))
+        except OSError:
+            continue
+
+    if not files:
+        return removed
+
+    total_bytes = sum(sz for _, _, sz in files)
+    max_bytes = max_total_mb * 1024 * 1024
+
+    if total_bytes <= max_bytes:
+        return removed
+
+    # Sort oldest-first so we evict the stalest results.
+    files.sort(key=lambda x: x[1])
+
+    for fpath, _, sz in files:
+        if total_bytes <= max_bytes:
+            break
+        try:
+            os.remove(fpath)
+            removed += 1
+            total_bytes -= sz
+            logger.debug("Evicted oversized tool result: %s (%.1f MB total)", fpath, total_bytes / (1024 * 1024))
+        except OSError:
+            continue
+
+    if removed:
+        logger.info("cleanup_old_results: removed %d files from %s", removed, storage_dir)
+    return removed

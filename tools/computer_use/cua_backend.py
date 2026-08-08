@@ -62,6 +62,12 @@ from tools.computer_use.backend import (
     UIElement,
 )
 from tools.computer_use.browser_route import CuaTypedBrowserRoute
+from tools.computer_use.uinput_safety import (
+    detect_uinput_leak_risk,
+    uinput_leak_risk_action_result,
+    uinput_leak_risk_possible,
+    uinput_read_write_accessible,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -646,6 +652,40 @@ def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
     except Exception:
         return False
 
+
+_DRIVER_VERSION_RE = re.compile(r"(\d+\.\d+\.\d+)")
+
+
+def _probe_cua_driver_version_for_uinput_guard(driver_cmd: Optional[str] = None) -> Optional[str]:
+    """Best-effort ``cua-driver --version`` probe for the Linux/X11 uinput
+    leak guard (Hermes #74148, trycua/cua#2618 / trycua/cua#2631).
+
+    ``--version`` is resolved before any other argument parsing in
+    cua-driver's CLI, so this never touches a display or MCP session — it
+    is safe to call ahead of ``CuaDriverBackend.start()``. Returns ``None``
+    on any failure (missing binary, spawn error, unparseable output); an
+    indeterminate version preserves current behavior via
+    ``detect_uinput_leak_risk``.
+    """
+    resolved = driver_cmd if driver_cmd is not None else resolve_cua_driver_cmd()
+    if not resolved:
+        return None
+    try:
+        from tools.environments.local import _sanitize_subprocess_env
+        proc = subprocess.run(
+            [resolved, "--version"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0,
+            stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
+            env=_sanitize_subprocess_env(cua_driver_child_env()),
+        )
+    except Exception:
+        return None
+    out = (proc.stdout or "") + (proc.stderr or "")
+    m = _DRIVER_VERSION_RE.search(out)
+    return m.group(1) if m else None
+
+
 # Regex to parse element lines from get_window_state AX tree markdown.
 #
 # cua-driver renders each actionable node as one of:
@@ -1116,6 +1156,13 @@ class _CuaDriverSession:
         # Used to revive a logical ended-session rejection without
         # recursive call_tool re-entry or backend-owned state (#71166).
         self._declared_session_id: Optional[str] = None
+        # The command `_lifecycle_coro` actually spawned for the MCP stdio
+        # transport — may differ from `resolve_cua_driver_cmd()` when
+        # `_resolve_mcp_invocation` surfaces a manifest-relocated executable
+        # (trycua/cua#1961). Guard callers (Hermes #74148) must probe THIS
+        # exact command rather than independently re-resolving, or a fixed
+        # wrapper could mask a vulnerable actual MCP executable.
+        self._resolved_mcp_command: Optional[str] = None
 
     def _require_started(self) -> None:
         if not self._started:
@@ -1158,6 +1205,7 @@ class _CuaDriverSession:
             else:
                 command, args = _resolve_mcp_invocation(driver_cmd)
                 child_env = cua_driver_child_env()
+            self._resolved_mcp_command = command
             _t_manifest = _time.monotonic()
             params = StdioServerParameters(
                 command=command,
@@ -1900,6 +1948,11 @@ def _apps_from_windows(windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return apps
 
 
+# Sentinel distinguishing "never probed" from a probe that legitimately
+# returned None (indeterminate version) — see _uinput_leak_guard below.
+_UNRESOLVED = object()
+
+
 # ---------------------------------------------------------------------------
 # The backend itself
 # ---------------------------------------------------------------------------
@@ -1956,6 +2009,10 @@ class CuaDriverBackend(ComputerUseBackend):
             call_tool=self._session.call_tool,
             has_tool=self._session._has_tool,
         )
+        # Lazily-resolved, per-instance cache for the Linux/X11 uinput leak
+        # guard (#74148) — unset until the first guarded action needs a
+        # version, and only ever probed on Linux with a DISPLAY set.
+        self._uinput_guard_driver_version: Optional[str] = _UNRESOLVED
 
     def _browser_route(self) -> CuaTypedBrowserRoute:
         """Return the per-backend typed route, including test-constructed instances."""
@@ -2058,6 +2115,50 @@ class CuaDriverBackend(ComputerUseBackend):
         if sys.platform not in ("darwin", "win32", "linux"):
             return False
         return cua_driver_binary_available()
+
+    # ── Linux/X11 uinput leak guard (#74148, trycua/cua#2618 / #2631) ──
+    def _uinput_leak_guard(self, action: str) -> Optional[ActionResult]:
+        """Refuse ``action`` before it declares an input session or invokes
+        the driver, when this host hits the known-unsafe combination:
+        Linux, X11 (``DISPLAY`` set), a cua-driver version below 0.13.1,
+        and ``/dev/uinput`` not read+write accessible.
+
+        Checks run cheapest-first, and each one that rules the risk out
+        stops the next from running at all: the (still fast, but non-zero)
+        ``--version`` probe only ever runs on Linux/X11 and is cached per
+        backend instance, and ``/dev/uinput`` is only ever opened once the
+        platform/DISPLAY/version triple still leaves risk open — a
+        fixed (>=0.13.1) or unknown driver never touches the device.
+        Returns ``None`` — proceed as before — for every other combination.
+        """
+        display = os.environ.get("DISPLAY")
+        if sys.platform != "linux" or not display:
+            return None
+        version = getattr(self, "_uinput_guard_driver_version", _UNRESOLVED)
+        if version is _UNRESOLVED:
+            # Probe the command _CuaDriverSession.start() actually launched
+            # (may be a manifest-relocated binary, trycua/cua#1961) rather
+            # than independently re-resolving — otherwise a fixed wrapper
+            # could mask a vulnerable actual MCP executable. Test doubles
+            # and legacy/not-yet-started sessions lack the attribute; the
+            # probe falls back to resolve_cua_driver_cmd() on None rather
+            # than guessing a fixed version.
+            resolved_cmd = getattr(self._session, "_resolved_mcp_command", None)
+            version = _probe_cua_driver_version_for_uinput_guard(resolved_cmd)
+            self._uinput_guard_driver_version = version
+        if not uinput_leak_risk_possible(
+            platform=sys.platform, display=display, driver_version=version
+        ):
+            return None
+        risk = detect_uinput_leak_risk(
+            platform=sys.platform,
+            display=display,
+            driver_version=version,
+            uinput_accessible=uinput_read_write_accessible(),
+        )
+        if risk is None:
+            return None
+        return uinput_leak_risk_action_result(action, risk)
 
     def _clear_active_target(self) -> None:
         """Forget a capture/focus target so a failed lookup cannot misroute input."""
@@ -2657,6 +2758,9 @@ class CuaDriverBackend(ComputerUseBackend):
         delivery_mode: Optional[str] = None,
         bring_to_front: bool = False,
     ) -> ActionResult:
+        guard = self._uinput_leak_guard("click")
+        if guard is not None:
+            return guard
         pid = self._active_pid
         if pid is None:
             return ActionResult(ok=False, action="click",
@@ -2710,6 +2814,9 @@ class CuaDriverBackend(ComputerUseBackend):
         delivery_mode: Optional[str] = None,
         bring_to_front: bool = False,
     ) -> ActionResult:
+        guard = self._uinput_leak_guard("drag")
+        if guard is not None:
+            return guard
         pid = self._active_pid
         if pid is None:
             return ActionResult(ok=False, action="drag",
@@ -2746,6 +2853,9 @@ class CuaDriverBackend(ComputerUseBackend):
         delivery_mode: Optional[str] = None,
         bring_to_front: bool = False,
     ) -> ActionResult:
+        guard = self._uinput_leak_guard("scroll")
+        if guard is not None:
+            return guard
         pid = self._active_pid
         if pid is None:
             return ActionResult(ok=False, action="scroll",
@@ -2779,6 +2889,9 @@ class CuaDriverBackend(ComputerUseBackend):
     # ── Keyboard ───────────────────────────────────────────────────
     def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
                   bring_to_front: bool = False) -> ActionResult:
+        guard = self._uinput_leak_guard("type_text")
+        if guard is not None:
+            return guard
         pid = self._active_pid
         window_id = self._active_window_id
         if pid is None or window_id is None:
@@ -2789,6 +2902,9 @@ class CuaDriverBackend(ComputerUseBackend):
 
     def key(self, keys: str, *, delivery_mode: Optional[str] = None,
             bring_to_front: bool = False) -> ActionResult:
+        guard = self._uinput_leak_guard("key")
+        if guard is not None:
+            return guard
         pid = self._active_pid
         window_id = self._active_window_id
         if pid is None or window_id is None:
@@ -2812,6 +2928,9 @@ class CuaDriverBackend(ComputerUseBackend):
     # ── Value setter ────────────────────────────────────────────────
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
         """Set a value on an element. Handles AXPopUpButton selects natively."""
+        guard = self._uinput_leak_guard("set_value")
+        if guard is not None:
+            return guard
         pid = self._active_pid
         window_id = self._active_window_id
         if pid is None or window_id is None:

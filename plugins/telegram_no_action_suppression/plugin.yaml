@@ -1,0 +1,7 @@
+name: telegram_no_action_suppression
+version: 0.1.0
+description: "Suppress obvious casual/no-action Telegram group chatter before Hermes agent dispatch."
+author: FGD GHO
+kind: standalone
+hooks:
+  - pre_gateway_dispatch

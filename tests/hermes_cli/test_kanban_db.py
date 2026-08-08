@@ -465,6 +465,61 @@ def test_delete_archived_task_removes_related_rows(kanban_home):
         assert conn.execute("SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?", (tid,)).fetchone()[0] == 0
 
 
+def test_delete_archived_task_rejects_non_archived_rows(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="live")
+        assert kb.delete_archived_task(conn, tid) is False
+        assert kb.get_task(conn, tid) is not None
+
+
+def test_list_tasks_order_by(kanban_home):
+    with kb.connect() as conn:
+        # Create tasks with different titles and priorities
+        t_a = kb.create_task(conn, title="alpha", priority=1)
+        t_b = kb.create_task(conn, title="beta", priority=2)
+        t_c = kb.create_task(conn, title="gamma", priority=1)
+
+        # Default sort: priority DESC, created ASC
+        default = kb.list_tasks(conn)
+        assert [t.id for t in default] == [t_b, t_a, t_c]
+
+        # Sort by title ASC
+        by_title = kb.list_tasks(conn, order_by="title")
+        assert [t.id for t in by_title] == [t_a, t_b, t_c]
+
+        # Sort by assignee
+        kb.assign_task(conn, t_a, "alice")
+        kb.assign_task(conn, t_b, "bob")
+        kb.assign_task(conn, t_c, "alice")
+        by_assignee = kb.list_tasks(conn, order_by="assignee")
+        # alice's tasks first (alphabetically), then bob's
+        assignees = [t.assignee for t in by_assignee]
+        assert assignees[:2] == ["alice", "alice"]
+        assert assignees[2] == "bob"
+
+        # Invalid sort order raises ValueError
+        try:
+            kb.list_tasks(conn, order_by="bogus")
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert "order_by must be one of" in str(e)
+
+
+def test_list_tasks_priority_recent_order(kanban_home):
+    # Used by the dashboard so newest cards float to the top of each lane
+    # while higher-priority cards still sort above lower-priority ones.
+    with kb.connect() as conn:
+        t_a = kb.create_task(conn, title="alpha", priority=1)
+        t_b = kb.create_task(conn, title="beta", priority=2)
+        t_c = kb.create_task(conn, title="gamma", priority=1)
+        t_d = kb.create_task(conn, title="delta", priority=2)
+
+        ordered = kb.list_tasks(conn, order_by="priority-recent")
+        # priority=2 group: newest first (t_d before t_b),
+        # then priority=1 group: newest first (t_c before t_a).
+        assert [t.id for t in ordered] == [t_d, t_b, t_c, t_a]
+
+
 def test_delete_task_removes_task_and_cascades(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="to-delete", assignee="alice")

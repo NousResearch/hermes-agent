@@ -35,10 +35,11 @@ from tui_gateway.turn_marker import (
 class _InlineThread:
     """Run threads synchronously so tests observe final state."""
 
-    def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+    def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
         self._target = target
         self._args = args
         self._kwargs = kwargs or {}
+        self.name = name
 
     def start(self):
         if self._target is not None:
@@ -369,6 +370,74 @@ def test_failed_agent_build_leaves_marker_for_retry(
     assert not schedule_env
     assert session["_auto_continue_scheduled"] is False
     assert read_turn_marker(marker_home, "session-key") is not None
+
+
+# ── Shutdown / update preserve + boot recovery ─────────────────────────
+
+
+def test_shutdown_preserve_keeps_marker_and_blocks_retire(marker_home):
+    """Update/backend death must NOT clear the marker the way a user Stop does."""
+    session = _session(
+        running=True,
+        inflight_turn={"prompt": "finish the deploy"},
+    )
+    server._preserve_turn_marker_for_shutdown(session, "tui_shutdown")
+
+    assert session.get("_preserve_turn_marker") is True
+    marker = read_turn_marker(marker_home, "session-key")
+    assert marker is not None
+    assert marker["prompt"] == "finish the deploy"
+    assert marker.get("cause") == "tui_shutdown"
+
+    # Terminal-frame retire is a no-op while preserve is set.
+    server._retire_turn_marker(session)
+    assert read_turn_marker(marker_home, "session-key") is not None
+
+
+def test_user_close_does_not_preserve_idle_session(marker_home):
+    session = _session(running=False, inflight_turn=None)
+    server._preserve_turn_marker_for_shutdown(session, "tui_close")
+    assert not session.get("_preserve_turn_marker")
+    assert read_turn_marker(marker_home, "session-key") is None
+
+
+def test_list_turn_markers_returns_all(tmp_path):
+    from tui_gateway.turn_marker import list_turn_markers
+
+    record_turn_start(tmp_path, "a", "one", cause="tui_shutdown")
+    record_turn_start(tmp_path, "b", "two")
+    listed = list_turn_markers(tmp_path)
+    assert set(listed) == {"a", "b"}
+    assert listed["a"]["cause"] == "tui_shutdown"
+
+
+def test_boot_recovery_resumes_marked_sessions(marker_home, monkeypatch):
+    """gateway.ready recovery cold-resumes every fresh marker, not just the focused tab."""
+    from tui_gateway.turn_marker import list_turn_markers
+
+    record_turn_start(marker_home, "sess-1", "keep going on chat 1")
+    record_turn_start(marker_home, "sess-2", "keep going on chat 2")
+
+    calls: list = []
+
+    def fake_resume(rid, params):
+        calls.append(params.get("session_id"))
+        return {"result": {"session_id": "live", "resumed": params.get("session_id")}}
+
+    monkeypatch.setattr(server, "_methods", {"session.resume": fake_resume})
+    monkeypatch.setattr(server, "_find_live_session_by_key", lambda key: None)
+    # Force the recovery thread to run inline.
+    monkeypatch.setattr(server.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(server.time, "sleep", lambda *_a, **_k: None)
+    # Allow re-entry across tests.
+    server._interrupted_turn_recovery_started = False
+
+    server._ensure_interrupted_turn_recovery()
+
+    assert set(calls) == {"sess-1", "sess-2"}
+    # Idempotent: second call is a no-op.
+    server._ensure_interrupted_turn_recovery()
+    assert calls.count("sess-1") == 1
 
 
 # ── End to end: continuation runs a real turn and clears the marker ────

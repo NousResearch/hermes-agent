@@ -785,7 +785,9 @@ def _run_review_in_thread(
                         _fork_kwargs[_pref_attr] = _pref_val
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
-                max_iterations=16,
+                # Was 16 — skill self-improve thrash (e.g. 100k SKILL.md cap)
+                # burned the whole budget and died mid-review, stranding parents.
+                max_iterations=48,
                 quiet_mode=True,
                 platform=agent.platform,
                 provider=_rt.get("provider") or agent.provider,

@@ -4,10 +4,13 @@ A running turn's progress lives only in process memory (the agent flushes to
 SQLite at turn end, not mid-turn), so an app/backend/machine death mid-turn
 leaves no durable trace of the interrupted prompt. This sidecar is that
 trace: a marker is written when a turn starts running and cleared when the
-turn concludes — success, handled error, or interrupt all clear it, so only
-a process death leaves one behind. ``session.resume`` reads the marker to
-decide whether to auto-continue the interrupted turn (see
-``_maybe_schedule_auto_continue`` in ``tui_gateway/server.py``).
+turn concludes cleanly (success, handled error, or *user* interrupt).
+
+Process death, update handoff, and ``tui_shutdown`` intentionally KEEP the
+marker (see ``_preserve_turn_marker_for_shutdown`` in ``tui_gateway/server.py``)
+so boot recovery can auto-continue every interrupted chat — not only the tab
+the user focuses first. ``session.resume`` and backend boot both call
+``_maybe_schedule_auto_continue``.
 
 Markers are stored per ``HERMES_HOME`` (callers pass the session's home so
 profile sessions keep their state in their own profile directory) and the
@@ -94,33 +97,6 @@ def _store(path: Path, entries: dict[str, dict]) -> None:
         raise
 
 
-def record_turn_start(
-    home: Path | str, session_key: str, prompt: str, *, attempts: int = 0
-) -> None:
-    """Persist the marker for a turn that is about to run.
-
-    ``attempts`` counts how many auto-continues led to this run: 0 for a
-    user-initiated turn, N for the Nth automatic re-run — the crash-loop
-    breaker reads it back on the next resume.
-    """
-    if not session_key or not prompt:
-        return
-    now = time.time()
-    entry = {
-        "attempts": max(0, int(attempts)),
-        "prompt": prompt[:_MAX_PROMPT_CHARS],
-        "started_at": now,
-    }
-    try:
-        with _lock:
-            path = _marker_path(home)
-            entries = _prune(_load(path), now)
-            entries[session_key] = entry
-            _store(path, entries)
-    except Exception:
-        logger.debug("failed to record turn marker for %s", session_key, exc_info=True)
-
-
 def clear_turn_marker(home: Path | str, session_key: str) -> None:
     """Remove the marker once its turn concluded (any outcome the client saw)."""
     if not session_key:
@@ -146,6 +122,10 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
             entry = _load(_marker_path(home)).get(session_key)
     except Exception:
         return None
+    return _normalize_entry(entry)
+
+
+def _normalize_entry(entry: Any) -> dict[str, Any] | None:
     if not isinstance(entry, dict):
         return None
     prompt = str(entry.get("prompt") or "")
@@ -156,4 +136,79 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
         attempts = max(0, int(entry.get("attempts") or 0))
     except (TypeError, ValueError):
         return None
-    return {"attempts": attempts, "prompt": prompt, "started_at": started_at}
+    out: dict[str, Any] = {
+        "attempts": attempts,
+        "prompt": prompt,
+        "started_at": started_at,
+    }
+    cause = entry.get("cause")
+    if isinstance(cause, str) and cause.strip():
+        out["cause"] = cause.strip()
+    return out
+
+
+def list_turn_markers(home: Path | str) -> dict[str, dict[str, Any]]:
+    """All durable interrupted-turn markers under ``home`` (best-effort).
+
+    Used at backend boot to resume every crash/update-interrupted chat, not
+    only the tab the user happens to focus first.
+    """
+    try:
+        with _lock:
+            raw = _load(_marker_path(home))
+    except Exception:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for key, entry in raw.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        normalized = _normalize_entry(entry)
+        if normalized is not None:
+            out[key] = normalized
+    return out
+
+
+def record_turn_start(
+    home: Path | str,
+    session_key: str,
+    prompt: str,
+    *,
+    attempts: int = 0,
+    cause: str | None = None,
+    keep_started_at: bool = False,
+) -> None:
+    """Persist the marker for a turn that is about to run (or is being preserved).
+
+    ``cause`` is optional metadata (e.g. ``update``, ``tui_shutdown``) so boot
+    recovery can tell intentional stops from process deaths. ``keep_started_at``
+    preserves the original clock when re-stamping a marker during shutdown so
+    freshness windows are not accidentally refreshed forever.
+    """
+    if not session_key or not prompt:
+        return
+    now = time.time()
+    entry: dict[str, Any] = {
+        "attempts": max(0, int(attempts)),
+        "prompt": prompt[:_MAX_PROMPT_CHARS],
+        "started_at": now,
+    }
+    if cause:
+        entry["cause"] = str(cause)[:64]
+    try:
+        with _lock:
+            path = _marker_path(home)
+            entries = _prune(_load(path), now)
+            if keep_started_at:
+                prev = entries.get(session_key) or {}
+                try:
+                    prev_started = float(prev.get("started_at") or 0)
+                except (TypeError, ValueError):
+                    prev_started = 0.0
+                if prev_started > 0:
+                    entry["started_at"] = prev_started
+                if not cause and isinstance(prev.get("cause"), str):
+                    entry["cause"] = prev["cause"]
+            entries[session_key] = entry
+            _store(path, entries)
+    except Exception:
+        logger.debug("failed to record turn marker for %s", session_key, exc_info=True)

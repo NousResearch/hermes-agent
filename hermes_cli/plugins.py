@@ -1920,6 +1920,37 @@ class PluginManager:
             PluginContext(manifest, self)._tool_override_allowed(""),
         )
         try:
+            # Warn when a declared required env var is missing, BEFORE
+            # loading the module at all. Some plugins read the variable
+            # directly at module scope (not just inside register()) and
+            # raise (e.g. KeyError / a provider SDK's own validation) --
+            # if this check ran only after the module import (or only
+            # after register_fn(ctx) succeeded), that raise would
+            # propagate straight to the generic "Failed to load plugin"
+            # handler below and the specific missing-variable diagnostic
+            # would never be reported (issue #2768). Uses manifest.requires_env
+            # directly since it's available before the module is ever
+            # imported. Normalize requires_env entries (str or dict) before
+            # checking the process environment, mirroring
+            # hermes_cli/plugins_cmd.py:307-314.
+            _missing_env: list[str] = []
+            for _entry in manifest.requires_env or []:
+                if isinstance(_entry, str):
+                    _var_name = _entry
+                elif isinstance(_entry, dict):
+                    _var_name = _entry.get("name", "")
+                else:
+                    _var_name = ""
+                if _var_name and not os.environ.get(_var_name):
+                    _missing_env.append(_var_name)
+
+            if _missing_env:
+                logger.warning(
+                    "Plugin '%s': required env var(s) not set: %s "
+                    "-- plugin may be non-functional or fail to load",
+                    manifest.name, ", ".join(_missing_env),
+                )
+
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
             else:
@@ -1934,6 +1965,7 @@ class PluginManager:
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
             else:
                 ctx = PluginContext(manifest, self)
+
                 # Snapshot registry state BEFORE register() so each registry's
                 # attribution counts only what THIS plugin actually added.
                 # The previous approach diffed names against all already-loaded
@@ -1968,16 +2000,39 @@ class PluginManager:
                     if self._plugin_commands[c].get("plugin") == manifest.name
                 ]
                 loaded.enabled = True
+
+                _cli_cmd_count = sum(
+                    1 for c in self._cli_commands
+                    if self._cli_commands[c].get("plugin") == manifest.name
+                )
+                # A plugin that registered nothing on any tracked surface may
+                # still be legitimate: provider-only plugins (e.g. an image
+                # generation backend) register a provider, which isn't
+                # tracked in LoadedPlugin's tools/hooks/middleware/commands
+                # counts. Demoted to DEBUG (not WARNING) to avoid false
+                # positives for that case.
+                _nothing_registered = not any([
+                    loaded.tools_registered,
+                    loaded.hooks_registered,
+                    loaded.middleware_registered,
+                    loaded.commands_registered,
+                    _cli_cmd_count,
+                ])
+                if _nothing_registered:
+                    logger.debug(
+                        "Plugin '%s' registered no tools, hooks, middleware, "
+                        "or commands -- it may register a provider or be a "
+                        "no-op stub",
+                        manifest.name,
+                    )
+
                 logger.debug(
                     "  registered: %d tool(s), %d hook(s), %d middleware, %d slash command(s), %d CLI command(s)",
                     len(loaded.tools_registered),
                     len(loaded.hooks_registered),
                     len(loaded.middleware_registered),
                     len(loaded.commands_registered),
-                    sum(
-                        1 for c in self._cli_commands
-                        if self._cli_commands[c].get("plugin") == manifest.name
-                    ),
+                    _cli_cmd_count,
                 )
 
         except Exception as exc:

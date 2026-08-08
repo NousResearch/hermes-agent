@@ -697,7 +697,7 @@ def _crop_image_region(
         cleanup of the temp file — or (None, None, error_message) on failure.
     """
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
     except ImportError:
         return None, None, (
             "region cropping requires Pillow (`pip install Pillow`); "
@@ -715,7 +715,9 @@ def _crop_image_region(
         )
 
     try:
-        with Image.open(image_path) as img:
+        with Image.open(image_path) as source_img, ImageOps.exif_transpose(
+            source_img
+        ) as img:
             width, height = img.size
             x1, y1, x2, y2 = (int(v) for v in region)
             # Clamp to image bounds.

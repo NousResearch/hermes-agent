@@ -1815,7 +1815,13 @@ def _normalize_media_tag_path(raw: str) -> str:
     path = str(raw or "").strip()
     if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
         path = path[1:-1].strip()
-    return path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    # On Windows running under Git Bash / MSYS, the shell translates
+    # native drive paths like ``C:/...`` into POSIX-style ``/C:/...``.
+    # Strip the leading slash so native Windows ``Path()`` can parse it.
+    if os.name == "nt" and re.match(r"^/[A-Za-z]:[/\\]", path):
+        path = path[1:]
+    return path
 
 
 def _path_lacks_deliverable_extension(path: str) -> bool:

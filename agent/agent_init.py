@@ -1911,6 +1911,9 @@ def init_agent(
     except Exception:
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+    compression_preflight_enabled = is_truthy_value(
+        _compression_cfg.get("preflight_enabled"), default=True
+    )
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
     # Minimum REAL (actionable) user messages guaranteed to survive in the
@@ -2522,6 +2525,7 @@ def init_agent(
         except Exception:
             pass
     agent.compression_enabled = compression_enabled
+    agent.compression_preflight_enabled = compression_preflight_enabled
     agent.compression_in_place = compression_in_place
     # Apply micro-compaction settings to the compressor (feature is opt-in)
     _cc = getattr(agent, "context_compressor", None)

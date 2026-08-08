@@ -189,3 +189,35 @@ def test_builtin_compressor_default_sub_threshold_path_unchanged(tmp_path):
     agent._compress_context.assert_not_called()
     agent._emit_status.assert_not_called()
     assert ctx.preflight_compression_blocked is False
+
+
+def test_disabled_engine_preflight_does_not_block_threshold_compression():
+    """The opt-out affects only the engine's sub-threshold hook."""
+    hook = MagicMock(return_value=True)
+    comp = _stub_compressor(preflight=hook, threshold_tokens=100)
+    comp.should_compress = lambda _tokens=None: True
+    comp.context_length = 200_000
+    agent = _make_agent(comp)
+    agent.compression_preflight_enabled = False
+
+    with patch(
+        "agent.turn_context.estimate_request_tokens_rough", return_value=999_999
+    ):
+        _build(agent)
+
+    hook.assert_not_called()
+    agent._compress_context.assert_called()
+
+
+def test_disabled_engine_preflight_skips_sub_threshold_hook():
+    """An explicit opt-out skips engine-requested sub-threshold work."""
+    hook = MagicMock(return_value=True)
+    agent = _make_agent(_stub_compressor(preflight=hook))
+    agent.compression_preflight_enabled = False
+
+    ctx = _build(agent)
+
+    assert isinstance(ctx, TurnContext)
+    hook.assert_not_called()
+    agent._compress_context.assert_not_called()
+    assert ctx.preflight_compression_blocked is False

@@ -166,6 +166,7 @@ export function useGatewayBoot({
           return
         }
 
+        gateway.setProfileRoute(conn.profile, conn.remoteProfile)
         publish(conn)
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // with a short TTL, so the ticket baked into the cached conn.wsUrl is
@@ -304,6 +305,7 @@ export function useGatewayBoot({
           return
         }
 
+        gateway.setProfileRoute(conn.profile, conn.remoteProfile)
         publish(conn)
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await gateway.connect(wsUrl)
@@ -499,6 +501,7 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.connectingGateway'),
           progress: 95
         })
+        gateway.setProfileRoute(conn.profile, conn.remoteProfile)
         publish(conn)
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into

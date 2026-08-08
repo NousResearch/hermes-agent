@@ -502,6 +502,8 @@ export interface HermesConnection {
   remoteIdentity?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'
   remoteHermesVersion?: string
+  // Remote backend profile id when it differs from the Desktop display profile.
+  remoteProfile?: string
   nativeOverlayWidth: number
   source?: 'env' | 'local' | 'settings'
   token: string
@@ -553,6 +555,9 @@ export interface DesktopConnectionConfig {
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
+  // Optional profile id on a named remote backend. Blank keeps the historical
+  // same-name mapping from the Desktop profile.
+  remoteProfile?: string
   remoteUrl: string
   // For a 'cloud' connection: the persisted Hermes Cloud org (slug or id) the
   // connected instance was discovered under, so Settings → Gateway can reopen
@@ -573,6 +578,7 @@ export interface DesktopConnectionConfigInput {
   profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
+  remoteProfile?: string
   remoteUrl?: string
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.

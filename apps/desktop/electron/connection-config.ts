@@ -216,6 +216,12 @@ function modeIsRemoteLike(mode) {
   return mode === 'remote' || mode === 'cloud'
 }
 
+function normalizeRemoteProfile(value) {
+  const profile = String(value || '').trim()
+
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(profile) && !RESERVED_REMOTE_PROFILES.has(profile) ? profile : null
+}
+
 function normalizeSshConfig(entry) {
   if (!entry || typeof entry !== 'object' || entry.mode !== 'ssh') {
     return null
@@ -288,9 +294,9 @@ function normalizeSshConfig(entry) {
   // name used by the remote Hermes installation. Preserve an explicit mapping
   // when it is a valid Hermes profile identifier; otherwise fall back to the
   // historical same-name behavior in the caller.
-  const remoteProfile = String(entry.remoteProfile || '').trim()
+  const remoteProfile = normalizeRemoteProfile(entry.remoteProfile)
 
-  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
+  if (remoteProfile) {
     out.remoteProfile = remoteProfile
   }
 
@@ -370,13 +376,26 @@ function profileRemoteOverride(config, profile) {
     return null
   }
 
-  return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
+  const override: any = {
+    url,
+    authMode: normAuthMode(entry.authMode),
+    token: entry.token
+  }
+
+  const remoteProfile = normalizeRemoteProfile(entry.remoteProfile)
+
+  if (remoteProfile) {
+    override.remoteProfile = remoteProfile
+  }
+
+  return override
 }
 
 export interface ProfileRouteOptions {
   globalRemote?: boolean
   primaryProfile?: null | string
   profileRemoteOverride?: boolean
+  remoteProfile?: null | string
 }
 
 export interface ProfileBackendRoute {
@@ -433,8 +452,9 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
  */
 function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = {}) {
   const scopedProfile = connectionScopeKey(profile)
+  const remoteProfile = normalizeRemoteProfile(opts.remoteProfile)
 
-  if (!resolveProfileBackendRoute(profile, opts).scopePath) {
+  if (!remoteProfile && !resolveProfileBackendRoute(profile, opts).scopePath) {
     return path
   }
 
@@ -452,7 +472,17 @@ function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = 
     return path
   }
 
-  if (parsed.searchParams.has('profile')) {
+  if (remoteProfile) {
+    if (remoteProfile === 'default') {
+      parsed.searchParams.delete('profile')
+    } else {
+      parsed.searchParams.set('profile', remoteProfile)
+    }
+
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`
+  }
+
+  if (!scopedProfile || parsed.searchParams.has('profile')) {
     return path
   }
 
@@ -573,6 +603,7 @@ export {
   localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeRemoteProfile,
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,

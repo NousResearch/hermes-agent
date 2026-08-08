@@ -227,7 +227,39 @@ export type {
   WebhooksResponse
 } from '@/types/hermes'
 
+export function mapGatewayProfileParams(
+  params: Record<string, unknown>,
+  localProfile?: null | string,
+  remoteProfile?: null | string
+): Record<string, unknown> {
+  const local = (localProfile ?? '').trim()
+  const remote = (remoteProfile ?? '').trim()
+
+  if (!local || !remote || local === remote) {
+    return params
+  }
+
+  const requested = typeof params.profile === 'string' ? params.profile.trim() : ''
+
+  if (requested && requested !== local) {
+    return params
+  }
+
+  const mapped = { ...params }
+
+  if (remote === 'default') {
+    delete mapped.profile
+  } else {
+    mapped.profile = remote
+  }
+
+  return mapped
+}
+
 export class HermesGateway extends JsonRpcGatewayClient {
+  private localProfile: null | string = null
+  private remoteProfile: null | string = null
+
   constructor() {
     super({
       closedErrorMessage: 'Hermes gateway connection closed',
@@ -236,6 +268,20 @@ export class HermesGateway extends JsonRpcGatewayClient {
       notConnectedErrorMessage: 'Hermes gateway is not connected',
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
     })
+  }
+
+  setProfileRoute(localProfile?: null | string, remoteProfile?: null | string): void {
+    this.localProfile = localProfile || null
+    this.remoteProfile = remoteProfile || null
+  }
+
+  override request<T>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ): Promise<T> {
+    return super.request(method, mapGatewayProfileParams(params, this.localProfile, this.remoteProfile), timeoutMs, signal)
   }
 }
 

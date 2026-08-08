@@ -6,6 +6,7 @@ import {
   getElevenLabsVoices,
   getMemoryProviderConfig,
   getStatus,
+  mapGatewayProfileParams,
   restartGateway,
   saveMemoryProviderConfig,
   setApiRequestProfile,
@@ -13,6 +14,27 @@ import {
   transcribeAudio,
   updateHermes
 } from './hermes'
+
+describe('remote gateway profile aliases', () => {
+  it('removes the Desktop alias when the remote target is default', () => {
+    expect(mapGatewayProfileParams({ profile: 'work', session_id: 's1' }, 'work', 'default')).toEqual({
+      session_id: 's1'
+    })
+  })
+
+  it('injects a named remote profile when a request omits the Desktop alias', () => {
+    expect(mapGatewayProfileParams({ key: 'model' }, 'research', 'writer')).toEqual({
+      key: 'model',
+      profile: 'writer'
+    })
+  })
+
+  it('preserves unrelated explicit profile scopes', () => {
+    expect(mapGatewayProfileParams({ profile: 'reviewer' }, 'research', 'writer')).toEqual({
+      profile: 'reviewer'
+    })
+  })
+})
 
 // Contract: every backend-targeted action helper must carry the active gateway
 // profile, so a multi-profile / global-remote user's restart, status poll, and

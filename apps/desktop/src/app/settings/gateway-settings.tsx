@@ -5,7 +5,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
-import type { DesktopAuthProvider, DesktopCloudAgent, DesktopCloudOrg, DesktopConnectionProbeResult } from '@/global'
+import type {
+  DesktopAuthProvider,
+  DesktopCloudAgent,
+  DesktopCloudOrg,
+  DesktopConnectionConfig,
+  DesktopConnectionProbeResult
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import {
@@ -44,6 +50,7 @@ interface GatewaySettingsState {
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
+  remoteProfile: string
   remoteUrl: string
   cloudOrg: string
   sshHost: string
@@ -63,6 +70,7 @@ const EMPTY_STATE: GatewaySettingsState = {
   remoteOauthConnected: false,
   remoteTokenPreview: null,
   remoteTokenSet: false,
+  remoteProfile: '',
   remoteUrl: '',
   cloudOrg: '',
   sshHost: '',
@@ -167,8 +175,8 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const contextSeq = useRef(0)
   const [connectedCloudUrl, setConnectedCloudUrl] = useState('')
 
-  const acceptSavedConfig = (config: GatewaySettingsState) => {
-    setState(config)
+  const acceptSavedConfig = (config: DesktopConnectionConfig) => {
+    setState({ ...EMPTY_STATE, ...config })
     setConnectedCloudUrl(savedCloudConnectionUrl(config))
   }
 
@@ -423,7 +431,8 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     state.sshPort,
     state.sshKeyPath,
     state.sshRemoteHermesPath,
-    state.sshRemoteProfile
+    state.sshRemoteProfile,
+    state.remoteProfile
   ])
 
   const oauthConnected = state.remoteOauthConnected
@@ -445,6 +454,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     profile: scope ?? undefined,
     remoteAuthMode: authMode,
     remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
+    remoteProfile: state.remoteProfile.trim(),
     remoteUrl: trimmedUrl,
     sshHost: state.sshHost.trim(),
     sshUser: state.sshUser.trim() || undefined,
@@ -1264,6 +1274,21 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             description={g.remoteUrlDesc}
             title={g.remoteUrlTitle}
           />
+
+          {scope !== null ? (
+            <ListRow
+              action={
+                <Input
+                  className={cn('h-8 font-mono', CONTROL_TEXT)}
+                  onChange={event => setState(current => ({ ...current, remoteProfile: event.target.value }))}
+                  placeholder={scope}
+                  value={state.remoteProfile}
+                />
+              }
+              description={g.sshRemoteProfileDesc}
+              title={g.sshRemoteProfileTitle}
+            />
+          ) : null}
 
           {state.mode === 'remote' && probeStatus === 'probing' ? (
             <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">

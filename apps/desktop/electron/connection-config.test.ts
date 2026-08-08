@@ -29,6 +29,7 @@ import {
   localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeRemoteProfile,
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
@@ -104,6 +105,33 @@ test('profileRemoteOverride returns the per-profile remote with defaulted auth m
     authMode: 'token',
     token: { value: 'sek' }
   })
+})
+
+test('profileRemoteOverride preserves a valid URL remote-profile mapping', () => {
+  const config = {
+    profiles: {
+      work: {
+        mode: 'remote',
+        url: 'https://gateway.example.com/hermes',
+        remoteProfile: 'default'
+      }
+    }
+  }
+
+  assert.deepEqual(profileRemoteOverride(config, 'work'), {
+    url: 'https://gateway.example.com/hermes',
+    authMode: 'token',
+    token: undefined,
+    remoteProfile: 'default'
+  })
+})
+
+test('normalizeRemoteProfile accepts Hermes names and rejects unsafe or reserved values', () => {
+  assert.equal(normalizeRemoteProfile(' default '), 'default')
+  assert.equal(normalizeRemoteProfile('writer_2'), 'writer_2')
+  assert.equal(normalizeRemoteProfile('bad profile'), null)
+  assert.equal(normalizeRemoteProfile('root'), null)
+  assert.equal(normalizeRemoteProfile(''), null)
 })
 
 test('profileRemoteOverride preserves an explicit oauth auth mode', () => {
@@ -335,6 +363,28 @@ test('pathWithGlobalRemoteProfile skips local and per-profile remote override pa
       profileRemoteOverride: true
     }),
     '/api/model/info'
+  )
+})
+
+test('pathWithGlobalRemoteProfile removes a local alias for a mapped remote default', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/cron/jobs?profile=work', 'work', {
+      globalRemote: true,
+      profileRemoteOverride: true,
+      remoteProfile: 'default'
+    }),
+    '/api/cron/jobs'
+  )
+})
+
+test('pathWithGlobalRemoteProfile replaces the local alias with a named remote profile', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/config?profile=work&force=1', 'work', {
+      globalRemote: true,
+      profileRemoteOverride: true,
+      remoteProfile: 'writer'
+    }),
+    '/api/config?profile=writer&force=1'
   )
 })
 

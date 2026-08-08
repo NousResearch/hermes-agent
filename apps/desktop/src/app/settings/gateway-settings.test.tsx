@@ -118,4 +118,41 @@ describe('GatewaySettings', () => {
       )
     )
   })
+
+  it('shows and saves a URL remote-profile mapping for a named Desktop profile', async () => {
+    getConnectionConfig.mockImplementation(async profile =>
+      profile === 'work'
+        ? {
+            ...localConnection,
+            mode: 'remote',
+            profile: 'work',
+            remoteUrl: 'https://gateway.example.com/hermes',
+            remoteProfile: 'default',
+            remoteTokenSet: true
+          }
+        : localConnection
+    )
+    saveConnectionConfig.mockReturnValue(new Promise(() => {}))
+    const { GatewaySettings } = await import('./gateway-settings')
+
+    render(<GatewaySettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'work' }))
+
+    await waitFor(() => expect(getConnectionConfig).toHaveBeenLastCalledWith('work'))
+    const inputs = await screen.findAllByPlaceholderText('work')
+    const remoteProfileInput = inputs.find(input => (input as HTMLInputElement).value === 'default')
+
+    expect(remoteProfileInput).toBeTruthy()
+    fireEvent.change(remoteProfileInput!, { target: { value: 'writer' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save for next restart' }))
+
+    await waitFor(() =>
+      expect(saveConnectionConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: 'work',
+          remoteProfile: 'writer'
+        })
+      )
+    )
+  })
 })

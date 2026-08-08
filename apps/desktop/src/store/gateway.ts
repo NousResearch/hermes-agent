@@ -175,6 +175,7 @@ async function openSecondary(entry: Secondary): Promise<void> {
   }
 
   const conn = await desktop.getConnection(entry.profile)
+  entry.gateway.setProfileRoute(entry.profile, conn.remoteProfile)
   const wsUrl = await resolveGatewayWsUrl(desktop, conn)
   await entry.gateway.connect(wsUrl)
   void desktop.touchBackend?.(entry.profile).catch(() => undefined)

@@ -9,11 +9,11 @@ import { Codicon } from '@/components/ui/codicon'
 import { getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
-import { AlertTriangle, Save } from '@/lib/icons'
+import { AlertTriangle, LogIn, Save } from '@/lib/icons'
 import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors, refreshProfiles } from '@/store/profile'
+import { $activeGatewayProfile, $profileColors, normalizeProfileKey, refreshProfiles, selectProfile } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -48,6 +48,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
+  const gatewayProfile = useStore($activeGatewayProfile)
 
   const refresh = useCallback(async () => {
     try {
@@ -152,7 +153,12 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
             </PanelList>
 
             {selected ? (
-              <ProfileDetail key={selected.name} profile={selected} />
+              <ProfileDetail
+                isActive={normalizeProfileKey(selected.name) === normalizeProfileKey(gatewayProfile)}
+                key={selected.name}
+                onClose={onClose}
+                profile={selected}
+              />
             ) : (
               <PanelEmpty description={p.selectPrompt} icon="account" />
             )}
@@ -246,7 +252,15 @@ function ProfileGlyph({ color, isDefault, name }: { color: null | string; isDefa
   )
 }
 
-function ProfileDetail({ profile }: { profile: ProfileInfo }) {
+function ProfileDetail({
+  isActive,
+  onClose,
+  profile
+}: {
+  isActive: boolean
+  onClose: () => void
+  profile: ProfileInfo
+}) {
   const { t } = useI18n()
   const p = t.profiles
 
@@ -266,6 +280,19 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
             {displayPath(profile.path)}
           </p>
         </div>
+
+        {!isActive && (
+          <Button
+            onClick={() => {
+              selectProfile(profile.name)
+              onClose()
+            }}
+            size="sm"
+          >
+            <LogIn />
+            {p.switchToProfile(profile.name)}
+          </Button>
+        )}
 
         <PanelMeta
           rows={[

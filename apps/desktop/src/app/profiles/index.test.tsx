@@ -8,12 +8,13 @@ import type { ProfileInfo } from '@/types/hermes'
 
 import { ProfilesView } from './index'
 
-// These tests pin the invariant this whole area exists to hold: the Manage
+// These tests pin the invariants this whole area exists to hold: the Manage
 // Profiles page and the sidebar rail share ONE set of profile dialogs, so both
 // "New Profile" entry points render the same modal (SOUL.md included), and
 // deleting the profile the gateway is on re-homes to default instead of
 // stranding it on a dead backend. The drift that motivated the fix got in
-// precisely because nothing rendered this view.
+// precisely because nothing rendered this view. The switch-to-profile button
+// tests pin the activation affordance added in #68667.
 
 afterEach(cleanup)
 
@@ -58,7 +59,7 @@ vi.mock('@/store/profile', () => ({
 }))
 
 // The one non-default profile these tests act on. Its name doubles as the row's
-// accessible name, so the delete helper queries by it rather than a literal.
+// accessible name, so the helpers query by it rather than a literal.
 const NAMED_PROFILE = 'work'
 
 function makeProfile(name: string, isDefault = false): ProfileInfo {
@@ -85,10 +86,12 @@ function realClick(el: HTMLElement) {
 // so the first paint is the loader and the rows commit a microtask later. Flush
 // that inside act() so the rows exist before anything queries them, and so the
 // mount setState isn't left unwrapped.
-async function renderProfilesView() {
+async function renderProfilesView(onClose = vi.fn()) {
   await act(async () => {
-    render(<ProfilesView onClose={vi.fn()} />)
+    render(<ProfilesView onClose={onClose} />)
   })
+
+  return onClose
 }
 
 // PanelListRow labels BOTH the row's select target and its kebab with the
@@ -109,6 +112,21 @@ async function deleteTheNamedProfile() {
   await act(async () => {
     fireEvent.click(confirm)
   })
+}
+
+// The row's select target is the plain RowButton (data-slot="row-button", no
+// aria-expanded), while the kebab trigger is a menu button carrying the same
+// accessible name. Disambiguate by slot rather than by name/expanded.
+function selectNamedProfileRow() {
+  const rowButton = screen
+    .getAllByRole('button', { name: NAMED_PROFILE })
+    .find(button => button.closest('[data-slot="row-button"]'))
+
+  if (!rowButton) {
+    throw new Error(`No row button found for profile "${NAMED_PROFILE}"`)
+  }
+
+  fireEvent.click(rowButton)
 }
 
 describe('ProfilesView', () => {
@@ -151,5 +169,40 @@ describe('ProfilesView', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull())
     expect(selectProfile).not.toHaveBeenCalled()
     expect(setActiveProfile).not.toHaveBeenCalled()
+  })
+
+  it('renders "Switch to <name>" for an inactive profile and activates it on click', async () => {
+    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile(NAMED_PROFILE)])
+    activeGateway.set('default')
+    const onClose = vi.fn()
+
+    await renderProfilesView(onClose)
+    selectNamedProfileRow()
+
+    const switchButton = await screen.findByRole('button', { name: `Switch to ${NAMED_PROFILE}` })
+    expect(switchButton).toBeTruthy()
+
+    fireEvent.click(switchButton)
+
+    expect(selectProfile).toHaveBeenCalledWith(NAMED_PROFILE)
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('omits the switch button when viewing the currently active profile', async () => {
+    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile(NAMED_PROFILE)])
+    activeGateway.set(NAMED_PROFILE)
+
+    await renderProfilesView()
+    selectNamedProfileRow()
+
+    // Confirm the detail panel actually switched to the named profile — its
+    // header is an h3 with the profile name. Without this, the absence query
+    // below would pass even if the row click never landed (the panel would
+    // still show "default", whose switch button says "Switch to default").
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 3, name: NAMED_PROFILE })).toBeTruthy()
+    })
+
+    expect(screen.queryByRole('button', { name: `Switch to ${NAMED_PROFILE}` })).toBeNull()
   })
 })

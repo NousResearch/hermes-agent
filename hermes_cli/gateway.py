@@ -6941,6 +6941,11 @@ def _block_until_terminated() -> None:
 def _gateway_command_inner(args):
     subcmd = getattr(args, "gateway_command", None)
 
+    if subcmd == "simulate-delivery":
+        from hermes_cli.gateway_delivery_simulator import cmd_simulate_delivery
+
+        return cmd_simulate_delivery(args)
+
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
         if _maybe_redirect_run_to_s6_supervision(args):

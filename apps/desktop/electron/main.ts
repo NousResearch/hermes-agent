@@ -9611,6 +9611,13 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', revealController.reveal)
 
+  // Under Playwright testing, instantly show the window: `ready-to-show`
+  // doesn't fire in some testing envs, and the suite can't wait out the
+  // production fallback.
+  if (process.env.TEST_WORKER_INDEX !== undefined) {
+    revealController.reveal()
+  }
+
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('will-leave-full-screen', () => sendWindowStateChanged(false))

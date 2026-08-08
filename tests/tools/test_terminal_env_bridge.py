@@ -164,3 +164,40 @@ def test_bridge_config_failure_does_not_crash(monkeypatch):
     # values are never trusted.
     assert config["env_type"] == "ssh"
     assert config["ssh_host"] == ""
+
+
+def test_worker_timeout_override_survives_bridge(monkeypatch):
+    """Explicit worker-scoped overrides beat config defaults.
+
+    Subprocess callers (e.g. kanban ``_default_spawn``) set
+    ``TERMINAL_TIMEOUT``/``TERMINAL_LIFETIME_SECONDS`` deliberately; the
+    snapshot must restore them after the bridge applies config defaults.
+    """
+    _write_config(
+        "terminal:\n"
+        "  backend: docker\n"
+        "  timeout: 180\n"
+        "  lifetime_seconds: 300\n"
+    )
+    monkeypatch.setenv("TERMINAL_TIMEOUT", "600")
+    monkeypatch.setenv("TERMINAL_LIFETIME_SECONDS", "900")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "docker"
+    assert config["timeout"] == 600
+    assert config["lifetime_seconds"] == 900
+
+
+def test_bridge_applies_config_default_when_no_worker_override(monkeypatch):
+    """Without an explicit worker override, config defaults apply."""
+    _write_config(
+        "terminal:\n"
+        "  backend: docker\n"
+        "  timeout: 240\n"
+    )
+    monkeypatch.delenv("TERMINAL_TIMEOUT", raising=False)
+
+    config = terminal_tool._get_env_config()
+
+    assert config["timeout"] == 240

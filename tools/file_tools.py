@@ -514,7 +514,10 @@ def _rewrite_v4a_patch_paths_for_host(
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
-    normalized = os.path.normpath(_expand_tilde(path))
+    raw = _expand_tilde(path)
+    if os.sep != "/":
+        raw = raw.replace(os.sep, "/")
+    normalized = posixpath.normpath(raw)
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
@@ -679,14 +682,20 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
+    raw = _expand_tilde(filepath)
+    if os.sep != "/":
+        raw = raw.replace(os.sep, "/")
+    posix_normalized = posixpath.normpath(raw)
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
+        if (resolved.startswith(prefix) or normalized.startswith(prefix)
+                or posix_normalized.startswith(prefix)):
             return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+    if (resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS
+            or posix_normalized in _SENSITIVE_EXACT_PATHS):
         return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or

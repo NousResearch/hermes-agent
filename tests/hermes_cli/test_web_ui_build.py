@@ -150,8 +150,66 @@ class TestBuildWebUISkipsWhenFresh:
         assert result is True
         args, kwargs = mock_run.call_args
         assert "--workspace" not in args[0]
-        assert args[0] == ["/usr/bin/npm", "ci", "--include=dev", "--silent", "--prefer-offline"]
+        # --silent must not be present: capture_output already keeps success
+        # quiet, and --silent swallows EBADENGINE text that
+        # maybe_repair_npm_engine needs (sibling of TUI fix PR #76074).
+        # --prefer-offline is still expected (perf #39267).
+        # Don't hardcode the npm binary path: _resolve_node_runtime_npm may
+        # return a managed/system path even when shutil.which is patched.
+        assert args[0][1:] == ["ci", "--include=dev", "--prefer-offline"]
+        assert "--silent" not in args[0]
         assert kwargs["cwd"] == web_dir
+
+    def test_web_install_preserves_engine_failure_for_recovery(
+        self, tmp_path, monkeypatch
+    ):
+        """First web install must retain npm's EBADENGINE diagnostic.
+
+        With --silent, npm exits non-zero and capture_output receives empty
+        stdout/stderr, so maybe_repair_npm_engine never sees the failure and
+        cannot provision a managed runtime. hermes dashboard then dies with
+        only "Web UI npm install failed". Sibling of the TUI fix in PR #76074.
+        """
+        from hermes_cli import npm_engine
+
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.setenv("PREFIX", "/usr")
+
+        engine_error = (
+            "npm error code EBADENGINE\n"
+            'npm error notsup Required: {"node":">=22.22.0","npm":"<11.10.0 || >=11.17.0"}\n'
+            'npm error notsup Actual: {"node":"v25.9.0","npm":"11.14.1"}\n'
+        )
+        npm_path = "/usr/bin/npm"
+
+        def fake_run(cmd, **kwargs):
+            stderr = "" if "--silent" in cmd else engine_error
+            return __import__("subprocess").CompletedProcess(
+                cmd, 1, stdout="", stderr=stderr
+            )
+
+        seen: dict = {}
+
+        def fake_repair(npm, output, **_kwargs):
+            seen["npm"] = npm
+            seen["output"] = output
+            return None
+
+        build_cp = __import__("subprocess").CompletedProcess(
+            [], 0, stdout="", stderr=""
+        )
+        with patch("hermes_cli.main._resolve_node_runtime_npm", return_value=npm_path), \
+             patch("hermes_cli.main.subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp), \
+             patch.object(npm_engine, "maybe_repair_npm_engine", side_effect=fake_repair):
+            result = _build_web_ui(web_dir, fatal=True)
+
+        assert result is False
+        assert seen.get("npm") == npm_path
+        assert "EBADENGINE" in (seen.get("output") or "")
+        assert "--silent" not in (seen.get("output") or "no-silent-marker")
 
     def test_web_build_uses_idle_timeout_helper(self, tmp_path):
         """npm run build now goes through _run_with_idle_timeout (issue #33788).

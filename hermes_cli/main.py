@@ -5764,7 +5764,14 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             env=build_env,
         )
 
-    r1 = _install_web_deps(silent=True)
+    # First install runs with capture_output=True inside
+    # _run_npm_install_deterministic, so success stays quiet without
+    # --silent. Passing --silent here empties stdout/stderr on
+    # engine-strict rejection, which blinds maybe_repair_npm_engine
+    # (is_ebadengine("") is False) and leaves users with only
+    # "Web UI npm install failed". Same class of bug as the TUI path
+    # (PR #76074); dashboard / hermes web hit this one.
+    r1 = _install_web_deps(silent=False)
     if r1.returncode != 0:
         _say(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"

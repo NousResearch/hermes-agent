@@ -18,11 +18,12 @@ import {
   $agentPluginsError,
   $agentPluginsStatus,
   type AgentPluginRow,
+  type GatewayRequest,
   loadAgentPlugins,
   toggleAgentPlugin
 } from '@/store/agent-plugins'
 import { notifyError } from '@/store/notifications'
-import { $gatewayState } from '@/store/session'
+import { $connection, $gatewayState } from '@/store/session'
 
 import { EmptyState, ListRowSkeleton, Pill, SettingsContent, SettingsSection } from './primitives'
 
@@ -66,6 +67,31 @@ async function revealPluginsDir() {
     }
   } catch (err) {
     notifyError(err, 'Could not resolve the plugins folder')
+  }
+}
+
+// Agent plugins live under the BACKEND's hermes home (profile-aware), so the
+// path comes from the gateway — not from the renderer's local HERMES_HOME.
+// Callers gate on a local connection: openDir mkdir-creates the path, which
+// must never happen for a directory that belongs to a remote box.
+async function revealAgentPluginsDir(request: GatewayRequest) {
+  try {
+    const result = await request<{ home?: string }>('config.get', { key: 'profile' })
+    const home = (result?.home ?? '').trim()
+
+    if (!home) {
+      notifyError('The backend did not report its home directory', 'Could not open the plugins folder')
+
+      return
+    }
+
+    const opened = await window.hermesDesktop?.openDir?.(`${home}/plugins`)
+
+    if (opened && !opened.ok) {
+      notifyError(opened.error ?? 'unknown error', 'Could not open the plugins folder')
+    }
+  } catch (err) {
+    notifyError(err, 'Could not open the plugins folder')
   }
 }
 
@@ -133,6 +159,7 @@ function AgentPluginsSection() {
   const p = t.settings.plugins
   const { requestGateway } = useGatewayRequest()
   const gatewayState = useStore($gatewayState)
+  const connection = useStore($connection)
   const rows = useStore($agentPlugins)
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
@@ -164,6 +191,20 @@ function AgentPluginsSection() {
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {p.agent.blurb}
       </p>
+
+      {connection?.mode !== 'remote' && (
+        <div className="mb-2 flex items-center gap-3">
+          <Button
+            onClick={() => void revealAgentPluginsDir(requestGateway)}
+            size="sm"
+            type="button"
+            variant="textStrong"
+          >
+            <FolderOpen className="size-3.5" />
+            <span>{p.openFolder}</span>
+          </Button>
+        </div>
+      )}
 
       <input
         className="mb-2 w-full rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)"
@@ -229,7 +270,7 @@ function PluginRow({ record }: { record: PluginRecord }) {
         record.status === 'error' ? (
           <span className="text-(--ui-danger,#f87171)">{record.error}</span>
         ) : (
-          (record.file ?? record.id)
+          (record.description ?? record.file ?? record.id)
         )
       }
       title={

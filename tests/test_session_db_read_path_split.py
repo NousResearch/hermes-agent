@@ -8,11 +8,45 @@ per-thread read-only connection under WAL, never touch self._lock, and fall
 back to the legacy locked path when WAL or the read connection is missing.
 """
 
+import os
+import sqlite3
 import threading
 
 import pytest
 
+import hermes_state
 from hermes_state import SessionDB
+
+
+def _count_open_fds():
+    for fd_dir in ("/proc/self/fd", "/dev/fd"):
+        try:
+            with os.scandir(fd_dir) as entries:
+                return sum(1 for _ in entries)
+        except OSError:
+            continue
+    pytest.skip("process fd directory is unavailable")
+
+
+def _start_checked_thread(target):
+    failures = []
+
+    def checked_target():
+        try:
+            target()
+        except BaseException as exc:
+            failures.append(exc)
+
+    thread = threading.Thread(target=checked_target)
+    thread.start()
+    return thread, failures
+
+
+def _join_checked_thread(thread, failures, *, message="worker did not finish"):
+    thread.join(timeout=5.0)
+    assert not thread.is_alive(), message
+    if failures:
+        raise failures[0]
 
 
 @pytest.fixture()
@@ -167,3 +201,298 @@ def test_session_resume_reads_do_not_take_writer_lock(db):
         assert len(done["ancestor_prefix"]) == 2
     finally:
         db._lock.release()
+
+
+def test_close_closes_read_connection_owned_by_another_thread(db):
+    """close() must close the fd, not only forget the tracked connection."""
+    db._wal_active = True
+    opened = threading.Event()
+    closed = threading.Event()
+    outcome = {}
+
+    def reader():
+        conn = db._get_read_conn()
+        assert conn is not None
+        opened.set()
+        closed.wait(timeout=5.0)
+        outcome["cached_after_close"] = db._get_read_conn()
+        try:
+            conn.execute("SELECT 1").fetchone()
+        except Exception as exc:  # inspected by the parent thread
+            outcome["error"] = exc
+        else:
+            outcome["usable_after_close"] = True
+
+    thread, failures = _start_checked_thread(reader)
+    assert opened.wait(timeout=5.0), "reader did not open its connection"
+
+    db.close()
+    closed.set()
+    _join_checked_thread(thread, failures)
+
+    error = outcome.get("error")
+    assert isinstance(error, sqlite3.ProgrammingError)
+    assert "closed" in str(error).lower()
+    assert outcome["cached_after_close"] is None
+    assert "usable_after_close" not in outcome
+    db.close()
+
+
+def test_close_waits_for_active_read_operation(db, monkeypatch):
+    """close() must drain an active reader before closing its connection."""
+    db._wal_active = True
+    operation_started = threading.Event()
+    allow_operation_to_finish = threading.Event()
+    close_returned = threading.Event()
+    outcome = {}
+    real_connect = hermes_state._connect_tracked_db
+
+    class ControllableConnection:
+        def __init__(self, conn):
+            object.__setattr__(self, "_conn", conn)
+            object.__setattr__(self, "close_calls", 0)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def __setattr__(self, name, value):
+            if name in {"_conn", "close_calls"}:
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self._conn, name, value)
+
+        def execute(self, sql, *args, **kwargs):
+            if sql == "SELECT 1":
+                operation_started.set()
+                assert allow_operation_to_finish.wait(timeout=5.0)
+            return self._conn.execute(sql, *args, **kwargs)
+
+        def close(self):
+            self.close_calls += 1
+            self._conn.close()
+
+    def controllable_connect(*args, **kwargs):
+        conn = ControllableConnection(real_connect(*args, **kwargs))
+        outcome["conn"] = conn
+        return conn
+
+    monkeypatch.setattr(hermes_state, "_connect_tracked_db", controllable_connect)
+
+    def reader():
+        with db._read_ctx() as conn:
+            outcome["value"] = conn.execute("SELECT 1").fetchone()[0]
+
+    reader_thread, reader_failures = _start_checked_thread(reader)
+    assert operation_started.wait(timeout=5.0), "reader did not start its query"
+
+    def closer():
+        db.close()
+        close_returned.set()
+
+    close_thread, close_failures = _start_checked_thread(closer)
+    try:
+        with db._read_conns_lock:
+            assert db._read_conns_closed
+            assert outcome["conn"].close_calls == 0
+            assert not close_returned.is_set()
+    finally:
+        allow_operation_to_finish.set()
+
+    _join_checked_thread(reader_thread, reader_failures)
+    _join_checked_thread(close_thread, close_failures, message="close() deadlocked")
+
+    assert outcome["value"] == 1
+    assert outcome["conn"].close_calls == 1
+    assert close_returned.is_set()
+
+
+def test_read_ctx_exception_releases_active_operation(db):
+    """An exception inside a read context must not strand close() waiting."""
+    db._wal_active = True
+
+    with pytest.raises(RuntimeError, match="simulated read failure"):
+        with db._read_ctx():
+            raise RuntimeError("simulated read failure")
+
+    with db._read_conns_lock:
+        assert not db._read_conns_active
+
+
+def test_reaper_skips_dead_owner_connection_with_active_operation(db):
+    """Dead-owner reaping must never close a connection marked active."""
+
+    class RecordingConnection:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    owner = threading.Thread(target=lambda: None)
+    owner.start()
+    owner.join(timeout=5.0)
+    assert not owner.is_alive()
+    conn = RecordingConnection()
+
+    with db._read_conns_lock:
+        db._read_conns[conn] = owner
+        db._read_conns_active[conn] = 1
+        db._reap_dead_read_conns_locked()
+        assert conn.close_calls == 0
+        assert conn in db._read_conns
+
+        db._read_conns_active.pop(conn)
+        db._reap_dead_read_conns_locked()
+        assert conn.close_calls == 1
+        assert conn not in db._read_conns
+
+
+def test_read_conn_open_racing_close_is_closed(db, monkeypatch):
+    """A reader opened during close must not escape the final drain."""
+    db._wal_active = True
+    opened = threading.Event()
+    resume_open = threading.Event()
+    outcome = {}
+    real_connect = hermes_state._connect_tracked_db
+
+    def blocking_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        outcome["conn"] = conn
+        opened.set()
+        resume_open.wait(timeout=5.0)
+        return conn
+
+    monkeypatch.setattr(hermes_state, "_connect_tracked_db", blocking_connect)
+
+    def reader():
+        outcome["result"] = db._get_read_conn()
+
+    thread, reader_failures = _start_checked_thread(reader)
+    assert opened.wait(timeout=5.0), "reader did not reach the open race"
+
+    close_returned = threading.Event()
+
+    def closer():
+        db.close()
+        close_returned.set()
+
+    close_thread, close_failures = _start_checked_thread(closer)
+    with db._read_conns_lock:
+        assert db._read_conns_closed
+        assert not close_returned.is_set()
+    resume_open.set()
+    _join_checked_thread(thread, reader_failures)
+    _join_checked_thread(close_thread, close_failures, message="close() deadlocked")
+
+    assert close_returned.is_set()
+    assert outcome["result"] is None
+    assert not db._read_conns
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        outcome["conn"].execute("SELECT 1")
+
+
+def test_unexpected_read_conn_setup_error_releases_opening_accounting(
+    db, monkeypatch
+):
+    """A non-SQLite setup error must not strand close() on the Condition."""
+    db._wal_active = True
+    opened = {}
+    real_connect = hermes_state._connect_tracked_db
+
+    def recording_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened["conn"] = conn
+        return conn
+
+    def unexpected_pragma_error(*_args, **_kwargs):
+        raise RuntimeError("unexpected pragma setup failure")
+
+    monkeypatch.setattr(hermes_state, "_connect_tracked_db", recording_connect)
+    monkeypatch.setattr(
+        hermes_state,
+        "apply_database_pragmas",
+        unexpected_pragma_error,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="unexpected pragma setup failure"):
+            db._get_read_conn()
+
+        with db._read_conns_lock:
+            assert db._read_conns_opening == 0
+        assert not db._read_conns
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            opened["conn"].execute("SELECT 1")
+    finally:
+        # Keep this regression test cleanup-safe if the accounting bug is
+        # reintroduced, so the fixture's close() reports a failure instead of
+        # hanging the entire test process forever.
+        with db._read_conns_lock:
+            if db._read_conns_opening:
+                db._read_conns_opening = 0
+                db._read_conns_lock.notify_all()
+        conn = opened.get("conn")
+        if conn is not None:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
+
+def test_short_lived_reader_connections_are_reaped(db):
+    """Completed reader threads must not accumulate on a long-lived DB."""
+    db._wal_active = True
+    stable_conn = db._get_read_conn()
+    assert stable_conn is not None
+
+    for _ in range(30):
+        thread, failures = _start_checked_thread(lambda: db.get_session("s1"))
+        _join_checked_thread(thread, failures)
+
+    assert len(db._read_conns) <= 2
+    assert stable_conn in db._read_conns
+    assert db._read_conns[stable_conn] is threading.current_thread()
+    assert db._get_read_conn() is stable_conn
+    assert stable_conn.execute("SELECT 1").fetchone()[0] == 1
+
+
+def test_short_lived_readers_do_not_leak_process_fds(db):
+    """The retained SQLite descriptors stay bounded across completed threads."""
+    db._wal_active = True
+    before = _count_open_fds()
+
+    for _ in range(30):
+        thread, failures = _start_checked_thread(lambda: db.get_session("s1"))
+        _join_checked_thread(thread, failures)
+
+    after = _count_open_fds()
+    assert after <= before + 6, f"process fds grew from {before} to {after}"
+
+
+def test_close_logs_read_conn_error_and_retries_idempotently(db, caplog):
+    """A failed read close stays tracked without making close() newly raise."""
+
+    class FlakyConnection:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise RuntimeError("simulated read close failure")
+
+    conn = FlakyConnection()
+    with db._read_conns_lock:
+        db._read_conns[conn] = threading.current_thread()
+
+    with caplog.at_level("WARNING"):
+        db.close()
+
+    assert conn.close_calls == 1
+    assert conn in db._read_conns
+    assert "failed to close a read-only state.db connection" in caplog.text
+
+    db.close()
+    assert conn.close_calls == 2
+    assert conn not in db._read_conns
+    db.close()

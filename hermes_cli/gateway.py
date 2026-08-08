@@ -4162,9 +4162,28 @@ def generate_launchd_plist() -> str:
     
     <key>RunAtLoad</key>
     <true/>
-    
+
     <key>KeepAlive</key>
     <true/>
+
+    <!-- launchd otherwise inherits macOS's low per-process default open-file
+         ceiling (often ~256), which a long-lived gateway blows through fast:
+         every kanban board's kanban.db (+ -wal/-shm), every concurrent
+         session, and every Discord/Telegram/provider/MCP connection counts
+         against it. This is headroom against slow fd leaks and legitimate
+         growth (more boards, more sessions) — not a fix for any leak itself,
+         which must still be found and closed at the source. -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
 
     <!-- ThrottleInterval raises launchd's default 10s minimum respawn interval
          to 30s so a crash-looping gateway can't hammer launchd into a rapid

@@ -1,14 +1,16 @@
 from hermes_state import AsyncSessionDB
 """Tests for gateway /status behavior and token persistence."""
 
+from dataclasses import replace
 from datetime import datetime
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
@@ -45,6 +47,7 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store.get_model_override.return_value = None
     runner.session_store.load_transcript.return_value = []
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.append_to_transcript = MagicMock()
@@ -139,6 +142,496 @@ async def test_status_command_includes_live_agent_model_and_context():
     assert "**Model:** `openai/gpt-test` (openai)" in result
     assert "**Context:** 12,345 / 100,000 (12%)" in result
     assert "**Lifetime tokens billed:** 1,250" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_falls_back_to_config_for_incomplete_live_agent(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "stale-model",
+        "billing_provider": "stale-provider",
+    }
+    runner._running_agents[session_entry.session_key] = SimpleNamespace(
+        model="",
+        provider="",
+        base_url="",
+        context_compressor=SimpleNamespace(last_prompt_tokens=0, context_length=0),
+    )
+
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "configured-model",
+                "provider": "configured-provider",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.run._resolve_gateway_model",
+        lambda config: config["model"]["default"],
+    )
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=(
+            "configured-model",
+            {"provider": "configured-provider"},
+        )
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `configured-model` (configured-provider)" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_preserves_live_model_when_provider_is_missing():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "stale-model",
+        "billing_provider": "stale-provider",
+    }
+    runner._running_agents[session_entry.session_key] = SimpleNamespace(
+        model="live-model",
+        provider="",
+        context_compressor=SimpleNamespace(last_prompt_tokens=12, context_length=100),
+    )
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=("resolver-model", {"provider": "resolved-provider"})
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `live-model` (resolved-provider)" in result
+    runner._resolve_session_agent_runtime.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_status_command_prefers_cached_agent_over_current_config(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+    runner._agent_cache[session_entry.session_key] = (
+        SimpleNamespace(
+            model="cached-model",
+            provider="cached-provider",
+            base_url="https://cached.example/v1",
+            context_compressor=SimpleNamespace(
+                last_prompt_tokens=12,
+                context_length=100,
+            ),
+        ),
+        "signature",
+        0,
+        session_entry.session_id,
+    )
+    runner.config.platforms[Platform.TELEGRAM].channel_overrides["c1"] = ChannelOverride(
+        model="channel-model",
+        provider="channel-provider",
+    )
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=("wrong-model", {"provider": "wrong-provider"})
+    )
+
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "configured-model",
+                "provider": "configured-provider",
+            }
+        },
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `cached-model` (cached-provider)" in result
+    assert "**Context:** 12 / 100 (12%)" in result
+    runner._resolve_session_agent_runtime.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_status_command_prefers_runtime_session_override_over_config(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+        model_override={
+            "model": "persisted-model",
+            "provider": "persisted-provider",
+        },
+    )
+    runner = _make_runner(session_entry)
+    runner._session_state(session_entry.session_key).conversation.model_override = {
+        "model": "once-model",
+        "provider": "once-provider",
+    }
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "persisted-model",
+        "billing_provider": "persisted-provider",
+    }
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=("once-model", {"provider": "once-provider"})
+    )
+
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "configured-model",
+                "provider": "configured-provider",
+            }
+        },
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `once-model` (once-provider)" in result
+    runner._resolve_session_agent_runtime.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_status_command_prefers_channel_override_over_global_config(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner.config.platforms[Platform.TELEGRAM].channel_overrides["c1"] = ChannelOverride(
+        model="channel-model",
+        provider="channel-provider",
+    )
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=("channel-model", {"provider": "channel-provider"})
+    )
+
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "configured-model",
+                "provider": "configured-provider",
+            }
+        },
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `channel-model` (channel-provider)" in result
+    runner._resolve_session_agent_runtime.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_status_command_resolves_config_for_pending_agent(monkeypatch):
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._running_agents[session_entry.session_key] = _AGENT_PENDING_SENTINEL
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "stale-model",
+        "billing_provider": "stale-provider",
+    }
+
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "configured-model",
+                "provider": "configured-provider",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.run._resolve_gateway_model",
+        lambda config: config["model"]["default"],
+    )
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `configured-model` (configured-provider)" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_uses_normalized_session_key_for_override():
+    raw_source = _make_source()
+    normalized_source = replace(raw_source, thread_id="topic-1")
+    normalized_key = build_session_key(normalized_source)
+    session_entry = SessionEntry(
+        session_key=normalized_key,
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._normalize_source_for_session_key = MagicMock(return_value=normalized_source)
+    runner._session_state(normalized_key).conversation.model_override = {
+        "model": "topic-model",
+        "provider": "topic-provider",
+    }
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=("topic-model", {"provider": "topic-provider"})
+    )
+
+    event = MessageEvent(text="/status", source=raw_source, message_id="m1")
+    result = await runner._handle_status_command(event)
+
+    assert "**Model:** `topic-model` (topic-provider)" in result
+    runner._normalize_source_for_session_key.assert_called_once_with(raw_source)
+    runner.session_store.get_or_create_session.assert_called_once_with(normalized_source)
+    runner._resolve_session_agent_runtime.assert_called_once()
+    assert runner._resolve_session_agent_runtime.call_args.kwargs["session_key"] == normalized_key
+
+
+@pytest.mark.asyncio
+async def test_status_command_prefers_current_config_over_stale_billing_route(monkeypatch):
+    """A persisted billing route must not mask the gateway's current config."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "stepfun-ai/step-3.7-flash",
+        "billing_provider": "openrouter",
+        "billing_base_url": "https://openrouter.ai/api/v1",
+    }
+
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "stepfun-ai/step-3.7-flash",
+                "provider": "custom",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.run._resolve_gateway_model",
+        lambda config: config["model"]["default"],
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `stepfun-ai/step-3.7-flash` (custom)" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_prefers_persisted_runtime_over_billing_and_config(monkeypatch):
+    """The last actual gateway route must beat accounting and changed defaults."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "persisted-model",
+        "billing_provider": "openrouter",
+        "model_config": json.dumps(
+            {
+                "gateway_runtime": {
+                    "provider": "custom",
+                    "base_url": "https://integrate.api.nvidia.com/v1",
+                }
+            }
+        ),
+    }
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "configured-model",
+                "provider": "configured-provider",
+            }
+        },
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `persisted-model` (custom)" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_ignores_malformed_persisted_runtime(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "stale-model",
+        "billing_provider": "stale-provider",
+        "model_config": "{not-json",
+    }
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "configured-model",
+                "provider": "configured-provider",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.run._resolve_gateway_model",
+        lambda config: config["model"]["default"],
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `configured-model` (configured-provider)" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_preserves_explicit_session_model_override(monkeypatch):
+    """A session-scoped /model choice must remain authoritative over global config."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+        model_override={
+            "model": "session-model",
+            "provider": "session-provider",
+            "base_url": "https://session.example/v1",
+        },
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "old-model",
+        "billing_provider": "old-provider",
+    }
+
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "global-model",
+                "provider": "global-provider",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.run._resolve_gateway_model",
+        lambda config: config["model"]["default"],
+    )
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=("session-model", {"provider": "session-provider"})
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `session-model` (session-provider)" in result
+    runner._resolve_session_agent_runtime.assert_called_once()
 
 
 @pytest.mark.asyncio

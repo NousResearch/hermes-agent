@@ -1228,6 +1228,52 @@ def _resolve_named_custom_model_id(
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
 
+def _custom_endpoint_label(
+    base_url: str,
+    user_providers: Optional[dict] = None,
+    custom_providers: Optional[List[dict]] = None,
+) -> str:
+    """Resolve the display name of a user-configured endpoint by base URL.
+
+    Matches ``current_base_url`` against ``providers:`` and
+    ``custom_providers:`` entries. Returns the configured ``name`` when a
+    match is found, else the generic fallback "Custom endpoint".
+    """
+    norm = (base_url or "").strip().rstrip("/").lower()
+    if not norm:
+        return "Custom endpoint"
+
+    def _match(name: str, url: Any) -> Optional[str]:
+        url_norm = str(url or "").strip().rstrip("/").lower()
+        if url_norm and url_norm == norm:
+            return name or None
+        return None
+
+    if isinstance(user_providers, dict):
+        for ep_name, ep_cfg in user_providers.items():
+            if not isinstance(ep_cfg, dict):
+                continue
+            matched = _match(
+                str(ep_cfg.get("name") or ep_name),
+                ep_cfg.get("base_url") or ep_cfg.get("api") or ep_cfg.get("url"),
+            )
+            if matched:
+                return matched
+
+    if isinstance(custom_providers, list):
+        for cp in custom_providers:
+            if not isinstance(cp, dict):
+                continue
+            matched = _match(
+                str(cp.get("name") or cp.get("label") or ""),
+                cp.get("base_url") or cp.get("api") or cp.get("url"),
+            )
+            if matched:
+                return matched
+
+    return "Custom endpoint"
+
+
 def switch_model(
     raw_input: str,
     current_provider: str,
@@ -1588,7 +1634,14 @@ def switch_model(
     provider_changed = target_provider != current_provider
     provider_label = get_label(target_provider)
     if target_provider == "custom" and current_base_url:
-        provider_label = "Custom endpoint"
+        # A bare ``custom`` provider is an endpoint configured by the user.
+        # Show the endpoint's real name (e.g. "CommandCode") instead of the
+        # generic "Custom endpoint" so the confirmation is unambiguous.
+        provider_label = _custom_endpoint_label(
+            current_base_url,
+            user_providers,
+            custom_providers,
+        )
     if target_provider.startswith("custom:"):
         custom_pdef = resolve_provider_full(
             target_provider,

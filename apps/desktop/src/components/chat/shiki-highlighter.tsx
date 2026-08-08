@@ -4,6 +4,7 @@ import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
 import { type ComponentProps, type FC, lazy, Suspense, useMemo } from 'react'
 import type ShikiHighlighter from 'react-shiki'
 
+import { referenceRe, unquoteReferenceValue } from '@/components/assistant-ui/reference-kinds'
 import { CodeCard, CodeCardBody } from '@/components/chat/code-card'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -123,6 +124,26 @@ const PlainCode: FC<{ code: string }> = ({ code }) => {
   )
 }
 
+/** Match the composer's contract: only HTTP(S) URLs with a parsed host become URL references. */
+function isHttpUrlWithHost(value: string): boolean {
+  try {
+    const url = new URL(value)
+
+    return (url.protocol === 'http:' || url.protocol === 'https:') && Boolean(url.hostname)
+  } catch {
+    return false
+  }
+}
+
+/** Convert URL references back to literal URLs for code-block clipboard text. */
+export function copyableCodeText(code: string): string {
+  return code.replace(referenceRe(), (directive, kind: string, value: string) => {
+    const url = unquoteReferenceValue(value)
+
+    return kind === 'url' && isHttpUrlWithHost(url) ? url : directive
+  })
+}
+
 export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   components: { Pre },
   language,
@@ -152,7 +173,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
         iconClassName="size-2.5"
         label={t.assistant.tool.copyCode}
         showLabel={false}
-        text={trimmed}
+        text={() => copyableCodeText(trimmed)}
       />
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>

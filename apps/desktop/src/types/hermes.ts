@@ -1100,6 +1100,8 @@ export interface ComputerUseStatus {
 }
 
 export interface SessionSearchResult {
+  /** Archived rows remain searchable and must not be reintroduced as active. */
+  archived?: boolean
   /** Lineage root of the matched conversation. Stable across compression and
    *  used as the durable pin id; falls back to session_id when absent. */
   lineage_root?: string | null

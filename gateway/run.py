@@ -4138,6 +4138,19 @@ class TurnRunner:
                             adapter.name,
                         )
                         return True
+                    if "flood" in (getattr(result, "error", "") or "").lower() or (
+                        "retry after" in (getattr(result, "error", "") or "").lower()
+                    ):
+                        # Sibling of the flood branch in the main edit path:
+                        # flood control is transient, so keep can_edit and
+                        # leave the buffer intact for a later retry rather
+                        # than splitting into fresh sends. Those extra API
+                        # calls are what escalate the penalty (#76494).
+                        logger.info(
+                            "[%s] Overflow edit flood control, backing off",
+                            adapter.name,
+                        )
+                        return True
                     can_edit = False
                     # Fall back to the existing non-edit behavior below.
                     return False
@@ -4252,14 +4265,28 @@ class TurnRunner:
                         if "flood" in _err or "retry after" in _err:
                             # Flood control hit — backoff but keep editing.
                             # Only disable edits for non-recoverable errors.
+                            #
+                            # Do NOT fall through to the send() below. The
+                            # penalty is charged per API call against this
+                            # chat, so answering a flood-controlled edit with
+                            # a fresh send is the exact burst that makes
+                            # Telegram escalate the retry-after — a ~50s
+                            # back-off compounds into multi-thousand-second
+                            # bans while the agent keeps completing turns
+                            # nobody can see (#76494). Resetting
+                            # _last_edit_ts above is the whole remedy: the
+                            # throttle at the top of the loop waits out
+                            # _PROGRESS_EDIT_INTERVAL and the next tick edits
+                            # the same bubble. Same contract as the
+                            # `retryable` branch above.
                             logger.info(
                                 "[%s] Progress edit flood control, backing off",
                                 adapter.name,
                             )
                             _last_edit_ts = time.monotonic()
-                        else:
-                            can_edit = False
-                        _flood_result = await adapter.send(
+                            continue
+                        can_edit = False
+                        _fallback_result = await adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=msg,
                             reply_to=ctx._progress_reply_to,
@@ -4267,10 +4294,10 @@ class TurnRunner:
                         )
                         if (
                             ctx._cleanup_progress
-                            and getattr(_flood_result, "success", False)
-                            and getattr(_flood_result, "message_id", None)
+                            and getattr(_fallback_result, "success", False)
+                            and getattr(_fallback_result, "message_id", None)
                         ):
-                            ctx._cleanup_msg_ids.append(str(_flood_result.message_id))
+                            ctx._cleanup_msg_ids.append(str(_fallback_result.message_id))
                 else:
                     if can_edit:
                         # First tool: send all accumulated text as new message

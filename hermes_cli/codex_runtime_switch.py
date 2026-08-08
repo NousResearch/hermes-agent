@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 VALID_RUNTIMES = ("auto", "codex_app_server")
+DEFAULT_CODEX_BINARY = "codex"
 
 
 @dataclass
@@ -73,6 +74,24 @@ def get_current_runtime(config: dict) -> str:
     return "auto"
 
 
+def get_configured_codex_binary(config: dict) -> str:
+    """Return ``model.codex_bin`` or the backward-compatible default.
+
+    The value is intentionally kept as an argv element instead of being
+    shell-parsed. This supports absolute paths with spaces while preserving
+    the subprocess boundary used by the app-server transport.
+    """
+    if not isinstance(config, dict):
+        return DEFAULT_CODEX_BINARY
+    model_cfg = config.get("model") or {}
+    if not isinstance(model_cfg, dict):
+        return DEFAULT_CODEX_BINARY
+    value = model_cfg.get("codex_bin")
+    if not isinstance(value, str):
+        return DEFAULT_CODEX_BINARY
+    return value.strip() or DEFAULT_CODEX_BINARY
+
+
 def set_runtime(config: dict, new_value: str) -> str:
     """Mutate the config dict in place to persist the new runtime value.
     Returns the previous value for callers that want to report a delta."""
@@ -87,13 +106,15 @@ def set_runtime(config: dict, new_value: str) -> str:
     return old
 
 
-def check_codex_binary_ok() -> tuple[bool, Optional[str]]:
+def check_codex_binary_ok(
+    codex_bin: str = DEFAULT_CODEX_BINARY,
+) -> tuple[bool, Optional[str]]:
     """Best-effort verification that codex CLI is installed at acceptable
     version. Returns (ok, version_or_message)."""
     try:
         from agent.transports.codex_app_server import check_codex_binary
 
-        return check_codex_binary()
+        return check_codex_binary(codex_bin=codex_bin)
     except Exception as exc:  # pragma: no cover
         return False, f"codex check failed: {exc}"
 
@@ -115,6 +136,7 @@ def apply(
     Returns: CodexRuntimeStatus describing the outcome.
     """
     current = get_current_runtime(config)
+    codex_bin = get_configured_codex_binary(config)
 
     # Cache the codex binary check for this apply() call. Subprocess spawn
     # is cheap (~50ms for `codex --version`), but we'd otherwise call it up
@@ -125,7 +147,7 @@ def apply(
     def _check_binary_cached() -> tuple[bool, Optional[str]]:
         nonlocal _binary_check
         if _binary_check is None:
-            _binary_check = check_codex_binary_ok()
+            _binary_check = check_codex_binary_ok(codex_bin)
         return _binary_check
 
     # Read-only call: just report state

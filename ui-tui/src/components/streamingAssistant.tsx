@@ -18,6 +18,7 @@ interface LiveBlock {
   isStreaming?: boolean
   key: string
   msg: Msg
+  streamingIsFull?: boolean
   tools?: ActiveTool[]
 }
 
@@ -34,6 +35,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   const streamSegments = useTurnSelector(state => state.streamSegments)
   const streamPendingTools = useTurnSelector(state => state.streamPendingTools)
   const streaming = useTurnSelector(state => state.streaming)
+  const streamingIsFull = useTurnSelector(state => state.streamingIsFull)
   const activeTools = useTurnSelector(state => state.tools)
   const showStreamingArea = Boolean(streaming)
 
@@ -56,7 +58,8 @@ export const StreamingAssistant = memo(function StreamingAssistant({
     blocks.push({
       isStreaming: true,
       key: 'streaming',
-      msg: { role: 'assistant', text: streaming, ...(streamPendingTools.length && { tools: streamPendingTools }) }
+      msg: { role: 'assistant', text: streaming, ...(streamPendingTools.length && { tools: streamPendingTools }) },
+      streamingIsFull
     })
   } else if (streamPendingTools.length) {
     blocks.push({ key: 'pending-tools', msg: { kind: 'trail', role: 'system', text: '', tools: streamPendingTools } })
@@ -79,6 +82,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
             msg={block.msg}
             prev={prev}
             sections={sections}
+            streamingIsFull={block.streamingIsFull}
             t={ui.theme}
             {...(block.tools ? { tools: block.tools } : {})}
           />

@@ -14,6 +14,7 @@ const buildTurnState = (): TurnState => ({
   streamPendingTools: [],
   streamSegments: [],
   streaming: '',
+  streamingIsFull: false,
   subagents: [],
   todoCollapsed: false,
   todos: [],
@@ -76,6 +77,7 @@ export interface TurnState {
   streamPendingTools: string[]
   streamSegments: Msg[]
   streaming: string
+  streamingIsFull: boolean
   subagents: SubagentProgress[]
   todoCollapsed: boolean
   todos: TodoItem[]

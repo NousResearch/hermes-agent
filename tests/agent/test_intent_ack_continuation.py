@@ -14,6 +14,8 @@ gates relate, not snapshots of the marker lists.
 from types import SimpleNamespace
 from typing import Union
 
+import pytest
+
 from agent.agent_runtime_helpers import (
     intent_ack_continuation_enabled,
     intent_ack_continuation_mode,
@@ -118,6 +120,119 @@ def test_all_path_drops_workspace_requirement():
 
 # ── detector: guardrails that hold regardless of workspace ───────────────────
 
+
+# ── detector: progress narration patterns (issue #74604) ────────────────────
+
+NARRATION_USER = "What is the full analysis of the dataset?"
+NARRATION_ACK = "I am now compiling the complete answer."
+
+
+def test_progress_narration_detected_as_intermediate_ack():
+    """Issue #74604: 'I am now compiling the complete answer.' is a progress
+    narration that should trigger a continuation, not end the turn. The
+    detector must catch 'i am now' + 'compiling' as a future-ack + action.
+    """
+    a = _agent(True, "chat_completions")
+    msgs = [{"role": "user", "content": NARRATION_USER}]
+    assert looks_like_codex_intermediate_ack(
+        a, NARRATION_USER, NARRATION_ACK, msgs, require_workspace=False
+    )
+
+
+def test_progress_narration_with_generating():
+    """'I'm currently generating the report.' should also be caught."""
+    a = _agent(True, "chat_completions")
+    msgs = [{"role": "user", "content": "Create the report"}]
+    assert looks_like_codex_intermediate_ack(
+        a, "Create the report",
+        "I'm currently generating the report.",
+        msgs, require_workspace=False,
+    )
+
+# ── detector: concise final answers remain terminal (#74604) ───────────────
+
+CONCISE_ANSWERS = [
+    "The server is healthy. All services are running normally.",
+    "42",
+    "Done. The file has been updated.",
+    "Based on the analysis, the root cause is a missing index on the users table.",
+]
+
+
+@pytest.mark.parametrize("answer", CONCISE_ANSWERS)
+def test_concise_final_answer_not_detected_as_intermediate_ack(answer):
+    """A valid concise final answer with finish_reason=stop must NOT trigger
+    a continuation — it should remain terminal. This is the guard against
+    over-filtering that GottZ's triage on #76013 asked for.
+    """
+    a = _agent(True, "chat_completions")
+    msgs = [{"role": "user", "content": "What is the answer?"}]
+    assert not looks_like_codex_intermediate_ack(
+        a, "What is the answer?", answer, msgs, require_workspace=False
+    )
+
+
+def test_finish_reason_stop_narration_triggers_continuation():
+    """Issue #74604: a progress narration with finish_reason=stop (no tool
+    calls) must trigger a continuation, not end the turn. This simulates the
+    conversation loop's decision at agent/conversation_loop.py:6713 — when
+    finish_reason is 'stop', the loop checks _looks_like_codex_intermediate_ack
+    and continues if True.
+
+    This test exercises the detector with the exact pattern from the bug
+    report: the model narrates progress ("I am now compiling the complete
+    answer.") and stops without calling any tool. The detector must return
+    True so the loop continues the turn.
+    """
+    a = _agent(True, "chat_completions")
+    user_msg = "What is the full analysis of the dataset?"
+    narration = "I am now compiling the complete answer."
+    msgs = [{"role": "user", "content": user_msg}]
+
+    # Simulate the loop's decision: finish_reason=stop, no tool_calls,
+    # check if the response looks like an intermediate ack.
+    finish_reason = "stop"
+    has_tool_calls = False
+
+    should_continue = (
+        finish_reason == "stop"
+        and not has_tool_calls
+        and looks_like_codex_intermediate_ack(
+            a, user_msg, narration, msgs, require_workspace=False
+        )
+    )
+
+    assert should_continue, (
+        "Progress narration with finish_reason=stop should trigger continuation, "
+        "not end the turn"
+    )
+
+
+def test_finish_reason_stop_concise_answer_remains_terminal():
+    """The complement of the above: a concise final answer with
+    finish_reason=stop must NOT trigger a continuation. The loop should
+    break and treat it as the final answer.
+    """
+    a = _agent(True, "chat_completions")
+    user_msg = "What is the answer?"
+    answer = "The answer is 42."
+    msgs = [{"role": "user", "content": user_msg}]
+
+    finish_reason = "stop"
+    has_tool_calls = False
+
+    should_continue = (
+        finish_reason == "stop"
+        and not has_tool_calls
+        and looks_like_codex_intermediate_ack(
+            a, user_msg, answer, msgs, require_workspace=False
+        )
+    )
+
+    assert not should_continue, (
+        "A concise final answer with finish_reason=stop should remain terminal, "
+        "not trigger a continuation"
+    )
 
 
 

@@ -847,6 +847,26 @@ DANGEROUS_PATTERNS = [
     # directly against the service label (commonly `ai.hermes.gateway`).
     # Catch the operations that stop, restart, or unload it.
     (r'\blaunchctl\s+(stop|kickstart|bootout|unload|kill|disable|remove)\b.*\b(hermes|ai\.hermes)\b', "stop/restart hermes launchd service (kills running agents)"),
+    # Windows self-termination protection: taskkill, Stop-Process,
+    # Stop/Restart-Service, tskill, wmic, CIM, net stop, sc/sc.exe.
+    # These are the Windows equivalents of pkill/killall and can kill the
+    # gateway's own process (hermes.exe) just as easily.
+    # The image-name match tolerates optional quotes (`/IM "hermes.exe"`)
+    # and does not require /F — a graceful taskkill still terminates the
+    # gateway.  The sc match tolerates an optional `\\machine` remote
+    # target (`sc \\host stop hermes`).
+    (r'\btaskkill\b.*\/im\s+["\x27]?hermes', "Windows taskkill targeting hermes.exe (self-termination)"),
+    (r'\btaskkill\b.*\/im\s+["\x27]?python.*hermes', "Windows taskkill targeting hermes python process (self-termination)"),
+    (r'\bStop-Process\b.*-?Name\s+["\x27]?\s*hermes', "PowerShell Stop-Process targeting hermes (self-termination)"),
+    (r'\bStop-Process\b.*-?Id\s+.*hermes', "PowerShell Stop-Process via hermes PID (self-termination)"),
+    (r'\btskill\b\s+hermes', "Windows tskill targeting hermes (self-termination)"),
+    (r'\bwmic\s+process\b.*where\s+.*name\s*=\s*["\x27]?hermes', "WMIC delete hermes process (self-termination)"),
+    (r'\bGet-Process\b.*hermes.*\|\s*Stop-Process\b', "PowerShell Get-Process hermes piped to Stop-Process (self-termination)"),
+    (r'\bsc(?:\.exe)?\s+(?:\\?\S+\s+)?stop\b\s+hermes', "Windows sc/sc.exe stop hermes service (self-termination)"),
+    (r'\bnet\s+stop\b\s+["\x27]?hermes', "Windows net stop hermes service (self-termination)"),
+    (r'\b(?:Stop-Service|Restart-Service)\b.*-?Name\s+["\x27]?\s*hermes', "PowerShell Stop/Restart-Service targeting hermes (self-termination)"),
+    (r'\bGet-Service\b.*hermes.*\|\s*(?:Stop-Service|Restart-Service)\b', "PowerShell Get-Service hermes piped to Stop/Restart-Service (self-termination)"),
+    (r'\b(?:Get-CimInstance|Invoke-CimMethod)\b.*hermes.*\bDelete\b', "CIM delete hermes process/service (self-termination)"),
     # File copy/move/edit into sensitive system paths (/etc/ and macOS
     # /private/etc/ mirror).
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),

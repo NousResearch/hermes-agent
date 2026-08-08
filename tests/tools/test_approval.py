@@ -702,6 +702,238 @@ class TestGatewayProtection:
         assert dangerous is False
 
 
+class TestWindowsSelfTerminationGuards:
+    """Windows equivalents of the pkill/killall self-termination guards.
+
+    The Unix guards above protect ``pkill hermes`` / ``killall gateway``;
+    these tests cover the Windows process-control spellings (taskkill,
+    Stop-Process, tskill, wmic, Get-Process pipelines, sc/sc.exe) that can
+    kill the gateway's own hermes.exe process just as easily.  Every
+    accepted spelling gets a positive case; every matcher gets an
+    unrelated-process negative case.
+    """
+
+    # ── taskkill ──────────────────────────────────────────────────
+
+    def test_taskkill_force_hermes_detected(self):
+        cmd = "taskkill /F /IM hermes.exe"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_taskkill_quoted_image_name_detected(self):
+        """/IM "hermes.exe" with a quoted image name must be caught."""
+        cmd = 'taskkill /f /im "hermes.exe"'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_taskkill_graceful_hermes_detected(self):
+        """taskkill without /F still terminates the gateway."""
+        cmd = "taskkill /IM hermes.exe"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_taskkill_python_with_hermes_filter_detected(self):
+        cmd = 'taskkill /f /im python.exe /fi "WINDOWTITLE eq hermes*"'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_taskkill_unrelated_not_flagged(self):
+        cmd = "taskkill /f /im nginx.exe"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    # ── PowerShell Stop-Process ───────────────────────────────────
+
+    def test_stop_process_name_hermes_detected(self):
+        cmd = "Stop-Process -Name hermes"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_stop_process_quoted_name_detected(self):
+        cmd = 'Stop-Process -Name "hermes" -Force'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_stop_process_pid_from_hermes_pidfile_detected(self):
+        cmd = (
+            "Stop-Process -Id"
+            " (Get-Content $env:LOCALAPPDATA\\hermes\\gateway.pid)"
+        )
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_stop_process_unrelated_not_flagged(self):
+        cmd = "Stop-Process -Name notepad"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    # ── tskill (legacy Windows) ───────────────────────────────────
+
+    def test_tskill_hermes_detected(self):
+        cmd = "tskill hermes"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_tskill_unrelated_not_flagged(self):
+        cmd = "tskill chrome"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    # ── wmic ──────────────────────────────────────────────────────
+
+    def test_wmic_delete_hermes_detected(self):
+        cmd = 'wmic process where name="hermes.exe" delete'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_wmic_call_terminate_quoted_detected(self):
+        cmd = """wmic process where "name='hermes.exe'" call terminate"""
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_wmic_unrelated_not_flagged(self):
+        cmd = 'wmic process where name="nginx.exe" delete'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    # ── Get-Process pipeline ──────────────────────────────────────
+
+    def test_get_process_piped_to_stop_process_detected(self):
+        cmd = "Get-Process hermes | Stop-Process -Force"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    # ── sc / sc.exe service control ───────────────────────────────
+
+    def test_sc_stop_hermes_detected(self):
+        cmd = "sc stop hermes"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_sc_exe_stop_hermes_detected(self):
+        """Explicit sc.exe invocation must be caught (review regression)."""
+        cmd = "sc.exe stop hermes"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_sc_stop_unrelated_not_flagged(self):
+        cmd = "sc stop nginx"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_sc_exe_stop_unrelated_not_flagged(self):
+        cmd = "sc.exe stop nginx"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_sc_remote_stop_hermes_detected(self):
+        """sc \\machine stop hermes (remote target syntax) must be caught."""
+        cmd = r"sc \\localhost stop hermes"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_sc_remote_stop_unrelated_not_flagged(self):
+        cmd = r"sc \\server01 stop nginx"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    # ── net stop ──────────────────────────────────────────────────
+
+    def test_net_stop_hermes_detected(self):
+        cmd = "net stop hermes"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_net_stop_quoted_hermes_detected(self):
+        cmd = 'net stop "hermes gateway"'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_net_stop_unrelated_not_flagged(self):
+        cmd = "net stop nginx"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_net_start_hermes_not_flagged(self):
+        """Starting (not stopping) the service is safe."""
+        cmd = "net start hermes"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    # ── PowerShell service cmdlets ────────────────────────────────
+
+    def test_stop_service_name_hermes_detected(self):
+        cmd = "Stop-Service -Name hermes -Force"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_restart_service_quoted_hermes_detected(self):
+        """Restart-Service stops the gateway too."""
+        cmd = 'Restart-Service -Name "hermes"'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_get_service_piped_to_stop_service_detected(self):
+        cmd = "Get-Service hermes | Stop-Service -Force"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_get_service_piped_to_restart_service_detected(self):
+        cmd = "Get-Service hermes | Restart-Service"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_stop_service_unrelated_not_flagged(self):
+        cmd = "Stop-Service -Name nginx"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_get_service_hermes_read_only_not_flagged(self):
+        """Querying the service without stopping it is safe."""
+        cmd = "Get-Service hermes | Select-Object Name, Status"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    # ── CIM (modern WMIC replacement) ─────────────────────────────
+
+    def test_cim_delete_hermes_detected(self):
+        cmd = (
+            'Get-CimInstance Win32_Process -Filter "Name=\'hermes.exe\'" |'
+            " Invoke-CimMethod -MethodName Delete"
+        )
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_cim_delete_unrelated_not_flagged(self):
+        cmd = (
+            'Get-CimInstance Win32_Process -Filter "Name=\'nginx.exe\'" |'
+            " Invoke-CimMethod -MethodName Delete"
+        )
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
 class TestNormalizationBypass:
     """Obfuscation techniques must not bypass dangerous command detection."""
 

@@ -12575,14 +12575,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             # Strip markdown and non-speech content for cleaner TTS via the
             # shared cleaner (tools/tts_text_normalize): markdown, emoji,
-            # <think> blocks, verifier footer, units, newline flattening.
+            # ⋗ blocks, verifier footer, units, newline flattening.
+            # The TTS tool owns provider request limits and long-form chunking.
             try:
                 from tools.tts_text_normalize import prepare_spoken_text
-                tts_text = prepare_spoken_text(text, max_chars=4000)
+                tts_text = prepare_spoken_text(text, max_chars=None)
             except Exception:
                 # Legacy fallback pipeline — keep voice replies best-effort.
-                tts_text = text[:4000] if len(text) > 4000 else text
-                tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
+                tts_text = re.sub(r'```[\s\S]*?```', ' ', text)   # fenced code blocks
                 tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
                 tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
                 tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
@@ -12611,26 +12611,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 tts_result = {}
 
-            # Prefer the requested MP3 when the provider produced it. This
-            # preserves reliable local playback while still supporting
-            # providers that write to and return a different path.
-            audio_path = mp3_path
-            if not os.path.isfile(mp3_path) or os.path.getsize(mp3_path) == 0:
-                audio_path = tts_result.get("file_path") or mp3_path
-
-            if os.path.isfile(audio_path) and os.path.getsize(audio_path) > 0:
-                play_audio_file(audio_path)
-                # Clean up
-                try:
-                    cleanup_paths = {audio_path, mp3_path}
-                    for path in list(cleanup_paths):
-                        ogg_path = path.rsplit(".", 1)[0] + ".ogg"
-                        cleanup_paths.add(ogg_path)
-                    for path in cleanup_paths:
-                        if os.path.isfile(path):
-                            os.unlink(path)
-                except OSError:
-                    pass
+            # The tool result is authoritative — it may return multiple files
+            # for long-form chunked output. Play each in order.
+            play_paths = tts_result.get("file_paths") or [
+                tts_result.get("file_path") or mp3_path
+            ]
+            for play_path in play_paths if tts_result.get("success") else []:
+                if os.path.isfile(play_path) and os.path.getsize(play_path) > 0:
+                    play_audio_file(play_path)
+            # Clean up all generated files (play_paths + mp3_path + ogg variants)
+            cleanup_paths = set(play_paths + [mp3_path, mp3_path.rsplit(".", 1)[0] + ".ogg"])
+            for path in cleanup_paths:
+                if os.path.isfile(path):
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
         except Exception as e:
             logger.warning("Voice TTS playback failed: %s", e)
             _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")

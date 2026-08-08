@@ -4202,19 +4202,22 @@ class BasePlatformAdapter(ABC):
     def prepare_tts_text(self, text: str) -> str:
         """Prepare a spoken script for TTS.
 
-        Auto-TTS should not feed raw chat Markdown, ``<think>`` reasoning
+        Auto-TTS should not feed raw chat Markdown, ``⋗`` reasoning
         blocks, or compact symbols to the speech provider.  It should receive
         a transcript-like script: reasoning blocks removed, headings and
         bullets flattened into sentence pauses, and units like ``°C``
         expanded to words such as ``degrees Celsius``.
+
+        Provider-safe chunking and platform delivery limits are enforced
+        by the TTS tool.
         """
         try:
             from tools.tts_text_normalize import prepare_spoken_text
-            return prepare_spoken_text(text, max_chars=4000)
+            return prepare_spoken_text(text, max_chars=None)
         except Exception:
             # Keep auto-TTS best-effort if the normalizer ever fails.
             text = re.sub(r'<think[\s>].*?</think>', ' ', text, flags=re.DOTALL)
-            return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+            return re.sub(r'[*_`#\[\]()]', '', text).strip()
 
     async def play_tts(
         self,
@@ -6071,6 +6074,7 @@ class BasePlatformAdapter(ABC):
                 # Skip when streaming TTS already delivered audio for this turn
                 # (#60671) — the gateway streaming-TTS consumer sets the flag.
                 _tts_path = None
+                _tts_paths: List[str] = []
                 _tts_requested_path = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
@@ -6104,14 +6108,21 @@ class BasePlatformAdapter(ABC):
                             )
                             tts_data = _json.loads(tts_result_str)
                             if tts_data.get("success", True):
-                                _tts_path = tts_data.get("file_path") or _tts_requested_path
+                                raw_tts_paths = tts_data.get("file_paths") or [
+                                    tts_data.get("file_path")
+                                ]
+                                _tts_paths = [
+                                    str(path) for path in raw_tts_paths
+                                    if path and Path(path).exists()
+                                ]
+                                _tts_path = _tts_paths[0] if _tts_paths else None
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
-                _tts_cleanup_paths = {_tts_requested_path, _tts_path} - {None}
-                if _tts_path and Path(_tts_path).exists():
+                _tts_cleanup_paths = {_tts_requested_path, *_tts_paths} - {None}
+                for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         # Caption eligibility and payload stay on the ORIGINAL
                         # reply text. The spoken script is for synthesis only:
@@ -6119,9 +6130,11 @@ class BasePlatformAdapter(ABC):
                         # 1024-char caption limit, and captioning that spoken
                         # form would suppress the full formatted reply the
                         # user is meant to receive as a separate message.
+                        # Caption only on the first file.
                         telegram_tts_caption = None
                         if (
-                            self.platform == Platform.TELEGRAM
+                            _tts_index == 0
+                            and self.platform == Platform.TELEGRAM
                             and text_content
                             and text_content[:1024] == text_content
                         ):
@@ -6132,16 +6145,20 @@ class BasePlatformAdapter(ABC):
                             caption=telegram_tts_caption,
                             metadata=_final_thread_metadata,
                         )
+                        _record_delivery(tts_result)
                         _tts_caption_delivered = bool(
-                            telegram_tts_caption and getattr(tts_result, "success", False)
+                            _tts_caption_delivered
+                            or (
+                                telegram_tts_caption
+                                and getattr(tts_result, "success", False)
+                            )
                         )
                     finally:
-                        for _cleanup_path in _tts_cleanup_paths:
-                            try:
-                                os.remove(_cleanup_path)
-                            except OSError:
-                                pass
-                elif _tts_cleanup_paths:
+                        try:
+                            os.remove(_tts_path)
+                        except OSError:
+                            pass
+                if not _tts_paths and _tts_cleanup_paths:
                     for _cleanup_path in _tts_cleanup_paths:
                         try:
                             os.remove(_cleanup_path)

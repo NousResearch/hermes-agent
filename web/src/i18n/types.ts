@@ -820,6 +820,9 @@ export interface Translations {
     confirmArchive: string;
     confirmBlocked: string;
     confirmScheduled?: string;
+    confirmDoneMany?: string;
+    confirmArchiveMany?: string;
+    confirmBlockedMany?: string;
     completionSummary: string;
     completionSummaryRequired: string;
     triagePlaceholder: string;
@@ -853,5 +856,9 @@ export interface Translations {
     saving?: string;
     commentHint?: string;
     commentHintTitle?: string;
+    trash?: {
+      confirmTitle: string;
+      confirmManyTitle: string;
+    };
   };
 }

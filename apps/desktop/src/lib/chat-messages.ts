@@ -73,6 +73,7 @@ export type GatewayEventPayload = {
   request_id?: string
   question?: string
   choices?: string[] | null
+  multi_select?: boolean
   // approval.request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string

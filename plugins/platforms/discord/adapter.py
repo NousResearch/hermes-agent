@@ -33,6 +33,7 @@ from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
 )
 from agent.display import ToolPreview
+from hermes_cli.model_switch import format_model_picker_button_label
 
 logger = logging.getLogger(__name__)
 
@@ -8838,7 +8839,10 @@ def _define_discord_view_classes() -> None:
             models = provider.get("models", [])
             options = []
             for model_id in models[:25]:
-                short = model_id.split("/")[-1] if "/" in model_id else model_id
+                short = format_model_picker_button_label(
+                    model_id,
+                    max_len=_DISCORD_SELECT_FIELD_LIMIT,
+                )
                 options.append(
                     discord.SelectOption(
                         label=_truncate_discord_component_text(

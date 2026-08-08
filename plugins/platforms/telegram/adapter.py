@@ -22,6 +22,8 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
+from hermes_cli.model_switch import format_model_picker_button_label
+
 logger = logging.getLogger(__name__)
 
 
@@ -6014,9 +6016,7 @@ class TelegramAdapter(BasePlatformAdapter):
         buttons: list = []
         for i, model_id in enumerate(page_models):
             abs_idx = start + i
-            short = model_id.split("/")[-1] if "/" in model_id else model_id
-            if len(short) > 38:
-                short = short[:35] + "..."
+            short = format_model_picker_button_label(model_id, max_len=38)
             buttons.append(
                 InlineKeyboardButton(short, callback_data=f"mm:{abs_idx}")
             )

@@ -269,6 +269,32 @@ def format_model_for_display(model_name: str) -> str:
     return model_name
 
 
+def format_model_picker_button_label(model_name: str, max_len: int = 38) -> str:
+    """Return a short picker-button label that keeps upstream route prefixes.
+
+    OpenCodex-style catalogs expose the same bare model under many upstream
+    paths (``opencode-go/glm-5.2``, ``cursor/glm-5.2``, …). Telegram/Discord
+    buttons used to show only the final path segment, so those entries looked
+    identical. Keep ``<first>/<last>`` so users can tell routes apart, then
+    truncate to *max_len* for messaging UI limits.
+
+    DISPLAY-ONLY — never send this string on the wire.
+    """
+    if not model_name:
+        return model_name
+    # Keep first + last segments so routes like opencode-go/x vs cursor/x differ.
+    parts = [part for part in str(model_name).split("/") if part]
+    if len(parts) >= 2:
+        short = f"{parts[0]}/{parts[-1]}"
+    else:
+        short = parts[0] if parts else str(model_name)
+    if max_len > 0 and len(short) > max_len:
+        if max_len <= 3:
+            return short[:max_len]
+        return short[: max_len - 3] + "..."
+    return short
+
+
 # ---------------------------------------------------------------------------
 def is_nous_hermes_non_agentic(model_name: str) -> bool:
     """Return True if *model_name* is a real Nous Hermes 3/4 chat model.

@@ -864,7 +864,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         if sys.platform == "win32":
             try:
                 _popen_kwargs["creationflags"] = windows_detach_flags()
-                subprocess.Popen(cmd, **_popen_kwargs)
+                _replacement = subprocess.Popen(cmd, **_popen_kwargs)
             except OSError:
                 # CREATE_BREAKAWAY_FROM_JOB can be rejected with
                 # ERROR_ACCESS_DENIED when the parent's job object refuses
@@ -872,10 +872,26 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
                 # alone are enough in most setups. Mirrors the canonical
                 # fallback in gateway_windows._spawn_detached.
                 _popen_kwargs["creationflags"] = windows_detach_flags_without_breakaway()
-                subprocess.Popen(cmd, **_popen_kwargs)
+                _replacement = subprocess.Popen(cmd, **_popen_kwargs)
         else:
             _popen_kwargs["start_new_session"] = True
-            subprocess.Popen(cmd, **_popen_kwargs)
+            _replacement = subprocess.Popen(cmd, **_popen_kwargs)
+
+        # Stay alive as the replacement's parent for its whole lifetime.
+        #
+        # Without this the watcher returns from Popen and exits immediately,
+        # so the gateway it just started loses its parent and is reparented
+        # to PID 1.  On a systemd-supervised host that orphan sits OUTSIDE
+        # the unit's cgroup: systemd never tracks it, never stops it, and
+        # never reaps it, so it races the supervised gateway for the
+        # duplicate-instance guard and keeps holding platform sessions (in
+        # #73480, Telegram's getUpdates long poll) open indefinitely.
+        #
+        # Blocking in wait() keeps the replacement inside a live waitpid
+        # chain: it always has a real parent, its exit status is collected
+        # rather than left as a zombie, and the whole restart chain
+        # terminates with the gateway instead of outliving it.
+        _replacement.wait()
         """
     ).strip().format(
         respawn_cwd_literal=respawn_cwd_literal,

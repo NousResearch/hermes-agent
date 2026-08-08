@@ -12,7 +12,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { $gateway, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
-import { setConnection } from '@/store/session'
+import { setConnection, setCurrentCwd, getRememberedWorkspaceCwd } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -247,6 +247,7 @@ async function syncConnectionToActiveProfile(profile: string): Promise<void> {
 
   try {
     setConnection(await getConnection(profile))
+    setCurrentCwd(getRememberedWorkspaceCwd())
   } catch {
     // Leave the prior connection in place; boot/reconnect resyncs it later.
   }

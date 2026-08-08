@@ -7017,47 +7017,28 @@ def run_conversation(
                     )
                     if _truly_empty and (not _has_structured or _prefill_exhausted) and agent._empty_content_retries < 3:
                         agent._empty_content_retries += 1
-                        wait_time = jittered_backoff(
+                        # Backoff before retry — empty responses are often
+                        # transient provider hiccups (e.g. z.ai GLM-5-Turbo
+                        # intermittently returns empty on 1st attempt).
+                        # Immediate retries hit the same transient state;
+                        # a short jittered pause lets the provider recover.
+                        _empty_wait = jittered_backoff(
                             agent._empty_content_retries,
-                            base_delay=5.0,
-                            max_delay=60.0,
+                            base_delay=1.0,
+                            max_delay=5.0,
                         )
                         logger.warning(
                             "Empty response (no content or reasoning) — "
                             "retry %d/3 in %.1fs (model=%s)",
-                            agent._empty_content_retries, wait_time, agent.model,
+                            agent._empty_content_retries, _empty_wait,
+                            agent.model,
                         )
                         agent._buffer_status(
                             f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3) in {wait_time:.0f}s"
+                            f"in {_empty_wait:.1f}s "
+                            f"({agent._empty_content_retries}/3)"
                         )
-                        # Sleep in small increments to stay responsive to interrupts
-                        sleep_end = time.time() + wait_time
-                        _backoff_touch_counter = 0
-                        while time.time() < sleep_end:
-                            if agent._interrupt_requested:
-                                agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during empty-response retry wait, aborting.", force=True)
-                                _interrupt_text = (
-                                    f"Operation interrupted: retrying empty response from model "
-                                    f"(retry {agent._empty_content_retries}/3)."
-                                )
-                                close_interrupted_tool_sequence(messages, _interrupt_text)
-                                agent._persist_session(messages, conversation_history)
-                                agent.clear_interrupt()
-                                return {
-                                    "final_response": _interrupt_text,
-                                    "messages": messages,
-                                    "api_calls": api_call_count,
-                                    "completed": False,
-                                    "interrupted": True,
-                                }
-                            time.sleep(0.2)
-                            _backoff_touch_counter += 1
-                            if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
-                                agent._touch_activity(
-                                    f"empty response retry backoff ({agent._empty_content_retries}/3), "
-                                    f"{int(sleep_end - time.time())}s remaining"
-                                )
+                        time.sleep(_empty_wait)
                         continue
 
                     # ── Exhausted retries — try fallback provider ──

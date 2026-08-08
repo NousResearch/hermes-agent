@@ -166,6 +166,125 @@ class TestDoctorToolAvailabilityOverrides:
         assert unavailable == [kanban_entry]
 
 
+class TestDoctorWebProviderReadiness:
+    """Issue #78412: web must not get a green check when its selected provider is not ready."""
+
+    def _patch_web_tools(self, monkeypatch, cfg, availability=None):
+        """Stub tools.web_tools resolution so tests avoid real env/config reads."""
+        import tools.web_tools as wt
+
+        availability = availability or {}
+        monkeypatch.setattr(wt, "_load_web_config", lambda: cfg)
+        monkeypatch.setattr(
+            wt, "_get_search_backend",
+            lambda: (cfg.get("search_backend") or "").strip() or (cfg.get("backend") or "").strip() or "firecrawl",
+        )
+        monkeypatch.setattr(
+            wt, "_get_extract_backend",
+            lambda: (cfg.get("extract_backend") or "").strip() or (cfg.get("backend") or "").strip() or "firecrawl",
+        )
+        monkeypatch.setattr(wt, "_is_backend_available", lambda backend: availability.get(backend, False))
+        monkeypatch.setattr(doctor, "_enabled_cli_toolsets_for_doctor", lambda: {"web"})
+
+    def test_explicit_provider_without_credentials_warns(self, monkeypatch):
+        cfg = {"backend": "firecrawl", "search_backend": "", "extract_backend": ""}
+        self._patch_web_tools(monkeypatch, cfg, availability={})
+
+        status = doctor._doctor_web_capability_status()
+
+        assert status == [
+            ("web search", "(firecrawl selected; provider not configured)", False),
+            ("web extract", "(firecrawl selected; provider not configured)", False),
+        ]
+
+    def test_configured_provider_is_green(self, monkeypatch):
+        cfg = {"backend": "firecrawl", "search_backend": "", "extract_backend": ""}
+        self._patch_web_tools(monkeypatch, cfg, availability={"firecrawl": True})
+
+        status = doctor._doctor_web_capability_status()
+
+        assert status == [
+            ("web search", "(firecrawl)", True),
+            ("web extract", "(firecrawl)", True),
+        ]
+
+    def test_mixed_search_ready_extract_unconfigured(self, monkeypatch):
+        cfg = {"backend": "", "search_backend": "ddgs", "extract_backend": "firecrawl"}
+        self._patch_web_tools(monkeypatch, cfg, availability={"ddgs": True})
+
+        status = doctor._doctor_web_capability_status()
+
+        assert status == [
+            ("web search", "(ddgs)", True),
+            ("web extract", "(firecrawl selected; provider not configured)", False),
+        ]
+
+    def test_ddgs_selected_but_package_absent_warns(self, monkeypatch):
+        cfg = {"backend": "", "search_backend": "ddgs", "extract_backend": ""}
+        self._patch_web_tools(monkeypatch, cfg, availability={})
+
+        status = doctor._doctor_web_capability_status()
+
+        assert status == [
+            ("web search", "(ddgs selected; provider not configured)", False),
+        ]
+
+    def test_no_explicit_backend_keeps_toolset_line(self, monkeypatch):
+        cfg = {"backend": "", "search_backend": "", "extract_backend": ""}
+        self._patch_web_tools(monkeypatch, cfg, availability={"tavily": True})
+
+        assert doctor._doctor_web_capability_status() is None
+
+    def test_disabled_web_gets_no_provider_warning(self, monkeypatch):
+        cfg = {"backend": "firecrawl", "search_backend": "", "extract_backend": ""}
+        self._patch_web_tools(monkeypatch, cfg, availability={})
+        monkeypatch.setattr(doctor, "_enabled_cli_toolsets_for_doctor", lambda: {"terminal"})
+
+        assert doctor._doctor_web_capability_status() is None
+
+    def test_doctor_output_warns_instead_of_green_check(self, monkeypatch, tmp_path):
+        """End-to-end: Tool Availability shows a warning, never '✓ web'."""
+        import tools.web_tools as wt
+
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("web:\n  backend: firecrawl\n", encoding="utf-8")
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        (tmp_path / "project").mkdir(exist_ok=True)
+
+        monkeypatch.setattr(wt, "_load_web_config", lambda: {"backend": "firecrawl", "search_backend": "", "extract_backend": ""})
+        monkeypatch.setattr(wt, "_get_search_backend", lambda: "firecrawl")
+        monkeypatch.setattr(wt, "_get_extract_backend", lambda: "firecrawl")
+        monkeypatch.setattr(wt, "_is_backend_available", lambda backend: False)
+        monkeypatch.setattr(doctor, "_enabled_cli_toolsets_for_doctor", lambda: {"web"})
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (["web"], []),
+            TOOLSET_REQUIREMENTS={"web": {"name": "web"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+
+        out = buf.getvalue()
+        assert "⚠ web search (firecrawl selected; provider not configured)" in out
+        assert "⚠ web extract (firecrawl selected; provider not configured)" in out
+        assert "✓ web\n" not in out
+        assert "✓ web search" not in out
+
+
 
 
 class TestHonchoDoctorConfigDetection:

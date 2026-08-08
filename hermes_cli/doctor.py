@@ -260,6 +260,63 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
+def _doctor_web_capability_status():
+    """Per-capability readiness for the web toolset (issue #78412).
+
+    The web registry gate (``check_web_api_key``) treats the *explicitly
+    selected* provider as available even when it cannot initialize — that is
+    intentional so dispatchers can surface a precise "X_API_KEY is not set"
+    error instead of silently rerouting — but it made doctor print a green
+    ``✓ web`` while the first ``web_search`` call fails deterministically.
+
+    Returns a list of ``(label, detail, ok)`` tuples covering ``web search``
+    and ``web extract`` when the user has explicitly selected a backend
+    (``web.search_backend`` / ``web.extract_backend`` / ``web.backend``), or
+    ``None`` when nothing is explicitly configured (doctor then keeps the
+    plain toolset-level line) or when the web toolset is intentionally
+    disabled (no actionable warnings for disabled toolsets).
+
+    Resolution mirrors the runtime dispatchers
+    (``tools.web_tools._get_search_backend`` / ``_get_extract_backend``) and
+    readiness uses the same side-effect-free availability probe
+    (``tools.web_tools._is_backend_available``), so the verdict matches what
+    an actual ``web_search`` / ``web_extract`` call would do.
+    """
+    enabled = _enabled_cli_toolsets_for_doctor()
+    if enabled is not None and "web" not in enabled:
+        return None
+    try:
+        from tools.web_tools import (
+            _get_extract_backend,
+            _get_search_backend,
+            _is_backend_available,
+            _load_web_config,
+        )
+    except Exception:
+        return None
+    try:
+        cfg = _load_web_config()
+        explicit = (cfg.get("backend") or "").strip()
+    except Exception:
+        return None
+
+    lines = []
+    for capability, resolver in (
+        ("search", _get_search_backend),
+        ("extract", _get_extract_backend),
+    ):
+        selected = (cfg.get(f"{capability}_backend") or "").strip() or explicit
+        if not selected:
+            continue
+        backend = resolver()
+        label = f"web {capability}"
+        if _is_backend_available(backend):
+            lines.append((label, f"({backend})", True))
+        else:
+            lines.append((label, f"({selected} selected; provider not configured)", False))
+    return lines or None
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     updated_available = list(available)
@@ -2762,6 +2819,19 @@ def run_doctor(args):
         
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})
+            if tid == "web":
+                # Issue #78412: web's registry gate reports the explicitly
+                # selected provider as available even when it cannot
+                # initialize, so doctor must report per-capability readiness
+                # instead of a green check that overstates provider health.
+                capability_status = _doctor_web_capability_status()
+                if capability_status is not None:
+                    for label, detail, ok in capability_status:
+                        if ok:
+                            check_ok(label, detail)
+                        else:
+                            check_warn(label, detail)
+                    continue
             check_ok(info.get("name", tid), _doctor_tool_availability_detail(tid))
         
         for item in unavailable:

@@ -95,6 +95,38 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertNotIn("abc123def456", content)
         self.assertIn("OPENAI_API_KEY=", content)
 
+    def test_read_text_file_preserves_source_code_constants(self) -> None:
+        """``fs/read_text_file`` hands file *content* to the agent, which can
+        write it straight back over ``fs/write_text_file``. Redacting without
+        ``file_read=True`` leaves the ENV/YAML/JSON assignment passes enabled,
+        so ordinary source constants came back as ``max_tokens=***`` — trailing
+        punctuation included — and the agent then wrote that mangled text back
+        over the user's file."""
+        source = (
+            "MAX_TOKENS = 8000\n"
+            "params = dict(\n"
+            "    max_tokens=4096,\n"
+            ")\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "settings.py"
+            target.write_text(source, encoding="utf-8")
+
+            with patch("agent.redact._REDACT_ENABLED", True):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "fs/read_text_file",
+                        "params": {"path": str(target)},
+                    },
+                    cwd=str(root),
+                )
+
+        content = ((response.get("result") or {}).get("content") or "")
+        self.assertEqual(content, source)
+
     def test_fs_read_text_file_decodes_as_utf8_under_non_utf8_locale(self) -> None:
         """Regression for #18637 (bug 2): fs/read_text_file used
         ``path.read_text()`` with no explicit encoding, so on Windows

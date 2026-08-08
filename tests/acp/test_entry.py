@@ -2,6 +2,7 @@
 
 import sys
 
+pytest.importorskip("acp")
 import acp
 import pytest
 

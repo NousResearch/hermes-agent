@@ -3069,6 +3069,21 @@ def compress_context(
                 _release_lock()
                 return messages, _existing_sp
 
+        # Past every guard that returns without mutating the session (abort,
+        # semantic no-op, empty transcript, commit-fence cancel), so compression
+        # is now committed to rewriting the transcript — the context-loss
+        # boundary the opt-in review exists for (#31597). Fires in BOTH in-place
+        # and rotation modes, independently of session_db. Hands the review the
+        # pre-dispatch deepcopy rather than a fresh copy: the rollback path
+        # below only ever deepcopies FROM it, so it is read-only from here on
+        # and safe to share with the review thread.
+        if getattr(agent, "_memory_review_on_compression", False):
+            from agent.background_review import maybe_spawn_boundary_review
+
+            maybe_spawn_boundary_review(
+                agent, messages_before_compression, trigger="compression"
+            )
+
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         if summary_error:
             if getattr(agent, "_last_compression_summary_warning", None) != summary_error:

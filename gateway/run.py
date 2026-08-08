@@ -17733,7 +17733,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pb_err,
                 )
                 turn_sidecar_notes.append(_intro_note)
-        
+
+        # Telegram sticker collection -- injected on the session's FIRST turn
+        # only (empty transcript == brand-new session, the same first-turn
+        # detection the home-channel prompt below uses).  The note rides the
+        # first user message via the sidecar channel and is persisted through
+        # api_content, so it replays verbatim on later turns: mid-session
+        # collection changes never re-inject and the prompt cache stays
+        # intact.  Lazy, guarded import -- the telegram platform plugin may
+        # be absent, and a rendering failure must never break message
+        # processing.
+        if not history and source.platform == Platform.TELEGRAM:
+            try:
+                from plugins.platforms.telegram.sticker_collection import (
+                    build_sticker_collection_note,
+                )
+
+                _sticker_note = build_sticker_collection_note()
+                if _sticker_note:
+                    turn_sidecar_notes.append(_sticker_note)
+            except Exception as _sticker_err:
+                logger.warning(
+                    "Telegram sticker collection note injection failed "
+                    "(non-fatal): %s",
+                    _sticker_err,
+                )
+
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:

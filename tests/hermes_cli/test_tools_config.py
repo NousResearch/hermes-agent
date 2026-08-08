@@ -429,6 +429,52 @@ class TestImagegenModelPicker:
 
 
 
+def test_telegram_toolset_in_configurable_toolsets():
+    keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    assert "telegram" in keys
+
+
+def test_telegram_toolset_not_default_off():
+    """Unlike discord/discord_admin, the telegram toolset is NOT opt-in:
+    subset inference auto-enables it for telegram sessions."""
+    assert "telegram" not in _DEFAULT_OFF_TOOLSETS
+
+
+def test_telegram_toolset_not_available_on_other_platforms():
+    """Platform-scoping mirrors discord: `telegram` should not appear on
+    CLI, Discord, Slack, etc. — not even as an opt-in."""
+    from hermes_cli.tools_config import _toolset_allowed_for_platform
+    for plat in ["cli", "discord", "slack", "whatsapp", "signal"]:
+        assert not _toolset_allowed_for_platform("telegram", plat), (
+            f"`telegram` toolset leaked onto {plat}"
+        )
+    assert _toolset_allowed_for_platform("telegram", "telegram")
+
+
+def test_get_platform_tools_telegram_auto_enabled_on_telegram():
+    """No saved config: the hermes-telegram composite carries the tg_* tools,
+    so subset inference resolves the `telegram` toolset as enabled."""
+    enabled = _get_platform_tools({}, "telegram")
+    assert "telegram" in enabled
+
+
+def test_get_platform_tools_telegram_toolset_hidden_on_other_platforms():
+    for plat in ["cli", "discord", "slack"]:
+        enabled = _get_platform_tools({}, plat)
+        assert "telegram" not in enabled, f"telegram toolset leaked onto {plat}"
+
+
+def test_save_platform_tools_strips_telegram_toolset_elsewhere():
+    """Hand-edited or all-platforms checklist with `telegram` selected for
+    Discord must be stripped at save time (mirrors the discord case)."""
+    config = {}
+    _save_platform_tools(config, "discord", {"web", "terminal", "telegram"})
+    saved = config["platform_toolsets"]["discord"]
+    assert "telegram" not in saved
+    assert "web" in saved
+    assert "terminal" in saved
+
+
 def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
     """Bundled plugins (plugins/spotify) share their toolset key with the
     built-in CONFIGURABLE_TOOLSETS entry. The effective list must not list

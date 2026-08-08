@@ -104,6 +104,35 @@ class TestResolveToolset:
 
 
 
+class TestTelegramToolset:
+    """Invariant tests for the telegram sticker toolset wiring.
+
+    These assert relationships (composite carries its platform tools;
+    unrelated composites do not), not snapshots of tool lists.
+    """
+
+    def test_hermes_telegram_includes_sticker_tools(self):
+        tools = resolve_toolset("hermes-telegram")
+        assert "tg_send_sticker" in tools
+        assert "tg_manage_stickers" in tools
+
+    def test_telegram_leaf_toolset_static_membership(self):
+        ts = get_toolset("telegram", include_registry=False)
+        assert ts is not None
+        assert set(ts["tools"]) == {"tg_send_sticker", "tg_manage_stickers"}
+        assert ts["includes"] == []
+
+    def test_sticker_tools_not_in_unrelated_composites(self):
+        for composite in ("hermes-cli", "hermes-slack"):
+            tools = resolve_toolset(composite)
+            assert "tg_send_sticker" not in tools, (
+                f"tg_send_sticker leaked into {composite}"
+            )
+            assert "tg_manage_stickers" not in tools, (
+                f"tg_manage_stickers leaked into {composite}"
+            )
+
+
 class TestResolveMultipleToolsets:
     def test_combines_and_deduplicates(self):
         tools = resolve_multiple_toolsets(["web", "terminal"])

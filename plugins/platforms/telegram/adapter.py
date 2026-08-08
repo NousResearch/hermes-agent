@@ -3670,11 +3670,57 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] DM topics setup failed (non-fatal): %s",
                     self.name, topics_err, exc_info=True,
                 )
+
+            # Seed the sticker collection from configured packs
+            # (telegram.sticker_sets → PlatformConfig.extra). Deferred here,
+            # off the connect path, so slow/failing getStickerSet calls can
+            # never block or crash connect(). Empty config is a no-op.
+            try:
+                await self._seed_sticker_collection_from_config()
+            except Exception as seed_err:
+                logger.warning(
+                    "[%s] Sticker collection seed failed (non-fatal): %s",
+                    self.name, seed_err, exc_info=True,
+                )
         except asyncio.CancelledError:
             raise
         finally:
             if self._post_connect_task is asyncio.current_task():
                 self._post_connect_task = None
+
+    async def _seed_sticker_collection_from_config(self) -> None:
+        """Import configured sticker packs into the persistent collection.
+
+        Reads ``telegram.sticker_sets`` from config.yaml (bridged into
+        ``PlatformConfig.extra`` by :func:`_apply_yaml_config`) and bulk-imports
+        each pack via the Bot API. An empty or missing list is a no-op. The
+        caller treats every failure as non-fatal; per-set failures are logged
+        and skipped inside ``refresh_from_sets``.
+        """
+        extra = getattr(self.config, "extra", None) or {}
+        sticker_sets = extra.get("sticker_sets")
+        if isinstance(sticker_sets, str):
+            # Tolerate a comma-separated string in user config.
+            sticker_sets = [s.strip() for s in sticker_sets.split(",")]
+        if not isinstance(sticker_sets, (list, tuple)):
+            return
+        names = [str(n).strip() for n in sticker_sets if str(n or "").strip()]
+        if not names:
+            return
+        bot = self._bot
+        if bot is None:
+            return
+        from plugins.platforms.telegram import sticker_collection
+        summary = await sticker_collection.refresh_from_sets(bot, names)
+        logger.info(
+            "[%s] Sticker collection seeded from config: %d set(s), %d sticker(s) "
+            "(%d new, %d set(s) failed)",
+            self.name,
+            summary["sets"],
+            summary["stickers"],
+            summary["new"],
+            summary["sets_failed"],
+        )
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
@@ -9497,6 +9543,11 @@ class TelegramAdapter(BasePlatformAdapter):
         For static stickers (WEBP), we download, analyze with vision, and cache
         the description by file_unique_id. For animated/video stickers, we inject
         a placeholder noting the emoji.
+
+        Every received sticker is also recorded into the persistent sticker
+        collection so the agent can later send it back with tg_send_sticker.
+        New entries append a mid-session note to the injected text (current
+        user message only — prompt-cache safe); known stickers get no note.
         """
         from gateway.sticker_cache import (
             get_cached_description,
@@ -9505,6 +9556,7 @@ class TelegramAdapter(BasePlatformAdapter):
             build_animated_sticker_injection,
             STICKER_VISION_PROMPT,
         )
+        from plugins.platforms.telegram import sticker_collection
 
         sticker = msg.sticker
         emoji = sticker.emoji or ""
@@ -9513,6 +9565,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Animated and video stickers can't be analyzed as static images
         if sticker.is_animated or sticker.is_video:
             event.text = build_animated_sticker_injection(emoji)
+            self._record_sticker_into_collection(
+                sticker_collection, sticker, event, emoji, set_name
+            )
             return
 
         # Check the cache first
@@ -9522,6 +9577,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 cached["description"], cached.get("emoji", emoji), cached.get("set_name", set_name)
             )
             logger.info("[Telegram] Sticker cache hit: %s", sticker.file_unique_id)
+            # Also refreshes file_id for entries the collection already knows.
+            self._record_sticker_into_collection(
+                sticker_collection, sticker, event, emoji, set_name
+            )
             return
 
         # Cache miss -- download and analyze
@@ -9554,6 +9613,58 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"a sticker with emoji {emoji}" if emoji else "a sticker",
                 emoji, set_name,
             )
+
+        # Record AFTER any cache_sticker_description() call above so the
+        # collection's best-effort vision-cache backfill can pick up the fresh
+        # description (see record_sticker's description merge rule).
+        self._record_sticker_into_collection(
+            sticker_collection, sticker, event, emoji, set_name
+        )
+
+    def _record_sticker_into_collection(
+        self,
+        sticker_collection: Any,
+        sticker: Any,
+        event: "MessageEvent",
+        emoji: str,
+        set_name: str,
+    ) -> None:
+        """Upsert an inbound sticker into the persistent sticker collection.
+
+        When the sticker is new to the collection, append a mid-session note
+        to the injected ``event.text`` telling the model it can send the
+        sticker back with ``tg_send_sticker``. The note rides the current user
+        message only, so no prior context is touched (prompt-cache safe).
+        Known stickers silently refresh ``file_id``/``last_seen``. Never
+        raises — collection failures must not break sticker handling.
+        """
+        try:
+            is_new = sticker_collection.record_sticker(
+                file_unique_id=sticker.file_unique_id,
+                file_id=sticker.file_id,
+                emoji=emoji,
+                set_name=set_name,
+                kind=sticker_collection.sticker_kind(sticker),
+            )
+        except Exception as e:
+            logger.warning(
+                "[Telegram] Failed to record sticker %s into collection: %s",
+                getattr(sticker, "file_unique_id", "?"),
+                _redact_telegram_error_text(e),
+            )
+            return
+        if not is_new:
+            return
+        details = []
+        if emoji:
+            details.append(f"emoji {emoji}")
+        if set_name:
+            details.append(f'set "{set_name}"')
+        suffix = f": {', '.join(details)}" if details else ""
+        event.text = (event.text or "") + (
+            "\n(New sticker saved to your collection — you can send it back "
+            f"later with tg_send_sticker{suffix})"
+        )
 
     def _reload_dm_topics_from_config(self) -> None:
         """Re-read dm_topics from config.yaml and load any new thread_ids into cache.
@@ -10115,6 +10226,12 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
 
     if "disable_topic_auto_rename" in telegram_cfg:
         extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])
+
+    # Sticker collection seed (plan §6): pack short names imported via
+    # refresh_from_sets() during post-connect housekeeping. Flows through
+    # PlatformConfig.extra; the adapter skips empty/missing lists.
+    if "sticker_sets" in telegram_cfg:
+        extras.setdefault("sticker_sets", telegram_cfg["sticker_sets"])
 
     _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
     if _effective_rm is not None and not os.getenv("TELEGRAM_REQUIRE_MENTION"):

@@ -1246,6 +1246,40 @@ Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, top
 
 Numeric YAML keys are automatically normalized to strings.
 
+## Stickers
+
+The agent can send **native Telegram stickers** (real stickers, not sticker-like images) from a personal sticker collection it builds over time:
+
+- Every sticker you send the bot is **recorded automatically**. Static stickers also get a short vision-generated description (e.g. "a cat waving its paw") so the agent knows when each one fits; animated and video stickers are recorded by emoji and pack.
+- When a **new session starts**, the collection listing is injected into the agent's context, so it knows which stickers it can send from the first message on.
+
+Just ask in chat — "send me the 😂 sticker" — and the bot replies with a native Telegram sticker.
+
+### Seeding packs from config
+
+To give the agent stickers before anyone has sent it any, list pack short names under `telegram.sticker_sets` in `~/.hermes/config.yaml`:
+
+```yaml
+telegram:
+  sticker_sets:
+    - HotCherry
+    - AnimatedEmojies
+```
+
+The packs are imported in the background when the gateway connects (a failing pack is logged and skipped). The short name is the last part of a pack's `https://t.me/addstickers/<name>` link.
+
+### Managing the collection
+
+The agent has two Telegram-only tools: `tg_send_sticker` picks a sticker from the collection by emoji (optionally disambiguated by pack name) and delivers it natively, and `tg_manage_stickers` curates the collection — annotate descriptions, remove entries, or import a whole pack. You never call these yourself: send the agent a `https://t.me/addstickers/<name>` link to have it import that pack, or ask it to forget a sticker ("forget the 😂 sticker").
+
+### Where the data lives
+
+The collection persists at `~/.hermes/telegram_stickers.json` (per-[profile](/user-guide/profiles) — each profile has its own file) and holds up to 500 stickers, evicting the least recently seen when full.
+
+:::note
+Sticker `file_id`s are issued **per bot**. If you switch to a new bot token, existing entries may stop working — re-import your packs (restart with `telegram.sticker_sets` set, or send the agent the pack links again) and ask the agent to remove any stale entries.
+:::
+
 ## Troubleshooting
 
 | Problem | Solution |

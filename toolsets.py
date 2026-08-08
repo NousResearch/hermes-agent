@@ -349,6 +349,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "telegram": {
+        "description": "Telegram platform tools - send and manage stickers",
+        "tools": [
+            "tg_send_sticker",
+            "tg_manage_stickers",
+        ],
+        "includes": []
+    },
+
     "feishu_doc": {
         "description": "Read Feishu/Lark document content",
         "tools": ["feishu_doc_read"],
@@ -504,7 +513,11 @@ TOOLSETS = {
 
     "hermes-telegram": {
         "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + [
+            "tg_send_sticker",
+            "tg_manage_stickers",
+        ],
+        "module": "tools.telegram_tool",
         "includes": []
     },
     

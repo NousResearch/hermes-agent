@@ -1637,6 +1637,7 @@ export interface Translations {
       archive: string
       newWindow: string
       hideTabBar: string
+      showTabBar: string
       openInNewTab: string
       openInSplit: string
       copyIdFailed: string

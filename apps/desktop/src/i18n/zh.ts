@@ -2135,6 +2135,7 @@ export const zh: Translations = {
       archive: '归档',
       newWindow: '新窗口',
       hideTabBar: '隐藏标签栏',
+      showTabBar: '显示标签栏',
       openInNewTab: '在新标签页中打开',
       openInSplit: '在分屏中打开',
       copyIdFailed: '无法复制会话 ID',

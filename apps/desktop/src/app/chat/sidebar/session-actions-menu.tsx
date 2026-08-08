@@ -7,7 +7,9 @@ import {
   closeAllTreeTabs,
   closeOtherTreeTabs,
   closeTreeTabsToRight,
+  isWorkspaceTabBarHidden,
   reloadTreePane,
+  showWorkspaceTabBar,
   treeTabCloseTargets
 } from '@/components/pane-shell/tree/store'
 import {
@@ -421,6 +423,20 @@ function useSessionActions({
             onSelect: () => {
               triggerHaptic('selection')
               onHideTabBar()
+            }
+          })}
+        </>
+      )}
+      {isWorkspaceTabBarHidden() && (
+        <>
+          <kit.Separator />
+          {renderActionItem(kit, {
+            disabled: false,
+            icon: 'eye',
+            label: r.showTabBar,
+            onSelect: () => {
+              triggerHaptic('selection')
+              showWorkspaceTabBar()
             }
           })}
         </>

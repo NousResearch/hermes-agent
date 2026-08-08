@@ -1578,6 +1578,29 @@ export function collapseTreePane(paneId: string) {
   }
 }
 
+/** Read-only: is the workspace zone's header (the main tab bar) explicitly
+ *  hidden? Read at menu-open time via `.get()` — never a render-time
+ *  subscription (layout-tree reads must stay render-free, see tree-group.tsx).
+ *  Only an EXPLICIT hide (headerHidden: true) counts; a lone pane's auto-hide
+ *  default is not a user state to restore. */
+export function isWorkspaceTabBarHidden(): boolean {
+  const tree = $layoutTree.get()
+
+  return tree ? findGroupOfPane(tree, 'workspace')?.headerHidden === true : false
+}
+
+/** Flip the workspace zone's sticky tab bar back on. The off switch lives on
+ *  the main tab's context menu — unreachable once the bar is hidden — so this
+ *  is the symmetrical restore for the always-reachable sidebar row menu. */
+export function showWorkspaceTabBar(): void {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, 'workspace') : null
+
+  if (group) {
+    setTreeGroupHeaderHidden(group.id, false)
+  }
+}
+
 /** Hide/show a zone's header entirely (double-click gesture). */
 export function setTreeGroupHeaderHidden(groupId: string, headerHidden: boolean) {
   const tree = $layoutTree.get()

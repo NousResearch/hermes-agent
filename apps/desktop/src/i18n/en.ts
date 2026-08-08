@@ -1943,6 +1943,7 @@ export const en: Translations = {
       archive: 'Archive',
       newWindow: 'New window',
       hideTabBar: 'Hide tab bar',
+      showTabBar: 'Show tab bar',
       openInNewTab: 'Open in new tab',
       openInSplit: 'Open in split',
       copyIdFailed: 'Could not copy session ID',

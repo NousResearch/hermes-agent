@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { isWorkspaceTabBarHidden, showWorkspaceTabBar } from '@/components/pane-shell/tree/store'
 
 import { SessionActionsMenu } from './session-actions-menu'
 
@@ -14,6 +16,8 @@ vi.mock('@/components/pane-shell/tree/store', () => ({
   closeAllTreeTabs: vi.fn(),
   closeOtherTreeTabs: vi.fn(),
   closeTreeTabsToRight: vi.fn(),
+  isWorkspaceTabBarHidden: vi.fn(() => false),
+  showWorkspaceTabBar: vi.fn(),
   treeTabCloseTargets: vi.fn(() => null)
 }))
 vi.mock('@/hermes', () => ({ renameSession: vi.fn() }))
@@ -37,6 +41,7 @@ vi.mock('@/i18n', () => ({
           copyIdFailed: 'Failed to copy ID',
           export: 'Export',
           hideTabBar: 'Hide tab bar',
+          showTabBar: 'Show tab bar',
           pin: 'Pin',
           rename: 'Rename',
           renameDesc: 'Leave empty to clear.',
@@ -95,6 +100,24 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
+  beforeEach(() => {
+    vi.mocked(isWorkspaceTabBarHidden).mockReset().mockReturnValue(false)
+    vi.mocked(showWorkspaceTabBar).mockReset()
+  })
+
+  async function openMenu() {
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+
+    // Radix's dropdown trigger opens on pointerdown (not on the synthetic
+    // 'click' fireEvent alone would dispatch), so fire the full mouse
+    // sequence a real click produces.
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    await screen.findByRole('menu')
+  }
+
   it('opens the dropdown on click without a tooltip on the kebab', async () => {
     renderMenu()
 
@@ -112,5 +135,24 @@ describe('SessionActionsMenu', () => {
     expect(await screen.findByRole('menu')).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /archive/i })).toBeTruthy()
+  })
+
+  it('offers "Show tab bar" only while the workspace tab bar is hidden, and restores it', async () => {
+    vi.mocked(isWorkspaceTabBarHidden).mockReturnValue(true)
+    renderMenu()
+    await openMenu()
+
+    const item = screen.getByRole('menuitem', { name: /show tab bar/i })
+
+    expect(item).toBeTruthy()
+    fireEvent.click(item)
+    expect(vi.mocked(showWorkspaceTabBar)).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides "Show tab bar" while the workspace tab bar is visible', async () => {
+    renderMenu()
+    await openMenu()
+
+    expect(screen.queryByRole('menuitem', { name: /show tab bar/i })).toBeNull()
   })
 })

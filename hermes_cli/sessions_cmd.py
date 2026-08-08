@@ -950,8 +950,7 @@ def cmd_sessions(args, sessions_parser=None):
         for row in candidates:
             session_id = row["id"]
             typed = describe_skill_invocation(row["content"]) or ""
-            first_reply = db.get_first_assistant_text(session_id) or ""
-            new_title = generate_title(typed, first_reply)
+            new_title = generate_title(typed)
             if not new_title or new_title == row["title"]:
                 continue
             if not _is_titlelike(new_title):

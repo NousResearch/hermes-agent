@@ -1001,6 +1001,23 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _rg_path_arg(self, path: str) -> str:
+        """Shell-quote a filesystem *path* for ripgrep on Windows.
+
+        ripgrep (``rg.exe``) is a NATIVE Windows binary on this host. The
+        standard ``_escape_shell_arg`` runs paths through ``_bash_safe_path``,
+        which rewrites ``C:/Users/x`` to the MSYS ``/c/Users/x`` spelling so
+        bash builtins (cat/sed/find) resolve them. But rg.exe cannot parse
+        ``/c/...`` and fails with ``os error 2/3``. Convert the path back to
+        native ``C:/...`` form and quote WITHOUT the MSYS rewrite so the
+        absolute-path search_files case works. No-op off Windows.
+        """
+        import sys
+        if sys.platform == "win32":
+            from tools.environments.local import _msys_to_windows_path
+            path = _msys_to_windows_path(path)
+        return "'" + path.replace("'", "'\"'\"'") + "'"
+
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
 
@@ -1929,8 +1946,11 @@ class ShellFileOperations(FileOperations):
         if not self._has_command(base_cmd):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
 
-        # Run linter
-        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
+        # Run linter. Use the native-Windows path form (C:/...) for the
+        # file argument: linters like node/go/rustfmt are NATIVE Windows
+        # binaries that reject the MSYS /c/... spelling (_bash_safe_path
+        # would produce), while python/npx (MSYS) also accept C:/...
+        cmd = linter_cmd.replace("{file}", self._rg_path_arg(path))
         result = self._exec(cmd, timeout=30)
 
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
@@ -2512,7 +2532,7 @@ class ShellFileOperations(FileOperations):
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
+            f"{self._rg_path_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
@@ -2523,7 +2543,7 @@ class ShellFileOperations(FileOperations):
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"{self._rg_path_arg(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
@@ -2607,8 +2627,8 @@ class ShellFileOperations(FileOperations):
         
         # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
-        
+        cmd_parts.append(self._rg_path_arg(path))
+
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,
         # so we grab generously and filter in Python.

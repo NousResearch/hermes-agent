@@ -31,6 +31,7 @@ from typing import Any, Optional, Union
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
+from agent.message_content import flatten_message_text
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
@@ -54,6 +55,9 @@ logger = logging.getLogger("gateway.run")
 # past this the reset proceeds and the cleanup is left to finish (or leak) in
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
+_TELEGRAM_RESUME_USER_SNIPPET_CHARS = 280
+_TELEGRAM_RESUME_ASSISTANT_SNIPPET_CHARS = 420
+_TELEGRAM_SESSION_PICKER_CONTEXT_CHARS = 96
 
 
 def _clean_str(value: Any) -> str:
@@ -67,6 +71,108 @@ def _int_value(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _resume_recap_snippet(content: Any, limit: int) -> str:
+    """Return a compact, single-paragraph excerpt for a resume recap."""
+    text = " ".join(flatten_message_text(content).split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _resume_recap_age(last_active: Any) -> str:
+    """Render a session timestamp compactly for a phone-sized recap."""
+    try:
+        timestamp = float(last_active)
+    except (TypeError, ValueError):
+        return "unknown"
+    delta = max(0.0, time.time() - timestamp)
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    if delta < 172800:
+        return "yesterday"
+    if delta < 604800:
+        return f"{int(delta // 86400)}d ago"
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+
+
+def _latest_user_context(history: list[dict[str, Any]], limit: int) -> str:
+    """Return the latest user-authored text without a bulky reply quotation."""
+    for message in reversed(history):
+        if str(message.get("role") or "") != "user":
+            continue
+        text = " ".join(flatten_message_text(message.get("content")).split())
+        if text.startswith("[Replying to:"):
+            reply_end = text.rfind('"]')
+            if reply_end >= 0 and text[reply_end + 2:].strip():
+                text = text[reply_end + 2:].strip()
+        return _resume_recap_snippet(text, limit)
+    return ""
+
+
+def _format_telegram_sessions_picker(
+    *,
+    title: str,
+    rows: list[dict[str, Any]],
+    histories: dict[str, list[dict[str, Any]]],
+) -> str:
+    """Render readable numbered context above narrow mobile-safe buttons."""
+    lines = [f"📋 **{title}**", "", "Tap the matching **Resume** button:"]
+    for index, row in enumerate(rows, start=1):
+        session_id = str(row.get("id") or "")
+        saved_title = str(row.get("title") or "Unnamed session")
+        lines.extend(
+            [
+                "",
+                f"**{index}. {saved_title}**",
+                f"Last active: {_resume_recap_age(row.get('last_active'))}",
+            ]
+        )
+        latest = _latest_user_context(
+            histories.get(session_id, []), _TELEGRAM_SESSION_PICKER_CONTEXT_CHARS
+        )
+        if latest:
+            lines.append(f"Latest: {latest}")
+    return "\n".join(lines)
+
+
+def _format_telegram_resume_recap(
+    *,
+    confirmation: str,
+    last_active: Any,
+    history: list[dict[str, Any]],
+) -> str:
+    """Add visible history context after a Telegram session-picker resume."""
+    last_user = _latest_user_context(history, _TELEGRAM_RESUME_USER_SNIPPET_CHARS)
+    last_assistant = ""
+    for message in reversed(history):
+        role = str(message.get("role") or "")
+        if role == "assistant" and not last_assistant:
+            last_assistant = _resume_recap_snippet(
+                message.get("content"), _TELEGRAM_RESUME_ASSISTANT_SNIPPET_CHARS
+            )
+        if last_assistant:
+            break
+
+    lines = [
+        confirmation,
+        "",
+        "📍 **Where you left off**",
+        f"Last active: {_resume_recap_age(last_active)}",
+    ]
+    if last_user:
+        lines.extend(["", f"**You last asked:** {last_user}"])
+    if last_assistant:
+        lines.extend(["", f"**Where things stood:** {last_assistant}"])
+    if not last_user and not last_assistant:
+        lines.extend(["", "No previous conversational messages were saved for this session."])
+    lines.extend(["", "Continue by replying in this topic."])
+    return "\n".join(lines)
 
 
 def _model_switch_skew_guard() -> Optional[str]:
@@ -4736,6 +4842,82 @@ class GatewaySlashCommandsMixin:
             title = f"Sessions matching “{search_query}”"
         else:
             title = "Sessions" if include_unnamed else "Named Sessions"
+
+        # Telegram DMs support inline choice buttons. Keep the original text
+        # rendering everywhere else, including group chats: the generic picker
+        # callback records only a chat-level state key, while `/resume` access
+        # is deliberately user-bound. Restricting this convenience path to DMs
+        # preserves that ownership boundary.
+        if source.platform == Platform.TELEGRAM and source.chat_type == "dm" and rows:
+            adapter = self._adapter_for_source(source)
+            send_picker = getattr(adapter, "send_choice_picker", None) if adapter else None
+            if callable(send_picker):
+                histories_list = await asyncio.gather(
+                    *(
+                        self.async_session_store.load_transcript(str(row.get("id") or ""))
+                        for row in rows
+                    ),
+                    return_exceptions=True,
+                )
+                histories_by_id = {
+                    str(row.get("id") or ""): (
+                        history if isinstance(history, list) else []
+                    )
+                    for row, history in zip(rows, histories_list)
+                    if row.get("id")
+                }
+                choices = [
+                    {
+                        "value": str(row.get("id") or ""),
+                        "label": f"↩️ Resume {index}",
+                    }
+                    for index, row in enumerate(rows, start=1)
+                    if row.get("id")
+                ]
+                if choices:
+                    row_by_id = {
+                        str(row.get("id") or ""): row
+                        for row in rows
+                        if row.get("id")
+                    }
+
+                    async def _resume_from_picker(_chat_id: str, session_id: str) -> str:
+                        previous_session_id = (
+                            await self.async_session_store.get_or_create_session(source)
+                        ).session_id
+                        resume_args = f"--all {session_id}" if cross_origin else session_id
+                        resume_event = dataclasses.replace(event, text=f"/resume {resume_args}")
+                        confirmation = await self._handle_resume_command(resume_event)
+                        active_entry = await self.async_session_store.get_or_create_session(
+                            source
+                        )
+                        if active_entry.session_id == previous_session_id:
+                            return confirmation
+                        selected_row = row_by_id.get(session_id, {})
+                        history = await self.async_session_store.load_transcript(
+                            active_entry.session_id
+                        )
+                        return _format_telegram_resume_recap(
+                            confirmation="↩️ Session resumed.",
+                            last_active=selected_row.get("last_active"),
+                            history=history or [],
+                        )
+
+                    result = await send_picker(
+                        chat_id=str(source.chat_id),
+                        title=_format_telegram_sessions_picker(
+                            title=title,
+                            rows=rows,
+                            histories=histories_by_id,
+                        ),
+                        choices=choices,
+                        session_key=current_entry.session_key,
+                        on_choice_selected=_resume_from_picker,
+                        metadata=self._thread_metadata_for_source(source),
+                        buttons_per_row=1,
+                    )
+                    if getattr(result, "success", False):
+                        return ""
         return format_gateway_session_listing(
             rows,
             include_source=cross_origin,

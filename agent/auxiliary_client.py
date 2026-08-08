@@ -7881,6 +7881,65 @@ def _contains_profile_reasoning_fields(value: Any) -> bool:
     return False
 
 
+def _order_zai_vision_content_parts(
+    messages: list,
+    *,
+    provider: str,
+    base_url: Optional[str],
+    task: Optional[str],
+) -> list:
+    """Put Z.ai image parts before text without mutating message history.
+
+    Z.ai's OpenAI-compatible vision endpoint rejects a user content list that
+    starts with ``text`` and is followed by ``image_url`` (provider error
+    1210). Other OpenAI-compatible providers accept the generic text-first
+    shape, so keep this normalization limited to Z.ai vision requests.
+    """
+    if task != "vision":
+        return messages
+
+    provider_norm = _normalize_aux_provider(provider)
+    is_zai_endpoint = any(
+        base_url_host_matches(base_url or "", hostname)
+        for hostname in ("api.z.ai", "open.bigmodel.cn")
+    )
+    if provider_norm != "zai" and not is_zai_endpoint:
+        return messages
+
+    normalized: list = []
+    changed = False
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            normalized.append(message)
+            continue
+
+        first_image_index = next(
+            (
+                index
+                for index, part in enumerate(content)
+                if isinstance(part, dict) and part.get("type") == "image_url"
+            ),
+            None,
+        )
+        if first_image_index in (None, 0):
+            normalized.append(message)
+            continue
+
+        reordered = [
+            content[first_image_index],
+            *content[:first_image_index],
+            *content[first_image_index + 1:],
+        ]
+        if reordered != content:
+            normalized.append({**message, "content": reordered})
+            changed = True
+        else:
+            normalized.append(message)
+
+    return normalized if changed else messages
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -7895,6 +7954,12 @@ def _build_call_kwargs(
     task: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
+    messages = _order_zai_vision_content_parts(
+        messages,
+        provider=provider,
+        base_url=base_url,
+        task=task,
+    )
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,

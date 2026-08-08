@@ -1462,6 +1462,7 @@ def run_conversation(
     effective_task_id = _ctx.effective_task_id
     turn_id = _ctx.turn_id
     current_turn_user_idx = _ctx.current_turn_user_idx
+    current_turn_user_marker = _ctx.current_turn_user_marker
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
@@ -1700,12 +1701,37 @@ def run_conversation(
         # repair_message_sequence_with_cursor also recomputes the SessionDB
         # flush cursor (_last_flushed_db_idx) when repair compacts the list,
         # so the turn-end flush doesn't skip the assistant/tool chain (#44837).
-        from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+        from agent.agent_runtime_helpers import (
+            TURN_USER_MARKER_KEY,
+            repair_message_sequence_with_cursor,
+            select_turn_glue_idx,
+        )
         repaired_seq = repair_message_sequence_with_cursor(agent, messages)
         if repaired_seq > 0:
             request_logger.info(
                 "Repaired %s message-alternation violations before request (session=%s)",
                 repaired_seq,
+                agent.session_id or "-",
+            )
+
+        # Recompute the glue target from the final message list here, not
+        # from the turn-start snapshot (``current_turn_user_idx``): preflight
+        # compression (above, in ``turn_context.py``) and the repair just
+        # above both mutate/replace ``messages``, which can leave that
+        # snapshot pointing at the wrong element or nothing at all — silently
+        # dropping ephemeral plugin/memory context from the request.
+        #
+        # We re-find THIS turn's user message by its per-turn marker, not the
+        # globally-last user message: the loop appends synthetic continuation/
+        # recovery user nudges (length-continue, codex-ack, verify-stop) that
+        # would otherwise steal the glue and pull memory/plugin context off the
+        # real request and onto a "[System: continue]" nudge.
+        _glue_idx = select_turn_glue_idx(messages, current_turn_user_marker)
+        if _glue_idx is None and (_ext_prefetch_cache or _plugin_user_context):
+            request_logger.warning(
+                "This turn's user message is no longer present to glue ephemeral "
+                "plugin/memory context onto (session=%s) — context dropped from "
+                "this request rather than misattached to a synthetic nudge",
                 agent.session_id or "-",
             )
 
@@ -1744,7 +1770,12 @@ def run_conversation(
             # API-call-time only — the original message in `messages` is
             # never mutated beyond the api_content stamp, so nothing leaks
             # into the clean transcript content.
-            if idx == current_turn_user_idx and msg.get("role") == "user":
+            #
+            # Targeted by ``_glue_idx`` (recomputed just above) rather than the
+            # turn-start ``current_turn_user_idx`` snapshot, which the repair
+            # pass can invalidate. ``_glue_idx`` only ever resolves to a
+            # role=="user" entry, so no explicit role check is needed here.
+            if idx == _glue_idx:
                 if isinstance(_api_content, str) and _api_content:
                     # Stamped by the prologue from the same composition —
                     # reuse it so the persisted sidecar and the wire cannot
@@ -1790,6 +1821,9 @@ def run_conversation(
                 api_msg.pop("finish_reason")
             # Strip internal thinking-prefill marker
             api_msg.pop("_thinking_prefill", None)
+            # Strip the per-turn glue marker so it never reaches the provider
+            # (strict APIs reject unknown message fields).
+            api_msg.pop(TURN_USER_MARKER_KEY, None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields

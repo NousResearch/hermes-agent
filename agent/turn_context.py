@@ -330,6 +330,9 @@ class TurnContext:
     turn_id: str
     # Index of the current user turn within ``messages``.
     current_turn_user_idx: int
+    # Stable marker identifying THIS turn's user message across compaction /
+    # repair (the glue target). ``None`` only if no user message was staged.
+    current_turn_user_marker: Optional[str] = None
     # Whether the post-turn memory review should fire.
     should_review_memory: bool = False
     # Context contributed by ``pre_llm_call`` plugins (appended to user message).
@@ -555,6 +558,22 @@ def build_turn_context(
             agent._user_turn_count = prior_user_turns
             if agent._memory_nudge_interval > 0 and agent._turns_since_memory == 0:
                 agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval
+
+    # Stamp a per-turn glue marker so the request-assembly step can re-find
+    # THIS turn's user message after preflight compression / repair relocate
+    # or re-object it. An index snapshot (``current_turn_user_idx``) goes
+    # stale, and object identity doesn't survive compression (it ``.copy()``s
+    # the protected tail), but a dict key rides the copy through — while the
+    # synthetic continuation/recovery nudges appended later in the loop never
+    # carry it, so glue can't drift onto them. Applies to both the fresh and
+    # the reused CLI-staged ``user_msg``. Stripped before the provider call in
+    # ``conversation_loop`` (like other ``_``-prefixed markers).
+    # Imported lazily: ``agent_runtime_helpers`` imports this module at top
+    # level, so a module-level import here would be a cycle (same reason
+    # ``note_turn_start`` is pulled in inside this function).
+    from agent.agent_runtime_helpers import TURN_USER_MARKER_KEY
+    _turn_user_marker = uuid.uuid4().hex
+    user_msg[TURN_USER_MARKER_KEY] = _turn_user_marker
 
     # Add the current user message after the prompt/session setup has made
     # close persistence safe. The handoff above preserves any marker already
@@ -1274,6 +1293,7 @@ def build_turn_context(
         effective_task_id=effective_task_id,
         turn_id=turn_id,
         current_turn_user_idx=current_turn_user_idx,
+        current_turn_user_marker=_turn_user_marker,
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,

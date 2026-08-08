@@ -8,6 +8,7 @@
     "start": "docusaurus start",
     "prebuild": "node scripts/prebuild.mjs",
     "build": "docusaurus build",
+    "build:fast": "docusaurus build --locale en",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
     "clear": "docusaurus clear",

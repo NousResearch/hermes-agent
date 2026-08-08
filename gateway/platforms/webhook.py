@@ -43,6 +43,7 @@ import sys
 import time
 from collections import deque
 from typing import Any, Deque, Dict, Optional
+from urllib.parse import quote
 
 try:
     from aiohttp import web
@@ -64,6 +65,7 @@ from gateway.platforms.webhook_filters import (
     WebhookRouteProcessor,
 )
 from gateway.response_filters import is_autonomous_silence_response
+from gateway.session import build_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +290,14 @@ class WebhookAdapter(BasePlatformAdapter):
         # Content-Length and would otherwise bypass the header check below.
         app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
+        app.router.add_post(
+            "/webhooks/{route_name}/deliveries/{delivery_id}/stop",
+            self._handle_stop_delivery,
+        )
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}/deliveries/{delivery_id}/stop",
+            self._handle_stop_delivery,
+        )
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
         # Multi-profile multiplexing: a /p/<profile>/webhooks/<route> prefix
         # routes the inbound event to that profile. Same handler; the profile is
@@ -470,6 +480,213 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
+
+    def _delivery_session_chat_id(self, route_name: str, delivery_id: str) -> str:
+        return f"webhook:{route_name}:{delivery_id}"
+
+    @staticmethod
+    def _delivery_stop_path(
+        route_name: str,
+        delivery_id: str,
+        profile: Optional[str] = None,
+    ) -> str:
+        route = quote(route_name, safe="")
+        delivery = quote(delivery_id, safe="")
+        if profile:
+            return (
+                f"/p/{quote(profile, safe='')}/webhooks/{route}/"
+                f"deliveries/{delivery}/stop"
+            )
+        return f"/webhooks/{route}/deliveries/{delivery}/stop"
+
+    def _delivery_source(
+        self,
+        route_name: str,
+        delivery_id: str,
+        profile: Optional[str] = None,
+    ):
+        source = self.build_source(
+            chat_id=self._delivery_session_chat_id(route_name, delivery_id),
+            chat_name=f"webhook/{route_name}",
+            chat_type="webhook",
+            user_id=f"webhook:{route_name}",
+            user_name=route_name,
+        )
+        if profile:
+            source.profile = profile
+        return source
+
+    def _delivery_session_key(self, source) -> str:
+        """Runner-side session key for this delivery (profile-namespaced).
+
+        This is the key the gateway runner registers the running agent under in
+        ``_running_agents`` — via ``_session_key_for_source`` when available, so
+        a /p/<profile>/ delivery lands in the ``agent:<profile>:`` namespace the
+        live gateway uses. The fallback mirrors that namespacing off
+        ``source.profile``.
+        """
+        runner = self.gateway_runner
+        if runner and hasattr(runner, "_session_key_for_source"):
+            try:
+                key = runner._session_key_for_source(source)
+                if isinstance(key, str) and key:
+                    return key
+            except Exception:
+                logger.debug("[webhook] failed to resolve session key via gateway runner", exc_info=True)
+
+        return build_session_key(
+            source,
+            group_sessions_per_user=self.config.extra.get(
+                "group_sessions_per_user", True
+            ),
+            thread_sessions_per_user=self.config.extra.get(
+                "thread_sessions_per_user", False
+            ),
+            profile=getattr(source, "profile", None),
+        )
+
+    def _delivery_adapter_session_key(self, source) -> str:
+        """Adapter-side session key for this delivery (profile-agnostic).
+
+        ``BasePlatformAdapter.handle_message`` keys its per-session interrupt
+        guard (``_active_sessions``) and owner task (``_session_tasks``) with
+        ``build_session_key`` and *no* profile argument, so a /p/<profile>/
+        delivery's adapter-side state lives in the legacy ``agent:main:``
+        namespace even while the runner tracks it under ``agent:<profile>:``.
+        Mirror that computation exactly (same config source and defaults as
+        ``handle_message``) so the stop endpoint cancels the delivery's real
+        adapter task instead of a profile-namespaced key that never matches.
+        """
+        return build_session_key(
+            source,
+            group_sessions_per_user=self.config.extra.get(
+                "group_sessions_per_user", True
+            ),
+            thread_sessions_per_user=self.config.extra.get(
+                "thread_sessions_per_user", False
+            ),
+        )
+
+    async def _handle_stop_delivery(self, request: "web.Request") -> "web.Response":
+        """POST /webhooks/{route}/deliveries/{delivery_id}/stop.
+
+        Stops a running webhook delivery without deleting the persisted session
+        transcript. Auth follows the same route secret as the original webhook.
+        """
+        self._reload_dynamic_routes()
+
+        route_name = request.match_info.get("route_name", "")
+        delivery_id = request.match_info.get("delivery_id", "")
+        route_config = self._routes.get(route_name)
+
+        profile = self._resolve_request_profile(request)
+        if profile is _PROFILE_REJECTED:
+            return web.json_response(
+                {"error": "Unknown or unconfigured profile"}, status=404
+            )
+
+        if not route_config:
+            return web.json_response(
+                {"error": f"Unknown route: {route_name}"}, status=404
+            )
+        if not self._route_allows_profile(route_config, profile):
+            return web.json_response(
+                {"error": f"Unknown route: {route_name}"}, status=404
+            )
+        if route_config.get("enabled", True) is False:
+            return web.json_response(
+                {"error": f"Route disabled: {route_name}"}, status=403
+            )
+        if not delivery_id:
+            return web.json_response({"error": "Missing delivery_id"}, status=400)
+
+        try:
+            raw_body = await request.read()
+        except Exception as e:
+            logger.error("[webhook] Failed to read stop body: %s", e)
+            return web.json_response({"error": "Bad request"}, status=400)
+
+        secret = route_config.get("secret", self._global_secret)
+        if not secret:
+            logger.error(
+                "[webhook] Route %s has no HMAC secret; refusing stop request",
+                route_name,
+            )
+            return web.json_response(
+                {"error": "Webhook route is missing an HMAC secret"},
+                status=403,
+            )
+        if secret != _INSECURE_NO_AUTH and not self._validate_signature(request, raw_body, secret):
+            logger.warning(
+                "[webhook] Invalid stop signature for route %s delivery %s",
+                route_name,
+                delivery_id,
+            )
+            return web.json_response({"error": "Invalid signature"}, status=401)
+
+        source = self._delivery_source(route_name, delivery_id, profile)
+        # The runner and the adapter key the same delivery under different
+        # namespaces when multiplexing (agent:<profile>: vs agent:main:), so the
+        # stop endpoint must target each with its own key — a single key would
+        # silently miss one side for /p/<profile>/ deliveries.
+        runner_session_key = self._delivery_session_key(source)
+        adapter_session_key = self._delivery_adapter_session_key(source)
+        runner = self.gateway_runner
+        runner_active = False
+        adapter_active = (
+            adapter_session_key in self._active_sessions
+            or (
+                adapter_session_key in self._session_tasks
+                and not self._session_tasks[adapter_session_key].done()
+            )
+        )
+
+        if runner is not None:
+            running_agents = getattr(runner, "_running_agents", {}) or {}
+            runner_active = runner_session_key in running_agents
+            if runner_active:
+                # A runner-side failure must never skip the adapter-side
+                # cancellation below: that adapter task is the live asyncio.Task
+                # this endpoint exists to stop, and it is tracked separately from
+                # the runner's _running_agents entry. Isolate (and surface) any
+                # runner error instead of letting it 500 out before we cancel.
+                try:
+                    if hasattr(runner, "_interrupt_and_clear_session"):
+                        await runner._interrupt_and_clear_session(
+                            runner_session_key,
+                            source,
+                            interrupt_reason="Stop requested for webhook delivery",
+                            invalidation_reason="webhook_delivery_stop",
+                        )
+                    else:
+                        running_agent = running_agents.get(runner_session_key)
+                        if hasattr(running_agent, "interrupt"):
+                            running_agent.interrupt("Stop requested for webhook delivery")
+                        running_agents.pop(runner_session_key, None)
+                except Exception:
+                    logger.exception(
+                        "[webhook] runner interrupt failed for route %s delivery %s; "
+                        "continuing with adapter-side cancellation",
+                        route_name,
+                        delivery_id,
+                    )
+
+        if adapter_active:
+            await self.cancel_session_processing(adapter_session_key)
+
+        response_payload = {
+            "status": "stopped",
+            "route": route_name,
+            "delivery_id": delivery_id,
+        }
+        if profile and isinstance(profile, str):
+            response_payload["profile"] = profile
+
+        if not runner_active and not adapter_active:
+            response_payload["status"] = "not_running"
+            return web.json_response(response_payload, status=409)
+
+        return web.json_response(response_payload)
 
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
@@ -871,7 +1088,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        session_chat_id = self._delivery_session_chat_id(route_name, delivery_id)
 
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
@@ -929,6 +1146,11 @@ class WebhookAdapter(BasePlatformAdapter):
                 "route": route_name,
                 "event": event_type,
                 "delivery_id": delivery_id,
+                "stop_path": self._delivery_stop_path(
+                    route_name,
+                    delivery_id,
+                    profile if isinstance(profile, str) else None,
+                ),
             },
             status=202,
         )

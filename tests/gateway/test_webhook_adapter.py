@@ -22,6 +22,7 @@ import json
 import socket
 import time
 from collections import deque
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -35,6 +36,7 @@ from gateway.platforms.webhook import (
     _INSECURE_NO_AUTH,
     check_webhook_requirements,
 )
+from gateway.session import build_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +75,18 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
     # Mirror connect(): client_max_size enforces the cap on chunked bodies.
     app = web.Application(client_max_size=adapter._max_body_bytes)
     app.router.add_get("/health", adapter._handle_health)
+    app.router.add_post(
+        "/webhooks/{route_name}/deliveries/{delivery_id}/stop",
+        adapter._handle_stop_delivery,
+    )
+    app.router.add_post(
+        "/p/{profile}/webhooks/{route_name}/deliveries/{delivery_id}/stop",
+        adapter._handle_stop_delivery,
+    )
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
+    app.router.add_post(
+        "/p/{profile}/webhooks/{route_name}", adapter._handle_webhook
+    )
     return app
 
 
@@ -639,6 +652,431 @@ class TestSessionIsolation:
         ids = {ev.source.chat_id for ev in captured_events}
         assert len(ids) == 2, "Each delivery must have a unique session chat_id"
 
+    @pytest.mark.asyncio
+    async def test_accepted_webhook_returns_stop_path(self):
+        """Accepted webhook runs expose the delivery-specific stop endpoint."""
+        routes = {"ci": {"secret": _INSECURE_NO_AUTH, "prompt": "build"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/ci",
+                json={"ref": "main"},
+                headers={"X-GitHub-Delivery": "aaa-111"},
+            )
+            assert resp.status == 202
+            body = await resp.json()
+
+        assert body["delivery_id"] == "aaa-111"
+        assert body["stop_path"] == "/webhooks/ci/deliveries/aaa-111/stop"
+
+
+class TestProfileScopedStopDelivery:
+    @pytest.mark.asyncio
+    async def test_profile_webhook_returns_matching_prefixed_stop_path(self):
+        routes = {
+            "ci": {
+                "profile": "coder",
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "build",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        adapter.gateway_runner = SimpleNamespace(
+            config=SimpleNamespace(multiplex_profiles=True)
+        )
+        app = _create_app(adapter)
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[("default", None), ("coder", None)],
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/p/coder/webhooks/ci",
+                    json={"ref": "main"},
+                    headers={"X-GitHub-Delivery": "profile-111"},
+                )
+                body = await resp.json()
+                await asyncio.sleep(0)
+        assert resp.status == 202
+        assert body["stop_path"] == (
+            "/p/coder/webhooks/ci/deliveries/profile-111/stop"
+        )
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.profile == "coder"
+
+    @pytest.mark.asyncio
+    async def test_profile_stop_targets_profile_namespaced_session_key(self):
+        routes = {
+            "ci": {
+                "profile": "coder",
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "build",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        source = adapter._delivery_source("ci", "profile-111")
+        source.profile = "coder"
+        expected_key = build_session_key(source, profile="coder")
+        calls = []
+
+        class Runner:
+            config = SimpleNamespace(
+                multiplex_profiles=True,
+                group_sessions_per_user=True,
+                thread_sessions_per_user=False,
+            )
+
+            def __init__(self):
+                self._running_agents = {expected_key: MagicMock()}
+
+            def _session_key_for_source(self, request_source):
+                assert request_source.profile == "coder"
+                return build_session_key(
+                    request_source,
+                    profile=request_source.profile,
+                )
+
+            async def _interrupt_and_clear_session(
+                self,
+                key,
+                request_source,
+                *,
+                interrupt_reason,
+                invalidation_reason,
+            ):
+                calls.append(
+                    (key, request_source.profile, interrupt_reason, invalidation_reason)
+                )
+                self._running_agents.pop(key, None)
+
+        adapter.gateway_runner = Runner()
+        app = _create_app(adapter)
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[("default", None), ("coder", None)],
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/p/coder/webhooks/ci/deliveries/profile-111/stop",
+                    data=b"",
+                )
+                body = await resp.json()
+
+        assert resp.status == 200
+        assert body == {
+            "status": "stopped",
+            "route": "ci",
+            "delivery_id": "profile-111",
+            "profile": "coder",
+        }
+        assert calls == [
+            (
+                expected_key,
+                "coder",
+                "Stop requested for webhook delivery",
+                "webhook_delivery_stop",
+            )
+        ]
+        assert expected_key.startswith("agent:coder:webhook:webhook:")
+
+    @pytest.mark.asyncio
+    async def test_profile_stop_rejects_unserved_profile(self):
+        routes = {
+            "ci": {
+                "profile": "coder",
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "build",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.gateway_runner = SimpleNamespace(
+            config=SimpleNamespace(multiplex_profiles=True)
+        )
+        app = _create_app(adapter)
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[("default", None), ("coder", None)],
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/p/unknown/webhooks/ci/deliveries/profile-111/stop",
+                    data=b"",
+                )
+                body = await resp.json()
+        assert resp.status == 404
+        assert body == {"error": "Unknown or unconfigured profile"}
+
+    @pytest.mark.asyncio
+    async def test_profile_stop_cancels_adapter_task_under_main_namespace(self):
+        """Profile stop cancels the adapter task even though the adapter keyed it
+        under ``agent:main`` while the runner keyed the agent under
+        ``agent:<profile>``.
+
+        ``BasePlatformAdapter.handle_message`` registers ``_active_sessions`` /
+        ``_session_tasks`` with a profile-less key, while the gateway runner
+        tracks the running agent under the profile namespace. A single-key stop
+        path interrupts the runner but leaks the adapter task; both sides must be
+        targeted with their own key.
+        """
+        routes = {
+            "ci": {
+                "profile": "coder",
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "build",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+
+        source = adapter._delivery_source("ci", "profile-111", "coder")
+        # Adapter maps use the profile-LESS key (what handle_message computes);
+        # the runner map uses the profile-AWARE key. These differ by namespace.
+        adapter_key = build_session_key(source)
+        runner_key = build_session_key(source, profile="coder")
+        assert adapter_key != runner_key
+        assert adapter_key.startswith("agent:main:webhook:webhook:")
+        assert runner_key.startswith("agent:coder:webhook:webhook:")
+
+        agent = MagicMock()
+        cancelled = asyncio.Event()
+
+        async def _parked_task():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        task = asyncio.create_task(_parked_task())
+        adapter._active_sessions[adapter_key] = asyncio.Event()
+        adapter._session_tasks[adapter_key] = task
+
+        class Runner:
+            config = SimpleNamespace(
+                multiplex_profiles=True,
+                group_sessions_per_user=True,
+                thread_sessions_per_user=False,
+            )
+
+            def __init__(self):
+                self._running_agents = {runner_key: agent}
+
+            def _session_key_for_source(self, request_source):
+                return build_session_key(
+                    request_source, profile=request_source.profile
+                )
+
+            async def _interrupt_and_clear_session(
+                self,
+                key,
+                request_source,
+                *,
+                interrupt_reason,
+                invalidation_reason,
+            ):
+                assert key == runner_key
+                assert invalidation_reason == "webhook_delivery_stop"
+                self._running_agents[key].interrupt(interrupt_reason)
+                self._running_agents.pop(key, None)
+
+        adapter.gateway_runner = Runner()
+        app = _create_app(adapter)
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[("default", None), ("coder", None)],
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/p/coder/webhooks/ci/deliveries/profile-111/stop",
+                    data=b"",
+                )
+                body = await resp.json()
+
+        assert resp.status == 200
+        assert body == {
+            "status": "stopped",
+            "route": "ci",
+            "delivery_id": "profile-111",
+            "profile": "coder",
+        }
+        # Runner side: the profile-namespaced agent was interrupted + cleared.
+        agent.interrupt.assert_called_once_with("Stop requested for webhook delivery")
+        assert runner_key not in adapter.gateway_runner._running_agents
+        # Adapter side: the profile-less task was actually cancelled + cleared
+        # (the regression: this used to no-op because the stop path checked the
+        # profile-namespaced key against the profile-less adapter maps).
+        assert cancelled.is_set()
+        assert adapter_key not in adapter._active_sessions
+        assert adapter_key not in adapter._session_tasks
+
+
+class TestStopDelivery:
+    @pytest.mark.asyncio
+    async def test_stop_delivery_interrupts_runner_and_cancels_adapter_task(self):
+        """Stop endpoint terminates the active webhook delivery without deleting logs."""
+        secret = "real-secret"
+        routes = {"ci": {"secret": secret, "prompt": "build"}}
+        adapter = _make_adapter(routes=routes)
+        source = adapter._delivery_source("ci", "aaa-111")
+        session_key = build_session_key(source)
+        agent = MagicMock()
+        cancelled = asyncio.Event()
+
+        async def _parked_task():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        task = asyncio.create_task(_parked_task())
+        adapter._active_sessions[session_key] = asyncio.Event()
+        adapter._session_tasks[session_key] = task
+        adapter._pending_messages[session_key] = MagicMock()
+
+        class _Runner:
+            def __init__(self):
+                self.adapters = {Platform.WEBHOOK: adapter}
+                self._running_agents = {session_key: agent}
+                self._running_agents_ts = {session_key: time.time()}
+                self._pending_messages = {session_key: "queued"}
+
+            def _session_key_for_source(self, _source):
+                return session_key
+
+            async def _interrupt_and_clear_session(
+                self,
+                key,
+                _source,
+                *,
+                interrupt_reason,
+                invalidation_reason,
+            ):
+                assert key == session_key
+                assert invalidation_reason == "webhook_delivery_stop"
+                self._running_agents[key].interrupt(interrupt_reason)
+                self._running_agents.pop(key, None)
+                self._running_agents_ts.pop(key, None)
+                self._pending_messages.pop(key, None)
+
+        adapter.gateway_runner = _Runner()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/ci/deliveries/aaa-111/stop",
+                data=b"",
+                headers={"X-Webhook-Signature": _generic_signature(b"", secret)},
+            )
+            assert resp.status == 200
+            body = await resp.json()
+
+        assert body == {
+            "status": "stopped",
+            "route": "ci",
+            "delivery_id": "aaa-111",
+        }
+        agent.interrupt.assert_called_once_with("Stop requested for webhook delivery")
+        assert session_key not in adapter._active_sessions
+        assert session_key not in adapter._session_tasks
+        assert session_key not in adapter._pending_messages
+        assert cancelled.is_set()
+
+    @pytest.mark.asyncio
+    async def test_stop_delivery_returns_not_running_for_finished_delivery(self):
+        """Finished or unknown deliveries report not_running instead of deleting state."""
+        routes = {"ci": {"secret": _INSECURE_NO_AUTH, "prompt": "build"}}
+        adapter = _make_adapter(routes=routes)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/ci/deliveries/finished/stop", data=b"")
+            body = await resp.json()
+
+        assert resp.status == 409
+        assert body == {
+            "status": "not_running",
+            "route": "ci",
+            "delivery_id": "finished",
+        }
+
+    @pytest.mark.asyncio
+    async def test_stop_delivery_requires_route_signature(self):
+        """Real route secrets protect the stop endpoint too."""
+        routes = {"ci": {"secret": "real-secret", "prompt": "build"}}
+        adapter = _make_adapter(routes=routes)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/ci/deliveries/aaa-111/stop", data=b"")
+
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_stop_delivery_cancels_adapter_task_when_runner_interrupt_raises(self):
+        """A runner-side interrupt failure must not skip adapter cancellation.
+
+        Adapter-side cancellation is the behavior this endpoint restores, so a
+        raising ``_interrupt_and_clear_session`` must be isolated: the live
+        adapter task is still cancelled and the request does not 500.
+        """
+        routes = {"ci": {"secret": _INSECURE_NO_AUTH, "prompt": "build"}}
+        adapter = _make_adapter(routes=routes)
+        source = adapter._delivery_source("ci", "aaa-111")
+        session_key = build_session_key(source)
+        cancelled = asyncio.Event()
+
+        async def _parked_task():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        task = asyncio.create_task(_parked_task())
+        adapter._active_sessions[session_key] = asyncio.Event()
+        adapter._session_tasks[session_key] = task
+
+        class _Runner:
+            def __init__(self):
+                self._running_agents = {session_key: MagicMock()}
+
+            def _session_key_for_source(self, _source):
+                return session_key
+
+            async def _interrupt_and_clear_session(self, *args, **kwargs):
+                raise RuntimeError("boom")
+
+        adapter.gateway_runner = _Runner()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/ci/deliveries/aaa-111/stop", data=b"")
+            body = await resp.json()
+
+        assert resp.status == 200
+        assert body == {"status": "stopped", "route": "ci", "delivery_id": "aaa-111"}
+        # The runner raised, but the adapter task was still cancelled + cleared.
+        assert cancelled.is_set()
+        assert session_key not in adapter._session_tasks
+
+    @pytest.mark.asyncio
+    async def test_stop_delivery_rejects_disabled_route(self):
+        """Disabled routes reject stop requests just like inbound deliveries."""
+        routes = {"ci": {"secret": _INSECURE_NO_AUTH, "prompt": "build", "enabled": False}}
+        adapter = _make_adapter(routes=routes)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/ci/deliveries/aaa-111/stop", data=b"")
+            body = await resp.json()
+
+        assert resp.status == 403
+        assert body == {"error": "Route disabled: ci"}
+
 
 # ===================================================================
 # Silence-marker suppression
@@ -929,12 +1367,7 @@ class TestMultiplexProfileWebhookAuthentication:
 
     @staticmethod
     def _app(adapter):
-        app = _create_app(adapter)
-        app.router.add_post(
-            "/p/{profile}/webhooks/{route_name}",
-            adapter._handle_webhook,
-        )
-        return app
+        return _create_app(adapter)
 
     @staticmethod
     def _headers(body: bytes, secret: str):

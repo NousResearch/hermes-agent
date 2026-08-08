@@ -193,6 +193,9 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 |------|-----------|
 | [`pre_tool_call`](/user-guide/features/hooks#pre_tool_call) | Before any tool executes |
 | [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | After any tool returns |
+| [`transform_tool_result`](/user-guide/features/hooks#transform_tool_result) | After any tool returns, before the result enters model context. Return a string to replace the result. |
+| [`transform_terminal_output`](/user-guide/features/hooks#transform_terminal_output) | Before terminal output is truncated, stripped of ANSI sequences, and redacted. Return a string to replace the output. |
+| [`transform_llm_output`](/user-guide/features/hooks#transform_llm_output) | After the final response is produced, before it is delivered to the user. Return a string to replace the response. |
 | [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the LLM loop — can return `{"context": "..."}` to [inject context into the user message](/user-guide/features/hooks#pre_llm_call) |
 | [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | Once per turn, after the LLM loop (successful turns only) |
 | [`on_session_start`](/user-guide/features/hooks#on_session_start) | New session created (first turn only) |

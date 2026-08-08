@@ -121,6 +121,19 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
+    def test_excludes_state_snapshots(self):
+        """state-snapshots/ holds prior quick snapshots, including their own
+        multi-GB state.db copies plus .env/auth.json. Archiving them would
+        re-ship an older backup inside every new one."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("state-snapshots/20260803-230143-pre-update/state.db"))
+        assert _should_exclude(Path("state-snapshots/20260803-230143-pre-update/.env"))
+
+    def test_excludes_update_staging(self):
+        """update-staging/ holds staged working trees the updater recreates."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("update-staging/hermes-agent-abc1234/run_agent.py"))
+
     def test_excludes_sqlite_sidecars(self):
         """SQLite WAL/SHM/journal sidecars must not ship alongside the
         safe-copied .db — pairing a fresh snapshot with stale sidecar state

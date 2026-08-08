@@ -14,7 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _mcp_url_with_token
+from tools.mcp_tool import MCPServerTask
+from tools.mcp_tool_errors import _mcp_url_with_token
 
 
 class TestMcpUrlWithToken:

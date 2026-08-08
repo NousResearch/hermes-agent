@@ -725,7 +725,9 @@ def init_agent(
         api_mode is None
         and agent.api_mode == "chat_completions"
         and agent.provider != "copilot-acp"
+        and agent.provider != "kiro-acp"
         and not str(agent.base_url or "").lower().startswith("acp://copilot")
+        and not str(agent.base_url or "").lower().startswith("acp://kiro")
         and not str(agent.base_url or "").lower().startswith("acp+tcp://")
         and not agent._is_azure_openai_url()
         and (
@@ -1179,6 +1181,10 @@ def init_agent(
             if agent.provider == "copilot-acp":
                 client_kwargs["command"] = agent.acp_command
                 client_kwargs["args"] = agent.acp_args
+            elif agent.provider == "kiro-acp":
+                client_kwargs["command"] = agent.acp_command
+                client_kwargs["args"] = agent.acp_args
+                client_kwargs["model"] = str(agent.model or "auto").strip() or "auto"
             effective_base = base_url
             if base_url_host_matches(effective_base, "openrouter.ai"):
                 from agent.auxiliary_client import build_or_headers

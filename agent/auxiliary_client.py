@@ -62,6 +62,11 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+# ACP backend marker for the Kiro CLI agent (mirrors the copilot "acp://copilot"
+# marker). Used as a sentinel base_url so routing can detect a kiro-acp client
+# without depending on the kiro_acp_client module at import time.
+ACP_MARKER_KIRO = "acp://kiro"
+
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # openai SDK pulls a large type tree (~240 ms cold, including responses/*,
 # graders/*). We expose `OpenAI` here as a thin proxy that imports the SDK on
@@ -522,6 +527,9 @@ _PROVIDER_ALIASES = {
     "github-models": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "kiro": "kiro-acp",
+    "kiro-acp": "kiro-acp",
+    "kiro-cli": "kiro-acp",
     "tencent": "tencent-tokenhub",
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
@@ -2033,6 +2041,12 @@ def _maybe_wrap_anthropic(
     try:
         from agent.copilot_acp_client import CopilotACPClient
         if _safe_isinstance(client_obj, CopilotACPClient):
+            return client_obj
+    except ImportError:
+        pass
+    try:
+        from agent.kiro_acp_client import KiroACPClient
+        if _safe_isinstance(client_obj, KiroACPClient):
             return client_obj
     except ImportError:
         pass
@@ -5645,6 +5659,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
             return sync_client, model
     except ImportError:
         pass
+    try:
+        from agent.kiro_acp_client import KiroACPClient
+        if isinstance(sync_client, KiroACPClient):
+            return sync_client, model
+    except ImportError:
+        pass
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -6405,6 +6425,26 @@ def resolve_provider_client(
                 base_url=base_url,
                 command=command,
                 args=args,
+            )
+        elif provider == "kiro-acp":
+            api_key = str(creds.get("api_key", "")).strip() or "kiro-acp"
+            base_url = str(creds.get("base_url", "")).strip() or ACP_MARKER_KIRO
+            command = str(creds.get("command", "")).strip() or None
+            args = list(creds.get("args") or [])
+            if not final_model:
+                logger.warning(
+                    "resolve_provider_client: kiro-acp requested but no model "
+                    "was provided or configured"
+                )
+                return None, None
+            from agent.kiro_acp_client import KiroACPClient
+
+            client = KiroACPClient(
+                api_key=api_key,
+                base_url=base_url,
+                command=command,
+                args=args,
+                model=final_model,
             )
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -7494,6 +7534,7 @@ def _resolve_task_provider_model(
                 "anthropic",
                 "copilot",
                 "copilot-acp",
+                "kiro-acp",
                 "minimax-oauth",
                 "nous",
                 "openai-codex",

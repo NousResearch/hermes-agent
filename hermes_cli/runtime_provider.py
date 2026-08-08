@@ -1712,6 +1712,27 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    # External-process providers (copilot-acp, kiro-acp, ...) spawn a local CLI
+    # over ACP and take NO api key. Route them here, before the
+    # credential-pool / _resolve_explicit_runtime paths below — those would
+    # otherwise match a (possibly stale) pool entry and return an empty
+    # api_key + no command, which makes setup.runtime_check report a false
+    # "No usable credentials" even though the provider works. Returning a
+    # truthy ``command`` lets the gate's ``bool(runtime.get("command"))``
+    # escape hatch pass, identical to how copilot-acp already behaves.
+    if requested_provider in ("copilot-acp", "kiro-acp"):
+        creds = resolve_external_process_provider_credentials(requested_provider)
+        return {
+            "provider": requested_provider,
+            "api_mode": "chat_completions",
+            "base_url": creds.get("base_url", "").rstrip("/"),
+            "api_key": creds.get("api_key", ""),
+            "command": creds.get("command", ""),
+            "args": list(creds.get("args") or []),
+            "source": creds.get("source", "process"),
+            "requested_provider": requested_provider,
+        }
+
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
     # return provider="custom" with chat_completions api_mode and no valid key).
@@ -2029,6 +2050,19 @@ def resolve_runtime_provider(
         creds = resolve_external_process_provider_credentials(provider)
         return {
             "provider": "copilot-acp",
+            "api_mode": "chat_completions",
+            "base_url": creds.get("base_url", "").rstrip("/"),
+            "api_key": creds.get("api_key", ""),
+            "command": creds.get("command", ""),
+            "args": list(creds.get("args") or []),
+            "source": creds.get("source", "process"),
+            "requested_provider": requested_provider,
+        }
+
+    if provider == "kiro-acp":
+        creds = resolve_external_process_provider_credentials(provider)
+        return {
+            "provider": "kiro-acp",
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),

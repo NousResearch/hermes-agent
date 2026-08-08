@@ -325,11 +325,19 @@ class MemoryStore:
                 params.append(new_trust)
 
             params.append(fact_id)
-            self._conn.execute(
-                f"UPDATE facts SET {', '.join(assignments)} WHERE fact_id = ?",
-                params,
-            )
-            self._conn.commit()
+            try:
+                self._conn.execute(
+                    f"UPDATE facts SET {', '.join(assignments)} WHERE fact_id = ?",
+                    params,
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError:
+                # content was changed to a value another row already holds
+                # (facts.content is UNIQUE). Reject the update instead of
+                # crashing the memory op — mirrors add_fact's graceful
+                # duplicate handling, and matches the not-found return. (#43389)
+                self._conn.rollback()
+                return False
 
             # If content changed, re-extract entities
             if content is not None:

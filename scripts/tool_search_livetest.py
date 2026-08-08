@@ -258,7 +258,7 @@ def setup_isolated_home(enabled: bool, listing: str = "off",
     """
     home_dir = Path(tempfile.mkdtemp(prefix="hermes_ts_live_"))
     hermes_home = home_dir / ".hermes"
-    hermes_home.mkdir(parents=True)
+    hermes_home.mkdir(parents=True, exist_ok=True)
 
     if ORIGINAL_AUTH.exists():
         shutil.copy(ORIGINAL_AUTH, hermes_home / "auth.json")

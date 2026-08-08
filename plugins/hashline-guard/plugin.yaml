@@ -1,0 +1,5 @@
+name: hashline-guard
+version: 0.2.0
+description: Guard rails for hashline behavior.
+author: Michael Anselmi
+kind: standalone

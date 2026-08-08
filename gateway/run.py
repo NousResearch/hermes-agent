@@ -23792,6 +23792,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             str(src.user_id or ""),
             str(getattr(src, "profile", None) or ""),
             bool(context.shared_multi_user_session),
+            str(getattr(context, "user_context", "") or ""),
             discord_ids,
             discord_tools,
             slack_tools,

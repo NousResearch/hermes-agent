@@ -2662,6 +2662,15 @@ DEFAULT_CONFIG = {
             # request flood. Set to 0 to disable the cap entirely.
             "max_concurrent_runs": 10,
         },
+
+        # Config-driven per-user context text injected into the session
+        # system prompt. Maps canonical ``<platform>:<user_id>`` keys to
+        # plain-text context strings. The agent receives the configured
+        # context for the authenticated sender alongside the existing
+        # session context, without editing SOUL.md. Unlisted senders get
+        # no extra context. Invalid entries fail closed (dropped with a
+        # debug log). Empty by default (feature is opt-in).
+        "user_context_map": {},
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

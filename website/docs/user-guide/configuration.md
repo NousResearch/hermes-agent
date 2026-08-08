@@ -2434,3 +2434,25 @@ dashboard:
 - `show_token_analytics` — off by default. The Analytics page and token/cost figures are a **local lower-bound estimate** (they exclude auxiliary calls, retries, fallbacks, and cache writes), so they can read far below the provider bill. Set `true` only if you understand they're not billing.
 - `public_url` — when set, this is the complete authority (scheme + host + optional path prefix) the OAuth `redirect_uri` is built from. Set it for deploys behind reverse proxies that don't reliably forward `X-Forwarded-*` headers. Leave empty to use proxy-header reconstruction.
 - `oauth` / `basic_auth` / `drain_auth` — auth provider config read by the bundled dashboard-auth plugins. The drain secret itself is **not** set here; it's provisioned via the `HERMES_DASHBOARD_DRAIN_SECRET` env var. See [Web Dashboard](/user-guide/features/web-dashboard) for full auth setup.
+
+## Per-User Context (gateway.user_context_map)
+
+Inject stable, per-sender context text into the agent's session prompt so the
+agent receives guidance tailored to each authenticated user without editing
+SOUL.md. Keys use the canonical `<platform>:<user_id>` form.
+
+```yaml
+gateway:
+  user_context_map:
+    "telegram:123456789": "This user prefers bullet-point summaries."
+    "discord:987654321": "Respond in British English."
+```
+
+- The configured text appears under a `**User Context:**` heading in the
+  session context prompt, after the sender's identity line.
+- Unlisted senders get no extra context (existing behaviour is unchanged).
+- The value is resolved once per session and pinned, so it does not mutate
+  mid-conversation and does not break prompt caching.
+- Values are treated as untrusted text (newlines are escaped, length is
+  capped at 4096 chars). Invalid entries are silently dropped with a debug
+  log.

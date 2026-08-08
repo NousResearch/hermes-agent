@@ -1873,6 +1873,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "filter_silence_narration",  # top-level form bridged by gateway/config.py
     "multiplex_profiles",    # top-level form accepted alongside gateway.multiplex_profiles
     "profile_routes",        # top-level form accepted alongside gateway.profile_routes
+    "user_context_map",     # top-level form accepted alongside gateway.user_context_map
     "platforms",             # top-level per-platform map merged by gateway/config.py
     "require_mention",       # top-level convenience form honored by the gateway (#3979)
     "unauthorized_dm_behavior",  # top-level form read by gateway/config.py

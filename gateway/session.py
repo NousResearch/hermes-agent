@@ -324,7 +324,13 @@ class SessionContext:
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
     shared_multi_user_session: bool = False
-    
+
+    # Config-driven per-user context text (from gateway.user_context_map).
+    # Empty string when the sender is not listed or the feature is unused.
+    # Resolved once per session in build_session_context and rendered into
+    # the pinned session context prompt, so it does not mutate mid-conversation.
+    user_context: str = ""
+
     # Session metadata
     session_key: str = ""
     session_id: str = ""
@@ -339,6 +345,7 @@ class SessionContext:
                 p.value: hc.to_dict() for p, hc in self.home_channels.items()
             },
             "shared_multi_user_session": self.shared_multi_user_session,
+            "user_context": self.user_context,
             "session_key": self.session_key,
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -589,6 +596,25 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
+
+    # Config-driven per-user context (from gateway.user_context_map).
+    # Rendered after identity so the agent has the sender's stable context
+    # guidance without editing SOUL.md. The value is pinned per session and
+    # does not change mid-conversation, preserving prompt caching.
+    #
+    # EXCLUDED from shared multi-user sessions: in a shared thread/group,
+    # multiple senders contribute to the same conversation. Each sender's
+    # user_context differs, so rendering it in the pinned system prompt
+    # would bust the cache when the turn switches from sender A to sender B
+    # (the existing code at :556-568 already omits per-sender identity for
+    # the same reason). The per-sender context remains available for a
+    # future per-turn injection path; it is simply not baked into the
+    # cached system prompt in shared sessions.
+    if context.user_context and not context.shared_multi_user_session:
+        lines.append("")
+        lines.append(
+            f"**User Context:** {_format_untrusted_prompt_value(context.user_context)}"
+        )
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
@@ -3712,7 +3738,26 @@ def build_session_context(
         home = config.get_home_channel(platform)
         if home:
             home_channels[platform] = home
-    
+
+    # Resolve per-user context from the config-driven user_context_map.
+    # Keys use the canonical ``<platform>:<user_id>`` form. Unlisted
+    # senders get an empty string (no extra context). The value is
+    # resolved once here and stays stable for the session lifetime,
+    # so the pinned session context prompt does not mutate mid-conversation.
+    user_context = ""
+    user_context_map = getattr(config, "user_context_map", None) or {}
+    if user_context_map and source.user_id and source.platform:
+        _platform_name = source.platform.value
+        _canonical_key = f"{_platform_name}:{source.user_id}"
+        user_context = user_context_map.get(_canonical_key, "")
+        if not user_context:
+            # Also try the user_id_alt (Signal UUID, Feishu union_id) when
+            # the primary user_id did not match.
+            _alt_id = getattr(source, "user_id_alt", None)
+            if _alt_id:
+                _alt_key = f"{_platform_name}:{_alt_id}"
+                user_context = user_context_map.get(_alt_key, "")
+
     context = SessionContext(
         source=source,
         connected_platforms=connected,
@@ -3722,6 +3767,7 @@ def build_session_context(
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         ),
+        user_context=user_context,
     )
     
     if session_entry:

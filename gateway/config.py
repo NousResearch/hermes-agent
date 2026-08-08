@@ -955,6 +955,14 @@ class GatewayConfig:
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
 
+    # Config-driven per-user context text injected into the session system
+    # prompt. Keys use the canonical ``<platform>:<user_id>`` form (e.g.
+    # ``telegram:8407960509``). The value is a plain-text string appended to
+    # the session context prompt under a ``**User Context:**`` heading.
+    # Unlisted senders retain current behaviour (no extra context). Invalid
+    # entries fail closed to no extra context and produce a debug warning.
+    user_context_map: Dict[str, str] = field(default_factory=dict)
+
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             self.systemd_watchdog_seconds
@@ -1185,9 +1193,55 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
-        # Parse profile routes (validated by gateway.profile_routing)
+        # Parse profile routes (validated by gateway/profile_routing)
         from gateway.profile_routing import parse_profile_routes
         profile_routes = parse_profile_routes(data.get("profile_routes") or [])
+
+        # Parse user_context_map: inline dict mapping "<platform>:<user_id>" to
+        # context text. Keys and values are validated (non-empty strings, bounded
+        # length). Invalid entries are silently dropped with a debug log.
+        raw_user_context_map = data.get("user_context_map") or {}
+        if isinstance(raw_user_context_map, str):
+            # File-backed map not supported for user_context_map (unlike
+            # channel_context_map). Treat a string as an error and fall back
+            # to empty.
+            logger.debug(
+                "user_context_map: string value is not supported; "
+                "use an inline mapping. Ignoring."
+            )
+            raw_user_context_map = {}
+        if not isinstance(raw_user_context_map, dict):
+            logger.debug(
+                "user_context_map: expected a mapping, got %s. Ignoring.",
+                type(raw_user_context_map).__name__,
+            )
+            raw_user_context_map = {}
+        user_context_map: Dict[str, str] = {}
+        _MAX_USER_CONTEXT_KEY_LEN = 256
+        _MAX_USER_CONTEXT_VAL_LEN = 4096
+        _MAX_USER_CONTEXT_ENTRIES = 4096
+        for raw_key, raw_val in raw_user_context_map.items():
+            if len(user_context_map) >= _MAX_USER_CONTEXT_ENTRIES:
+                logger.debug(
+                    "user_context_map: exceeded %d entries, remaining ignored",
+                    _MAX_USER_CONTEXT_ENTRIES,
+                )
+                break
+            key = str(raw_key).strip()
+            if not key or len(key) > _MAX_USER_CONTEXT_KEY_LEN:
+                logger.debug("user_context_map: skipping invalid key (len=%d)", len(key))
+                continue
+            val = str(raw_val).strip() if raw_val is not None else ""
+            if not val:
+                logger.debug("user_context_map: skipping empty value for key %s", key)
+                continue
+            if len(val) > _MAX_USER_CONTEXT_VAL_LEN:
+                logger.debug(
+                    "user_context_map: value for key %s exceeds %d chars, truncated",
+                    key, _MAX_USER_CONTEXT_VAL_LEN,
+                )
+                val = val[:_MAX_USER_CONTEXT_VAL_LEN]
+            user_context_map[key] = val
 
         return cls(
             platforms=platforms,
@@ -1214,6 +1268,7 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=profile_routes,
+            user_context_map=user_context_map,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -1358,6 +1413,15 @@ def load_gateway_config() -> GatewayConfig:
                 _pr = gateway_section.get("profile_routes")
             if isinstance(_pr, list):
                 gw_data["profile_routes"] = _pr
+
+            # user_context_map: accept either top-level ``user_context_map`` or
+            # the nested ``gateway.user_context_map`` form (matching the
+            # profile_routes parity above).
+            _ucm = yaml_cfg.get("user_context_map")
+            if _ucm is None and isinstance(gateway_section, dict):
+                _ucm = gateway_section.get("user_context_map")
+            if _ucm is not None:
+                gw_data["user_context_map"] = _ucm
 
             if isinstance(gateway_section, dict):
                 if "multiplex_profiles" in gateway_section and "multiplex_profiles" not in gw_data:

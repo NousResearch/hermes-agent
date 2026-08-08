@@ -21,12 +21,12 @@
 
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Brain } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import {
-  EFFORT_OPTIONS,
   normalizeEffort,
+  optionsForSupportedEfforts,
   VALID_EFFORTS,
 } from "@/lib/reasoning-effort";
 
@@ -38,6 +38,8 @@ interface ReasoningPickerProps {
   profile?: string;
   /** Bumped after the model picker saves, to re-read config in lockstep. */
   refreshKey?: number;
+  /** Optional model-specific effort allow-list from provider metadata. */
+  supportedEfforts?: string[];
   /** Called after a successful change so the sidebar can show an "apply on
    *  /new or reload" notice, matching the model-switch UX. */
   onChanged?: (effort: string) => void;
@@ -47,12 +49,17 @@ export function ReasoningPicker({
   currentModel,
   profile,
   refreshKey = 0,
+  supportedEfforts,
   onChanged,
 }: ReasoningPickerProps) {
   const [effort, setEffort] = useState("medium");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const lastFetchKeyRef = useRef("");
+  const effortOptions = useMemo(
+    () => optionsForSupportedEfforts(supportedEfforts),
+    [supportedEfforts],
+  );
 
   useEffect(() => {
     const fetchKey = `${profile ?? ""}:${currentModel}:${refreshKey}`;
@@ -114,7 +121,7 @@ export function ReasoningPicker({
         onValueChange={onSelect}
         value={effort}
       >
-        {EFFORT_OPTIONS.map((opt) => (
+        {effortOptions.map((opt) => (
           <SelectOption key={opt.value} value={opt.value}>
             {opt.label}
           </SelectOption>

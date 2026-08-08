@@ -270,6 +270,17 @@ class HostSupervisor:
         self.start()
         self._send_frame({"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
 
+    def has_pending_turn(self, sid: str) -> bool:
+        """True when a host completion callback is still registered for ``sid``.
+
+        Read by the serving process to tell "the host still owes this session a
+        terminal frame" from "nothing will ever call back for it". Entries are
+        added in :meth:`submit_turn` and removed by :meth:`_complete_turn` or
+        :meth:`_fail_pending_turns`, all under ``self._lock``.
+        """
+        with self._lock:
+            return any(s == sid for s, _cb in self._pending_turns.values())
+
     def reload_mcp(self, sid: str, *, request_id: str | None = None) -> dict:
         return self.control(
             sid,

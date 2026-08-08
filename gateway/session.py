@@ -1232,6 +1232,10 @@ class AsyncSessionStore:
         return _offloaded
 
 
+class MultiplexSessionCollisionError(RuntimeError):
+    """Active gateway routing aliases one session across profile namespaces."""
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -1317,6 +1321,37 @@ class SessionStore:
         """Load sessions index from disk if not already loaded."""
         with self._lock:
             self._ensure_loaded_locked()
+
+    def assert_no_cross_profile_session_aliases(self) -> None:
+        """Reject active routing that aliases one session across profiles.
+
+        Loading also prunes routing entries whose durable session is already
+        ended. Duplicate keys within one normalized profile are legitimate
+        aliases, but a live session ID shared by distinct profile namespaces
+        would merge caches, transcripts, and turn leases.
+
+        The raised error deliberately omits routing keys and session IDs.
+        """
+        if not getattr(self.config, "multiplex_profiles", False):
+            return
+
+        self._ensure_loaded()
+        profiles_by_session: Dict[str, set[str]] = {}
+        with self._lock:
+            for session_key, entry in self._entries.items():
+                profile = self._profile_from_session_key(session_key)
+                if profile is None:
+                    continue
+                profiles_by_session.setdefault(entry.session_id, set()).add(profile)
+
+        collisions = sum(
+            1 for profiles in profiles_by_session.values() if len(profiles) > 1
+        )
+        if collisions:
+            raise MultiplexSessionCollisionError(
+                "multiplex routing contains "
+                f"{collisions} active cross-profile session collision(s)"
+            )
 
     def _routing_scope(self) -> str:
         """Namespace for this store's rows in the gateway_routing table.
@@ -1969,7 +2004,10 @@ class SessionStore:
         recovered = self._find_gateway_session_row(
             session_key=session_key,
             source=source,
-            allow_peer_fallback=legacy_key is None,
+            allow_peer_fallback=(
+                legacy_key is None
+                and not getattr(self.config, "multiplex_profiles", False)
+            ),
             raise_on_lookup_error=raise_on_lookup_error,
         )
         migrated_legacy = False
@@ -2031,7 +2069,10 @@ class SessionStore:
         recovered = self._find_gateway_session_row(
             session_key=session_key,
             source=source,
-            allow_peer_fallback=legacy_key is None,
+            allow_peer_fallback=(
+                legacy_key is None
+                and not getattr(self.config, "multiplex_profiles", False)
+            ),
         )
         migrated_legacy = False
         if (

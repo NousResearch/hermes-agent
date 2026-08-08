@@ -4722,6 +4722,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
     def _produce():
         from tools.tts_streaming import SentenceChunker
+        from tools.tts_text_normalize import has_unclosed_reasoning_tag
         from tools.tts_tool import _strip_markdown_for_tts
 
         chunker = SentenceChunker()
@@ -4745,7 +4746,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                 except queue.Empty:
                     idle_polls += 1
                     buffered = chunker.buf.strip()
-                    if not buffered or ("<think" in chunker.buf and "</think>" not in chunker.buf):
+                    # Hold the buffer while a reasoning block is still open —
+                    # any variant, not just <think> — so an idle force-flush
+                    # can't synthesise a half-open reasoning tail.
+                    if not buffered or has_unclosed_reasoning_tag(chunker.buf):
                         continue
                     if buffered.endswith((".", "!", "?", "…", ":")) or idle_polls >= idle_polls_before_force_flush:
                         yield from chunker.flush()

@@ -83,7 +83,16 @@ def take_speech_interrupted() -> bool:
 
 # Sentence boundary: after .!? followed by whitespace, or a blank line.
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
-_THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL)
+# Strip every reasoning-tag variant (not just ``<think>``) so a model emitting
+# ``<thinking>`` / ``<reasoning>`` / ``<thought>`` doesn't get spoken aloud.
+# Reuse tts_text_normalize's shared helpers (which draw the canonical tag set
+# from agent.think_scrubber) so the streamed speaker path and the batch
+# normalizer can't drift apart.
+from tools.tts_text_normalize import (  # noqa: E402
+    has_unclosed_reasoning_tag,
+    strip_reasoning_blocks as _strip_reasoning_blocks,
+    strip_unterminated_reasoning as _strip_unterminated_reasoning,
+)
 
 
 class SentenceChunker:
@@ -102,9 +111,9 @@ class SentenceChunker:
 
     def feed(self, delta: str) -> List[str]:
         """Absorb *delta*; return every complete sentence now ready to speak."""
-        self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
-        if "<think" in self.buf and "</think>" not in self.buf:
-            return []  # open think tag — the closing tag may arrive next delta
+        self.buf = _strip_reasoning_blocks(self.buf + delta)
+        if has_unclosed_reasoning_tag(self.buf):
+            return []  # open reasoning tag — the close may arrive next delta
         out: List[str] = []
         start = 0  # skip boundaries that would leave the head too short
         while m := SENTENCE_BOUNDARY_RE.search(self.buf, start):
@@ -118,8 +127,15 @@ class SentenceChunker:
         return out
 
     def flush(self) -> List[str]:
-        """Drain the tail (end-of-text or long-idle flush)."""
-        tail = _THINK_BLOCK_RE.sub("", self.buf).strip()
+        """Drain the tail (end-of-text or long-idle flush).
+
+        ``feed`` holds a delta back on an unclosed reasoning tag; if the stream
+        then ends (or idles out) with that tag never closed, the raw open tail
+        would otherwise be synthesised here.  Drop the unterminated block too,
+        not just closed pairs.
+        """
+        tail = _strip_reasoning_blocks(self.buf)
+        tail = _strip_unterminated_reasoning(tail).strip()
         self.buf = ""
         return [tail] if tail else []
 

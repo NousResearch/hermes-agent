@@ -36,6 +36,42 @@ class TestSentenceChunker:
         assert c.feed("<think>secret reason") == []
         assert c.feed("ing</think>The actual spoken answer. ") == ["The actual spoken answer. "]
 
+    @pytest.mark.parametrize("tag", ["thinking", "reasoning", "thought", "REASONING_SCRATCHPAD"])
+    def test_non_think_reasoning_tags_are_also_stripped_across_deltas(self, tag):
+        # Models that don't use <think> (Gemini/Gemma/GLM via the OpenAI-
+        # compatible path) still must not have their reasoning spoken.
+        c = ts.SentenceChunker()
+        assert c.feed(f"<{tag}>secret reason") == []          # held: open tag, close not here yet
+        assert c.feed(f"ing</{tag}>The actual spoken answer. ") == ["The actual spoken answer. "]
+
+    def test_uppercase_reasoning_tag_is_stripped(self):
+        c = ts.SentenceChunker()
+        assert c.feed("<THINKING>hidden</THINKING>The actual spoken answer. ") == ["The actual spoken answer. "]
+        assert "hidden" not in "".join(c.flush())
+
+    @pytest.mark.parametrize("tag", ["think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD"])
+    def test_flush_drops_unterminated_reasoning_tail(self, tag):
+        # feed() holds a delta back on an open tag; if the stream then ENDS with
+        # that tag never closed, flush() must not emit the raw open tail — the
+        # gateway synthesises every flushed clause.
+        c = ts.SentenceChunker()
+        assert c.feed(f"<{tag}>secret reasoning to the very end") == []
+        assert c.flush() == []
+
+    @pytest.mark.parametrize("tag", ["think", "thinking", "reasoning", "thought"])
+    def test_flush_keeps_visible_text_before_unterminated_reasoning(self, tag):
+        # Visible prose before an unterminated block is still spoken; only the
+        # open reasoning tail is dropped.
+        c = ts.SentenceChunker()
+        assert c.feed(f"The visible answer. <{tag}>runaway reasoning") == []
+        assert c.flush() == ["The visible answer."]
+
+    def test_flush_drops_unterminated_reasoning_split_across_deltas(self):
+        c = ts.SentenceChunker()
+        assert c.feed("<reasoni") == []          # partial open tag
+        assert c.feed("ng>secret chain") == []   # tag completes, still open
+        assert c.flush() == []
+
 
     def test_paragraph_break_is_a_boundary(self):
         c = ts.SentenceChunker()

@@ -182,8 +182,9 @@ class TestConfirmDestructiveSlash:
 
     This is the flow bug #33961 froze on native Windows.  The fix made it
     platform-agnostic (modal via the app loop), so the assertion holds on
-    whichever host runs it — including the Windows CI job, where it is the
-    genuine regression guard.
+    whichever host runs it.  The class carries no OS marker, so the
+    ``windows_only`` lane deselects it — the deadlock tests above are the
+    Windows-side regression guard.
     """
 
     def _make_interactive_cli(self):

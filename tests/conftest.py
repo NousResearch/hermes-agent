@@ -1159,6 +1159,29 @@ def pytest_runtest_setup(item):
             )
 
 
+def _reject_multiple_os_marks(items):
+    """Fail collection when one test carries two host-OS markers.
+
+    Every marker in ``_OS_MARKS`` skips on all but one host, so two of them
+    on the same item means it is skipped on *every* host — a test that never
+    runs anywhere, reported as green by both the Linux suite and the
+    tests-os lanes. That is the exact silent-coverage-loss the markers were
+    introduced to remove, so it is a hard collection error rather than a
+    warning nobody reads.
+    """
+    offenders = []
+    for item in items:
+        marks = sorted({m.name for m in item.iter_markers() if m.name in _OS_MARKS})
+        if len(marks) > 1:
+            offenders.append(f"  {item.nodeid}: {', '.join(marks)}")
+    if offenders:
+        raise pytest.UsageError(
+            "a test may carry at most one host-OS marker "
+            f"({', '.join(_OS_MARKS)}); these carry several and would be "
+            "skipped on every host:\n" + "\n".join(offenders)
+        )
+
+
 def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
     """Apply host-OS gating, then skip ``requires_wal`` where WAL is unusable.
 
@@ -1171,6 +1194,8 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
     version check: the reason string names the actual linked version so the
     skip is diagnosable rather than mysterious.
     """
+    _reject_multiple_os_marks(items)
+
     for mark_name, (is_host, label) in _OS_MARKS.items():
         if is_host():
             continue

@@ -115,9 +115,17 @@ def test_install_without_source_icon_uses_themed_name(tmp_path, xdg_home, monkey
     assert _parse(entry.read_text(encoding="utf-8"))["Icon"] == "hermes"
 
 
-@pytest.mark.parametrize("platform", ["darwin", "win32"])
-def test_install_is_a_noop_off_linux(tmp_path, monkeypatch, platform):
-    monkeypatch.setattr(lde.sys, "platform", platform)
+@pytest.mark.macos_only
+def test_install_is_a_noop_on_macos(tmp_path):
+    """Faking darwin only renamed the host — the real macOS runner is the
+    only place the `sys.platform` guard is exercised against a real host."""
+    assert lde.install_desktop_entry(_make_project(tmp_path)) is None
+
+
+@pytest.mark.windows_only
+def test_install_is_a_noop_on_windows(tmp_path):
+    """As above for Windows: a fake left POSIX paths and a POSIX XDG layout
+    in place, so the no-op was never proven against a real one."""
     assert lde.install_desktop_entry(_make_project(tmp_path)) is None
 
 

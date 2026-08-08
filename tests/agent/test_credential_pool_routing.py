@@ -377,6 +377,13 @@ class TestFailureAttribution:
         (hermes_home / "auth.json").write_text(
             json.dumps({"version": 1, "credential_pool": {"anthropic": entries}})
         )
+        # Prevent load_pool auto-discovery from reading real ~/.claude/.credentials.json
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None
+        )
         from agent.credential_pool import load_pool
 
         return load_pool("anthropic")

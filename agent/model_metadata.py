@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import time
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse
@@ -1091,6 +1092,41 @@ def _extract_max_completion_tokens(payload: Dict[str, Any]) -> Optional[int]:
     return _extract_first_int(payload, _MAX_COMPLETION_KEYS)
 
 
+def _pricing_unit_divisor(unit: str) -> Optional[Decimal]:
+    """Parse a pricing unit string into a per-token conversion divisor.
+
+    Handles OpenAI-compatible unit spellings: ``per_1m_tokens``,
+    ``per_1k_tokens``, ``per_10k_tokens``, ``per_token``, ``per_million``,
+    ``per_1m``, ``per_1000000``, and bare ``per``. Returns the divisor that
+    converts the reported price to per-token, or ``None`` when the unit is
+    absent/unknown or already per-token (callers then keep historical
+    behavior).
+    """
+    if not unit:
+        return None
+    u = unit.strip().lower()
+    if re.fullmatch(r"per_?tokens?", u):
+        return None  # already per-token
+    # per_N[M|K] tokens — e.g. per_1m_tokens, per_10k_tokens, per_1000000_tokens
+    m = re.fullmatch(r"per_?(\d*\.?\d*)([km]?)(?:_?tokens?)?", u)
+    if m:
+        count_str, suffix = m.groups()
+        if not count_str and not suffix:
+            return None  # bare "per"
+        count = Decimal(count_str) if count_str else Decimal("1")
+        if suffix == "k":
+            count *= Decimal("1000")
+        elif suffix == "m":
+            count *= Decimal("1000000")
+        return count
+    # word forms: per_million(_tokens), per_thousand(_tokens)
+    if u in ("per_million", "per_million_tokens", "per_million_token"):
+        return Decimal("1000000")
+    if u in ("per_thousand", "per_thousand_tokens", "per_thousand_token"):
+        return Decimal("1000")
+    return None
+
+
 def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
     novita_input = payload.get("input_token_price_per_m")
     novita_output = payload.get("output_token_price_per_m")
@@ -1120,6 +1156,13 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
             result["cache_read"] = str(float(deepinfra_pricing["cache_read_tokens"]) / 1_000_000)
         return result
 
+    # OpenAI-compatible endpoints (and aggregators following their schema)
+    # ship prices in explicit per-N-token units — either top-level
+    # ``input_price_per_million`` / ``output_price_per_million`` fields or a
+    # nested ``pricing`` block with a ``unit`` such as ``per_1m_tokens``.
+    # Normalize to per-token at the extraction point (matching the Novita and
+    # DeepInfra branches above); without this the generic cost machinery
+    # multiplies by 1M a second time and reports absurd prices (e.g. $1M/M).
     alias_map = {
         "prompt": ("prompt", "input", "input_cost_per_token", "prompt_token_cost"),
         "completion": ("completion", "output", "output_cost_per_token", "completion_token_cost"),
@@ -1127,6 +1170,49 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token"),
         "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token"),
     }
+    per_million_fields = (
+        ("prompt", payload.get("input_price_per_million")),
+        ("completion", payload.get("output_price_per_million")),
+        (
+            "cache_read",
+            payload.get("cache_read_price_per_million")
+            or payload.get("cache_read_input_price_per_million"),
+        ),
+        (
+            "cache_write",
+            payload.get("cache_write_price_per_million")
+            or payload.get("cache_creation_input_price_per_million"),
+        ),
+    )
+    top_level_values = [value for _, value in per_million_fields if value is not None]
+    nested_pricing = payload.get("pricing") if isinstance(payload.get("pricing"), dict) else None
+    unit_divisor = _pricing_unit_divisor(
+        str(nested_pricing.get("unit", "")) if nested_pricing else ""
+    )
+
+    if top_level_values:
+        # ``*_price_per_million`` fields are semantically fixed at per-1M.
+        result: Dict[str, Any] = {}
+        for target, value in per_million_fields:
+            if value is not None:
+                result[target] = str(Decimal(str(value)) / Decimal("1000000"))
+        return result
+    if unit_divisor is not None and nested_pricing is not None:
+        # Nested ``pricing`` block declares an explicit per-N-token unit.
+        # Resolve values through the same alias set as the generic path below
+        # so vendor key variants (e.g. OpenAI's ``input_cache_read``) work.
+        result: Dict[str, Any] = {}
+        for target, aliases in alias_map.items():
+            for alias in aliases:
+                value = nested_pricing.get(alias)
+                if value is not None and value != "":
+                    if target == "request":
+                        result[target] = value
+                    else:
+                        result[target] = str(Decimal(str(value)) / unit_divisor)
+                    break
+        return result
+
     for mapping in _iter_nested_dicts(payload):
         normalized = {str(key).lower(): value for key, value in mapping.items()}
         if not any(any(alias in normalized for alias in aliases) for aliases in alias_map.values()):

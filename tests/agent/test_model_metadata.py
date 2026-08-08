@@ -11,6 +11,7 @@ Coverage levels:
 """
 
 import time
+from decimal import Decimal
 
 import pytest
 import yaml
@@ -20,6 +21,7 @@ from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
     DEFAULT_FALLBACK_CONTEXT,
+    _pricing_unit_divisor,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -1358,3 +1360,223 @@ class TestFallbackWarning:
             if r.levelno == logging.WARNING and "falling back" in r.getMessage()
         ]
         assert len(fallback_warnings) == 0
+
+
+# =========================================================================
+# Pricing extraction (_extract_pricing)
+# =========================================================================
+
+class TestExtractPricing:
+    """Pricing extraction normalizes per-1M-token prices to per-token.
+
+    OpenAI-compatible endpoints may report ``input_price_per_million`` /
+    ``output_price_per_million`` (top-level) or a nested ``pricing`` block
+    with ``unit: "per_1m_tokens"``. Both must be divided by 1M so the
+    downstream cost machinery (usage_pricing.py) does not scale them a
+    second time and report absurd values.
+    """
+
+    def _extract(self, payload):
+        import agent.model_metadata as mm
+        return mm._extract_pricing(payload)
+
+    def test_top_level_per_million_fields(self):
+        """Top-level input/output_price_per_million are per-1M → per-token."""
+        result = self._extract({
+            "id": "deepseek-v4-flash-0731",
+            "input_price_per_million": 1,
+            "output_price_per_million": 2,
+            "cache_read_price_per_million": 0.02,
+        })
+        assert result == {
+            "prompt": "0.000001",
+            "completion": "0.000002",
+            "cache_read": "2E-8",
+        }
+
+    def test_nested_pricing_with_per_1m_unit(self):
+        """Nested pricing block with unit=per_1m_tokens is normalized too."""
+        result = self._extract({
+            "id": "m",
+            "pricing": {
+                "currency": "CNY",
+                "unit": "per_1m_tokens",
+                "prompt": 1,
+                "completion": 2,
+                "cache_read": 0.02,
+            },
+        })
+        assert result == {
+            "prompt": "0.000001",
+            "completion": "0.000002",
+            "cache_read": "2E-8",
+        }
+
+    def test_nested_pricing_with_per_1k_unit(self):
+        """per_1k_tokens divides by 1000, not 1M."""
+        result = self._extract({
+            "id": "m",
+            "pricing": {"unit": "per_1k_tokens", "prompt": 1, "completion": 2},
+        })
+        assert result == {
+            "prompt": "0.001",
+            "completion": "0.002",
+        }
+
+    def test_nested_pricing_with_per_10k_unit(self):
+        """Compound units like per_10k_tokens parse correctly."""
+        result = self._extract({
+            "id": "m",
+            "pricing": {"unit": "per_10k_tokens", "prompt": 5, "completion": 10},
+        })
+        assert result == {
+            "prompt": "0.0005",
+            "completion": "0.001",
+        }
+
+    def test_nested_pricing_with_per_token_unit(self):
+        """per_token unit leaves values untouched (already per-token)."""
+        result = self._extract({
+            "id": "m",
+            "pricing": {
+                "unit": "per_token",
+                "prompt": 0.000001,
+                "completion": 0.000002,
+            },
+        })
+        assert result == {"prompt": 0.000001, "completion": 0.000002}
+
+    def test_unknown_unit_falls_through_to_alias_map(self):
+        """An unrecognized unit does not crash and keeps historical behavior."""
+        result = self._extract({
+            "id": "m",
+            "pricing": {"unit": "per_bazillion_tokens", "prompt": 1},
+        })
+        assert result == {"prompt": 1}
+
+    def test_unit_word_forms(self):
+        """Word-form units (per_million, per_thousand, per_1m) parse too."""
+        for unit, prompt_expected in (
+            ("per_million", "0.000001"),
+            ("per_million_tokens", "0.000001"),
+            ("per_1m", "0.000001"),
+            ("per_1000000", "0.000001"),
+            ("per_thousand", "0.001"),
+        ):
+            result = self._extract({
+                "id": "m",
+                "pricing": {"unit": unit, "prompt": 1, "completion": 2},
+            })
+            divisor = _pricing_unit_divisor(unit)
+            assert divisor is not None
+            assert result["prompt"] == prompt_expected
+            assert result["completion"] == str(Decimal("2") / divisor)
+
+    def test_nested_openai_official_key_names(self):
+        """OpenAI's input_cache_read key works in a unit-tagged pricing block."""
+        result = self._extract({
+            "id": "m",
+            "pricing": {
+                "unit": "per_1m_tokens",
+                "prompt": 1,
+                "completion": 2,
+                "input_cache_read": 1.25,
+            },
+        })
+        assert result == {
+            "prompt": "0.000001",
+            "completion": "0.000002",
+            "cache_read": "0.00000125",
+        }
+
+    def test_top_level_cache_read_input_field(self):
+        """OpenAI's cache_read_input_price_per_million top-level field."""
+        result = self._extract({
+            "id": "m",
+            "input_price_per_million": 1,
+            "output_price_per_million": 2,
+            "cache_read_input_price_per_million": 1.25,
+        })
+        assert result == {
+            "prompt": "0.000001",
+            "completion": "0.000002",
+            "cache_read": "0.00000125",
+        }
+
+    def test_top_level_fields_take_precedence_over_nested(self):
+        """Explicit top-level fields win when a nested block also exists."""
+        result = self._extract({
+            "id": "m",
+            "input_price_per_million": 1,
+            "output_price_per_million": 2,
+            "pricing": {
+                "unit": "per_1m_tokens",
+                "prompt": 999,
+                "completion": 999,
+            },
+        })
+        assert result == {"prompt": "0.000001", "completion": "0.000002"}
+
+    def test_per_token_pricing_untouched(self):
+        """Per-token pricing (OpenRouter style) still flows to the alias map."""
+        result = self._extract({
+            "id": "m",
+            "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+        })
+        assert result == {"prompt": "0.000001", "completion": "0.000002"}
+
+    def test_novita_format_still_works(self):
+        """Novita per-token-per-10k fields keep their existing conversion."""
+        result = self._extract({
+            "id": "m",
+            "input_token_price_per_m": 1.0,
+            "output_token_price_per_m": 2.0,
+        })
+        assert result == {
+            "prompt": "1e-10",
+            "completion": "2e-10",
+        }
+
+    def test_deepinfra_format_still_works(self):
+        """DeepInfra $/MTok metadata keeps its existing conversion."""
+        result = self._extract({
+            "id": "m",
+            "metadata": {
+                "pricing": {
+                    "input_tokens": 1.0,
+                    "output_tokens": 2.0,
+                    "cache_read_tokens": 0.02,
+                }
+            },
+        })
+        assert result == {
+            "prompt": "1e-06",
+            "completion": "2e-06",
+            "cache_read": "2e-08",
+        }
+
+    def test_no_pricing_returns_empty(self):
+        """Models without pricing info yield an empty dict, not an error."""
+        assert self._extract({"id": "m"}) == {}
+        assert self._extract({"id": "m", "pricing": {}}) == {}
+
+    def test_downstream_round_trip_is_accurate(self):
+        """Extracted per-token values restore correct per-1M costs downstream."""
+        import agent.model_metadata as mm
+        from agent.usage_pricing import _pricing_entry_from_metadata
+
+        raw = {
+            "id": "deepseek-v4-flash-0731",
+            "input_price_per_million": 1,
+            "output_price_per_million": 2,
+            "cache_read_price_per_million": 0.02,
+        }
+        extracted = mm._extract_pricing(raw)
+        entry = _pricing_entry_from_metadata(
+            {"m": {"pricing": extracted}}, "m", source_url="x", pricing_version="test"
+        )
+        assert entry is not None
+        assert entry.input_cost_per_million == 1
+        assert entry.output_cost_per_million == 2
+        assert entry.cache_read_cost_per_million is not None
+        assert float(entry.cache_read_cost_per_million) == 0.02

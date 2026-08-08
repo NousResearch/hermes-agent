@@ -661,6 +661,14 @@ class MCPOAuthManager:
             except (FileNotFoundError, OSError):
                 return False
 
+            if entry.last_mtime_ns == 0:
+                # First read — seed the baseline without invalidating.
+                # A freshly created _ProviderEntry starts at 0; treating
+                # the initial read as a "change" forces a spurious
+                # re-initialization that regularly exceeds connect_timeout
+                # on hosted OAuth servers (#77369).
+                entry.last_mtime_ns = mtime_ns
+                return False
             if mtime_ns != entry.last_mtime_ns:
                 old = entry.last_mtime_ns
                 entry.last_mtime_ns = mtime_ns

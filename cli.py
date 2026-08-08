@@ -4652,6 +4652,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        # Async /compress: background thread + input queuing.
+        self._compress_in_progress = False
+        self._compress_pending = deque()
         # Tracks whether the turn that just finished was interrupted via
         # Ctrl+C. Consumed by _maybe_continue_goal_after_turn so /goal loops
         # don't auto-queue another continuation on top of a user-cancelled
@@ -11154,7 +11157,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return
 
         original_count = len(self.conversation_history)
-        with self._busy_command("Compressing context...", blocks_input=False):
+        # Show busy state immediately so the TUI spinner fires, then run the
+        # LLM compression on a background thread so the user can keep typing.
+        # Input submitted during compression is queued and processed after.
+        if self._compress_in_progress:
+            print("🗜️  Compression already in progress...")
+            return
+        self._command_running = True
+        self._command_blocks_input = False
+        self._command_status = "Compressing context..."
+        self._invalidate(min_interval=0.0)
+        self._compress_in_progress = True
+        print(f"⏳ Compressing context...")
+
+        def _run_compress():
             try:
                 from agent.model_metadata import estimate_request_tokens_rough
                 from agent.manual_compression_feedback import summarize_manual_compression
@@ -11295,6 +11311,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     committed=False,
                 )
                 print(f"  ❌ Compression failed: {e}")
+            finally:
+                self._compress_in_progress = False
+                self._command_running = False
+                self._command_status = ""
+                self._invalidate(min_interval=0.0)
+                # Drain queued input that arrived during compression.
+                while self._compress_pending:
+                    payload = self._compress_pending.popleft()
+                    self._pending_input.put(payload)
+
+        import threading
+        threading.Thread(target=_run_compress, daemon=True).start()
 
 
 
@@ -15437,6 +15465,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
+                # If async /compress is running on a background thread,
+                # queue the input for processing after compression completes.
+                if self._compress_in_progress:
+                    self._compress_pending.append(
+                        (text, list(self._attached_images)) if has_images else text
+                    )
+                    self._attached_images.clear()
+                    event.app.current_buffer.reset(append_to_history=True)
+                    event.app.invalidate()
+                    _cprint(f"  🗜️  Input queued — compress in progress")
+                    return
                 # Handle /model directly on the UI thread so interactive pickers
                 # can safely use prompt_toolkit terminal handoff helpers.
                 if self._should_handle_model_command_inline(text, has_images=has_images):

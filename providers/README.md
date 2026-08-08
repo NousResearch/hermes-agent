@@ -40,8 +40,9 @@ layer reads from it:
   `auth_type="api_key"` profile.
 - `hermes_cli/config.py` injects every `env_var` into
   `OPTIONAL_ENV_VARS` so the setup wizard knows about it.
-- `hermes_cli/runtime_provider.py` reads `profile.api_mode` as a fallback
-  when URL detection finds nothing.
+- `hermes_cli/providers.py::determine_api_mode` reads `profile.api_mode` as
+  a fallback when host/URL detection finds nothing; every runtime resolver
+  reaches it through `runtime_provider._fallback_api_mode`.
 - `agent/model_metadata.py` maps hostname → provider via
   `profile.get_hostname()`.
 - `agent/auxiliary_client.py` reads `profile.default_aux_model` first

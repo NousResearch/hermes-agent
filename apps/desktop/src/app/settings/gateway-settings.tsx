@@ -212,6 +212,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   // its public /api/status) whether it gates with OAuth or a static session
   // token, so we can show the right control (login button vs token box).
   const [probeStatus, setProbeStatus] = useState<ProbeStatus>('idle')
+  const [needsSignInRestart, setNeedsSignInRestart] = useState(false)
   const [probe, setProbe] = useState<DesktopConnectionProbeResult | null>(null)
   const probeSeq = useRef(0)
 
@@ -415,9 +416,11 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     signingSeq.current += 1
     cloudConnectSeq.current += 1
     setLastTest(null)
+    setNeedsSignInRestart(false)
   }, [
     scope,
     state.mode,
+    state.remoteUrl,
     state.sshHost,
     state.sshUser,
     state.sshPort,
@@ -533,6 +536,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     }
 
     setSigningIn(true)
+    setNeedsSignInRestart(false)
 
     try {
       // Save (don't apply/restart) so the login window has a URL to use and the
@@ -556,15 +560,20 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         return
       }
 
+      if (result.superseded) {
+        return
+      }
+
       if (result.connected) {
         const refreshed = await window.hermesDesktop.getConnectionConfig(scope)
         acceptSavedConfig(refreshed)
         notify({ kind: 'success', title: g.signedIn, message: g.connectedTo(providerLabel) })
       } else {
+        setNeedsSignInRestart(Boolean(result.restartSignIn))
         notify({
           kind: 'warning',
           title: t.boot.failure.signInIncompleteTitle,
-          message: t.boot.failure.signInIncompleteMessage
+          message: result.restartSignIn ? t.install.restartSignInHint : t.boot.failure.signInIncompleteMessage
         })
       }
     } catch (err) {
@@ -1296,7 +1305,11 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
                 ) : (
                   <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
                     {signingIn ? <Loader2 className="animate-spin" /> : <LogIn />}
-                    {isPasswordProvider ? g.signIn : g.signInWith(providerLabel)}
+                    {needsSignInRestart
+                      ? t.install.restartSignIn
+                      : isPasswordProvider
+                        ? g.signIn
+                        : g.signInWith(providerLabel)}
                   </Button>
                 )
               }

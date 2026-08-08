@@ -315,14 +315,20 @@ async def auth_native_authorize(
         raise HTTPException(status_code=400, detail="code_challenge required")
     _validate_loopback_redirect_uri(redirect_uri)
 
-    # Resolve the provider. With exactly one session provider registered
-    # (the common hosted case) an empty ``provider`` selects it, mirroring
-    # the auto-SSO convenience so the desktop needn't hardcode the name.
+    # Resolve the provider. With exactly one brokerable OAuth provider
+    # registered, an empty ``provider`` selects it. Password providers are
+    # deliberately excluded from this count: mixed deployments commonly
+    # expose both a password fallback and one OAuth provider, while the desktop
+    # intentionally omits the provider name from its native-PKCE URL.
     p = get_provider(provider) if provider else None
     if p is None and not provider:
-        sess_providers = list_session_providers()
-        if len(sess_providers) == 1:
-            p = sess_providers[0]
+        brokerable_providers = [
+            candidate
+            for candidate in list_session_providers()
+            if not getattr(candidate, "supports_password", False)
+        ]
+        if len(brokerable_providers) == 1:
+            p = brokerable_providers[0]
     if p is None:
         raise HTTPException(
             status_code=404, detail=f"Unknown provider: {provider!r}"

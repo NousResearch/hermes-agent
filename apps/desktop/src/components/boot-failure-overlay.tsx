@@ -50,6 +50,7 @@ export function BootFailureOverlay() {
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
   const [remoteReauth, setRemoteReauth] = useState<RemoteReauth | null>(null)
+  const [needsSignInRestart, setNeedsSignInRestart] = useState(false)
   const [connectionConfig, setConnectionConfig] = useState<DesktopConnectionConfig | null>(null)
   // A remote/cloud backend that failed to boot is fixable from gateway settings,
   // so the escape hatch earns emphasis (local failures keep it as a quiet ghost).
@@ -84,6 +85,7 @@ export function BootFailureOverlay() {
       setRemoteReauth(null)
       setConnectionConfig(null)
       setRemoteFailure(false)
+      setNeedsSignInRestart(false)
       setView('recovery')
 
       return
@@ -174,10 +176,15 @@ export function BootFailureOverlay() {
     }
 
     setBusy('signin')
+    setNeedsSignInRestart(false)
 
     try {
-      await window.hermesDesktop?.oauthLogoutConnectionConfig?.()
+      await window.hermesDesktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
       const result = await window.hermesDesktop?.oauthLoginConnectionConfig(remoteReauth.url)
+
+      if (result?.superseded) {
+        return
+      }
 
       if (result?.connected) {
         notify({ kind: 'success', title: t.boot.failure.signedInTitle, message: t.boot.failure.signedInMessage })
@@ -186,10 +193,12 @@ export function BootFailureOverlay() {
         return
       }
 
+      setNeedsSignInRestart(Boolean(result?.restartSignIn))
+
       notify({
         kind: 'warning',
         title: t.boot.failure.signInIncompleteTitle,
-        message: t.boot.failure.signInIncompleteMessage
+        message: result?.restartSignIn ? t.install.restartSignInHint : t.boot.failure.signInIncompleteMessage
       })
     } catch (err) {
       notifyError(err, t.boot.failure.signInFailed)
@@ -252,7 +261,7 @@ export function BootFailureOverlay() {
     actions = [
       {
         key: 'signin',
-        label: copy.signOutAndSignIn,
+        label: needsSignInRestart ? t.install.restartSignIn : copy.signOutAndSignIn,
         onClick: () => void signInRemote(),
         icon: <LogIn />,
         busy: 'signin'
@@ -260,7 +269,7 @@ export function BootFailureOverlay() {
       { ...settingsAction, variant: 'secondary' },
       localAction
     ]
-    hint = copy.remoteSignInHint(label)
+    hint = needsSignInRestart ? t.install.restartSignInHint : copy.remoteSignInHint(label)
   } else if (remoteFailure) {
     actions = [settingsAction, { ...retryAction, variant: 'secondary' }, localAction]
     hint = copy.remoteFailureHint

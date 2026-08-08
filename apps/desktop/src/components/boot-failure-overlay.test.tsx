@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -96,6 +96,52 @@ describe('BootFailureOverlay', () => {
       expect(screen.getByRole('button', { name: /use local gateway/i })).toBeTruthy()
     } finally {
       restore()
+    }
+  })
+
+  it('offers Restart sign-in when native reauthentication reports a stale attempt', async () => {
+    $desktopBoot.set({ ...$desktopBoot.get(), error: 'Gateway sign-in required' })
+    const original = window.hermesDesktop
+
+    const remoteOauth = {
+      ...remoteToken,
+      remoteAuthMode: 'oauth',
+      remoteTokenSet: false
+    }
+
+    const oauthLoginConnectionConfig = vi.fn().mockResolvedValue({
+      baseUrl: remoteOauth.remoteUrl,
+      connected: false,
+      ok: false,
+      restartSignIn: true
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        getConnectionConfig: async () => remoteOauth,
+        getRecentLogs: async () => ({ lines: [] }),
+        oauthLoginConnectionConfig,
+        oauthLogoutConnectionConfig: vi.fn().mockResolvedValue({ connected: false, ok: true }),
+        probeConnectionConfig: vi.fn().mockResolvedValue({
+          authMode: 'oauth',
+          baseUrl: remoteOauth.remoteUrl,
+          error: null,
+          providers: [{ displayName: 'Google', name: 'nous' }],
+          reachable: true,
+          version: '0.17.0'
+        })
+      }
+    })
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Sign out & sign in' }))
+
+      expect(await screen.findByRole('button', { name: 'Restart sign-in' })).toBeTruthy()
+      expect(oauthLoginConnectionConfig).toHaveBeenCalledWith(remoteOauth.remoteUrl)
+    } finally {
+      Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: original })
     }
   })
 })

@@ -14,4 +14,20 @@ function setJsonRequestHeaders(request) {
   request.setHeader('Content-Type', 'application/json')
 }
 
-export { serializeJsonBody, setJsonRequestHeaders }
+function bindAbortSignal(signal, abort) {
+  if (!signal) {
+    return () => undefined
+  }
+
+  if (signal.aborted) {
+    abort()
+
+    return () => undefined
+  }
+
+  signal.addEventListener('abort', abort, { once: true })
+
+  return () => signal.removeEventListener('abort', abort)
+}
+
+export { bindAbortSignal, serializeJsonBody, setJsonRequestHeaders }

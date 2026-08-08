@@ -2272,6 +2272,9 @@ export const en: Translations = {
     connected: 'Connected',
     signIn: 'Sign in',
     signInWith: provider => `Sign in with ${provider}`,
+    restartSignIn: 'Restart sign-in',
+    restartSignInHint:
+      "That browser attempt is no longer valid. Don't refresh the old Google 400 tab — Restart sign-in creates fresh PKCE state.",
     enterUrlFirst: 'Enter a gateway URL first.',
     signInIncomplete: 'The sign-in window closed before authentication completed.',
     tokenTitle: 'Session token',

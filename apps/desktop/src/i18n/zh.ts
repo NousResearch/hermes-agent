@@ -2461,6 +2461,8 @@ export const zh: Translations = {
     connected: '已连接',
     signIn: '登录',
     signInWith: provider => `使用 ${provider} 登录`,
+    restartSignIn: '重新开始登录',
+    restartSignInHint: '此浏览器登录尝试已失效。请勿刷新旧的 Google 400 标签页；“重新开始登录”会创建新的 PKCE 状态。',
     enterUrlFirst: '请先输入网关 URL。',
     signInIncomplete: '认证完成前登录窗口已关闭。',
     tokenTitle: '会话令牌',

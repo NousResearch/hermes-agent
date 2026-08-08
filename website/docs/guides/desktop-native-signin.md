@@ -78,9 +78,16 @@ an `auth_flows` array:
 | `["cookie"]` | Gateway supports only the legacy flow → the app uses the embedded webview |
 | *(field absent)* | Older gateway → the app uses the embedded webview |
 
-If native sign-in is advertised but fails for a local reason — e.g. a security
-tool blocks the loopback listener, or you close the browser tab — the app
-**falls back to the embedded flow automatically** so you can still sign in.
+If native sign-in cannot start locally — for example, a security tool blocks
+the loopback listener or the system browser cannot open — the app can still use
+the embedded compatibility flow. Once a native attempt has started, Hermes
+does not silently retry it or open repeated tabs. A timeout, cancellation,
+callback-state mismatch, or an expired one-time gateway code ends that attempt
+and shows **Restart sign-in**.
+
+Restarting closes the previous loopback listener and creates a new callback
+port, PKCE verifier/challenge, and `state` before opening one new browser tab.
+The old attempt stays invalid and cannot complete the new one.
 
 ## Token lifecycle
 
@@ -94,6 +101,18 @@ tool blocks the loopback listener, or you close the browser tab — the app
   sign-in.
 - **Sign out**: clears both the native tokens (keychain) and any legacy session
   cookie for that gateway.
+
+## Troubleshooting a Google 400 page
+
+If an older Google sign-in tab shows a `400` after the Desktop attempt timed
+out, was cancelled, or was restarted, **do not refresh that tab**. Its
+one-time OAuth and PKCE state belongs to an attempt Hermes has already closed,
+so refreshing cannot make it valid again.
+
+Return to Hermes Desktop and select **Restart sign-in**. Desktop closes any
+remaining local listener for that gateway and opens one fresh attempt with a
+new PKCE verifier/challenge, callback port, and `state`. Complete sign-in only
+in the newly opened tab.
 
 ## For gateway operators
 

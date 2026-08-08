@@ -641,6 +641,8 @@ export interface DesktopOauthLoginResult {
   ok: boolean
   baseUrl: string
   connected: boolean
+  restartSignIn?: boolean
+  superseded?: boolean
 }
 
 export interface DesktopOauthLogoutResult {

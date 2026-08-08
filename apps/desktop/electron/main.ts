@@ -150,9 +150,13 @@ import {
   resolveLoginStrategy,
   tokenNeedsRefresh
 } from './native-oauth'
-import { runNativeLogin } from './native-oauth-login'
+import {
+  canUseEmbeddedLoginFallback,
+  NativeLoginCoordinator,
+  recoveryActionForNativeLoginFailure
+} from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
-import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { bindAbortSignal, serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -4259,6 +4263,8 @@ function fetchJson(url, token, options: any = {}) {
       return
     }
 
+    let detachAbort = () => undefined
+
     const req = client.request(
       parsed,
       {
@@ -4277,13 +4283,22 @@ function fetchJson(url, token, options: any = {}) {
       },
       res => {
         const chunks = []
-        res.on('error', reject)
+        res.on('error', error => {
+          detachAbort()
+          reject(error)
+        })
         res.on('data', chunk => chunks.push(chunk))
         res.on('end', () => {
+          detachAbort()
           const text = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
-            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+            const error = new Error(`${res.statusCode}: ${text || res.statusMessage}`) as Error & {
+              statusCode?: number
+            }
+
+            error.statusCode = res.statusCode
+            reject(error)
 
             return
           }
@@ -4321,9 +4336,15 @@ function fetchJson(url, token, options: any = {}) {
       }
     )
 
-    req.on('error', reject)
+    req.on('error', error => {
+      detachAbort()
+      reject(error)
+    })
     req.setTimeout(timeoutMs, () => {
       req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    })
+    detachAbort = bindAbortSignal(options.signal, () => {
+      req.destroy(new Error('Hermes backend request was cancelled.'))
     })
 
     if (body) {
@@ -6288,6 +6309,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 // In-memory cache of decrypted native tokens, keyed by normalized base URL.
 // Backed by the encrypted on-disk store so it survives restarts.
 const _nativeTokens = new Map<string, NativeTokenSet>()
+const _nativeLoginCoordinator = new NativeLoginCoordinator()
 
 function _nativeTokenStorePath() {
   // Co-located with the connection config under userData; one JSON file mapping
@@ -10194,7 +10216,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 
   if (strategy === 'native') {
     try {
-      const tokens = await runNativeLogin(baseUrl, {
+      const tokens = await _nativeLoginCoordinator.start(baseUrl, {
         openExternal: url => shell.openExternal(url),
         postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
         rememberLog
@@ -10207,13 +10229,27 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 
       return { ok: true, baseUrl, connected: true }
     } catch (error) {
-      rememberLog(
-        `[native-oauth] native login failed (${
-          error instanceof Error ? error.message : String(error)
-        }); falling back to embedded flow`
-      )
+      const recovery = recoveryActionForNativeLoginFailure(error)
+
+      if (recovery === 'ignore') {
+        return { ok: false, baseUrl, connected: false, superseded: true }
+      }
+
+      if (recovery === 'restart') {
+        rememberLog('[native-oauth] native login ended; waiting for an explicit restart')
+
+        return { ok: false, baseUrl, connected: false, restartSignIn: true }
+      }
+
+      if (!canUseEmbeddedLoginFallback(error)) {
+        rememberLog('[native-oauth] native login ended without opening another sign-in surface')
+
+        return { ok: false, baseUrl, connected: false }
+      }
+
+      rememberLog('[native-oauth] native login unavailable; using embedded compatibility flow')
       // Fall through to the embedded flow so a native-flow hiccup (blocked
-      // loopback, user closed the browser) still lets the user sign in.
+      // loopback or system-browser launch failure) still lets the user sign in.
     }
   }
 
@@ -10233,6 +10269,11 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
+
+  if (baseUrl) {
+    _nativeLoginCoordinator.cancel(baseUrl)
+  }
+
   await clearOauthSession(baseUrl || undefined)
 
   // Also drop any native (RFC 8252) bearer tokens for this gateway so a

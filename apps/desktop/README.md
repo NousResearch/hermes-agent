@@ -177,6 +177,11 @@ release-path changes.
 
 Boot logs land in `HERMES_HOME/logs/desktop.log` (includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure.
 
+If an old Google sign-in tab shows a `400`, do not refresh it. That tab belongs
+to an expired or replaced one-time PKCE attempt. Return to Desktop and choose
+**Restart sign-in**; Hermes closes the prior local callback listener and opens
+one fresh attempt with a new callback port, verifier/challenge, and state.
+
 **macOS / Linux:**
 
 ```bash

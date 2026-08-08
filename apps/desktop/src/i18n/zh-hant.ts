@@ -2040,6 +2040,9 @@ export const zhHant = defineLocale({
     connected: '已連線',
     signIn: '登入',
     signInWith: provider => `使用 ${provider} 登入`,
+    restartSignIn: '重新開始登入',
+    restartSignInHint:
+      '此瀏覽器登入嘗試已失效。請勿重新整理舊的 Google 400 分頁；「重新開始登入」會建立新的 PKCE 狀態。',
     enterUrlFirst: '請先輸入閘道 URL。',
     signInIncomplete: '驗證完成前登入視窗已關閉。',
     tokenTitle: '工作階段權杖',

@@ -1894,6 +1894,8 @@ export interface Translations {
     connected: string
     signIn: string
     signInWith: (provider: string) => string
+    restartSignIn: string
+    restartSignInHint: string
     enterUrlFirst: string
     signInIncomplete: string
     tokenTitle: string

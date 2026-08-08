@@ -56,14 +56,92 @@ export interface NativeLoginDeps {
   /** Open a URL in the user's system browser (shell.openExternal). */
   openExternal: (url: string) => Promise<void>
   /** POST JSON and resolve the parsed body (electron.net-backed in prod). */
-  postJson: (url: string, body: unknown, opts?: { timeoutMs?: number }) => Promise<any>
+  postJson: (url: string, body: unknown, opts?: { signal?: AbortSignal; timeoutMs?: number }) => Promise<any>
   /** http.createServer, injectable for tests. */
   createServer?: typeof http.createServer
   /** Clock + timeout, injectable for tests. */
   now?: () => number
   timeoutMs?: number
+  /** Abort the attempt and synchronously release its local resources. */
+  signal?: AbortSignal
   /** Optional logger for boot diagnostics. */
   rememberLog?: (line: string) => void
+}
+
+export type NativeLoginFailureCode = 'cancelled' | 'stale_attempt' | 'state_mismatch' | 'superseded' | 'timeout'
+
+export class NativeLoginError extends Error {
+  readonly code: NativeLoginFailureCode
+
+  constructor(code: NativeLoginFailureCode, message: string) {
+    super(message)
+    this.name = 'NativeLoginError'
+    this.code = code
+  }
+}
+
+class NativeLoginUnavailableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'NativeLoginUnavailableError'
+  }
+}
+
+const STALE_AUTHORIZATION_CODE_DETAIL = 'Invalid or expired authorization code.'
+
+/** Recognize only errors that are safe to turn into native-login recovery. */
+export function classifyNativeLoginFailure(error: unknown): NativeLoginFailureCode | null {
+  if (error instanceof NativeLoginError) {
+    return error.code
+  }
+
+  if (!error || typeof error !== 'object' || (error as any).statusCode !== 400) {
+    return null
+  }
+
+  const message = error instanceof Error ? error.message : String(error)
+  const body = message.replace(/^400:\s*/, '')
+
+  try {
+    const parsed = JSON.parse(body)
+
+    return parsed?.detail === STALE_AUTHORIZATION_CODE_DETAIL ? 'stale_attempt' : null
+  } catch {
+    return null
+  }
+}
+
+export function recoveryActionForNativeLoginFailure(error: unknown): 'ignore' | 'restart' | null {
+  const failure = classifyNativeLoginFailure(error)
+
+  if (failure === 'superseded') {
+    return 'ignore'
+  }
+
+  if (failure === 'cancelled' || failure === 'stale_attempt' || failure === 'state_mismatch' || failure === 'timeout') {
+    return 'restart'
+  }
+
+  return null
+}
+
+/** Only local startup failures may use the intentionally supported embedded flow. */
+export function canUseEmbeddedLoginFallback(error: unknown): boolean {
+  return error instanceof NativeLoginUnavailableError
+}
+
+function classifyLoopbackError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error)
+
+  if (message.startsWith('Loopback callback state mismatch')) {
+    return new NativeLoginError('state_mismatch', message)
+  }
+
+  if (message.startsWith('Gateway rejected native login: access_denied')) {
+    return new NativeLoginError('cancelled', message)
+  }
+
+  return error instanceof Error ? error : new Error(message)
 }
 
 /**
@@ -89,7 +167,10 @@ export async function runNativeLogin(
 
   return new Promise<NativeTokenSet>((resolve, reject) => {
     let settled = false
+    let processingCallback = false
+    let browserLaunchStarted = false
     let timer: NodeJS.Timeout | null = null
+    let listenerClosed = false
 
     const server = createServer((req, res) => {
       // Only the callback path carries the code; any other path (favicon,
@@ -101,7 +182,7 @@ export async function runNativeLogin(
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       res.end(DONE_HTML)
 
-      if (settled) {
+      if (settled || processingCallback) {
         return
       }
 
@@ -116,26 +197,48 @@ export async function runNativeLogin(
           const tokenBody = await deps.postJson(
             nativeTokenUrl(baseUrl),
             { code, code_verifier: verifier },
-            { timeoutMs: 15_000 }
+            { signal: deps.signal, timeoutMs: 15_000 }
           )
 
           return parseTokenResponse(tokenBody)
         })
       } catch (error) {
-        fail(error instanceof Error ? error : new Error(String(error)))
+        fail(classifyLoopbackError(error))
       }
     })
 
-    const cleanup = () => {
+    const closeListener = () => {
       if (timer) {
         clearTimeout(timer)
+        timer = null
       }
+
+      if (listenerClosed) {
+        return
+      }
+
+      listenerClosed = true
 
       try {
         server.close()
       } catch {
         // already closed
       }
+    }
+
+    const cleanup = () => {
+      closeListener()
+      deps.signal?.removeEventListener('abort', cancel)
+    }
+
+    function cancel() {
+      const reason = deps.signal?.reason
+
+      fail(
+        reason instanceof NativeLoginError
+          ? reason
+          : new NativeLoginError('superseded', 'Native sign-in was replaced by a newer attempt.')
+      )
     }
 
     const fail = (error: Error) => {
@@ -149,32 +252,72 @@ export async function runNativeLogin(
     }
 
     const finishWith = (produce: () => Promise<NativeTokenSet>) => {
-      if (settled) {
+      if (settled || processingCallback) {
         return
       }
 
-      settled = true
-      // Keep the listener up just long enough to have answered the browser,
-      // then redeem the code out-of-band.
+      processingCallback = true
+      // The browser response is complete. Close the one-shot listener before
+      // redeeming so replacement can never leave an old callback port alive.
+      closeListener()
       produce()
         .then(tokens => {
+          if (settled) {
+            return
+          }
+
+          settled = true
           cleanup()
           resolve(tokens)
         })
         .catch(error => {
+          if (settled) {
+            return
+          }
+
+          settled = true
           cleanup()
-          reject(error instanceof Error ? error : new Error(String(error)))
+          const failure = classifyNativeLoginFailure(error)
+          reject(
+            failure === 'stale_attempt'
+              ? new NativeLoginError(failure, 'Native sign-in expired before its authorization code could be redeemed.')
+              : error instanceof Error
+                ? error
+                : new Error(String(error))
+          )
         })
     }
 
-    server.on('error', err => fail(err instanceof Error ? err : new Error(String(err))))
+    server.on('error', err => {
+      const message = err instanceof Error ? err.message : String(err)
+
+      fail(
+        browserLaunchStarted
+          ? err instanceof Error
+            ? err
+            : new Error(message)
+          : new NativeLoginUnavailableError(`Could not start the loopback listener for native sign-in: ${message}`)
+      )
+    })
+
+    deps.signal?.addEventListener('abort', cancel, { once: true })
+
+    if (deps.signal?.aborted) {
+      cancel()
+
+      return
+    }
 
     // Bind an ephemeral loopback port, then open the browser.
     server.listen(0, '127.0.0.1', () => {
+      if (settled) {
+        return
+      }
+
       const addr = server.address() as AddressInfo | null
 
       if (!addr || typeof addr === 'string') {
-        fail(new Error('Failed to bind loopback listener for native login'))
+        fail(new NativeLoginUnavailableError('Failed to bind loopback listener for native login'))
 
         return
       }
@@ -189,19 +332,15 @@ export async function runNativeLogin(
       })
 
       timer = setTimeout(() => {
-        fail(
-          new Error(
-            'Native sign-in timed out. The browser window may not have completed ' +
-              'sign-in; open Settings → Gateway and try again.'
-          )
-        )
+        fail(new NativeLoginError('timeout', 'Native sign-in timed out. Return to Hermes and select Restart sign-in.'))
       }, timeoutMs)
 
       log(`[native-oauth] loopback listening on 127.0.0.1:${addr.port}; opening system browser`)
 
+      browserLaunchStarted = true
       deps.openExternal(authorizeUrl).catch(error => {
         fail(
-          new Error(
+          new NativeLoginUnavailableError(
             `Could not open the system browser for native sign-in: ${
               error instanceof Error ? error.message : String(error)
             }`
@@ -210,6 +349,50 @@ export async function runNativeLogin(
       })
     })
   })
+}
+
+interface ActiveNativeLogin {
+  controller: AbortController
+  promise: Promise<NativeTokenSet>
+}
+
+/** Owns the single live native-login attempt for each normalized gateway. */
+export class NativeLoginCoordinator {
+  private readonly active = new Map<string, ActiveNativeLogin>()
+
+  start(baseUrl: string, deps: NativeLoginDeps, opts: { provider?: string } = {}): Promise<NativeTokenSet> {
+    this.active
+      .get(baseUrl)
+      ?.controller.abort(new NativeLoginError('superseded', 'Native sign-in was replaced by a newer attempt.'))
+
+    const controller = new AbortController()
+    const promise = runNativeLogin(baseUrl, { ...deps, signal: controller.signal }, opts)
+    const attempt = { controller, promise }
+    this.active.set(baseUrl, attempt)
+
+    void promise
+      .finally(() => {
+        if (this.active.get(baseUrl) === attempt) {
+          this.active.delete(baseUrl)
+        }
+      })
+      .catch(() => undefined)
+
+    return promise
+  }
+
+  cancel(baseUrl: string): boolean {
+    const attempt = this.active.get(baseUrl)
+
+    if (!attempt) {
+      return false
+    }
+
+    this.active.delete(baseUrl)
+    attempt.controller.abort(new NativeLoginError('cancelled', 'Native sign-in was cancelled.'))
+
+    return true
+  }
 }
 
 export { DEFAULT_LOGIN_TIMEOUT_MS }

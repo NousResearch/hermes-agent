@@ -516,6 +516,57 @@ describe('DesktopInstallOverlay first-run setup', () => {
     })
   })
 
+  it('offers one explicit fresh PKCE restart after a stale native sign-in', async () => {
+    const desktop = installDesktopMock(
+      bootstrapState({
+        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent' }
+      })
+    )
+
+    desktop.probeConnectionConfig.mockResolvedValue({
+      authMode: 'oauth',
+      baseUrl: 'https://gateway.example.com/hermes',
+      error: null,
+      providers: [{ displayName: 'Google', name: 'nous' }],
+      reachable: true,
+      version: '0.17.0'
+    })
+    desktop.oauthLoginConnectionConfig
+      .mockResolvedValueOnce({
+        baseUrl: 'https://gateway.example.com/hermes',
+        connected: false,
+        ok: false,
+        restartSignIn: true
+      })
+      .mockResolvedValueOnce({
+        baseUrl: 'https://gateway.example.com/hermes',
+        connected: true,
+        ok: true
+      })
+
+    render(<DesktopInstallOverlay />)
+    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
+    fireEvent.change(await screen.findByPlaceholderText('https://gateway.example.com/hermes'), {
+      target: { value: 'https://gateway.example.com/hermes' }
+    })
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 550))
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }))
+    const restart = await screen.findByRole('button', { name: 'Restart sign-in' })
+    expect(
+      screen.getByText(
+        "That browser attempt is no longer valid. Don't refresh the old Google 400 tab — Restart sign-in creates fresh PKCE state."
+      )
+    ).toBeTruthy()
+
+    fireEvent.click(restart)
+    await waitFor(() => expect(desktop.oauthLoginConnectionConfig).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('Browser sign-in completed.')).toBeTruthy()
+  })
+
   it('offers remote connection from the unsupported packaged install screen', async () => {
     const desktop = installDesktopMock(
       bootstrapState({

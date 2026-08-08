@@ -2107,6 +2107,9 @@ export const ja = defineLocale({
     connected: '接続済み',
     signIn: 'サインイン',
     signInWith: provider => `${provider} でサインイン`,
+    restartSignIn: 'サインインを再開',
+    restartSignInHint:
+      'このブラウザーの試行は無効です。古い Google の 400 タブは更新しないでください。「サインインを再開」で新しい PKCE 状態が作成されます。',
     enterUrlFirst: '先にゲートウェイ URL を入力してください。',
     signInIncomplete: '認証が完了する前にサインインウィンドウが閉じられました。',
     tokenTitle: 'セッショントークン',

@@ -29,6 +29,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
   const [probe, setProbe] = useState<DesktopConnectionProbeResult | null>(null)
   const [oauthConnected, setOauthConnected] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
+  const [needsSignInRestart, setNeedsSignInRestart] = useState(false)
   const [testing, setTesting] = useState(false)
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -44,6 +45,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
     setTesting(false)
     setError(null)
     setSuccess(null)
+    setNeedsSignInRestart(false)
     setLastTestedPayloadKey(null)
   }, [])
 
@@ -135,10 +137,16 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
       // its OAuth cookies; config is persisted once the user applies.
       const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
       invalidateTest()
+
+      if (result.superseded) {
+        return
+      }
+
       setOauthConnected(Boolean(result.connected))
 
       if (!result.connected) {
-        setError(copy.signInIncomplete)
+        setNeedsSignInRestart(Boolean(result.restartSignIn))
+        setError(result.restartSignIn ? copy.restartSignInHint : copy.signInIncomplete)
       }
     } catch (err) {
       setError(errorMessage(err))
@@ -280,7 +288,11 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
                 ) : (
                   <Button disabled={signingIn || applying} onClick={() => void signIn()} size="sm">
                     {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                    {isPasswordProvider ? copy.signIn : copy.signInWith(providerLabel)}
+                    {needsSignInRestart
+                      ? copy.restartSignIn
+                      : isPasswordProvider
+                        ? copy.signIn
+                        : copy.signInWith(providerLabel)}
                   </Button>
                 )}
               </div>

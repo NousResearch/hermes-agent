@@ -6,6 +6,8 @@ import type { ProfileInfo } from '@/types/hermes'
 
 const getConnectionConfig = vi.fn()
 const saveConnectionConfig = vi.fn()
+const probeConnectionConfig = vi.fn()
+const oauthLoginConnectionConfig = vi.fn()
 const profiles = atom<ProfileInfo[]>([])
 
 vi.mock('@/store/profile', () => ({
@@ -49,7 +51,7 @@ beforeEach(() => {
   saveConnectionConfig.mockResolvedValue(localConnection)
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { getConnectionConfig, saveConnectionConfig }
+    value: { getConnectionConfig, oauthLoginConnectionConfig, probeConnectionConfig, saveConnectionConfig }
   })
 })
 
@@ -117,5 +119,44 @@ describe('GatewaySettings', () => {
         })
       )
     )
+  })
+
+  it('changes the OAuth action to Restart sign-in after a stale native attempt', async () => {
+    const remote = {
+      ...localConnection,
+      mode: 'remote',
+      remoteAuthMode: 'oauth',
+      remoteUrl: 'https://gateway.example.com/hermes'
+    }
+
+    getConnectionConfig.mockResolvedValue(remote)
+    saveConnectionConfig.mockResolvedValue(remote)
+    probeConnectionConfig.mockResolvedValue({
+      authMode: 'oauth',
+      baseUrl: remote.remoteUrl,
+      error: null,
+      providers: [{ displayName: 'Google', name: 'nous' }],
+      reachable: true,
+      version: '0.17.0'
+    })
+    oauthLoginConnectionConfig.mockResolvedValue({
+      baseUrl: remote.remoteUrl,
+      connected: false,
+      ok: false,
+      restartSignIn: true
+    })
+    const { GatewaySettings } = await import('./gateway-settings')
+
+    render(<GatewaySettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }))
+
+    expect(await screen.findByRole('button', { name: 'Restart sign-in' })).toBeTruthy()
+    expect(oauthLoginConnectionConfig).toHaveBeenCalledWith(remote.remoteUrl)
+
+    fireEvent.change(screen.getByDisplayValue(remote.remoteUrl), {
+      target: { value: 'https://other-gateway.example.com' }
+    })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart sign-in' })).toBeNull())
+    expect(await screen.findByRole('button', { name: 'Sign in with Google' })).toBeTruthy()
   })
 })

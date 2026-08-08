@@ -181,6 +181,29 @@ def test_native_authorize_rejects_non_loopback_redirect(gated_client):
     assert "loopback" in r.json()["detail"].lower()
 
 
+def test_native_authorize_auto_selects_only_oauth_provider_with_password_fallback(
+    gated_client,
+):
+    class PasswordFallback(StubAuthProvider):
+        name = "password-fallback"
+        supports_password = True
+
+    register_provider(PasswordFallback())
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params={
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": "http://127.0.0.1:53999/callback",
+            "state": "desktop-state",
+        },
+    )
+
+    assert r.status_code == 302, r.text
+    assert "code=stub_code" in r.headers["location"]
+
+
 # ---------------------------------------------------------------------------
 # Cookieless bearer auth of a gated route — the core deliverable
 # ---------------------------------------------------------------------------

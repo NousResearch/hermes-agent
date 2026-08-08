@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { bindAbortSignal, serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 
 test('serializeJsonBody returns undefined for absent bodies', () => {
   assert.equal(serializeJsonBody(undefined), undefined)
@@ -36,4 +36,27 @@ test('setJsonRequestHeaders does not set Electron-restricted Content-Length', ()
     headers.some(([name]) => name.toLowerCase() === 'content-length'),
     false
   )
+})
+
+test('bindAbortSignal aborts once and detaches cleanly', () => {
+  const controller = new AbortController()
+  let aborts = 0
+
+  const detach = bindAbortSignal(controller.signal, () => {
+    aborts += 1
+  })
+
+  controller.abort()
+  controller.abort()
+  assert.equal(aborts, 1)
+
+  detach()
+  assert.equal(aborts, 1)
+
+  const alreadyAborted = new AbortController()
+  alreadyAborted.abort()
+  bindAbortSignal(alreadyAborted.signal, () => {
+    aborts += 1
+  })
+  assert.equal(aborts, 2)
 })

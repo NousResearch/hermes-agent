@@ -7234,22 +7234,45 @@ def run_conversation(
                 # the budget resets after any successful tool round) to make the
                 # model emit the call instead of exiting. finish_reason="stop"
                 # text finishes never enter this guard.
+                #
+                # finish_reason="error" (observed: gemini-2.5-flash via
+                # OpenRouter, 2026-07) is the same stall under a different
+                # label: the provider aborts the stream — in the observed
+                # field cases exactly where the tool call should have been,
+                # with the narration arriving intact. With no branch for it,
+                # the errored generation fell through to this ordinary text
+                # exit and was recorded as the model having finished talking:
+                # no retry, no warning, task silently unstarted. It shares the
+                # bounded budget but keeps its own nudge wording, because an
+                # aborted stream may also cut mid-text with no tool intent.
                 if (
-                    finish_reason == "tool_calls"
+                    finish_reason in ("tool_calls", "error")
                     and not assistant_message.tool_calls
                     and getattr(agent, "_dropped_toolcall_retries", 0) < 3
                 ):
                     agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1
-                    logger.warning(
-                        "finish_reason=tool_calls with empty tool_calls array "
-                        "(narration only) — re-prompting to emit the call "
-                        "(retry %d/3, model=%s provider=%s)",
-                        agent._dropped_toolcall_retries, agent.model, agent.provider,
-                    )
-                    agent._emit_status(
-                        "↻ Model signaled a tool call but sent none — "
-                        f"re-prompting ({agent._dropped_toolcall_retries}/3)"
-                    )
+                    if finish_reason == "error":
+                        logger.warning(
+                            "finish_reason=error — provider aborted the "
+                            "generation mid-stream — re-prompting to continue "
+                            "(retry %d/3, model=%s provider=%s)",
+                            agent._dropped_toolcall_retries, agent.model, agent.provider,
+                        )
+                        agent._emit_status(
+                            "↻ Provider stream error cut the turn short — "
+                            f"re-prompting ({agent._dropped_toolcall_retries}/3)"
+                        )
+                    else:
+                        logger.warning(
+                            "finish_reason=tool_calls with empty tool_calls array "
+                            "(narration only) — re-prompting to emit the call "
+                            "(retry %d/3, model=%s provider=%s)",
+                            agent._dropped_toolcall_retries, agent.model, agent.provider,
+                        )
+                        agent._emit_status(
+                            "↻ Model signaled a tool call but sent none — "
+                            f"re-prompting ({agent._dropped_toolcall_retries}/3)"
+                        )
                     # Both halves of the re-prompt pair are ephemeral recovery
                     # scaffolding (mirrors the empty-response nudge pattern):
                     # the interim narration-only assistant turn exists solely to
@@ -7262,22 +7285,33 @@ def run_conversation(
                     # flush regardless of position.
                     final_msg["_dropped_toolcall_nudge"] = True
                     messages.append(final_msg)
-                    messages.append({
-                        "role": "user",
-                        "content": (
+                    if finish_reason == "error":
+                        _stall_nudge = (
+                            "Your previous turn was cut off by a provider error "
+                            "before it completed. Continue the task from where you "
+                            "left off — if you were about to invoke a tool, issue "
+                            "the actual tool call now; otherwise complete your "
+                            "answer."
+                        )
+                    else:
+                        _stall_nudge = (
                             "Your previous turn indicated a tool call but none was "
                             "included. Do not narrate a plan or restate intent — issue "
                             "the actual tool call now to continue the task."
-                        ),
+                        )
+                    messages.append({
+                        "role": "user",
+                        "content": _stall_nudge,
                         "_dropped_toolcall_nudge": True,
                     })
                     agent._session_messages = messages
                     final_response = None
                     continue
 
-                # Reached finalization without the dropped-tool-call mismatch —
-                # a genuine turn end. Clear the consecutive-stall budget so the
-                # next turn starts fresh.
+                # Reached finalization without a recoverable stall (dropped
+                # tool call or provider stream error) — a genuine turn end.
+                # Clear the consecutive-stall budget so the next turn starts
+                # fresh.
                 agent._dropped_toolcall_retries = 0
 
                 # Pop thinking-only prefill and empty-response retry

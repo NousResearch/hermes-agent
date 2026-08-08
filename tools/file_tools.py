@@ -672,6 +672,29 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+def _names_same_file(candidate: str, target: str) -> bool:
+    """Return True when *candidate* is another name on disk for *target*.
+
+    Path strings alone cannot answer this. An NTFS 8.3 short name
+    (``...\\hermes\\CONFIG~1.YAM``) or a hard link is a second name for the
+    same file that matches no lexical form of it, and on Windows
+    :func:`_resolve_path_for_task` is deliberately lexical (``ntpath.normpath``,
+    no filesystem access), so the string comparisons never see through either.
+    ``os.stat`` identity does.
+
+    Resolution failures are treated as "cannot prove this is not the target"
+    and answered with True, so the caller keeps denying. The one exception is a
+    missing path: a name that does not exist cannot be a second name for a file
+    that does, and every write to a new file lands here.
+    """
+    try:
+        return os.path.samefile(candidate, target)
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -693,7 +716,11 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     # prompt-injected agent could silently disable exec approval by writing to
     # this file.
     hermes_config = _get_hermes_config_resolved()
-    if hermes_config and (resolved == hermes_config or normalized == hermes_config):
+    if hermes_config and (
+        resolved == hermes_config
+        or normalized == hermes_config
+        or _names_same_file(resolved, hermes_config)
+    ):
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "

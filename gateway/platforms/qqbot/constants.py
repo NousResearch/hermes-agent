@@ -44,6 +44,14 @@ RATE_LIMIT_DELAY = 60  # seconds
 QUICK_DISCONNECT_THRESHOLD = 5.0  # seconds
 MAX_QUICK_DISCONNECT_COUNT = 3
 
+# Wall-clock budget for a single reconnect attempt (token refresh + gateway
+# URL fetch + WebSocket handshake). Bounds the worst case when underlying
+# per-stage timeouts fail to fire — e.g. asyncio timers frozen during host
+# sleep / App Nap, or sockets left in CLOSE_WAIT by a proxy. Tuned to
+# comfortably exceed the sum of DEFAULT_API_TIMEOUT + CONNECT_TIMEOUT_SECONDS
+# under normal latency while still failing fast on a wedged socket.
+RECONNECT_ATTEMPT_TIMEOUT = 90.0
+
 ONBOARD_POLL_INTERVAL = 2.0  # seconds between poll_bind_result calls
 ONBOARD_API_TIMEOUT = 10.0
 

@@ -49,9 +49,19 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              claimed_at TEXT NOT NULL,
              started_at TEXT,
              finished_at TEXT,
-             error TEXT
+             error TEXT,
+             session_id TEXT
            )"""
     )
+    # Compatibility migration for libraries written before ``session_id``
+    # was added (#81523). Existing rows are NULL until they are next
+    # claimed; the nullable column keeps every previous consumer working.
+    existing_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(executions)").fetchall()
+    }
+    if "session_id" not in existing_columns:
+        conn.execute("ALTER TABLE executions ADD COLUMN session_id TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
         "ON executions(job_id, claimed_at DESC, id DESC)"
@@ -59,6 +69,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
         "ON executions(status, claimed_at DESC, id DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_executions_session_id "
+        "ON executions(session_id)"
     )
 
 
@@ -132,8 +146,17 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
     )
 
 
-def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
-    """Persist a claimed attempt before executor/provider dispatch."""
+def create_execution(
+    job_id: str, *, source: str, session_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Persist a claimed attempt before executor/provider dispatch.
+
+    ``session_id`` records the canonical ``cron_<job_id>_<ts>`` session key
+    the scheduler will use for the underlying AIAgent, so the executions
+    ledger can be joined to ``state.db`` rows by a durable key rather than by
+    a reconstructed timestamp (#81523). Nullable for backward compatibility
+    with entry points that don't have the session id at claim time yet.
+    """
     now = _hermes_now().isoformat()
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
@@ -141,10 +164,10 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
         conn.execute(
             """INSERT INTO executions
                (id, job_id, source, process_id, pid, process_started_at,
-                status, claimed_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?)""",
+                status, claimed_at, session_id)
+               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?)""",
             (execution_id, str(job_id), str(source), _PROCESS_ID, pid,
-             _process_start_time(pid), now),
+             _process_start_time(pid), now, session_id),
         )
         row = conn.execute(
             "SELECT * FROM executions WHERE id=?", (execution_id,)
@@ -162,6 +185,33 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
             """UPDATE executions SET status='running', started_at=?
                WHERE id=? AND status='claimed'""",
             (now, execution_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        record = _record(conn.execute(
+            "SELECT * FROM executions WHERE id=?", (execution_id,)
+        ).fetchone())
+    _emit_execution_state(record)
+    return record
+
+
+def link_execution_session(
+    execution_id: str, session_id: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Attach the canonical ``cron_<job_id>_<ts>`` session id to a claimed
+    execution so the executions ledger joins to ``state.db`` by a durable key
+    instead of by a reconstructed timestamp (#81523).
+
+    Safe to call once the AIAgent has been constructed and its session id is
+    known. Terminal executions (completed/failed/unknown) are returned as-is
+    rather than updated — the join key is set during the running window and
+    stays accurate after the run finishes.
+    """
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE executions SET session_id=?
+               WHERE id=? AND status IN ('claimed','running')""",
+            (session_id, execution_id),
         )
         if cur.rowcount != 1:
             return None

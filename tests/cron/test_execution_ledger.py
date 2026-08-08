@@ -397,3 +397,57 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_execution_session_id_is_durable(monkeypatch, tmp_path):
+    """#81523 — executions.db must record the canonical session id so the
+    ledger can be joined to state.db by a durable key instead of by a
+    reconstructed timestamp that drifts on every cron fire."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+
+    record = executions.create_execution(
+        "job-link", source="builtin", session_id="cron_job-link_20260808_120000"
+    )
+    assert record["session_id"] == "cron_job-link_20260808_120000"
+
+    running = executions.mark_execution_running(record["id"])
+    assert running["session_id"] == "cron_job-link_20260808_120000"
+
+    completed = executions.finish_execution(record["id"], success=True)
+    assert completed["session_id"] == "cron_job-link_20260808_120000"
+
+    # Round-trip via SELECT * survives across claim → running → completed.
+    persisted = executions.list_executions(job_id="job-link")
+    assert persisted[0]["session_id"] == "cron_job-link_20260808_120000"
+
+
+def test_execution_session_id_is_optional(monkeypatch, tmp_path):
+    """session_id must remain optional so existing callers that don't have
+    a session id at claim time keep working."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+
+    record = executions.create_execution("job-no-session", source="direct")
+    assert record["session_id"] is None
+
+    # Linking later still works (this is the scheduler's two-step pattern:
+    # claim the row first, then attach the session id once the AIAgent has
+    # been constructed).
+    linked = executions.link_execution_session(record["id"], "cron_job-no-session_20260808_121500")
+    assert linked["session_id"] == "cron_job-no-session_20260808_121500"
+
+
+def test_execution_session_id_is_not_rewritten_after_terminal(monkeypatch, tmp_path):
+    """A completed execution must not accept a new session id — the durable
+    join key is set during the running window and stays accurate after."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+
+    record = executions.create_execution(
+        "job-terminal", source="builtin", session_id="cron_first_20260808_130000"
+    )
+    executions.mark_execution_running(record["id"])
+    executions.finish_execution(record["id"], success=True)
+
+    assert executions.link_execution_session(record["id"], "cron_late_20260808_130001") is None
+
+    persisted = executions.list_executions(job_id="job-terminal")
+    assert persisted[0]["session_id"] == "cron_first_20260808_130000"

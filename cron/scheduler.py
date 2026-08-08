@@ -291,7 +291,12 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_runs, claim_dispatch, heartbeat_run_claim
-from cron.executions import create_execution, finish_execution, mark_execution_running
+from cron.executions import (
+    create_execution,
+    finish_execution,
+    link_execution_session,
+    mark_execution_running,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -3148,6 +3153,7 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None,
     extra_prompt: Optional[str] = None,
+    execution_id: Optional[str] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -3459,6 +3465,19 @@ def run_job(
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+
+    # Join the executions ledger to the state.db session row by a durable
+    # key (#81523). ``execution_id`` may be None for entry points that have
+    # not yet claimed a ledger row (e.g. legacy callers, direct in-process
+    # invokes); the join is best-effort and never affects run output.
+    if execution_id:
+        try:
+            link_execution_session(execution_id, _cron_session_id)
+        except Exception:
+            logger.debug(
+                "Job '%s': could not link execution %s to session %s",
+                job_id, execution_id, _cron_session_id, exc_info=True,
+            )
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -4573,6 +4592,7 @@ def run_one_job(
             success, output, final_response, error = run_job(
                 job, defer_agent_teardown=_deferred_agents,
                 extra_prompt=extra_prompt,
+                execution_id=execution_id,
             )
         except BaseException:
             # run_job's finally still hands back the agent when it raises; tear

@@ -2039,7 +2039,12 @@ async def _send_qqbot(pconfig, chat_id, message):
                 "Authorization": f"QQBot {access_token}",
                 "Content-Type": "application/json",
             }
-            payload = {"content": message[:4000], "msg_type": 0}
+            # markdown 消息（msg_type=2）使表格能渲染，与 live adapter 的
+            # _build_text_body() 保持一致：markdown 内容包在 markdown.content 里。
+            payload = {
+                "markdown": {"content": message[:4000]},
+                "msg_type": 2,
+            }
 
             # Try channel endpoint first (works for guild channels)
             url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"

@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
   expandWhatsAppIdentifiers,
+  matchesAllowedSenderWithAlt,
   matchesAllowedUser,
   normalizeWhatsAppIdentifier,
   parseAllowedUsers,
@@ -74,6 +75,52 @@ test('matchesAllowedUser rejects everyone when allowlist is empty (#8389)', () =
     // Null/undefined allowlist (defensive) also rejects.
     assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', null, sessionDir), false);
     assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', undefined, sessionDir), false);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('matchesAllowedSenderWithAlt falls back to participantAlt when no lid mapping exists (#72529)', () => {
+  // Baileys v7 group messages arrive with key.participant in LID form and
+  // the phone number only in key.participantAlt. A fresh bot session has no
+  // lid-mapping-*.json files, so the LID alone can never match a phone
+  // allowlist — the alt identifier must be consulted as a fallback.
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+
+  try {
+    const allowedUsers = parseAllowedUsers('+19175395595');
+
+    // No mapping file: LID by itself is rejected today (the #72529 drop)…
+    assert.equal(matchesAllowedUser('267383306489914@lid', allowedUsers, sessionDir), false);
+    // …but the alt phone identifier rescues the match.
+    assert.equal(
+      matchesAllowedSenderWithAlt('267383306489914@lid', '19175395595@s.whatsapp.net', allowedUsers, sessionDir),
+      true
+    );
+
+    // A stranger's LID with a non-allowlisted alt stays rejected.
+    assert.equal(
+      matchesAllowedSenderWithAlt('188012763865257@lid', '15550001111@s.whatsapp.net', allowedUsers, sessionDir),
+      false
+    );
+
+    // Missing / empty alt keeps the existing behaviour.
+    assert.equal(matchesAllowedSenderWithAlt('267383306489914@lid', '', allowedUsers, sessionDir), false);
+    assert.equal(matchesAllowedSenderWithAlt('267383306489914@lid', undefined, allowedUsers, sessionDir), false);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('matchesAllowedSenderWithAlt still resolves via lid-mapping files without an alt', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+
+  try {
+    writeFileSync(path.join(sessionDir, 'lid-mapping-19175395595.json'), JSON.stringify('267383306489914'));
+    writeFileSync(path.join(sessionDir, 'lid-mapping-267383306489914_reverse.json'), JSON.stringify('19175395595'));
+
+    const allowedUsers = parseAllowedUsers('+19175395595');
+    assert.equal(matchesAllowedSenderWithAlt('267383306489914@lid', '', allowedUsers, sessionDir), true);
   } finally {
     rmSync(sessionDir, { recursive: true, force: true });
   }

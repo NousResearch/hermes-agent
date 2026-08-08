@@ -116,6 +116,79 @@ class GatewaySlashCommandsMixin:
         adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
+    async def _handle_temp_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /temp [off|status] — toggle a temporary chat on any platform.
+
+        Reuses ``_handle_reset_command`` for the rotation itself: entering and
+        leaving a temporary chat are both true session boundaries, and the
+        reset path already does the full teardown correctly (run-generation
+        bump, agent-resource cleanup, delegation interrupt, conversation-scope
+        clear, hook emission). Re-implementing a lighter rotation here is how
+        a temporary chat ends up leaking into the session that follows it.
+
+        The flag is written AFTER the rotation so it lands on the new entry.
+        """
+        source = event.source
+        arg = event.get_command_args().strip().lower()
+        session_key = self._session_key_for_source(source)
+        currently = self._session_is_ephemeral(session_key)
+
+        if arg in ("status", "?"):
+            if currently:
+                return t("gateway.temp.status_on")
+            return t("gateway.temp.status_off")
+
+        if arg in ("off", "no", "0", "false", "stop"):
+            if not currently:
+                return t("gateway.temp.not_active")
+            # Rotate FIRST while still flagged ephemeral, so the temporary
+            # transcript is discarded rather than flushed into the new session.
+            await self._handle_reset_command(event)
+            self._set_session_ephemeral(session_key, False)
+            return t("gateway.temp.ended")
+
+        if currently:
+            return t("gateway.temp.already_on")
+
+        # An unrecognised argument is almost always a typo or a guess at an
+        # option that doesn't exist ("/temp help", "/temp please"). Starting a
+        # temporary chat anyway would silently discard whatever the user
+        # actually meant, so show the usage instead -- same contract as
+        # /background with a missing prompt. "on"/"start" are accepted as the
+        # obvious mirror of "off" rather than punished as typos.
+        if arg and arg not in ("on", "yes", "1", "true", "start"):
+            return t("gateway.temp.usage")
+
+        # Rotate FIRST while persistence is still on, so the preceding real
+        # conversation is flushed and closed properly, then mark ephemeral.
+        await self._handle_reset_command(event)
+        self._set_session_ephemeral(session_key, True)
+        return t("gateway.temp.started")
+
+    def _set_session_ephemeral(self, session_key: str, value: bool) -> None:
+        """Flip the ephemeral flag on a session entry and evict its agent.
+
+        The agent reads ``ephemeral`` at construction (it gates the tool guard
+        and the system-prompt notice), so the cached agent must go or the
+        toggle silently does nothing for the rest of the conversation.
+        """
+        try:
+            entry = self.session_store._entries.get(session_key)
+            if entry is not None:
+                entry.ephemeral = bool(value)
+        except Exception as e:
+            logger.warning("Could not set ephemeral=%s on %s: %s", value, session_key, e)
+            return
+        # Persist so a gateway restart can't downgrade a temp chat to a saved one.
+        try:
+            self.session_store._save_entry(session_key)
+        except Exception:
+            pass
+        try:
+            self._evict_cached_agent(session_key)
+        except Exception:
+            pass
+
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source

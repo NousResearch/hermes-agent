@@ -1617,6 +1617,7 @@ export const zhHant = defineLocale({
 
   sidebar: {
     nav: {
+      'new-temporary-session': '新增暫時工作階段',
       'new-session': '新工作階段',
       skills: '技能與工具',
       messaging: '訊息平台',
@@ -1833,6 +1834,11 @@ export const zhHant = defineLocale({
     attachments: count => `${count} 個附件`,
     editingInComposer: '在輸入框中編輯',
     editingQueuedInComposer: '在輸入框中編輯排隊回合',
+    temporarySessionBadge: '暫時 — 不會儲存',
+    temporarySessionHint: '關閉此對話後即消失。',
+    temporaryHeroTitle: '臨時聊天',
+    temporaryHeroBody:
+      '此處的內容不會被儲存。該聊天不會出現在歷史記錄中，不會被記住，關閉後也無法復原。',
     queueEdit: '編輯',
     queueSendNext: '下一個',
     queueSend: '傳送',

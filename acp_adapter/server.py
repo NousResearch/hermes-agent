@@ -2023,6 +2023,7 @@ class HermesACPAgent(acp.Agent):
                     user_text,
                     final_response,
                     state.history,
+                    ephemeral=bool(getattr(state.agent, "ephemeral", False)),
                     main_runtime={
                         "model": getattr(state.agent, "model", None),
                         "provider": getattr(state.agent, "provider", None),

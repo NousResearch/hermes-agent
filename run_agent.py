@@ -507,6 +507,8 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        persist_disabled: bool = False,
+        ephemeral: bool = False,
         requested_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
@@ -593,6 +595,8 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            persist_disabled=persist_disabled,
+            ephemeral=ephemeral,
         )
 
     def _get_session_db_for_recall(self):
@@ -4057,17 +4061,24 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
+        # Persistence-isolated agents (background review fork, --no-session
+        # one-shots, /temp sessions) skip end-of-session memory extraction: a
+        # throwaway conversation is not signal worth committing to long-term
+        # memory. Provider teardown still runs so threads and DB handles are
+        # released.
+        persist_disabled = getattr(self, "_persist_disabled", False)
         if self._memory_manager:
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception as e:
-                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
+            if not persist_disabled:
+                try:
+                    self._memory_manager.on_session_end(messages or [])
+                except Exception as e:
+                    logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             try:
                 self._memory_manager.shutdown_all()
             except Exception:
                 pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)
-        if hasattr(self, "context_compressor") and self.context_compressor:
+        if not persist_disabled and hasattr(self, "context_compressor") and self.context_compressor:
             try:
                 self.context_compressor.on_session_end(
                     self.session_id or "",
@@ -4081,6 +4092,12 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
+        # Ephemeral/isolated agents never commit memory — mirrors the
+        # extraction skip in shutdown_memory_provider(). This is the path a
+        # /temp session hits on /new, which is exactly when the temporary
+        # conversation would otherwise be extracted into durable memory.
+        if getattr(self, "_persist_disabled", False):
+            return
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -4136,6 +4153,12 @@ class AIAgent:
         backend must not block the user from seeing their response.
         """
         if interrupted:
+            return
+        # Persistence-isolated agents (background review fork, --no-session
+        # one-shots, /temp sessions) must not mirror the turn into external
+        # memory. This is the leak the tool-level guard cannot catch: sync_all
+        # runs automatically at turn end, with no tool call involved.
+        if getattr(self, "_persist_disabled", False):
             return
         if not (self._memory_manager and final_response and original_user_message):
             return

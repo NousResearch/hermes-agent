@@ -454,6 +454,10 @@ export interface RpcEvent<T = unknown> {
 }
 
 export interface SessionCreateResponse {
+  /** Echoed back by the gateway when the session was registered as temporary.
+   *  Authoritative -- the client's request flag is only a hope until this
+   *  confirms it. */
+  ephemeral?: boolean
   info?: SessionRuntimeInfo
   message_count?: number
   messages?: SessionMessage[]
@@ -475,6 +479,12 @@ export interface SessionInfo {
    *  workspaces and not-yet-backfilled rows. */
   git_repo_root?: null | string
   ended_at: null | number
+  /** True while this row is a live temporary chat. Temporary sessions persist
+   *  nothing, so they never reach the DB and never come back from
+   *  `session.list` — this flag only ever arrives on the in-memory overlay of
+   *  live gateway sessions, where it exists so the sidebar can filter the row
+   *  out. Undefined against a backend predating temporary chats. */
+  ephemeral?: boolean
   id: string
   /** Original root id of a compression chain, when this entry is a projected
    *  continuation tip. Stable across compressions — used as the durable id for
@@ -611,6 +621,10 @@ export interface SessionResumeResponse {
 
 export interface SessionRuntimeInfo {
   approval_mode?: 'manual' | 'off' | 'smart'
+  /** True while this session is a temporary chat (nothing persisted). Present
+   *  on every session.info emit, so it is the client's authority for the
+   *  badge/hero rather than the optimistic local atom. */
+  ephemeral?: boolean
   branch?: string
   config_warning?: string
   credential_warning?: string

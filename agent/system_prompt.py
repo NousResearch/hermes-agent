@@ -34,6 +34,7 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
+    EPHEMERAL_SESSION_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -202,6 +203,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+
+    # Ephemeral ("temporary chat") notice. Goes in the STABLE layer because the
+    # flag is fixed at agent construction and never toggles mid-conversation —
+    # putting it in a later layer would rewrite the prompt prefix and break
+    # per-conversation prompt caching for the whole session.
+    if getattr(agent, "ephemeral", False):
+        stable_parts.append(EPHEMERAL_SESSION_GUIDANCE)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes

@@ -331,6 +331,14 @@ gateway:
     stopped:               "⚡ Detenido. Puedes continuar esta sesión."
     no_active:             "No hay ninguna tarea activa que detener."
 
+  temp:
+    usage:                 "Uso: /temp [off|status]\nEjemplo: /temp\n\nInicia un chat temporal del que no se guarda nada. Usa /temp off para volver a una sesión normal."
+    started:               "🕵️ Chat temporal iniciado.\nAquí no se guarda nada: este chat no aparecerá en tu historial, no se recordará y no podrá reanudarse tras cerrarlo.\nUsa /temp off para volver a una sesión normal."
+    already_on:            "🕵️ Ya estás en un chat temporal.\nUsa /temp off para volver a una sesión normal."
+    ended:                 "Chat temporal finalizado. Se inició una nueva sesión guardada.\nLa conversación temporal no se guardó y no puede recuperarse."
+    not_active:            "No hay ningún chat temporal activo.\nUsa /temp para iniciar uno."
+    status_on:             "🕵️ Chat temporal: activado\nNada de este chat se guarda. Usa /temp off para finalizarlo."
+    status_off:            "Chat temporal: desactivado\nEsta sesión se guarda con normalidad. Usa /temp para iniciar un chat temporal."
   title:
     db_unavailable:        "Base de datos de sesiones no disponible."
     warn_prefix:           "⚠️ {error}"

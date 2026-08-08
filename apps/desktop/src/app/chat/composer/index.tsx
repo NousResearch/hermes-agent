@@ -1,5 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
+import { IconSpy } from '@tabler/icons-react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
@@ -17,7 +18,7 @@ import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } f
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { toggleReview } from '@/store/review'
-import { $gatewayState } from '@/store/session'
+import { $currentSessionEphemeral, $currentThreadEmpty, $gatewayState } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
@@ -195,6 +196,11 @@ export function ChatBar({
 
   const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
+  const sessionEphemeral = useStore($currentSessionEphemeral)
+  // Drives the empty-state hero vs. the compact bar. Read from the session view
+  // store rather than threaded down as a prop so the composer keeps working
+  // standalone (tests, the model-pill fixture) without a new required prop.
+  const threadIsEmpty = useStore($currentThreadEmpty)
   const reconnecting = gatewayState === 'closed' || gatewayState === 'error'
   const inputDisabled = disabled && !reconnecting
 
@@ -1077,6 +1083,27 @@ export function ChatBar({
               5px transparent grab margin — so both strips carry the same inset
               and share one left edge with it. */}
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
+            {sessionEphemeral && !threadIsEmpty && (
+              /* Temporary-chat indicator. Deliberately pinned directly above the
+                 input rather than in a header: this is where the user is
+                 looking as they type, and "am I being recorded?" is a question
+                 that must be answerable without moving your eyes. Amber (not
+                 red) — temporary mode is a valid state, not an error.
+
+                 Hidden while the thread is empty: the full-surface hero
+                 (TemporaryChatHero) is already making this exact point at that
+                 moment, and showing both stacks two amber blocks saying the
+                 same thing. The bar takes over once the hero is gone. */
+              <div
+                aria-live="polite"
+                className="flex w-full items-center gap-2 rounded-md border border-amber-600/55 bg-amber-50 px-2.5 py-1.5 text-[0.6875rem] font-medium text-amber-900 dark:border-amber-400/50 dark:bg-amber-400/15 dark:text-amber-200"
+                data-testid="temporary-session-indicator"
+              >
+                <IconSpy aria-hidden className="size-3.5 shrink-0" stroke={2} />
+                <span className="font-semibold">{t.composer.temporarySessionBadge}</span>
+                <span className="truncate font-normal opacity-80">{t.composer.temporarySessionHint}</span>
+              </div>
+            )}
             <ActionBadges sessionId={statusSessionId} />
           </div>
           {/* Session-scoped status stack (todos, subagents, background tasks,
@@ -1176,7 +1203,13 @@ export function ChatBar({
                 className={cn(
                   'group/composer-surface relative z-4 isolate grid grid-rows-[auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
                   COMPOSER_DROP_FADE_CLASS,
-                  dragActive && COMPOSER_DROP_ACTIVE_CLASS
+                  dragActive && COMPOSER_DROP_ACTIVE_CLASS,
+                  // Private session: recolour the surface the user types INTO,
+                  // not just a chip beside it. A small badge is easy to stop
+                  // seeing after a minute; the input itself looking different
+                  // is not. Amber, never red — private is a valid state.
+                  sessionEphemeral &&
+                    'border-amber-500/45 shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-amber-500)_28%,transparent)]'
                 )}
                 data-slot="composer-surface"
                 ref={composerSurfaceRef}

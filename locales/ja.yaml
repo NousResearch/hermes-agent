@@ -334,6 +334,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped:               "⚡ 停止しました。このセッションを続行できます。"
     no_active:             "停止できるアクティブなタスクはありません。"
 
+  temp:
+    usage:                 "使い方: /temp [off|status]\n例: /temp\n\n一時チャットを開始します。保存されるものは何もありません。/temp off で通常のセッションに戻ります。"
+    started:               "🕵️ 一時チャットを開始しました。\nこのチャットは保存されません。履歴にも残らず、記憶もされず、後から再開することもできません。\n/temp off で通常のセッションに戻ります。"
+    already_on:            "🕵️ すでに一時チャット中です。\n/temp off で通常のセッションに戻ります。"
+    ended:                 "一時チャットを終了しました。新しい保存セッションを開始します。\n一時的な会話は保存されておらず、復元できません。"
+    not_active:            "一時チャットは有効ではありません。\n/temp で開始できます。"
+    status_on:             "🕵️ 一時チャット: 有効\nこのチャットの内容は保存されません。/temp off で終了します。"
+    status_off:            "一時チャット: 無効\nこのセッションは通常どおり保存されます。/temp で一時チャットを開始します。"
   title:
     db_unavailable:        "セッションデータベースは利用できません。"
     warn_prefix:           "⚠️ {error}"

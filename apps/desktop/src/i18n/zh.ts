@@ -232,6 +232,7 @@ export const zh: Translations = {
       'nav.agents': '打开智能体',
       'session.new': '新建会话',
       'session.newTab': '新建会话标签',
+      'session.newTemporary': '新建临时对话',
       'session.newWindow': '新建窗口',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
@@ -2025,6 +2026,7 @@ export const zh: Translations = {
 
   sidebar: {
     nav: {
+      'new-temporary-session': '新建临时会话',
       'new-session': '新建会话',
       skills: '技能与工具',
       messaging: '消息平台',
@@ -2253,6 +2255,11 @@ export const zh: Translations = {
     attachments: count => `${count} 个附件`,
     editingInComposer: '正在输入框中编辑',
     editingQueuedInComposer: '正在输入框中编辑排队回合',
+    temporarySessionBadge: '临时 — 不会保存',
+    temporarySessionHint: '关闭此对话后即消失。',
+    temporaryHeroTitle: '临时聊天',
+    temporaryHeroBody:
+      '此处的内容不会被保存。该聊天不会出现在历史记录中，不会被记住，关闭后也无法恢复。',
     queueEdit: '编辑',
     queueSendNext: '下一个',
     queueSend: '发送',

@@ -357,7 +357,10 @@ class CLIAgentSetupMixin:
         )
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
-        if self._session_db is None:
+        # Ephemeral runs (--no-session / after /temp) leave _session_db None on
+        # purpose; without this guard the lazy re-open would silently undo the
+        # no-trace contract the moment the agent is (re)built.
+        if self._session_db is None and not getattr(self, "_ephemeral", False):
             try:
                 from hermes_state import SessionDB
                 self._session_db = SessionDB()
@@ -496,6 +499,7 @@ class CLIAgentSetupMixin:
                 session_id=self.session_id,
                 platform="cli",
                 session_db=self._session_db,
+                ephemeral=getattr(self, "_ephemeral", False),
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),
 

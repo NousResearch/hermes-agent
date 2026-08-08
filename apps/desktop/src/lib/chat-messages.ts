@@ -58,6 +58,8 @@ export type GatewayEventPayload = {
   fast?: boolean
   approval_mode?: string
   yolo?: boolean
+  /** session.info: this session is private/temporary and is never persisted. */
+  ephemeral?: boolean
   running?: boolean
   cwd?: string
   branch?: string

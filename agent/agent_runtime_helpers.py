@@ -2810,6 +2810,60 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             )
 
 
+# ---------------------------------------------------------------------------
+# Ephemeral session tool-write guard
+# ---------------------------------------------------------------------------
+# Maps tool name -> frozenset of BLOCKED action values. Only write-side actions
+# are listed; every other action on these tools (and every other tool) stays
+# available. This read/write split is deliberate: an ephemeral chat that cannot
+# read memory or view skills is a degraded assistant, not a private one.
+#
+# Tools without an "action" parameter are not listed here — they either don't
+# write durable user state, or (session_search) only read it.
+_EPHEMERAL_BLOCKED_TOOL_ACTIONS: Dict[str, frozenset] = {
+    "memory": frozenset({"add", "replace", "remove"}),
+    "skill_manage": frozenset({
+        "create", "edit", "patch", "delete", "write_file", "remove_file",
+    }),
+    "cronjob": frozenset({"create", "update", "remove", "pause", "resume"}),
+}
+
+
+def check_ephemeral_tool_block(
+    function_name: str, function_args: Dict[str, Any]
+) -> Optional[str]:
+    """Return an error string if this call writes durable state in an
+    ephemeral session, else ``None``.
+
+    Read-side actions return ``None`` so they execute normally.
+    """
+    blocked_actions = _EPHEMERAL_BLOCKED_TOOL_ACTIONS.get(function_name)
+    if not blocked_actions:
+        return None
+
+    action = function_args.get("action")
+    # `memory` accepts a batch `operations` list instead of a bare action;
+    # a blocked action anywhere in the batch blocks the whole call, since the
+    # batch is applied atomically.
+    if function_name == "memory" and not action:
+        operations = function_args.get("operations")
+        if isinstance(operations, list):
+            for op in operations:
+                if isinstance(op, dict) and op.get("action") in blocked_actions:
+                    action = op.get("action")
+                    break
+
+    if action not in blocked_actions:
+        return None
+
+    return (
+        f"'{function_name}' action '{action}' is blocked in this temporary chat. "
+        "Temporary chats leave no trace: nothing is saved to the session store, "
+        "memory, or skills. Read-only actions on this tool still work. "
+        "Start a normal chat (/new) if you want to save this."
+    )
+
+
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
@@ -2824,6 +2878,19 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     """
     if not isinstance(function_args, dict):
         function_args = {}
+
+    # Ephemeral session guard: block write-side tool actions so a temporary
+    # chat cannot durably change the user's state. Read-side actions on the
+    # same tools stay available — an ephemeral chat is still allowed to *use*
+    # memory and skills, it just can't rewrite them.
+    #
+    # Both the sequential and concurrent executors dispatch through this
+    # function (agent/tool_executor.py calls agent._invoke_tool, which
+    # forwards here), so this is the single chokepoint for tool-side writes.
+    if getattr(agent, "ephemeral", False):
+        _ephemeral_block = check_ephemeral_tool_block(function_name, function_args)
+        if _ephemeral_block is not None:
+            return json.dumps({"error": _ephemeral_block}, ensure_ascii=False)
 
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:

@@ -1672,6 +1672,7 @@ export const ja = defineLocale({
 
   sidebar: {
     nav: {
+      'new-temporary-session': '新しい一時セッション',
       'new-session': '新しいセッション',
       skills: 'スキルとツール',
       messaging: 'メッセージング',
@@ -1891,6 +1892,11 @@ export const ja = defineLocale({
     attachments: count => `${count} 件の添付`,
     editingInComposer: 'コンポーザーで編集中',
     editingQueuedInComposer: 'コンポーザーでキュー済みターンを編集中',
+    temporarySessionBadge: '一時的 — 保存されません',
+    temporarySessionHint: 'このチャットを閉じると消えます。',
+    temporaryHeroTitle: '一時的なチャット',
+    temporaryHeroBody:
+      'ここでの内容は保存されません。このチャットは履歴に表示されず、記憶されず、閉じた後に再開することもできません。',
     queueEdit: '編集',
     queueSendNext: '次に送信',
     queueSend: '送信',

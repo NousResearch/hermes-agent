@@ -795,6 +795,12 @@ export function upsertOptimisticSession(
     // the session was just started in when the create response omits it.
     cwd: created.info?.cwd ?? ($currentCwd.get().trim() || null),
     ended_at: null,
+    // The create response is authoritative: the gateway echoes back whether it
+    // registered this session as temporary. Without this the optimistically
+    // inserted row carries `ephemeral: undefined` and the sidebar's filter
+    // keeps it -- which is how a temporary chat still showed up in Recents
+    // even with the gateway and the filter both correct.
+    ephemeral: Boolean(created.info?.ephemeral ?? created.ephemeral),
     id,
     input_tokens: 0,
     is_active: true,

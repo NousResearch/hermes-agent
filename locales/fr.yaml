@@ -334,6 +334,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped:               "⚡ Arrêté. Vous pouvez continuer cette session."
     no_active:             "Aucune tâche active à arrêter."
 
+  temp:
+    usage:                 "Utilisation : /temp [off|status]\nExemple : /temp\n\nDémarre une discussion temporaire dont rien n'est enregistré. Utilisez /temp off pour revenir à une session normale."
+    started:               "🕵️ Discussion temporaire démarrée.\nRien n'est enregistré ici : cette discussion n'apparaîtra pas dans votre historique, ne sera pas mémorisée et ne pourra pas être reprise après sa fermeture.\nUtilisez /temp off pour revenir à une session normale."
+    already_on:            "🕵️ Vous êtes déjà dans une discussion temporaire.\nUtilisez /temp off pour revenir à une session normale."
+    ended:                 "Discussion temporaire terminée. Nouvelle session enregistrée démarrée.\nLa conversation temporaire n'a pas été enregistrée et ne peut pas être récupérée."
+    not_active:            "Aucune discussion temporaire active.\nUtilisez /temp pour en démarrer une."
+    status_on:             "🕵️ Discussion temporaire : activée\nRien de cette discussion n'est enregistré. Utilisez /temp off pour la terminer."
+    status_off:            "Discussion temporaire : désactivée\nCette session est enregistrée normalement. Utilisez /temp pour démarrer une discussion temporaire."
   title:
     db_unavailable:        "Base de données des sessions indisponible."
     warn_prefix:           "⚠️ {error}"

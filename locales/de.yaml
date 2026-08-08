@@ -334,6 +334,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped:               "⚡ Gestoppt. Sie können diese Sitzung fortsetzen."
     no_active:             "Keine aktive Aufgabe zum Stoppen."
 
+  temp:
+    usage:                 "Verwendung: /temp [off|status]\nBeispiel: /temp\n\nStartet einen temporären Chat, bei dem nichts gespeichert wird. Mit /temp off kehrst du zu einer normalen Sitzung zurück."
+    started:               "🕵️ Temporärer Chat gestartet.\nHier wird nichts gespeichert: Dieser Chat erscheint nicht im Verlauf, wird nicht erinnert und kann nach dem Schließen nicht fortgesetzt werden.\nMit /temp off kehrst du zu einer normalen Sitzung zurück."
+    already_on:            "🕵️ Du befindest dich bereits in einem temporären Chat.\nMit /temp off kehrst du zu einer normalen Sitzung zurück."
+    ended:                 "Temporärer Chat beendet. Neue gespeicherte Sitzung gestartet.\nDas temporäre Gespräch wurde nicht gespeichert und kann nicht wiederhergestellt werden."
+    not_active:            "Kein temporärer Chat aktiv.\nMit /temp startest du einen."
+    status_on:             "🕵️ Temporärer Chat: an\nNichts aus diesem Chat wird gespeichert. Mit /temp off beendest du ihn."
+    status_off:            "Temporärer Chat: aus\nDiese Sitzung wird normal gespeichert. Mit /temp startest du einen temporären Chat."
   title:
     db_unavailable:        "Sitzungsdatenbank nicht verfügbar."
     warn_prefix:           "⚠️ {error}"

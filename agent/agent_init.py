@@ -530,6 +530,8 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    persist_disabled: bool = False,
+    ephemeral: bool = False,
     requested_provider: str = None,
 ):
     """
@@ -1603,8 +1605,22 @@ def init_agent(
     # When True, this agent NEVER persists to the canonical session store
     # (state.db) or the JSON snapshot, regardless of session_id. Set on the
     # background skill/memory review fork so its harness turn can't leak into
-    # the user's real session and hijack the next live turn. Default False.
-    agent._persist_disabled = False
+    # the user's real session and hijack the next live turn, and by both
+    # ephemeral entry points (`--no-session` one-shots and `/temp` sessions).
+    # Default False.
+    agent._persist_disabled = persist_disabled
+    # Ephemeral (user-facing "temporary chat"): implies persist_disabled and
+    # additionally blocks the write-side tools (memory/skill_manage/cronjob
+    # create) so a temporary chat cannot durably change the user's state.
+    # `_persist_disabled` alone is the weaker internal-fork contract, which
+    # deliberately still allows those tools.
+    agent.ephemeral = ephemeral
+    if ephemeral:
+        agent._persist_disabled = True
+    if agent._persist_disabled:
+        # An ephemeral/isolated agent must not leave a JSON snapshot either,
+        # even when sessions.write_json_snapshots is enabled above.
+        agent._session_json_enabled = False
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,

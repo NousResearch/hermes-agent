@@ -237,6 +237,7 @@ export const en: Translations = {
       'nav.agents': 'Open agents',
       'session.new': 'New session',
       'session.newTab': 'New session tab',
+      'session.newTemporary': 'New temporary chat',
       'session.newWindow': 'New window',
       'session.next': 'Next session',
       'session.prev': 'Previous session',
@@ -1831,6 +1832,7 @@ export const en: Translations = {
 
   sidebar: {
     nav: {
+      'new-temporary-session': 'New temporary session',
       'new-session': 'New session',
       skills: 'Capabilities',
       messaging: 'Messaging',
@@ -2060,6 +2062,14 @@ export const en: Translations = {
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
+    temporarySessionBadge: 'Temporary — not saved',
+    // Answers the question users actually have. "No history, no memory, no
+    // resume" lists three consequences but never says WHEN the chat goes away,
+    // which is the thing someone deciding whether to trust it needs to know.
+    temporarySessionHint: 'Gone when you close this chat.',
+    temporaryHeroTitle: 'Temporary chat',
+    temporaryHeroBody:
+      "Nothing here is saved. This chat won't appear in your history, won't be remembered, and can't be resumed after you close it.",
     queueEdit: 'Edit',
     queueSendNext: 'Next',
     queueSend: 'Send',

@@ -895,6 +895,18 @@ def _pop_session_by_id(sid: str) -> dict | None:
         session = _sessions.pop(sid, None)
     if session is None:
         return None
+    # Drop the temporary-session registration. Every session exits through this
+    # pop, so this is the one place that can't be bypassed. Without it the id
+    # set in hermes_state grows for the lifetime of the process — and, worse, a
+    # later session that happened to reuse the id would be silently treated as
+    # temporary and never persisted.
+    if session.get("ephemeral"):
+        try:
+            from hermes_state import unmark_session_ephemeral
+
+            unmark_session_ephemeral(sid)
+        except Exception:  # never fail teardown over bookkeeping
+            pass
     # The session is already out of _sessions here, so downstream teardown
     # (e.g. _finalize_session's per-session async-delegation interrupt) can't
     # recover its live id by scanning the dict — stamp it on the record.
@@ -2700,6 +2712,13 @@ def _ensure_session_db_row(session: dict) -> None:
     """
     key = session.get("session_key")
     if not key:
+        return
+    # Private ("temporary") session: never persist a row. This is the single
+    # chokepoint every desktop/TUI transcript write funnels through, so gating
+    # here is what makes the guarantee hold rather than relying on each caller
+    # to remember. Returning before the row exists also means a SIGKILL cannot
+    # strand a half-written transcript — there is nothing to purge later.
+    if session.get("ephemeral"):
         return
     # Persist into the session's own profile db (global remote mode), not the
     # launch profile's — otherwise the row lands in the wrong state.db, the
@@ -5170,6 +5189,11 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "branch": _git_branch_for_cwd(cwd),
         "project": _project_info_for_cwd(cwd),
         "personality": str(personality or ""),
+        # Private ("temporary") session. Mirrored so the desktop's lock badge
+        # reflects BACKEND truth rather than its own local atom — a UI that can
+        # disagree with the server about whether anything is being saved is
+        # worse than no badge at all.
+        "ephemeral": bool((session or {}).get("ephemeral")),
         "running": bool((session or {}).get("running")),
         "title": _session_live_title(session or {}, session_key) if session_key else "",
         "stored_session_id": session_key or "",
@@ -6571,6 +6595,11 @@ def _make_agent(
         platform=_resolve_agent_platform(platform_override),
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
+        # Private session: blocks write-side tools (memory/skill/cron) and adds
+        # the temporary-chat notice to the system prompt. Read from the session
+        # dict rather than threaded through every caller, so a new build path
+        # can't silently forget it and downgrade a private chat.
+        ephemeral=bool((_sessions.get(sid) or {}).get("ephemeral")),
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
@@ -7933,6 +7962,11 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     now = time.time()
     return {
         "current": sid == current_sid,
+        # Temporary chats never reach the DB, so a live row is the ONLY way one
+        # can appear in a session list. Report the flag so clients can drop it:
+        # a sidebar row for a temporary chat is both a broken promise (clicking
+        # it resumes nothing) and the exact trace the mode exists to avoid.
+        "ephemeral": bool(session.get("ephemeral")),
         "id": sid,
         "last_active": float(session.get("last_active") or session.get("created_at") or now),
         "message_count": len(history),
@@ -10098,6 +10132,13 @@ def _run_prompt_submit(
                         text,
                         raw,
                         session.get("history", []),
+                        # Temporary chat: the session row survives but its
+                        # content does not, so deriving a title from that
+                        # content would leave exactly the durable summary the
+                        # user opted out of. Read from the session dict (same
+                        # source as the agent's own flag) so a new build path
+                        # can't silently drop it.
+                        ephemeral=bool(session.get("ephemeral")),
                         # Keep auxiliary auto-detection aligned with the active
                         # Desktop/Webapp session. Without this, providers that
                         # rely on runtime auth (for example OpenAI Codex OAuth)

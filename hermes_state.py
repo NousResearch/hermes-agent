@@ -84,6 +84,46 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 
 logger = logging.getLogger(__name__)
 
+# --- Temporary ("ephemeral") sessions -------------------------------------
+#
+# A temporary chat must leave NOTHING on disk. Guarding only the transcript
+# writer is not enough: token/cost accounting calls _insert_session_row()
+# directly (with source="unknown") to satisfy a foreign key, which resurrects
+# a row for a chat the user was promised would not be stored. That row is
+# empty and untitled, but it still proves *when* a private chat happened and
+# carries model/cost/cwd metadata.
+#
+# The DB layer sits below the session objects and cannot see an `ephemeral`
+# flag on them, so the set of temporary session ids is registered here and
+# consulted at the single INSERT chokepoint. Process-local by design: a
+# temporary session never outlives the process that created it.
+_EPHEMERAL_SESSION_IDS: set[str] = set()
+_EPHEMERAL_LOCK = threading.Lock()
+
+
+def mark_session_ephemeral(session_id: str) -> None:
+    """Register *session_id* as temporary so no row is ever persisted for it."""
+    if not session_id:
+        return
+    with _EPHEMERAL_LOCK:
+        _EPHEMERAL_SESSION_IDS.add(session_id)
+
+
+def unmark_session_ephemeral(session_id: str) -> None:
+    """Drop *session_id* from the temporary registry (session ended)."""
+    if not session_id:
+        return
+    with _EPHEMERAL_LOCK:
+        _EPHEMERAL_SESSION_IDS.discard(session_id)
+
+
+def is_session_ephemeral(session_id: str) -> bool:
+    """Return True iff *session_id* is a temporary chat."""
+    if not session_id:
+        return False
+    with _EPHEMERAL_LOCK:
+        return session_id in _EPHEMERAL_SESSION_IDS
+
 _COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
 
 
@@ -3186,6 +3226,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         crash before the gateway re-records the peer can't strand the child
         without a recoverable routing mapping (#59527).
         """
+        # Temporary chat: never write a row. Every other persistence path funnels
+        # here (create_session, ensure_session, token accounting, model-usage
+        # accounting), so this one check is what makes "nothing on disk" true
+        # rather than "nothing on disk unless you were billed for it".
+        if is_session_ephemeral(session_id):
+            return
+
         def _do(conn):
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
             conn.execute(
@@ -5169,6 +5216,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         the caller already holds cumulative totals (gateway path, where the
         cached agent accumulates across messages).
         """
+        # Temporary chat: there is no row to update, and creating one purely to
+        # hold token counters is exactly the leak this feature exists to
+        # prevent. Bail before touching the DB — cost for a temporary chat is
+        # still reported in-process, it just isn't written down.
+        if is_session_ephemeral(session_id):
+            return
         # Ensure the session row exists so the UPDATE doesn't silently affect
         # 0 rows.  Under concurrent load (cron + kanban + delegate_task) the
         # initial create_session() may have failed due to SQLite locking.
@@ -5453,6 +5506,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         accounting failed.
         """
         if not session_id or not task:
+            return
+        # Temporary chat: no row exists (by design), so the FK below cannot be
+        # satisfied and must not be forced. Skip accounting entirely rather
+        # than resurrecting the session row to hold it.
+        if is_session_ephemeral(session_id):
             return
         # FK on session_model_usage.session_id → sessions.id: ensure the row
         # exists (same INSERT OR IGNORE guard update_token_counts uses — the

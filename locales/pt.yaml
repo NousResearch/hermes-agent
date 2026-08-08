@@ -334,6 +334,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped:               "⚡ Parado. Podes continuar esta sessão."
     no_active:             "Não há nenhuma tarefa ativa para parar."
 
+  temp:
+    usage:                 "Uso: /temp [off|status]\nExemplo: /temp\n\nInicia uma conversa temporária da qual nada é salvo. Use /temp off para voltar a uma sessão normal."
+    started:               "🕵️ Conversa temporária iniciada.\nNada aqui é salvo: esta conversa não aparecerá no seu histórico, não será lembrada e não poderá ser retomada depois de fechada.\nUse /temp off para voltar a uma sessão normal."
+    already_on:            "🕵️ Você já está em uma conversa temporária.\nUse /temp off para voltar a uma sessão normal."
+    ended:                 "Conversa temporária encerrada. Nova sessão salva iniciada.\nA conversa temporária não foi salva e não pode ser recuperada."
+    not_active:            "Nenhuma conversa temporária ativa.\nUse /temp para iniciar uma."
+    status_on:             "🕵️ Conversa temporária: ativada\nNada desta conversa é salvo. Use /temp off para encerrá-la."
+    status_off:            "Conversa temporária: desativada\nEsta sessão é salva normalmente. Use /temp para iniciar uma conversa temporária."
   title:
     db_unavailable:        "Base de dados de sessões indisponível."
     warn_prefix:           "⚠️ {error}"

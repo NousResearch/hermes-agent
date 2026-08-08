@@ -58,6 +58,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Feishu can opt into one persistent per-turn status message that tool
+    # progress edits in place and the delivery lifecycle finalizes.
+    "turn_status_message": False,
     # Live working-state status on platforms whose typing indicator renders
     # text (Slack's assistant status line). Values:
     #   "full" / true  -> verb + argument preview ("is running pytest…")
@@ -148,7 +151,11 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
-    "feishu":          _TIER_MEDIUM,
+    "feishu":          {
+        **_TIER_MEDIUM,
+        "turn_status_message": True,
+        "interim_assistant_messages": False,
+    },
 
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
@@ -274,6 +281,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "busy_ack_detail",
         "busy_steer_ack_enabled",
         "thinking_progress",
+        "turn_status_message",
     }:
         if isinstance(value, str):
             val = value.strip().lower()

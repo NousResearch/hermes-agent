@@ -131,6 +131,13 @@ class TestPlatformDefaults:
         # Discord: pure tier_high.
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
+    def test_feishu_defaults_to_single_turn_status_message(self):
+        """Feishu pre-creates one editable status message without extra config."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "feishu", "turn_status_message") is True
+        assert resolve_display_setting({}, "feishu", "interim_assistant_messages") is False
+
 
     def test_low_tier_platforms(self):
         """Signal, BlueBubbles, etc. default to 'off' tool progress."""

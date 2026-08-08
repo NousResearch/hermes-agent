@@ -271,16 +271,13 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
-# Feishu reactions render as prominent badges, unlike Discord/Telegram's
-# small footer emoji — a success badge on every message would add noise, so
-# we only mark start (Typing) and failure (CrossMark); the reply itself is
-# the success signal.
+# Feishu reactions render as prominent badges.  The unified turn lifecycle
+# deliberately mirrors start and terminal state on both participating messages.
 _FEISHU_REACTION_IN_PROGRESS = "Typing"
+_FEISHU_REACTION_SUCCESS = "CheckMark"
 _FEISHU_REACTION_FAILURE = "CrossMark"
-# Bound on the (message_id → reaction_id) handle cache. Happy-path entries
-# drain on completion; the cap is a safeguard against unbounded growth from
-# delete-failures, not a capacity plan.
-_FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
+_FEISHU_REACTION_REMOVE_ATTEMPTS = 3
+_FEISHU_REACTION_REMOVE_RETRY_DELAY = 0.25
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
 
 # QR onboarding constants
@@ -1559,6 +1556,10 @@ class FeishuAdapter(BasePlatformAdapter):
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        # Trigger-message id -> per-turn editable status message.  Kept on the
+        # adapter because the final delivery lifecycle runs here, after the
+        # gateway has proved whether the answer actually reached Feishu.
+        self._turn_status_messages: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
         self._load_seen_message_ids()
 
     @staticmethod
@@ -3232,42 +3233,165 @@ class FeishuAdapter(BasePlatformAdapter):
         cache = self._pending_processing_reactions
         cache[message_id] = reaction_id
         cache.move_to_end(message_id)
-        while len(cache) > _FEISHU_PROCESSING_REACTION_CACHE_SIZE:
-            cache.popitem(last=False)
+        # Every entry is an in-flight lifecycle handle, not historical cache.
+        # Completion owns removal; evicting an active handle can strand Typing.
 
     def _pop_processing_reaction(self, message_id: str) -> Optional[str]:
         return self._pending_processing_reactions.pop(message_id, None)
 
-    async def on_processing_start(self, event: MessageEvent) -> None:
-        if not self._reactions_enabled():
+    async def start_processing_reaction(self, message_id: str) -> None:
+        """Attach Typing to any message participating in a turn lifecycle."""
+        if not self._reactions_enabled() or not message_id:
             return
-        message_id = event.message_id
-        if not message_id or message_id in self._pending_processing_reactions:
+        if message_id in self._pending_processing_reactions:
             return
-        reaction_id = await self._add_reaction(message_id, _FEISHU_REACTION_IN_PROGRESS)
+        reaction_id = await self._add_reaction(
+            message_id, _FEISHU_REACTION_IN_PROGRESS
+        )
         if reaction_id:
             self._remember_processing_reaction(message_id, reaction_id)
+
+    async def complete_processing_reaction(
+        self, message_id: str, outcome: ProcessingOutcome
+    ) -> None:
+        """Replace Typing with the terminal reaction for one message."""
+        if not self._reactions_enabled() or not message_id:
+            return
+        start_reaction_id = self._pending_processing_reactions.get(message_id)
+        if start_reaction_id:
+            removed = False
+            for attempt in range(_FEISHU_REACTION_REMOVE_ATTEMPTS):
+                if await self._remove_reaction(message_id, start_reaction_id):
+                    removed = True
+                    break
+                if attempt + 1 < _FEISHU_REACTION_REMOVE_ATTEMPTS:
+                    await asyncio.sleep(
+                        _FEISHU_REACTION_REMOVE_RETRY_DELAY * (2**attempt)
+                    )
+            # Release only the handle this completion attempt owned. A newer
+            # lifecycle registration for the same message must not be popped.
+            if (
+                self._pending_processing_reactions.get(message_id)
+                == start_reaction_id
+            ):
+                self._pop_processing_reaction(message_id)
+            if not removed:
+                logger.warning(
+                    "[Feishu] Giving up reaction cleanup on %s after %d attempts",
+                    message_id,
+                    _FEISHU_REACTION_REMOVE_ATTEMPTS,
+                )
+                return
+
+        terminal_reaction = None
+        if outcome is ProcessingOutcome.SUCCESS:
+            terminal_reaction = _FEISHU_REACTION_SUCCESS
+        elif outcome is ProcessingOutcome.FAILURE:
+            terminal_reaction = _FEISHU_REACTION_FAILURE
+        if terminal_reaction:
+            await self._add_reaction(message_id, terminal_reaction)
+
+    def register_turn_status_message(
+        self,
+        *,
+        trigger_message_id: str,
+        chat_id: str,
+        status_message_id: str,
+        lifecycle_id: Optional[str] = None,
+    ) -> None:
+        """Bind the one editable Feishu status message to its inbound turn."""
+        if not trigger_message_id or not chat_id or not status_message_id:
+            return
+        cache = self._turn_status_messages
+        status_key = lifecycle_id or trigger_message_id
+        cache[status_key] = {
+            "trigger_message_id": trigger_message_id,
+            "chat_id": chat_id,
+            "message_id": status_message_id,
+            "tool_count": 0,
+            "current_stage": "處理中",
+        }
+        cache.move_to_end(status_key)
+        # These records represent active turns, not historical cache entries.
+        # Never evict an in-flight turn: on_processing_complete owns removal
+        # and must always be able to clear the status message's Typing reaction.
+
+    def update_turn_status_progress(
+        self, status_key: str, *, tool_count: int, current_stage: str
+    ) -> None:
+        record = self._turn_status_messages.get(status_key)
+        if record is None:
+            return
+        record["tool_count"] = max(0, int(tool_count))
+        record["current_stage"] = str(current_stage or "處理中")
+
+    @staticmethod
+    def _terminal_turn_status_text(record: Dict[str, Any], outcome: ProcessingOutcome) -> str:
+        count = max(0, int(record.get("tool_count", 0) or 0))
+        if outcome is ProcessingOutcome.SUCCESS:
+            return f"已完成\n共執行 {count} 個工具操作"
+        if outcome is ProcessingOutcome.CANCELLED:
+            return "已停止"
+        stage = str(record.get("current_stage") or "處理最終結果")
+        return f"處理失敗\n階段：{stage}\n原因：處理或傳送未成功"
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        await self.start_processing_reaction(event.message_id)
 
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
     ) -> None:
-        if not self._reactions_enabled():
-            return
         message_id = event.message_id
         if not message_id:
             return
+        # The inbound reaction belongs to the adapter that received the event.
+        # Status ownership may live on a replacement adapter after reconnect.
+        await self.complete_processing_reaction(message_id, outcome)
 
-        start_reaction_id = self._pending_processing_reactions.get(message_id)
-        if start_reaction_id:
-            if not await self._remove_reaction(message_id, start_reaction_id):
-                # Don't stack a second badge on top of a Typing we couldn't
-                # remove — UI would read as both "working" and "done/failed"
-                # simultaneously. Keep the handle so LRU eventually evicts it.
-                return
-            self._pop_processing_reaction(message_id)
+        source = getattr(event, "source", None)
+        status_owner = getattr(
+            source, "_feishu_turn_status_adapter", None
+        ) if source is not None else None
+        if not isinstance(status_owner, type(self)):
+            status_owner = self
+        status_key = getattr(
+            source, "_feishu_turn_status_lifecycle_id", None
+        ) if source is not None else None
+        if not isinstance(status_key, str) or not status_key:
+            status_key = message_id
+        await status_owner._finalize_turn_status(status_key, outcome)
 
-        if outcome is ProcessingOutcome.FAILURE:
-            await self._add_reaction(message_id, _FEISHU_REACTION_FAILURE)
+    async def _finalize_turn_status(
+        self, status_key: str, outcome: ProcessingOutcome
+    ) -> None:
+        """Finalize the status record owned by this adapter instance."""
+        status = self._turn_status_messages.pop(status_key, None)
+        if status is None:
+            return
+
+        status_message_id = str(status["message_id"])
+        try:
+            result = await self.edit_message(
+                chat_id=str(status["chat_id"]),
+                message_id=status_message_id,
+                content=self._terminal_turn_status_text(status, outcome),
+            )
+            if not getattr(result, "success", False):
+                logger.warning(
+                    "[Feishu] Turn status edit rejected for %s: %s",
+                    status_message_id,
+                    getattr(result, "error", None) or "unknown error",
+                )
+        except Exception as exc:
+            logger.warning(
+                "[Feishu] Failed to finalize turn status message %s: %s",
+                status_message_id,
+                exc,
+            )
+        finally:
+            # Reaction cleanup is independent of text-edit success.  A failed
+            # edit must never strand Typing on the status message.
+            await self.complete_processing_reaction(status_message_id, outcome)
 
     # =========================================================================
     # Webhook server and security

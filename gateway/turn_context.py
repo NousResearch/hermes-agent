@@ -64,6 +64,12 @@ class TurnContext:
     #     send_progress_messages is scheduled) ----------------------------
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
+    # Feishu-only single editable status bubble for this turn.  It is created
+    # before agent execution and finalized by the adapter after final delivery.
+    turn_status_enabled: bool = False
+    status_message_id: Optional[str] = None
+    status_lifecycle_id: Optional[str] = None
+    _turn_status_adapter: Any = None
 
     # ------------------------------------------------------------------
     # run_sync extraction (second wave of the seam): the closed-over locals

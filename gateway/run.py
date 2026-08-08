@@ -3773,6 +3773,12 @@ class TurnRunner:
         if not ctx.progress_queue or not ctx._run_still_current():
             return
 
+        # Feishu's status counter is driven by the completion event itself.
+        # Queue it before the onboarding-hint branch, which intentionally
+        # returns for the first completed tool.
+        if event_type == "tool.completed" and ctx.turn_status_enabled:
+            ctx.progress_queue.put(("__status_completed__",))
+
         # First-touch onboarding: the first time a tool takes longer than
         # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
         # (progress_mode == "all"), append a one-time hint suggesting
@@ -3817,11 +3823,12 @@ class TurnRunner:
             return
 
         # If tool_progress is off, only _thinking passes through (above).
-        # Regular tool calls are suppressed.
-        if not ctx.tool_progress_enabled:
+        # Regular tool calls are suppressed unless Feishu's single status
+        # message needs lifecycle events to keep its counters accurate.
+        if not ctx.tool_progress_enabled and not ctx.turn_status_enabled:
             return
 
-        # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+        # Only tool.started produces a visible history row.
         if event_type not in {"tool.started",}:
             return
 
@@ -3997,7 +4004,11 @@ class TurnRunner:
         if not ctx.progress_queue:
             return
 
-        adapter = self._runner._adapter_for_source(ctx.source)
+        adapter = (
+            ctx._turn_status_adapter
+            if ctx.turn_status_enabled and ctx._turn_status_adapter is not None
+            else self._runner._adapter_for_source(ctx.source)
+        )
         if not adapter:
             return
 
@@ -4017,8 +4028,9 @@ class TurnRunner:
             return
 
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
-        progress_msg_id = None   # ID of the current progress message to edit
-        can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+        progress_msg_id = ctx.status_message_id  # Feishu may pre-create the one turn-status bubble
+        turn_completed_count = 0
+        can_edit = ctx.turn_status_enabled or ctx.progress_grouping != "separate"  # Feishu status always stays singular
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -4078,6 +4090,17 @@ class TurnRunner:
             return await adapter.edit_message(**kwargs)
 
         def _progress_text(lines: list) -> str:
+            if ctx.turn_status_enabled:
+                recent = lines[-5:]
+                current = str(recent[-1]) if recent else "處理中"
+                history = "\n".join(f"• {line}" for line in recent)
+                text = (
+                    f"處理中\n目前：{current}\n"
+                    f"已完成：{turn_completed_count} 個工具操作"
+                )
+                if history:
+                    text += f"\n\n最近：\n{history}"
+                return text
             return "\n".join(str(line) for line in lines)
 
         def _split_progress_groups(lines: list) -> list[list]:
@@ -4121,8 +4144,8 @@ class TurnRunner:
                 intact for a later retry.  In either case the caller should skip
                 the normal send/edit path for this tick.
                 """
-            nonlocal progress_msg_id, progress_lines, can_edit
-            if not progress_lines or not can_edit:
+            nonlocal progress_msg_id, progress_lines, can_edit, turn_completed_count
+            if ctx.turn_status_enabled or not progress_lines or not can_edit:
                 return False
             groups = _split_progress_groups(progress_lines)
             if len(groups) <= 1:
@@ -4185,8 +4208,13 @@ class TurnRunner:
                 except Exception:
                     pass
 
+                # Completion markers update the count without adding a second
+                # history row for the same tool call.
+                if isinstance(raw, tuple) and raw and raw[0] == "__status_completed__":
+                    turn_completed_count += 1
+                    msg = progress_lines[-1] if progress_lines else "處理中"
                 # Handle dedup messages: update last line with repeat counter
-                if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                     _, base_msg, count = raw
                     if progress_lines:
                         progress_lines[-1] = f"{base_msg} (×{count + 1})"
@@ -4200,14 +4228,24 @@ class TurnRunner:
                     # order. Mirrors GatewayStreamConsumer.on_segment_break
                     # on the content side. (Issue: tool + content
                     # linearization regression after PR #7885.)
-                    progress_msg_id = None
-                    progress_lines = []
-                    ctx.last_progress_msg[0] = None
-                    ctx.repeat_count[0] = 0
+                    if not ctx.turn_status_enabled:
+                        progress_msg_id = None
+                        progress_lines = []
+                        ctx.last_progress_msg[0] = None
+                        ctx.repeat_count[0] = 0
                     continue
                 else:
-                    msg = raw
+                    msg = str(raw)
                     progress_lines.append(msg)
+
+                if ctx.turn_status_enabled and ctx.event_message_id:
+                    update_status = getattr(adapter, "update_turn_status_progress", None)
+                    if callable(update_status):
+                        update_status(
+                            ctx.status_lifecycle_id or ctx.event_message_id,
+                            tool_count=turn_completed_count,
+                            current_stage=str(msg),
+                        )
 
                 if await _roll_progress_overflow_if_needed():
                     _last_edit_ts = time.monotonic()
@@ -4234,7 +4272,7 @@ class TurnRunner:
 
                 if can_edit and progress_msg_id is not None:
                     # Try to edit the existing progress message
-                    full_text = "\n".join(progress_lines)
+                    full_text = _progress_text(progress_lines)
                     result = await _edit_progress_message(progress_msg_id, full_text)
                     if not result.success:
                         _err = (getattr(result, "error", "") or "").lower()
@@ -4259,6 +4297,10 @@ class TurnRunner:
                             _last_edit_ts = time.monotonic()
                         else:
                             can_edit = False
+                        if ctx.turn_status_enabled:
+                            # Feishu's status contract is one message or none:
+                            # never degrade an edit failure into extra bubbles.
+                            continue
                         _flood_result = await adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=msg,
@@ -4272,6 +4314,11 @@ class TurnRunner:
                         ):
                             ctx._cleanup_msg_ids.append(str(_flood_result.message_id))
                 else:
+                    if ctx.turn_status_enabled:
+                        # A permanent edit failure disables status updates for
+                        # the rest of the turn; never fall back to extra Feishu
+                        # progress bubbles.
+                        continue
                     if can_edit:
                         # First tool: send all accumulated text as new message
                         full_text = "\n".join(progress_lines)
@@ -4308,7 +4355,9 @@ class TurnRunner:
                 while not ctx.progress_queue.empty():
                     try:
                         raw = ctx.progress_queue.get_nowait()
-                        if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                        if isinstance(raw, tuple) and raw and raw[0] == "__status_completed__":
+                            turn_completed_count += 1
+                        elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                             _, base_msg, count = raw
                             if progress_lines:
                                 progress_lines[-1] = f"{base_msg} (×{count + 1})"
@@ -4324,16 +4373,25 @@ class TurnRunner:
                                     await _edit_progress_message(progress_msg_id, _pending_text)
                                 except Exception:
                                     pass
-                            progress_msg_id = None
-                            progress_lines = []
-                            ctx.last_progress_msg[0] = None
-                            ctx.repeat_count[0] = 0
+                            if not ctx.turn_status_enabled:
+                                progress_msg_id = None
+                                progress_lines = []
+                                ctx.last_progress_msg[0] = None
+                                ctx.repeat_count[0] = 0
                         else:
-                            progress_lines.append(raw)
+                            progress_lines.append(str(raw))
                             await _roll_progress_overflow_if_needed()
                     except Exception:
                         break
                 # Final edit with all remaining tools (only if editing works)
+                if ctx.turn_status_enabled and ctx.event_message_id and progress_lines:
+                    update_status = getattr(adapter, "update_turn_status_progress", None)
+                    if callable(update_status):
+                        update_status(
+                            ctx.status_lifecycle_id or ctx.event_message_id,
+                            tool_count=turn_completed_count,
+                            current_stage=str(progress_lines[-1]),
+                        )
                 if can_edit and progress_lines and progress_msg_id:
                     await _roll_progress_overflow_if_needed()
                 if can_edit and progress_lines and progress_msg_id:
@@ -25091,6 +25149,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source.platform != Platform.WEBHOOK
             and interim_assistant_messages_mode != "off"
         )
+        turn_status_enabled = (
+            source.platform == Platform.FEISHU
+            and is_truthy_value(
+                resolve_display_setting(
+                    user_config, platform_key, "turn_status_message"
+                ),
+                default=False,
+            )
+            and bool(event_message_id)
+        )
+        _turn_status_adapter = (
+            self._adapter_for_source(source) if turn_status_enabled else None
+        )
+        status_lifecycle_id = (
+            f"{event_message_id}:{run_generation}:{time.monotonic_ns()}"
+            if turn_status_enabled and event_message_id
+            else None
+        )
         # thinking_progress is independent — if enabled, we need the progress
         # queue even when tool_progress is off (thinking relay uses same infra).
         # Mattermost requires a per-platform opt-in: global scratch-text display
@@ -25101,7 +25177,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             require_platform_override_for={Platform.MATTERMOST},
         )
         _thinking_enabled = _thinking_mode != "off"
-        needs_progress_queue = tool_progress_enabled or _thinking_enabled
+        needs_progress_queue = (
+            tool_progress_enabled or _thinking_enabled or turn_status_enabled
+        )
 
 
         # Queue for progress messages (thread-safe)
@@ -25193,6 +25271,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             log_mode_enabled=log_mode_enabled,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             needs_progress_queue=needs_progress_queue,
+            turn_status_enabled=turn_status_enabled,
+            status_lifecycle_id=status_lifecycle_id,
+            _turn_status_adapter=_turn_status_adapter,
             _voice_ack_fired=_voice_ack_fired,
             _voice_ack_guild=_voice_ack_guild,
             _voice_ack_loop=_voice_ack_loop,
@@ -25362,6 +25443,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         turn_ctx._progress_metadata = _progress_metadata
         turn_ctx._progress_reply_to = _progress_reply_to
         send_progress_messages = turn_runner.send_progress_messages
+
+        # Feishu's turn UI is one pre-created editable status message.  Tool
+        # callbacks only edit this ID; final delivery later drives the adapter's
+        # reaction/text lifecycle for both the inbound and status messages.
+        if turn_status_enabled:
+            # Bind terminal status cleanup to the adapter that creates this
+            # turn's status. The inbound adapter may be replaced by reconnect
+            # before final delivery, so a fresh registry lookup is not stable.
+            setattr(source, "_feishu_turn_status_adapter", _turn_status_adapter)
+            setattr(
+                source,
+                "_feishu_turn_status_lifecycle_id",
+                status_lifecycle_id,
+            )
+            try:
+                _status_result = await _turn_status_adapter.send(
+                    chat_id=source.chat_id,
+                    content="處理中",
+                    reply_to=_progress_reply_to,
+                    metadata=_progress_metadata,
+                )
+                if getattr(_status_result, "success", False) and getattr(
+                    _status_result, "message_id", None
+                ):
+                    turn_ctx.status_message_id = str(_status_result.message_id)
+                    _register_status = getattr(
+                        _turn_status_adapter, "register_turn_status_message", None
+                    )
+                    if callable(_register_status):
+                        _register_status(
+                            trigger_message_id=str(event_message_id),
+                            chat_id=str(source.chat_id),
+                            status_message_id=turn_ctx.status_message_id,
+                            lifecycle_id=status_lifecycle_id,
+                        )
+                    _start_status_reaction = getattr(
+                        _turn_status_adapter, "start_processing_reaction", None
+                    )
+                    if callable(_start_status_reaction):
+                        await _start_status_reaction(turn_ctx.status_message_id)
+                else:
+                    logger.warning(
+                        "[feishu] Could not create turn status message: %s",
+                        getattr(_status_result, "error", None) or "send failed",
+                    )
+            except Exception:
+                logger.warning(
+                    "[feishu] Could not create turn status message",
+                    exc_info=True,
+                )
         
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance

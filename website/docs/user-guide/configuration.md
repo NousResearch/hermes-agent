@@ -1846,9 +1846,14 @@ display:
       tool_progress: verbose  # detailed progress on Telegram
     slack:
       tool_progress: 'off'    # quiet in shared Slack workspace
+    feishu:
+      turn_status_message: true       # one editable status message per turn (default)
+      interim_assistant_messages: false  # keep the turn to status + final answer (default)
 ```
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
+
+Feishu enables `turn_status_message` by default. It pre-creates one editable status message, routes tool progress into that message, and finalizes it after answer delivery. Feishu also defaults `interim_assistant_messages` to `false` so mid-turn commentary does not create extra chat bubbles. Either setting can be overridden under `display.platforms.feishu`.
 
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 

@@ -422,7 +422,21 @@ Plain text messages (no markdown detected) are sent as the simple `text` message
 
 ## Processing Status Reactions
 
-While the agent is working, the bot shows a `Typing` reaction on your message. It's cleared when the reply arrives, or replaced with `CrossMark` if processing failed.
+By default, each Feishu turn creates one editable `處理中` status message. Tool progress updates edit that message in place instead of posting a new message for every tool call. The final answer remains a separate message.
+
+The status message keeps the five most recent tool operations and a total count. When delivery finishes, it becomes `已完成`, `處理失敗`, or `已停止`.
+
+While the agent is working, the bot shows a `Typing` reaction on both your message and the turn-status message. Successful delivery replaces it with `CheckMark`; failure replaces it with `CrossMark`; cancellation removes `Typing` without adding a terminal reaction.
+
+Disable the single status message, or restore separate interim assistant updates, with per-platform display settings:
+
+```yaml
+display:
+  platforms:
+    feishu:
+      turn_status_message: false
+      interim_assistant_messages: true
+```
 
 Set `FEISHU_REACTIONS=false` to turn it off.
 

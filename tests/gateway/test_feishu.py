@@ -11,7 +11,7 @@ from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from gateway.platforms.base import ProcessingOutcome
 
@@ -458,7 +458,7 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter = FeishuAdapter(PlatformConfig())
         adapter._loop = object()
 
-        for emoji in ("Typing", "CrossMark"):
+        for emoji in ("Typing", "CheckMark", "CrossMark"):
             event = SimpleNamespace(
                 message_id="om_msg",
                 operator_type="bot",
@@ -1784,8 +1784,7 @@ class TestBotNameResolution(unittest.TestCase):
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestProcessingReactions(unittest.TestCase):
-    """Typing on start → removed on SUCCESS, swapped for CrossMark on FAILURE,
-    removed (no replacement) on CANCELLED."""
+    """Typing on start → CheckMark/CrossMark terminal reactions."""
 
     @staticmethod
     def _run(coro):
@@ -1861,16 +1860,191 @@ class TestProcessingReactions(unittest.TestCase):
 
     # --------------------------------------------------------------- complete
     @patch.dict(os.environ, {}, clear=True)
-    def test_success_removes_typing_and_adds_nothing(self):
+    def test_success_removes_typing_then_adds_check_mark(self):
         adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
         with self._patch_to_thread():
             self._run(adapter.on_processing_start(self._event()))
             self._run(
                 adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
             )
-        self.assertEqual(tracker.create_calls, ["Typing"])
+        self.assertEqual(tracker.create_calls, ["Typing", "CheckMark"])
         self.assertEqual(tracker.delete_calls, ["r_typing"])
         self.assertNotIn("om_msg", adapter._pending_processing_reactions)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_registered_status_message_receives_same_success_lifecycle(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.register_turn_status_message(
+            trigger_message_id="om_msg",
+            chat_id="oc_chat",
+            status_message_id="om_status",
+        )
+        adapter.update_turn_status_progress(
+            "om_msg", tool_count=3, current_stage="檢查資料庫"
+        )
+        with self._patch_to_thread():
+            self._run(adapter.start_processing_reaction("om_status"))
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
+            )
+
+        self.assertEqual(
+            tracker.create_calls,
+            ["Typing", "Typing", "CheckMark", "CheckMark"],
+        )
+        self.assertEqual(tracker.delete_calls, ["r_typing", "r_typing"])
+        adapter.edit_message.assert_awaited_once_with(
+            chat_id="oc_chat",
+            message_id="om_status",
+            content="已完成\n共執行 3 個工具操作",
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_registered_status_message_receives_failure_text_and_cross_mark(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.register_turn_status_message(
+            trigger_message_id="om_msg",
+            chat_id="oc_chat",
+            status_message_id="om_status",
+        )
+        adapter.update_turn_status_progress(
+            "om_msg", tool_count=2, current_stage="驗證 Slug"
+        )
+        with self._patch_to_thread():
+            self._run(adapter.start_processing_reaction("om_status"))
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
+            )
+
+        self.assertEqual(
+            tracker.create_calls,
+            ["Typing", "Typing", "CrossMark", "CrossMark"],
+        )
+        adapter.edit_message.assert_awaited_once_with(
+            chat_id="oc_chat",
+            message_id="om_status",
+            content="處理失敗\n階段：驗證 Slug\n原因：處理或傳送未成功",
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_registered_status_message_cancellation_has_no_terminal_reaction(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.register_turn_status_message(
+            trigger_message_id="om_msg",
+            chat_id="oc_chat",
+            status_message_id="om_status",
+        )
+        with self._patch_to_thread():
+            self._run(adapter.start_processing_reaction("om_status"))
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.CANCELLED)
+            )
+
+        self.assertEqual(tracker.create_calls, ["Typing", "Typing"])
+        self.assertEqual(tracker.delete_calls, ["r_typing", "r_typing"])
+        adapter.edit_message.assert_awaited_once_with(
+            chat_id="oc_chat",
+            message_id="om_status",
+            content="已停止",
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_active_turn_status_records_are_not_lru_evicted(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        for index in range(513):
+            adapter.register_turn_status_message(
+                trigger_message_id=f"trigger-{index}",
+                chat_id="oc_chat",
+                status_message_id=f"status-{index}",
+            )
+
+        self.assertIn("trigger-0", adapter._turn_status_messages)
+        with self._patch_to_thread():
+            self._run(adapter.start_processing_reaction("status-0"))
+            event = SimpleNamespace(message_id="trigger-0")
+            self._run(
+                adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+            )
+
+        self.assertNotIn("trigger-0", adapter._turn_status_messages)
+        self.assertEqual(tracker.delete_calls, ["r_typing"])
+        self.assertEqual(
+            tracker.create_calls, ["Typing", "CheckMark", "CheckMark"]
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_active_processing_reactions_are_not_lru_evicted(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        with self._patch_to_thread():
+            for index in range(1025):
+                self._run(adapter.start_processing_reaction(f"message-{index}"))
+
+            self._run(
+                adapter.complete_processing_reaction(
+                    "message-0", ProcessingOutcome.CANCELLED
+                )
+            )
+
+        self.assertEqual(len(tracker.create_calls), 1025)
+        self.assertEqual(tracker.delete_calls, ["r_typing"])
+        self.assertNotIn("message-0", adapter._pending_processing_reactions)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_terminal_edit_exception_still_clears_status_typing(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        adapter.edit_message = AsyncMock(side_effect=RuntimeError("edit failed"))
+        adapter.register_turn_status_message(
+            trigger_message_id="om_msg",
+            chat_id="oc_chat",
+            status_message_id="om_status",
+        )
+        with self._patch_to_thread():
+            self._run(adapter.start_processing_reaction("om_status"))
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
+            )
+
+        self.assertEqual(tracker.delete_calls, ["r_typing", "r_typing"])
+        self.assertEqual(
+            tracker.create_calls,
+            ["Typing", "Typing", "CheckMark", "CheckMark"],
+        )
+        self.assertNotIn("om_msg", adapter._turn_status_messages)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_terminal_edit_rejection_still_clears_status_typing(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="edit rejected")
+        )
+        adapter.register_turn_status_message(
+            trigger_message_id="om_msg",
+            chat_id="oc_chat",
+            status_message_id="om_status",
+        )
+        event = MagicMock()
+        event.message_id = "om_msg"
+        with self._patch_to_thread():
+            self._run(adapter.start_processing_reaction("om_status"))
+            self._run(adapter.on_processing_start(event))
+            self._run(
+                adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+            )
+
+        self.assertEqual(tracker.delete_calls, ["r_typing", "r_typing"])
+        self.assertEqual(
+            tracker.create_calls,
+            ["Typing", "Typing", "CrossMark", "CrossMark"],
+        )
+        self.assertNotIn("om_msg", adapter._turn_status_messages)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_failure_removes_typing_then_adds_cross_mark(self):
@@ -1886,10 +2060,10 @@ class TestProcessingReactions(unittest.TestCase):
 
     # ------------------------- delete failure: don't stack badges -----------
     @patch.dict(os.environ, {}, clear=True)
-    def test_delete_failure_on_failure_outcome_skips_cross_mark(self):
+    def test_delete_failure_retries_then_releases_handle_without_cross_mark(self):
         # Removing Typing is best-effort — but if it fails, we must NOT
         # additionally add CrossMark, or the UI would show two contradictory
-        # badges. The handle stays in the cache for LRU to clean up later.
+        # badges. Cleanup retries are bounded and then release the handle.
         adapter, tracker = self._build_adapter(
             next_reaction_id="r_typing", delete_success=False,
         )
@@ -1899,16 +2073,100 @@ class TestProcessingReactions(unittest.TestCase):
                 adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
             )
         self.assertEqual(tracker.create_calls, ["Typing"])  # CrossMark NOT added
-        self.assertEqual(tracker.delete_calls, ["r_typing"])  # delete was attempted
-        self.assertEqual(
-            adapter._pending_processing_reactions["om_msg"], "r_typing",
-        )  # handle retained
+        self.assertEqual(tracker.delete_calls, ["r_typing"] * 3)
+        self.assertNotIn("om_msg", adapter._pending_processing_reactions)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_delete_retry_can_recover_and_add_terminal_reaction(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        adapter._pending_processing_reactions["om_msg"] = "r_typing"
+        adapter._remove_reaction = AsyncMock(side_effect=[False, False, True])
+
+        with patch(
+            "plugins.platforms.feishu.adapter.asyncio.sleep", new=AsyncMock()
+        ):
+            with self._patch_to_thread():
+                self._run(
+                    adapter.complete_processing_reaction(
+                        "om_msg", ProcessingOutcome.SUCCESS
+                    )
+                )
+
+        self.assertEqual(adapter._remove_reaction.await_count, 3)
+        self.assertEqual(tracker.create_calls, ["CheckMark"])
+        self.assertNotIn("om_msg", adapter._pending_processing_reactions)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_replacement_adapter_owns_status_terminal_cleanup(self):
+        inbound_adapter, inbound = self._build_adapter(next_reaction_id="r_inbound")
+        status_adapter, status = self._build_adapter(next_reaction_id="r_status")
+        status_adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        status_adapter.register_turn_status_message(
+            trigger_message_id="om_msg",
+            chat_id="oc_chat",
+            status_message_id="om_status",
+        )
+        source = MagicMock()
+        source._feishu_turn_status_adapter = status_adapter
+        event = MagicMock()
+        event.message_id = "om_msg"
+        event.source = source
+
+        with self._patch_to_thread():
+            self._run(inbound_adapter.on_processing_start(event))
+            self._run(status_adapter.start_processing_reaction("om_status"))
+            self._run(
+                inbound_adapter.on_processing_complete(
+                    event, ProcessingOutcome.SUCCESS
+                )
+            )
+
+        self.assertEqual(inbound.create_calls, ["Typing", "CheckMark"])
+        self.assertEqual(inbound.delete_calls, ["r_inbound"])
+        self.assertEqual(status.create_calls, ["Typing", "CheckMark"])
+        self.assertEqual(status.delete_calls, ["r_status"])
+        status_adapter.edit_message.assert_awaited_once()
+        self.assertNotIn("om_msg", status_adapter._turn_status_messages)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_stale_status_completion_cannot_finalize_newer_duplicate_turn(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="unused")
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.register_turn_status_message(
+            trigger_message_id="om_msg",
+            chat_id="oc_chat",
+            status_message_id="om_status_old",
+            lifecycle_id="om_msg:old",
+        )
+        adapter.register_turn_status_message(
+            trigger_message_id="om_msg",
+            chat_id="oc_chat",
+            status_message_id="om_status_new",
+            lifecycle_id="om_msg:new",
+        )
+        adapter._pending_processing_reactions["om_status_old"] = "r_old"
+        adapter._pending_processing_reactions["om_status_new"] = "r_new"
+
+        with self._patch_to_thread():
+            self._run(
+                adapter._finalize_turn_status(
+                    "om_msg:old", ProcessingOutcome.SUCCESS
+                )
+            )
+
+        self.assertNotIn("om_msg:old", adapter._turn_status_messages)
+        self.assertIn("om_msg:new", adapter._turn_status_messages)
+        self.assertIn("om_status_new", adapter._pending_processing_reactions)
+        adapter.edit_message.assert_awaited_once_with(
+            chat_id="oc_chat",
+            message_id="om_status_old",
+            content="已完成\n共執行 0 個工具操作",
+        )
+        self.assertEqual(tracker.delete_calls, ["r_old"])
+        self.assertEqual(tracker.create_calls, ["CheckMark"])
 
 
     # ------------------------------------------------------------- env toggle
-
-    # ------------------------------------------------------------- LRU bounds
-
 
 class TestFeishuMentionMap(unittest.TestCase):
 

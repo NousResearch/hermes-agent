@@ -9,7 +9,12 @@ import json
 
 import pytest
 
-from tools.memory_tool import MemoryStore, memory_tool, MEMORY_SCHEMA
+from tools.memory_tool import (
+    MemoryStore,
+    apply_memory_pending,
+    memory_tool,
+    MEMORY_SCHEMA,
+)
 
 
 @pytest.fixture()
@@ -124,11 +129,66 @@ class TestPatchDispatch:
         assert payload["success"] is False
         assert "pattern is required" in payload["error"]
 
+    def test_patch_is_rejected_inside_a_batch(self, store):
+        """patch is single-op only — the batch path must say so, not half-apply."""
+        store.add("memory", "endpoint at /v1/old")
+        result = store.apply_batch("memory", [{"action": "patch", "pattern": "old", "content": "new"}])
+        assert result["success"] is False
+        assert "unknown action" in result["error"]
+        assert store.memory_entries == ["endpoint at /v1/old"]
+
     def test_patch_requires_content(self, store):
         out = memory_tool(action="patch", target="memory", pattern=r"x", store=store)
         payload = json.loads(out)
         assert payload["success"] is False
         assert "content is required" in payload["error"]
+
+
+class TestPatchWriteGate:
+    """A staged patch must carry its pattern through to the replay."""
+
+    @pytest.fixture()
+    def staged(self, tmp_path, monkeypatch):
+        """Force the write gate to stage instead of writing, into a temp HERMES_HOME."""
+        from tools import write_approval as wa
+
+        monkeypatch.setattr(wa, "get_hermes_home", lambda: tmp_path / "home")
+        monkeypatch.setattr(
+            wa, "evaluate_gate",
+            lambda *a, **kw: wa.GateDecision(stage=True, message="staged for approval"),
+        )
+        return wa
+
+    def test_staged_patch_round_trips_through_apply_memory_pending(self, store, staged):
+        store.add("memory", "Deploy target is staging.example.com")
+
+        out = memory_tool(action="patch", target="memory",
+                          pattern=r"staging\.example\.com",
+                          content="prod.example.com", store=store)
+        payload = json.loads(out)
+        assert payload["staged"] is True
+        # Nothing committed yet.
+        assert store.memory_entries == ["Deploy target is staging.example.com"]
+
+        record = staged.get_pending(staged.MEMORY, payload["pending_id"])
+        assert record is not None
+        # Regression: the staged payload used to omit ``pattern`` entirely, so
+        # an approved patch replayed with an empty pattern and failed.
+        assert record["payload"]["pattern"] == r"staging\.example\.com"
+
+        result = apply_memory_pending(record["payload"], store)
+        assert result["success"] is True
+        assert store.memory_entries == ["Deploy target is prod.example.com"]
+
+    def test_replay_without_pattern_is_refused_not_silently_applied(self, store):
+        store.add("memory", "Deploy target is staging.example.com")
+        result = apply_memory_pending(
+            {"action": "patch", "target": "memory", "content": "prod.example.com"},
+            store,
+        )
+        assert result["success"] is False
+        assert "pattern cannot be empty" in result["error"]
+        assert store.memory_entries == ["Deploy target is staging.example.com"]
 
 
 class TestPatchSchema:

@@ -17,8 +17,9 @@ Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
 
 Design:
-- Single `memory` tool with action parameter: add, replace, remove
+- Single `memory` tool with action parameter: add, replace, remove, patch
 - replace/remove use short unique substring matching (not full text or IDs)
+- patch locates a span with a regex and rewrites only that span in place
 - Behavioral guidance lives in the tool schema description
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
@@ -26,9 +27,7 @@ Design:
 import difflib
 import json
 import logging
-import os
 import re
-import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -147,6 +146,8 @@ def _read_failed_error(path: "Path") -> Dict[str, Any]:
             f"retry in a moment."
         ),
     }
+
+
 def _fuzzy_candidates(pattern: str, entries: List[str], k: int = 3) -> List[Dict[str, Any]]:
     """Return up to ``k`` entries most similar to ``pattern`` with scores.
 
@@ -622,7 +623,14 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry patched.")
+        resp = self._success_response(target, "Entry patched.")
+        # Echo the one rewritten entry (not the whole store — see
+        # _success_response). A regex substitution is the one action whose
+        # result the caller cannot predict from its own arguments, and the
+        # external-memory bridge needs the full entry to mirror the update
+        # rather than the bare replacement span.
+        resp["patched_entry"] = new_entry
+        return resp
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
@@ -1062,6 +1070,10 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "target": target,
         "content": content,
         "old_text": old_text,
+        # ``patch`` locates its span by regex, so the pattern is part of the
+        # staged write. Without it an approved patch replays with an empty
+        # pattern and fails in ``apply_memory_pending``.
+        "pattern": pattern,
     }
     record = wa.stage_write(
         wa.MEMORY, payload,

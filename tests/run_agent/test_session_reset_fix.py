@@ -67,6 +67,7 @@ class TestResetSessionState:
         compressor.last_total_tokens = 150
         compressor.compression_count = 3
         compressor._context_probed = True
+        compressor.max_tail_message_floor = 0
 
         agent.context_compressor = compressor
 
@@ -88,5 +89,3 @@ class TestResetSessionState:
         assert agent._user_turn_count == 0, (
             f"_user_turn_count must be 0 after reset; got: {agent._user_turn_count}"
         )
-
-

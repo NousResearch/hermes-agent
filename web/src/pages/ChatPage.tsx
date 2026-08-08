@@ -1064,7 +1064,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // resume frame into "" (pty-resume-sanitizer.ts); keying off raw `text`
       // would hide the wait notice while the terminal is still blank.
       const rendered = resumeParam ? sanitizer.next(text) : text;
-      term.write(rendered);
+      // NS-53413: capture the viewport position before term.write so the
+      // completion callback can decide whether the user was already at the
+      // live bottom. On a long transcript the viewport's top line sits near
+      // baseY when at the bottom, so the condition is `viewportY >= baseY - 2`
+      // (not an absolute `viewportY <= 2` threshold). This avoids the blank
+      // scroll-height drift while not yanking the user out of history.
+      const buf = term.buffer.active;
+      const wasNearBottom = buf.viewportY >= buf.baseY - 2;
+      term.write(rendered, () => {
+        if (wasNearBottom) {
+          term.scrollToBottom();
+        }
+      });
       noteResumePtyChunk(rendered);
     };
 

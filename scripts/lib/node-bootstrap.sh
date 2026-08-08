@@ -281,10 +281,13 @@ _nb_install_bundled_node() {
     }
 
     _nb_log "Extracting to $HERMES_HOME/node/..."
+    # --no-same-owner: as root, tar restores the uids recorded in the archive,
+    # and nodejs.org builds theirs as uid 1001, which collides with the first
+    # local account created after the installing user.
     if [[ "$tarball" == *.tar.xz ]]; then
-        tar xf  "$tmp/$tarball" -C "$tmp" || { rm -rf "$tmp"; return 1; }
+        tar --no-same-owner -xf  "$tmp/$tarball" -C "$tmp" || { rm -rf "$tmp"; return 1; }
     else
-        tar xzf "$tmp/$tarball" -C "$tmp" || { rm -rf "$tmp"; return 1; }
+        tar --no-same-owner -xzf "$tmp/$tarball" -C "$tmp" || { rm -rf "$tmp"; return 1; }
     fi
 
     local extracted

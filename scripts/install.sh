@@ -933,10 +933,13 @@ install_node() {
     fi
 
     log_info "Extracting to ~/.hermes/node/..."
+    # --no-same-owner: as root, tar restores the uids recorded in the archive,
+    # and nodejs.org builds theirs as uid 1001, which collides with the first
+    # local account created after the installing user.
     if [[ "$tarball_name" == *.tar.xz ]]; then
-        tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        tar --no-same-owner -xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
     else
-        tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        tar --no-same-owner -xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
     fi
 
     local extracted_dir

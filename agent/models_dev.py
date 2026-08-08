@@ -506,20 +506,14 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     if not isinstance(models, dict):
         return None
 
-    # Exact match
-    entry = models.get(model)
+    # Shared matcher: exact, case-insensitive, and kimi- prefix-strip
+    # (models.dev kimi-for-coding catalog uses bare slugs like ``k3`` while
+    # the Kimi Coding API is configured with ``kimi-k3``).
+    entry = _find_model_entry(models, model)
     if entry:
         ctx = _extract_context(entry)
         if ctx:
             return ctx
-
-    # Case-insensitive match
-    model_lower = model.lower()
-    for mid, mdata in models.items():
-        if mid.lower() == model_lower:
-            ctx = _extract_context(mdata)
-            if ctx:
-                return ctx
 
     # Suffix-aware fallback: some providers (e.g. ollama-cloud) store
     # model IDs with :cloud / -cloud suffixes in models.dev while the
@@ -528,6 +522,7 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     # reporting 32768 — tripping the 64k minimum-context guard.
     # The suffix-stripping in fetch_ollama_cloud_models() handles the
     # model-picker UX; this handles the context-length lookup path.
+    model_lower = model.lower()
     for suffix in (":cloud", "-cloud"):
         suffixed_key = model + suffix
         entry = models.get(suffixed_key)
@@ -601,7 +596,15 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
 
 
 def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
-    """Find a model entry by exact match, then case-insensitive fallback."""
+    """Find a model entry by exact match, then case-insensitive fallback.
+
+    Prefix-aware fallback: the models.dev ``kimi-for-coding`` catalog keys its
+    models with bare slugs (``k3``, ``k3-256k``) while the Kimi Coding API is
+    configured with ``kimi-``-prefixed slugs (``kimi-k3``).  Without the strip,
+    every ``kimi-*`` lookup misses the catalog and the caller falls back to
+    "capability unknown" — which for image routing means a multimodal model
+    like kimi-k3 is treated as text-only.
+    """
     # Exact match
     entry = models.get(model)
     if isinstance(entry, dict):
@@ -612,6 +615,17 @@ def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, 
     for mid, mdata in models.items():
         if mid.lower() == model_lower and isinstance(mdata, dict):
             return mdata
+
+    # kimi- prefix strip (exact + case-insensitive)
+    if model_lower.startswith("kimi-") and len(model_lower) > len("kimi-"):
+        stripped = model[len("kimi-"):]
+        entry = models.get(stripped)
+        if isinstance(entry, dict):
+            return entry
+        stripped_lower = stripped.lower()
+        for mid, mdata in models.items():
+            if mid.lower() == stripped_lower and isinstance(mdata, dict):
+                return mdata
 
     return None
 

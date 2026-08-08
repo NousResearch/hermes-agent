@@ -11891,7 +11891,7 @@ def _compute_mcp_rev() -> str:
             sort_keys=True,
             default=str,
         )
-        return hashlib.sha1(rev_src.encode()).hexdigest()[:12]
+        return hashlib.sha1(rev_src.encode(), usedforsecurity=False).hexdigest()[:12]
     except Exception:
         return ""
 

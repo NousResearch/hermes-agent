@@ -103,6 +103,7 @@ import inspect
 import json
 import logging
 import math
+import ntpath
 import os
 import random
 import re
@@ -4616,6 +4617,75 @@ def _mcp_loop_exception_handler(loop, context):
     loop.default_exception_handler(context)
 
 
+def _is_asyncio_subprocess_teardown(unraisable) -> bool:
+    """Return True if ``unraisable`` is the benign asyncio stdio subprocess
+    transport ``__del__`` race that fires after the event loop closes.
+
+    This is purely cosmetic — the transport already finished its work —
+    but it pollutes the chat / TUI with::
+
+        Exception ignored in: <function BaseSubprocessTransport.__del__>
+        ...
+        RuntimeError: Event loop is closed
+
+    See #81175.
+    """
+    exc_value = unraisable.exc_value
+    if exc_value is None:
+        return False
+    # Only swallow RuntimeError / ValueError / ResourceWarning from
+    # asyncio's base_subprocess module. Anything else is forwarded.
+    if not isinstance(exc_value, (RuntimeError, ValueError, ResourceWarning)):
+        return False
+    tb = exc_value.__traceback__
+    while tb is not None:
+        filename = tb.tb_frame.f_code.co_filename
+        # Match asyncio/base_subprocess.py regardless of OS path separator.
+        basename = ntpath.basename(filename.replace("/", ntpath.sep))
+        if basename == "base_subprocess.py" and "asyncio" in filename:
+            return True
+        # The "close" frame in unix_events.py / proactor_events.py is the
+        # second hop in the same teardown chain.
+        if (
+            basename.endswith("events.py")
+            and "asyncio" in filename
+            and tb.tb_frame.f_code.co_name == "close"
+        ):
+            return True
+        tb = tb.tb_next
+    return False
+
+
+def _install_asyncio_del_quiet_hook() -> None:
+    """Install a ``sys.unraisablehook`` that swallows ONLY the benign
+    asyncio-subprocess-transport teardown race described in #81175.
+
+    The previous hook (if any) is preserved and invoked for every other
+    unraisable so we do not silence unrelated errors. Idempotent.
+    """
+    previous = getattr(sys, "unraisablehook", None)
+    if getattr(sys, "_hermes_mcp_quiet_hook_installed", False):
+        return
+
+    def _hook(unraisable):
+        try:
+            if _is_asyncio_subprocess_teardown(unraisable):
+                return
+        except Exception:  # pragma: no cover - never fail in unraisable
+            pass
+        if previous is not None:
+            try:
+                previous(unraisable)
+                return
+            except Exception:  # pragma: no cover
+                pass
+        # Fall back to the default CPython handler so nothing is lost.
+        sys.__unraisablehook__(unraisable)
+
+    sys.unraisablehook = _hook
+    sys._hermes_mcp_quiet_hook_installed = True
+
+
 def _ensure_mcp_loop():
     """Start the background event loop thread if not already running."""
     global _mcp_loop, _mcp_thread
@@ -7528,3 +7598,9 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         # since the loop is gone and no session can still be in flight.
         _kill_orphaned_mcp_children(include_active=True)
     return True
+
+
+# Install the quiet unraisable hook (#81175) at import time so MCP stdio
+# subprocess transports that get garbage-collected after the event loop
+# closes do not pollute the chat / TUI with tracebacks. Idempotent.
+_install_asyncio_del_quiet_hook()

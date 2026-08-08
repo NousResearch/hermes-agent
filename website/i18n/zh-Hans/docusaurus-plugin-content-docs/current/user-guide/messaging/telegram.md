@@ -894,9 +894,15 @@ gateway:
     telegram:
       extra:
         rich_messages: true
+        rich_drafts: false
+        allow_cjk_rich_messages: false
 ```
 
-这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
+这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。`rich_drafts` 控制 Telegram 私聊流式传输期间的实验性富草稿预览，默认关闭，因为 Telegram Desktop/macOS 可能在聊天重绘前视觉叠加富草稿帧。
+
+CJK 文本（中文、日文、韩文以及罕见汉字扩展）默认仍走旧版 MarkdownV2 路径，因为受影响的 Telegram Desktop/macOS 客户端曾将 Bot API 富消息渲染成重叠的 CJK 字形。如果你使用不受影响的客户端，并希望 CJK 内容里的表格、任务列表、折叠详情和公式走原生富渲染，可以在 `rich_messages: true` 旁显式设置 `allow_cjk_rich_messages: true`，接受该客户端侧风险。
+
+如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
 
 **链接预览。** Telegram 会为机器人消息中的 URL 自动生成链接预览。如果你希望抑制这些预览（长 `/tools` 输出、提及十个链接的 Agent 回复等）：
 

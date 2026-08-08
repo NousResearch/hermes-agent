@@ -66,6 +66,15 @@ from agent.turn_context import (
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
+# Status-message helpers extracted from this module (slice 14 of #54962).
+# Module-attribute import keeps ``gateway.run.<name>`` references resolving
+# through this module. _prepare_gateway_status_message stays in run.py: it
+# reads _TELEGRAM_NOISY_STATUS_RE / _gateway_compression_progress_notices_enabled
+# / _gateway_surface_passes_raw_text here plus the redaction helpers being
+# extracted in parallel (#77707) and _COMPRESSION_PROGRESS_STATUS_RE (#77450);
+# it moves to status_message_helpers.py once those land.
+from gateway.status_message_helpers import _send_or_update_status_coro, render_notice_line
+
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
@@ -756,34 +765,6 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
-
-
-def render_notice_line(notice) -> str:
-    """Render an AgentNotice to a single plaintext line for messaging platforms.
-
-    Messaging has no persistent status bar (unlike the TUI), so a notice is a
-    one-shot standalone push. The notice policy already bakes the level glyph
-    (⚠ / • / ✕ / ✓) into the text, and the TUI + CLI REPL render that text
-    verbatim — so we emit it as-is here too. Prepending a per-level glyph would
-    DOUBLE it ("⚠ ⚠ Credits 90% used", "⛔ ✕ Credit access paused"). Plaintext
-    only — no markdown — so it renders uniformly across Telegram/Discord/Slack/
-    SMS without per-platform escaping. Fail-soft: a malformed/empty notice
-    degrades to "" rather than raising on the agent's callback path.
-    """
-    return str(getattr(notice, "text", "") or "").strip()
-
-
-async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
-    """Route a status message through adapter.send_or_update_status when supported.
-
-    Issue #30045: adapters that implement send_or_update_status (currently
-    Telegram) edit the previous bubble for the same status_key instead of
-    appending a new one. Adapters without the method fall back to plain send.
-    """
-    sender = getattr(adapter, "send_or_update_status", None)
-    if callable(sender):
-        return await sender(chat_id, status_key, content, metadata=metadata)
-    return await adapter.send(chat_id, content, metadata=metadata)
 
 
 def _resolve_progress_thread_id(

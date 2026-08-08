@@ -73,8 +73,14 @@ def _make_fake_mautrix():
         UNAVAILABLE = "unavailable"
 
     class TrustState:
+        BLACKLISTED = -100
         UNVERIFIED = 0
-        VERIFIED = 1
+        VERIFIED = 300
+
+    class RoomKeyWithheldCode:
+        BLACKLISTED = "m.blacklisted"
+        UNVERIFIED = "m.unverified"
+        UNAVAILABLE = "m.unavailable"
 
     class PaginationDirection:
         BACKWARD = "b"
@@ -89,6 +95,7 @@ def _make_fake_mautrix():
     mautrix_types.RoomCreatePreset = RoomCreatePreset
     mautrix_types.PresenceState = PresenceState
     mautrix_types.TrustState = TrustState
+    mautrix_types.RoomKeyWithheldCode = RoomKeyWithheldCode
     mautrix_types.PaginationDirection = PaginationDirection
     mautrix.types = mautrix_types
 
@@ -131,14 +138,19 @@ def _make_fake_mautrix():
     mautrix_client_state_store = types.ModuleType("mautrix.client.state_store")
 
     class MemoryStateStore:
+        members = {}
+
         async def get_member(self, room_id, user_id):
             return None
 
         async def get_members(self, room_id):
-            return []
+            return list(self.members.get(room_id, set()))
 
         async def get_member_profiles(self, room_id):
             return {}
+
+        async def is_joined(self, room_id, user_id):
+            return user_id in self.members.get(room_id, set())
 
     class MemorySyncStore:
         def __init__(self):
@@ -171,6 +183,17 @@ def _make_fake_mautrix():
             return event
 
     mautrix_crypto.OlmMachine = OlmMachine
+
+    # --- mautrix.crypto.key_share ---
+    mautrix_crypto_key_share = types.ModuleType("mautrix.crypto.key_share")
+
+    class RejectKeyShare(Exception):
+        def __init__(self, message="", code=None, reason=""):
+            super().__init__(message)
+            self.code = code
+            self.reason = reason
+
+    mautrix_crypto_key_share.RejectKeyShare = RejectKeyShare
 
     # --- mautrix.crypto.store ---
     mautrix_crypto_store = types.ModuleType("mautrix.crypto.store")
@@ -240,6 +263,7 @@ def _make_fake_mautrix():
         "mautrix.client.state_store": mautrix_client_state_store,
         "mautrix.crypto": mautrix_crypto,
         "mautrix.crypto.attachments": mautrix_crypto_attachments,
+        "mautrix.crypto.key_share": mautrix_crypto_key_share,
         "mautrix.crypto.store": mautrix_crypto_store,
         "mautrix.crypto.store.asyncpg": mautrix_crypto_store_asyncpg,
         "mautrix.util": mautrix_util,
@@ -981,6 +1005,142 @@ class TestMatrixAccessTokenAuth:
         assert adapter._user_id == "@bot:example.org"
 
         await adapter.disconnect()
+
+
+class TestMatrixKeySharePolicy:
+    """Key-request policy: allowlisted users keep mautrix's device safeguards
+    and are room-scoped; everyone else keeps the default policy."""
+
+    @pytest.fixture
+    def policy_harness(self, monkeypatch):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        fake_mautrix_mods = _make_fake_mautrix()
+        state_store_cls = fake_mautrix_mods["mautrix.client.state_store"].MemoryStateStore
+        trust_state = fake_mautrix_mods["mautrix.types"].TrustState
+        reject_cls = fake_mautrix_mods["mautrix.crypto.key_share"].RejectKeyShare
+
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@operator:example.org")
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        class FakeWhoamiResponse:
+            def __init__(self, user_id, device_id):
+                self.user_id = user_id
+                self.device_id = device_id
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "DEV123"))
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"DEV123": {
+                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
+            }}},
+        })
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = trust_state.UNVERIFIED
+        mock_olm.send_keys_min_trust = trust_state.UNVERIFIED
+        mock_olm.default_allow_key_share = AsyncMock(return_value=True)
+        mock_olm.resolve_trust = AsyncMock(return_value=trust_state.UNVERIFIED)
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        async def _run_connect():
+            import plugins.platforms.matrix.adapter as matrix_mod
+            with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+                with patch.dict("sys.modules", fake_mautrix_mods):
+                    with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                        with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                            assert await adapter.connect() is True
+                            await adapter.disconnect()
+
+        asyncio.run(_run_connect())
+
+        return mock_olm, state_store_cls, trust_state, reject_cls
+
+    def _device(self, trust_state, user_id="@operator:example.org", trust=None):
+        return MagicMock(
+            user_id=user_id,
+            device_id="DEVOP1",
+            trust=trust if trust is not None else trust_state.UNVERIFIED,
+        )
+
+    def _request(self, room_id="!room:server"):
+        return MagicMock(
+            room_id=room_id,
+            session_id="S1",
+            algorithm="m.megolm.v1.aes-sha2",
+            sender_key="k",
+        )
+
+    @pytest.mark.asyncio
+    async def test_allowed_user_joined_room_trusted_device(self, policy_harness):
+        mock_olm, state_store_cls, trust_state, reject_cls = policy_harness
+        state_store_cls.members = {"!room:server": {"@operator:example.org"}}
+        policy = mock_olm.allow_key_share
+        assert await policy(self._device(trust_state), self._request()) is True
+
+    @pytest.mark.asyncio
+    async def test_unlisted_user_delegates_to_default_policy(self, policy_harness):
+        mock_olm, state_store_cls, trust_state, reject_cls = policy_harness
+        policy = mock_olm.allow_key_share
+        device = self._device(trust_state, user_id="@stranger:example.org")
+        request = self._request()
+        assert await policy(device, request) is True
+        mock_olm.default_allow_key_share.assert_awaited_once_with(device, request)
+
+    @pytest.mark.asyncio
+    async def test_blacklisted_device_rejected(self, policy_harness):
+        mock_olm, state_store_cls, trust_state, reject_cls = policy_harness
+        state_store_cls.members = {"!room:server": {"@operator:example.org"}}
+        policy = mock_olm.allow_key_share
+        device = self._device(trust_state, trust=trust_state.BLACKLISTED)
+        with pytest.raises(reject_cls) as exc:
+            await policy(device, self._request())
+        assert exc.value.code == "m.blacklisted"
+
+    @pytest.mark.asyncio
+    async def test_untrusted_device_rejected(self, policy_harness):
+        mock_olm, state_store_cls, trust_state, reject_cls = policy_harness
+        state_store_cls.members = {"!room:server": {"@operator:example.org"}}
+        mock_olm.resolve_trust = AsyncMock(return_value=trust_state.BLACKLISTED)
+        policy = mock_olm.allow_key_share
+        with pytest.raises(reject_cls) as exc:
+            await policy(self._device(trust_state), self._request())
+        assert exc.value.code == "m.unverified"
+
+    @pytest.mark.asyncio
+    async def test_allowed_user_outside_room_denied(self, policy_harness):
+        mock_olm, state_store_cls, trust_state, reject_cls = policy_harness
+        state_store_cls.members = {"!room:server": {"@someone-else:example.org"}}
+        policy = mock_olm.allow_key_share
+        assert await policy(self._device(trust_state), self._request()) is False
 
 
 class TestDeviceKeyReVerification:

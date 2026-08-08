@@ -1846,7 +1846,9 @@ class MatrixAdapter(BasePlatformAdapter):
             else:
                 try:
                     from mautrix.crypto import OlmMachine
+                    from mautrix.crypto.key_share import RejectKeyShare
                     from mautrix.crypto.store.asyncpg import PgCryptoStore
+                    from mautrix.types import RoomKeyWithheldCode
                     from mautrix.util.async_db import Database
 
                     _STORE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1922,6 +1924,42 @@ class MatrixAdapter(BasePlatformAdapter):
                     olm = OlmMachine(client, crypto_store, crypto_state)
                     olm.share_keys_min_trust = TrustState.UNVERIFIED
                     olm.send_keys_min_trust = TrustState.UNVERIFIED
+
+                    # Override the default key-request policy. mautrix's
+                    # default_allow_key_share only serves key requests to the
+                    # bot's OWN user (self.client.mxid) and silently rejects
+                    # everyone else (code=None). For a personal agent whose
+                    # operator is a different Matrix account, that makes the
+                    # "Request keys" recovery path dead on arrival: if a
+                    # proactive key share is missed (e.g. device list stale
+                    # right after a gateway restart), the owner's client shows
+                    # m.bad.encrypted and any m.room_key_request is dropped.
+                    # The allowlist widens the user check only, never the
+                    # device checks: allowlisted users keep mautrix's
+                    # blacklist and resolved-trust enforcement plus a
+                    # room-scoped entitlement check, and everyone else keeps
+                    # the default policy untouched.
+                    async def _allow_key_share(device, request) -> bool:
+                        if device.user_id not in self._allowed_user_ids:
+                            return await olm.default_allow_key_share(device, request)
+
+                        if device.trust == TrustState.BLACKLISTED:
+                            raise RejectKeyShare(
+                                f"Rejecting key request from blacklisted device {device.device_id}",
+                                code=RoomKeyWithheldCode.BLACKLISTED,
+                                reason="You have been blacklisted by this device",
+                            )
+                        if await olm.resolve_trust(device) < olm.share_keys_min_trust:
+                            raise RejectKeyShare(
+                                f"Rejecting key request from untrusted device {device.device_id}",
+                                code=RoomKeyWithheldCode.UNVERIFIED,
+                                reason="You have not been verified by this device",
+                            )
+                        if not await state_store.is_joined(request.room_id, device.user_id):
+                            return False
+                        return True
+
+                    olm.allow_key_share = _allow_key_share
 
                     await olm.load()
 

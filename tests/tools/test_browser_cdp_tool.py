@@ -332,6 +332,266 @@ def test_frame_id_route_allowed_when_page_is_not_private(monkeypatch):
     assert len(supervisor_calls) == 1
 
 
+def test_frame_id_rejects_non_dict_params_before_guard(monkeypatch):
+    """frame_id path must reject non-dict params like the stateless path.
+
+    Without this check, a truthy non-dict (e.g. a string) reaches
+    ``_browser_cdp_private_guard``, raises on ``.get``, and the guard's
+    broad except fail-opens — skipping the private-page boundary and
+    never surfacing the clear params validation error.
+    """
+    supervisor_calls = []
+    guard_calls = []
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+
+    real_guard = browser_cdp_tool._browser_cdp_private_guard
+
+    def tracking_guard(**kwargs):
+        guard_calls.append(kwargs)
+        return real_guard(**kwargs)
+
+    def fake_supervisor_route(**kwargs):
+        supervisor_calls.append(kwargs)
+        return json.dumps({"success": True, "result": {"value": "leaked"}})
+
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_private_guard", tracking_guard)
+    monkeypatch.setattr(
+        browser_cdp_tool, "_browser_cdp_via_supervisor", fake_supervisor_route
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params="not-a-dict",
+            frame_id="frame-1",
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert "params" in result["error"].lower()
+    assert "object/dict" in result["error"]
+    assert "str" in result["error"]
+    assert guard_calls == []
+    assert supervisor_calls == []
+
+
+class _FakeFrame:
+    def __init__(self, **kwargs):
+        self._data = dict(kwargs)
+
+    def to_dict(self):
+        return dict(self._data)
+
+
+class _FakeSnapshot:
+    def __init__(self, frame_tree):
+        self.frame_tree = frame_tree
+
+
+class _FakeSupervisor:
+    """Minimal supervisor stub for frame_id private-URL routing tests."""
+
+    def __init__(self, *, frame_tree=None, frames=None):
+        self._frame_tree = frame_tree or {"top": None, "children": []}
+        self._frames = frames or {}
+        self._state_lock = threading.Lock()
+        self._loop = None
+        self.cdp_calls = []
+
+    def snapshot(self):
+        return _FakeSnapshot(self._frame_tree)
+
+
+def test_frame_id_blocks_private_oopif_when_top_page_is_public(monkeypatch):
+    """Public parent + private OOPIF child must still block page-content CDP."""
+    import tools.browser_tool as bt
+    import tools.browser_supervisor as bs
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    # Top-level page is public — the regression the review called out.
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: None)
+
+    supervisor = _FakeSupervisor(
+        frame_tree={
+            "top": {
+                "frame_id": "top-1",
+                "url": "https://example.com/",
+                "origin": "https://example.com",
+                "session_id": "top-session",
+            },
+            "children": [
+                {
+                    "frame_id": "oopif-private",
+                    "url": PRIVATE_URL,
+                    "origin": "http://169.254.169.254",
+                    "session_id": "child-session",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(bs.SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.body.innerText"},
+            frame_id="oopif-private",
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert PRIVATE_URL in result["error"]
+    assert "private or internal address" in result["error"]
+    assert supervisor.cdp_calls == []
+
+
+def test_frame_id_raw_frames_fallback_blocks_private_oopif(monkeypatch):
+    """Raw ``_frames`` fallback (outside capped frame_tree) must apply the same check."""
+    import tools.browser_tool as bt
+    import tools.browser_supervisor as bs
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: None)
+
+    supervisor = _FakeSupervisor(
+        frame_tree={"top": {"frame_id": "top-1", "url": "https://example.com/"}, "children": []},
+        frames={
+            "oopif-raw": _FakeFrame(
+                frame_id="oopif-raw",
+                url=PRIVATE_URL,
+                origin="http://169.254.169.254",
+                session_id="raw-session",
+            )
+        },
+    )
+    monkeypatch.setattr(bs.SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="DOM.getDocument",
+            params={},
+            frame_id="oopif-raw",
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert PRIVATE_URL in result["error"]
+    assert supervisor.cdp_calls == []
+
+
+def test_frame_id_allowlist_survives_private_oopif(monkeypatch):
+    """Navigation/inspection allowlist must still reach supervisor on private frames."""
+    import tools.browser_tool as bt
+    import tools.browser_supervisor as bs
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: None)
+
+    dispatched = []
+
+    class _AllowlistSupervisor(_FakeSupervisor):
+        def __init__(self):
+            super().__init__(
+                frame_tree={
+                    "top": {
+                        "frame_id": "top-1",
+                        "url": "https://example.com/",
+                        "origin": "https://example.com",
+                    },
+                    "children": [
+                        {
+                            "frame_id": "oopif-private",
+                            "url": PRIVATE_URL,
+                            "origin": "http://169.254.169.254",
+                            "session_id": "child-session",
+                        }
+                    ],
+                }
+            )
+            # Running loop stub so via_supervisor proceeds past the loop check.
+            self._loop = type(
+                "Loop",
+                (),
+                {"is_running": staticmethod(lambda: True)},
+            )()
+
+    supervisor = _AllowlistSupervisor()
+    monkeypatch.setattr(bs.SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
+
+    def fake_schedule(coro, loop):
+        dispatched.append(coro)
+        class _Fut:
+            def result(self, timeout=None):
+                return {"result": {"ok": True}}
+        # Close the coroutine to avoid "never awaited" warnings.
+        coro.close()
+        return _Fut()
+
+    monkeypatch.setattr(
+        "agent.async_utils.safe_schedule_threadsafe", fake_schedule
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Page.reload",
+            params={},
+            frame_id="oopif-private",
+            task_id="task-1",
+        )
+    )
+
+    assert result.get("success") is True
+    assert len(dispatched) == 1
+
+
+def test_frame_id_blocks_oopif_with_empty_url_and_origin(monkeypatch):
+    """OOPIF session without URL/origin metadata must fail closed for page CDP."""
+    import tools.browser_tool as bt
+    import tools.browser_supervisor as bs
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: None)
+
+    supervisor = _FakeSupervisor(
+        frame_tree={
+            "top": {
+                "frame_id": "top-1",
+                "url": "https://example.com/",
+                "origin": "https://example.com",
+            },
+            "children": [
+                {
+                    "frame_id": "oopif-pending",
+                    "url": "",
+                    "origin": "",
+                    "session_id": "child-session",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(bs.SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.body.innerText"},
+            frame_id="oopif-pending",
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert "no URL/origin metadata" in result["error"]
+    assert supervisor.cdp_calls == []
+
+
 def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
     calls = []
 

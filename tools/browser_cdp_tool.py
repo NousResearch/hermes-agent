@@ -124,6 +124,67 @@ def _private_page_guard_error(blocked_url: str, method: str) -> str:
     )
 
 
+def _private_address_from_candidates(*candidates: Any) -> Optional[str]:
+    """Return the first private/always-blocked URL-or-origin among candidates."""
+    from tools import browser_tool as bt  # type: ignore[import-not-found]
+
+    for raw in candidates:
+        candidate = str(raw or "").strip()
+        if not candidate:
+            continue
+        if bt._is_always_blocked_url(candidate) or not bt._is_safe_url(candidate):  # type: ignore[attr-defined]
+            return candidate
+    return None
+
+
+def _browser_cdp_selected_frame_private_guard(
+    *,
+    task_id: str,
+    method: str,
+    frame_info: Dict[str, Any],
+) -> Optional[str]:
+    """Block page-content CDP calls against a private selected OOPIF frame.
+
+    Top-level ``_current_page_private_url`` is not enough for ``frame_id``
+    routing: a public parent can embed a private OOPIF, and the supervisor
+    dispatches into that child session independently. Navigation/inspection
+    allowlisted methods still pass so the model can leave or inspect tabs.
+
+    When the selected frame already has a child ``session_id`` but URL/origin
+    metadata is still empty (common briefly after Target.attachedToTarget),
+    fail closed for non-allowlisted methods instead of dispatching blind.
+    """
+    try:
+        from tools import browser_tool as bt  # type: ignore[import-not-found]
+
+        if not bt._eval_ssrf_guard_active(task_id):  # type: ignore[attr-defined]
+            return None
+        if method in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:
+            return None
+        frame_url = str(frame_info.get("url") or "").strip()
+        frame_origin = str(frame_info.get("origin") or "").strip()
+        blocked = _private_address_from_candidates(frame_url, frame_origin)
+        if blocked:
+            return _private_page_guard_error(blocked, method)
+        # OOPIF session without address metadata: cannot prove the frame is
+        # public, so do not fail-open into page-content CDP.
+        if frame_info.get("session_id") and not frame_url and not frame_origin:
+            return tool_error(
+                "Blocked: selected OOPIF frame has no URL/origin metadata "
+                f"yet; raw CDP method {method!r} could expose private page "
+                "content or state. Retry after browser_snapshot once the "
+                "frame has navigated.",
+                method=method,
+                cdp_docs=CDP_DOCS_URL,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "browser_cdp: selected-frame private-page guard probe failed: %s",
+            exc,
+        )
+    return None
+
+
 def _browser_cdp_private_guard(
     *,
     task_id: str,
@@ -337,6 +398,17 @@ def _browser_cdp_via_supervisor(
             f"Call browser_snapshot to see current frame_tree."
         )
 
+    # Validate the selected frame (frame_tree hit or raw _frames fallback)
+    # before any child-session dispatch. A public top-level page can embed a
+    # private OOPIF; top-page probing alone would miss that boundary.
+    blocked_frame = _browser_cdp_selected_frame_private_guard(
+        task_id=task_id,
+        method=method,
+        frame_info=frame_info,
+    )
+    if blocked_frame:
+        return blocked_frame
+
     child_sid = frame_info.get("session_id")
     if not child_sid:
         # Not an OOPIF — fall back to top-level session (evaluating at page
@@ -426,6 +498,18 @@ def browser_cdp(
     """
     effective_task_id = task_id or "default"
 
+    # Validate params before any path (including frame_id early-return).
+    # A non-dict would AttributeError inside _browser_cdp_private_guard's
+    # (params or {}).get(...); that probe's broad except fail-opens, so
+    # rejecting here keeps the SSRF/private-page boundary fail-closed and
+    # matches the clear input-validation error the stateless path already
+    # returned.
+    call_params: Dict[str, Any] = params or {}
+    if not isinstance(call_params, dict):
+        return tool_error(
+            f"'params' must be an object/dict, got {type(call_params).__name__}"
+        )
+
     # --- Route iframe-scoped calls through the supervisor ---------------
     if frame_id:
         # Same private-page/SSRF boundary as the stateless path below —
@@ -433,7 +517,7 @@ def browser_cdp(
         blocked = _browser_cdp_private_guard(
             task_id=effective_task_id,
             method=method,
-            params=params or {},
+            params=call_params,
         )
         if blocked:
             return blocked
@@ -441,7 +525,7 @@ def browser_cdp(
             task_id=effective_task_id,
             frame_id=frame_id,
             method=method,
-            params=params,
+            params=call_params,
             timeout=timeout,
         )
 
@@ -473,12 +557,6 @@ def browser_cdp(
             "Expected ws://... or wss://... — the /browser connect "
             "resolver should have rewritten this. Check that a Chromium-family "
             "browser is actually listening on the debug port."
-        )
-
-    call_params: Dict[str, Any] = params or {}
-    if not isinstance(call_params, dict):
-        return tool_error(
-            f"'params' must be an object/dict, got {type(call_params).__name__}"
         )
 
     blocked = _browser_cdp_private_guard(

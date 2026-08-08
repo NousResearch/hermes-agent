@@ -281,6 +281,7 @@ const SSH_ERROR = {
   AUTH_FAILED: 'auth-failed',
   HOST_KEY_CHANGED: 'host-key-changed',
   TIMEOUT: 'timeout',
+  PROCESS_KILLED: 'process-killed',
   UNKNOWN: 'unknown'
 }
 
@@ -338,6 +339,17 @@ function sshErrorMessage(kind, conn, stderr?) {
 
     case SSH_ERROR.UNREACHABLE:
       return `Could not reach ${host} over SSH. Check the host, port, and your network. Original error: ${String(stderr || '').trim()}`
+
+    case SSH_ERROR.PROCESS_KILLED:
+      return (
+        `The local ssh process for ${host} was terminated unexpectedly before it could ` +
+        `report a result (no error output). This is different from a network/host ` +
+        `reachability failure -- something on this machine killed the process (e.g. ` +
+        `macOS Gatekeeper, an antivirus/EDR tool, or app sandboxing intercepting the ` +
+        `spawned ssh binary). Try running the equivalent ssh command from a terminal to ` +
+        `confirm it works there, and check Console.app for a crash report matching ssh ` +
+        `around the time of this attempt.`
+      )
 
     case SSH_ERROR.TIMEOUT:
       return `SSH operation to ${host} timed out. The connection may be half-open (e.g. after sleep); reconnecting.`
@@ -405,14 +417,14 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
       clearTimeout(timer)
       reject(error)
     })
-    child.on('close', code => {
+    child.on('close', (code, signal) => {
       if (settled) {
         return
       }
 
       settled = true
       clearTimeout(timer)
-      resolve({ code, stdout, stderr })
+      resolve({ code, signal, stdout, stderr })
     })
   })
 }
@@ -515,6 +527,21 @@ class SshConnection {
     this._log(redactSecrets(`[ssh] ${msg}`))
   }
 
+  // Distinguishes a signal-killed ssh child (no stderr, terminated by a
+  // signal rather than exiting normally) from a genuine ssh-reported
+  // failure that merely produced no stderr text. The former is NOT a
+  // network/host reachability problem -- something on this machine (AV,
+  // sandboxing, Gatekeeper) killed the process after it had already
+  // connected (issue #80836). `defaultKind` is used for the ordinary
+  // non-zero-exit case.
+  _fallbackKindFor(result, defaultKind) {
+    if (!result.stderr && result.code == null && result.signal) {
+      return SSH_ERROR.PROCESS_KILLED
+    }
+
+    return defaultKind
+  }
+
   _fail(stderrOrErr, fallbackKind = SSH_ERROR.UNKNOWN) {
     if (stderrOrErr && stderrOrErr.kind === SSH_ERROR.TIMEOUT) {
       const err: any = new Error(sshErrorMessage(SSH_ERROR.TIMEOUT, this))
@@ -564,7 +591,7 @@ class SshConnection {
       }
 
       if (result.code !== 0) {
-        throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
+        throw this._fail(result.stderr, this._fallbackKindFor(result, SSH_ERROR.UNREACHABLE))
       }
 
       this._opened = true
@@ -612,7 +639,7 @@ class SshConnection {
     }
 
     if (result.code !== 0) {
-      throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
+      throw this._fail(result.stderr, this._fallbackKindFor(result, SSH_ERROR.UNREACHABLE))
     }
 
     this._opened = true

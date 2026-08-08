@@ -776,6 +776,7 @@ export const zhHant = defineLocale({
       sshReachable: (host, platform) => `可連線：${host}（${platform}）——已找到 Hermes`,
       sshIncompleteHost: '連線前請輸入 SSH 主機。',
       sshErrUnreachable: '無法透過 SSH 連線到該主機。請檢查主機、連接埠和網路。',
+      sshErrProcessKilled: '本機 SSH 處理程序在連線前意外終止（無錯誤輸出）。這是本機問題，而非網路/主機問題——請嘗試從終端機執行相同的 SSH 指令以確認其是否有效，並檢查是否有防毒軟體/EDR 工具或 macOS Gatekeeper 攔截了 ssh 程式。',
       sshErrAuth:
         'SSH 驗證失敗。請將金鑰載入 ssh-agent（ssh-add），或在 ~/.ssh/config 中設定 IdentityFile——Hermes 以非互動方式執行 ssh。',
       sshErrHostKey: '自上次連線以來主機金鑰已變更。請確認這是預期的，然後執行 ssh-keygen -R <host> 並重新連線。',

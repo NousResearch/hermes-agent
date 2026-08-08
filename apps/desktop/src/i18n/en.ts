@@ -731,6 +731,8 @@ export const en: Translations = {
       sshReachable: (host, platform) => `Reachable: ${host} (${platform}) — Hermes found`,
       sshIncompleteHost: 'Enter an SSH host before connecting.',
       sshErrUnreachable: 'Could not reach that host over SSH. Check the host, port, and your network.',
+      sshErrProcessKilled:
+        'The local ssh process was terminated unexpectedly before it could connect (no error output). This is a local-machine problem, not a network/host issue -- try running the equivalent ssh command from a terminal to confirm it works there, and check for antivirus/EDR tools or macOS Gatekeeper intercepting the ssh binary.',
       sshErrAuth:
         'SSH authentication failed. Load your key into the ssh-agent (ssh-add) or set an IdentityFile in ~/.ssh/config — Hermes runs ssh non-interactively.',
       sshErrHostKey:

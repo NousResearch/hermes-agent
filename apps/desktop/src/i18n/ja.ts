@@ -800,6 +800,7 @@ export const ja = defineLocale({
       sshReachable: (host, platform) => `接続可能: ${host}（${platform}）— Hermes を検出`,
       sshIncompleteHost: '接続する前に SSH ホストを入力してください。',
       sshErrUnreachable: 'SSH でそのホストに到達できませんでした。ホスト、ポート、ネットワークを確認してください。',
+      sshErrProcessKilled: 'ローカルの ssh プロセスが接続前に予期せず終了しました（エラー出力なし）。これはネットワークやホストの問題ではなく、ローカルマシンの問題です。ターミナルから同じ ssh コマンドを実行して動作を確認し、アンチウイルス/EDR ツールや macOS Gatekeeper が ssh バイナリをブロックしていないか確認してください。',
       sshErrAuth:
         'SSH 認証に失敗しました。鍵を ssh-agent に読み込む（ssh-add）か、~/.ssh/config に IdentityFile を設定してください。Hermes は非対話的に ssh を実行します。',
       sshErrHostKey:

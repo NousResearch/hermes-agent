@@ -120,6 +120,23 @@ describe('sshFailureMessage', () => {
     expect(sshFailureMessage(ssh, 'unexpected failure', copy)).toBe('localized unknown')
     expect(sshFailureMessage(config(), 'raw remote error', copy)).toBe('raw remote error')
   })
+
+  it('classifies a signal-killed probe child distinctly from unreachable (#80890)', () => {
+    // Matches the exact message shape ssh-connection.ts's sshErrorMessage()
+    // produces for SSH_ERROR.PROCESS_KILLED -- previously this fell
+    // through to the generic sshErrUnknown fallback, silently replacing
+    // what used to be the more specific (if misleading) "unreachable"
+    // copy the reporter of #80836 quoted.
+    const copy = {
+      sshErrUnreachable: 'localized unreachable',
+      sshErrProcessKilled: 'localized process-killed',
+      sshErrUnknown: 'localized unknown'
+    }
+    const ssh = config({ mode: 'ssh', sshHost: 'box', remoteUrl: '' })
+    const message =
+      'The local ssh process for box was terminated unexpectedly before it could report a result (no error output).'
+    expect(sshFailureMessage(ssh, message, copy)).toBe('localized process-killed')
+  })
 })
 
 describe('deriveProviderShape', () => {

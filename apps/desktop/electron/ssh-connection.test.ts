@@ -187,7 +187,7 @@ test('sshErrorMessage gives actionable guidance for auth and host-key-change', (
 })
 
 // A fake child process that emits a scripted result on next tick.
-function fakeChild({ code = 0, stdout = '', stderr = '', errorEvent = null, hang = false }: any = {}) {
+function fakeChild({ code = 0, signal = null, stdout = '', stderr = '', errorEvent = null, hang = false }: any = {}) {
   const child: any = new EventEmitter()
   child.stdout = new EventEmitter()
   child.stderr = new EventEmitter()
@@ -215,7 +215,7 @@ function fakeChild({ code = 0, stdout = '', stderr = '', errorEvent = null, hang
       child.stderr.emit('data', Buffer.from(stderr))
     }
 
-    child.emit('close', code)
+    child.emit('close', code, signal)
   })
 
   return child
@@ -454,6 +454,44 @@ test('no-mux: open() verifies auth with a one-shot exec, no -M master', async ()
   assert.ok(
     spawnFn.calls.some(args => args[args.length - 1] === 'exit 0'),
     'liveness/openness via one-shot exec'
+  )
+})
+
+test('no-mux: open() classifies a signal-killed probe child as process-killed, not unreachable', async () => {
+  // Regression for issue #80836: the ssh probe child can die from a
+  // signal (code: null, no stderr) after having already reached the
+  // server -- e.g. macOS Gatekeeper/AV/sandboxing killing the spawned
+  // binary. Previously this fell through _fail()'s stderr-empty branch
+  // to the UNREACHABLE fallback, producing the misleading "Could not
+  // reach that host" message even though the connection was fine.
+  const spawnFn = scriptedSpawn([{ code: null, signal: 'SIGKILL', stderr: '' }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
+
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => {
+      assert.equal(err.kind, SSH_ERROR.PROCESS_KILLED)
+      assert.notEqual(err.kind, SSH_ERROR.UNREACHABLE)
+      assert.match(err.message, /terminated unexpectedly/)
+
+      return true
+    }
+  )
+})
+
+test('no-mux: open() still classifies a genuine ssh failure (with stderr) as unreachable', async () => {
+  // Sanity: the new signal-killed path must not swallow real ssh
+  // failures that DO print to stderr -- those still classify normally.
+  const spawnFn = scriptedSpawn([{ code: 255, stderr: 'ssh: Could not resolve hostname box' }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: false })
+
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => {
+      assert.equal(err.kind, SSH_ERROR.UNREACHABLE)
+
+      return true
+    }
   )
 })
 

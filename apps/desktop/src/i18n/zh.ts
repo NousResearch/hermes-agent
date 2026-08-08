@@ -937,6 +937,7 @@ export const zh: Translations = {
       sshReachable: (host, platform) => `可连接：${host}（${platform}）——已找到 Hermes`,
       sshIncompleteHost: '连接前请输入 SSH 主机。',
       sshErrUnreachable: '无法通过 SSH 连接到该主机。请检查主机、端口和网络。',
+      sshErrProcessKilled: '本地 SSH 进程在连接前意外终止（无错误输出）。这是本机问题，而非网络/主机问题——请尝试从终端运行相同的 SSH 命令以确认其是否有效，并检查是否有杀毒软件/EDR 工具或 macOS Gatekeeper 拦截了 ssh 程序。',
       sshErrAuth:
         'SSH 认证失败。请将密钥加载到 ssh-agent（ssh-add），或在 ~/.ssh/config 中设置 IdentityFile——Hermes 以非交互方式运行 ssh。',
       sshErrHostKey: '自上次连接以来主机密钥已更改。请确认这是预期的，然后运行 ssh-keygen -R <host> 并重新连接。',

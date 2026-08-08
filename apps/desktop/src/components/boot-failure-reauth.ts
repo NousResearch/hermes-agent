@@ -76,6 +76,7 @@ export function sshFailureMessage(
     sshErrTimeout?: string
     sshErrUpdateRequired?: string
     sshErrUnreachable?: string
+    sshErrProcessKilled?: string
     sshErrUnknown?: string
   }
 ): string {
@@ -109,6 +110,10 @@ export function sshFailureMessage(
 
   if (text.includes('update')) {
     return copy.sshErrUpdateRequired || raw
+  }
+
+  if (text.includes('terminated unexpectedly')) {
+    return copy.sshErrProcessKilled || raw
   }
 
   if (text.includes('unreachable') || text.includes('could not reach')) {

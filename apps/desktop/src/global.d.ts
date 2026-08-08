@@ -569,6 +569,7 @@ export interface DesktopConnectionTestResult {
     | 'auth-failed'
     | 'hermes-not-found'
     | 'host-key-changed'
+    | 'process-killed'
     | 'timeout'
     | 'unreachable'
     | 'unsupported-platform'

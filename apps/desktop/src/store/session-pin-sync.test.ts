@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
 import type { SessionInfo } from '@/types/hermes'
 
 const patch = vi.fn<(id: string, pinned: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
@@ -11,12 +12,18 @@ vi.mock('@/hermes', () => ({
 }))
 
 import { $pinnedSessionIds } from '@/store/layout'
-import { $sessions } from '@/store/session'
+import { $sessions, setConnection } from '@/store/session'
+import { legacyPinnedSessionIds, pinnedSessionScopeInitialized } from '@/store/session-pins'
 
 import { resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
+
+const localConnection = { baseUrl: '', mode: 'local', profile: 'default' } as HermesConnection
+
+const remoteConnection = (baseUrl: string): HermesConnection =>
+  ({ baseUrl, mode: 'remote', profile: 'default', remoteKind: 'url' }) as HermesConnection
 
 const flush = () => Promise.resolve()
 
@@ -28,6 +35,8 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  setConnection(null)
+  window.localStorage.clear()
   $sessions.set([])
   $pinnedSessionIds.set([])
   // The mirror/pending/unconfirmed maps are module-global, so one test's
@@ -35,11 +44,14 @@ beforeEach(() => {
   // its page). Same reset the gateway switch uses.
   resetSessionPinMirror()
   patch.mockClear()
+  setConnection(localConnection)
 })
 
 afterEach(() => {
+  setConnection(null)
   $sessions.set([])
   $pinnedSessionIds.set([])
+  window.localStorage.clear()
 })
 
 describe('watchSessionPins', () => {
@@ -286,5 +298,111 @@ describe('watchSessionPins remote pull', () => {
 
     expect($pinnedSessionIds.get()).toContain('failed')
     expect(patch).toHaveBeenCalledWith('failed', true, undefined)
+  })
+})
+
+describe('watchSessionPins legacy migration', () => {
+  it('imports only legacy pins that belong to the active connection', async () => {
+    setConnection(null)
+    window.localStorage.setItem('hermes.desktop.pinnedSessions', JSON.stringify(['local-pin', 'foreign-pin']))
+    setConnection(localConnection)
+
+    expect(window.localStorage.getItem('hermes.desktop.pinnedSessions.v2.local%3Adefault')).toBeNull()
+    expect(pinnedSessionScopeInitialized()).toBe(false)
+    expect(legacyPinnedSessionIds()).toEqual(['local-pin', 'foreign-pin'])
+
+    $sessions.set([row('local-pin')])
+    await flush()
+
+    expect(pinnedSessionScopeInitialized()).toBe(true)
+    expect($pinnedSessionIds.get()).toEqual(['local-pin'])
+  })
+
+  it('does not let legacy pins override a modern backend', async () => {
+    setConnection(null)
+    window.localStorage.setItem('hermes.desktop.pinnedSessions', JSON.stringify(['legacy-pin']))
+    setConnection(localConnection)
+
+    $sessions.set([row('legacy-pin', { pinned: false }), row('server-pin', { pinned: true })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['server-pin'])
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('does not let a scoped cache override a modern backend on reconnect', async () => {
+    setConnection(null)
+    window.localStorage.setItem('hermes.desktop.pinnedSessions.v2.local%3Adefault', JSON.stringify(['stale-local-pin']))
+    setConnection(localConnection)
+
+    $sessions.set([row('stale-local-pin', { pinned: false }), row('server-pin', { pinned: true })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['server-pin'])
+    expect(patch).not.toHaveBeenCalled()
+  })
+})
+
+describe('watchSessionPins connection isolation', () => {
+  it('does not let an earlier gateway write clear the active gateway write guard', async () => {
+    let settleGatewayA: (value: { ok: boolean }) => void = () => {}
+
+    let settleGatewayB: (value: { ok: boolean }) => void = () => {}
+
+    patch
+      .mockImplementationOnce(() => new Promise(resolve => (settleGatewayA = resolve)))
+      .mockImplementationOnce(() => new Promise(resolve => (settleGatewayB = resolve)))
+
+    setConnection(remoteConnection('https://gateway-a.example.test'))
+    $sessions.set([row('shared', { pinned: false })])
+    $pinnedSessionIds.set(['shared'])
+    await flush()
+
+    setConnection(remoteConnection('https://gateway-b.example.test'))
+    $sessions.set([row('shared', { pinned: false })])
+    $pinnedSessionIds.set(['shared'])
+    await flush()
+    expect(patch).toHaveBeenCalledTimes(2)
+
+    // Gateway A responds after B has started its own write for the same id.
+    // Its completion must not clear B's in-flight guard.
+    settleGatewayA({ ok: true })
+    await flush()
+    await flush()
+
+    $sessions.set([row('shared', { pinned: false }), row('other')])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('shared')
+
+    settleGatewayB({ ok: true })
+    await flush()
+  })
+
+  it('does not let an earlier gateway failure enqueue work on the active gateway', async () => {
+    let rejectGatewayA: (error: Error) => void = () => {}
+
+    patch.mockImplementationOnce(() => new Promise((_resolve, reject) => (rejectGatewayA = reject)))
+
+    setConnection(remoteConnection('https://gateway-a.example.test'))
+    $sessions.set([row('shared', { pinned: false })])
+    $pinnedSessionIds.set(['shared'])
+    await flush()
+
+    setConnection(remoteConnection('https://gateway-b.example.test'))
+    $sessions.set([row('shared', { pinned: true })])
+    await flush()
+    expect($pinnedSessionIds.get()).toContain('shared')
+    patch.mockClear()
+
+    rejectGatewayA(new Error('gateway A disconnected'))
+    await flush()
+    await flush()
+
+    $sessions.set([row('shared', { pinned: true }), row('other')])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('shared')
+    expect(patch).not.toHaveBeenCalled()
   })
 })

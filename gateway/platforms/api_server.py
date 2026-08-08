@@ -5981,14 +5981,23 @@ class APIServerAdapter(BasePlatformAdapter):
                 for tc in msg["tool_calls"]:
                     func = tc.get("function", {})
                     items.append({
+                        "id": f"fc_{uuid.uuid4().hex[:24]}",
                         "type": "function_call",
+                        # These calls were already executed server-side by the
+                        # Hermes agent; they are replayed for structured tool
+                        # UI only.  Mark them completed (matching the SSE
+                        # streaming path) so OpenAI clients don't interpret
+                        # them as pending calls the client must execute.
+                        "status": "completed",
                         "name": func.get("name", ""),
                         "arguments": func.get("arguments", ""),
                         "call_id": tc.get("id", ""),
                     })
             elif role == "tool":
                 items.append({
+                    "id": f"fco_{uuid.uuid4().hex[:24]}",
                     "type": "function_call_output",
+                    "status": "completed",
                     "call_id": msg.get("tool_call_id", ""),
                     "output": msg.get("content", ""),
                 })

@@ -6196,7 +6196,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._session_db = None
         try:
             from hermes_state import AsyncSessionDB, SessionDB
-            self._session_db = AsyncSessionDB(SessionDB())
+            # SessionStore already opens the process-wide gateway SessionDB.
+            # Reuse it so the WAL per-thread reader pool (and its file
+            # descriptors) is not duplicated across two long-lived instances.
+            _sync_session_db = getattr(self.session_store, "_db", None)
+            if _sync_session_db is None:
+                _sync_session_db = SessionDB()
+                self.session_store._db = _sync_session_db
+            self._session_db = AsyncSessionDB(_sync_session_db)
         except Exception as e:
             # WARNING (not DEBUG) so the failure appears in errors.log — matches
             # cli.py's handling of the same init path.  Users hitting NFS-mounted
@@ -13278,9 +13285,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # unwrap to the sync handle. ``session_store`` holds it at ``_db``.
             _self_db = getattr(self, "_session_db", None)
             _self_db = getattr(_self_db, "_db", _self_db)
+            _closed_db_ids = set()
             for _db in (_self_db, getattr(getattr(self, "session_store", None), "_db", None)):
                 if _db is None or not hasattr(_db, "close"):
                     continue
+                if id(_db) in _closed_db_ids:
+                    continue
+                _closed_db_ids.add(id(_db))
                 try:
                     _db.close()
                 except Exception as _e:

@@ -2467,6 +2467,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _FTS_MERGE_EVERY_N_WRITES = 1000
     _FTS_MERGE_MAX_PAGES_PER_INDEX = 500
     _FTS_MERGE_COMMANDS_PER_PASS = 4
+    # WAL reads use one read-only connection per worker thread. Long-lived
+    # gateways have both a dedicated agent executor and asyncio's default
+    # executor, and short-lived helper threads may also touch the shared DB.
+    # Keeping every thread's connection alive until process shutdown can
+    # otherwise consume the common launchd soft limit of 256 descriptors.
+    # Once this budget is full, additional threads use the existing locked
+    # writer-connection fallback rather than opening another descriptor pair.
+    _MAX_READ_CONNECTIONS = 16
     # Session imports intentionally use a lower cap than exports: import holds
     # one BEGIN IMMEDIATE transaction, so bounded batches avoid starving live
     # gateway/CLI writers. The dashboard accepts one exported JSON/JSONL file
@@ -2779,11 +2787,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return conn
         if getattr(self._read_local, "failed", False):
             return None
+        with self._read_conns_lock:
+            if self._read_conns_closed:
+                self._read_local.failed = True
+                return None
+            if len(self._read_conns) >= self._MAX_READ_CONNECTIONS:
+                self._read_local.failed = True
+                return None
         try:
             conn = _connect_tracked_db(
                 f"file:{self.db_path}?mode=ro",
                 tracking_path=self.db_path,
                 uri=True,
+                check_same_thread=False,
                 timeout=5.0,
                 isolation_level=None,
             )
@@ -2799,6 +2815,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if self._read_conns_closed:
                     # close() already drained — don't register; close
                     # immediately so no tracked fd leaks.
+                    conn.close()
+                    self._read_local.failed = True
+                    return None
+                if len(self._read_conns) >= self._MAX_READ_CONNECTIONS:
+                    # Another thread filled the final slot while this
+                    # connection was opening. Close deterministically and use
+                    # the locked writer fallback for this thread.
                     conn.close()
                     self._read_local.failed = True
                     return None

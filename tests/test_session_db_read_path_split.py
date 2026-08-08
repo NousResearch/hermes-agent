@@ -44,6 +44,57 @@ def test_read_conn_reused_within_thread(db):
 
 
 @pytest.mark.requires_wal
+def test_read_conn_pool_is_bounded_for_short_lived_threads(db, monkeypatch):
+    """Dead reader threads must not consume descriptors without a hard bound."""
+    monkeypatch.setattr(db, "_MAX_READ_CONNECTIONS", 2)
+    barrier = threading.Barrier(4)
+    conns = {}
+    fallback_reads = {}
+
+    def grab(key):
+        barrier.wait()
+        conn = db._get_read_conn()
+        conns[key] = conn
+        if conn is None:
+            fallback_reads[key] = db.get_session("s1")
+
+    threads = [threading.Thread(target=grab, args=(key,)) for key in range(3)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=5.0)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert sum(conn is not None for conn in conns.values()) == 2
+    assert len(db._read_conns) == 2
+    assert len(fallback_reads) == 1
+    assert next(iter(fallback_reads.values()))["id"] == "s1"
+
+
+@pytest.mark.requires_wal
+def test_close_releases_read_connections_created_by_worker_threads(tmp_path):
+    """The owner thread must be able to close every worker-owned reader."""
+    from hermes_cli.sqlite_safe_read import has_live_connection
+
+    db_path = tmp_path / "cross-thread-close.db"
+    worker_db = SessionDB(db_path=db_path)
+    worker_db.create_session(session_id="s1", source="cli", model="m")
+
+    thread = threading.Thread(target=lambda: worker_db.get_session("s1"))
+    thread.start()
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert len(worker_db._read_conns) == 1
+    assert has_live_connection(db_path)
+
+    worker_db.close()
+
+    assert not has_live_connection(db_path)
+
+
+@pytest.mark.requires_wal
 def test_reads_do_not_take_writer_lock(db):
     """Reads must complete while another thread holds self._lock."""
     acquired = db._lock.acquire()

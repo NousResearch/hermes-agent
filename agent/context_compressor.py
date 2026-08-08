@@ -445,6 +445,38 @@ _SUMMARY_INPUT_MAX_CHARS = 160_000
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
+# Floor shared by _prune_old_tool_results' ``min_prune_chars`` default, the
+# constructor clamp on ``proactive_prune_min_result_chars``, and the clarify
+# summary cap (which must stay strictly BELOW this so a preserved user answer
+# is never re-summarized away on a later prune pass).
+_PRUNE_MIN_CHARS = 200
+
+# Non-response sentinels the clarify callbacks embed as ``user_response`` when
+# the user never actually answered (timeout / no-user contexts). These must
+# not be quoted as a user answer during compaction. Sources:
+#   cli.py timeout callback, gateway/run.py timeout + delivery-failure paths,
+#   hermes_cli/oneshot.py no-user callback.
+_CLARIFY_NON_RESPONSE_PREFIXES = (
+    "The user did not provide a response",
+    "[user did not respond",
+    "[clarify prompt could not be delivered",
+    "[oneshot mode:",
+)
+
+
+def _is_clarify_non_response_sentinel(response: Any) -> bool:
+    """Return True when a clarify ``user_response`` is runtime sentinel prose
+    (timeout / no-user), not an actual user answer."""
+    if isinstance(response, str):
+        return response.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
+    if isinstance(response, list):
+        return any(
+            isinstance(item, str)
+            and item.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
+            for item in response
+        )
+    return False
+
 # Ghost-skill defense (#32106): when compaction reduces an old ``skill_view``
 # result to a 1-line metadata summary, the model still believes the skill is
 # loaded even though its instructions are gone. The marker below is the ONE
@@ -1315,7 +1347,12 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
 
     if tool_name == "clarify":
         response_prefix = "[clarify] user responded: "
-        max_summary_chars = 200
+        # One char under _PRUNE_MIN_CHARS: the summary survives later
+        # _prune_old_tool_results passes only via the ``len(content) <=
+        # min_prune_chars`` guard (the "already summarized" guard keys on
+        # " chars)" which this shape never contains), and staying strictly
+        # below the floor also keeps it out of the >=200-char dedup pass.
+        max_summary_chars = _PRUNE_MIN_CHARS - 1
         truncation_marker = "...[truncated]"
 
         try:
@@ -1330,6 +1367,13 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
             and bool(response)
             and all(isinstance(item, str) and item for item in response)
         )
+        if resolved and _is_clarify_non_response_sentinel(response):
+            # Timeout / no-user paths embed sentinel prose as user_response
+            # (gateway "[user did not respond within Nm]", oneshot
+            # "[oneshot mode: ...]", CLI "The user did not provide a
+            # response..."). Quoting those as a user answer would be false
+            # attribution — keep them on the generic path.
+            resolved = False
         if resolved:
             # Keep ordinary Unicode intact while escaping lone UTF-16
             # surrogates so the compacted message remains UTF-8/SQLite safe.
@@ -2391,7 +2435,7 @@ class ContextCompressor(ContextEngine):
         # configured 0 keeps the 8000 default via `or`. Keep the floor well above
         # typical summary length (default 8000) to stay idempotent.
         self.proactive_prune_min_result_chars = max(
-            200, int(proactive_prune_min_result_chars or 8000)
+            _PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 8000)
         )
         # Minimum estimated token reclaim before a proactive prune COMMITS.
         # Every commit rewrites messages the provider has already seen, which
@@ -2918,7 +2962,7 @@ class ContextCompressor(ContextEngine):
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None,
-        min_prune_chars: int = 200,
+        min_prune_chars: int = _PRUNE_MIN_CHARS,
     ) -> tuple[List[Dict[str, Any]], int]:
         """Replace old tool result contents with informative 1-line summaries.
 

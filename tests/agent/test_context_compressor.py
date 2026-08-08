@@ -11,6 +11,7 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    _PRUNE_MIN_CHARS,
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
 )
@@ -94,7 +95,9 @@ class TestSummarizeToolResultClarify:
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
-        assert len(summary) == 200
+        # Strictly below the prune floor so a later prune pass can never
+        # re-summarize the preserved answer away (idempotency below).
+        assert len(summary) == _PRUNE_MIN_CHARS - 1
         assert summary.startswith('[clarify] user responded: "AAA')
         assert summary.endswith("...[truncated]")
         assert (
@@ -170,6 +173,41 @@ class TestSummarizeToolResultClarify:
         ],
     )
     def test_does_not_expose_unresolved_or_internal_content(self, content):
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    @pytest.mark.parametrize(
+        "sentinel",
+        [
+            # cli.py clarify timeout callback
+            "The user did not provide a response within the time limit. "
+            "Use your best judgement to make the choice and proceed.",
+            # gateway/run.py timeout + delivery-failure paths
+            "[user did not respond within 15m]",
+            "[clarify prompt could not be delivered]",
+            # hermes_cli/oneshot.py no-user callback
+            "[oneshot mode: no user available. Pick the best option from "
+            "['a', 'b'] using your own judgment and continue.]",
+        ],
+    )
+    def test_non_response_sentinels_are_not_attributed_to_user(self, sentinel):
+        """Timeout/no-user sentinel prose must not be quoted as a user answer."""
+        content = json.dumps({
+            "question": "Deploy when?",
+            "choices_offered": ["Friday", "Monday"],
+            "user_response": sentinel,
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    def test_multi_select_containing_sentinel_stays_generic(self):
+        content = json.dumps({
+            "user_response": ["lint", "[user did not respond within 15m]"],
+        })
+
         summary = _summarize_tool_result("clarify", "{}", content)
 
         assert summary == "[clarify] asked user a question"

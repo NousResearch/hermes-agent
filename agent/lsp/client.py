@@ -1068,7 +1068,14 @@ class LSPClient:
         This is what report paths should use: after an edit, "stale
         errors" and "no errors" must not be conflated.
         """
-        doc = self._docs.get(_path_key(path))
+        path_key = _path_key(path)
+        doc = self._docs.get(path_key)
+        if doc is None and not os.path.isabs(path):
+            # ``urlsplit`` cannot distinguish an opaque URI such as
+            # ``untitled:buffer`` from a valid relative POSIX filename such
+            # as ``notes:2026.ts``. Prefer an exact opaque-URI match, then
+            # fall back to the absolute filesystem key used by ``open_file``.
+            doc = self._docs.get(_path_key(_absolute_path(path)))
         if doc is None:
             return []
         if fresh_only:

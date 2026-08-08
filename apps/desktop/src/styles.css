@@ -57,6 +57,18 @@
   src: url('./fonts/JetBrainsMono-Italic.woff2') format('woff2');
 }
 
+/* Prefer a symbols-only Nerd Font when one is installed, then use a full Nerd
+   Font only for its private-use glyphs. The unicode range prevents these local
+   faces from changing ordinary UI typography or color emoji. */
+@font-face {
+  font-family: 'Hermes Nerd Glyphs';
+  font-display: swap;
+  src:
+    local('Symbols Nerd Font Mono'), local('Symbols Nerd Font'), local('JetBrainsMono Nerd Font Mono'),
+    local('JetBrainsMono Nerd Font');
+  unicode-range: U+E000-F8FF, U+F0000-F2FFF;
+}
+
 @theme inline {
   --color-background: var(--dt-background);
   --color-foreground: var(--dt-foreground);
@@ -388,16 +400,16 @@
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
     --dt-font-sans:
-      'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
-      'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+      'Hermes Nerd Glyphs', 'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui,
+      sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
     /* Menlo/Monaco first — Apple's native monospace faces — so code/diff read
        in the system mono on macOS, with SF Mono and bundled Courier Prime as
        fallbacks. */
     --dt-font-mono:
-      Menlo, Monaco, 'SF Mono', 'Courier Prime', monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
-      'Noto Color Emoji', emoji;
+      'Hermes Nerd Glyphs', Menlo, Monaco, 'SF Mono', 'Courier Prime', monospace, 'Apple Color Emoji',
+      'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;

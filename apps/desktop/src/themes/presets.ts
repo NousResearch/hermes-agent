@@ -11,13 +11,33 @@ import type { DesktopTheme, DesktopThemeTypography } from './types'
 // Covers macOS, Windows, Linux, plus the `emoji` generic for anything else.
 export const EMOJI_FALLBACK = '"Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji'
 
+// `Hermes Nerd Glyphs` is a unicode-range-limited @font-face declared in
+// styles.css. It only participates for Nerd Font private-use codepoints, so a
+// locally installed full Nerd Font cannot change ordinary text metrics.
+export const NERD_GLYPH_FALLBACK = '"Hermes Nerd Glyphs"'
+
 const SYSTEM_SANS =
-  '"Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, ' +
+  NERD_GLYPH_FALLBACK +
+  ', "Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, ' +
   EMOJI_FALLBACK
 
-const SYSTEM_MONO = 'Menlo, Monaco, "SF Mono", "Courier Prime", monospace, ' + EMOJI_FALLBACK
+const SYSTEM_MONO =
+  NERD_GLYPH_FALLBACK + ', Menlo, Monaco, "SF Mono", "Courier Prime", monospace, ' + EMOJI_FALLBACK
 
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
+
+/**
+ * Give an external theme the same private-use glyph fallback as built-in
+ * themes. The face's unicode range prevents it from affecting normal text.
+ */
+export function withNerdGlyphFallback(fontFamily: string): string {
+  const withoutFallback = fontFamily
+    .trim()
+    .replace(/(?:^|,\s*)(?:"Hermes Nerd Glyphs"|'Hermes Nerd Glyphs'|Hermes Nerd Glyphs)(?=\s*(?:,|$))/gi, '')
+    .replace(/^,\s*|,\s*$/g, '')
+
+  return withoutFallback ? `${NERD_GLYPH_FALLBACK}, ${withoutFallback}` : NERD_GLYPH_FALLBACK
+}
 
 const NOUS_BLUE = '#0053FD'
 const PSYCHE_BLUE = '#1540B1'
@@ -235,8 +255,8 @@ export const cyberpunkTheme: DesktopTheme = {
     userBubbleBorder: '#004800'
   },
   typography: {
-    fontMono: `"Courier New", Courier, monospace, ${EMOJI_FALLBACK}`,
-    fontSans: `"Courier New", Courier, monospace, ${EMOJI_FALLBACK}`
+    fontMono: `${NERD_GLYPH_FALLBACK}, "Courier New", Courier, monospace, ${EMOJI_FALLBACK}`,
+    fontSans: `${NERD_GLYPH_FALLBACK}, "Courier New", Courier, monospace, ${EMOJI_FALLBACK}`
   }
 }
 

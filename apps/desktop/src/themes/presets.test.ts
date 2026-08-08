@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK, NERD_GLYPH_FALLBACK, withNerdGlyphFallback } from './presets'
 
 // #40364: none of the UI text/mono fonts carry emoji glyphs, so every font
 // stack must end with a color-emoji fallback or emoji render as tofu on
@@ -29,5 +29,23 @@ describe('theme typography emoji fallback (#40364)', () => {
     expect(EMOJI_FALLBACK).toContain('Apple Color Emoji')
     expect(EMOJI_FALLBACK).toContain('Segoe UI Emoji')
     expect(EMOJI_FALLBACK).toContain('Noto Color Emoji')
+  })
+
+  it('keeps Nerd Font icon fallbacks available to the UI', () => {
+    expect(DEFAULT_TYPOGRAPHY.fontSans).toContain(NERD_GLYPH_FALLBACK)
+    expect(DEFAULT_TYPOGRAPHY.fontMono).toContain(NERD_GLYPH_FALLBACK)
+  })
+
+  it('adds the private-use fallback to external theme typography without changing its preferred stack', () => {
+    expect(withNerdGlyphFallback('ui-monospace, monospace')).toBe(
+      `${NERD_GLYPH_FALLBACK}, ui-monospace, monospace`
+    )
+  })
+
+  it('moves and deduplicates the private-use fallback ahead of external theme fonts', () => {
+    expect(withNerdGlyphFallback(`ui-monospace, ${NERD_GLYPH_FALLBACK}, monospace`)).toBe(
+      `${NERD_GLYPH_FALLBACK}, ui-monospace, monospace`
+    )
+    expect(withNerdGlyphFallback('')).toBe(NERD_GLYPH_FALLBACK)
   })
 })

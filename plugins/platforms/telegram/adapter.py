@@ -8897,6 +8897,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+            else:
+                logger.debug(
+                    "[%s] Telegram group message dropped by processing gate "
+                    "(observe off): chat=%s from=%s",
+                    self.name,
+                    getattr(getattr(msg, "chat", None), "id", None),
+                    getattr(getattr(msg, "from_user", None), "id", None),
+                )
             return
         await self._ensure_forum_commands(update.message)
 
@@ -8955,6 +8963,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+            else:
+                logger.debug(
+                    "[%s] Telegram group location dropped by processing gate "
+                    "(observe off): chat=%s from=%s",
+                    self.name,
+                    getattr(getattr(msg, "chat", None), "id", None),
+                    getattr(getattr(msg, "from_user", None), "id", None),
+                )
             return
 
         venue = getattr(msg, "venue", None)
@@ -9166,6 +9182,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._cache_observed_media(_m, _event)
                 self._observe_unmentioned_group_message(
                     _m, _event.message_type, update_id=update.update_id, event=_event
+                )
+            else:
+                logger.debug(
+                    "[%s] Telegram group attachment dropped by processing gate "
+                    "(observe off): chat=%s from=%s",
+                    self.name,
+                    getattr(getattr(update.message, "chat", None), "id", None),
+                    getattr(getattr(update.message, "from_user", None), "id", None),
                 )
             return
 

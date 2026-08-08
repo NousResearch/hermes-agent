@@ -153,6 +153,92 @@ def _bot_command_entity(text, command):
     return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
 
 
+def test_group_messages_can_be_opened_via_config():
+    adapter = _make_adapter(require_mention=False)
+
+    assert adapter._should_process_message(_group_message("hello everyone")) is True
+
+
+def test_dropped_unmentioned_group_message_logs_when_observe_off(caplog):
+    # When the processing gate drops an unmentioned group message AND observe
+    # is off, the drop is logged at DEBUG (previously it left zero trace).
+    # Generic "processing gate" wording: _should_process_message rejects for
+    # several reasons (self-message, topic/thread, exclusive-mention, allowlist,
+    # require-mention), so the log must not claim require-mention specifically.
+    async def _run():
+        adapter = _make_adapter(require_mention=True, allowed_chats=["-100"])
+        update = SimpleNamespace(
+            update_id=7001,
+            message=_group_message("side chatter"),
+            effective_message=None,
+        )
+        with caplog.at_level("DEBUG", logger="plugins.platforms.telegram.adapter"):
+            await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert "dropped by processing gate" in caplog.text
+
+    asyncio.run(_run())
+
+
+def test_dropped_location_message_logs_when_observe_off(caplog):
+    # Location path parity: a dropped group location logs at DEBUG too.
+    async def _run():
+        adapter = _make_adapter(require_mention=True, allowed_chats=["-100"])
+        update = SimpleNamespace(
+            update_id=7002,
+            message=_group_location_message(),
+            effective_message=None,
+        )
+        with caplog.at_level("DEBUG", logger="plugins.platforms.telegram.adapter"):
+            await adapter._handle_location_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert "dropped by processing gate" in caplog.text
+
+    asyncio.run(_run())
+
+
+def test_dropped_media_message_logs_when_observe_off(caplog):
+    # Media/attachment path parity: a dropped group attachment logs at DEBUG too.
+    async def _run():
+        adapter = _make_adapter(require_mention=True, allowed_chats=["-100"])
+        update = SimpleNamespace(
+            update_id=7003,
+            message=_group_voice_message(),
+            effective_message=None,
+        )
+        with caplog.at_level("DEBUG", logger="plugins.platforms.telegram.adapter"):
+            await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert "dropped by processing gate" in caplog.text
+
+    asyncio.run(_run())
+
+
+def test_non_mention_rejection_logs_generic_processing_gate(caplog):
+    # Regression: the drop log must NOT be require-mention-specific. A message
+    # rejected for a DIFFERENT reason (chat not on the allowlist, with
+    # require_mention=False) must log the same generic "processing gate" line.
+    async def _run():
+        adapter = _make_adapter(require_mention=False, allowed_chats=["-100"])
+        update = SimpleNamespace(
+            update_id=7004,
+            message=_group_message("hello", chat_id=-200),  # chat not allowlisted
+            effective_message=None,
+        )
+        with caplog.at_level("DEBUG", logger="plugins.platforms.telegram.adapter"):
+            await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert "dropped by processing gate" in caplog.text
+        # Must NOT carry the old require-mention-specific mislabeling.
+        assert "require_mention gate" not in caplog.text
+
+    asyncio.run(_run())
+
+
 def test_unmentioned_group_messages_can_be_observed_without_dispatching():
     async def _run():
         adapter = _make_adapter(

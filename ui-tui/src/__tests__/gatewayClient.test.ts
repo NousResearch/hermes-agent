@@ -227,6 +227,42 @@ describe('GatewayClient websocket attach mode', () => {
     gw.kill()
   })
 
+  it('re-arms event delivery when the gateway transport restarts', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    const seen: string[] = []
+
+    gw.on('event', ev => seen.push(ev.type))
+    gw.start()
+
+    const firstSocket = FakeWebSocket.instances[0]!
+
+    firstSocket.open()
+    gw.drain()
+    await Promise.resolve()
+    firstSocket.message(
+      JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+    )
+
+    expect(seen).toEqual(['gateway.ready'])
+
+    gw.start()
+    const replacementSocket = FakeWebSocket.instances[1]!
+
+    replacementSocket.open()
+    replacementSocket.message(
+      JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+    )
+    replacementSocket.message(
+      JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'session.info', payload: {} } })
+    )
+
+    await vi.waitFor(() => expect(seen).toHaveLength(3))
+    expect(seen).toEqual(['gateway.ready', 'gateway.ready', 'session.info'])
+
+    gw.kill()
+  })
+
   it('mirrors event frames to sidecar websocket when configured', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     process.env.HERMES_TUI_SIDECAR_URL = 'ws://gateway.test/api/pub?token=abc&channel=demo'

@@ -15,6 +15,16 @@ from agent.prompt_caching import (
 MARKER = {"type": "ephemeral"}
 
 
+def _skill_invocation(instruction: str) -> str:
+    return (
+        '[IMPORTANT: The user has invoked the "airtable" skill, indicating they want '
+        "you to follow its instructions. The full skill content is loaded below.]\n\n"
+        "# Airtable\n\nA stable skill body.\n\n"
+        "The user has provided the following instruction alongside the skill invocation: "
+        f"{instruction}"
+    )
+
+
 def _native_marker_indexes(messages):
     return {
         index
@@ -192,6 +202,20 @@ class TestApplyCacheMarker:
         assert msg["content"][0]["type"] == "text"
         assert msg["content"][0]["text"] == "Hello"
         assert msg["content"][0]["cache_control"] == MARKER
+
+    def test_skill_invocation_marks_only_the_stable_scaffold_prefix(self):
+        first = {"role": "user", "content": _skill_invocation("ticket=A/time=1")}
+        second = {"role": "user", "content": _skill_invocation("ticket=B/time=2")}
+
+        _apply_cache_marker(first, MARKER)
+        _apply_cache_marker(second, MARKER)
+
+        assert len(first["content"]) == len(second["content"]) == 2
+        assert first["content"][0] == second["content"][0]
+        assert first["content"][0]["cache_control"] == MARKER
+        assert "cache_control" not in first["content"][1]
+        assert first["content"][1]["text"] == "ticket=A/time=1"
+        assert second["content"][1]["text"] == "ticket=B/time=2"
 
 
 
@@ -463,6 +487,32 @@ class TestStripAnthropicCacheControl:
         assert isinstance(content, list) and len(content) == 2
         assert content[0] == {"type": "text", "text": "see"}
         assert content[1]["type"] == "image_url"
+
+    def test_skill_prefix_split_round_trips_and_redecorates_identically(self):
+        import copy
+
+        original = [
+            {"role": "system", "content": "stable system\nvolatile session"},
+            {"role": "user", "content": _skill_invocation("ticket=A/time=1")},
+        ]
+        first_plan = build_prompt_cache_plan(
+            original,
+            tools=None,
+            native_anthropic=True,
+            static_system_prefix="stable system",
+        )
+        first_wire = copy.deepcopy(first_plan.messages)
+
+        stripped = strip_anthropic_cache_control(first_plan.messages)
+        assert stripped == original
+
+        second_plan = build_prompt_cache_plan(
+            stripped,
+            tools=None,
+            native_anthropic=True,
+            static_system_prefix="stable system",
+        )
+        assert second_plan.messages == first_wire
 
 
 

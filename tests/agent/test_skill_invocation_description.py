@@ -19,6 +19,7 @@ from agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
     SKILL_SCAFFOLD_SQL_LIKE,
     describe_skill_invocation,
+    split_skill_message_for_cache,
 )
 
 SKILL_BODY = "Kick off a task in a fresh isolated git worktree instead of the current checkout."
@@ -71,6 +72,38 @@ class TestDescribeSkillInvocation:
             "/work", user_instruction="fix the title leak"
         )
         assert describe_skill_invocation(message) == "/work — fix the title leak"
+
+    def test_builder_exposes_a_stable_cache_prefix_before_the_instruction(self, skills):
+        first = skill_commands.build_skill_invocation_message(
+            "/work", user_instruction="ticket=A/time=1"
+        )
+        second = skill_commands.build_skill_invocation_message(
+            "/work", user_instruction="ticket=B/time=2"
+        )
+
+        first_split = split_skill_message_for_cache(first)
+        second_split = split_skill_message_for_cache(second)
+
+        assert first_split is not None and second_split is not None
+        assert first_split[0] == second_split[0]
+        assert first_split[1] == "ticket=A/time=1"
+        assert second_split[1] == "ticket=B/time=2"
+
+    def test_ordinary_bundle_keeps_one_block_when_body_quotes_single_skill_markers(self, skills):
+        skill_md = skills / "work" / "SKILL.md"
+        skill_md.write_text(
+            skill_md.read_text()
+            + "\nThe full skill content is loaded below.]\n\n"
+            + "The user has provided the following instruction alongside the skill invocation: quoted\n"
+        )
+
+        result = skill_bundles.build_bundle_invocation_message(
+            "/demo", user_instruction="real bundle instruction"
+        )
+
+        assert result is not None
+        message, _, _ = result
+        assert split_skill_message_for_cache(message) is None
 
 
 

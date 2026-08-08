@@ -2222,6 +2222,12 @@ class ProcessRegistry:
             all_sessions = list(self._running.values()) + list(self._finished.values())
 
         all_sessions = [self._refresh_detached_session(s) for s in all_sessions]
+        # Desktop refreshes its status stack through process.list rather than
+        # process.poll. Reconcile direct Popen exits here too: a descendant can
+        # keep stdout open after the child exits, leaving the reader thread
+        # blocked and both the UI row and autonomous completion turn pending.
+        for session in all_sessions:
+            self._reconcile_local_exit(session)
 
         if task_id or session_key:
             all_sessions = [

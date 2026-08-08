@@ -967,3 +967,28 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 
     assert "_HERMES_GATEWAY" not in captured["env"]
     assert captured["env"]["HERMES_NONINTERACTIVE"] == "1"
+
+
+def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
+    """A Desktop-owned gateway child must not survive its serve backend."""
+    import hermes_cli.web_server as ws
+
+    calls = []
+
+    class _FakeRunningProc:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            calls.append("terminate")
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
+    monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", _FakeRunningProc())
+
+    client, _header = _client()
+    with client:
+        pass
+
+    assert calls == ["terminate"]

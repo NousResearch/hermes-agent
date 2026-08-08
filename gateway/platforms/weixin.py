@@ -420,6 +420,25 @@ async def _api_post(
     return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
 
+def _raise_if_ilink_error(resp: Dict[str, Any], endpoint: str) -> None:
+    """Raise when an iLink API response carries a business-level error.
+
+    ``_api_post`` only checks the HTTP status; iLink reports failures in the
+    response body (``ret`` / ``errcode``). Callers that must not silently drop
+    a message (media/file sends) should call this right after ``_api_post`` so
+    a rejected message surfaces as an exception instead of a fake success.
+    """
+    if not isinstance(resp, dict):
+        return
+    ret = resp.get("ret")
+    errcode = resp.get("errcode")
+    if (ret is not None and ret != 0) or (errcode is not None and errcode != 0):
+        errmsg = resp.get("errmsg") or resp.get("msg") or "unknown error"
+        raise RuntimeError(
+            f"iLink {endpoint} error: ret={ret} errcode={errcode} errmsg={errmsg}"
+        )
+
+
 async def _api_get(
     session: "aiohttp.ClientSession",
     *,
@@ -2208,7 +2227,7 @@ class WeixinAdapter(BasePlatformAdapter):
         last_message_id = None
         if caption:
             last_message_id = f"hermes-weixin-{uuid.uuid4().hex}"
-            await _send_message(
+            caption_resp = await _send_message(
                 self._send_session,
                 base_url=self._base_url,
                 token=self._token,
@@ -2217,9 +2236,10 @@ class WeixinAdapter(BasePlatformAdapter):
                 context_token=context_token,
                 client_id=last_message_id,
             )
+            _raise_if_ilink_error(caption_resp, EP_SEND_MESSAGE)
 
         last_message_id = f"hermes-weixin-{uuid.uuid4().hex}"
-        await _api_post(
+        send_resp = await _api_post(
             self._send_session,
             base_url=self._base_url,
             endpoint=EP_SEND_MESSAGE,
@@ -2237,6 +2257,7 @@ class WeixinAdapter(BasePlatformAdapter):
             token=self._token,
             timeout_ms=API_TIMEOUT_MS,
         )
+        _raise_if_ilink_error(send_resp, EP_SEND_MESSAGE)
         return last_message_id
 
     def _outbound_media_builder(self, path: str, force_file_attachment: bool = False):

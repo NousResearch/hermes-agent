@@ -437,6 +437,75 @@ def test_compression_rotation_publishes_nothing_for_temporary_chat(tmp_path):
         db.close()
 
 
+def test_every_sessions_insert_site_consults_the_ephemeral_registry():
+    """Source invariant: a sessions-row writer must check the registry.
+
+    The compression leak existed because publish_compression_child grew its
+    own INSERT INTO sessions without going through _insert_session_row —
+    the registry refusal guarded one door while a second door opened. Any
+    new INSERT site must either consult is_session_ephemeral in its
+    enclosing function or be added to the exemption table below with a
+    reason a reviewer can veto.
+    """
+    import ast
+    import inspect
+
+    import hermes_state
+
+    # function name -> why an unguarded INSERT INTO sessions is acceptable.
+    exempt = {
+        # FTS corruption probe: the transaction is ALWAYS rolled back and the
+        # id is a synthetic "_hermes_fts_health_probe_*" — nothing durable.
+        "_db_opens_cleanly": "probe insert inside an always-rolled-back txn",
+    }
+
+    source = inspect.getsource(hermes_state)
+    tree = ast.parse(source)
+    lines = source.splitlines()
+    functions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+
+    insert_lines = [
+        i + 1 for i, line in enumerate(lines) if "INSERT INTO sessions" in line
+    ]
+    # Inverse guard: a sweep that matches nothing must fail rather than
+    # silently passing after a refactor moves or rewrites the SQL.
+    assert len(insert_lines) >= 3, (
+        f"expected the known INSERT INTO sessions sites, found {insert_lines} "
+        "— if the SQL moved or changed shape, update this sweep"
+    )
+
+    unguarded = []
+    for lineno in insert_lines:
+        enclosing = [
+            f
+            for f in functions
+            if f.lineno <= lineno <= (f.end_lineno or f.lineno)
+        ]
+        if not enclosing:
+            unguarded.append((lineno, "<module level>"))
+            continue
+        innermost = max(enclosing, key=lambda f: f.lineno)
+        if innermost.name in exempt:
+            continue
+        chain_source = "\n".join(
+            "\n".join(lines[f.lineno - 1 : f.end_lineno]) for f in enclosing
+        )
+        if "is_session_ephemeral" not in chain_source:
+            unguarded.append((lineno, innermost.name))
+
+    assert not unguarded, (
+        f"INSERT INTO sessions without an is_session_ephemeral check: "
+        f"{unguarded}. Temporary chats rely on EVERY sessions-row writer "
+        "consulting the registry — route the insert through "
+        "_insert_session_row, add the registry refusal, or add a justified "
+        "exemption to this test."
+    )
+
+
 def test_publish_compression_child_refuses_registered_ids(tmp_path):
     from hermes_state import (
         SessionDB,

@@ -158,6 +158,7 @@ import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-bac
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import { fetchPrimaryProfileSessions } from './profile-session-routing'
+import { gracefulReleaseSessions } from './project-path-release'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
@@ -185,6 +186,7 @@ import {
   redactSecrets,
   SshConnection
 } from './ssh-connection'
+import { setStableProcessCwd } from './stable-process-cwd'
 import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
@@ -577,6 +579,8 @@ function resolveHermesHome() {
 }
 
 const HERMES_HOME = resolveHermesHome()
+fs.mkdirSync(HERMES_HOME, { recursive: true })
+setStableProcessCwd(HERMES_HOME)
 
 function pathWithHermesManagedNode(...entries) {
   const managed = hermesManagedNodePathEntries(HERMES_HOME).filter(directoryExists)
@@ -693,6 +697,7 @@ const APP_ICON_PATHS = [
 
 let rendererTitleBarTheme = null
 const terminalSessions = new Map()
+let projectControlWatcher = null
 
 // Force the NATIVE window appearance (vibrancy material, titlebar, the
 // pre-first-paint window background) to follow the APP theme instead of the
@@ -11084,6 +11089,46 @@ function disposeTerminalSession(id) {
   return true
 }
 
+async function releaseTerminalSessionsForPath(projectPath) {
+  return gracefulReleaseSessions(
+    projectPath,
+    [...terminalSessions.entries()].map(([id, info]) => ({
+      id,
+      launchCwd: info.launchCwd,
+      remote: info.sshScope !== undefined,
+      writeExit: () => {
+        try { info.pty.write(IS_WINDOWS ? 'exit\r' : 'exit\n') } catch { void 0 }
+      },
+      isActive: () => terminalSessions.has(id)
+    }))
+  )
+}
+
+function startProjectControlWatcher() {
+  const controlDir = path.join(HERMES_HOME, 'cache', 'project-control')
+  fs.mkdirSync(controlDir, { recursive: true })
+  projectControlWatcher = fs.watch(controlDir, async (_eventType, filename) => {
+    const name = String(filename || '')
+    const match = /^request-([a-f0-9]+)\.json$/.exec(name)
+
+    if (!match) {
+      return
+    }
+
+    try {
+      const request = JSON.parse(await fs.promises.readFile(path.join(controlDir, name), 'utf8'))
+      const result = await releaseTerminalSessionsForPath(String(request.path || ''))
+      await fs.promises.writeFile(
+        path.join(controlDir, `response-${match[1]}.json`),
+        JSON.stringify({ ...result, requestId: match[1] }),
+        'utf8'
+      )
+    } catch (error) {
+      rememberLog(`[project-control] release request failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })
+}
+
 ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
 
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
@@ -11352,6 +11397,7 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
 
   terminalSessions.set(id, {
     pty: ptyProcess,
+    launchCwd: remote ? null : cwd,
     webContentsId: event.sender.id,
     ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
   })
@@ -11832,6 +11878,7 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  startProjectControlWatcher()
   const systemCa = installWindowsSystemCaTrust(tls)
 
   if (systemCa.applied) {
@@ -12021,6 +12068,11 @@ app.on('before-quit', event => {
 
   flushDesktopLogBufferSync()
   closePreviewWatchers()
+
+  if (projectControlWatcher) {
+    projectControlWatcher.close()
+    projectControlWatcher = null
+  }
 
   // Kill open PTYs before environment teardown to avoid the node-pty#904
   // ThreadSafeFunction SIGABRT race.

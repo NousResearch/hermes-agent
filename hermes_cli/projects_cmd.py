@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import sys
 
 from hermes_cli import projects_db as pdb
+from hermes_cli import project_lock
 
 
 def build_parser(
@@ -101,6 +103,12 @@ def build_parser(
         "board", nargs="?", default="", help="Board slug (omit to unbind)"
     )
 
+    p_diagnose = sub.add_parser("diagnose-lock", help="Read-only project-directory lock diagnostics")
+    p_diagnose.add_argument("path", help="Project directory to diagnose")
+
+    p_release = sub.add_parser("release-path", help="Gracefully release a Hermes project directory")
+    p_release.add_argument("path", help="Project directory to release")
+
     parser.set_defaults(_project_parser=parser)
     return parser
 
@@ -133,12 +141,26 @@ def projects_command(args: argparse.Namespace) -> int:
         "archive": _cmd_archive,
         "restore": _cmd_restore,
         "bind-board": _cmd_bind_board,
+        "diagnose-lock": _cmd_diagnose_lock,
+        "release-path": _cmd_release_path,
     }
     handler = handlers.get(action)
     if handler is None:
         print(f"Unknown project action: {action}", file=sys.stderr)
         return 1
     return handler(args)
+
+
+def _cmd_diagnose_lock(args: argparse.Namespace) -> int:
+    result = project_lock.diagnose(args.path)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result["rename_probe"]["ok"] else 1
+
+
+def _cmd_release_path(args: argparse.Namespace) -> int:
+    result = project_lock.release_path(args.path)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result["released"] else 1
 
 
 def _resolve(conn, ident: str):

@@ -127,11 +127,16 @@ jobs:
           echo "selected $# file(s) for ${{ matrix.marker }}:"
           cat "$LIST"
 
+          # ``shell: bash`` runs this script with ``-e`` injected, which
+          # ``set -uo pipefail`` above does not clear. A bare pytest call
+          # would therefore abort the script on any non-zero exit and the
+          # exit-5 branch below would be unreachable dead code — the job
+          # would still fail red, but the diagnostic would never print.
+          status=0
           uv run --no-sync python -m pytest \
             "$@" \
             -m "${{ matrix.marker }} and not integration" \
-            -v --tb=short
-          status=$?
+            -v --tb=short || status=$?
           if [ "$status" -eq 5 ]; then
             echo "::error::No tests matched -m ${{ matrix.marker }}. Either the" \
                  "marker was renamed/dropped or selection is broken — this job" \

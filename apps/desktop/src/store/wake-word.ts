@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { type ClientWakeCaptureHandle, startClientWakeCapture } from '@/lib/wake-client-capture'
 import { $gateway } from '@/store/gateway'
+import { notify } from '@/store/notifications'
 
 // "Hey Hermes" wake-word listener state for the composer toggle. The gateway is
 // the single source of truth (the listener lives in the backend and is shared
@@ -36,37 +37,56 @@ export const $wakeWord = atom<WakeWordState>(INITIAL_WAKE_WORD_STATE)
 
 /** Active client mic stream for remote wake (capture: client). */
 let clientCapture: ClientWakeCaptureHandle | null = null
+let captureGeneration = 0
 
 /** Stop client-side PCM capture (also called on wake.detected before voice). */
 export function stopClientCapture(): void {
+  captureGeneration++
   clientCapture?.stop()
   clientCapture = null
 }
 
-async function maybeStartClientCapture(result: WakeStartResponse | null | undefined): Promise<void> {
-  stopClientCapture()
+async function maybeStartClientCapture(result: WakeStartResponse | null | undefined): Promise<string> {
+  const generation = ++captureGeneration
+  clientCapture?.stop()
+  clientCapture = null
 
   if (!result?.started) {
-    return
+    return ''
   }
 
   const mode = (result.capture || '').toLowerCase()
 
   if (mode !== 'client' && mode !== 'remote' && mode !== 'external') {
-    return
+    return ''
   }
 
   try {
-    clientCapture = await startClientWakeCapture({
+    const handle = await startClientWakeCapture({
       frameLength: result.frame_length,
       request: gatewayRequester
     })
+
+    if (generation !== captureGeneration) {
+      handle.stop()
+
+      return ''
+    }
+
+    clientCapture = handle
+
+    return ''
   } catch (error) {
+    if (generation !== captureGeneration) {
+      return ''
+    }
+
     const current = $wakeWord.get()
+    const message = error instanceof Error ? error.message : 'Failed to open the client microphone for wake word'
     $wakeWord.set({
       ...current,
       listening: false,
-      notice: error instanceof Error ? error.message : 'Failed to open the client microphone for wake word',
+      notice: message,
       pending: false
     })
 
@@ -76,6 +96,8 @@ async function maybeStartClientCapture(result: WakeStartResponse | null | undefi
     } catch {
       // ignore
     }
+
+    return message
   }
 }
 
@@ -137,6 +159,7 @@ export type WakeRequester = <T>(method: string, params?: Record<string, unknown>
 // large wheel) — that legitimately takes minutes. The default 30s WS timeout
 // fired mid-install, leaving a dead button that went blue on its own later.
 const WAKE_START_TIMEOUT_MS = 180_000
+const WAKE_START_FAILURE_NOTICE_ID = 'wake-word-start-failed'
 
 const gatewayRequester: WakeRequester = async <T>(method: string, params: Record<string, unknown> = {}) => {
   const gateway = $gateway.get()
@@ -193,7 +216,10 @@ export function applyWakeStatus(status: WakeStatusResponse | null | undefined): 
 
 /** Sync the atom from a `wake.start` response. A `{started:false, reason}`
  *  refusal keeps the toggle off and surfaces the reason as the tooltip. */
-export function applyWakeStartResult(result: WakeStartResponse | null | undefined): void {
+export function applyWakeStartResult(
+  result: WakeStartResponse | null | undefined,
+  options: { keepPending?: boolean; startClientCapture?: boolean } = {}
+): void {
   const current = $wakeWord.get()
 
   if (result?.started) {
@@ -203,10 +229,13 @@ export function applyWakeStartResult(result: WakeStartResponse | null | undefine
       enabled: true,
       listening: true,
       notice: '',
-      pending: false,
+      pending: options.keepPending === true,
       phrase: result.phrase?.trim() || current.phrase
     })
-    void maybeStartClientCapture(result)
+
+    if (options.startClientCapture !== false) {
+      void maybeStartClientCapture(result)
+    }
 
     return
   }
@@ -308,22 +337,44 @@ export async function toggleWakeWord(request: WakeRequester = gatewayRequester):
       // persist: true — a deliberate click is consent, so the backend flips
       // wake_word.enabled in config.yaml (on/off) and the choice sticks for
       // future sessions. Auto-arm (armWakeWord) never passes it.
-      applyWakeStartResult(
-        await request<WakeStartResponse>('wake.start', {
-          persist: true,
-          surface: 'gui',
-          client_capture: true
+      const result = await request<WakeStartResponse>('wake.start', {
+        persist: true,
+        surface: 'gui',
+        client_capture: true
+      })
+
+      applyWakeStartResult(result, {
+        keepPending: Boolean(result?.started),
+        startClientCapture: false
+      })
+
+      const clientCaptureFailure = result?.started ? await maybeStartClientCapture(result) : ''
+
+      if (result?.started && !clientCaptureFailure) {
+        $wakeWord.set({ ...$wakeWord.get(), pending: false })
+      }
+
+      if (!result?.started || clientCaptureFailure) {
+        notify({
+          id: WAKE_START_FAILURE_NOTICE_ID,
+          kind: 'warning',
+          message: clientCaptureFailure || noticeFrom(result) || 'Wake word could not start'
         })
-      )
+      }
     }
   } catch (error) {
     const current = $wakeWord.get()
+    const message = error instanceof Error ? error.message : String(error)
 
     $wakeWord.set({
       ...current,
-      notice: error instanceof Error ? error.message : String(error),
+      notice: message,
       pending: false
     })
+
+    if (!state.listening) {
+      notify({ id: WAKE_START_FAILURE_NOTICE_ID, kind: 'warning', message })
+    }
   }
 }
 

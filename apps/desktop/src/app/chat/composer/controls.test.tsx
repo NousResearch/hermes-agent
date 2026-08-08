@@ -1,9 +1,9 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { I18nProvider } from '@/i18n'
-import { applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/store/wake-word'
+import { $wakeWord, applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/store/wake-word'
 
 import { ComposerControls } from './controls'
 
@@ -89,6 +89,16 @@ describe('wake-word ear visibility', () => {
     renderControls({ busy: true, busyAction: 'stop' })
 
     expect(screen.getByLabelText('Wake word: "hey hermes" — listening')).toBeTruthy()
+  })
+
+  it('shows an accessible spinner while a wake toggle is pending', () => {
+    applyWakeStatus({ available: true, enabled: true, listening: false, phrase: 'hey hermes' })
+    act(() => $wakeWord.set({ ...$wakeWord.get(), pending: true }))
+    renderControls()
+
+    const ear = screen.getByLabelText('Wake word: "hey hermes" — off')
+    expect(ear.getAttribute('aria-busy')).toBe('true')
+    expect(ear.querySelector('.animate-spin')).toBeTruthy()
   })
 
   it('stays mounted (enabled in config) even when a start was refused', () => {

@@ -142,11 +142,15 @@ def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
 
 
 def _format_db_size(db_path: Path) -> str:
+    # backup.py owns human-readable size formatting; reuse it (as with
+    # _QUICK_STATE_FILES above) and keep only the stat-failure wrap here.
+    from hermes_cli.backup import _format_size
+
     try:
-        mb = db_path.stat().st_size / 1_048_576
+        nbytes = db_path.stat().st_size
     except OSError:
         return "size unknown"
-    return f"{mb:.1f} MB" if mb >= 0.1 else "<0.1 MB"
+    return _format_size(nbytes)
 
 
 def _report_database_journal_modes(

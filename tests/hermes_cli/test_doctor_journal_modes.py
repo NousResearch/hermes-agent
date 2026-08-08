@@ -8,6 +8,7 @@ read-only engine open creates -wal/-shm sidecar files next to a WAL database.
 """
 
 import os
+import re
 import sqlite3
 
 import pytest
@@ -257,7 +258,8 @@ class TestSizeAndRepairHint:
         _make_db(db, journal_mode="WAL")
         doctor._report_database_journal_modes(tmp_path, VULNERABLE)
         out = capsys.readouterr().out
-        assert "MB)" in out
+        # _format_size picks the unit (a fresh test DB is KB-scale).
+        assert re.search(r"\(\d[\d.]* [KMGT]?B\)", out)
         assert "To clear the exposure:" in out
 
     def test_no_repair_hint_when_nothing_is_exposed(self, tmp_path, capsys):

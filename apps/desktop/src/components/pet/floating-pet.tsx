@@ -26,6 +26,7 @@ import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
+import { PET_STARTUP_RETRY_MS, petInfoPollIntervalMs } from './pet-info-poll'
 import { PetSprite, roamWalkRow } from './pet-sprite'
 import { usePetRoam } from './use-pet-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
@@ -89,12 +90,15 @@ function loadPosition(): Point {
  * pets rewritten on disk (or renamed/rebuilt by the hatch flow) repaint without
  * restarting the app.
  *
+ * Event-capable backends also drive refreshes via `pet.changed`, but a slow
+ * backstop poll stays in place: the watcher seeds the pet signature silently
+ * at gateway boot and only broadcasts when it *moves*, and the one-shot
+ * connect pull can race a still-warming `pet.info` (fail-open enabled:false).
+ * Without the backstop the mascot stays hidden until Settings re-seeds it.
+ *
  * Promotion to a separate frameless OS-level window is a follow-up — the
  * sprite + state logic here is reused as-is, only the host changes.
  */
-const PET_POLL_MS = 3000
-const PET_ACTIVE_REFRESH_MS = 15000
-
 export function FloatingPet() {
   const { requestGateway } = useGatewayRequest()
   const { resolvedMode } = useTheme()
@@ -129,11 +133,9 @@ export function FloatingPet() {
   // edge can't leave the window cropping it. Shared by drag + the reclamp effect.
   const clamp = useCallback(({ x, y }: Point): Point => clampPoint(x, y, petW, petH), [petW, petH])
 
-  // Fetch pet.info on connect, then let pet.changed drive refreshes: the
-  // change watcher broadcasts when /pet (de)activates a pet or the hatch flow
-  // rewrites a sheet, so event-capable backends need no interval at all —
-  // users with no pet especially (this used to poll hardest for them). Older
-  // backends keep the legacy fast-while-inactive poll.
+  // Fetch pet.info on connect. pet.changed re-runs this effect when the
+  // signature moves; a slow backstop covers silent seed + cold-start races.
+  // Older backends (no change_events) keep the legacy fast-while-inactive poll.
   const active = info.enabled && Boolean(info.spritesheetBase64)
   useEffect(() => {
     if (gatewayState !== 'open') {
@@ -208,29 +210,50 @@ export function FloatingPet() {
       }
     }
 
+    const pullIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void pull()
+      }
+    }
+
     void pull()
     window.addEventListener('focus', pull)
 
-    // Event-capable backend: pet.changed re-runs this effect (petChange dep),
-    // so no timer. Legacy backend: the historical poll.
-    const timer = changeEventsAvailable
-      ? null
-      : window.setInterval(
-          () => {
-            if (document.visibilityState === 'visible') {
-              void pull()
-            }
-          },
-          active ? PET_ACTIVE_REFRESH_MS : PET_POLL_MS
-        )
+    // Cover the cold-start race where the first pull hit fail-open enabled:false
+    // before the pet store was warm. Skip further retries once the mascot is live.
+    const startupRetryTimers = PET_STARTUP_RETRY_MS.map(delay =>
+      window.setTimeout(() => {
+        if (cancelled) {
+          return
+        }
+
+        const current = $petInfo.get()
+
+        if (current.enabled && current.spritesheetBase64) {
+          return
+        }
+
+        pullIfVisible()
+      }, delay)
+    )
+
+    // Always keep a timer. Event-capable backends use the slow backstop (same
+    // contract as cron/sessions in use-background-sync); legacy keeps the
+    // historical fast-while-inactive cadence.
+    const timer = window.setInterval(
+      pullIfVisible,
+      petInfoPollIntervalMs(changeEventsAvailable, active)
+    )
 
     return () => {
       cancelled = true
       window.removeEventListener('focus', pull)
 
-      if (timer !== null) {
-        window.clearInterval(timer)
+      for (const id of startupRetryTimers) {
+        window.clearTimeout(id)
       }
+
+      window.clearInterval(timer)
     }
   }, [gatewayState, active, changeEventsAvailable, petChange, requestGateway])
 

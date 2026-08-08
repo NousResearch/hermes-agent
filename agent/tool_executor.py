@@ -1458,6 +1458,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 except Exception as _ver_err:
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
+            # Track generic tool failures for the turn-end tool-verifier footer.
+            # A success for the same tool reconciles a prior failure away, so
+            # a failed probe that was retried successfully later in the turn
+            # does not force the warning (#54722).
+            if not blocked:
+                try:
+                    if is_error:
+                        agent._record_tool_failure(
+                            function_name, function_result,
+                        )
+                    else:
+                        agent._record_tool_success(function_name)
+                except Exception as _fail_err:
+                    logging.debug("tool failure tracking error: %s", _fail_err)
+
             if agent.verbose_logging:
                 logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
                 logging.debug("Tool result (%d chars): %s", len(function_result), function_result)
@@ -2233,6 +2248,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
             except Exception as _ver_err:
                 logging.debug("file-mutation verifier record failed: %s", _ver_err)
+
+        # Track generic tool failures for the turn-end tool-verifier footer.
+        # A success for the same tool reconciles a prior failure away, so
+        # a failed probe that was retried successfully later in the turn
+        # does not force the warning (#54722).
+        if not _execution_blocked:
+            try:
+                if _is_error_result:
+                    agent._record_tool_failure(
+                        function_name, function_result,
+                    )
+                else:
+                    agent._record_tool_success(function_name)
+            except Exception as _fail_err:
+                logging.debug("tool failure tracking error: %s", _fail_err)
 
         agent._current_tool = None
         _status_suffix = " (error)" if _is_error_result else ""

@@ -489,6 +489,41 @@ def finalize_turn(
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
+    # Tool-verifier footer.
+    # Generalised version of the file-mutation verifier: if ANY tool
+    # call failed this turn, append an advisory footer so the model's
+    # success-summary cannot go structurally unchallenged.  Catches the
+    # class of failures described in #54722: a tool errors out, the
+    # model produces a confident "done/verified/succeeded"
+    # conclusion anyway, and the user has no way to detect the mismatch.
+    #
+    # Same gate as the file-mutation verifier: only applied when a
+    # real text response exists and the turn wasn't interrupted.
+    #
+    # The tool-call guardrail already surfaces repeated-failure warnings
+    # inline in the tool result and, on a hard stop, synthesises its own
+    # halt response.  Suppress the footer for tools the guardrail already
+    # intervened on so the turn-end response isn't double-flagging the same
+    # failure (and so the guardrail's own streamed halt text stays intact).
+    if final_response and not interrupted:
+        try:
+            _failures = getattr(agent, "_turn_tool_failures", None) or {}
+            _guardrail = getattr(agent, "_tool_guardrails", None)
+            if _failures and _guardrail is not None:
+                _intervened = _guardrail.intervened_tools()
+                if _intervened:
+                    _failures = {
+                        _t: _f
+                        for _t, _f in _failures.items()
+                        if _t not in _intervened
+                    }
+            if _failures and agent._tool_failure_verifier_enabled():
+                footer = agent._format_tool_failure_footer(_failures)
+                if footer:
+                    final_response = final_response.rstrip() + "\n\n" + footer
+        except Exception as _ver_err:
+            logger.debug("tool-verifier footer failed: %s", _ver_err)
+
     # Turn-completion explainer.
     # When a turn ends abnormally after substantive work — empty content
     # after retries, a partial/truncated stream, a still-pending tool

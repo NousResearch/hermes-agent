@@ -3463,6 +3463,45 @@ class AIAgent:
             for path in targets:
                 state.pop(path, None)
 
+    def _record_tool_failure(self, tool_name: str, result: Any) -> None:
+        """Record a generic tool failure for the turn-end verifier footer.
+
+        Unlike ``_record_file_mutation_result`` which tracks per-path state
+        for write_file/patch tools, this captures ANY tool that failed this
+        turn.  The aggregated state drives the tool-verifier footer appended
+        in ``finalize_turn``, a generalised version of the file-mutation
+        verifier pattern (#54722).
+
+        Failures are keyed by tool name so a later success for the same tool
+        (see ``_record_tool_success``) reconciles the entry away — a failed
+        probe or an attempt that was successfully retried later in the turn
+        must NOT force the final warning.  The FIRST error for a tool is kept
+        unless a later success supersedes it.
+        """
+        state = getattr(self, "_turn_tool_failures", None)
+        if state is None:
+            return
+        if tool_name in state:
+            return
+        preview = _extract_error_preview(result)
+        state[tool_name] = {
+            "tool": tool_name,
+            "error_preview": preview,
+        }
+
+    def _record_tool_success(self, tool_name: str) -> None:
+        """Reconcile a tool failure when the same tool later succeeds.
+
+        Any tool that ran without error this turn clears a prior failure for
+        that tool name, so a failure that was subsequently retried and
+        resolved does not linger in the turn-end tool-verifier footer.
+        Silently no-ops if the per-turn state dict hasn't been initialised.
+        """
+        state = getattr(self, "_turn_tool_failures", None)
+        if state is None:
+            return
+        state.pop(tool_name, None)
+
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.
 
@@ -3486,6 +3525,26 @@ class AIAgent:
             _display = _cfg.get("display") if isinstance(_cfg, dict) else None
             if isinstance(_display, dict) and "file_mutation_verifier" in _display:
                 return bool(_display.get("file_mutation_verifier"))
+        except Exception:
+            pass
+        return True  # safe default: verifier on
+
+    def _tool_failure_verifier_enabled(self) -> bool:
+        """Check whether the per-turn tool-failure verifier footer is on.
+
+        Config path: ``display.tool_failure_verifier`` (bool, default True).
+        No ``HERMES_*``/``.env`` override is exposed — behavioural display
+        settings belong in ``config.yaml`` (AGENTS.md:102-107), and the
+        file-mutation verifier precedent keeps the gate config-only.  Exposed
+        as a method so tests can patch the seam independently of the
+        file-mutation verifier.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+            _cfg = _load_config() or {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "tool_failure_verifier" in _display:
+                return bool(_display.get("tool_failure_verifier"))
         except Exception:
             pass
         return True  # safe default: verifier on
@@ -3558,6 +3617,45 @@ class AIAgent:
         # Neutralize any path the preview text echoed (the bullet path is
         # already backticked above; the lookbehind keeps it from being
         # double-wrapped).
+        return cls._neutralize_footer_paths("\n".join(lines))
+
+    @classmethod
+    def _format_tool_failure_footer(cls, failures: dict) -> str:
+        """Render the per-turn tool-failure dict as a user-facing footer.
+
+        *failures* is the ``{tool_name: {tool, error_preview}}`` state built
+        by ``_record_tool_failure``.  Only failures that were NOT reconciled
+        away by a later success for the same tool remain, so the footer only
+        warns about unresolved errors.  Displays up to 5 tool names with
+        their first error preview, then a count of any additional failures.
+        Returns empty string when the dict is empty so callers can
+        concatenate unconditionally.
+
+        Every file path that reaches the user-facing text is backtick-wrapped
+        via ``_neutralize_footer_paths``, mirroring the file-mutation verifier
+        (#35584).
+        """
+        if not failures:
+            return ""
+        lines = [
+            "⚠️ Tool-verifier: "
+            f"{len(failures)} tool call(s) returned errors this turn — "
+            "double-check claims above against the actual results."
+        ]
+        shown = 0
+        for f in failures.values():
+            if shown >= 5:
+                break
+            tool = f.get("tool", "?")
+            preview = (f.get("error_preview") or "").strip()
+            if preview:
+                lines.append(f"  • {tool} — {preview}")
+            else:
+                lines.append(f"  • {tool} — failed")
+            shown += 1
+        remaining = len(failures) - shown
+        if remaining > 0:
+            lines.append(f"  • … and {remaining} more")
         return cls._neutralize_footer_paths("\n".join(lines))
 
     def _turn_completion_explainer_enabled(self) -> bool:

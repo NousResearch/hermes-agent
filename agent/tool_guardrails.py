@@ -282,6 +282,11 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
+        # Tools the guardrail already surfaced this turn (via a warn or halt
+        # decision). Used by the generic tool-failure verifier footer to avoid
+        # double-flagging a failure the guardrail guidance already told the
+        # model about.
+        self._intervened_tools: set[str] = set()
         # Per-turn runaway-loop cap counters. Reset every turn (this method
         # runs at the start of each run_conversation), so the caps bound a
         # single agent loop rather than accumulating across the session.
@@ -291,6 +296,12 @@ class ToolCallGuardrailController:
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
+
+    def intervened_tools(self) -> set[str]:
+        """Names of tools the guardrail warned about or halted this turn."""
+        if self._halt_decision is not None and self._halt_decision.tool_name:
+            self._intervened_tools.add(self._halt_decision.tool_name)
+        return set(self._intervened_tools)
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
@@ -384,6 +395,7 @@ class ToolCallGuardrailController:
                 return decision
 
             if self.config.warnings_enabled and exact_count >= self.config.exact_failure_warn_after:
+                self._intervened_tools.add(tool_name)
                 return ToolGuardrailDecision(
                     action="warn",
                     code="repeated_exact_failure_warning",
@@ -398,6 +410,7 @@ class ToolCallGuardrailController:
                 )
 
             if self.config.warnings_enabled and same_count >= self.config.same_tool_failure_warn_after:
+                self._intervened_tools.add(tool_name)
                 return ToolGuardrailDecision(
                     action="warn",
                     code="same_tool_failure_warning",
@@ -424,6 +437,7 @@ class ToolCallGuardrailController:
         self._no_progress[signature] = (result_hash, repeat_count)
 
         if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
+            self._intervened_tools.add(tool_name)
             return ToolGuardrailDecision(
                 action="warn",
                 code="idempotent_no_progress_warning",

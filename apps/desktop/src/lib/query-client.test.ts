@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { invalidateProfileScopedQueries, queryClient } from './query-client'
+import { HERMES_CONFIG_QUERY_KEY, invalidateProfileScopedQueries, queryClient } from './query-client'
 
 function invalidated(key: unknown[]): boolean {
   return queryClient.getQueryState(key)?.isInvalidated ?? false
@@ -13,7 +13,6 @@ describe('invalidateProfileScopedQueries', () => {
 
   it('invalidates profile-scoped caches and leaves account/global caches intact', () => {
     const profileScoped = [
-      ['hermes-config-record'],
       ['hermes-config-schema'],
       ['skills-list'],
       ['toolsets-list'],
@@ -54,5 +53,22 @@ describe('invalidateProfileScopedQueries', () => {
 
     expect(invalidated(['some-future-profile-query'])).toBe(true)
     expect(invalidated([{ scope: 'weird' }])).toBe(true)
+  })
+
+  it('hard-resets the config record: profile A’s data is gone, not visible-but-stale', () => {
+    queryClient.setQueryData(HERMES_CONFIG_QUERY_KEY, { terminal: { cwd: '/profile-a' } })
+    queryClient.setQueryData(['skills-list'], { from: 'profile-a' })
+
+    invalidateProfileScopedQueries()
+
+    // Settings surfaces seed editable drafts (and autosave whole records) from
+    // this cache. After a switch, invalidate() would leave profile A's record
+    // readable until B's refetch lands — reset must drop it immediately so no
+    // consumer can seed from it.
+    expect(queryClient.getQueryData(HERMES_CONFIG_QUERY_KEY)).toBeUndefined()
+
+    // Ordinary profile-scoped caches keep stale-while-revalidate semantics.
+    expect(queryClient.getQueryData(['skills-list'])).toEqual({ from: 'profile-a' })
+    expect(invalidated(['skills-list'])).toBe(true)
   })
 })

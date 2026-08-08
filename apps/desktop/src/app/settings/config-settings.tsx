@@ -92,25 +92,27 @@ export function ConfigSettings({
   const savedDiscoverySignatureRef = useRef<string | undefined>(undefined)
   const [saveVersion, setSaveVersion] = useState(0)
 
-  // Seed the local draft once, the first time the shared record lands.
-  // Background refetches thereafter must not clobber in-progress edits.
-  const configSeeded = useRef(false)
-
+  // Seed the local draft whenever it is empty and the shared record is
+  // available. The guard is the draft state itself (not a one-shot ref), so any
+  // path that clears the draft re-seeds automatically once data lands — there
+  // is no "cleared but never re-seeded" state to get stuck in. Background
+  // refetches while an edit is in progress still can't clobber the draft,
+  // because a non-null draft blocks the seed.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (loadedConfig && !configSeeded.current) {
-      configSeeded.current = true
+    if (loadedConfig && config === null) {
       savedDiscoverySignatureRef.current = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(loadedConfig))
       setConfig(loadedConfig)
     }
-  }, [loadedConfig])
+  }, [loadedConfig, config])
 
-  // A profile switch invalidates (but doesn't clear) the shared config query, so
-  // the local draft would otherwise keep profile A's data and autosave it into
-  // B. Drop the seed + draft (re-seeds from B's refetch) and zero saveVersion so
-  // the pending debounced autosave is cancelled by its effect cleanup.
+  // A profile switch swaps the backend under the mounted panel. Drop the draft
+  // and zero saveVersion so the pending debounced autosave is cancelled by its
+  // effect cleanup — profile A's draft must never be saved into profile B. The
+  // shared record itself is hard-reset centrally at the switch boundary
+  // (invalidateProfileScopedQueries), so the seed effect re-seeds from B's
+  // fresh fetch rather than A's cached record.
   useOnProfileSwitch(() => {
-    configSeeded.current = false
     savedDiscoverySignatureRef.current = undefined
     setConfig(null)
     saveVersionRef.current = 0
@@ -156,11 +158,14 @@ export function ConfigSettings({
             throw new Error(c.autosaveFailed)
           }
 
-          // Mirror the saved record into the shared cache so MCP/model surfaces
-          // reflect the edit without their own refetch.
-          setHermesConfigCache(config)
-
           if (saveVersionRef.current === v) {
+            // Mirror the saved record into the shared cache so MCP/model
+            // surfaces reflect the edit without their own refetch. Inside the
+            // version guard: a profile switch zeroes saveVersion while this
+            // save is in flight, and mirroring then would write profile A's
+            // record over profile B's freshly-reset cache.
+            setHermesConfigCache(config)
+
             const discoverySignature = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(config))
 
             if (savedDiscoverySignatureRef.current !== discoverySignature) {

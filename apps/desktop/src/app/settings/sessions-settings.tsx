@@ -20,6 +20,8 @@ import { untombstoneSessions } from '@/store/projects'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
+import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
+
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
@@ -181,6 +183,19 @@ function AutoArchiveSetting() {
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [enabled, setEnabled] = useState(false)
   const [days, setDays] = useState(DEFAULT_AUTO_ARCHIVE_DAYS)
+  // Bumped on profile switch to re-run the fetch effect against the new
+  // profile's backend.
+  const [profileEpoch, setProfileEpoch] = useState(0)
+
+  // This control holds a full config-record copy and PUTs it back on toggle.
+  // On a profile switch, drop profile A's record so persist() can't write it
+  // into profile B, and refetch: re-running the fetch effect flips the previous
+  // run's `alive` flag, so a slow in-flight profile-A response is discarded
+  // instead of seeding B's view.
+  useOnProfileSwitch(() => {
+    setConfig(null)
+    setProfileEpoch(epoch => epoch + 1)
+  })
 
   useEffect(() => {
     // Config REST is only reachable through the Electron bridge; skip in
@@ -210,7 +225,7 @@ function AutoArchiveSetting() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [profileEpoch])
 
   const persist = useCallback(
     async (autoArchive: boolean, archiveDays: number) => {

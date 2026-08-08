@@ -2444,6 +2444,7 @@ export interface Translations {
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string
+    slashAttachmentsUnsupported: string
     providerCredentialRequired: string
     emptySlashCommand: string
     desktopCommands: string

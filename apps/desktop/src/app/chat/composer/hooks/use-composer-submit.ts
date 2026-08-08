@@ -6,6 +6,7 @@ import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
+import { notify } from '@/store/notifications'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -37,6 +38,7 @@ interface UseComposerSubmitArgs {
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
   setComposerText: (value: string) => void
+  slashAttachmentsUnsupported: string
   stashAt: (scope: string | null, text?: string, attachments?: ComposerAttachment[]) => void
 }
 
@@ -72,6 +74,7 @@ export function useComposerSubmit({
   queuedPrompts,
   sessionId,
   setComposerText,
+  slashAttachmentsUnsupported,
   stashAt
 }: UseComposerSubmitArgs) {
   const scope = useComposerScope()
@@ -145,6 +148,17 @@ export function useComposerSubmit({
     // on the way out so it attaches instead of submitting as inert text.
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
+
+    // Attachment refs are prepended to the wire payload, so allowing this
+    // through makes the gateway miss the leading slash and silently treat the
+    // command as ordinary prose (#81798). Keep both draft and attachments
+    // intact and make the unsupported combination explicit.
+    if (attachments.length > 0 && SLASH_COMMAND_RE.test(text.trim())) {
+      notify({ kind: 'warning', message: slashAttachmentsUnsupported })
+      focusInput()
+
+      return
+    }
 
     // A clarify card parked on this session owns the turn: the agent is blocked
     // inside its tool batch waiting on `clarify.respond`, so a follow-up routed

@@ -146,6 +146,20 @@ class MattermostAdapter(BasePlatformAdapter):
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
 
+    def _dm_top_level_threads_as_sessions(self) -> bool:
+        """Whether top-level Mattermost DMs get per-message session threads.
+
+        Defaults to ``True`` so each top-level DM message is isolated as its
+        own Hermes session — matching Slack's ``dm_top_level_threads_as_sessions``
+        behavior.  Set ``platforms.mattermost.extra.dm_top_level_threads_as_sessions``
+        to ``false`` in config.yaml to revert to the legacy behavior where all
+        top-level DMs share one continuous session.
+        """
+        raw = self.config.extra.get("dm_top_level_threads_as_sessions") if self.config.extra else None
+        if raw is None:
+            return True  # default: each DM top-level message is its own session
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
@@ -911,9 +925,21 @@ class MattermostAdapter(BasePlatformAdapter):
         thread_id = post.get("root_id") or None
         if (
             not thread_id
-            and self._reply_mode == "thread"
             and channel_type_raw != "D"
+            and self._reply_mode == "thread"
             and post_id
+        ):
+            thread_id = post_id
+
+        # DM session isolation: stamp each top-level DM message with its own
+        # post_id as thread_id so each root message becomes its own session,
+        # matching Slack's dm_top_level_threads_as_sessions behavior. Replies
+        # in a thread keep the thread's root_id as their session key.
+        if (
+            not thread_id
+            and channel_type_raw == "D"
+            and post_id
+            and self._dm_top_level_threads_as_sessions()
         ):
             thread_id = post_id
 

@@ -1052,7 +1052,7 @@ class ShellFileOperations(FileOperations):
         #    successful mv (the temp no longer exists by then).
         #  - we `cat >` the temp, then `mv -f` it over the target.
         script = (
-            "set -e; "
+            "( set -e; "
             f"d={q_parent}; t={q_path}; "
             # Follow a symlink target so we edit the file the link points at,
             # rather than replacing the symlink itself with a plain file (which
@@ -1085,7 +1085,7 @@ class ShellFileOperations(FileOperations):
             # quoted "=rw" so zsh doesn't =word-expand it.
             'if [ ! -e "$t" ]; then chmod "=rw" "$tmp" 2>/dev/null || true; fi; '
             'mv -f "$tmp" "$t"; '
-            "trap - EXIT"
+            "trap - EXIT )"
         )
         return self._exec(script, stdin_data=content)
 

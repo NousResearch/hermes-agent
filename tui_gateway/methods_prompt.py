@@ -936,6 +936,15 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "text", allow_expired=True)
 
 
+@method("window.read.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string describing the OS window underneath the Hermes
+    # window (read_window_below tool). allow_expired=True for the same reason
+    # as terminal.read: the tool's bounded wait can expire while the renderer's
+    # round-trip to the main process is still in flight.
+    return _respond(rid, params, "text", allow_expired=True)
+
+
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
     return _respond(rid, params, "password", allow_expired=True)

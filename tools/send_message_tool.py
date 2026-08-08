@@ -478,8 +478,13 @@ def _handle_send(args):
             _slack_dm_target = f"user:{_slack_dm_target}"
         if _slack_dm_target.startswith(("user:", "user_name:")):
             from model_tools import _run_async
+            # Honor a custom Slack Web API base URL (config.yaml → PlatformConfig
+            # .extra) so DM resolution hits the same endpoint as the rest of the
+            # Slack integration.
             _resolved, _resolve_err = _run_async(
-                _resolve_slack_user_target(pconfig.token, _slack_dm_target)
+                _resolve_slack_user_target(
+                    pconfig.token, _slack_dm_target, getattr(pconfig, "extra", None)
+                )
             )
             if _resolve_err:
                 return json.dumps(_resolve_err)
@@ -1517,7 +1522,42 @@ async def _registry_standalone_send(platform_name, pconfig, chat_id, message, th
 # wired via standalone_sender_fn and reached through _registry_standalone_send. #41112.
 
 
-async def _resolve_slack_user_target(token, chat_id):
+def _slack_dm_base_url(extra: dict | None) -> str:
+    """Resolve the Slack Web API base URL for DM resolution (conversations.open).
+
+    Falls back to the slack_sdk default (``https://slack.com/api/``) when the
+    configured value is unset or blank, so a whitespace-only ``base_url``
+    (reachable verbatim via ``platforms.slack.extra.base_url``) never collapses
+    to ``"/"``. A trailing slash is enforced.
+    """
+    raw = (extra or {}).get("base_url")
+    base = (str(raw).strip() if raw else "") or "https://slack.com/api/"
+    if not base.endswith("/"):
+        base += "/"
+    return base
+
+
+def _slack_proxy_target_hosts(base_url: str) -> tuple:
+    """Hosts to check against NO_PROXY for Slack DM resolution.
+
+    ``resolve_proxy_url`` only honors NO_PROXY when it is told which hosts the
+    request targets, so calling it bare sends conversations.open through the
+    proxy even when the operator excluded the Slack host. Delegates to the
+    Slack plugin so the host list stays defined in one place; falls back to the
+    base URL's own host if the plugin is unavailable.
+    """
+    try:
+        from plugins.platforms.slack.adapter import _slack_proxy_bypass_hosts
+
+        return tuple(_slack_proxy_bypass_hosts(base_url))
+    except Exception:
+        from urllib.parse import urlsplit
+
+        host = (urlsplit(base_url).hostname or "").strip().lower()
+        return (host,) if host else ()
+
+
+async def _resolve_slack_user_target(token, chat_id, extra=None):
     """Resolve a Slack user target to a D... DM conversation ID.
 
     ``chat_id`` may be a Slack conversation ID (C/G/D...) — returned unchanged —
@@ -1536,13 +1576,14 @@ async def _resolve_slack_user_target(token, chat_id):
         return None, {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _proxy = resolve_proxy_url()
+        base_url = _slack_dm_base_url(extra)
+        # NO_PROXY-aware for the built-in Slack hosts and any custom base_url host.
+        _proxy = resolve_proxy_url(target_hosts=_slack_proxy_target_hosts(base_url))
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-        base_url = "https://slack.com/api"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
         async def post_api(session, method, payload):
-            async with session.post(f"{base_url}/{method}", headers=headers, json=payload, **_req_kw) as resp:
+            async with session.post(f"{base_url}{method}", headers=headers, json=payload, **_req_kw) as resp:
                 return await resp.json()
 
         async def resolve_user_name(session, name):

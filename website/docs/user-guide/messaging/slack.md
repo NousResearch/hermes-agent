@@ -518,6 +518,73 @@ display:
 |-----|---------|-------------|
 | `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Requires the `assistant:write` scope, same as the static status line. |
 
+### Custom API endpoint (`base_url`) & network proxy
+
+By default Hermes talks to Slack's Web API at `https://slack.com/api/`. If you run
+a **self-hosted Slack-compatible server**, a **staging/mock endpoint**, or a
+dedicated Enterprise endpoint, point Hermes at it with `base_url`:
+
+```yaml
+slack:
+  # Custom Slack Web API base URL (default: https://slack.com/api/).
+  # A trailing slash is added automatically if you omit it. Set it here in
+  # config.yaml, not .env (which holds secrets like SLACK_BOT_TOKEN).
+  base_url: "https://slack.internal.corp/api/"
+```
+
+`base_url` applies to every Web API call (`chat.postMessage`, `auth.test`, file
+uploads, …), including out-of-process cron delivery. Socket Mode obtains its
+WebSocket URL dynamically from the endpoint's `apps.connections.open`, so a fully
+custom endpoint must implement that method too.
+
+#### Inbound file downloads from a custom endpoint
+
+Incoming attachments — images, voice clips, PDFs, anything else — are fetched
+from the `url_private` / `url_private_download` links in the event payload, and
+those links are minted by whatever endpoint the workspace actually talks to. So
+`base_url` governs downloads too: **file URLs on that exact origin are trusted**
+for inbound downloads. Concretely, for that origin only:
+
+- the URL may resolve to a **private or loopback address**
+  (`http://127.0.0.1:49917/files/…`) — the usual SSRF block that protects the
+  bot token does not apply to an endpoint you configured yourself;
+- **redirects are pinned to the origin.** Your endpoint may `3xx` within itself
+  (auth handoff, path rewrite), but any hop that leaves the origin is refused,
+  because the bot token travels with the request.
+
+"Exact origin" means **scheme + host + port must all match** `base_url`. A
+sibling host is *not* covered: if your relay mirrors Slack's own split
+(`slack.com` for the API, `files.slack.com` for files) and hands out file links
+on a different hostname than `base_url`, those downloads are refused — the
+refusal in `~/.hermes/logs/gateway.log` names the trusted origin so the
+mismatch is obvious. Serve files from the same origin as the API (e.g. a
+`/files/…` path under it), or point `base_url` at the host that mints the file
+links.
+
+Without a custom `base_url` nothing changes: inbound file URLs are accepted only
+on Slack's own CDN hosts (`slack.com`, `slack-files.com` and their subdomains)
+over `https`.
+
+#### Routing Slack through a proxy
+
+Hermes honors the standard `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` environment
+variables (and, on macOS, the system proxy) for Slack traffic. Only `http://` and
+`https://` proxy schemes are used for the in-process Slack bot; other schemes
+(e.g. SOCKS) are ignored for it.
+
+To send Slack **directly**, bypassing the proxy, add a Slack host to `NO_PROXY`:
+
+```bash
+# Bypass the proxy for the real Slack hosts
+NO_PROXY=slack.com
+```
+
+`NO_PROXY=slack.com` covers `slack.com`, `files.slack.com`, and
+`wss-primary.slack.com`. When you set a custom `base_url`, **its host is honored in
+`NO_PROXY` too** — so `NO_PROXY=slack.internal.corp` disables the proxy for your
+custom endpoint. As soon as a matching host appears in `NO_PROXY`, Slack traffic
+goes direct.
+
 ### Session Isolation
 
 ```yaml

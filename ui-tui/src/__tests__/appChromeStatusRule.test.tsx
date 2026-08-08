@@ -104,6 +104,22 @@ const baseProps = {
   voiceLabel: ''
 }
 
+describe('StatusRule session title', () => {
+  it('pins the named session at the far-right edge instead of the cwd label', () => {
+    const element = StatusRule({
+      ...baseProps,
+      sessionTitle: 'weekly-digest'
+    })
+
+    const rendered = textContent(element)
+    const title = findElementWithText(element, 'weekly-digest')
+
+    expect(rendered).toContain('weekly-digest')
+    expect(rendered).not.toContain('~/repo')
+    expect(title?.props.backgroundColor).toBe(DEFAULT_THEME.color.accent)
+  })
+})
+
 describe('StatusRule background-subagent indicator', () => {
   it('renders ⛓ N on a wide terminal when subagents are running', () => {
     const element = StatusRule({

@@ -642,8 +642,10 @@ def _(rid, params: dict) -> dict:
     """Stage a non-image file attachment into the session workspace.
 
     The image/PDF path renders to vision tiles; this one keeps the file as a
-    readable artifact and returns a workspace-relative ``@file:`` ref so the
-    agent's file tools (and ``agent.context_references``) can read it. Solves the
+    readable artifact and returns an ``@file:`` ref that the agent's file tools
+    (and ``agent.context_references``) can read. Writable workspaces use the
+    existing relative ref; a read-only workspace falls back to a session-scoped
+    profile cache and an explicitly authorized absolute ref. This solves the
     remote-gateway case where the desktop passes a path that only exists on the
     CLIENT's disk: the client uploads ``data_url`` bytes and we materialize the
     file on the gateway.

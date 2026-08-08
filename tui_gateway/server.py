@@ -3,6 +3,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import copy
+import errno
 import hashlib
 import inspect
 import json
@@ -1668,6 +1669,7 @@ def _compute_host_turn_frame(
     text: Any,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    attachment_session_keys: list[str] | None = None,
 ) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
@@ -1694,6 +1696,7 @@ def _compute_host_turn_frame(
         "source": _session_source(session),
         "attached_images": attached_images,
         "queued_prompt_generation": queued_prompt_generation,
+        "attachment_session_keys": list(attachment_session_keys or []),
     }
 
 
@@ -1771,6 +1774,7 @@ def _submit_prompt_to_compute_host(
     text: Any,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    attachment_session_keys: list[str] | None = None,
 ) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(
@@ -1780,6 +1784,7 @@ def _submit_prompt_to_compute_host(
         text,
         image_paths=image_paths,
         queued_prompt_generation=queued_prompt_generation,
+        attachment_session_keys=attachment_session_keys,
     )
 
     def _complete(done: dict) -> None:
@@ -7476,6 +7481,10 @@ def _enqueue_prompt(
     """
     image_paths = list(image_paths or [])
     queued = {"text": text, "transport": transport}
+    if isinstance(text, str) and "@file:" in text:
+        attachment_session_key = str(session.get("session_key") or "").strip()
+        if attachment_session_key:
+            queued["attachment_session_keys"] = [attachment_session_key]
     if image_paths:
         queued["image_paths"] = image_paths
     existing = session.get("queued_prompt")
@@ -7489,6 +7498,10 @@ def _enqueue_prompt(
     ):
         prev = existing["text"]
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
+        existing_keys = existing.setdefault("attachment_session_keys", [])
+        for attachment_session_key in queued.get("attachment_session_keys", []):
+            if attachment_session_key not in existing_keys:
+                existing_keys.append(attachment_session_key)
         return
     if existing:
         session.setdefault("queued_prompts", []).append(queued)
@@ -7639,6 +7652,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
             session["running"] = False
             return True
+    attachment_kwargs = {}
+    if queued.get("attachment_session_keys"):
+        attachment_kwargs["attachment_session_keys"] = queued["attachment_session_keys"]
     dispatch_failed = False
     try:
         if use_compute_host:
@@ -7650,10 +7666,16 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     queued["text"],
                     image_paths=queued["image_paths"],
                     queued_prompt_generation=queue_generation,
+                    **attachment_kwargs,
                 )
             else:
                 resp = _submit_prompt_to_compute_host(
-                    rid, sid, session, queued["text"], queued_prompt_generation=queue_generation
+                    rid,
+                    sid,
+                    session,
+                    queued["text"],
+                    queued_prompt_generation=queue_generation,
+                    **attachment_kwargs,
                 )
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
@@ -7671,6 +7693,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     queued["text"],
                     image_paths=queued["image_paths"],
                     queued_prompt_generation=queue_generation,
+                    **attachment_kwargs,
                 )
             else:
                 _run_prompt_submit(
@@ -7679,6 +7702,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     session,
                     queued["text"],
                     queued_prompt_generation=queue_generation,
+                    **attachment_kwargs,
                 )
     except Exception as exc:
         print(
@@ -9522,6 +9546,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    attachment_session_keys: list[str] | None = None,
 ) -> None:
     with session["history_lock"]:
         if (
@@ -9639,10 +9664,22 @@ def _run_prompt_submit(
                         agent, "_config_context_length", None
                     ),
                 )
+                attachment_roots = [
+                    _profile_desktop_attachment_dir(session, create=False)
+                ]
+                for attachment_session_key in attachment_session_keys or []:
+                    queued_root = _profile_desktop_attachment_dir(
+                        session,
+                        create=False,
+                        session_key=attachment_session_key,
+                    )
+                    if queued_root not in attachment_roots:
+                        attachment_roots.append(queued_root)
                 ctx = preprocess_context_references(
                     prompt,
                     cwd=cwd,
                     allowed_root=cwd,
+                    additional_allowed_roots=tuple(attachment_roots),
                     context_length=ctx_len,
                 )
                 if ctx.blocked:
@@ -10542,6 +10579,45 @@ def _desktop_attachment_dir(session: dict) -> Path:
     return root
 
 
+def _profile_desktop_attachment_dir(
+    session: dict,
+    *,
+    create: bool = True,
+    session_key: str | None = None,
+) -> Path:
+    """Return a profile-owned attachment fallback directory for a session key."""
+    profile_home = session.get("profile_home")
+    base = Path(profile_home) if profile_home else Path(_hermes_home)
+    session_key = str(
+        session_key if session_key is not None else session.get("session_key") or ""
+    ).strip()
+    if not session_key:
+        raise ValueError("session identity unavailable for attachment staging")
+    profile_root = base.resolve()
+    scope = hashlib.sha256(session_key.encode("utf-8")).hexdigest()
+    root = profile_root / "cache" / "desktop-attachments" / scope
+    resolved_root = root.resolve()
+    try:
+        resolved_root.relative_to(profile_root)
+    except ValueError as exc:
+        raise PermissionError("attachment fallback escaped the active profile home") from exc
+    if create:
+        resolved_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        resolved_root = resolved_root.resolve()
+        try:
+            resolved_root.relative_to(profile_root)
+        except ValueError as exc:
+            raise PermissionError("attachment fallback escaped the active profile home") from exc
+    if create and os.name != "nt":
+        resolved_root.chmod(0o700)
+    return resolved_root
+
+
+def _is_readonly_attachment_staging_error(exc: OSError) -> bool:
+    """Classify only permission/read-only errors as workspace fallback triggers."""
+    return isinstance(exc, PermissionError) or exc.errno == errno.EROFS
+
+
 def _sanitize_attachment_name(name: str) -> str:
     import re as _re
 
@@ -10551,18 +10627,29 @@ def _sanitize_attachment_name(name: str) -> str:
     return candidate or "attachment"
 
 
-def _unique_attachment_path(root: Path, filename: str) -> Path:
-    candidate = root / filename
-    if not candidate.exists():
-        return candidate
+def _write_unique_attachment(
+    root: Path, filename: str, payload: bytes, *, mode: int = 0o600
+) -> Path:
+    """Create an attachment without following or replacing a raced path."""
     stem = Path(filename).stem or "attachment"
     suffix = Path(filename).suffix
-    counter = 2
+    counter = 1
     while True:
-        next_candidate = root / f"{stem}-{counter}{suffix}"
-        if not next_candidate.exists():
-            return next_candidate
-        counter += 1
+        candidate = root / (filename if counter == 1 else f"{stem}-{counter}{suffix}")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(candidate, flags, mode)
+        except FileExistsError:
+            counter += 1
+            continue
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+        except Exception:
+            with contextlib.suppress(OSError):
+                candidate.unlink()
+            raise
+        return candidate
 
 
 def _resolve_gateway_attachment_path(raw: str) -> Path | None:
@@ -10623,6 +10710,11 @@ def _stage_session_file_attachment(
          path on the CLIENT's disk) — decode the uploaded ``data_url`` bytes and
          write them into the session home's ``attachments/`` dir.
 
+    If workspace-local staging is denied or the filesystem is read-only, the
+    attachment is instead written under the active profile's HERMES_HOME. The
+    resulting reference is absolute so it remains resolvable outside the
+    workspace.
+
     Returns ``(stored_path, uploaded)``.
     """
     workspace = Path(_session_cwd(session)).resolve()
@@ -10640,9 +10732,17 @@ def _stage_session_file_attachment(
         payload = _decode_attachment_data_url(data_url)
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
 
-    upload_dir = _desktop_attachment_dir(session)
-    target = _unique_attachment_path(upload_dir, _sanitize_attachment_name(filename))
-    target.write_bytes(payload)
+    safe_filename = _sanitize_attachment_name(filename)
+    try:
+        upload_dir = _desktop_attachment_dir(session)
+        target = _write_unique_attachment(
+            upload_dir, safe_filename, payload, mode=0o666
+        )
+    except OSError as exc:
+        if not _is_readonly_attachment_staging_error(exc):
+            raise
+        upload_dir = _profile_desktop_attachment_dir(session)
+        target = _write_unique_attachment(upload_dir, safe_filename, payload)
     return target.resolve(), True
 
 

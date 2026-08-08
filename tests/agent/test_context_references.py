@@ -190,6 +190,33 @@ def test_binary_reference_block_keeps_host_path_on_local_backend(tmp_path: Path,
 
 
 @pytest.mark.asyncio
+async def test_additional_allowed_root_is_narrow_and_keeps_sibling_blocked(tmp_path: Path):
+    from agent.context_references import preprocess_context_references_async
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_root = tmp_path / "profile" / "cache" / "desktop-attachments" / "session-a"
+    session_root.mkdir(parents=True)
+    staged = session_root / "report.txt"
+    staged.write_text("session-a report", encoding="utf-8")
+    sibling = session_root.parent / "session-b" / "secret.txt"
+    sibling.parent.mkdir()
+    sibling.write_text("session-b secret", encoding="utf-8")
+
+    result = await preprocess_context_references_async(
+        f"inspect @file:{staged} and @file:{sibling}",
+        cwd=workspace,
+        allowed_root=workspace,
+        additional_allowed_roots=(session_root,),
+        context_length=100_000,
+    )
+
+    assert "session-a report" in result.message
+    assert "session-b secret" not in result.message
+    assert any("outside the allowed workspace" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
 async def test_blocks_canonical_read_denylist_credential_stores(tmp_path: Path, monkeypatch):
     """@file expansion must honour the canonical read deny-list.
 

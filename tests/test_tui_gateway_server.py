@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import subprocess
@@ -273,19 +274,28 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
 
 
 def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch):
+    captured = {}
+
     class _Supervisor:
-        def submit_turn(self, _frame, *, on_complete=None):
+        def submit_turn(self, frame, *, on_complete=None):
+            captured["frame"] = frame
             session["attached_images"].append("/tmp/c.png")
 
     session = _session(attached_images=[])
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _Supervisor())
 
     response = server._submit_prompt_to_compute_host(
-        "r1", "sid", session, "B", image_paths=["/tmp/b.png"]
+        "r1",
+        "sid",
+        session,
+        "B",
+        image_paths=["/tmp/b.png"],
+        attachment_session_keys=["pre-compression-key"],
     )
 
     assert response["result"]["status"] == "streaming"
     assert session["attached_images"] == ["/tmp/c.png"]
+    assert captured["frame"]["attachment_session_keys"] == ["pre-compression-key"]
 
 
 def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monkeypatch):
@@ -7975,7 +7985,7 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     assert captured["session_key"] == "session-key"
 
 
-def test_prompt_submit_expands_context_refs(monkeypatch):
+def test_prompt_submit_expands_context_refs(monkeypatch, tmp_path):
     captured = {}
 
     class _Agent:
@@ -7998,19 +8008,23 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
             self._target()
 
     fake_ctx = types.ModuleType("agent.context_references")
-    fake_ctx.preprocess_context_references = (
-        lambda message, **kwargs: types.SimpleNamespace(
+
+    def preprocess_context_references(message, **kwargs):
+        captured["context_kwargs"] = kwargs
+        return types.SimpleNamespace(
             blocked=False,
             message="expanded prompt",
             warnings=[],
             references=[],
             injected_tokens=0,
         )
-    )
+
+    fake_ctx.preprocess_context_references = preprocess_context_references
     fake_meta = types.ModuleType("agent.model_metadata")
     fake_meta.get_model_context_length = lambda *args, **kwargs: 100000
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    session = _session(agent=_Agent(), profile_home=str(tmp_path / "profile-home"))
+    server._sessions["sid"] = session
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
@@ -8027,6 +8041,113 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     )
 
     assert captured["prompt"] == "expanded prompt"
+    current_root = server._profile_desktop_attachment_dir(session, create=False)
+    assert captured["context_kwargs"]["additional_allowed_roots"] == (current_root,)
+
+    server._run_prompt_submit(
+        "2",
+        "sid",
+        session,
+        "@file:/queued/attachment.txt",
+        attachment_session_keys=["pre-compression-key"],
+    )
+
+    assert captured["context_kwargs"]["additional_allowed_roots"] == (
+        current_root,
+        server._profile_desktop_attachment_dir(
+            session, create=False, session_key="pre-compression-key"
+        ),
+    )
+
+
+def test_queued_file_ref_expands_after_session_key_rotation(monkeypatch, tmp_path):
+    captured = {}
+
+    class _Agent:
+        model = "test/model"
+        base_url = ""
+        api_key = ""
+        provider = ""
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            captured["prompt"] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile_home = tmp_path / "profile-home"
+    session = _session(
+        agent=_Agent(),
+        cwd=str(workspace),
+        profile_home=str(profile_home),
+        session_key="after-compression",
+    )
+    old_root = server._profile_desktop_attachment_dir(
+        session, create=True, session_key="before-compression"
+    )
+    attached = old_root / "queued.txt"
+    attached.write_text("queued attachment survived compression", encoding="utf-8")
+
+    from agent import model_metadata
+
+    monkeypatch.setattr(
+        model_metadata, "get_model_context_length", lambda *args, **kwargs: 100000
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    server._run_prompt_submit(
+        "1",
+        "sid",
+        session,
+        f"@file:{attached}",
+        attachment_session_keys=["before-compression"],
+    )
+
+    assert "queued attachment survived compression" in captured["prompt"]
+
+
+def test_queued_file_refs_retain_pre_compression_session_keys(monkeypatch):
+    session = _session(running=True, session_key="before-compression")
+    transport = object()
+    server._enqueue_prompt(session, "@file:/old/one.txt", transport)
+    session["session_key"] = "during-compression"
+    server._enqueue_prompt(session, "@file:/old/two.txt", transport)
+
+    queued = session["queued_prompt"]
+    assert queued["attachment_session_keys"] == [
+        "before-compression",
+        "during-compression",
+    ]
+
+    captured = {}
+
+    def capture_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    session["session_key"] = "after-compression"
+    session["running"] = False
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
+    monkeypatch.setattr(server, "_run_prompt_submit", capture_run)
+
+    assert server._drain_queued_prompt("1", "sid", session)
+    assert captured["kwargs"]["attachment_session_keys"] == [
+        "before-compression",
+        "during-compression",
+    ]
 
 
 def test_image_attach_appends_local_image(monkeypatch):
@@ -8125,6 +8246,231 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
         assert resp["result"]["path"] == str(stored)
         assert resp["result"]["ref_text"] == f"@file:{stored}"
         assert stored.read_text(encoding="utf-8") == "hello world"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+@pytest.mark.parametrize(
+    "staging_error",
+    [
+        pytest.param(PermissionError("workspace staging denied"), id="permission-no-errno"),
+        pytest.param(
+            PermissionError(errno.EACCES, "permission denied"), id="permission-eacces"
+        ),
+        pytest.param(
+            PermissionError(errno.EPERM, "operation not permitted"), id="permission-eperm"
+        ),
+        pytest.param(OSError(errno.EROFS, "read-only filesystem"), id="read-only-filesystem"),
+    ],
+)
+def test_file_attach_falls_back_to_profile_home_when_workspace_staging_is_unwritable(
+    monkeypatch, tmp_path, staging_error
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile_home = tmp_path / "profile-home"
+    profile_home.mkdir()
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    def fail_workspace_staging(_session):
+        raise staging_error
+
+    monkeypatch.setattr(server, "_desktop_attachment_dir", fail_workspace_staging)
+    session = _session(cwd=str(workspace), profile_home=str(profile_home))
+    server._sessions["sid"] = session
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+                },
+            }
+        )
+
+        fallback_root = server._profile_desktop_attachment_dir(session, create=False)
+        stored = fallback_root / "report.txt"
+        assert resp["result"]["attached"] is True
+        assert resp["result"]["uploaded"] is True
+        assert resp["result"]["path"] == str(stored)
+        assert resp["result"]["ref_text"] == f"@file:{stored}"
+        assert stored.read_text(encoding="utf-8") == "hello world"
+        assert not (workspace / ".hermes" / "desktop-attachments").exists()
+        if os.name != "nt":
+            assert stored.stat().st_mode & 0o777 == 0o600
+            assert fallback_root.stat().st_mode & 0o777 == 0o700
+
+        from agent.context_references import preprocess_context_references
+
+        expanded = preprocess_context_references(
+            resp["result"]["ref_text"],
+            cwd=workspace,
+            allowed_root=workspace,
+            additional_allowed_roots=(fallback_root,),
+            context_length=100_000,
+        )
+        assert not expanded.blocked
+        assert "hello world" in expanded.message
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_rejects_profile_cache_symlink_escape(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile_home = tmp_path / "profile-home"
+    cache_root = profile_home / "cache"
+    cache_root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    attachment_link = cache_root / "desktop-attachments"
+    try:
+        attachment_link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    def fail_workspace_staging(_session):
+        raise PermissionError("workspace staging denied")
+
+    monkeypatch.setattr(server, "_desktop_attachment_dir", fail_workspace_staging)
+    server._sessions["sid"] = _session(
+        cwd=str(workspace), profile_home=str(profile_home)
+    )
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+                },
+            }
+        )
+
+        assert "error" in resp
+        assert "escaped the active profile home" in resp["error"]["message"]
+        assert list(outside.rglob("*")) == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
+@pytest.mark.parametrize(
+    "staging_error",
+    [
+        pytest.param(OSError(errno.ENOSPC, "no space left on device"), id="disk-full"),
+        pytest.param(OSError(errno.EIO, "input/output error"), id="io-error"),
+        pytest.param(OSError(errno.ENOTDIR, "not a directory"), id="not-a-directory"),
+    ],
+)
+def test_file_attach_does_not_fallback_for_unrelated_staging_os_error(
+    monkeypatch, tmp_path, staging_error
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile_home = tmp_path / "profile-home"
+    profile_home.mkdir()
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    def fail_workspace_staging(_session):
+        raise staging_error
+
+    monkeypatch.setattr(server, "_desktop_attachment_dir", fail_workspace_staging)
+    server._sessions["sid"] = _session(
+        cwd=str(workspace), profile_home=str(profile_home)
+    )
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+                },
+            }
+        )
+
+        assert "error" in resp
+        assert resp["error"]["message"] == str(staging_error)
+        assert not (profile_home / "cache" / "desktop-attachments").exists()
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_does_not_fallback_for_source_read_permission_error(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile_home = tmp_path / "profile-home"
+    profile_home.mkdir()
+    source = tmp_path / "outside.txt"
+    source.write_text("unreadable source", encoding="utf-8")
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: source
+
+    original_read_bytes = Path.read_bytes
+
+    def deny_source_read(path):
+        if path.resolve() == source.resolve():
+            raise PermissionError(errno.EACCES, "source read denied")
+        return original_read_bytes(path)
+
+    fallback_calls = []
+    original_fallback_dir = server._profile_desktop_attachment_dir
+
+    def track_fallback(*args, **kwargs):
+        fallback_calls.append(True)
+        return original_fallback_dir(*args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", deny_source_read)
+    monkeypatch.setattr(server, "_profile_desktop_attachment_dir", track_fallback)
+    server._sessions["sid"] = _session(
+        cwd=str(workspace), profile_home=str(profile_home)
+    )
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {"session_id": "sid", "path": str(source)},
+            }
+        )
+
+        assert "error" in resp
+        assert "source read denied" in resp["error"]["message"]
+        assert fallback_calls == []
+        assert not (profile_home / "cache" / "desktop-attachments").exists()
     finally:
         server._sessions.pop("sid", None)
 

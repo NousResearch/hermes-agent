@@ -569,3 +569,221 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
             run_task.cancel()
 
     asyncio.run(_scenario())
+
+
+# ---------------------------------------------------------------------------
+# Per-server circuit breaker threshold tests
+# ---------------------------------------------------------------------------
+
+
+def test_per_server_threshold_override_bumps_at_configured_value(monkeypatch, tmp_path):
+    """When _circuit_breaker_thresholds is set for a server, _bump_server_error
+    must stamp the breaker-open timestamp only when the count reaches the
+    per-server threshold, not the global default.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+
+    PER_SERVER = 10
+
+    try:
+        mcp_tool._circuit_breaker_thresholds["srv"] = PER_SERVER
+        fake_now = 1000.0
+        monkeypatch.setattr(mcp_tool.time, "monotonic", lambda: fake_now)
+
+        # Count = PER_SERVER - 1: should NOT open the breaker.
+        mcp_tool._server_error_counts["srv"] = PER_SERVER - 2
+        mcp_tool._server_breaker_opened_at.pop("srv", None)
+        mcp_tool._bump_server_error("srv")
+        assert "srv" not in mcp_tool._server_breaker_opened_at, (
+            f"breaker should not open at count {PER_SERVER} (threshold={PER_SERVER})"
+        )
+
+        # Reset and verify it opens at exactly PER_SERVER.
+        mcp_tool._server_error_counts["srv"] = 0
+        mcp_tool._server_breaker_opened_at.pop("srv", None)
+        for _ in range(PER_SERVER):
+            mcp_tool._bump_server_error("srv")
+        assert "srv" in mcp_tool._server_breaker_opened_at, (
+            f"breaker should open at count {PER_SERVER}"
+        )
+    finally:
+        _cleanup(mcp_tool, "srv")
+        mcp_tool._circuit_breaker_thresholds.pop("srv", None)
+
+
+def test_default_threshold_unchanged_when_no_override(monkeypatch, tmp_path):
+    """Without a per-server threshold override, the global _CIRCUIT_BREAKER_THRESHOLD
+    (3) must still control the breaker.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+
+    try:
+        # No override set.
+        mcp_tool._circuit_breaker_thresholds.pop("srv", None)
+        fake_now = 1000.0
+        monkeypatch.setattr(mcp_tool.time, "monotonic", lambda: fake_now)
+
+        # Count = 2: should NOT open.
+        mcp_tool._server_error_counts["srv"] = 1
+        mcp_tool._server_breaker_opened_at.pop("srv", None)
+        mcp_tool._bump_server_error("srv")
+        assert "srv" not in mcp_tool._server_breaker_opened_at, (
+            "breaker should not open at count 3 (global threshold=3)"
+        )
+
+        # Count = 3: SHOULD open (global default).
+        mcp_tool._server_error_counts["srv"] = 0
+        mcp_tool._server_breaker_opened_at.pop("srv", None)
+        for _ in range(3):
+            mcp_tool._bump_server_error("srv")
+        assert "srv" in mcp_tool._server_breaker_opened_at, (
+            "breaker should open at count 3 (global threshold=3)"
+        )
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_tool_handler_respects_per_server_threshold(monkeypatch, tmp_path):
+    """The tool handler's circuit-breaker gate must use the per-server threshold
+    when one is configured, not the global default.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    PER_SERVER = 10
+
+    async def _call_tool_success(*a, **kw):
+        result = MagicMock()
+        result.isError = False
+        block = MagicMock()
+        block.text = "ok"
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_success)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        mcp_tool._circuit_breaker_thresholds["srv"] = PER_SERVER
+        fake_now = [1000.0]
+
+        def _fake_monotonic():
+            return fake_now[0]
+
+        monkeypatch.setattr(mcp_tool.time, "monotonic", _fake_monotonic)
+
+        # Set count to PER_SERVER - 1 (9) — below per-server threshold.
+        # The global default is 3, so if the handler uses the wrong threshold,
+        # it would short-circuit immediately.
+        mcp_tool._server_error_counts["srv"] = PER_SERVER - 2
+        # But the breaker hasn't opened yet, so this field shouldn't exist.
+        mcp_tool._server_breaker_opened_at.pop("srv", None)
+
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+        result = handler({})
+        parsed = json.loads(result)
+        assert parsed.get("result") == "ok", (
+            f"handler should NOT short-circuit at count {PER_SERVER - 1} "
+            f"when per-server threshold is {PER_SERVER}"
+        )
+    finally:
+        _cleanup(mcp_tool, "srv")
+        mcp_tool._circuit_breaker_thresholds.pop("srv", None)
+
+
+def test_register_mcp_servers_populates_threshold_from_config(monkeypatch, tmp_path):
+    """register_mcp_servers must populate _circuit_breaker_thresholds from
+    server config's breaker_threshold key.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+
+    # This test only verifies the population logic — we don't need a real
+    # MCP connection. We mock the async parts to avoid side effects.
+    monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", False)
+
+    try:
+        # Call with a server config that includes breaker_threshold.
+        servers = {
+            "email_srv": {
+                "command": "node",
+                "args": ["dist/index.js"],
+                "breaker_threshold": 7,
+                "enabled": True,
+            },
+            "normal_srv": {
+                "command": "python",
+                "args": ["-m", "other"],
+                "enabled": True,
+            },
+        }
+
+        # register_mcp_servers returns [] since _MCP_AVAILABLE is False,
+        # but it should still populate the thresholds dict.
+        mcp_tool.register_mcp_servers(servers)
+        assert mcp_tool._circuit_breaker_thresholds.get("email_srv") == 7, (
+            "breaker_threshold should be populated from config"
+        )
+        assert "normal_srv" not in mcp_tool._circuit_breaker_thresholds, (
+            "servers without breaker_threshold should not get an entry"
+        )
+    finally:
+        mcp_tool._circuit_breaker_thresholds.pop("email_srv", None)
+
+
+def test_breaker_threshold_rejects_invalid_values(monkeypatch, tmp_path):
+    """Non-int or non-positive breaker_threshold values must be ignored
+    (not crash or silently corrupt the dict).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+
+    monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", False)
+
+    try:
+        servers = {
+            "zero_val": {
+                "command": "x",
+                "breaker_threshold": 0,
+                "enabled": True,
+            },
+            "neg_val": {
+                "command": "x",
+                "breaker_threshold": -1,
+                "enabled": True,
+            },
+            "str_val": {
+                "command": "x",
+                "breaker_threshold": "ten",
+                "enabled": True,
+            },
+            "float_val": {
+                "command": "x",
+                "breaker_threshold": 5.5,
+                "enabled": True,
+            },
+            "bool_val": {
+                "command": "x",
+                "breaker_threshold": True,
+                "enabled": True,
+            },
+        }
+
+        mcp_tool.register_mcp_servers(servers)
+
+        for name in ["zero_val", "neg_val", "str_val", "float_val", "bool_val"]:
+            assert name not in mcp_tool._circuit_breaker_thresholds, (
+                f"invalid breaker_threshold for {name} should be ignored"
+            )
+    finally:
+        for name in ["zero_val", "neg_val", "str_val", "float_val", "bool_val"]:
+            mcp_tool._circuit_breaker_thresholds.pop(name, None)

@@ -592,10 +592,12 @@ export function TreeGroup({
 
       {/* Body: the zone's pane content — every kept (ever-active) pane stays
           mounted in an absolute layer; only the active one is visible.
-          `visibility` (not display) keeps the hidden pane's layout box, so
-          scroll positions and measurements survive the round-trip — which also
-          makes a hidden layer's rect identical to the visible one's, hence the
-          marker document-wide lookups filter on (see pane-visibility.ts). */}
+          `visibility` + `pointer-events-none invisible` keeps the hidden pane's
+          layout box, so scroll positions and measurements survive the round-trip.
+          `content-visibility: hidden` (Chromium) skips browser layout/paint for
+          hidden subtrees; `contain-intrinsic-size: auto 1000px` reserves space
+          to prevent layout shift on reactivation. React reconciliation and the
+          V8 heap are unaffected — panes stay mounted with state/DOM intact. */}
       {!node.minimized && (
         <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
           {isEmpty ? (
@@ -614,6 +616,10 @@ export function TreeGroup({
                   className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
                   key={paneId}
                   {...hiddenPaneProps(!isActive)}
+                  style={{
+                    contentVisibility: isActive ? 'visible' : 'hidden',
+                    containIntrinsicSize: 'auto 1000px',
+                  }}
                 >
                   {pane?.render ? (
                     // Visibility flows to the pane so a kept-alive chat surface

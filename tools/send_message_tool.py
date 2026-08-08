@@ -32,6 +32,10 @@ _SLACK_MENTION_RE = re.compile(r"^\s*<@(U[A-Z0-9]{8,})(?:\|[^>]+)?>\s*$")
 # Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
+# WeCom user IDs: external contacts start with "wo", internal users are
+# alphanumeric.  Multi-corp deployments use "corp_id:user_id" to avoid
+# cross-corp collisions (see plugins/platforms/wecom/callback_adapter.py).
+_WECOM_TARGET_RE = re.compile(r"^\s*(wo[A-Za-z0-9_-]+|[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
@@ -568,6 +572,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return trimmed[:split_idx], trimmed[split_idx + 1 :], True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
+    if platform_name == "wecom":
+        match = _WECOM_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
     if platform_name == "yuanbao":

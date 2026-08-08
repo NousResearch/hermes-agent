@@ -2456,6 +2456,16 @@ class _ApprovalEntry:
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+# Session-scoped notify registry: SURVIVES turn teardown, so a CLI-initiated
+# background SDK turn between hermes turns can still page the operator (the
+# 2026-08-06 incident lane: notify_cb None → silent deny falsely attributed
+# to the user). Populated ONLY by the hermes gateway's turn registration
+# (gateway/run.py) — NOT folded into register_gateway_notify, because the
+# api_server per-run and tui_gateway per-session callers key differently and
+# a blanket refresh would leak dead run_id/session_id entries. Removed at
+# conversation boundaries (clear_session, via the gateway's boundary funnel)
+# and gateway shutdown (clear_all_session_notify).
+_session_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -2475,17 +2485,258 @@ def unregister_gateway_notify(session_key: str) -> None:
 
     Signals ALL blocked threads for this session so they don't hang forever
     (e.g. when the agent run finishes or is interrupted).
+
+    Deliberately does NOT remove the session-scoped entry
+    (``_session_notify_cbs``): turn teardown is exactly the moment the
+    session-scoped approver starts mattering — background SDK prompts fire
+    between turns.
     """
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
+        # Turn teardown: the prompt dies with the turn. Mark it EXPLICITLY
+        # expired — signaling with an unset result let every wait-loop
+        # consumer read it as a deny, fabricating user-attributed denials
+        # for prompts nobody answered (observed 08-04 and 08-06). A result
+        # that raced in ahead of teardown is kept.
+        if entry.result is None:
+            entry.result = "expired"
         entry.event.set()
+
+
+def register_session_notify(session_key: str, cb) -> None:
+    """Register/refresh the SESSION-scoped approval notify callback.
+
+    Idempotent — the gateway calls this on every turn alongside
+    ``register_gateway_notify``; the latest callback wins. The callback must
+    stay valid between turns (the gateway's closure is: adapter, chat id and
+    event loop all outlive the turn).
+    """
+    if not session_key:
+        return
+    with _lock:
+        _session_notify_cbs[session_key] = cb
+
+
+def unregister_session_notify(session_key: str) -> None:
+    """Remove the session-scoped approval notify callback (idempotent).
+
+    Touches ONLY the session-scoped registry — never the turn registry or
+    the pending-approval queues.
+    """
+    with _lock:
+        _session_notify_cbs.pop(session_key, None)
+
+
+def clear_all_session_notify() -> None:
+    """Drop every session-scoped notify callback (gateway shutdown)."""
+    with _lock:
+        _session_notify_cbs.clear()
+
+
+def current_approval_turn_context() -> dict:
+    """Snapshot the TURN-variant approval context for later use on a thread
+    where contextvars are invisible.
+
+    Runtimes whose approval callback fires on a foreign thread (the
+    claude-agent-sdk loop) call this at the top of EVERY turn — on the agent
+    turn thread, where the session contextvars are visible — and hand the
+    snapshot to ``build_sdk_gateway_approval_callback`` via its
+    ``context_provider``.
+    """
+    return {
+        "gateway": _is_gateway_approval_context(),
+        "session_key": get_current_session_key(""),
+    }
+
+
+def build_sdk_gateway_approval_callback(context_provider=None):
+    """Approval callback for external agent-loop runtimes (claude-agent-sdk)
+    running under the gateway: bridges the SDK's per-tool permission request
+    onto the same per-session queue + notify machinery the native terminal
+    guard uses, so the user gets a real chat approval prompt instead of a
+    silent SDK-internal deny.
+
+    Returns None only for surfaces that are not gateway-shaped (no
+    ``HERMES_GATEWAY_SESSION`` env and no session platform binding): the CLI
+    keeps its thread-local callback (tools.terminal_tool) and one-shot
+    processes keep the SDK's settings posture. Build-time invariance proof:
+    ``HERMES_GATEWAY_SESSION`` is process-level (tui_gateway sets it once at
+    startup; nothing unsets it), and a process where no code ever binds a
+    session platform (pure CLI/one-shot) has no path that starts binding one
+    mid-lifetime — so "not gateway-shaped at SDK-session creation" cannot
+    flip for that session's lifetime.
+
+    EVERYTHING TURN-VARIANT is resolved per call, not at build (P1.b —
+    sticky-session binding fix): the cron veto and the session key change
+    from turn to turn on one long-lived SDK session, and freezing them at
+    creation made a session first created during a CRON turn silently deny
+    every un-allowlisted tool FOREVER, even in later interactive turns.
+    Per-call resolution order:
+
+    1. live contextvar read — wins when the callback runs on a thread that
+       can see the turn's context (native-thread invocations, tests);
+    2. ``context_provider()`` — the runtime's per-turn snapshot (see
+       ``current_approval_turn_context``), the production path: the SDK
+       invokes the callback from its own loop thread, where session
+       contextvars are NEVER propagated, so a live read there is empty;
+    3. build-time snapshot — provider-less callers keep the pre-W9
+       bind-early semantics.
+
+    A cron turn resolves gateway=False and lands in the honest no-approver
+    deny WITHOUT paging or blocking — cron's allowlist-or-deny posture is
+    preserved because settings allow-rules suppress prompts before
+    ``can_use_tool`` is ever consulted; only would-be prompts reach this
+    callback, and they deny immediately.
+
+    Known v1 semantics (deliberate, documented trade-offs):
+
+    - The wait runs on the SDK loop's ``asyncio.to_thread`` worker, not the
+      agent execution thread — so the wait loop's ``is_interrupted()``
+      fast-deny and activity heartbeats do not apply to this surface. /stop
+      interrupts the TURN at the SDK level; the orphaned wait self-expires
+      at the approval timeout and its result is discarded. Operators raising
+      ``approvals.timeout`` should keep it under the agent watchdog timeout.
+    - The approval wait spends the SDK turn's own budget (``run_turn``
+      ``turn_timeout``, 600s): one ignored prompt costs the approval timeout
+      (default 300s); a second ignored prompt can time the turn out, which
+      retires the session (digest-resume next turn) and orphans the
+      displayed prompt. The interactive one-tap flow this bridge exists for
+      is unaffected.
+    """
+    gateway_shaped = env_var_enabled("HERMES_GATEWAY_SESSION") or bool(
+        _get_session_platform()
+    )
+    if not gateway_shaped:
+        return None
+    # Build-time snapshots: the fallback for provider-less callers only.
+    _build_gateway = _is_gateway_approval_context()
+    _build_key = get_current_session_key("")
+
+    def _sdk_gateway_approval(command: str, description: str, *,
+                              allow_permanent: bool = False,
+                              tool_use_id: str = ""):
+        # Widened return channel (plan-of-record): a plain choice string
+        # ("once"/"deny") for the classic outcomes, or a dict
+        # {"choice": str, "reason": str} when the deny needs an HONEST
+        # reason. The SDK session's _make_can_use_tool normalizes both;
+        # "denied by user" is reserved for a human actually choosing deny —
+        # timeout, no-approver and notify-failure each carry their own
+        # reason (the model used to hear "denied by user" for prompts no
+        # user ever saw — 2026-08-06 incident).
+        #
+        # Per-call context resolution (P1.b). The discriminator is the LIVE
+        # KEY, not the live gateway check: on a TUI SDK-thread call the
+        # process-level HERMES_GATEWAY_SESSION env is visible while the key
+        # contextvar is not — branching on the gateway check alone would
+        # grab an empty key and wrongly deny.
+        live_key = get_current_session_key("")
+        if live_key:
+            session_key = live_key
+            gateway = _is_gateway_approval_context()
+        elif context_provider is not None:
+            try:
+                ctx = context_provider() or {}
+            except Exception:
+                logger.debug(
+                    "SDK approval context_provider raised", exc_info=True,
+                )
+                ctx = {}
+            session_key = str(ctx.get("session_key") or "")
+            gateway = bool(ctx.get("gateway"))
+        else:
+            session_key = _build_key
+            gateway = _build_gateway
+        notify_cb = None
+        if gateway and session_key:
+            with _lock:
+                # Turn registration wins; the session-scoped entry is the
+                # between-turns fallback that lets a background SDK turn
+                # page the operator.
+                notify_cb = (
+                    _gateway_notify_cbs.get(session_key)
+                    or _session_notify_cbs.get(session_key)
+                )
+        if notify_cb is None:
+            # No approver anywhere (background context with no session
+            # registration, or gateway tearing down): fail closed, but say
+            # so honestly — never attribute this deny to the user.
+            logger.warning(
+                "SDK approval request has NO approver available "
+                "(background context): tool=%s session=%s — denying "
+                "without user attribution",
+                command, session_key,
+            )
+            return {
+                "choice": "deny",
+                "reason": "no approver available (background context)",
+            }
+        approval_data = {
+            "command": command,
+            "pattern_key": "claude_sdk_tool",
+            "pattern_keys": ["claude_sdk_tool"],
+            "description": description,
+            # One-tap "once" grants only: durable grants for SDK tools
+            # belong in the operator's settings.json (setting_sources),
+            # where they are auditable — not in chat-tap persistence.
+            "allow_permanent": False,
+            "allow_session": False,
+            # P2.a correlator: rides onto the pending _ApprovalEntry
+            # (entry.data IS this dict) so a button tap can resolve the
+            # MATCHING prompt instead of queue[0].
+            "tool_use_id": tool_use_id or "",
+        }
+        decision = _await_gateway_decision(
+            session_key, notify_cb, approval_data, surface="claude_sdk"
+        )
+        if decision.get("notify_failed"):
+            return {
+                "choice": "deny",
+                "reason": "approval request could not be delivered to the "
+                          "operator (notify failed)",
+            }
+        if not decision.get("resolved"):
+            # The operator saw the prompt (notify succeeded) but never
+            # answered within the approval timeout.
+            return {
+                "choice": "deny",
+                "reason": "approval timed out — no operator response",
+            }
+        choice = decision.get("choice")
+        if choice in (None, "expired"):
+            # Turn teardown expired this prompt before anyone answered.
+            # Honest attribution through the widened channel — the model
+            # must never hear "denied by user" for a prompt that simply
+            # died with the turn. (None is defensive residue: teardown now
+            # always stamps "expired".)
+            return {
+                "choice": "deny",
+                "reason": "approval expired (turn ended)",
+            }
+        if choice == "deny":
+            reason = decision.get("reason")
+            if reason:
+                # /deny <reason>: still a real user deny — attribute it,
+                # and relay the operator's words.
+                return {"choice": "deny", "reason": f"denied by user: {reason}"}
+            return "deny"
+        # Clamp durable choices to one-shot: an older client button can
+        # still send "session"/"always"; the grant must not outlive the
+        # single SDK permission request it answered.
+        return "once"
+
+    # Marker for the SDK session layer: this callback accepts the
+    # tool_use_id kwarg (the CLI thread-local callback does not — the
+    # session only passes the correlator to callbacks that opt in).
+    _sdk_gateway_approval._accepts_tool_use_id = True
+    return _sdk_gateway_approval
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None,
+                             tool_use_id: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -2497,8 +2748,18 @@ def resolve_gateway_approval(session_key: str, choice: str,
     deny (``/deny <reason>``).  It is relayed back to the agent in the
     BLOCKED message so it can adapt instead of only hearing "denied".
 
+    *tool_use_id* (P2.a): when the resolution carries the SDK's prompt
+    correlator, ONLY the matching pending entry resolves — with parallel
+    prompts, FIFO let tapping prompt B's button grant prompt A. A carried
+    id that matches nothing pending (already resolved/expired) resolves
+    ZERO entries, never queue[0]. Id-less resolutions (text /approve,
+    stale pre-deploy buttons, non-SDK surfaces) keep FIFO, and every
+    single-pop FIFO fallback is logged — that log line is the only
+    observability left for the misroute class this correlator kills.
+
     Returns the number of approvals resolved (0 means nothing was pending).
     """
+    fifo_fallback_pending = 0
     with _lock:
         queue = _gateway_queues.get(session_key)
         if not queue:
@@ -2506,10 +2767,26 @@ def resolve_gateway_approval(session_key: str, choice: str,
         if resolve_all:
             targets = list(queue)
             queue.clear()
+        elif tool_use_id:
+            targets = [
+                e for e in queue
+                if e.data.get("tool_use_id") == tool_use_id
+            ][:1]
+            if not targets:
+                return 0
+            queue.remove(targets[0])
         else:
+            fifo_fallback_pending = len(queue)
             targets = [queue.pop(0)]
         if not queue:
             _gateway_queues.pop(session_key, None)
+    if fifo_fallback_pending:
+        logger.info(
+            "Gateway approval resolved by FIFO fallback (no tool_use_id): "
+            "session=%s pending=%d — with parallel prompts this cannot "
+            "distinguish which prompt was answered",
+            session_key, fifo_fallback_pending,
+        )
 
     for entry in targets:
         entry.result = choice
@@ -2583,6 +2860,11 @@ def clear_session(session_key: str) -> None:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
+        # Conversation boundary (/new, expiry, auto-reset, …): the
+        # session-scoped approver dies with the conversation — the next
+        # turn's registration refreshes it. A retained entry would page the
+        # operator for a session the user deliberately rotated away.
+        _session_notify_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
         # Session-boundary cleanup should cancel any blocked approval waits
@@ -3288,15 +3570,21 @@ def _run_approval_gate(
             choice = decision["choice"]
             deny_reason = decision.get("reason")
 
-            if not resolved or choice is None or choice == "deny":
+            if not resolved or choice in (None, "deny", "expired"):
                 if not resolved:
                     reason = "timed out without user response"
+                    timeout_addendum = " Silence is not consent."
+                elif choice in (None, "expired"):
+                    # Turn teardown expired the prompt before anyone
+                    # answered — honest attribution; still not consent.
+                    reason = ("approval expired when the turn ended, "
+                              "before the user responded")
                     timeout_addendum = " Silence is not consent."
                 else:
                     reason = "denied by user"
                     timeout_addendum = ""
                 reason_addendum = ""
-                if resolved and deny_reason:
+                if resolved and choice == "deny" and deny_reason:
                     reason_addendum = f' Reason given by the user: "{deny_reason}".'
                 return {
                     "approved": False,
@@ -3688,10 +3976,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
             # Respect interrupt signals (e.g. /stop, /new, or an inactivity
             # timeout from the gateway) so a pending approval doesn't keep the
             # session wedged on threading.Event.wait() until the 5-minute approval
-            # timeout. The wait runs on the agent's execution thread, which is the
-            # exact thread AIAgent.interrupt() flags — so is_interrupted() here
-            # sees the signal. Resolve as "deny" so the agent loop receives a
-            # normal denial and unwinds cleanly (#8697).
+            # timeout. For the native surfaces the wait runs on the agent's
+            # execution thread, which is the exact thread AIAgent.interrupt()
+            # flags — so is_interrupted() here sees the signal. Resolve as "deny"
+            # so the agent loop receives a normal denial and unwinds cleanly
+            # (#8697). Exception: surface="claude_sdk" waits on the SDK loop's
+            # to_thread worker, which interrupts never flag — that surface
+            # unblocks via turn teardown/unregister or the approval timeout (see
+            # build_sdk_gateway_approval_callback's docstring).
             if is_interrupted():
                 logger.info(
                     "Approval wait interrupted by user signal — "
@@ -4049,16 +4341,23 @@ def check_all_command_guards(command: str, env_type: str,
             choice = decision["choice"]
             deny_reason = decision.get("reason")
 
-            if not resolved or choice is None or choice == "deny":
+            if not resolved or choice in (None, "deny", "expired"):
                 # Consent contract: silence is NOT consent, and an explicit
                 # deny is also a hard halt — both produce a BLOCKED outcome
                 # that names the agent's most common evasion paths (retry,
                 # rephrase, achieve the same outcome via a different command).
-                # See issue #24912 for the original incident.
+                # See issue #24912 for the original incident. An "expired"
+                # result (turn teardown) is equally non-consent — honest
+                # attribution, same hard halt.
                 if not resolved:
                     reason = "timed out without user response"
                     timeout_addendum = " Silence is not consent."
                     outcome = "timeout"
+                elif choice in (None, "expired"):
+                    reason = ("approval expired when the turn ended, "
+                              "before the user responded")
+                    timeout_addendum = " Silence is not consent."
+                    outcome = "expired"
                 else:
                     reason = "denied by user"
                     timeout_addendum = ""
@@ -4418,9 +4717,22 @@ def check_execute_code_guard(code: str, env_type: str,
     choice = decision["choice"]
     deny_reason = decision.get("reason")
 
-    if not resolved or choice is None or choice == "deny":
-        reason = "timed out without user response" if not resolved else "denied by user"
-        addendum = " Silence is not consent." if not resolved else ""
+    if not resolved or choice in (None, "deny", "expired"):
+        if not resolved:
+            reason = "timed out without user response"
+            addendum = " Silence is not consent."
+            outcome = "timeout"
+        elif choice in (None, "expired"):
+            # Turn teardown expired the prompt before anyone answered —
+            # honest attribution; still not consent.
+            reason = ("approval expired when the turn ended, before the "
+                      "user responded")
+            addendum = " Silence is not consent."
+            outcome = "expired"
+        else:
+            reason = "denied by user"
+            addendum = ""
+            outcome = "denied"
         reason_addendum = ""
         if resolved and choice == "deny" and deny_reason:
             reason_addendum = f' Reason given by the user: "{deny_reason}".'
@@ -4435,7 +4747,7 @@ def check_execute_code_guard(code: str, env_type: str,
             ),
             "pattern_key": pattern_key,
             "description": description,
-            "outcome": "timeout" if not resolved else "denied",
+            "outcome": outcome,
             "user_consent": False,
             "deny_reason": deny_reason,
         }
@@ -4523,6 +4835,10 @@ def request_elicitation_consent(
         choice = decision.get("choice")
         if choice in ("once", "session", "always"):
             return "accept"
+        if choice == "expired":
+            # Turn teardown expired the prompt unanswered — mirror the
+            # unresolved/timeout outcome ("cancel"), not a user decline.
+            return "cancel"
         return "decline"
 
     # CLI / TUI path. allow_permanent=False because elicitation is a

@@ -184,7 +184,7 @@ VALID_HOOKS: Set[str] = {
     #
     # Kwargs for pre_approval_request:
     #   command: str, description: str, pattern_key: str, pattern_keys: list[str],
-    #   session_key: str, surface: "cli" | "gateway" | "smart"
+    #   session_key: str, surface: "cli" | "gateway" | "smart" | "claude_sdk"
     # Kwargs for post_approval_response: same as above plus
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     #           | "smart_approve" | "smart_deny"

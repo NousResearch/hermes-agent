@@ -833,6 +833,42 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # Claude Agent SDK provider runtime (provider: claude-agent-sdk).
+  # claude_agent_sdk:
+  #   # Emit the SDK's partial-message deltas into the gateway streaming
+  #   # pipeline (default off — upstream-conservative; the top-level
+  #   # streaming: block still governs how deltas are displayed).
+  #   streaming: false
+  #   # The provider exists to bill the Claude subscription and refuses to
+  #   # start while a metered ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN could
+  #   # silently take over billing. Set true to explicitly allow that.
+  #   allow_metered_key: false
+  #   # Optional operator persona/soul file appended to the system prompt
+  #   # ("" = none).
+  #   append_file: ""
+  #   # SDK permission mode, taken verbatim as a claude-agent-sdk
+  #   # permission_mode literal: default | acceptEdits | plan |
+  #   # bypassPermissions | dontAsk | auto ("auto" is the SDK's own mode,
+  #   # not the HERMES_TERMINAL_SECURITY_MODE value of the same name).
+  #   # "" (default) keeps current behavior: the HERMES_TERMINAL_SECURITY_MODE
+  #   # mapping stands (auto→acceptEdits, approval-required→default,
+  #   # unrestricted/yolo→bypassPermissions). Set "default" to route SDK tool
+  #   # permissions through Hermes' approval flow. Invalid values are ignored
+  #   # with a warning.
+  #   permission_mode: ""
+  #   # SDK setting sources (claude-agent-sdk SettingSource literals:
+  #   # user | project | local). [] (default) = full isolation: the spawned
+  #   # CLI loads no filesystem settings. Opt in (e.g. ["user"]) when your
+  #   # deployment keeps tool grants in the operator's ~/.claude/settings.json
+  #   # — unattended cron turns can't answer permission prompts. Invalid
+  #   # entries are dropped with a warning.
+  #   setting_sources: []
+  #   # Per-query USD budget forwarded to the SDK's max_budget_usd option:
+  #   # the turn stops with error_max_budget_usd once exceeded. null
+  #   # (default) = no budget. Non-numeric / non-positive values are ignored
+  #   # with a warning.
+  #   max_budget_usd: null
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

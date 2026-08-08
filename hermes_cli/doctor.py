@@ -1169,6 +1169,21 @@ def run_doctor(args):
             except Exception:
                 _resolve_auth_provider = None
                 pass
+            # Pluggable model providers (plugins/model-providers/<name>/) are
+            # valid model.provider values without a PROVIDER_REGISTRY entry —
+            # e.g. claude-agent-sdk. Same philosophy as the API-key health
+            # list: adding the plugin profile is sufficient to get into doctor.
+            try:
+                from providers import list_providers as _list_provider_profiles
+                for _profile in _list_provider_profiles():
+                    _pname = getattr(_profile, "name", None)
+                    if _pname:
+                        known_providers.add(str(_pname).strip().lower())
+                    for _palias in getattr(_profile, "aliases", None) or ():
+                        if _palias:
+                            known_providers.add(str(_palias).strip().lower())
+            except Exception:
+                pass
             try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
                 from hermes_cli.providers import (
@@ -1613,6 +1628,37 @@ def run_doctor(args):
             check_warn("xAI OAuth", "(not logged in)")
             if xai_oauth_status.get("error"):
                 check_info(xai_oauth_status["error"])
+    except Exception:
+        pass
+
+    # Claude Agent SDK (subscription) — separate try/except like xAI OAuth so
+    # an import failure can't disrupt the rows above. The probe is structural
+    # (env var / ~/.claude credential files); a macOS Keychain-only login
+    # reports as not-detected and the hint says so.
+    try:
+        from hermes_cli.auth import get_claude_agent_sdk_auth_status
+        sdk_status = get_claude_agent_sdk_auth_status() or {}
+        if sdk_status.get("logged_in"):
+            check_ok(
+                "Claude Agent SDK (subscription)",
+                f"({sdk_status.get('source', 'credentials found')})",
+            )
+        else:
+            check_warn("Claude Agent SDK (subscription)", "(no credential detected)")
+            if sdk_status.get("hint"):
+                check_info(sdk_status["hint"])
+        # The SDK python package is an opt-in extra that lazy-installs at
+        # first use — mirror the codex-CLI availability hint.
+        try:
+            from tools.lazy_deps import is_available as _lazy_available
+            if not _lazy_available("provider.claude_agent_sdk"):
+                check_info(
+                    "claude-agent-sdk package not installed (optional — "
+                    "installs at first use, or: pip install "
+                    "'hermes-agent[claude-agent-sdk]')"
+                )
+        except Exception:
+            pass
     except Exception:
         pass
 

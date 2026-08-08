@@ -13780,9 +13780,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # this to True. Early returns (credential refresh failure, etc.)
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
+        # Per-turn failure state for one-shot callers: the human `-q` path
+        # discards chat()'s return value, so main() reads these to decide
+        # the process exit code (mirrors the -Q result.get("failed") gate).
+        self._last_turn_failed = False
+        self._last_turn_failure_reason = None
 
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
+            self._last_turn_failed = True
+            self._last_turn_failure_reason = "credentials"
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
@@ -13797,9 +13804,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             runtime_override=turn_route["runtime"],
             request_overrides=turn_route.get("request_overrides"),
         ):
+            self._last_turn_failed = True
+            self._last_turn_failure_reason = "init"
             return None
         agent = self.agent
         if agent is None:
+            self._last_turn_failed = True
+            self._last_turn_failure_reason = "init"
             return None
 
         # Route image attachments based on the active model's vision capability.
@@ -14381,6 +14392,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Expose the flag for post-turn hooks (e.g. goal continuation)
             # so they can skip themselves when the turn was user-cancelled.
             self._last_turn_interrupted = _interrupted_this_turn
+            # Expose turn failure for one-shot exit-code decisions (the -q
+            # path discards the return value; see main()'s single-query
+            # branch). Set beside the interrupt flag so both per-turn states
+            # come from the same result dict.
+            self._last_turn_failed = bool(result and result.get("failed"))
+            if self._last_turn_failed:
+                self._last_turn_failure_reason = result.get("failure_reason")
             if _interrupted_this_turn:
                 pending_message = result.get("interrupt_message") or interrupt_msg
                 # Add indicator that we were interrupted
@@ -14584,6 +14602,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             
         except Exception as e:
             print(f"Error: {e}")
+            # A turn that died in orchestration (post-thread display/session
+            # sync, not run_conversation — those become failed result dicts
+            # inside run_agent) is still a failed turn for one-shot callers.
+            self._last_turn_failed = True
+            self._last_turn_failure_reason = "exception"
             return None
         finally:
             # Stop the ambient thinking sound the moment the turn ends —
@@ -18597,6 +18620,34 @@ def main(
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
                 cli._print_exit_summary(clear_screen=False)
+                # Human one-shot mirrors the -Q exit contract: a failed turn
+                # (fatal SDK startup/auth/billing refusal, credential or init
+                # failure) must not exit 0 — integrations and shell scripts
+                # read the code. getattr: chat() sets the flag per turn; a
+                # stubbed CLI without it means "not failed". Raised inside
+                # the try so _finalize_single_query still runs (same cleanup
+                # order the -Q path gets).
+                #
+                # Kanban parity is load-bearing: non-goal-mode workers are
+                # spawned `chat -q` WITHOUT -Q, so this hook is their exit
+                # contract. A provider quota wall (failure_reason
+                # rate_limit/billing) must exit EX_TEMPFAIL exactly like the
+                # -Q branch — a plain 1 would classify as "crashed", tick
+                # consecutive_failures, and let one 5-hour quota window trip
+                # the circuit breaker across every in-flight card.
+                if getattr(cli, "_last_turn_failed", False):
+                    _exit_code = 1
+                    if os.environ.get("HERMES_KANBAN_TASK") and getattr(
+                        cli, "_last_turn_failure_reason", None
+                    ) in ("rate_limit", "billing"):
+                        try:
+                            from hermes_cli.kanban_db import (
+                                KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
+                            )
+                            _exit_code = _RL_CODE
+                        except Exception:
+                            _exit_code = 1
+                    sys.exit(_exit_code)
         finally:
             _finalize_single_query(cli)
         return

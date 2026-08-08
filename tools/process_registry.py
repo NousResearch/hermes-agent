@@ -2622,7 +2622,18 @@ def _format_async_delegation(evt: dict) -> str:
     """
     import time as _time
 
-    deleg_id = evt.get("delegation_id", "unknown")
+    deleg_id = evt.get("delegation_id")
+    if not deleg_id:
+        # No real delegation behind this event (synthetic/echo lane) — never
+        # render a completion envelope for it; empty text makes the watcher
+        # skip injection entirely.
+        logger.warning(
+            "async-delegation completion with empty delegation_id dropped "
+            "(goal=%r, status=%r) — envelope not rendered",
+            evt.get("goal", ""),
+            evt.get("status"),
+        )
+        return ""
     goal = evt.get("goal", "") or ""
     context = evt.get("context")
     toolsets = evt.get("toolsets")

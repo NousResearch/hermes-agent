@@ -869,7 +869,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         self._choice_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
-        self._approval_state: Dict[int, str] = {}
+        # approval_id → (session_key, tool_use_id); legacy plain-string
+        # session_key values are tolerated by the tap handler.
+        self._approval_state: Dict[int, Any] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -5539,6 +5541,7 @@ class TelegramAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        tool_use_id: str = "",
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
 
@@ -5600,8 +5603,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
             msg = await self._send_message_with_thread_fallback(**kwargs)
 
-            # Store session_key keyed by approval_id for the callback handler
-            self._approval_state[approval_id] = session_key
+            # Store (session_key, tool_use_id) keyed by approval_id for the
+            # callback handler. The prompt correlator rides the adapter-side
+            # map, NOT callback_data: Telegram caps callback_data at 64
+            # bytes — "ea:session:" (11B) plus a toolu_… id (~30–45B, length
+            # not contractually bounded) would usually fit, but the map
+            # already exists, keeps int-parsing and stale pre-deploy buttons
+            # byte-identical, and removes the cap risk entirely.
+            self._approval_state[approval_id] = (session_key, tool_use_id or "")
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -6464,10 +6473,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
-                if not session_key:
+                _entry = self._approval_state.pop(approval_id, None)
+                if not _entry:
                     await query.answer(text="This approval has already been resolved.")
                     return
+                if isinstance(_entry, tuple):
+                    session_key, tool_use_id = _entry
+                else:
+                    # Legacy plain-string value (pre-correlator writer in a
+                    # mixed state): session key only, FIFO resolution.
+                    session_key, tool_use_id = _entry, ""
 
                 user_display = getattr(query.from_user, "first_name", "User")
 
@@ -6479,7 +6494,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # regression follow-up: 60s waits made stale taps common).
                 try:
                     from tools.approval import resolve_gateway_approval
-                    count = resolve_gateway_approval(session_key, choice)
+                    # tool_use_id present → resolve the MATCHING prompt
+                    # (parallel prompts: FIFO let tap-B grant prompt A);
+                    # absent → FIFO fallback, logged by tools.approval.
+                    count = resolve_gateway_approval(
+                        session_key, choice,
+                        tool_use_id=tool_use_id or None,
+                    )
                     logger.info(
                         "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                         count, session_key, choice, user_display,

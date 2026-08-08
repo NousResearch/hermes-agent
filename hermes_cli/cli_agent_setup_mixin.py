@@ -18,6 +18,12 @@ import sys
 
 from rich.markup import escape as _escape
 
+# api modes whose runtime is an external agent loop that owns its own
+# credentials and transport — there is no HTTP base URL on these paths by
+# design (the resolver returns base_url "" rather than a routable sentinel),
+# so the generic HTTP base-URL validation below must not reject them.
+EXTERNAL_AGENT_LOOP_API_MODES = frozenset({"claude_agent_sdk"})
+
 
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
@@ -119,7 +125,9 @@ class CLIAgentSetupMixin:
                 print("   Run 'hermes model' to choose a provider, or "
                       "'hermes setup' for first-time setup.")
                 return False
-        if not isinstance(base_url, str) or not base_url:
+        if resolved_api_mode not in EXTERNAL_AGENT_LOOP_API_MODES and (
+            not isinstance(base_url, str) or not base_url
+        ):
             print("\n⚠️  Provider resolver returned an empty base URL. "
                   "Check your provider config or run: hermes setup")
             return False

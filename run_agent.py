@@ -3135,6 +3135,15 @@ class AIAgent:
                         exc_info=True,
                     )
 
+        # claude-agent-sdk runtime: the blocking run_turn observes only the
+        # session's own interrupt event — signal it directly (idempotent;
+        # schedules client.interrupt() on the session's loop). (#25267)
+        sdk_session = getattr(self, "_claude_sdk_session", None)
+        if sdk_session is not None:
+            try:
+                sdk_session.request_interrupt()
+            except Exception:
+                logger.debug("claude-sdk interrupt signal failed", exc_info=True)
         # A cron turn performs its API request on the conversation thread to
         # avoid the nested interrupt-worker deadlock.  Unlike the normal worker
         # path, its client is registered here so this cross-thread interrupt can
@@ -4263,6 +4272,19 @@ class AIAgent:
         except Exception:
             pass
 
+        # Disconnect the claude-agent-sdk session: it owns a loop thread and
+        # a Claude Code CLI subprocess that would otherwise outlive the
+        # evicted agent forever. Continuity survives eviction regardless —
+        # the rebuilt agent RESUMES via the persisted claude_sdk_session_id
+        # on the session row. (#25267)
+        try:
+            sdk_session = getattr(self, "_claude_sdk_session", None)
+            if sdk_session is not None:
+                self._claude_sdk_session = None
+                sdk_session.close()
+        except Exception:
+            pass
+
     def close(self) -> None:
         """Release all resources held by this agent instance.
 
@@ -4351,6 +4373,17 @@ class AIAgent:
             if codex_session is not None:
                 self._codex_session = None
                 codex_session.close()
+        except Exception:
+            pass
+
+        # 6d. Disconnect the claude-agent-sdk session (subscription runtime).
+        # The SDK client owns a Claude Code CLI subprocess; dropping it to GC
+        # on /new, expiry, or cache eviction leaks that subprocess. (#25267)
+        try:
+            sdk_session = getattr(self, "_claude_sdk_session", None)
+            if sdk_session is not None:
+                self._claude_sdk_session = None
+                sdk_session.close()
         except Exception:
             pass
 
@@ -8022,6 +8055,19 @@ class AIAgent:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+
+    def _run_claude_agent_sdk_turn(
+        self,
+        *,
+        user_message: str,
+        original_user_message: Any,
+        messages: List[Dict[str, Any]],
+        effective_task_id: str,
+        should_review_memory: bool = False,
+    ) -> Dict[str, Any]:
+        """Forwarder — see ``agent.claude_sdk_runtime.run_claude_agent_sdk_turn``."""
+        from agent.claude_sdk_runtime import run_claude_agent_sdk_turn
+        return run_claude_agent_sdk_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
 
 def main(
     query: str = None,

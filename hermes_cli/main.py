@@ -787,6 +787,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_openrouter,
     _model_flow_nous,
     _model_flow_openai_codex,
+    _model_flow_claude_agent_sdk,
     _model_flow_xai_oauth,
     _model_flow_qwen_oauth,
     _model_flow_minimax_oauth,
@@ -3488,6 +3489,8 @@ def select_provider_and_model(args=None):
         _remove_custom_provider(config)
     elif selected_provider == "anthropic":
         _model_flow_anthropic(config, current_model)
+    elif selected_provider == "claude-agent-sdk":
+        _model_flow_claude_agent_sdk(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
     elif selected_provider == "stepfun":

@@ -1,0 +1,5 @@
+name: claude-agent-sdk-provider
+kind: model-provider
+version: 1.0.0
+description: Claude via the official Agent SDK (subscription OAuth, agent-loop runtime)
+author: Felipe Cavalcanti

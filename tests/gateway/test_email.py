@@ -806,8 +806,39 @@ class TestConnectionConfigResolution(unittest.TestCase):
     """Host/address resolution and pre-connect validation (#49736)."""
 
 
-    def test_connect_aborts_without_attempting_imap_when_host_missing(self):
-        """A missing host returns False without the cryptic DNS error, and marks
+    def test_connect_send_only_mode_when_imap_missing(self):
+        """When IMAP host is missing but SMTP is configured, connect succeeds
+        in send-only mode: no IMAP connection is attempted, and no fatal error
+        is raised (#40715 is about the retry loop for a fully-missing config)."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "",
+            "EMAIL_IMAP_HOST": "",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }, clear=False):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        self.assertFalse(adapter._use_imap)
+        self.assertFalse(adapter._use_smtp_auth)
+
+        with patch("imaplib.IMAP4_SSL") as mock_imap, \
+             patch.object(adapter, "_connect_smtp") as mock_connect_smtp:
+            mock_smtp = MagicMock()
+            mock_connect_smtp.return_value = mock_smtp
+            result = asyncio.run(adapter.connect())
+
+        self.assertTrue(result)
+        mock_imap.assert_not_called()  # IMAP not attempted in send-only mode
+        # No fatal error — send-only is a valid configuration
+        self.assertFalse(adapter.has_fatal_error)
+        # Polling task should NOT be created
+        self.assertIsNone(getattr(adapter, "_poll_task", None))
+
+    def test_connect_aborts_when_smtp_host_missing(self):
+        """A missing SMTP host returns False without a cryptic DNS error, and marks
         the failure non-retryable so the gateway stops reconnecting (#40715)."""
         import asyncio
         from gateway.config import PlatformConfig
@@ -815,22 +846,20 @@ class TestConnectionConfigResolution(unittest.TestCase):
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
             "EMAIL_PASSWORD": "secret",
-            "EMAIL_IMAP_HOST": "",
-            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "",
         }, clear=False):
             adapter = EmailAdapter(PlatformConfig(enabled=True))
 
-        with patch("imaplib.IMAP4_SSL") as mock_imap:
-            result = asyncio.run(adapter.connect())
+        result = asyncio.run(adapter.connect())
 
         self.assertFalse(result)
-        mock_imap.assert_not_called()
         # The OOM fix (#40715): a blank host must NOT leave the platform in the
         # retryable reconnect loop — it is a permanent config error.
         self.assertTrue(adapter.has_fatal_error)
         self.assertEqual(adapter.fatal_error_code, "email_missing_configuration")
         self.assertFalse(adapter.fatal_error_retryable)
-        self.assertIn("EMAIL_IMAP_HOST", adapter.fatal_error_message or "")
+        self.assertIn("EMAIL_SMTP_HOST", adapter.fatal_error_message or "")
 
     def test_blank_present_env_vars_are_not_required(self):
         """Blank/whitespace EMAIL_* values must read as missing (#40715) — an
@@ -842,6 +871,18 @@ class TestConnectionConfigResolution(unittest.TestCase):
                 "EMAIL_IMAP_HOST": blank, "EMAIL_SMTP_HOST": blank,
             }, clear=False):
                 self.assertFalse(check_email_requirements())
+
+    def test_send_only_mode_minimal_config(self):
+        """EMAIL_ADDRESS + EMAIL_SMTP_HOST alone are sufficient to enable the
+        platform (send-only mode); PASSWORD and IMAP_HOST are optional."""
+        from plugins.platforms.email.adapter import check_email_requirements
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "a@b.com",
+            "EMAIL_PASSWORD": "",
+            "EMAIL_IMAP_HOST": "",
+            "EMAIL_SMTP_HOST": "smtp.b.com",
+        }, clear=False):
+            self.assertTrue(check_email_requirements())
 
 
 class TestSenderAuthentication(unittest.TestCase):

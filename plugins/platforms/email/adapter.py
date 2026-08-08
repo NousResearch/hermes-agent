@@ -208,12 +208,15 @@ def check_email_requirements() -> bool:
 
     Treats blank/whitespace-only values as missing so an abandoned setup that
     left empty ``EMAIL_*`` keys in ``.env`` does not enable the platform (#40715).
+    Send-only setups need ``EMAIL_ADDRESS`` + ``EMAIL_SMTP_HOST`` only —
+    ``EMAIL_PASSWORD`` and ``EMAIL_IMAP_HOST`` are optional.
     """
     addr = _get_secret("EMAIL_ADDRESS", "").strip()
-    pwd = _get_secret("EMAIL_PASSWORD", "").strip()
-    imap = _get_secret("EMAIL_IMAP_HOST", "").strip()
     smtp = _get_secret("EMAIL_SMTP_HOST", "").strip()
-    return all([addr, pwd, imap, smtp])
+    if not all([addr, smtp]):
+        return False
+    # pwd / imap are optional for send-only mode
+    return True
 
 
 def _decode_header_value(raw: str) -> str:
@@ -480,12 +483,23 @@ class EmailAdapter(BasePlatformAdapter):
         # instead of an obvious "host not set" error.
         extra = config.extra or {}
         self._address = (_get_secret("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
-        self._password = _get_secret("EMAIL_PASSWORD", "")
+        self._password = _get_secret("EMAIL_PASSWORD", "").strip()
         self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
         self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
+
+        # Send-only mode flags: derived once at init, checked in connect() and send paths.
+        # When password is empty, SMTP AUTH is skipped (useful for internal relays).
+        # When IMAP host is empty, the polling loop is not started (outbound-only).
+        self._use_smtp_auth = bool(self._password)
+        self._use_imap = bool(self._imap_host and self._password)
+
+        if not self._use_imap:
+            logger.info("[Email] IMAP reception disabled — send-only mode")
+        if not self._use_smtp_auth:
+            logger.info("[Email] SMTPAUTH disabled — no-auth SMTP mode")
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -594,16 +608,17 @@ class EmailAdapter(BasePlatformAdapter):
             return _connect(ipv4_only=True)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Connect to the IMAP server and start polling for new messages."""
-        # Validate up front so a missing host surfaces as an actionable config
-        # error instead of IMAP4_SSL("") raising the cryptic
-        # ``[Errno 8] nodename nor servname provided, or not known``.
+        """Connect to the IMAP server (optional) and validate SMTP.
+
+        Send-only setups work with just ``EMAIL_ADDRESS`` + ``EMAIL_SMTP_HOST``
+        — IMAP / password are optional (dummy placeholders are accepted). When
+        IMAP is not configured the polling loop is not started.
+        """
+        # Only ADDRESS + SMTP_HOST are required; PASSWORD / IMAP_HOST are optional.
         missing = [
             name
             for name, value in (
                 ("EMAIL_ADDRESS", self._address),
-                ("EMAIL_PASSWORD", self._password),
-                ("EMAIL_IMAP_HOST", self._imap_host),
                 ("EMAIL_SMTP_HOST", self._smtp_host),
             )
             if not value
@@ -625,30 +640,39 @@ class EmailAdapter(BasePlatformAdapter):
             )
             return False
 
-        try:
-            # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
-            _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
-            imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
-        except Exception as e:
-            logger.error("[Email] IMAP connection failed: %s", e)
-            return False
+        # IMAP reception is optional — only test+start the polling loop when
+        # _use_imap flag is set (both IMAP_HOST and PASSWORD configured).
+        if self._use_imap:
+            try:
+                # Test IMAP connection
+                imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+                imap.login(self._address, self._password)
+                _send_imap_id(imap)
+                # Mark all existing messages as seen so we only process new ones
+                imap.select("INBOX")
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    for uid in data[0].split():
+                        self._seen_uids.add(uid)
+                # Keep only the most recent UIDs to prevent unbounded growth
+                self._trim_seen_uids()
+                imap.logout()
+                logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            except Exception as e:
+                logger.error("[Email] IMAP connection failed: %s", e)
+                return False
+        else:
+            logger.info("[Email] Skipping IMAP setup — send-only mode")
 
         try:
-            # Test SMTP connection
+            # Test SMTP connection; AUTH skipped when _use_smtp_auth is False.
             smtp = self._connect_smtp()
             try:
-                smtp.login(self._address, self._password)
+                if self._use_smtp_auth:
+                    smtp.login(self._address, self._password)
+                    logger.info("[Email] SMTPAUTH login successful for %s", self._address)
+                else:
+                    logger.info("[Email] SMTPAUTH skipped — no-auth mode")
             finally:
                 smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
@@ -657,7 +681,9 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         self._running = True
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        # Only start the IMAP polling loop if IMAP is enabled.
+        if self._use_imap:
+            self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")
         return True
 
@@ -995,7 +1021,8 @@ class EmailAdapter(BasePlatformAdapter):
 
         smtp = self._connect_smtp()
         try:
-            smtp.login(self._address, self._password)
+            if self._use_smtp_auth:
+                smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -1121,7 +1148,8 @@ class EmailAdapter(BasePlatformAdapter):
 
         smtp = self._connect_smtp()
         try:
-            smtp.login(self._address, self._password)
+            if self._use_smtp_auth:
+                smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -1199,7 +1227,8 @@ class EmailAdapter(BasePlatformAdapter):
 
         smtp = self._connect_smtp()
         try:
-            smtp.login(self._address, self._password)
+            if self._use_smtp_auth:
+                smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -1257,8 +1286,9 @@ async def _standalone_send(
     except (ValueError, TypeError):
         smtp_port = 587
 
-    if not all([address, password, smtp_host]):
-        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+    if not all([address, smtp_host]):
+        return {"error": "Email not configured (EMAIL_ADDRESS and EMAIL_SMTP_HOST required)"}
+    use_auth = bool(password)
 
     try:
         msg = MIMEText(message, "plain", "utf-8")
@@ -1269,7 +1299,8 @@ async def _standalone_send(
 
         server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls(context=_ssl.create_default_context())
-        server.login(address, password)
+        if use_auth:
+            server.login(address, password)
         server.send_message(msg)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}

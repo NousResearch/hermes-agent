@@ -550,6 +550,11 @@ def _export_dump_excluding_session_vars(
 # ---------------------------------------------------------------------------
 
 
+# Account names accepted for bare ``~name`` emission in _quote_cwd_for_cd.
+# Deliberately narrower than POSIX allows: anything outside this set takes
+# the fully quoted path rather than reaching the shell unquoted.
+_TILDE_USER_RE = re.compile(r"^~([A-Za-z0-9._][A-Za-z0-9._-]*)(/.*)?$")
+
 class BaseEnvironment(ABC):
     """Common interface and unified execution flow for all Hermes backends.
 
@@ -786,13 +791,32 @@ class BaseEnvironment(ABC):
 
     @staticmethod
     def _quote_cwd_for_cd(cwd: str) -> str:
-        """Quote a ``cd`` target while preserving ``~`` expansion."""
+        """Quote a ``cd`` target while preserving ``~`` expansion.
+
+        The named form ``~other`` is preserved too, and it cannot go through
+        ``$HOME``: it names a different account's home, which only the remote
+        shell can resolve. Tilde expansion applies to the unquoted prefix up to
+        the first unquoted ``/``, so the prefix is emitted bare and only the
+        remainder is quoted. ``shlex.quote``-ing the whole thing yields
+        ``cd '~other/x'``, which no shell expands, and the session silently
+        starts in the login directory instead.
+
+        The account name is matched against a conservative pattern before it is
+        emitted unquoted, so a cwd like ``~$(cmd)/x`` still takes the fully
+        quoted path rather than reaching the shell unquoted.
+        """
         if cwd == "~":
             return cwd
         if cwd == "~/":
             return "$HOME"
         if cwd.startswith("~/"):
             return f"$HOME/{shlex.quote(cwd[2:])}"
+        named = _TILDE_USER_RE.match(cwd)
+        if named:
+            user, rest = named.group(1), named.group(2) or ""
+            if rest in ("", "/"):
+                return f"~{user}"
+            return f"~{user}/{shlex.quote(rest[1:])}"
         return shlex.quote(cwd)
 
     def _quote_shell_path(self, path: str) -> str:

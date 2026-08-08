@@ -114,6 +114,10 @@ MiniMax TTS selects its region, endpoint, and credential together:
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
 
+**Voice selection**: For the built-in `piper` and `kittentts` providers the provider-specific key (`tts.piper.voice`, `tts.kittentts.voice`) wins. The shared top-level `tts.voice` key — the same key plugin providers read — is honored as a fallback, so switching backends keeps your configured voice instead of silently rendering the provider default. Requesting a voice the loaded model doesn't offer fails with an error listing the available choices rather than substituting another voice.
+
+**KittenTTS package version**: `hermes setup tts` installs the KittenTTS 0.8.1 wheel, which resolves Hugging Face model ids (e.g., `KittenML/kitten-tts-nano-0.8-int8`) on its own. The legacy PyPI releases (`pip install kittentts`, 0.1.x) cannot resolve repo ids; Hermes falls back to resolving the model files itself, but upgrading to the wheel is recommended.
+
 ### Gemini Persona Prompts
 
 Gemini TTS can follow natural-language performance direction. Set `tts.gemini.persona_prompt_file` to a local Markdown or text file that describes the voice persona. The file can include Gemini-style sections such as `AUDIO PROFILE`, `SCENE`, `DIRECTOR'S NOTES`, `SAMPLE CONTEXT`, and `TRANSCRIPT`.

@@ -63,7 +63,7 @@ class TestResolvePiperVoicePath:
 
     def test_empty_voice_falls_back_to_default_name(self, tmp_path):
         (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx").write_bytes(b"model")
-        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}")
+        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}", encoding="utf-8")
         result = _resolve_piper_voice_path("", tmp_path)
         assert result.endswith(f"{DEFAULT_PIPER_VOICE}.onnx")
 
@@ -111,7 +111,7 @@ class TestGeneratePiperTts:
     def _prepare_voice_files(self, tmp_path, voice=DEFAULT_PIPER_VOICE):
         model = tmp_path / f"{voice}.onnx"
         model.write_bytes(b"model")
-        (tmp_path / f"{voice}.onnx.json").write_text("{}")
+        (tmp_path / f"{voice}.onnx.json").write_text("{}", encoding="utf-8")
         return model
 
     def test_loads_voice_and_writes_wav(self, tmp_path, monkeypatch):
@@ -180,6 +180,52 @@ class TestGeneratePiperTts:
         assert _StubPiperVoice.loaded == [str(model)]
 
 
+class TestPiperVoiceSelectionFallback:
+    """Voice resolution contract (#79459): provider key wins, the shared
+    top-level ``tts.voice`` is the fallback, garbage falls back to the
+    default — but never silently substitutes a *different* cached voice."""
+
+    def _prepare_named_voice(self, tmp_path, voice):
+        model = tmp_path / f"{voice}.onnx"
+        model.write_bytes(b"model")
+        (tmp_path / f"{voice}.onnx.json").write_text("{}", encoding="utf-8")
+        return model
+
+    def test_top_level_tts_voice_used_when_no_piper_voice(self, tmp_path, monkeypatch):
+        """``tts.voice`` (the plugin-dispatch key) must reach piper when
+        ``tts.piper.voice`` is unset — previously piper fell through to the
+        lessac default and rendered the wrong voice silently (#79459)."""
+        model = self._prepare_named_voice(tmp_path, "en_US-ryan-medium")
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
+
+        config = {"voice": "en_US-ryan-medium", "piper": {"voices_dir": str(tmp_path)}}
+        tts_tool._generate_piper_tts("hi", str(tmp_path / "out.wav"), config)
+
+        assert _StubPiperVoice.loaded == [str(model)]
+
+    def test_piper_voice_beats_top_level_voice(self, tmp_path, monkeypatch):
+        ryan = self._prepare_named_voice(tmp_path, "en_US-ryan-medium")
+        self._prepare_named_voice(tmp_path, DEFAULT_PIPER_VOICE)
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
+
+        config = {
+            "voice": DEFAULT_PIPER_VOICE,
+            "piper": {"voice": "en_US-ryan-medium", "voices_dir": str(tmp_path)},
+        }
+        tts_tool._generate_piper_tts("hi", str(tmp_path / "out.wav"), config)
+
+        assert _StubPiperVoice.loaded == [str(ryan)]
+
+    def test_non_string_voice_falls_back_to_default(self, tmp_path, monkeypatch):
+        default = self._prepare_named_voice(tmp_path, DEFAULT_PIPER_VOICE)
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
+
+        config = {"voice": 42, "piper": {"voice": None, "voices_dir": str(tmp_path)}}
+        tts_tool._generate_piper_tts("hi", str(tmp_path / "out.wav"), config)
+
+        assert _StubPiperVoice.loaded == [str(default)]
+
+
 # ---------------------------------------------------------------------------
 # text_to_speech_tool end-to-end (provider == "piper")
 # ---------------------------------------------------------------------------
@@ -188,7 +234,7 @@ class TestTextToSpeechToolWithPiper:
     def test_dispatches_to_piper(self, tmp_path, monkeypatch):
         model = tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx"
         model.write_bytes(b"model")
-        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}")
+        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}", encoding="utf-8")
 
         monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
 

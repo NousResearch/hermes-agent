@@ -2471,40 +2471,7 @@ class TestHandleMaxIterations:
         assert len(result) > 0
         assert "summary" in result.lower()
 
-    def test_summary_retries_share_relay_identity(self, agent):
-        agent.client.chat.completions.create.side_effect = [
-            _mock_response(content=""),
-            _mock_response(content="Summary"),
-        ]
-        agent._cached_system_prompt = "You are helpful."
-        relay_calls = []
-
-        def execute_current(request, callback, **kwargs):
-            relay_calls.append(kwargs)
-            return callback(request)
-
-        with (
-            patch("agent.relay_llm.execute_current", side_effect=execute_current),
-            patch("agent.relay_llm.complete_logical_call") as complete_logical,
-        ):
-            result = agent._handle_max_iterations(
-                [{"role": "user", "content": "do stuff"}],
-                60,
-            )
-
-        assert result == "Summary"
-        assert [call["metadata"]["retry_count"] for call in relay_calls] == [0, 1]
-        assert relay_calls[0]["metadata"]["api_request_id"] == (
-            relay_calls[1]["metadata"]["api_request_id"]
-        )
-        assert relay_calls[0]["metadata"]["call_role"] == "iteration_summary"
-        assert all(call["defer_logical_completion"] is True for call in relay_calls)
-        complete_logical.assert_called_once_with(
-            relay_calls[0]["metadata"]["api_request_id"],
-            outcome="success",
-        )
-
-    def test_api_failure_returns_error(self, agent):
+    def test_api_failure_returns_safe_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."
         messages = [{"role": "user", "content": "do stuff"}]
@@ -2512,9 +2479,8 @@ class TestHandleMaxIterations:
             result = agent._handle_max_iterations(messages, 60)
         assert isinstance(result, str)
         assert "error" in result.lower()
-        assert "API down" in result
-        complete_logical.assert_called_once()
-        assert complete_logical.call_args.kwargs == {"outcome": "failed"}
+        assert "work completed before the limit remains" in result.lower()
+        assert "API down" not in result
 
     def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"

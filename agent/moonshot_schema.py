@@ -125,7 +125,7 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
     # empty, drop it entirely.
     if "enum" in repaired and isinstance(repaired["enum"], list):
         node_type = repaired.get("type")
-        if node_type in {"string", "integer", "number", "boolean"}:
+        if isinstance(node_type, str) and node_type in {"string", "integer", "number", "boolean"}:
             cleaned = [v for v in repaired["enum"]
                        if v is not None and v != ""]
             if cleaned:

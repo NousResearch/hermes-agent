@@ -393,3 +393,23 @@ class TestUnionTypeList:
         assert sort["type"] == "string"
         assert sort["enum"] == ["asc", "desc"]
         assert params["properties"]["sort"]["type"] == ["string", "null"]
+
+    def test_ref_union_type_list_with_enum_does_not_crash(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "choice": {
+                    "$ref": "#/$defs/Choice",
+                    "type": ["string", "null"],
+                    "enum": ["a", None],
+                },
+            },
+            "$defs": {"Choice": {"type": "string"}},
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+
+        choice = out["properties"]["choice"]
+        assert choice["$ref"] == "#/$defs/Choice"
+        assert choice["type"] == ["string", "null"]
+        assert choice["enum"] == ["a", None]

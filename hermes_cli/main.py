@@ -1078,12 +1078,16 @@ def _has_any_provider_configured() -> bool:
     return False
 
 
-def _session_browse_picker(sessions: list) -> Optional[str]:
+def _session_browse_picker(sessions: list, include_profile: bool = False) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
 
     Returns the selected session ID, or None if cancelled.
     Uses curses (not simple_term_menu) to avoid the ghost-duplication rendering
     bug in tmux/iTerm when arrow keys are used.
+
+    ``include_profile`` adds a Profile column (used by ``sessions browse --all``
+    so sessions from different profiles are distinguishable). The profile label
+    comes from each row's ``profile_name`` (None displays as "default").
     """
     if not sessions:
         print("No sessions found.")
@@ -1102,10 +1106,13 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             source = s.get("source", "")[:6]
             last_active = _relative_time(s.get("last_active"))
             sid = s["id"][:18]
+            profile = (s.get("profile_name") or "default")[:10]
 
             # Adaptive column widths based on terminal width
-            # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 18]
+            # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 18] [profile 10]
             fixed_cols = 3 + 12 + 6 + 18 + 6  # arrow + active + src + id + padding
+            if include_profile:
+                fixed_cols += 12  # profile + padding
             name_width = max(20, max_x - fixed_cols)
 
             if title:
@@ -1115,17 +1122,24 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             else:
                 name = sid
 
-            return f"{name:<{name_width}}  {last_active:<10}  {source:<5} {sid}"
+            row = f"{name:<{name_width}}  {last_active:<10}  {source:<5} {sid}"
+            if include_profile:
+                row += f"  {profile}"
+            return row
 
         def _match(s, query):
             """Check if a session matches the search query (case-insensitive)."""
             q = query.lower()
-            return (
+            if (
                 q in (s.get("title") or "").lower()
                 or q in (s.get("preview") or "").lower()
                 or q in s.get("id", "").lower()
                 or q in (s.get("source") or "").lower()
-            )
+            ):
+                return True
+            if include_profile:
+                return q in (s.get("profile_name") or "").lower()
+            return False
 
         def _curses_browse(stdscr):
             curses.curs_set(0)
@@ -1173,8 +1187,12 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
                 # Column header line
                 fixed_cols = 3 + 12 + 6 + 18 + 6
+                if include_profile:
+                    fixed_cols += 12
                 name_width = max(20, max_x - fixed_cols)
                 col_header = f"   {'Title / Preview':<{name_width}}  {'Active':<10}  {'Src':<5} {'ID'}"
+                if include_profile:
+                    col_header += "  Profile"
                 try:
                     dim_attr = (
                         curses.color_pair(4) if curses.has_colors() else curses.A_DIM
@@ -1301,7 +1319,11 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             label = label[:47] + "..."
         last_active = _relative_time(s.get("last_active"))
         src = s.get("source", "")[:6]
-        print(f"  {i + 1:>3}. {label:<50}  {last_active:<10}  {src}")
+        if include_profile:
+            profile = (s.get("profile_name") or "default")[:10]
+            print(f"  {i + 1:>3}. {label:<46}  {last_active:<10}  {src:<6}  {profile}")
+        else:
+            print(f"  {i + 1:>3}. {label:<50}  {last_active:<10}  {src}")
 
     while True:
         try:
@@ -12033,6 +12055,12 @@ def main():
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).",
     )
+    sessions_list.add_argument(
+        "-A",
+        "--all",
+        action="store_true",
+        help="Include sessions from every profile (adds a Profile column)",
+    )
 
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(
@@ -12416,6 +12444,12 @@ def main():
     )
     sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
+    )
+    sessions_browse.add_argument(
+        "-A",
+        "--all",
+        action="store_true",
+        help="Include sessions from every profile (adds a Profile column)",
     )
 
 

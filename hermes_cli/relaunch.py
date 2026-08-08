@@ -51,8 +51,19 @@ def _build_inherited_flag_table() -> list[tuple[str, bool]]:
 _INHERITED_FLAGS_TABLE = _build_inherited_flag_table()
 
 
-def _extract_inherited_flags(argv: Sequence[str]) -> list[str]:
-    """Pull out flags that should carry over into a self-relaunched hermes."""
+def _extract_inherited_flags(
+    argv: Sequence[str], exclude_options: Optional[set] = None
+) -> list[str]:
+    """Pull out flags that should carry over into a self-relaunched hermes.
+
+    ``exclude_options`` is a set of option strings (e.g. ``{"-p",
+    "--profile"}``) that must NOT be carried over, even though they are
+    normally inherited.  Used when the relaunch's own ``extra_args``
+    supplies a fresh value for the option and the stale inherited one
+    would win (argparse/``_apply_profile_override`` stop at the first
+    occurrence).
+    """
+    exclude_options = exclude_options or set()
     flags: list[str] = []
     i = 0
     while i < len(argv):
@@ -61,13 +72,16 @@ def _extract_inherited_flags(argv: Sequence[str]) -> list[str]:
             key = arg.split("=", 1)[0]
             for flag, _ in _INHERITED_FLAGS_TABLE:
                 if key == flag:
-                    flags.append(arg)
+                    if flag not in exclude_options:
+                        flags.append(arg)
                     break
             i += 1
             continue
 
         for flag, takes_value in _INHERITED_FLAGS_TABLE:
             if arg == flag:
+                if flag in exclude_options:
+                    break  # skip this option (and its value) entirely
                 flags.append(arg)
                 if takes_value and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
                     flags.append(argv[i + 1])
@@ -126,15 +140,19 @@ def build_relaunch_argv(
     *,
     preserve_inherited: bool = True,
     original_argv: Optional[Sequence[str]] = None,
+    exclude_options: Optional[set] = None,
 ) -> list[str]:
     """Construct an argv list for replacing the current process with hermes.
 
     Args:
-        extra_args: Arguments to append (e.g. ``["--resume", id]``).
+        extra_args: Arguments to append (e.g. a resume pair).
         preserve_inherited: Whether to carry over UI / behaviour flags
             tagged with ``inherit_on_relaunch`` in the parser.
         original_argv: The original argv to scan for flags (defaults to
             ``sys.argv[1:]``).
+        exclude_options: Option strings that must not be inherited even
+            though they normally would be (see
+            :func:`_extract_inherited_flags`).
     """
     bin_path = resolve_hermes_bin()
 
@@ -146,7 +164,7 @@ def build_relaunch_argv(
     src = list(original_argv) if original_argv is not None else list(sys.argv[1:])
 
     if preserve_inherited:
-        argv.extend(_extract_inherited_flags(src))
+        argv.extend(_extract_inherited_flags(src, exclude_options=exclude_options))
 
     argv.extend(extra_args)
     return argv
@@ -157,6 +175,7 @@ def relaunch(
     *,
     preserve_inherited: bool = True,
     original_argv: Optional[Sequence[str]] = None,
+    exclude_options: Optional[set] = None,
 ) -> None:
     """Replace the current process with a fresh hermes invocation.
 
@@ -179,7 +198,10 @@ def relaunch(
     new hermes started" — just with two PIDs in play instead of one.
     """
     new_argv = build_relaunch_argv(
-        extra_args, preserve_inherited=preserve_inherited, original_argv=original_argv
+        extra_args,
+        preserve_inherited=preserve_inherited,
+        original_argv=original_argv,
+        exclude_options=exclude_options,
     )
     if sys.platform == "win32":
         # Windows: subprocess + exit, because execvp can't swap to .cmd/.exe shims.

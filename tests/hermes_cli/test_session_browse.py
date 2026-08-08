@@ -9,8 +9,23 @@ Covers:
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from hermes_cli.main import _session_browse_picker
+
+
+# curses (and its _curses C extension) is Unix-only; the curses-based picker
+# classes can't run where the module is missing, so skip them there. The
+# fallback (numbered list) tests keep running everywhere.
+try:
+    import curses  # noqa: F401
+    _HAS_CURSES = True
+except ImportError:  # pragma: no cover - platform without _curses
+    _HAS_CURSES = False
+
+curses_unavailable = pytest.mark.skipif(
+    not _HAS_CURSES, reason="curses is not available on this platform"
+)
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────
@@ -95,6 +110,7 @@ class TestSessionBrowsePicker:
 
 # ─── Curses-based picker (mocked curses) ────────────────────────────────────
 
+@curses_unavailable
 class TestCursesBrowse:
     """Tests for the curses-based interactive picker via simulated key sequences."""
 
@@ -139,6 +155,80 @@ class TestCursesBrowse:
         keys = [ord(c) for c in "Beta"] + [10]
         result = self._run_with_keys(sessions, keys)
         assert result == "s2"
+
+
+@curses_unavailable
+class TestCursesBrowseProfile:
+    """Curses picker with include_profile=True shows the profile column."""
+
+    def _run_with_keys(self, sessions, key_sequence, include_profile=False):
+        mock_stdscr = MagicMock()
+        mock_stdscr.getmaxyx.return_value = (30, 120)
+        mock_stdscr.getch.side_effect = key_sequence
+
+        with patch("curses.wrapper") as mock_wrapper:
+            def run_inner(func):
+                try:
+                    func(mock_stdscr)
+                except StopIteration:
+                    pass  # key sequence exhausted
+
+            mock_wrapper.side_effect = run_inner
+            with patch("curses.curs_set"):
+                with patch("curses.has_colors", return_value=False):
+                    return _session_browse_picker(sessions, include_profile=include_profile)
+
+    def test_profile_shown_in_row(self):
+        """With include_profile, the profile label appears in each row."""
+        now = time.time()
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Alpha", "preview": "",
+             "last_active": now, "profile_name": "red"},
+            {"id": "s2", "source": "cli", "title": "Beta", "preview": "",
+             "last_active": now, "profile_name": None},
+        ]
+        mock_stdscr = MagicMock()
+        mock_stdscr.getmaxyx.return_value = (30, 120)
+        mock_stdscr.getch.side_effect = [10]  # Enter selects row 0
+
+        rendered_rows = []
+
+        def _capture_addnstr(y, x, text, *a, **k):
+            rendered_rows.append(text)
+
+        mock_stdscr.addnstr.side_effect = _capture_addnstr
+
+        with patch("curses.wrapper") as mock_wrapper:
+            def run_inner(func):
+                try:
+                    func(mock_stdscr)
+                except StopIteration:
+                    pass
+
+            mock_wrapper.side_effect = run_inner
+            with patch("curses.curs_set"):
+                with patch("curses.has_colors", return_value=False):
+                    result = _session_browse_picker(sessions, include_profile=True)
+
+        assert result == "s1"
+        joined = "\n".join(rendered_rows)
+        assert "red" in joined
+        # NULL profile_name displays as "default"
+        assert "default" in joined
+
+    def test_profile_filterable(self):
+        """Typing a profile name filters the list when include_profile is on."""
+        now = time.time()
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Alpha", "preview": "",
+             "last_active": now, "profile_name": "red"},
+            {"id": "s2", "source": "cli", "title": "Beta", "preview": "",
+             "last_active": now, "profile_name": "green"},
+        ]
+        # Type "red" then Enter — only the red session should be selectable
+        keys = [ord(c) for c in "red"] + [10]
+        result = self._run_with_keys(sessions, keys, include_profile=True)
+        assert result == "s1"
 
 
 

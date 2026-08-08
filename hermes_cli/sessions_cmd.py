@@ -39,8 +39,8 @@ def _relative_time(ts):
     return _m()._relative_time(ts)
 
 
-def _session_browse_picker(sessions):
-    return _m()._session_browse_picker(sessions)
+def _session_browse_picker(sessions, include_profile: bool = False):
+    return _m()._session_browse_picker(sessions, include_profile=include_profile)
 
 
 def _size_delta_label(saved_mb):
@@ -53,6 +53,107 @@ def _confirm_prompt(prompt: str) -> bool:
         return input(prompt).strip().lower() in {"y", "yes"}
     except (EOFError, KeyboardInterrupt):
         return False
+
+
+def _profile_label(s) -> str:
+    """Human-readable profile name for a session row (None -> "default")."""
+    return s.get("profile_name") or "default"
+
+
+def _collect_all_profile_sessions(
+    source: str = None,
+    exclude_sources: list = None,
+    limit: int = 20,
+) -> list:
+    """Collect sessions from every profile's state.db, tagged with their profile.
+
+    Used by ``hermes sessions list --all`` / ``browse --all``. Each profile's
+    store is opened read-only (no write lock, no schema repair) following the
+    desktop sidebar's cross-profile aggregation pattern. Rows are tagged with
+    the owning profile name from the DB path — authoritative even when the
+    sessions.profile_name column is NULL (default profile stamps NULL).
+
+    Returns up to ``limit`` sessions per profile, merged and ordered by most
+    recent activity. Profiles without a state.db are skipped. A custom
+    HERMES_HOME that ``list_profiles()`` cannot enumerate (the active profile
+    resolves to ``"custom"``) is appended under that label so --all still
+    shows the active profile's own sessions.
+    """
+    from pathlib import Path
+
+    from hermes_cli.profiles import get_active_profile_name, list_profiles
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+
+    profiles = list_profiles()
+
+    merged: list = []
+    for profile in profiles:
+        db_path = Path(profile.path) / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            db = SessionDB(db_path=db_path, read_only=True)
+        except Exception:
+            # A profile whose store can't be opened (locked, malformed)
+            # must not break the whole --all listing.
+            continue
+        try:
+            rows = db.list_sessions_rich(
+                source=source,
+                exclude_sources=exclude_sources,
+                limit=limit,
+                order_by_last_active=True,
+            )
+        except Exception:
+            rows = []
+        finally:
+            db.close()
+        for s in rows:
+            s["profile_name"] = profile.name
+            merged.append(s)
+
+    # list_profiles() only enumerates the default home plus named profile
+    # dirs.  A custom HERMES_HOME (get_active_profile_name() -> "custom")
+    # is not in that set, so its sessions would silently vanish from
+    # --all.  Surface the active profile's own store when it isn't already
+    # covered by the enumeration above.
+    active_name = get_active_profile_name() or "default"
+    active_home = Path(get_hermes_home()).resolve()
+    covered_homes = {Path(p.path).resolve() for p in profiles}
+    if active_name == "custom" and active_home not in covered_homes:
+        db_path = active_home / "state.db"
+        if db_path.exists():
+            try:
+                db = SessionDB(db_path=db_path, read_only=True)
+            except Exception:
+                db = None
+            if db is not None:
+                try:
+                    rows = db.list_sessions_rich(
+                        source=source,
+                        exclude_sources=exclude_sources,
+                        limit=limit,
+                        order_by_last_active=True,
+                    )
+                except Exception:
+                    rows = []
+                finally:
+                    db.close()
+                for s in rows:
+                    s["profile_name"] = active_name
+                    merged.append(s)
+
+    # Most-recent activity first, matching the desktop sidebar's cross-profile
+    # ordering (list_sessions_rich sorts within one DB; we sort the merge).
+    merged.sort(
+        key=lambda s: (
+            s.get("last_active") or s.get("started_at") or 0.0,
+            s.get("id") or "",
+        ),
+        reverse=True,
+    )
+    return merged
 
 
 def cmd_sessions(args, sessions_parser=None):
@@ -239,9 +340,15 @@ def cmd_sessions(args, sessions_parser=None):
     if action == "list":
         from hermes_state import workspace_key as _ws_key
 
-        sessions = db.list_sessions_rich(
-            source=args.source, exclude_sources=_exclude, limit=args.limit
-        )
+        _show_profile = bool(getattr(args, "all", False))
+        if _show_profile:
+            sessions = _collect_all_profile_sessions(
+                source=args.source, exclude_sources=_exclude, limit=args.limit
+            )
+        else:
+            sessions = db.list_sessions_rich(
+                source=args.source, exclude_sources=_exclude, limit=args.limit
+            )
 
         # Workspace filter: match a session by its workspace key (git repo
         # root, else cwd) — path substring or exact basename.
@@ -271,32 +378,43 @@ def cmd_sessions(args, sessions_parser=None):
         has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
         has_titles = any(s.get("title") for s in sessions)
 
+        # Profile column (width 10) only appears with --all; otherwise the
+        # layout is byte-identical to before.
+        def _prof_cell(s):
+            return f" {_profile_label(s):<10}" if _show_profile else ""
+
         if has_ws:
             if has_titles:
-                print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
-                print("─" * 110)
+                print(f"{'Title':<28} {'Workspace':<18}{' Profile':<11} {'Last Active':<13} {'ID'}" if _show_profile
+                      else f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
+                print("─" * (122 if _show_profile else 110))
             else:
-                print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 100)
+                print(f"{'Preview':<38} {'Workspace':<18}{' Profile':<11} {'Last Active':<13} {'Src':<6} {'ID'}" if _show_profile
+                      else f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
+                print("─" * (112 if _show_profile else 100))
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
                 ws = _ws_label(s)[:16]
+                prof = _prof_cell(s)
                 if has_titles:
                     title = (s.get("title") or "—")[:26]
-                    print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                    print(f"{title:<28} {ws:<18}{prof} {last_active:<13} {s['id']}")
                 else:
                     preview = s.get("preview", "")[:36]
-                    print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+                    print(f"{preview:<38} {ws:<18}{prof} {last_active:<13} {s['source']:<6} {s['id']}")
             return
 
         if has_titles:
-            print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-            print("─" * 110)
+            print(f"{'Title':<32} {'Preview':<40}{' Profile':<11} {'Last Active':<13} {'ID'}" if _show_profile
+                  else f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+            print("─" * (122 if _show_profile else 110))
         else:
-            print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-            print("─" * 95)
+            print(f"{'Preview':<50}{' Profile':<11} {'Last Active':<13} {'Src':<6} {'ID'}" if _show_profile
+                  else f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+            print("─" * (107 if _show_profile else 95))
         for s in sessions:
             last_active = _relative_time(s.get("last_active"))
+            prof = _prof_cell(s)
             preview = (
                 s.get("preview", "")[:38]
                 if has_titles
@@ -305,10 +423,10 @@ def cmd_sessions(args, sessions_parser=None):
             if has_titles:
                 title = (s.get("title") or "—")[:30]
                 sid = s["id"]
-                print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                print(f"{title:<32} {preview:<40}{prof} {last_active:<13} {sid}")
             else:
                 sid = s["id"]
-                print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                print(f"{preview:<50}{prof} {last_active:<13} {s['source']:<6} {sid}")
 
     elif action == "export":
         from hermes_cli.session_filters import (
@@ -984,22 +1102,56 @@ def cmd_sessions(args, sessions_parser=None):
         limit = getattr(args, "limit", 500) or 500
         source = getattr(args, "source", None)
         _browse_exclude = None if source else ["tool"]
-        sessions = db.list_sessions_rich(
-            source=source, exclude_sources=_browse_exclude, limit=limit
-        )
+        _browse_all = bool(getattr(args, "all", False))
+        if _browse_all:
+            sessions = _collect_all_profile_sessions(
+                source=source, exclude_sources=_browse_exclude, limit=limit
+            )
+        else:
+            sessions = db.list_sessions_rich(
+                source=source, exclude_sources=_browse_exclude, limit=limit
+            )
         db.close()
         if not sessions:
             print("No sessions found.")
             return
 
-        selected_id = _session_browse_picker(sessions)
+        selected_id = _session_browse_picker(sessions, include_profile=_browse_all)
         if not selected_id:
             print("Cancelled.")
             return
 
+        # A session picked from another profile's store can only be resumed
+        # by launching hermes under that profile; same-profile picks (or a
+        # plain per-profile browse, where every row belongs to the current
+        # profile) keep the historical plain --resume.
+        _selected_profile = None
+        if _browse_all:
+            for s in sessions:
+                if s.get("id") == selected_id:
+                    _selected_profile = _profile_label(s)
+                    break
+
         # Launch hermes --resume <id> by replacing the current process
         print(f"Resuming session: {selected_id}")
         from hermes_cli.relaunch import relaunch
+
+        if _selected_profile:
+            from hermes_cli.profiles import get_active_profile_name
+
+            _current_profile = get_active_profile_name() or "default"
+            if _selected_profile != _current_profile:
+                # The user launched with -p <current>; that flag is inherited
+                # from the original argv and would precede the explicit -p
+                # <selected> below, and _apply_profile_override stops at the
+                # FIRST -p — so the resume would target the wrong profile.
+                # Exclude the inherited profile flags so only the explicit
+                # -p <selected> survives.
+                relaunch(
+                    ["-p", _selected_profile, "--resume", selected_id],
+                    exclude_options={"-p", "--profile"},
+                )
+                return  # won't reach here after execvp
 
         relaunch(["--resume", selected_id])
         return  # won't reach here after execvp

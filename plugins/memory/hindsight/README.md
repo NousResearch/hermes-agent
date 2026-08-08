@@ -117,8 +117,23 @@ Config file: `~/.hermes/hindsight/config.json`
 | `llm_provider` | `openai` | `openai`, `anthropic`, `gemini`, `groq`, `openrouter`, `minimax`, `ollama`, `lmstudio`, `openai_compatible` |
 | `llm_model` | per-provider | Model name (e.g. `gpt-4o-mini`, `qwen/qwen3.5-9b`) |
 | `llm_base_url` | — | Endpoint URL for `openai_compatible` (e.g. `http://192.168.1.10:8080/v1`) |
+| `llm_max_concurrent` | `32` | Maximum concurrent Hindsight LLM requests; lower for shared local endpoints to prevent slot starvation |
 
 The LLM API key is stored in `~/.hermes/.env` as `HINDSIGHT_LLM_API_KEY`.
+#### Local LLM Concurrency
+
+Hindsight's default `HINDSIGHT_API_LLM_MAX_CONCURRENT=32` is tuned for cloud APIs. When pointing Hindsight at a **local** LLM server (`llama-server`, vLLM, LM Studio) that also serves Hermes's main agent or subagents, the default will saturate the endpoint's slot pool and block Hermes from getting an inference slot — the symptom looks like Hermes "freezing" mid-conversation.
+
+For a shared local LLM endpoint, lower the limit to match the Ollama blog recommendation:
+
+```bash
+echo "HINDSIGHT_API_LLM_MAX_CONCURRENT=1" >> ~/.hermes/.env
+# Restart Hermes so the daemon respawns with the new env.
+```
+
+Set Hindsight's limit below the endpoint's total slot count when possible. On a one-slot server, `1` serializes Hindsight requests and prevents a 32-request burst, but Hermes may still wait behind the active Hindsight request. If Hindsight has its own **dedicated** LLM endpoint, you can raise the limit to match the endpoint's slot count.
+
+See the upstream [Hindsight docs](https://hindsight.vectorize.io/sdks/integrations/hermes) for the full caveat and diagnostic commands.
 
 ## Tools
 
@@ -137,6 +152,7 @@ Available in `hybrid` and `tools` memory modes:
 | `HINDSIGHT_API_KEY` | API key for Hindsight Cloud |
 | `HINDSIGHT_LLM_API_KEY` | LLM API key for local mode |
 | `HINDSIGHT_API_LLM_BASE_URL` | LLM Base URL for local mode (e.g. OpenRouter) |
+| `HINDSIGHT_API_LLM_MAX_CONCURRENT` | Maximum concurrent Hindsight LLM requests; use a low value for shared local endpoints to prevent slot starvation (see Local LLM Concurrency above) |
 | `HINDSIGHT_API_URL` | Override API endpoint |
 | `HINDSIGHT_BANK_ID` | Override bank name |
 | `HINDSIGHT_BUDGET` | Override recall budget |

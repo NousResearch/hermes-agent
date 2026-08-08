@@ -48,6 +48,7 @@ def _clean_env(tmp_path, monkeypatch):
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_OBSERVATION_SCOPES",
         "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HINDSIGHT_API_LLM_MAX_CONCURRENT",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -328,6 +329,62 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
 
+
+    def test_embedded_profile_env_includes_max_concurrent_from_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "llm_max_concurrent": 1,
+        })
+        assert env["HINDSIGHT_API_LLM_MAX_CONCURRENT"] == "1"
+
+    def test_embedded_profile_env_includes_max_concurrent_from_env(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_API_LLM_MAX_CONCURRENT", "4")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert env["HINDSIGHT_API_LLM_MAX_CONCURRENT"] == "4"
+
+    def test_embedded_profile_env_omits_max_concurrent_when_unset(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+        # SDK uses its own default (32) when the key is absent.
+        assert "HINDSIGHT_API_LLM_MAX_CONCURRENT" not in env
+
+    def test_embedded_profile_env_max_concurrent_config_overrides_env(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("HINDSIGHT_API_LLM_MAX_CONCURRENT", "4")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "llm_max_concurrent": 1,
+        })
+
+        # Config takes precedence over environment.
+        assert env["HINDSIGHT_API_LLM_MAX_CONCURRENT"] == "1"
+
+    def test_embedded_profile_env_max_concurrent_clamped_at_one(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "llm_max_concurrent": 0,
+        })
+        assert env["HINDSIGHT_API_LLM_MAX_CONCURRENT"] == "1"
+
+    def test_embedded_profile_env_max_concurrent_clamped_negative(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "llm_max_concurrent": -1,
+        })
+        assert env["HINDSIGHT_API_LLM_MAX_CONCURRENT"] == "1"
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}

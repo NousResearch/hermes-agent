@@ -59,6 +59,7 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.6.1"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
+_DEFAULT_LLM_MAX_CONCURRENT = 32  # mirrors SDK default (hindsight-api-slim config.py)
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -553,6 +554,26 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    # Wire HINDSIGHT_API_LLM_MAX_CONCURRENT through the profile environment so that:
+    #  (a) setting it in ~/.hermes/.env actually propagates to the embedded daemon on restart,
+    #  (b) config-change detection sees the delta and respawns the daemon with the new value.
+    max_concurrent = (
+        config.get("llm_max_concurrent")
+        if config.get("llm_max_concurrent") is not None
+        else os.environ.get("HINDSIGHT_API_LLM_MAX_CONCURRENT")
+    )
+    if max_concurrent is not None and max_concurrent != "":
+        parsed = _parse_int_setting(max_concurrent, _DEFAULT_LLM_MAX_CONCURRENT)
+        # Reject 0 / negative: asyncio.Semaphore(0) blocks forever, negatives raise ValueError.
+        clamped = max(1, parsed)
+        if clamped != parsed:
+            logger.warning(
+                "Hindsight LLM max_concurrent %r clamped to 1 (zero/negative values block all requests)",
+                max_concurrent,
+            )
+        env_values["HINDSIGHT_API_LLM_MAX_CONCURRENT"] = str(clamped)
+
     return env_values
 
 
@@ -1068,6 +1089,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
+            {"key": "llm_max_concurrent", "description": "Maximum concurrent embedded Hindsight LLM requests; lower for shared local endpoints to prevent slot starvation", "default": _DEFAULT_LLM_MAX_CONCURRENT, "when": {"mode": "local_embedded"}},
             {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "hermes"},
             {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},

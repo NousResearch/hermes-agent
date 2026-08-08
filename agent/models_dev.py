@@ -188,6 +188,8 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "perplexity": "perplexity",
     "cohere": "cohere",
     "ollama-cloud": "ollama-cloud",
+    "siliconflow": "siliconflow",
+    "siliconflow-cn": "siliconflow-cn",
 }
 
 # Reverse mapping: models.dev → Hermes (built lazily)

@@ -1917,7 +1917,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if whatsapp_cloud_phone_id and whatsapp_cloud_token:
         if Platform.WHATSAPP_CLOUD not in config.platforms:
             config.platforms[Platform.WHATSAPP_CLOUD] = PlatformConfig()
-        config.platforms[Platform.WHATSAPP_CLOUD].enabled = True
+        if not config.platforms[Platform.WHATSAPP_CLOUD].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.WHATSAPP_CLOUD].enabled = True
         config.platforms[Platform.WHATSAPP_CLOUD].extra.update({
             "phone_number_id": whatsapp_cloud_phone_id,
             "access_token": whatsapp_cloud_token,
@@ -2082,7 +2083,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if hass_token:
         if Platform.HOMEASSISTANT not in config.platforms:
             config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
-        config.platforms[Platform.HOMEASSISTANT].enabled = True
+        if not config.platforms[Platform.HOMEASSISTANT].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.HOMEASSISTANT].enabled = True
         config.platforms[Platform.HOMEASSISTANT].token = hass_token
         hass_url = getenv("HASS_URL")
         if hass_url:
@@ -2096,7 +2098,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if all([email_addr, email_pwd, email_imap, email_smtp]):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
-        config.platforms[Platform.EMAIL].enabled = True
+        if not config.platforms[Platform.EMAIL].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.EMAIL].enabled = True
         config.platforms[Platform.EMAIL].extra.update({
             "address": email_addr,
             "imap_host": email_imap,
@@ -2116,7 +2119,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if twilio_sid:
         if Platform.SMS not in config.platforms:
             config.platforms[Platform.SMS] = PlatformConfig()
-        config.platforms[Platform.SMS].enabled = True
+        if not config.platforms[Platform.SMS].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.SMS].enabled = True
         config.platforms[Platform.SMS].api_key = getenv("TWILIO_AUTH_TOKEN", "")
     sms_home = getenv("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:
@@ -2177,7 +2181,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if webhook_enabled:
         if Platform.WEBHOOK not in config.platforms:
             config.platforms[Platform.WEBHOOK] = PlatformConfig()
-        config.platforms[Platform.WEBHOOK].enabled = True
+        if not config.platforms[Platform.WEBHOOK].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.WEBHOOK].enabled = True
         if webhook_port:
             try:
                 config.platforms[Platform.WEBHOOK].extra["port"] = int(webhook_port)
@@ -2205,7 +2210,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.MSGRAPH_WEBHOOK not in config.platforms:
             config.platforms[Platform.MSGRAPH_WEBHOOK] = PlatformConfig()
         if msgraph_webhook_enabled:
-            config.platforms[Platform.MSGRAPH_WEBHOOK].enabled = True
+            if not config.platforms[Platform.MSGRAPH_WEBHOOK].extra.get("_enabled_explicit", False):
+                config.platforms[Platform.MSGRAPH_WEBHOOK].enabled = True
         if msgraph_webhook_port:
             try:
                 config.platforms[Platform.MSGRAPH_WEBHOOK].extra["port"] = int(
@@ -2244,7 +2250,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if dingtalk_client_id and dingtalk_client_secret:
         if Platform.DINGTALK not in config.platforms:
             config.platforms[Platform.DINGTALK] = PlatformConfig()
-        config.platforms[Platform.DINGTALK].enabled = True
+        if not config.platforms[Platform.DINGTALK].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.DINGTALK].enabled = True
         config.platforms[Platform.DINGTALK].extra.update({
             "client_id": dingtalk_client_id,
             "client_secret": dingtalk_client_secret,
@@ -2264,7 +2271,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if feishu_app_id and feishu_app_secret:
         if Platform.FEISHU not in config.platforms:
             config.platforms[Platform.FEISHU] = PlatformConfig()
-        config.platforms[Platform.FEISHU].enabled = True
+        if not config.platforms[Platform.FEISHU].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.FEISHU].enabled = True
         config.platforms[Platform.FEISHU].extra.update({
             "app_id": feishu_app_id,
             "app_secret": feishu_app_secret,
@@ -2292,7 +2300,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if wecom_bot_id and wecom_secret:
         if Platform.WECOM not in config.platforms:
             config.platforms[Platform.WECOM] = PlatformConfig()
-        config.platforms[Platform.WECOM].enabled = True
+        if not config.platforms[Platform.WECOM].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.WECOM].enabled = True
         config.platforms[Platform.WECOM].extra.update({
             "bot_id": wecom_bot_id,
             "secret": wecom_secret,
@@ -2315,7 +2324,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if wecom_callback_corp_id and wecom_callback_corp_secret:
         if Platform.WECOM_CALLBACK not in config.platforms:
             config.platforms[Platform.WECOM_CALLBACK] = PlatformConfig()
-        config.platforms[Platform.WECOM_CALLBACK].enabled = True
+        if not config.platforms[Platform.WECOM_CALLBACK].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.WECOM_CALLBACK].enabled = True
         config.platforms[Platform.WECOM_CALLBACK].extra.update({
             "corp_id": wecom_callback_corp_id,
             "corp_secret": wecom_callback_corp_secret,
@@ -2335,7 +2345,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if weixin_token or weixin_account_id:
         if Platform.WEIXIN not in config.platforms:
             config.platforms[Platform.WEIXIN] = PlatformConfig()
-        config.platforms[Platform.WEIXIN].enabled = True
+        if not config.platforms[Platform.WEIXIN].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.WEIXIN].enabled = True
         if weixin_token:
             config.platforms[Platform.WEIXIN].token = weixin_token
         extra = config.platforms[Platform.WEIXIN].extra
@@ -2377,7 +2388,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if bluebubbles_server_url and bluebubbles_password:
         if Platform.BLUEBUBBLES not in config.platforms:
             config.platforms[Platform.BLUEBUBBLES] = PlatformConfig()
-        config.platforms[Platform.BLUEBUBBLES].enabled = True
+        if not config.platforms[Platform.BLUEBUBBLES].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.BLUEBUBBLES].enabled = True
         config.platforms[Platform.BLUEBUBBLES].extra.update({
             "server_url": bluebubbles_server_url.rstrip("/"),
             "password": bluebubbles_password,
@@ -2417,7 +2429,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if qq_app_id or qq_client_secret:
         if Platform.QQBOT not in config.platforms:
             config.platforms[Platform.QQBOT] = PlatformConfig()
-        config.platforms[Platform.QQBOT].enabled = True
+        if not config.platforms[Platform.QQBOT].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.QQBOT].enabled = True
         extra = config.platforms[Platform.QQBOT].extra
         if qq_app_id:
             extra["app_id"] = qq_app_id
@@ -2459,7 +2472,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if yuanbao_app_id and yuanbao_app_secret:
         if Platform.YUANBAO not in config.platforms:
             config.platforms[Platform.YUANBAO] = PlatformConfig()
-        config.platforms[Platform.YUANBAO].enabled = True
+        if not config.platforms[Platform.YUANBAO].extra.get("_enabled_explicit", False):
+            config.platforms[Platform.YUANBAO].enabled = True
         extra = config.platforms[Platform.YUANBAO].extra
         extra["app_id"] = yuanbao_app_id
         extra["app_secret"] = yuanbao_app_secret

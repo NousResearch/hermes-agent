@@ -1,0 +1,28 @@
+request_id: "example-commercial-001"
+requested_outcome: "Pricing and commercial model with honest gaps labeled"
+target_user: "operator exploring first packaging of a diagnostic service"
+current_state: "product intent partial; buyer roles not fully declared"
+desired_state: "commercial packet with role map, scenarios, and DataRequests for private budget authority"
+constraints:
+  - "advisory_only"
+  - "no fabricated market sizes"
+canonical_sources: []
+preferred_profiles:
+  - commercial
+  - opportunity_mining
+requested_outputs:
+  - CommercialSimulationPacket
+  - NeonGenieRunReceipt
+research:
+  enabled: true
+  offline: false
+  max_fetches: null
+  focus:
+    - "comparable public pricing bands only if category named"
+authority:
+  research: true
+  drafting: true
+  execution: false
+  spending: false
+  publishing: false
+human_review_required: true

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Wayfinder Execution Packet",
+  "type": "object",
+  "required": [
+    "product_authority",
+    "product_version",
+    "objective",
+    "non_goals",
+    "acceptance_criteria",
+    "workstreams",
+    "validation_gates",
+    "change_control"
+  ],
+  "properties": {
+    "product_authority": {},
+    "product_version": {},
+    "objective": {},
+    "non_goals": {},
+    "acceptance_criteria": {},
+    "workstreams": {},
+    "validation_gates": {},
+    "change_control": {}
+  },
+  "additionalProperties": true
+}

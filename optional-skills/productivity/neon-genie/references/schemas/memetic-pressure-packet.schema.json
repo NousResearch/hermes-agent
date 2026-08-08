@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Memetic Pressure Packet",
+  "type": "object",
+  "required": [
+    "candidates",
+    "pressure_scores",
+    "claim_defensibility",
+    "hype_drift_risks",
+    "promotion_gate_status",
+    "level99_route"
+  ],
+  "properties": {
+    "candidates": {},
+    "pressure_scores": {},
+    "claim_defensibility": {},
+    "hype_drift_risks": {},
+    "promotion_gate_status": {},
+    "level99_route": {},
+    "hooks": {},
+    "names": {},
+    "audience_fit": {},
+    "rejected_candidates": {}
+  },
+  "additionalProperties": true
+}

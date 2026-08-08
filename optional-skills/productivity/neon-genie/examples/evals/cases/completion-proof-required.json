@@ -1,0 +1,12 @@
+{
+  "input": {
+    "packet_type": "opportunity",
+    "has_completion_proof": false,
+    "promotion_state": "TESTABLE"
+  },
+  "expected": {
+    "status": "GATE_FAIL",
+    "gate": "PROOF",
+    "reason": "completion_proof required before TESTABLE or higher promotion"
+  }
+}

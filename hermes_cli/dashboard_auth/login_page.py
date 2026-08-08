@@ -505,30 +505,43 @@ def _render_password_form(provider, next_path: str) -> str:
     submit handler) to POST JSON to ``/auth/password-login`` and navigate
     on success. ``next_path`` is carried in a hidden field; it has already
     been validated same-origin by the caller and is HTML-escaped here as
-    defence in depth. The provider ``name`` is emitted in a ``data-``
-    attribute (not a hidden input) so the script reads it without trusting
-    form-field ordering.
+    defence in depth. The provider's stable ``name`` supplies deterministic,
+    unique form-control IDs so password managers can recognize the same fields
+    across visits. Explicit labels keep those controls accessible.
+
+    ``method="post"`` is intentional even though JavaScript owns the JSON
+    request: if the handler does not run, the browser must not place credentials
+    in a GET URL. The provider ``name`` remains in a ``data-`` attribute rather
+    than a hidden input because the endpoint accepts JSON, not form data.
     """
     pname = html.escape(provider.name, quote=True)
     plabel = html.escape(provider.display_name)
     safe_next = html.escape(next_path, quote=True) if next_path else ""
     return (
         f'      <form class="provider-form" data-provider="{pname}" '
-        f'autocomplete="on">\n'
-        f'        <div class="form-title">Sign in with {plabel}</div>\n'
-        f'        <input type="hidden" name="next" value="{safe_next}">\n'
-        f'        <label class="field">\n'
-        f'          <span class="field-label">Username</span>\n'
-        f'          <input class="field-input" type="text" name="username" '
-        f'autocomplete="username" autocapitalize="none" '
-        f'autocorrect="off" spellcheck="false" required>\n'
-        f'        </label>\n'
-        f'        <label class="field">\n'
-        f'          <span class="field-label">Password</span>\n'
-        f'          <input class="field-input" type="password" name="password" '
-        f'autocomplete="current-password" required>\n'
-        f'        </label>\n'
-        f'        <div class="form-error" role="alert" hidden></div>\n'
+        f'id="dashboard-{pname}-login" method="post" autocomplete="on" '
+        f'aria-labelledby="dashboard-{pname}-title">\n'
+        f'        <div id="dashboard-{pname}-title" class="form-title">'
+        f'Sign in with {plabel}</div>\n'
+        f'        <input id="dashboard-{pname}-next" type="hidden" '
+        f'name="next" value="{safe_next}">\n'
+        f'        <div class="field">\n'
+        f'          <label class="field-label" for="dashboard-{pname}-username">'
+        f'Username</label>\n'
+        f'          <input id="dashboard-{pname}-username" class="field-input" '
+        f'type="text" name="username" autocomplete="username" autocapitalize="none" '
+        f'autocorrect="off" spellcheck="false" '
+        f'aria-describedby="dashboard-{pname}-error" required>\n'
+        f'        </div>\n'
+        f'        <div class="field">\n'
+        f'          <label class="field-label" for="dashboard-{pname}-password">'
+        f'Password</label>\n'
+        f'          <input id="dashboard-{pname}-password" class="field-input" '
+        f'type="password" name="password" autocomplete="current-password" '
+        f'aria-describedby="dashboard-{pname}-error" required>\n'
+        f'        </div>\n'
+        f'        <div id="dashboard-{pname}-error" class="form-error" '
+        f'role="alert" hidden></div>\n'
         f'        <button class="provider-btn" type="submit">Sign in</button>\n'
         f'      </form>'
     )

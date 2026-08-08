@@ -353,6 +353,67 @@ def _cli_doctor_snippet(binary: str, timeout: float = 8.0) -> Optional[str]:
     return out or None
 
 
+def _autostart_probe() -> Tuple[str, str]:
+    """Probe whether cua-driver registers a logon autostart entry.
+
+    Returns (status, message) with status in {"pass", "fail", "skip"}.
+
+    Uses ``cua-driver autostart status`` on all platforms (cua-driver
+    0.19.2+ implements it for Windows Scheduled Task and macOS LaunchAgent;
+    older builds return a "Windows-only" error which we report as skip with
+    an actionable hint). The probe is best-effort and never fatal: doctor
+    runs it only after ``--version`` already proved the binary exists.
+    """
+    binary = _resolve_driver_binary()
+    if not binary:
+        return "skip", "cua-driver binary not resolved"
+
+    try:
+        completed = subprocess.run(
+            [binary, "autostart", "status"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8.0,
+            env=_sanitized_cua_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return "skip", f"autostart status probe failed: {e}"
+
+    text = ((completed.stdout or "") + (completed.stderr or "")).strip()
+
+    # Order matters: "not-registered" contains the substring "registered", so
+    # the negative must be tested first.
+    if "not-registered" in text.lower():
+        return (
+            "fail",
+            "no autostart entry — daemon must be started manually after each logon",
+        )
+    if "registered" in text.lower():
+        # Order matters inside the positive branch too: "not running" contains
+        # the substring "running", so the negative must win first.
+        if "not running" in text.lower():
+            return "pass", "autostart registered (daemon not running now)"
+        if "running" in text.lower():
+            return "pass", "autostart registered and daemon running"
+        return "pass", "autostart registered (daemon not running now)"
+
+    # Older cua-driver (< 0.19.2) or Linux stub → not actionable via CLI.
+    if "windows-only" in text.lower() or "not implemented" in text.lower():
+        return "skip", "autostart subcommand unavailable on this driver/build"
+
+    # Unknown output — report the raw text without claiming a status.
+    return "skip", text[:160] or "autostart status returned no output"
+
+
+def _resolve_driver_binary() -> Optional[str]:
+    """Best-effort resolution of the cua-driver binary for CLI probes."""
+    from tools.computer_use.cua_backend import resolve_cua_driver_cmd
+
+    return resolve_cua_driver_cmd()
+
+
 def _drive_fallback_probes(
     binary: str,
     *,
@@ -648,6 +709,16 @@ def _compose_fallback_report(
             "message": first,
             "data": {"snippet": doctor_txt[:2000]},
         })
+
+    # daemon_autostart — whether cua-driver registers a logon autostart entry
+    # so `serve` comes up without manual intervention after each logon.
+    # Best-effort; the CLI probe is non-fatal on old drivers (skip).
+    autostart_status, autostart_msg = _autostart_probe()
+    checks.append({
+        "name": "daemon_autostart",
+        "status": autostart_status,
+        "message": autostart_msg,
+    })
 
     # Normalize any accidental non-vocab status values
     for c in checks:

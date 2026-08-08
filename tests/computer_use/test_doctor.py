@@ -429,3 +429,65 @@ class TestDoctorVersionIdentity:
         payload = json.loads(out.getvalue())
         assert payload["hermes_identity"]["version_mismatch"] is False
 
+
+# ── daemon_autostart probe ─────────────────────────────────────────────────
+
+
+def _fake_autostart_output(text: str, rc: int = 0) -> MagicMock:
+    """A subprocess.CompletedProcess stand-in with the shape we read."""
+    completed = MagicMock()
+    completed.stdout = text
+    completed.stderr = ""
+    completed.returncode = rc
+    return completed
+
+
+class TestDaemonAutostartProbe:
+    """``doctor._autostart_probe`` maps ``cua-driver autostart status``
+    output to a pass/fail/skip check. The negative state must win over the
+    positive substring ("not-registered" contains "registered")."""
+
+    def _probe(self, text: str, rc: int = 0):
+        from tools.computer_use import doctor
+
+        with patch.object(doctor, "_resolve_driver_binary", return_value="/fake/cua-driver"), \
+             patch("subprocess.run", return_value=_fake_autostart_output(text, rc)):
+            return doctor._autostart_probe()
+
+    def test_not_registered_is_fail(self):
+        status, msg = self._probe("not-registered\n")
+        assert status == "fail"
+        assert "manual" in msg.lower() or "autostart" in msg.lower()
+
+    def test_registered_running_is_pass(self):
+        status, msg = self._probe("registered (running)\n")
+        assert status == "pass"
+        assert "running" in msg
+
+    def test_registered_idle_is_pass_but_noted(self):
+        status, msg = self._probe("registered (not running)\n")
+        assert status == "pass"
+        assert "not running" in msg
+
+    def test_windows_only_stub_is_skip(self):
+        status, _ = self._probe(
+            "cua-driver autostart is currently Windows-only.\n", rc=1
+        )
+        assert status == "skip"
+
+    def test_not_implemented_stub_is_skip(self):
+        status, _ = self._probe("not implemented yet\n", rc=1)
+        assert status == "skip"
+
+    def test_empty_output_is_skip(self):
+        status, _ = self._probe("")
+        assert status == "skip"
+
+    def test_binary_unresolved_is_skip(self):
+        from tools.computer_use import doctor
+
+        with patch.object(doctor, "_resolve_driver_binary", return_value=None):
+            status, msg = doctor._autostart_probe()
+        assert status == "skip"
+        assert "not resolved" in msg
+

@@ -349,6 +349,32 @@ class TestDefaultContextLengths:
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
 
+    def test_mixed_case_default_keys_match_lowercased_model(self):
+        # The step-8 fallback lowercases the model id, so the dict keys must be
+        # compared case-insensitively too. The HuggingFace "org/Name" fallbacks
+        # carry uppercase letters; before the fix they could never match and the
+        # model silently fell through to the 256K default.
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            cases = [
+                ("deepseek-ai/DeepSeek-V3.2", 65536),
+                ("MiniMaxAI/MiniMax-M2.5", 204800),
+                ("moonshotai/Kimi-K2-Thinking", 262144),
+                ("zai-org/GLM-5", 202752),
+                ("Qwen/Qwen3.5-397B-A17B", 131072),
+                ("XiaomiMiMo/MiMo-V2-Flash", 262144),
+            ]
+            for model_id, expected_ctx in cases:
+                actual = get_model_context_length(model_id)
+                assert actual == expected_ctx, (
+                    f"{model_id}: expected {expected_ctx}, got {actual}"
+                )
+
 
 
 

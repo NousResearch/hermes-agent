@@ -2968,11 +2968,15 @@ def get_model_context_length(
     # Only check `default_model in model` (is the key a substring of the input).
     # The reverse (`model in default_model`) causes shorter names like
     # "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.
+    # The key is lowercased too: the model side is already lowercased, so
+    # mixed-case keys (the HuggingFace "org/Name" fallbacks like
+    # "deepseek-ai/DeepSeek-V3.2") would otherwise never match and silently
+    # fall through to the 256K default.
     model_lower = model.lower()
     for default_model, length in sorted(
         DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
     ):
-        if default_model in model_lower:
+        if default_model.lower() in model_lower:
             return length
 
     # 9. Default fallback — warn (deduped per model+endpoint) so

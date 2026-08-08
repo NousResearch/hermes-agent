@@ -1,7 +1,11 @@
-import React from 'react'
+import { PassThrough } from 'node:stream'
+
+import { renderSync } from '@hermes/ink'
+import React, { act } from 'react'
+import stripAnsi from 'strip-ansi'
 import { describe, expect, it, vi } from 'vitest'
 
-import { StatusRule } from '../components/appChrome.js'
+import { AnimatedSubagentNodes, StatusRule, subagentNodeFrame, subagentNodeStyle } from '../components/appChrome.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type ReactNodeLike = React.ReactNode
@@ -105,13 +109,68 @@ const baseProps = {
 }
 
 describe('StatusRule background-subagent indicator', () => {
-  it('renders ⛓ N on a wide terminal when subagents are running', () => {
+  it('uses one linked node per active subagent', () => {
+    expect(subagentNodeFrame(1, 0)).toBe('◌')
+    expect(subagentNodeFrame(3, 0)).toBe('◌─◔─◑')
+  })
+
+  it('advances every agent node with a subtle phase stagger', () => {
+    const first = subagentNodeFrame(4, 0).split('─')
+    const second = subagentNodeFrame(4, 1).split('─')
+
+    expect(second).toHaveLength(first.length)
+    expect(second.every((node, index) => node !== first[index])).toBe(true)
+  })
+
+  it('uses semantic theme colors as each node fills', () => {
+    expect(subagentNodeStyle('◌', DEFAULT_THEME)).toEqual({ color: DEFAULT_THEME.color.muted, dim: true })
+    expect(subagentNodeStyle('◑', DEFAULT_THEME)).toEqual({ color: DEFAULT_THEME.color.label })
+    expect(subagentNodeStyle('●', DEFAULT_THEME)).toEqual({ color: DEFAULT_THEME.color.accent })
+    expect(subagentNodeStyle('─', DEFAULT_THEME)).toEqual({ color: DEFAULT_THEME.color.border })
+  })
+
+  it('ticks only while the linked nodes are mounted', () => {
+    vi.useFakeTimers()
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval')
+    const stdin = new PassThrough()
+    const stdout = Object.assign(new PassThrough(), { columns: 40, rows: 4 })
+    let output = ''
+    stdout.on('data', chunk => (output += chunk.toString()))
+
+    const instance = renderSync(
+      <AnimatedSubagentNodes count={1} t={DEFAULT_THEME}>
+        {subagentNodeFrame(1, 0)}
+      </AnimatedSubagentNodes>,
+      {
+        exitOnCtrlC: false,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stdout: stdout as unknown as NodeJS.WriteStream
+      }
+    )
+
+    act(() => vi.advanceTimersByTime(320))
+    instance.unmount()
+    instance.cleanup()
+
+    const rendered = stripAnsi(output)
+    expect(rendered).toContain('◌')
+    expect(rendered).toContain('◔')
+    expect(clearIntervalSpy).toHaveBeenCalled()
+
+    clearIntervalSpy.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it('renders the active count as linked nodes instead of a number', () => {
     const element = StatusRule({
       ...baseProps,
       usage: { ...baseProps.usage, active_subagents: 3 }
     })
 
-    expect(textContent(element)).toContain('⛓ 3')
+    const text = textContent(element)
+
+    expect(text).toContain('◌─◔─◑')
+    expect(text).not.toContain('⛓ 3')
   })
 
   it('omits the segment when no subagents are running', () => {
@@ -120,13 +179,13 @@ describe('StatusRule background-subagent indicator', () => {
       usage: { ...baseProps.usage, active_subagents: 0 }
     })
 
-    expect(textContent(element)).not.toContain('⛓')
+    expect(textContent(element)).not.toMatch(/[◌◔◑◕●]/)
   })
 
   it('omits the segment when the field is absent', () => {
     const element = StatusRule({ ...baseProps })
 
-    expect(textContent(element)).not.toContain('⛓')
+    expect(textContent(element)).not.toMatch(/[◌◔◑◕●]/)
   })
 
   it('spells out the auto-resume hint when idle with subagents in flight', () => {
@@ -141,6 +200,7 @@ describe('StatusRule background-subagent indicator', () => {
   it('pluralizes the resume hint for multiple in-flight subagents', () => {
     const element = StatusRule({
       ...baseProps,
+      cols: 120,
       usage: { ...baseProps.usage, active_subagents: 3 }
     })
 
@@ -175,7 +235,7 @@ describe('StatusRule background-subagent indicator', () => {
       usage: { ...baseProps.usage, active_subagents: 2 }
     })
 
-    expect(textContent(element)).not.toContain('⛓')
+    expect(textContent(element)).not.toMatch(/[◌◔◑◕●]/)
   })
 })
 

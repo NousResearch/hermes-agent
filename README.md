@@ -30,6 +30,12 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 <tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
 </table>
 
+<p align="center">
+  <img src="assets/subagent-status-animation.gif" alt="Hermes TUI showing linked nodes animating as the active subagent count changes" width="620">
+  <br>
+  <sub>Each linked node represents a running subagent and updates in place as delegated work progresses.</sub>
+</p>
+
 ---
 
 ## Quick Install

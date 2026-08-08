@@ -2656,6 +2656,7 @@ class CuaDriverBackend(ComputerUseBackend):
         modifiers: Optional[List[str]] = None,
         delivery_mode: Optional[str] = None,
         bring_to_front: bool = False,
+        dispatch: Optional[str] = None,  # background | foreground | auto (pass-through)
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -2695,6 +2696,8 @@ class CuaDriverBackend(ComputerUseBackend):
                                 message="click requires element= or x/y.")
         if modifiers:
             args["modifier"] = modifiers
+        if dispatch:
+            args["dispatch"] = dispatch
 
         return self._run_input_action(tool, args, delivery_mode, bring_to_front)
 
@@ -2709,6 +2712,7 @@ class CuaDriverBackend(ComputerUseBackend):
         modifiers: Optional[List[str]] = None,
         delivery_mode: Optional[str] = None,
         bring_to_front: bool = False,
+        dispatch: Optional[str] = None,  # background | foreground | auto (pass-through)
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -2732,6 +2736,8 @@ class CuaDriverBackend(ComputerUseBackend):
         else:
             return ActionResult(ok=False, action="drag",
                                 message="drag requires from_element/to_element or from_coordinate/to_coordinate.")
+        if dispatch:
+            args["dispatch"] = dispatch
         return self._run_input_action("drag", args, delivery_mode, bring_to_front)
 
     def scroll(
@@ -2745,6 +2751,7 @@ class CuaDriverBackend(ComputerUseBackend):
         modifiers: Optional[List[str]] = None,
         delivery_mode: Optional[str] = None,
         bring_to_front: bool = False,
+        dispatch: Optional[str] = None,  # background | foreground | auto (pass-through)
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -2774,21 +2781,27 @@ class CuaDriverBackend(ComputerUseBackend):
                 args["x"] = x
                 args["y"] = y
             args["window_id"] = self._active_window_id
+        if dispatch:
+            args["dispatch"] = dispatch
         return self._run_input_action("scroll", args, delivery_mode, bring_to_front)
 
     # ── Keyboard ───────────────────────────────────────────────────
     def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
-                  bring_to_front: bool = False) -> ActionResult:
+                  bring_to_front: bool = False,
+                  dispatch: Optional[str] = None) -> ActionResult:
         pid = self._active_pid
         window_id = self._active_window_id
         if pid is None or window_id is None:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
         args: Dict[str, Any] = {"pid": pid, "window_id": window_id, "text": text}
+        if dispatch:
+            args["dispatch"] = dispatch
         return self._run_input_action("type_text", args, delivery_mode, bring_to_front)
 
     def key(self, keys: str, *, delivery_mode: Optional[str] = None,
-            bring_to_front: bool = False) -> ActionResult:
+            bring_to_front: bool = False,
+            dispatch: Optional[str] = None) -> ActionResult:
         pid = self._active_pid
         window_id = self._active_window_id
         if pid is None or window_id is None:
@@ -2804,13 +2817,18 @@ class CuaDriverBackend(ComputerUseBackend):
             # hotkey requires at least one modifier + one key.
             args: Dict[str, Any] = {"pid": pid, "window_id": window_id,
                                     "keys": modifiers + [key_name]}
+            if dispatch:
+                args["dispatch"] = dispatch
             return self._run_input_action("hotkey", args, delivery_mode, bring_to_front)
         else:
             args = {"pid": pid, "window_id": window_id, "key": key_name}
+            if dispatch:
+                args["dispatch"] = dispatch
             return self._run_input_action("press_key", args, delivery_mode, bring_to_front)
 
     # ── Value setter ────────────────────────────────────────────────
-    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+    def set_value(self, value: str, element: Optional[int] = None,
+                  dispatch: Optional[str] = None) -> ActionResult:
         """Set a value on an element. Handles AXPopUpButton selects natively."""
         pid = self._active_pid
         window_id = self._active_window_id
@@ -2826,6 +2844,8 @@ class CuaDriverBackend(ComputerUseBackend):
             "element_index": element,
             "value": value,
         }
+        if dispatch:
+            args["dispatch"] = dispatch
         return self._action("set_value", args)
 
     # ── Introspection ──────────────────────────────────────────────

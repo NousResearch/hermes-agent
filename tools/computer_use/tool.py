@@ -428,8 +428,10 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
         return ActionResult(ok=True, action="focus_app")
 
-    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
-        self.calls.append(("set_value", {"value": value, "element": element}))
+    def set_value(self, value: str, element: Optional[int] = None,
+                  dispatch: Optional[str] = None) -> ActionResult:
+        self.calls.append(("set_value", {"value": value, "element": element,
+                                         "dispatch": dispatch}))
         return ActionResult(ok=True, action="set_value")
 
 
@@ -734,6 +736,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
             delivery_mode=delivery_mode, bring_to_front=bring_to_front,
+            dispatch=args.get("dispatch"),
         )
         return _maybe_follow_capture(backend, res, capture_after)
 
@@ -752,6 +755,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
             delivery_mode=delivery_mode, bring_to_front=bring_to_front,
+            dispatch=args.get("dispatch"),
         )
         return _maybe_follow_capture(backend, res, capture_after)
 
@@ -765,24 +769,28 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
             delivery_mode=delivery_mode, bring_to_front=bring_to_front,
+            dispatch=args.get("dispatch"),
         )
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "type":
         res = backend.type_text(args.get("text", ""),
-                                delivery_mode=delivery_mode, bring_to_front=bring_to_front)
+                                delivery_mode=delivery_mode, bring_to_front=bring_to_front,
+                                dispatch=args.get("dispatch"))
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "key":
         res = backend.key(args.get("keys", ""),
-                          delivery_mode=delivery_mode, bring_to_front=bring_to_front)
+                          delivery_mode=delivery_mode, bring_to_front=bring_to_front,
+                          dispatch=args.get("dispatch"))
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action == "set_value":
         value = args.get("value")
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
-        res = backend.set_value(value=str(value), element=args.get("element"))
+        res = backend.set_value(value=str(value), element=args.get("element"),
+                                dispatch=args.get("dispatch"))
         return _maybe_follow_capture(backend, res, capture_after)
 
     return json.dumps({"error": f"unknown action {action!r}"})

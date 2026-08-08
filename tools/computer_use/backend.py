@@ -147,6 +147,7 @@ class ComputerUseBackend(ABC):
         modifiers: Optional[List[str]] = None,
         delivery_mode: Optional[str] = None,   # background (default) | foreground
         bring_to_front: bool = False,
+        dispatch: Optional[str] = None,  # background | foreground | auto (pass-through)
     ) -> ActionResult: ...
 
     @abstractmethod
@@ -161,6 +162,7 @@ class ComputerUseBackend(ABC):
         modifiers: Optional[List[str]] = None,
         delivery_mode: Optional[str] = None,
         bring_to_front: bool = False,
+        dispatch: Optional[str] = None,  # background | foreground | auto (pass-through)
     ) -> ActionResult: ...
 
     @abstractmethod
@@ -175,16 +177,19 @@ class ComputerUseBackend(ABC):
         modifiers: Optional[List[str]] = None,
         delivery_mode: Optional[str] = None,
         bring_to_front: bool = False,
+        dispatch: Optional[str] = None,  # background | foreground | auto (pass-through)
     ) -> ActionResult: ...
 
     # ── Keyboard ────────────────────────────────────────────────────
     @abstractmethod
     def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
-                  bring_to_front: bool = False) -> ActionResult: ...
+                  bring_to_front: bool = False,
+                  dispatch: Optional[str] = None) -> ActionResult: ...
 
     @abstractmethod
     def key(self, keys: str, *, delivery_mode: Optional[str] = None,
-            bring_to_front: bool = False) -> ActionResult:
+            bring_to_front: bool = False,
+            dispatch: Optional[str] = None) -> ActionResult:
         """Send a key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return'."""
 
     # ── Introspection ───────────────────────────────────────────────
@@ -206,7 +211,8 @@ class ComputerUseBackend(ABC):
 
     # ── Native-value mutation ────────────────────────────────────────
     @abstractmethod
-    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+    def set_value(self, value: str, element: Optional[int] = None,
+                  dispatch: Optional[str] = None) -> ActionResult:
         """Set a native value on an element (e.g. AXPopUpButton selection).
 
         `element` is the 1-based SOM index returned by a prior capture call.

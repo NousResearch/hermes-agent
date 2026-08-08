@@ -12,21 +12,42 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
 EXECUTIONS_FILE = get_hermes_home().resolve() / "cron" / "executions.db"
+_IMPORT_TIME_EXECUTIONS_FILE = EXECUTIONS_FILE
 MAX_TERMINAL_EXECUTIONS = 1000
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
 
+def _executions_file() -> Path:
+    """Resolve the ledger path for the current execution context.
+
+    A deliberately re-pointed module constant wins (the documented
+    test/embedder surface — monkeypatching EXECUTIONS_FILE keeps working).
+    Otherwise delegate to ``cron.jobs._current_cron_store`` so EVERY
+    scoping mechanism — the use_cron_store() ContextVar (highest
+    precedence there), re-pointed jobs constants, and context-local
+    set_hermes_home_override — routes the row to the active profile's
+    ledger instead of the import-time frozen one.
+    """
+    if EXECUTIONS_FILE != _IMPORT_TIME_EXECUTIONS_FILE:
+        return EXECUTIONS_FILE
+    from cron.jobs import _current_cron_store
+
+    return _current_cron_store().cron_dir / "executions.db"
+
+
 def _connect() -> sqlite3.Connection:
-    EXECUTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(EXECUTIONS_FILE, timeout=5)
+    target = _executions_file()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(target, timeout=5)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:

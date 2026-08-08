@@ -791,6 +791,78 @@ class TestEnvironmentHints:
         _pb._clear_backend_probe_cache()
         assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
 
+    def test_build_environment_hints_uses_live_probe_when_available(self, monkeypatch):
+        """When the probe succeeds, its output must appear in the hint block."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"agent": {"remote_backend_probe": True}},
+        )
+        fake_probe_output = "  OS: Linux 6.8.0\n  User: root\n  Home: /root\n  Working directory: /workspace"
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: fake_probe_output)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Terminal backend: modal" in result
+        assert "Linux 6.8.0" in result
+        assert "/workspace" in result
+
+    @pytest.mark.parametrize("configured", [False, "false", 0])
+    def test_build_environment_hints_can_skip_remote_probe(self, monkeypatch, configured):
+        """Managed platforms can use static hints without starting a probe environment."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.delenv("HERMES_ENVIRONMENT_HINT", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {
+                "agent": {
+                    "remote_backend_probe": configured,
+                    "environment_hint": "Managed sandbox: cwd is /workspace.",
+                }
+            },
+        )
+
+        def _unexpected_probe(_backend):
+            raise AssertionError("remote backend probe must not run when disabled")
+
+        monkeypatch.setattr(_pb, "_probe_remote_backend", _unexpected_probe)
+        _pb._clear_backend_probe_cache()
+
+        result = _pb.build_environment_hints()
+
+        assert "Terminal backend: docker" in result
+        assert "live backend probe is disabled" in result
+        assert "Managed sandbox: cwd is /workspace." in result
+
+    def test_remote_probe_toggle_loads_from_config_file(self, monkeypatch, tmp_path):
+        """The public config.yaml key must gate the real prompt-builder path."""
+        import agent.prompt_builder as _pb
+
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n"
+            "  remote_backend_probe: false\n"
+            "  environment_hint: Static managed sandbox.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.delenv("HERMES_ENVIRONMENT_HINT", raising=False)
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+
+        def _unexpected_probe(_backend):
+            raise AssertionError("config.yaml must disable the remote backend probe")
+
+        monkeypatch.setattr(_pb, "_probe_remote_backend", _unexpected_probe)
+        _pb._clear_backend_probe_cache()
+
+        result = _pb.build_environment_hints()
+
+        assert "live backend probe is disabled" in result
+        assert "Static managed sandbox." in result
 
     def test_probe_remote_backend_imports_real_factory(self, monkeypatch):
         """Regression for #53667: the probe imported a nonexistent
@@ -985,5 +1057,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

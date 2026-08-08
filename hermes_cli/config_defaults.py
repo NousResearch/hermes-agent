@@ -137,6 +137,11 @@ DEFAULT_CONFIG = {
         # (docker/modal/ssh — they have their own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
+        # Live remote-backend probe used to describe Docker/SSH/cloud sandbox
+        # OS, user, home, and cwd in the stable system prompt. Disable this
+        # when an embedder supplies deterministic details via environment_hint
+        # and does not want prompt construction to start a probe environment.
+        "remote_backend_probe": True,
         # Embedder-supplied environment description appended to the system
         # prompt's environment-hints block. Lets a host that wraps Hermes
         # (sandbox runner, managed platform) explain the runtime environment

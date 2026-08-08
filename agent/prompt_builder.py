@@ -1027,6 +1027,34 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
 
 
+def _remote_backend_probe_enabled() -> bool:
+    """Return whether prompt construction may live-probe a remote backend."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        value = cfg_get(
+            load_config_readonly(),
+            "agent",
+            "remote_backend_probe",
+            default=True,
+        )
+    except Exception as e:
+        logger.debug("Could not read agent.remote_backend_probe from config: %s", e)
+        return True
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return True
+
+
 _WINDOWS_BASH_SHELL_HINT = (
     "Shell: on this Windows host your `terminal` tool runs commands through "
     "bash (git-bash / MSYS), NOT PowerShell or cmd.exe. Use POSIX shell "
@@ -1182,8 +1210,9 @@ def build_environment_hints() -> str:
     - For **remote / sandbox** terminal backends (docker, singularity,
       modal, daytona, ssh, vercel_sandbox): host info is **suppressed**
       because the agent's tools can't touch the host — only the backend
-      matters. A live probe inside the backend reports its OS, user, $HOME,
-      and cwd. Falls back to a static summary if the probe fails.
+      matters. An optional live probe inside the backend reports its OS, user,
+      $HOME, and cwd. Falls back to a static summary when disabled or when the
+      probe fails.
 
     The WSL environment hint is appended unchanged when running under WSL.
     """
@@ -1229,7 +1258,8 @@ def build_environment_hints() -> str:
             hints.append(_WINDOWS_BASH_SHELL_HINT)
     else:
         # --- Remote backend block (host info suppressed) ---
-        probe = _probe_remote_backend(backend)
+        probe_enabled = _remote_backend_probe_enabled()
+        probe = _probe_remote_backend(backend) if probe_enabled else None
         if probe:
             hints.append(
                 f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
@@ -1243,12 +1273,16 @@ def build_environment_hints() -> str:
             description = _BACKEND_FALLBACK_DESCRIPTIONS.get(
                 backend, f"a {backend} environment (likely Linux)"
             )
+            probe_status = (
+                "The backend probe didn't respond at prompt-build time"
+                if probe_enabled
+                else "The live backend probe is disabled by configuration"
+            )
             hints.append(
                 f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
                 f"`write_file`, `patch`, and `search_files` tools all operate "
                 f"inside {description} — NOT on the machine where Hermes "
-                f"itself runs. The backend probe didn't respond at "
-                f"prompt-build time, so the sandbox's current user, $HOME, "
+                f"itself runs. {probe_status}, so the sandbox's current user, $HOME, "
                 f"and working directory are unknown from here. If you need "
                 f"them, probe directly with a terminal call like "
                 f"`uname -a && whoami && pwd`."

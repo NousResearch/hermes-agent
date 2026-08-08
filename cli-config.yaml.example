@@ -873,6 +873,12 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Probe remote terminal backends once while building the stable system
+  # prompt to discover their OS, user, HOME, and working directory. Disable
+  # this when a managed platform supplies deterministic agent.environment_hint
+  # text and should not start a prompt-only Docker/cloud sandbox (default true).
+  # remote_backend_probe: true
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. The default "auto" enables it on interactive
   # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables

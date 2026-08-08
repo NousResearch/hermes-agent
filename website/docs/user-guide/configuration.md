@@ -745,6 +745,26 @@ the `hermes tools` UI.
 
 Leaving the list empty, or omitting the key, is a no-op.
 
+## Remote Backend Environment Probe
+
+Hermes normally probes a remote terminal backend once while building the
+stable system prompt. The probe reports the sandbox OS, user, home directory,
+and working directory. Managed platforms with a fixed runtime can disable the
+live probe and provide deterministic details instead:
+
+```yaml
+agent:
+  remote_backend_probe: false
+  environment_hint: |
+    Tools run in an isolated Linux sandbox rooted at /workspace.
+    HOME and /tmp are ephemeral; store durable output under /workspace.
+```
+
+When disabled, Hermes uses its static description for the selected terminal
+backend and does not create a prompt-only Docker, SSH, or cloud environment.
+This setting is separate from `agent.environment_probe`, which controls the
+local Python toolchain probe.
+
 ## Git Worktree Isolation
 
 Enable isolated git worktrees for running multiple agents in parallel on the same repo:

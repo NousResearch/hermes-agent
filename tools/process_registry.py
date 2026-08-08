@@ -78,6 +78,7 @@ WATCH_STRIKE_LIMIT = 3            # Strikes in a row → disable watch + promote
 WATCH_GLOBAL_MAX_PER_WINDOW = 15
 WATCH_GLOBAL_WINDOW_SECONDS = 10
 WATCH_GLOBAL_COOLDOWN_SECONDS = 30
+WINDOWS_TREE_EXIT_TIMEOUT_SECONDS = 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -796,7 +797,68 @@ class ProcessRegistry:
             return 2.0
 
     @classmethod
-    def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
+    def _snapshot_windows_tree_identities(
+        cls, pid: int, expected_start: Optional[int]
+    ) -> List[tuple[int, Optional[int]]]:
+        """Snapshot a live Windows tree before its parent can disappear.
+
+        ``taskkill /T`` discovers descendants from parent links, so the
+        identities needed to verify cleanup must be captured first. Pairing
+        each PID with its start time prevents PID reuse from looking like an
+        owned survivor.
+        """
+        identities: List[tuple[int, Optional[int]]] = [
+            (
+                pid,
+                expected_start
+                if expected_start is not None
+                else cls._safe_host_start_time(pid),
+            )
+        ]
+
+        import psutil
+        try:
+            descendants = psutil.Process(pid).children(recursive=True)
+        except psutil.NoSuchProcess:
+            return identities
+        except (psutil.AccessDenied, OSError) as exc:
+            raise OSError(
+                f"Could not snapshot owned Windows process tree for PID {pid}: {exc}"
+            ) from exc
+
+        seen = {pid}
+        for proc in descendants:
+            child_pid = int(proc.pid)
+            if child_pid in seen:
+                continue
+            seen.add(child_pid)
+            identities.append((child_pid, cls._safe_host_start_time(child_pid)))
+        return identities
+
+    @classmethod
+    def _wait_for_host_identities_exit(
+        cls,
+        identities: List[tuple[int, Optional[int]]],
+        timeout: float,
+    ) -> List[tuple[int, Optional[int]]]:
+        """Return owned identities still alive after a bounded deadline."""
+        deadline = time.monotonic() + max(timeout, 0.0)
+        survivors = [
+            identity
+            for identity in identities
+            if cls._host_pid_is_ours(*identity)
+        ]
+        while survivors and time.monotonic() < deadline:
+            time.sleep(0.05)
+            survivors = [
+                identity
+                for identity in survivors
+                if cls._host_pid_is_ours(*identity)
+            ]
+        return survivors
+
+    @classmethod
+    def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> bool:
         """Terminate a host-visible PID and its descendants.
 
         ``expected_start`` is the kernel start time captured when we spawned the
@@ -833,10 +895,15 @@ class ProcessRegistry:
              on Windows.) Headless Chromium has no GUI window, so the
              softer ``taskkill /T`` without ``/F`` won't reach it either.
 
-        ``psutil`` is a hard dependency (see ``pyproject.toml``); the
-        bare-``os.kill`` fallback covers OSError / PermissionError on
-        POSIX and a missing ``taskkill.exe`` on Windows (effectively
-        unreachable on real Windows installs, but cheap insurance).
+        ``psutil`` is a hard dependency (see ``pyproject.toml``). On Windows,
+        taskkill failure is explicit: falling back to ``os.kill`` would kill
+        only the wrapper and could not prove descendant cleanup.
+
+        Returns ``False`` only when the root PID identity no longer matches;
+        successful verified termination returns ``True``. Windows taskkill,
+        snapshot, timeout, and survivor failures raise ``OSError`` so existing
+        best-effort cleanup callers can handle them while ``kill_process`` can
+        never report ``killed`` without real cleanup evidence.
         """
         if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start):
             # PID was recycled (start time changed) or is gone — never signal a
@@ -846,10 +913,11 @@ class ProcessRegistry:
                 "Refusing to terminate host pid %d: start-time mismatch — "
                 "PID was recycled onto an unrelated process.", pid,
             )
-            return
+            return False
         if _IS_WINDOWS:
+            identities = cls._snapshot_windows_tree_identities(pid, expected_start)
             try:
-                subprocess.run(
+                result = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
                     text=True, encoding='utf-8', errors='replace',
@@ -857,24 +925,39 @@ class ProcessRegistry:
                     creationflags=windows_hide_flags(),
                     stdin=subprocess.DEVNULL,
                 )
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except (OSError, ProcessLookupError, PermissionError):
-                    pass
-            return
+            except subprocess.TimeoutExpired as exc:
+                raise OSError(f"taskkill timed out for PID {pid}") from exc
+            except (FileNotFoundError, OSError) as exc:
+                raise OSError(f"taskkill failed for PID {pid}: {exc}") from exc
+
+            if result.returncode != 0:
+                details = (result.stderr or result.stdout or "").strip()
+                raise OSError(details or f"taskkill failed for PID {pid}")
+
+            survivors = cls._wait_for_host_identities_exit(
+                identities, WINDOWS_TREE_EXIT_TIMEOUT_SECONDS
+            )
+            if survivors:
+                survivor_pids = ", ".join(
+                    str(survivor_pid) for survivor_pid, _ in survivors
+                )
+                raise OSError(
+                    "taskkill reported success but owned Windows PID(s) survived: "
+                    f"{survivor_pids}"
+                )
+            return True
 
         import psutil
         try:
             parent = psutil.Process(pid)
         except psutil.NoSuchProcess:
-            return
+            return True
         except (OSError, PermissionError):
             try:
                 os.kill(pid, signal.SIGTERM)
             except (OSError, ProcessLookupError, PermissionError):
                 pass
-            return
+            return True
 
         # Snapshot the whole tree (children before parent) and SIGTERM each.
         try:
@@ -896,7 +979,7 @@ class ProcessRegistry:
         # leak indefinitely.
         grace = cls._daemon_term_grace_seconds()
         if grace <= 0:
-            return
+            return True
         # Sleep out the grace window, then independently re-probe every target
         # and SIGKILL any survivor.  We deliberately do NOT trust
         # ``psutil.wait_procs``'s gone/alive partition here: it reaps via
@@ -922,6 +1005,7 @@ class ProcessRegistry:
                 pass
             except (psutil.AccessDenied, OSError):
                 pass
+        return True
 
     # ----- Spawn -----
 
@@ -1524,10 +1608,11 @@ class ProcessRegistry:
             pty.wait()
         except Exception as e:
             logger.debug("PTY wait timed out or failed: %s", e)
-        session.exited = True
-        if session.completion_reason != "killed":
-            session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
-            session.completion_reason = "exited"
+        with session._lock:
+            session.exited = True
+            if session.completion_reason != "killed":
+                session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+                session.completion_reason = "exited"
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
@@ -2026,7 +2111,57 @@ class ProcessRegistry:
         # Kill via PTY, Popen (local), or env execute (non-local)
         try:
             if session._pty:
-                # PTY process -- terminate via ptyprocess
+                if _IS_WINDOWS:
+                    # The PTY handle owns only the wrapper. Snapshot, identity-
+                    # check, tree-kill, and verify the Windows process tree
+                    # before touching that handle; otherwise parent/PPID evidence
+                    # can disappear while descendants survive.
+                    if not session.pid or session.host_start_time is None:
+                        return {
+                            "status": "error",
+                            "error": (
+                                "Windows PTY process identity is unavailable; "
+                                "refusing unverified tree cleanup"
+                            ),
+                        }
+                    with session._lock:
+                        tree_killed = self._terminate_host_pid(
+                            session.pid, session.host_start_time
+                        )
+                        if not tree_killed:
+                            return {
+                                "status": "error",
+                                "error": (
+                                    "Windows PTY process identity no longer matches; "
+                                    "tree cleanup was not attempted"
+                                ),
+                            }
+                        try:
+                            session._pty.terminate(force=True)
+                        except Exception as exc:
+                            # The verified tree is already gone. PTY implementations
+                            # may reject terminate() after observing that exit; this
+                            # is handle teardown noise, not a cleanup failure.
+                            logger.debug("PTY handle teardown after tree kill failed: %s", exc)
+
+                        output = strip_ansi(session.output_buffer[-2000:])
+                        if consume_output:
+                            self._completion_consumed.add(session_id)
+                        session.exited = True
+                        session.exit_code = -15  # SIGTERM-compatible tool contract
+                        session.completion_reason = "killed"
+                        session.termination_source = source
+                    self._move_to_finished(session)
+                    self._write_checkpoint()
+                    return {
+                        "status": "killed",
+                        "session_id": session.id,
+                        "completion_reason": session.completion_reason,
+                        "termination_source": session.termination_source,
+                        "output": output,
+                    }
+
+                # POSIX PTY process -- preserve ptyprocess termination behavior.
                 try:
                     session._pty.terminate(force=True)
                 except Exception:

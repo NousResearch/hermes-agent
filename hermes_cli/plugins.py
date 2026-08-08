@@ -1867,6 +1867,15 @@ class PluginManager:
         platform. Until then we record a lightweight ``LoadedPlugin`` so
         ``hermes plugins list`` still shows the platform as available, and we
         hand the registry a loader that runs the normal eager-load path.
+
+        If the plugin's ``__init__`` module exposes a top-level
+        ``register_tools(ctx)`` callable, we invoke it eagerly here so the
+        plugin's outbound client/agent tools (e.g. ``a2a``'s ``a2a_call``,
+        ``a2a_discover``) reach the tool catalog during ``discover_plugins()``
+        rather than waiting for the deferred adapter load. The plugin module
+        itself is a thin re-export of ``register`` (per the bundled-platform
+        convention), so this import stays cheap — adapter SDKs remain lazy.
+        See issue #81163.
         """
         lookup_key = manifest.key or manifest.name
         platform_name = self._platform_name_from_manifest(manifest)
@@ -1877,6 +1886,42 @@ class PluginManager:
         loaded = LoadedPlugin(manifest=manifest, enabled=True)
         loaded.deferred = True
         self._plugins[lookup_key] = loaded
+
+        # Eagerly register any client/agent tools the plugin exposes, without
+        # running the full register(ctx) (which would double-register the
+        # platform adapter against platform_registry). Tolerate failure so a
+        # broken or absent register_tools hook never blocks platform loading.
+        try:
+            if manifest.source in {"user", "project", "bundled"}:
+                module = self._load_directory_module(manifest)
+            else:
+                module = self._load_entrypoint_module(manifest)
+            register_tools_fn = getattr(module, "register_tools", None)
+            if callable(register_tools_fn):
+                ctx = PluginContext(manifest, self)
+                # Snapshot registry state BEFORE register_tools() so attribution
+                # in the deferred loader's later _load_plugin() call still
+                # captures *everything* this plugin added, but we ALSO seed
+                # self._plugin_tool_names here so get_plugin_toolsets()
+                # surfaces the toolset on first discovery.
+                _tools_before = set(self._plugin_tool_names)
+                register_tools_fn(ctx)
+                new_tools = [
+                    t for t in self._plugin_tool_names if t not in _tools_before
+                ]
+                if new_tools:
+                    logger.debug(
+                        "Eager-registered %d client tool(s) from deferred platform plugin %s: %s",
+                        len(new_tools),
+                        lookup_key,
+                        ", ".join(sorted(new_tools)),
+                    )
+        except Exception:
+            logger.debug(
+                "Eager register_tools() skipped for deferred platform %s",
+                lookup_key,
+                exc_info=_PLUGINS_DEBUG,
+            )
 
         def _loader(_manifest: PluginManifest = manifest) -> None:
             self._load_plugin(_manifest)

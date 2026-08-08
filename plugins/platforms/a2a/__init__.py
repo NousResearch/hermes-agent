@@ -17,7 +17,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["register"]
+__all__ = ["register", "register_tools"]
 
 
 def check_requirements() -> bool:
@@ -27,6 +27,20 @@ def check_requirements() -> bool:
     to enable by default once the user turns the platform on.
     """
     return True
+
+
+def register_tools(ctx) -> None:
+    """Eager-registration entry point for the outbound client tools.
+
+    The bundled platform loader (``PluginManager._register_deferred_platform``)
+    imports the plugin module to register any ``register_tools(ctx)`` callable
+    at the top level — the inbound adapter (``register`` / adapter module) is
+    still deferred so the heavy SDK imports don't fire on plain ``hermes chat``.
+    See issue #81163 for the reasoning: outbound client tools should be
+    available regardless of whether the inbound platform is enabled.
+    """
+    from .tools import register_tools as _register_tools
+    _register_tools(ctx)
 
 
 def validate_config(config) -> bool:

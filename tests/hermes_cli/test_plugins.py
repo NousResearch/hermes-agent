@@ -1338,3 +1338,143 @@ class TestDispatchToolWithoutCliRef:
             assert calls[0][1].get("parent_agent") is None
         finally:
             registry.deregister("_test_dispatch_probe")
+
+
+class TestDeferredPlatformClientTools:
+    """Regression for #81163: a deferred platform plugin's client tools must
+    reach the plugin toolset catalog during ``discover_plugins()``, not wait
+    until the deferred adapter loader fires (which only happens when the
+    gateway / cron / setup / send_message path asks the platform_registry
+    for the platform by name)."""
+
+    def _make_deferred_platform_plugin(self, plugins_dir, *, name="deferred_plat"):
+        """A platform-style plugin that:
+        - exposes ``register_tools(ctx)`` (the eager-registration entry point)
+        - exposes ``register(ctx)`` that ALSO registers a platform adapter
+          (matching the bundled-platform convention in plugins/platforms/<x>/)
+        - has ``kind: platform`` in its manifest
+        - is opt-out, but we still need to mark it enabled in plugins.enabled so
+          the plugin manager sweeps the bundled plugin through its deferred
+          branch instead of the opt-in branch.
+        """
+        plugin_dir = plugins_dir / name
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({
+            "name": name,
+            "version": "0.1.0",
+            "description": "deferred platform test",
+            "kind": "platform",
+        }))
+        (plugin_dir / "__init__.py").write_text(
+            "from typing import Any\n"
+            "from typing import Callable\n"
+            "_CLIENT_TOOL_SCHEMA = {\n"
+            "    'name': 'dplat_call',\n"
+            "    'description': 'Outbound client tool for the deferred platform.',\n"
+            "    'parameters': {'type': 'object', 'properties': {}},\n"
+            "}\n"
+            "def _handler(args, **kw):\n"
+            "    return 'called'\n"
+            "def register_tools(ctx):\n"
+            "    ctx.register_tool(\n"
+            "        name='dplat_call',\n"
+            "        toolset='dplat_client',\n"
+            "        schema=_CLIENT_TOOL_SCHEMA,\n"
+            "        handler=_handler,\n"
+            "        description='Outbound client tool for the deferred platform.',\n"
+            "    )\n"
+            "def register(ctx):\n"
+            "    from tools.registry import registry\n"
+            "    if not hasattr(registry, 'register_dplat_adapter_calls'):\n"
+            "        registry.register_dplat_adapter_calls = []\n"
+            "    registry.register_dplat_adapter_calls.append(1)\n"
+        )
+
+    def test_eager_register_tools_runs_for_deferred_platform(self, tmp_path, monkeypatch):
+        """After discover_plugins(), the deferred plugin's client toolset must
+        already appear in get_plugin_toolsets() — without firing the full
+        register(ctx) (which would run the adapter registration)."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        self._make_deferred_platform_plugin(plugins_dir)
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        # Bundled platform plugins register a deferred loader instead of
+        # importing their module. The bundled-plugin branch in the manager
+        # looks at manifest.source == "bundled". We construct a PluginManifest
+        # directly with source="bundled" so the test exercises that branch.
+        import hermes_cli.plugins as plugins_mod
+        from hermes_cli.plugins import (
+            get_plugin_toolsets,
+            PluginManager,
+            PluginManifest,
+        )
+
+        plugin_dir = plugins_dir / "deferred_plat"
+        manifest = PluginManifest(
+            name="deferred_plat",
+            source="bundled",
+            path=str(plugin_dir),
+            key="deferred_plat",
+            kind="platform",
+        )
+        mgr = PluginManager()
+        # Make get_plugin_toolsets() see THIS manager, not a fresh global.
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+
+        mgr._register_deferred_platform(manifest)
+
+        # The placeholder must be recorded as deferred so list_plugins() still
+        # shows it, and the platform adapter's register() must NOT have run.
+        loaded = mgr._plugins["deferred_plat"]
+        assert loaded.deferred is True
+        assert loaded.enabled is True
+        # The adapter's register() must NOT have run (it stays lazy).
+        from tools import registry as _reg
+        assert not getattr(_reg, "register_dplat_adapter_calls", [])
+
+        # The client toolset must be present in get_plugin_toolsets() WITHOUT
+        # having to fire the deferred loader first.
+        ts_keys = {k for k, _, _ in get_plugin_toolsets()}
+        assert "dplat_client" in ts_keys, (
+            f"client toolset from deferred platform plugin was not eagerly "
+            f"registered (issue #81163); got {sorted(ts_keys)}"
+        )
+        # Sanity: discover_plugins() must remain idempotent.
+        plugins_mod.discover_plugins()
+        assert "dplat_client" in {k for k, _, _ in get_plugin_toolsets()}
+
+        # Cleanup so we don't leak dplat_call into other tests / processes.
+        from tools.registry import registry as _reg2
+        _reg2.deregister("dplat_call")
+
+    def test_deferred_platform_without_register_tools_is_a_noop(self, tmp_path, monkeypatch):
+        """Plugins without a register_tools() symbol must still register their
+        deferred loader cleanly — the new eager-registration path must
+        tolerate missing/None register_tools attributes."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "no_tools_deferred"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({
+            "name": "no_tools_deferred",
+            "kind": "platform",
+        }))
+        # No register_tools symbol — just a stub register() so _load_plugin
+        # would still be valid if anything tried to invoke the loader.
+        (plugin_dir / "__init__.py").write_text("def register(ctx):\n    pass\n")
+
+        from hermes_cli.plugins import PluginManager, PluginManifest
+
+        manifest = PluginManifest(
+            name="no_tools_deferred",
+            source="bundled",
+            path=str(plugin_dir),
+            key="no_tools_deferred",
+            kind="platform",
+        )
+        mgr = PluginManager()
+        # Must not raise even though register_tools is absent.
+        mgr._register_deferred_platform(manifest)
+        loaded = mgr._plugins["no_tools_deferred"]
+        assert loaded.deferred is True
+        assert loaded.enabled is True

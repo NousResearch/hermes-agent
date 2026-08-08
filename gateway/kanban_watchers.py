@@ -842,6 +842,67 @@ class GatewayKanbanWatchersMixin:
                                     sub["task_id"], _wk_err, exc_info=True,
                                 )
                         if task_terminal:
+                            # Event-driven lead shared-memory injection
+                            # (locked decision 2 / R5): on task completion,
+                            # distil team shared-surface points into the
+                            # lead's scope. Best-effort — must never wedge
+                            # the notifier tick, mirroring the wake path.
+                            try:
+                                from gateway.shared_injection import (
+                                    TEAMS as _SI_TEAMS,
+                                    inject_on_task_completion,
+                                )
+                                from severian.composition import build_bundle as _si_bundle
+                                from severian.infrastructure.granite_embedding import (
+                                    GraniteR2Embedding as _si_granite,
+                                )
+                                from severian.infrastructure.vector import (
+                                    HashEmbedding as _si_hash,
+                                )
+
+                                import os as _os
+                                from pathlib import Path as _Path
+
+                                # Scope-safe team resolution: only a
+                                # REGISTERED team (task tenant key present
+                                # in the TEAMS registry) triggers injection;
+                                # anything else is a no-op.
+                                _team_key = (getattr(task, "tenant", None) or "")
+                                _team_key = _team_key if _team_key in _SI_TEAMS else ""
+                                _store = _os.environ.get(
+                                    "SEVERIAN_STORAGE", ""
+                                ).strip()
+                                if _store and _team_key:
+                                    _embedding = (
+                                        _si_granite()
+                                        if _os.environ.get(
+                                            "SEVERIAN_EMBEDDING", ""
+                                        ).strip().lower() == "granite"
+                                        else _si_hash()
+                                    )
+                                    _bundle = _si_bundle(
+                                        backend="sqlite",
+                                        database=_Path(_store) / "severian.db",
+                                        fts=_Path(_store) / "severian.fts",
+                                        vectors=_Path(_store) / "severian.vec",
+                                        embedding=_embedding,
+                                    )
+                                    try:
+                                        await asyncio.to_thread(
+                                            inject_on_task_completion,
+                                            bundle=_bundle,
+                                            task_id=sub["task_id"],
+                                            title=(task.title if task else "")[:120],
+                                            board=board_slug,
+                                            team=_team_key,
+                                        )
+                                    finally:
+                                        _bundle.close()
+                            except Exception as _si_err:
+                                logger.warning(
+                                    "kanban notifier: shared injection failed for %s: %s",
+                                    sub["task_id"], _si_err,
+                                )
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
                             )

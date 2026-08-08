@@ -183,7 +183,7 @@ gateway:
 | YAML 配置桥接 | `apply_yaml_config_fn` 将 `config.yaml` 键转换为环境变量/extras |
 | Cron 投递 | `cron_deliver_env_var` 使 `deliver=<name>` 生效 |
 | `hermes config` UI 条目 | `plugin.yaml` 中的 `requires_env` / `optional_env` 自动填充 |
-| send_message 工具 | 通过实时 gateway 适配器路由 |
+| `hermes send` / cron 投递 | 通过独立发送器或实时 gateway 适配器路由 |
 | Webhook 跨平台投递 | 检查注册表中的已知平台 |
 | `/update` 命令访问 | `allow_update_command` 标志 |
 | 频道目录 | Plugin 平台包含在枚举中 |

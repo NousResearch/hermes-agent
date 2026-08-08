@@ -196,12 +196,15 @@ class TestMaybePersistToolResult:
         assert len(result) < len(content)
         env.execute.assert_called_once()
 
-    def test_persists_full_content_as_is(self):
-        """Content is persisted verbatim — no JSON extraction."""
+    def test_persists_json_output_field_decoded(self):
+        """Regression (#79818): a JSON-wrapped tool result must be persisted
+        as the DECODED text (real newlines), not as a single JSON-escaped
+        line -- otherwise read_file offset/limit cannot paginate by line."""
         import json
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
-        raw = "line1\nline2\n" * 5_000
+        lines = [f"line{i}" for i in range(5_000)]
+        raw = "\n".join(lines)
         content = json.dumps({"output": raw, "exit_code": 0, "error": None})
         result = maybe_persist_tool_result(
             content=content,
@@ -211,8 +214,47 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         assert PERSISTED_OUTPUT_TAG in result
+        written = env.execute.call_args[1]["stdin_data"]
+        # The persisted file carries the decoded text with real newlines,
+        # so it is multi-line and line-paginable by read_file offset/limit.
+        assert written == raw
+        assert "\n" in written
+        assert written.count("\n") == len(lines) - 1
+        # The raw JSON blob must NOT be written verbatim.
+        assert written != content
+
+    def test_persists_json_content_field_decoded(self):
+        """Regression (#79818): a `content` string field is decoded too."""
+        import json
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        raw = "alpha\nbeta\n" * 5_000
+        content = json.dumps({"content": raw, "status": "ok"})
+        maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_content",
+            env=env,
+            threshold=30_000,
+        )
+        assert env.execute.call_args[1]["stdin_data"] == raw
+
+    def test_persists_non_json_content_verbatim(self):
+        """Regression (#79818): non-JSON content keeps the existing verbatim
+        behavior -- plain text is written exactly as-is."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        content = "line1\nline2\n" * 5_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_plain",
+            env=env,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
-        # command string — see test_large_content_via_stdin for why).
+        # command string -- see test_large_content_via_stdin for why).
         assert env.execute.call_args[1]["stdin_data"] == content
 
 

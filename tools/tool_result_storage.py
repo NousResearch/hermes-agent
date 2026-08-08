@@ -23,6 +23,7 @@ Defense against context-window overflow operates at three levels:
 """
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -77,6 +78,31 @@ def _safe_result_filename(tool_use_id: str) -> str:
         safe_stem = f"{safe_stem}_{digest}"
 
     return f"{safe_stem}.txt"
+
+
+def _decode_json_wrapped_text(content: str) -> str:
+    """Return the decoded text when content is a JSON blob carrying a string
+    ``output`` or ``content`` field; otherwise return content unchanged.
+
+    Some tools (e.g. terminal) return their result serialized as JSON, e.g.
+    ``{"output": "line1\\nline2", "exit_code": 0}``. Persisting that blob
+    verbatim writes every newline as the two characters ``\\n``, producing a
+    single physical line -- which read_file's line-based offset/limit cannot
+    paginate. Extracting the text field keeps persisted files line-oriented
+    so offset/limit work as documented (#79818).
+    """
+    if not content.lstrip().startswith("{"):
+        return content
+    try:
+        parsed = json.loads(content)
+    except (ValueError, TypeError):
+        return content
+    if isinstance(parsed, dict):
+        for key in ("output", "content"):
+            value = parsed.get(key)
+            if isinstance(value, str):
+                return value
+    return content
 
 
 def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
@@ -176,11 +202,17 @@ def maybe_persist_tool_result(
 
     storage_dir = _resolve_storage_dir(env)
     remote_path = f"{storage_dir}/{_safe_result_filename(tool_use_id)}"
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    # If the raw result is a JSON blob wrapping a string field (e.g. the
+    # terminal tool's {"output": ..., "exit_code": ...}), persist the DECODED
+    # text so the file keeps real newlines and read_file offset/limit can
+    # paginate by line. Persisting the escaped blob produces a single physical
+    # line that line-based pagination cannot slice (#79818).
+    persist_content = _decode_json_wrapped_text(content)
+    preview, has_more = generate_preview(persist_content, max_chars=config.preview_size)
 
     if env is not None:
         try:
-            if _write_to_sandbox(content, remote_path, env):
+            if _write_to_sandbox(persist_content, remote_path, env):
                 logger.info(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,

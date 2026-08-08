@@ -252,6 +252,14 @@ DEFAULT_CONFIG = {
         # detector instead of hanging forever. The env var
         # ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch use.
         "local_stream_stale_timeout": 900,
+        # How long a streaming call tolerates a model emitting ONLY reasoning
+        # tokens (reasoning_content / thinking) with no visible output before
+        # the stream is killed and reconnected (#78807).  Independent of the
+        # no-chunk stale detectors: this fires when chunks arrive but are all
+        # reasoning.  Default 300s leaves slow-but-normal thinking models
+        # (30K-char reasoning blocks) untouched while bounding the
+        # reasoning-only hang class.  0 disables the check.
+        "reasoning_only_stale_timeout": 300,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly

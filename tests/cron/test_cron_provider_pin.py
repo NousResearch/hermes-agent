@@ -153,6 +153,27 @@ class TestProviderDriftGuard:
         assert error is None
         assert agent_constructed is True
 
+    def test_non_string_snapshot_does_not_crash(self, tmp_path):
+        """Hand-edited jobs.json with a non-string snapshot must not AttributeError."""
+        job = _base_job(provider_snapshot=42, model_snapshot=True)
+        success, output, final_response, error, agent_constructed = \
+            _run_with_current_provider(job, "nous", tmp_path)
+
+        # Treated as absent → back-compat run, no crash.
+        assert success is True
+        assert error is None
+        assert agent_constructed is True
+
+
+def test_job_text_rejects_non_strings():
+    from cron.scheduler import _job_text
+
+    assert _job_text(None) == ""
+    assert _job_text(42) == ""
+    assert _job_text(True) == ""
+    assert _job_text(["openrouter"]) == ""
+    assert _job_text("  openrouter  ") == "openrouter"
+
 
 class TestCreateJobSnapshot:
     """create_job captures provider_snapshot for unpinned agent jobs only."""

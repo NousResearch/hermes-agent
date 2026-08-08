@@ -59,6 +59,19 @@ from agent.delegation_context import (
 logger = logging.getLogger(__name__)
 
 
+def _job_text(raw: Any) -> str:
+    """Return a stripped string from a job field, or ``\"\"`` if non-string.
+
+    Hand-edited ``jobs.json`` can store snapshot/pin fields as non-strings
+    (e.g. ``provider_snapshot: 1``). Calling ``.strip()`` on those raises
+    ``AttributeError`` and aborts the job mid-run. Non-strings are treated
+    as absent so the drift guard stays back-compat quiet.
+    """
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip()
+
+
 def _set_cron_session_title(session_db, session_id, base_title):
     """Robustly title a finished cron session before it is closed.
 
@@ -3959,10 +3972,10 @@ def run_job(
         # unpinned cron jobs there, so the guard is skipped for that axis.
         if cron_model_drift_guard_enabled(_cfg):
             _drift: list[str] = []
-            _provider_snapshot = (job.get("provider_snapshot") or "").strip().lower()
+            _provider_snapshot = _job_text(job.get("provider_snapshot")).lower()
             if (
                 _provider_snapshot
-                and not (job.get("provider") or "").strip()
+                and not _job_text(job.get("provider"))
                 and not _cron_default_provider
             ):
                 _current_provider = str(
@@ -3972,10 +3985,10 @@ def run_job(
                     _drift.append(
                         f"provider '{_provider_snapshot}' -> '{_current_provider}'"
                     )
-            _model_snapshot = (job.get("model_snapshot") or "").strip().lower()
+            _model_snapshot = _job_text(job.get("model_snapshot")).lower()
             if (
                 _model_snapshot
-                and not (job.get("model") or "").strip()
+                and not _job_text(job.get("model"))
                 and not _cron_default_model
             ):
                 _current_model = str(primary_model_for_drift or "").strip().lower()

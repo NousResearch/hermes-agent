@@ -463,6 +463,7 @@ def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
+    load_external_secrets: bool = True,
 ) -> list[Path]:
     """Load Hermes environment files with user config taking precedence.
 
@@ -471,6 +472,9 @@ def load_hermes_dotenv(
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
+    - callers that only maintain the installation can set
+      ``load_external_secrets=False`` to avoid loading optional secret-manager
+      dependencies into the process that replaces that same environment.
     """
     loaded: list[Path] = []
 
@@ -509,7 +513,8 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
-    _apply_external_secret_sources(home_path)
+    if load_external_secrets:
+        _apply_external_secret_sources(home_path)
     _apply_managed_env()
 
     # config.yaml is the documented source of truth for terminal.* settings,

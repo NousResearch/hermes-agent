@@ -49,7 +49,7 @@ class RateLimitBucket:
     @property
     def remaining_seconds_now(self) -> float:
         """Estimated seconds remaining until reset, adjusted for elapsed time."""
-        elapsed = time.time() - self.captured_at
+        elapsed = time.monotonic() - self.captured_at
         return max(0.0, self.reset_seconds - elapsed)
 
 

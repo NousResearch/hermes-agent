@@ -7,14 +7,18 @@ Hooks are discovered from ~/.hermes/hooks/ directories, each containing:
   - handler.py (Python handler with async def handle(event_type, context))
 
 Events:
-  - gateway:startup     -- Gateway process starts
-  - session:start       -- New session created (first message of a new session)
-  - session:end         -- Session ends (user ran /new or /reset)
-  - session:reset       -- Session reset completed (new session entry created)
-  - agent:start         -- Agent begins processing a message
-  - agent:step          -- Each turn in the tool-calling loop
-  - agent:end           -- Agent finishes processing
-  - command:*           -- Any slash command executed (wildcard match)
+  - gateway:startup         -- Gateway process starts
+  - session:start           -- New session created (first message of a new session)
+  - session:end             -- Session ends (user ran /new or /reset)
+  - session:reset           -- Session reset completed (new session entry created)
+  - agent:start             -- Agent begins processing a message
+  - agent:step              -- Each turn in the tool-calling loop
+  - agent:end               -- Agent finishes processing
+  - command:*               -- Any slash command executed (wildcard match)
+  - pre_gateway_text_send   -- Outbound text about to be sent to a platform.
+    Emitted with emit_collect. Handlers receive context:
+      {text: str, platform: str, chat_id: str}
+    Return a str to rewrite the message, or None to block delivery.
 
 Errors in hooks are caught and logged but never block the main pipeline.
 

@@ -32,6 +32,8 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+from hermes_cli import _http_response_limits as http_response_limits
+
 
 # Docker-style name generator. Same vibe as Docker's adjective_surname, but
 # adjective_noun with a space-free underscore join so it drops cleanly into a
@@ -139,17 +141,26 @@ def _register_self_hosted_client(
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = http_response_limits.read_limited_json_response(
+                resp,
+                label="dashboard registration response body",
+            )
     except urllib.error.HTTPError as exc:
         # The endpoint returns structured JSON errors ({error, error_description}).
         detail = ""
         try:
-            err_body = json.loads(exc.read().decode())
+            err_body = http_response_limits.read_limited_json_response(
+                exc,
+                limit=http_response_limits.ERROR_RESPONSE_BODY_MAX_BYTES,
+                label="dashboard registration error response body",
+            )
             detail = (
                 err_body.get("error_description")
                 or err_body.get("error")
                 or ""
             )
+        except http_response_limits.ResponseBodyTooLarge as read_exc:
+            detail = str(read_exc)
         except Exception:
             pass
         if exc.code == 401:

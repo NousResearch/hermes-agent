@@ -289,7 +289,15 @@ class LSPClient:
         return cmd
 
     async def _spawn(self) -> None:
-        env = dict(os.environ)
+        # Sanitized env, not a raw os.environ copy: LSP servers are
+        # third-party processes (pyright, gopls, ...) that never need
+        # Hermes' gateway tokens or provider keys, and a model can trigger
+        # a spawn just by writing a file in the workspace (#77463).
+        # hermes_subprocess_env strips Tier-1 secrets unconditionally;
+        # the language server's own env additions are layered on top.
+        from tools.environments.local import hermes_subprocess_env
+
+        env = hermes_subprocess_env(inherit_credentials=False)
         if self._env:
             env.update(self._env)
 

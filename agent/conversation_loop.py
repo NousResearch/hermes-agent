@@ -7613,7 +7613,26 @@ def run_conversation(
                     continue
 
                 messages.append(final_msg)
-                
+                # Make the completed answer durable before leaving the loop.
+                # The text already reached the user through the streaming /
+                # interim display path, which is display-only and never writes
+                # to state.db; the next durable write would otherwise be
+                # finalize_turn's _persist_session, behind post-turn work that
+                # can include micro-compaction's aux-LLM call. A session torn
+                # down inside that window (ws_orphan_reap after a remote 1006
+                # close, container stop) lost a reply the user had already
+                # seen (#81641). Same contract the tool-call exit gets from
+                # #49045 and the verify-on-stop exits above; the
+                # _DB_PERSISTED_MARKER dedup keeps _persist_session idempotent.
+                #
+                # Unlike the tool-call exit, a failed flush must NOT abort the
+                # turn: no side effect runs after this point, the answer is
+                # already produced, and _persist_session retries the write.
+                try:
+                    agent._flush_messages_to_session_db(messages, conversation_history)
+                except Exception:
+                    logger.debug("final text-turn flush failed", exc_info=True)
+
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")

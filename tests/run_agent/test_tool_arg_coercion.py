@@ -40,6 +40,40 @@ class TestCoerceNumber:
         assert result == "3.14"
         assert isinstance(result, str)
 
+    # ── Leading-zero preservation (#55369) ────────────────────────────
+
+    def test_pure_integer_drops_leading_zeros(self):
+        """A pure ``integer`` schema must coerce ``"007"`` to ``int(7)``.
+
+        Without ``is_union`` the helper uses normal numeric coercion; the
+        leading zeros are lost, matching the declared ``integer`` type.
+        Regression for the tekium1 review point on #55401.
+        """
+        result = _coerce_number("007", integer_only=True)
+        assert result == 7
+        assert isinstance(result, int)
+
+    def test_union_integer_string_preserves_leading_zeros(self):
+        """A union ``integer|string`` schema must keep ``"007"`` as a string.
+
+        The leading zeros are significant (zip codes, country codes, zero-
+        padded IDs). ``is_union=True`` preserves them verbatim.
+        """
+        result = _coerce_number("007", is_union=True)
+        assert result == "007"
+        assert isinstance(result, str)
+
+    def test_union_preserves_negative_zero_padded(self):
+        """``"-007"`` in a union schema stays a string too."""
+        result = _coerce_number("-007", is_union=True)
+        assert result == "-007"
+        assert isinstance(result, str)
+
+    def test_union_plain_zero_still_coerces(self):
+        """``"0"`` and ``"-0"`` have no leading zeros to preserve — coerce."""
+        assert _coerce_number("0", is_union=True) == 0
+        assert _coerce_number("-0", is_union=True) == 0
+
 
 
 

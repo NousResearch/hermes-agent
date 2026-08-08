@@ -954,7 +954,16 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
         return value
 
     if expected_type in {"integer", "number"}:
-        return _coerce_number(value, integer_only=(expected_type == "integer"))
+        # ``_coerce_number`` preserves leading zeros (e.g. "007") only when
+        # the schema also admits ``string`` — a pure ``integer`` field must
+        # still coerce to ``int``, dropping the leading zeros. ``is_union``
+        # tells the helper whether ``string`` was one of the accepted types.
+        is_union = isinstance(expected_type, list) or _schema_allows_string(schema)
+        return _coerce_number(
+            value,
+            integer_only=(expected_type == "integer"),
+            is_union=is_union,
+        )
     if expected_type == "boolean":
         return _coerce_boolean(value)
     if expected_type == "array":
@@ -964,6 +973,30 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
     if expected_type == "null" and value.strip().lower() == "null":
         return None
     return value
+
+
+def _schema_allows_string(schema: dict | None) -> bool:
+    """Return True when a JSON Schema fragment also accepts ``string``.
+
+    Used by ``_coerce_value`` to decide whether a leading-zero string like
+    ``"007"`` should be preserved (union ``integer|string``) or coerced to
+    ``int`` (pure ``integer``).
+    """
+    if not isinstance(schema, dict):
+        return False
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list) and "string" in schema_type:
+        return True
+    if schema_type == "string":
+        return True
+    for union_key in ("anyOf", "oneOf"):
+        variants = schema.get(union_key)
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            if isinstance(variant, dict) and variant.get("type") == "string":
+                return True
+    return False
 
 
 def _schema_allows_null(schema: dict | None) -> bool:
@@ -1021,8 +1054,22 @@ def _coerce_json(value: str, expected_python_type: type):
     return value
 
 
-def _coerce_number(value: str, integer_only: bool = False):
-    """Try to parse *value* as a number.  Returns original string on failure."""
+def _coerce_number(value: str, integer_only: bool = False, *, is_union: bool = False):
+    """Try to parse *value* as a number.  Returns original string on failure.
+
+    When ``is_union`` is True the schema also accepts ``string``, so
+    leading-zero strings like ``"007"`` are preserved verbatim (zip codes,
+    country codes, zero-padded IDs). When False (pure ``integer`` /
+    ``number``), leading zeros are dropped via normal numeric coercion.
+    """
+    stripped = value.strip()
+    if (
+        is_union
+        and stripped.lstrip("-").startswith("0")
+        and len(stripped) > 1
+        and stripped not in ("0", "-0")
+    ):
+        return value
     try:
         f = float(value)
     except (ValueError, OverflowError):

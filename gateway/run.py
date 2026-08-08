@@ -4418,6 +4418,56 @@ class TurnRunner:
         except Exception as _e:
             logger.debug("event_callback hook error: %s", _e)
 
+    def _attach_session_title_callback(self, agent, ctx) -> None:
+        """Wire the platform thread-rename lane onto the agent as `_on_session_title`.
+
+        The session titler runs inside the turn prologue now (it derives the
+        title from the user's first message, so it no longer needs the
+        response), which means the callback has to be attached before the run
+        rather than registered after it. The lane predicates and their
+        rationale are unchanged from the old post-response registration.
+        """
+        try:
+            # Gateway auto-title failures must NOT be surfaced as user-visible
+            # messages (#23246) — they are not actionable to the end user.
+            # Overriding the failure sink here keeps CLI mode on the agent's
+            # _emit_auxiliary_failure path while the gateway logs at debug.
+            def _title_failure_cb(task: str, exc: BaseException) -> None:
+                logger.debug(
+                    "Gateway auto-title failure suppressed (not user-visible): %s: %s",
+                    task, exc,
+                )
+
+            agent._title_failure_callback = _title_failure_cb
+
+            session_id = getattr(agent, "session_id", None)
+            source = ctx.source
+
+            if self._runner._is_telegram_topic_lane(source):
+                agent._on_session_title = lambda title: (
+                    self._runner._schedule_telegram_topic_title_rename(
+                        source, session_id, title,
+                    )
+                )
+            elif self._runner._is_discord_auto_thread_lane(source) or (
+                self._runner._is_relay_discord_channel_lane(source)
+            ):
+                # Relay note: the second predicate is shape-only (relay
+                # Discord channel event). Whether the connector actually
+                # auto-threaded our reply is only knowable AFTER delivery
+                # (send-result feedback), so the callback must be registered
+                # eagerly and the rename lane performs the cache lookup at
+                # fire time (staging repro 2026-07-31: gating registration on
+                # the cache read meant it never registered and no
+                # thread_rename op was ever sent).
+                agent._on_session_title = lambda title: (
+                    self._runner._schedule_discord_semantic_thread_rename(
+                        source, session_id, title,
+                    )
+                )
+        except Exception:
+            logger.debug("Failed to attach session title callback", exc_info=True)
+
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         ctx = self._ctx
         if not ctx._status_adapter or not ctx._run_still_current():
@@ -5136,6 +5186,10 @@ class TurnRunner:
         agent.thinking_progress = ctx._thinking_enabled
         # Store agent reference for interrupt support
         ctx.agent_holder[0] = agent
+        # Wire the platform thread-rename lane onto the agent, because the
+        # session titler now fires from the turn prologue rather than after
+        # the response. Titles are pushed here the moment they land.
+        self._attach_session_title_callback(agent, ctx)
         # Publish turn ownership for explicit /stop, /new, disconnect, and
         # shutdown interrupts. Older session processes are outside this
         # baseline and remain alive.
@@ -5707,74 +5761,13 @@ class TurnRunner:
                     unique_tags.insert(0, "[[audio_as_voice]]")
                 final_response = final_response + "\n" + "\n".join(unique_tags)
 
-        # Auto-generate session title after first exchange (non-blocking)
-        if final_response and self._runner._session_db:
-            try:
-                from agent.title_generator import maybe_auto_title
-                all_msgs = ctx.result_holder[0].get("messages", []) if ctx.result_holder[0] else []
-                # In Gateway mode, auto-title failures must NOT be
-                # surfaced as user-visible messages (fixes #23246).
-                # Log them at debug level only — they are not actionable
-                # to the end user. CLI mode keeps the existing behaviour
-                # via the agent's _emit_auxiliary_failure path.
-                def _title_failure_cb(task: str, exc: BaseException) -> None:
-                    logger.debug(
-                        "Gateway auto-title failure suppressed (not user-visible): %s: %s",
-                        task, exc,
-                    )
-                # Snapshot the runtime identity; the validator lets the
-                # background titler skip its LLM call if the session's
-                # model changed before it fires (a stale request would
-                # reload an unloaded Ollama model, #19027).
-                _title_model = getattr(agent, "model", None) if agent else None
-                _title_provider = getattr(agent, "provider", None) if agent else None
-                maybe_auto_title_kwargs = {
-                    "failure_callback": _title_failure_cb,
-                    "main_runtime": {
-                        "model": getattr(agent, "model", None),
-                        "provider": getattr(agent, "provider", None),
-                        "base_url": getattr(agent, "base_url", None),
-                        "api_key": getattr(agent, "api_key", None),
-                        "api_mode": getattr(agent, "api_mode", None),
-                    } if agent else None,
-                    "runtime_validator": (lambda: (
-                        getattr(agent, "model", None) == _title_model
-                        and getattr(agent, "provider", None) == _title_provider
-                    )) if agent else None,
-                }
-                if self._runner._is_telegram_topic_lane(ctx.source):
-                    maybe_auto_title_kwargs["title_callback"] = lambda title: self._runner._schedule_telegram_topic_title_rename(
-                        ctx.source,
-                        effective_session_id,
-                        title,
-                    )
-                elif self._runner._is_discord_auto_thread_lane(ctx.source) or (
-                    self._runner._is_relay_discord_channel_lane(ctx.source)
-                ):
-                    # Relay note: the second predicate is shape-only (relay
-                    # Discord channel event). Whether the connector actually
-                    # auto-threaded our reply is only knowable AFTER delivery
-                    # (send-result feedback), which on the non-streaming lane
-                    # happens after this registration runs — so the callback
-                    # must be registered eagerly and the rename lane performs
-                    # the cache lookup at fire time (staging repro 2026-07-31:
-                    # gating registration on the cache read meant it never
-                    # registered and no thread_rename op was ever sent).
-                    maybe_auto_title_kwargs["title_callback"] = lambda title: self._runner._schedule_discord_semantic_thread_rename(
-                        ctx.source,
-                        effective_session_id,
-                        title,
-                    )
-                maybe_auto_title(
-                    getattr(self._runner._session_db, "_db", self._runner._session_db),
-                    effective_session_id,
-                    ctx.message,
-                    final_response,
-                    all_msgs,
-                    **maybe_auto_title_kwargs,
-                )
-            except Exception:
-                pass
+        # Auto-titling runs at TURN START (agent/turn_context.py) from the
+        # user's message alone, so it no longer waits on final_response — a
+        # failed or interrupted turn still gets a titled session. The
+        # platform-specific thread-rename callbacks are attached to the agent
+        # as `_on_session_title` before the run starts (see
+        # _attach_session_title_callback), because the titler now fires from
+        # inside the turn prologue rather than from here.
 
         return {
             "final_response": final_response,

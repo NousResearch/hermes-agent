@@ -22,6 +22,10 @@ requires_env:
     prompt: "Twilio phone number"
     password: false
 optional_env:
+  - name: TWILIO_MESSAGING_SERVICE_SID
+    description: "Optional Twilio Messaging Service SID for outbound SMS (starts with MG)"
+    prompt: "Twilio Messaging Service SID (optional)"
+    password: false
   - name: SMS_ALLOWED_USERS
     description: "Comma-separated phone numbers allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"

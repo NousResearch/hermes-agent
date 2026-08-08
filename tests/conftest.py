@@ -24,6 +24,7 @@ import atexit
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -855,6 +856,49 @@ def mock_config():
         "memory": {"memory_enabled": False, "user_profile_enabled": False},
         "command_allowlist": [],
     }
+
+
+@pytest.fixture(scope="session")
+def posix_bash():
+    """A bash that can open the native paths tests hand it.
+
+    Bare ``bash`` resolves to ``C:\\Windows\\System32\\bash.exe`` — the WSL
+    launcher — on any Windows box with WSL installed, and WSL's bash cannot
+    open a ``C:\\...`` argument: it strips the backslashes and exits 127.
+
+    ``_find_bash()`` prefers Git-for-Windows locations for that reason, but
+    it still appends the ``PATH`` result as a last-resort candidate and
+    accepts whichever candidate starts first, so on a box without Git for
+    Windows it hands back the WSL launcher. Preference is not a guarantee,
+    so the resolved bash is asked to open a native temp path before it is
+    handed out, and the test skips when it cannot.
+    """
+    if sys.platform != "win32":
+        bash = shutil.which("bash")
+        if not bash:
+            pytest.skip("bash not on PATH")
+        return bash
+
+    from tools.environments.local import _find_bash
+
+    try:
+        bash = _find_bash()
+    except RuntimeError as exc:  # no usable bash at all
+        pytest.skip(str(exc))
+
+    fd, probe = tempfile.mkstemp(suffix=".sh")
+    try:
+        os.write(fd, b":\n")
+        os.close(fd)
+        opens_native_paths = (
+            subprocess.run([bash, "-n", probe], capture_output=True).returncode == 0
+        )
+    finally:
+        os.unlink(probe)
+
+    if not opens_native_paths:
+        pytest.skip(f"{bash} cannot open native Windows paths (WSL bash?)")
+    return bash
 
 
 # ── Per-test timeout — handled by the isolation plugin ─────────────────────

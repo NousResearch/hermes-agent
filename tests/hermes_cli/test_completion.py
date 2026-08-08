@@ -84,14 +84,14 @@ class TestGenerateBash:
         assert "complete -F _hermes_completion hermes" in out
 
 
-    def test_valid_bash_syntax(self):
+    def test_valid_bash_syntax(self, posix_bash):
         """Script must pass `bash -n` syntax check."""
         out = generate_bash(_make_parser())
         with tempfile.NamedTemporaryFile(mode="w", suffix=".bash", delete=False) as f:
             f.write(out)
             path = f.name
         try:
-            result = subprocess.run(["bash", "-n", path], capture_output=True)
+            result = subprocess.run([posix_bash, "-n", path], capture_output=True)
             assert result.returncode == 0, result.stderr.decode()
         finally:
             os.unlink(path)

@@ -25,6 +25,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
+import { findGitBash } from './find-git-bash'
 import {
   buildRelaunchScript,
   collectRelaunchArgs,
@@ -39,6 +40,21 @@ import {
 
 const ROOT = '/home/u/.hermes/hermes-agent'
 const UNPACKED = path.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked')
+
+// The `bash -n` lint steps below hand bash a native `os.tmpdir()` path. On
+// Windows `bash` on PATH is C:\Windows\System32\bash.exe — the WSL launcher —
+// and WSL's bash cannot open a `C:\...` argument: it eats the backslashes and
+// exits 127. Resolve Git for Windows instead; `findGitBash` without
+// `findOnPath` returns null rather than falling back to that PATH bash, so a
+// box without Git for Windows skips the lint instead of failing on it.
+const LINT_BASH: string | null =
+  process.platform === 'win32'
+    ? findGitBash({
+        isWindows: true,
+        env: process.env,
+        fileExists: (filePath) => fs.existsSync(filePath)
+      })
+    : 'bash'
 
 // ---------------------------------------------------------------------------
 // 1) The execPath split — the heart of the GUI/backend skew guard.
@@ -215,7 +231,7 @@ test('buildRelaunchScript embeds pid/exec/args/env/cwd and is valid bash', () =>
   fs.writeFileSync(tmp, script)
 
   try {
-    execFileSync('bash', ['-n', tmp], { stdio: 'pipe' })
+    if (LINT_BASH) execFileSync(LINT_BASH, ['-n', tmp], { stdio: 'pipe' })
   } finally {
     fs.rmSync(tmp, { force: true })
   }
@@ -234,7 +250,7 @@ test('buildRelaunchScript with no args/env still lints clean', () => {
   fs.writeFileSync(tmp, script)
 
   try {
-    execFileSync('bash', ['-n', tmp], { stdio: 'pipe' })
+    if (LINT_BASH) execFileSync(LINT_BASH, ['-n', tmp], { stdio: 'pipe' })
   } finally {
     fs.rmSync(tmp, { force: true })
   }

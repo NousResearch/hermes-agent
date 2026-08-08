@@ -53,7 +53,10 @@ class CLICommandsMixin:
 
         Syntax:
             /rollback                 — list checkpoints
-            /rollback <N>             — restore checkpoint N (also undoes last chat turn)
+            /rollback <N>             — restore checkpoint N, preserving user
+                                        hand-edits (also undoes last chat turn)
+            /rollback <N> --all       — classic full restore (may overwrite
+                                        files you edited after Hermes did)
             /rollback diff <N>        — preview changes since checkpoint N
             /rollback <N> <file>      — restore a single file from checkpoint N
         """
@@ -73,6 +76,16 @@ class CLICommandsMixin:
         cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         parts = command.split()
         args = parts[1:] if len(parts) > 1 else []
+
+        # --all / --force: classic full restore, overwriting user edits too.
+        restore_all = False
+        filtered = []
+        for a in args:
+            if a.lower() in ("--all", "--force"):
+                restore_all = True
+            else:
+                filtered.append(a)
+        args = filtered
 
         if not args:
             # List checkpoints
@@ -126,12 +139,21 @@ class CLICommandsMixin:
         # Check for file-level restore: /rollback <N> <file>
         file_path = args[1] if len(args) > 1 else None
 
-        result = mgr.restore(cwd, target_hash, file_path=file_path)
+        result = mgr.restore(
+            cwd, target_hash, file_path=file_path,
+            safe=not restore_all and not file_path,
+        )
         if result["success"]:
             if file_path:
                 print(f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
             else:
                 print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
+            skipped = result.get("skipped_user_edits") or []
+            if skipped:
+                shown = ", ".join(skipped[:5])
+                more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
+                print(f"  ↷ Kept your hand-edits: {shown}{more}")
+                print("  Use /rollback <N> --all to restore those too.")
             print("  A pre-rollback snapshot was saved automatically.")
 
             # Also undo the last conversation turn so the agent's context

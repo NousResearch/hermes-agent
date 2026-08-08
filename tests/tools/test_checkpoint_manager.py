@@ -280,7 +280,6 @@ class TestRestore:
         mgr.ensure_checkpoint(str(work_dir), "initial")
         assert mgr.restore(str(work_dir), "deadbeef1234")["success"] is False
 
-
     def test_tilde_path_supports_diff_and_restore_flow(
         self, checkpoint_base, fake_home, monkeypatch,
     ):
@@ -305,6 +304,111 @@ class TestRestore:
         restore_result = m.restore(tilde, cps[0]["hash"])
         assert restore_result["success"] is True
         assert file_path.read_text() == "original\n"
+
+
+class TestSafeRestore:
+    """Safe restore: preserve user hand-edits, revert only Hermes-authored changes.
+
+    Inspired by Copilot CLI's /rewind, which "restores only the files Copilot
+    changed, skipping any file whose contents no longer match what Copilot
+    last wrote".
+    """
+
+    def _checkpoint(self, mgr, work_dir):
+        assert mgr.ensure_checkpoint(str(work_dir), "initial") is True
+        mgr.new_turn()
+        cps = mgr.list_checkpoints(str(work_dir))
+        assert cps
+        return cps[0]["hash"]
+
+    def test_safe_restore_skips_user_edited_file(self, mgr, work_dir):
+        base = self._checkpoint(mgr, work_dir)
+
+        # Hermes writes main.py and records it in the ledger.
+        (work_dir / "main.py").write_text("agent version\n")
+        mgr.record_agent_write(str(work_dir / "main.py"))
+
+        # The user then hand-edits README.md (Hermes never wrote it).
+        (work_dir / "README.md").write_text("user hand edit\n")
+
+        result = mgr.restore(str(work_dir), base, safe=True)
+        assert result["success"] is True
+        # Hermes-authored change reverted...
+        assert (work_dir / "main.py").read_text() == "print('hello')\n"
+        # ...user's hand edit preserved.
+        assert (work_dir / "README.md").read_text() == "user hand edit\n"
+        assert "README.md" in result["skipped_user_edits"]
+        assert "main.py" in result["restored_files"]
+
+    def test_safe_restore_skips_file_user_edited_after_agent(self, mgr, work_dir):
+        base = self._checkpoint(mgr, work_dir)
+
+        # Hermes writes the file, then the user modifies it afterwards.
+        (work_dir / "main.py").write_text("agent version\n")
+        mgr.record_agent_write(str(work_dir / "main.py"))
+        (work_dir / "main.py").write_text("user tweaked the agent's file\n")
+
+        result = mgr.restore(str(work_dir), base, safe=True)
+        assert result["success"] is True
+        # Content no longer matches what Hermes last wrote → preserved.
+        assert (work_dir / "main.py").read_text() == "user tweaked the agent's file\n"
+        assert "main.py" in result["skipped_user_edits"]
+
+    def test_safe_restore_restores_agent_deleted_file(self, mgr, work_dir):
+        base = self._checkpoint(mgr, work_dir)
+
+        (work_dir / "main.py").write_text("agent version\n")
+        mgr.record_agent_write(str(work_dir / "main.py"))
+        (work_dir / "main.py").unlink()
+
+        result = mgr.restore(str(work_dir), base, safe=True)
+        assert result["success"] is True
+        assert (work_dir / "main.py").read_text() == "print('hello')\n"
+
+    def test_safe_restore_falls_back_to_full_when_no_ledger(self, mgr, work_dir):
+        """Empty ledger (pre-existing stores) → classic full restore."""
+        base = self._checkpoint(mgr, work_dir)
+        (work_dir / "main.py").write_text("changed without ledger\n")
+
+        result = mgr.restore(str(work_dir), base, safe=True)
+        assert result["success"] is True
+        assert (work_dir / "main.py").read_text() == "print('hello')\n"
+        # Fallback path: no per-file classification in the result.
+        assert "skipped_user_edits" not in result
+
+    def test_safe_restore_removes_agent_created_file_keeps_user_edit(self, mgr, work_dir):
+        base = self._checkpoint(mgr, work_dir)
+
+        # Hermes creates a brand-new file after the checkpoint...
+        (work_dir / "agent.txt").write_text("agent file\n")
+        mgr.record_agent_write(str(work_dir / "agent.txt"))
+        # ...and the user hand-edits an existing one.
+        (work_dir / "README.md").write_text("user edit\n")
+
+        result = mgr.restore(str(work_dir), base, safe=True)
+        assert result["success"] is True
+        # User edit preserved; Hermes-created file removed (not in checkpoint).
+        assert (work_dir / "README.md").read_text() == "user edit\n"
+        assert not (work_dir / "agent.txt").exists()
+        assert "README.md" in result["skipped_user_edits"]
+        assert "agent.txt" in result["restored_files"]
+
+    def test_unsafe_restore_overwrites_everything(self, mgr, work_dir):
+        base = self._checkpoint(mgr, work_dir)
+        (work_dir / "main.py").write_text("agent version\n")
+        mgr.record_agent_write(str(work_dir / "main.py"))
+        (work_dir / "README.md").write_text("user hand edit\n")
+
+        result = mgr.restore(str(work_dir), base, safe=False)
+        assert result["success"] is True
+        assert (work_dir / "main.py").read_text() == "print('hello')\n"
+        assert (work_dir / "README.md").read_text() == "# Project\n"
+
+    def test_record_agent_write_disabled_manager_noop(self, checkpoint_base, work_dir, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        m = CheckpointManager(enabled=False)
+        m.record_agent_write(str(work_dir / "main.py"))  # must not raise
+        assert not (checkpoint_base / "store").exists()
 
 
 # =========================================================================

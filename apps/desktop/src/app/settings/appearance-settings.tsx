@@ -17,7 +17,13 @@ import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedM
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
-import { $translucency, setTranslucency } from '@/store/translucency'
+import {
+  $translucency,
+  setTranslucency,
+  TRANSLUCENCY_MAX,
+  TRANSLUCENCY_MIN,
+  TRANSLUCENCY_STEP
+} from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
@@ -439,13 +445,13 @@ export function AppearanceSettings() {
                 <input
                   aria-label={a.translucencyTitle}
                   className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
-                  max={100}
-                  min={0}
+                  max={TRANSLUCENCY_MAX}
+                  min={TRANSLUCENCY_MIN}
                   onChange={event => {
                     triggerHaptic('selection')
                     setTranslucency(Number(event.target.value))
                   }}
-                  step={5}
+                  step={TRANSLUCENCY_STEP}
                   style={{ accentColor: 'var(--dt-primary)' }}
                   type="range"
                   value={translucency}

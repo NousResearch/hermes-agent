@@ -1054,13 +1054,15 @@ class WebhookAdapter(BasePlatformAdapter):
                 signature_header=svix_signature,
             )
 
-        # GitHub: X-Hub-Signature-256 = sha256=<hex>
+        # GitHub / Hindsight: sha256=<hex> of raw body bytes
         gh_sig = request.headers.get("X-Hub-Signature-256", "")
-        if gh_sig:
+        hindsight_sig = request.headers.get("X-Hindsight-Signature", "")
+        if gh_sig or hindsight_sig:
+            provided_sig = gh_sig or hindsight_sig
             expected = "sha256=" + hmac.new(
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
-            return _hmac_str_equal(gh_sig, expected)
+            return _hmac_str_equal(provided_sig, expected)
 
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")

@@ -26327,6 +26327,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             interrupt_monitor.cancel()
             _notify_task.cancel()
 
+            # Stop typing before waiting for the stream consumer's final edit.
+            # The caller and base adapter also stop it, but only after this
+            # method returns; until then their refresh task can keep the
+            # indicator visible throughout the final stream flush.
+            try:
+                _cleanup_adapter = self._adapter_for_source(source)
+                _stop_with_metadata = getattr(
+                    type(_cleanup_adapter), "_stop_typing_with_metadata", None
+                )
+                _stop_typing = getattr(type(_cleanup_adapter), "stop_typing", None)
+                if _cleanup_adapter and callable(_stop_with_metadata):
+                    await _cleanup_adapter._stop_typing_with_metadata(
+                        source.chat_id, _status_thread_metadata
+                    )
+                elif _cleanup_adapter and callable(_stop_typing):
+                    await _cleanup_adapter.stop_typing(source.chat_id)
+            except Exception:
+                pass
+
             # Wait for stream consumer to finish its final edit
             if stream_task:
                 # If the agent never created a stream consumer (e.g. non-

@@ -433,7 +433,12 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
         "message_id": "1234567890.000001",
     }
     assert adapter.sent[0]["metadata"] == expected_metadata
-    assert all(call["metadata"] == expected_metadata for call in adapter.typing)
+    typing_updates = [
+        call for call in adapter.typing if call["metadata"] != {"stopped": True}
+    ]
+    assert typing_updates
+    assert all(call["metadata"] == expected_metadata for call in typing_updates)
+    assert any(call["metadata"] == {"stopped": True} for call in adapter.typing)
 
 
 @pytest.mark.asyncio
@@ -926,6 +931,154 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_run_agent_stops_profile_adapter_before_final_stream_flush(
+    monkeypatch, tmp_path
+):
+    """Cleanup must stop the routed profile's typing before stream flush ends."""
+    import yaml
+    import gateway.stream_consumer as stream_consumer_mod
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        }),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class StreamingAgent:
+        def __init__(self, **kwargs):
+            self.stream_delta_callback = kwargs.get("stream_delta_callback")
+            self.tools = []
+
+        def run_conversation(self, message, conversation_history=None, task_id=None):
+            if self.stream_delta_callback:
+                self.stream_delta_callback("final answer")
+            return {
+                "final_response": "final answer",
+                "messages": [],
+                "api_calls": 1,
+            }
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = StreamingAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    events = []
+    flush_started = asyncio.Event()
+    allow_flush = asyncio.Event()
+    profile_stopped = asyncio.Event()
+    default_stopped = asyncio.Event()
+
+    class DelayedFinalFlushConsumer:
+        def __init__(self, *, adapter, chat_id, **kwargs):
+            self.adapter = adapter
+            self.chat_id = chat_id
+            self.message_id = None
+            self.final_response_sent = False
+            self.final_content_delivered = False
+            self._finished = False
+
+        def on_delta(self, text):
+            return None
+
+        def finish(self):
+            self._finished = True
+
+        async def run(self):
+            while not self._finished:
+                await asyncio.sleep(0)
+            events.append("flush-started")
+            flush_started.set()
+            await allow_flush.wait()
+            events.append("flush-complete")
+            self.final_response_sent = True
+            self.final_content_delivered = True
+
+        def has_delivered_text(self, final_text):
+            return self.final_response_sent and final_text == "final answer"
+
+    monkeypatch.setattr(
+        stream_consumer_mod, "GatewayStreamConsumer", DelayedFinalFlushConsumer
+    )
+
+    class MetadataStopAdapter(ProgressCaptureAdapter):
+        def __init__(self, label, stopped_event):
+            super().__init__(platform=Platform.SLACK)
+            self.label = label
+            self.stopped_event = stopped_event
+            self.stop_metadata = []
+
+        async def stop_typing(self, chat_id, metadata=None):
+            events.append(f"{self.label}-stop")
+            self.stop_metadata.append(metadata)
+            self.stopped_event.set()
+
+    default_adapter = MetadataStopAdapter("default", default_stopped)
+    profile_adapter = MetadataStopAdapter("profile", profile_stopped)
+
+    runner = _make_runner(default_adapter)
+    runner._profile_adapters = {
+        "secondary": {Platform.SLACK: profile_adapter},
+    }
+    runner.config.streaming = StreamingConfig.from_dict({
+        "enabled": True,
+        "edit_interval": 0.01,
+        "buffer_threshold": 1,
+    })
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="channel",
+        thread_id="1700000000.000100",
+        scope_id="T-secondary",
+        profile="secondary",
+    )
+
+    run_task = asyncio.create_task(
+        runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-profile-stream-flush",
+            session_key="agent:secondary:slack:channel:C123:1700000000.000100",
+            event_message_id="1700000000.000200",
+        )
+    )
+    try:
+        await asyncio.wait_for(flush_started.wait(), timeout=1.0)
+        try:
+            await asyncio.wait_for(profile_stopped.wait(), timeout=0.25)
+        except asyncio.TimeoutError:
+            pytest.fail(
+                "profile-specific adapter was not stopped before final stream flush"
+            )
+        assert not default_stopped.is_set()
+        assert profile_adapter.stop_metadata == [
+            {
+                "thread_id": "1700000000.000100",
+                "message_id": "1700000000.000200",
+                "slack_team_id": "T-secondary",
+            }
+        ]
+    finally:
+        allow_flush.set()
+        await asyncio.wait_for(run_task, timeout=1.0)
+
+    assert events.index("profile-stop") < events.index("flush-complete")
 
 
 @pytest.mark.asyncio

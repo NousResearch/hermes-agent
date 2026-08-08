@@ -69,6 +69,96 @@ export function firstImageFromClipboard(
   return imageFilesFromTransfer(data)[0] ?? null;
 }
 
+// Non-image chat uploads (PDFs, docs, archives) — server cap mirrored in
+// /api/chat/file-upload.
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
+
+/** Pull every non-image file out of a DataTransfer (clipboard or drop). */
+export function nonImageFilesFromTransfer(
+  data: DataTransfer | null,
+): File[] {
+  if (!data) return [];
+  const files: File[] = [];
+  const seen = new Set<string>();
+  const add = (file: File | null) => {
+    if (!file || file.type.startsWith("image/")) return;
+    const key = imageFileKey(file);
+    if (seen.has(key)) return;
+    seen.add(key);
+    files.push(file);
+  };
+
+  if (data.items?.length) {
+    for (let i = 0; i < data.items.length; i++) {
+      const item = data.items[i];
+      if (item.kind === "file" && !item.type.startsWith("image/")) {
+        add(item.getAsFile());
+      }
+    }
+  }
+
+  if (data.files?.length) {
+    for (let i = 0; i < data.files.length; i++) {
+      add(data.files[i]);
+    }
+  }
+
+  return files;
+}
+
+/** True when a drag payload may contain any file (for dragover preventDefault). */
+export function transferMayContainFile(data: DataTransfer | null): boolean {
+  if (!data) return false;
+  if (data.items?.length) {
+    for (let i = 0; i < data.items.length; i++) {
+      if (data.items[i].kind === "file") return true;
+    }
+    return false;
+  }
+  return (data.files?.length ?? 0) > 0;
+}
+
+/**
+ * Upload a non-image chat file to ``HERMES_HOME/uploads`` via the generic
+ * chat upload endpoint and return the absolute gateway path. The caller
+ * types the path into the TUI input so the agent can read the file with
+ * its file tools.
+ *
+ * Streams the raw bytes as multipart/form-data (same rationale as the
+ * managed-files upload-stream path, NS-501): base64 JSON inflates the body
+ * ~33%, buffers the whole file in memory, and trips proxy limits on large
+ * files. Do NOT set Content-Type — the browser adds the multipart boundary.
+ */
+export async function uploadChatFile(
+  file: File,
+  profile = "",
+): Promise<ChatImageUploadResult> {
+  if (file.size === 0) throw new Error("file is empty");
+  if (file.size > MAX_FILE_BYTES) {
+    const mb = Math.round(MAX_FILE_BYTES / (1024 * 1024));
+    throw new Error(`file too large (max ${mb} MB)`);
+  }
+
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const qs = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+  const res = await authedFetch(`/api/chat/file-upload${qs}`, {
+    method: "POST",
+    body: form,
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+
+  const uploaded = (await res.json()) as ChatImageUploadResult;
+  if (!uploaded?.path) {
+    throw new Error("file upload did not return a path");
+  }
+  return uploaded;
+}
+
 /** True when a drag payload may contain an image (for dragover preventDefault). */
 export function transferMayContainImage(data: DataTransfer | null): boolean {
   if (!data) return false;
@@ -161,4 +251,28 @@ export async function uploadChatImage(
     throw new Error("image upload did not return a path");
   }
   return uploaded;
+}
+
+export interface OrderedUploadHandlers {
+  /** Attach images: writes `/image … \r` into the PTY draft (submits). */
+  attachImages: (files: File[]) => Promise<void>;
+  /** Insert non-image paths: types them into the PTY draft (no Return). */
+  insertFiles: (files: File[]) => Promise<void>;
+}
+
+/**
+ * Serialize a mixed drop/paste. The image flow and the non-image flow both
+ * write to the same PTY WebSocket, so running them concurrently lets a faster
+ * non-image upload type its path into the draft mid-way through the image
+ * command — corrupting or prematurely submitting it. Completing the image
+ * attach before inserting non-image paths keeps the two writers ordered
+ * regardless of which upload resolves first. See PR #62869 review.
+ */
+export async function runOrderedUploads(
+  images: File[],
+  others: File[],
+  handlers: OrderedUploadHandlers,
+): Promise<void> {
+  await handlers.attachImages(images);
+  await handlers.insertFiles(others);
 }

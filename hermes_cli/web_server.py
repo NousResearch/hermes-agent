@@ -14217,6 +14217,7 @@ def _aux_usage_rows(db, cutoff: float) -> List[Dict[str, Any]]:
                    SUM(u.input_tokens) as input_tokens,
                    SUM(u.output_tokens) as output_tokens,
                    SUM(u.cache_read_tokens) as cache_read_tokens,
+                   SUM(u.cache_write_tokens) as cache_write_tokens,
                    SUM(u.reasoning_tokens) as reasoning_tokens,
                    COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
                    COUNT(DISTINCT u.session_id) as sessions,
@@ -14233,6 +14234,12 @@ def _aux_usage_rows(db, cutoff: float) -> List[Dict[str, Any]]:
         # Table predates the task column (older DB opened by newer code) —
         # aux breakdown is simply unavailable.
         return []
+
+
+def _enrich_usage_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach canonical prompt/processed metrics while preserving old fields."""
+    from agent.token_governance import enrich_usage_metrics
+    return enrich_usage_metrics(row)
 
 
 def _merge_aux_into_by_model(
@@ -14265,6 +14272,8 @@ def _merge_aux_into_by_model(
             merged[model] = target
         target["input_tokens"] = (target.get("input_tokens") or 0) + (aux.get("input_tokens") or 0)
         target["output_tokens"] = (target.get("output_tokens") or 0) + (aux.get("output_tokens") or 0)
+        target["cache_read_tokens"] = (target.get("cache_read_tokens") or 0) + (aux.get("cache_read_tokens") or 0)
+        target["cache_write_tokens"] = (target.get("cache_write_tokens") or 0) + (aux.get("cache_write_tokens") or 0)
         target["estimated_cost"] = (target.get("estimated_cost") or 0) + (aux.get("estimated_cost") or 0)
         target["api_calls"] = (target.get("api_calls") or 0) + (aux.get("api_calls") or 0)
         tasks = target.setdefault("aux_tasks", [])
@@ -14272,12 +14281,14 @@ def _merge_aux_into_by_model(
             "task": aux.get("task") or "",
             "input_tokens": aux.get("input_tokens") or 0,
             "output_tokens": aux.get("output_tokens") or 0,
+            "cache_read_tokens": aux.get("cache_read_tokens") or 0,
+            "cache_write_tokens": aux.get("cache_write_tokens") or 0,
             "estimated_cost": aux.get("estimated_cost") or 0,
             "api_calls": aux.get("api_calls") or 0,
         })
-    result = list(merged.values())
+    result = [_enrich_usage_row(row) for row in merged.values()]
     result.sort(
-        key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
+        key=lambda r: r.get("prompt_tokens") or 0,
         reverse=True,
     )
     return result
@@ -14292,20 +14303,24 @@ def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "task": task,
             "input_tokens": 0,
             "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
             "estimated_cost": 0,
             "api_calls": 0,
             "models": [],
         })
         d["input_tokens"] += aux.get("input_tokens") or 0
         d["output_tokens"] += aux.get("output_tokens") or 0
+        d["cache_read_tokens"] += aux.get("cache_read_tokens") or 0
+        d["cache_write_tokens"] += aux.get("cache_write_tokens") or 0
         d["estimated_cost"] += aux.get("estimated_cost") or 0
         d["api_calls"] += aux.get("api_calls") or 0
         model = aux.get("model") or "unknown"
         if model not in d["models"]:
             d["models"].append(model)
-    result = list(by_task.values())
+    result = [_enrich_usage_row(row) for row in by_task.values()]
     result.sort(
-        key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
+        key=lambda r: r.get("prompt_tokens") or 0,
         reverse=True,
     )
     return result
@@ -14322,6 +14337,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,
+                   SUM(cache_write_tokens) as cache_write_tokens,
                    SUM(reasoning_tokens) as reasoning_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
@@ -14330,19 +14346,21 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             FROM sessions WHERE started_at > ?
             GROUP BY day ORDER BY day
         """, (cutoff,))
-        daily = [dict(r) for r in cur.fetchall()]
+        daily = [_enrich_usage_row(dict(r)) for r in cur.fetchall()]
 
         cur2 = db._conn.execute("""
             SELECT model,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
+                   SUM(cache_read_tokens) as cache_read_tokens,
+                   SUM(cache_write_tokens) as cache_write_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
                    COUNT(*) as sessions,
                    SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL
             GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, (cutoff,))
-        by_model = [dict(r) for r in cur2.fetchall()]
+        by_model = [_enrich_usage_row(dict(r)) for r in cur2.fetchall()]
 
         # Fold in auxiliary usage (vision, compression, title_generation, ...)
         # recorded per (model, task) in session_model_usage. Aux calls never
@@ -14356,6 +14374,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             SELECT SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
                    SUM(cache_read_tokens) as total_cache_read,
+                   SUM(cache_write_tokens) as total_cache_write,
                    SUM(reasoning_tokens) as total_reasoning,
                    COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
@@ -14364,6 +14383,14 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
             FROM sessions WHERE started_at > ?
         """, (cutoff,))
         totals = dict(cur3.fetchone())
+        totals.update(_enrich_usage_row({
+            "input_tokens": totals.get("total_input"),
+            "output_tokens": totals.get("total_output"),
+            "cache_read_tokens": totals.get("total_cache_read"),
+            "cache_write_tokens": totals.get("total_cache_write"),
+            "api_calls": totals.get("total_api_calls"),
+            "estimated_cost": totals.get("total_estimated_cost"),
+        }))
         usage = InsightsEngine(db).get_usage_breakdown(days=days)
 
         return {
@@ -14411,6 +14438,7 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,
+                   SUM(cache_write_tokens) as cache_write_tokens,
                    SUM(reasoning_tokens) as reasoning_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
@@ -14436,6 +14464,7 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                 "input_tokens": aux.get("input_tokens") or 0,
                 "output_tokens": aux.get("output_tokens") or 0,
                 "cache_read_tokens": aux.get("cache_read_tokens") or 0,
+                "cache_write_tokens": aux.get("cache_write_tokens") or 0,
                 "reasoning_tokens": aux.get("reasoning_tokens") or 0,
                 "estimated_cost": aux.get("estimated_cost") or 0,
                 "actual_cost": 0,
@@ -14471,6 +14500,7 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                             "input_tokens",
                             "output_tokens",
                             "cache_read_tokens",
+                            "cache_write_tokens",
                             "reasoning_tokens",
                             "estimated_cost",
                             "actual_cost",
@@ -14482,7 +14512,7 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                         continue
                     target["sessions"] = (target.get("sessions") or 0) + (row.get("sessions") or 0)
                     target["last_used_at"] = max(target.get("last_used_at") or 0, row.get("last_used_at") or 0)
-                    total_tokens = (target.get("input_tokens") or 0) + (target.get("output_tokens") or 0)
+                    total_tokens = _enrich_usage_row(target)["processed_tokens"]
                     sessions = target.get("sessions") or 0
                     target["avg_tokens_per_session"] = total_tokens / sessions if sessions else 0
                 rows.append(target)
@@ -14495,6 +14525,7 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                             "input_tokens",
                             "output_tokens",
                             "cache_read_tokens",
+                            "cache_write_tokens",
                             "reasoning_tokens",
                             "estimated_cost",
                             "actual_cost",
@@ -14507,7 +14538,7 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                 rows.extend(model_rows)
 
         rows.sort(
-            key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
+            key=lambda r: _enrich_usage_row(r)["prompt_tokens"],
             reverse=True,
         )
 
@@ -14531,13 +14562,10 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
             except Exception:
                 pass
 
-            models.append({
+            model_row = _enrich_usage_row(row)
+            model_row.update({
                 "model": model_name,
                 "provider": provider,
-                "input_tokens": row["input_tokens"],
-                "output_tokens": row["output_tokens"],
-                "cache_read_tokens": row["cache_read_tokens"],
-                "reasoning_tokens": row["reasoning_tokens"],
                 "estimated_cost": row["estimated_cost"],
                 "actual_cost": row["actual_cost"],
                 "sessions": row["sessions"],
@@ -14547,12 +14575,14 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                 "avg_tokens_per_session": row["avg_tokens_per_session"],
                 "capabilities": caps,
             })
+            models.append(model_row)
 
         totals_cur = db._conn.execute("""
             SELECT COUNT(DISTINCT model) as distinct_models,
                    SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
                    SUM(cache_read_tokens) as total_cache_read,
+                   SUM(cache_write_tokens) as total_cache_write,
                    SUM(reasoning_tokens) as total_reasoning,
                    COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
@@ -14561,6 +14591,13 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
         """, (cutoff,))
         totals = dict(totals_cur.fetchone())
+        totals.update(_enrich_usage_row({
+            "input_tokens": totals.get("total_input"),
+            "output_tokens": totals.get("total_output"),
+            "cache_read_tokens": totals.get("total_cache_read"),
+            "cache_write_tokens": totals.get("total_cache_write"),
+            "api_calls": totals.get("total_api_calls"),
+        }))
 
         return {
             "models": models,

@@ -1669,6 +1669,25 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    # Subagents inherit token-governance only when the parent explicitly
+    # enabled it. Disabled governance leaves historical child behaviour intact.
+    _parent_tg = getattr(parent_agent, "_token_governance_config", {})
+    if isinstance(_parent_tg, dict) and _parent_tg.get("enabled", False):
+        from agent.token_governance import BudgetPolicy, PromptBudget
+        _sub_budget = _parent_tg.get("subagent_budget", {})
+        if not isinstance(_sub_budget, dict):
+            raise ValueError("token_governance.subagent_budget must be a mapping")
+        try:
+            _child_policy = BudgetPolicy(
+                api_call_limit=min(int(max_iterations), int(_sub_budget.get("api_call_limit", 20))),
+                prompt_token_limit=int(_sub_budget.get("prompt_token_limit", 500_000)),
+                absolute_prompt_limit=int(_sub_budget.get("absolute_prompt_limit", 500_000)),
+            )
+            if min(_child_policy.api_call_limit, _child_policy.prompt_token_limit, _child_policy.absolute_prompt_limit) <= 0:
+                raise ValueError("subagent token budgets must be positive")
+            child._token_prompt_budget = PromptBudget(_child_policy)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid token_governance.subagent_budget: {exc}") from exc
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id

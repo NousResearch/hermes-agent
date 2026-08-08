@@ -1626,12 +1626,33 @@ def init_agent(
     from tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
     
-    # Load config once for memory, skills, and compression sections
+    # Load config once for memory, skills, compression, and token governance.
     try:
         from hermes_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    agent._token_prompt_budget = None
+    agent._token_governance_contract = None
+    agent._token_governance_config = {}
+    try:
+        _tg = _agent_cfg.get("token_governance", {})
+        if isinstance(_tg, dict) and _tg.get("enabled", False):
+            from agent.token_governance import BudgetPolicy, PromptBudget
+            agent._token_governance_config = dict(_tg)
+            _budget = _tg.get("budget", {}) if isinstance(_tg.get("budget", {}), dict) else {}
+            agent._token_prompt_budget = PromptBudget(BudgetPolicy(
+                api_call_limit=int(_budget.get("api_call_limit", 25)),
+                prompt_token_limit=int(_budget.get("prompt_token_limit", 1_000_000)),
+                absolute_prompt_limit=int(_budget.get("absolute_prompt_limit", 5_000_000)),
+            ))
+    except Exception as _tg_err:
+        # Governance is explicitly enabled: malformed configuration must fail
+        # closed before any model call, never silently disable the contract.
+        agent._token_governance_config = {"enabled": True}
+        agent._token_governance_config_error = str(_tg_err)
+        logger.error("token_governance config invalid; turns will be blocked: %s", _tg_err)
 
     # Codex commentary visibility (display.show_commentary, default true).
     # When true, completed Codex phase=commentary messages are delivered as

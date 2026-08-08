@@ -24,7 +24,9 @@ move-and-name refactor with no semantic change.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -663,6 +665,77 @@ def build_turn_context(
         # fresh staged input.
         if not isinstance(pending_cli_message, dict) or pending_cli_message.get("_db_persisted"):
             agent._pending_cli_user_message = None
+
+    # Deterministic zero-token governance preflight. This is deliberately after
+    # the task/turn ids and current user message exist, but before idle/preflight
+    # compression and pre_llm_call plugins — all of those may call an auxiliary
+    # model. Non-ready status is carried into the loop for a structured exit.
+    _token_preflight = {"status": "ready"}
+    _tg = getattr(agent, "_token_governance_config", {})
+    if isinstance(_tg, dict) and _tg:
+        try:
+            from agent.token_governance import preflight_workspace, validate_task_contract
+            _config_error = getattr(agent, "_token_governance_config_error", "")
+            if _config_error:
+                _token_preflight = {
+                    "status": "blocked",
+                    "block_reason": "token_governance_config_invalid",
+                    "error": _config_error,
+                    "missing": [],
+                }
+            _contract_path = _tg.get("contract_path")
+            if _token_preflight["status"] == "ready" and not _contract_path:
+                _token_preflight = {
+                    "status": "blocked",
+                    "block_reason": "task_contract_missing",
+                    "missing": ["contract_path"],
+                }
+            if _token_preflight["status"] == "ready" and _contract_path:
+                with open(os.path.expanduser(str(_contract_path)), encoding="utf-8") as _contract_file:
+                    agent._token_governance_contract = json.load(_contract_file)
+                _contract_result = validate_task_contract(agent._token_governance_contract)
+                if not _contract_result["valid"]:
+                    _token_preflight = {
+                        "status": "blocked",
+                        "block_reason": _contract_result["reason"],
+                        "missing": _contract_result.get("missing", []),
+                    }
+            _preflight_cfg = _tg.get("preflight", {}) if isinstance(_tg.get("preflight", {}), dict) else {}
+            if _preflight_cfg.get("enabled", False) and _token_preflight["status"] == "ready":
+                _token_preflight = preflight_workspace(
+                    _preflight_cfg.get("workspace") or os.getcwd(),
+                    required_files=_preflight_cfg.get("required_files", ()),
+                    test_commands=_preflight_cfg.get("test_commands", ()),
+                    dependencies_complete=bool(_preflight_cfg.get("dependencies_complete", True)),
+                    revision=_preflight_cfg.get("revision"),
+                    current_revision=_preflight_cfg.get("current_revision"),
+                    successful_artifact=bool(_preflight_cfg.get("successful_artifact", False)),
+                    active_run=bool(_preflight_cfg.get("active_run", False)),
+                    require_git=bool(_preflight_cfg.get("require_git", False)),
+                )
+        except Exception as _tg_err:
+            _token_preflight = {
+                "status": "blocked",
+                "block_reason": "token_governance_preflight_error",
+                "error": str(_tg_err),
+                "missing": [],
+            }
+    agent._token_preflight = _token_preflight
+    if _token_preflight.get("status") != "ready":
+        # Skip every remaining prologue step that can invoke an auxiliary model
+        # (compression, pre_llm_call hooks, external-memory prefetch). The loop
+        # consumes this structured status and returns with api_call_count=0.
+        return TurnContext(
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            conversation_history=conversation_history,
+            active_system_prompt=active_system_prompt,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            current_turn_user_idx=current_turn_user_idx,
+            should_review_memory=should_review_memory,
+        )
 
     # ── Idle-triggered compaction (opt-in; ``idle_compact_after_seconds``) ──
     # When a session resumes after a long idle gap, compact the accumulated

@@ -132,7 +132,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
   if (daily.length === 0) return null;
 
   const maxTokens = Math.max(
-    ...daily.map((d) => d.input_tokens + d.output_tokens),
+    ...daily.map((d) => d.processed_tokens),
     1,
   );
 
@@ -168,9 +168,9 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
           style={{ height: CHART_HEIGHT_PX }}
         >
           {daily.map((d) => {
-            const total = d.input_tokens + d.output_tokens;
+            const total = d.processed_tokens;
             const inputH = Math.round(
-              (d.input_tokens / maxTokens) * CHART_HEIGHT_PX,
+              (d.prompt_tokens / maxTokens) * CHART_HEIGHT_PX,
             );
             const outputH = Math.round(
               (d.output_tokens / maxTokens) * CHART_HEIGHT_PX,
@@ -185,13 +185,19 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                   <div className="font-mondwest normal-case bg-card border border-border px-2.5 py-1.5 text-xs text-foreground shadow-lg whitespace-nowrap">
                     <div className="font-medium">{formatDate(d.day)}</div>
                     <div>
-                      {t.analytics.input}: {formatTokens(d.input_tokens)}
+                      New input: {formatTokens(d.new_input_tokens)}
+                    </div>
+                    <div>
+                      Cache input: {formatTokens(d.cache_input_tokens)}
+                    </div>
+                    <div>
+                      Prompt: {formatTokens(d.prompt_tokens)}
                     </div>
                     <div>
                       {t.analytics.output}: {formatTokens(d.output_tokens)}
                     </div>
                     <div>
-                      {t.analytics.total}: {formatTokens(total)}
+                      Processed: {formatTokens(total)}
                     </div>
                   </div>
                 </div>
@@ -255,7 +261,9 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
               <tr className="border-b border-border text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.date} col="day" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.input} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label="New input" col="new_input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label="Cache input" col="cache_input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label="Prompt" col="prompt_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
               </tr>
             </thead>
@@ -272,9 +280,15 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                       {d.sessions}
                     </td>
                   <td className="text-right py-2 px-4">
+                    {formatTokens(d.new_input_tokens)}
+                  </td>
+                  <td className="text-right py-2 px-4">
+                    {formatTokens(d.cache_input_tokens)}
+                  </td>
+                  <td className="text-right py-2 px-4">
                     <span style={{ color: "var(--series-input-token)" }}>
-                        {formatTokens(d.input_tokens)}
-                      </span>
+                      {formatTokens(d.prompt_tokens)}
+                    </span>
                   </td>
                   <td className="text-right py-2 pl-4">
                     <span style={{ color: "var(--series-output-token)" }}>
@@ -293,7 +307,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
 
 function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
   const { t } = useI18n();
-  const { sorted, sortKey, sortDir, toggle } = useTableSort(models, "input_tokens", "desc");
+  const { sorted, sortKey, sortDir, toggle } = useTableSort(models, "prompt_tokens", "desc");
 
   if (models.length === 0) return null;
 
@@ -314,7 +328,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
               <tr className="border-b border-border text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.model} col="model" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label="Prompt / Output" col="prompt_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -331,7 +345,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                   </td>
                   <td className="text-right py-2 pl-4">
                     <span style={{ color: "var(--series-input-token)" }}>
-                      {formatTokens(m.input_tokens)}
+                      {formatTokens(m.prompt_tokens)}
                     </span>
                     {" / "}
                     <span style={{ color: "var(--series-output-token)" }}>
@@ -494,13 +508,10 @@ export default function AnalyticsPage() {
               </h2>
               <p>
                 The token, cost, and per-day analytics on this page are a
-                local debug estimate. They only count successful main-agent
-                responses with a usable <span className="font-mono">usage</span>{" "}
-                block, and silently exclude auxiliary calls (context
-                compression, title generation, vision, session search, web
-                extract, smart approvals, MCP routing, plugin LLM access)
-                plus provider-side retries and fallback attempts. Cache
-                writes are missing entirely.
+                local debug estimate. It counts recorded main-agent and known
+                auxiliary usage, but provider-side retries or calls that do not
+                return a usable <span className="font-mono">usage</span> block
+                can still be absent.
               </p>
               <p>
                 On models with heavy auxiliary traffic (Kimi K2.6, MiniMax
@@ -544,18 +555,28 @@ export default function AnalyticsPage() {
                 <Stats
                   items={[
                     {
-                      label: t.analytics.totalTokens,
-                      value: formatTokens(
-                        data.totals.total_input + data.totals.total_output,
-                      ),
+                      label: "Processed tokens",
+                      value: formatTokens(data.totals.processed_tokens),
                     },
                     {
-                      label: t.analytics.input,
-                      value: formatTokens(data.totals.total_input),
+                      label: "New input",
+                      value: formatTokens(data.totals.new_input_tokens),
+                    },
+                    {
+                      label: "Cache input",
+                      value: formatTokens(data.totals.cache_input_tokens),
+                    },
+                    {
+                      label: "Prompt tokens",
+                      value: formatTokens(data.totals.prompt_tokens),
                     },
                     {
                       label: t.analytics.output,
                       value: formatTokens(data.totals.total_output),
+                    },
+                    {
+                      label: "Avg prompt / API call",
+                      value: formatTokens(data.totals.avg_prompt_tokens_per_call),
                     },
                     {
                       label: t.analytics.totalSessions,

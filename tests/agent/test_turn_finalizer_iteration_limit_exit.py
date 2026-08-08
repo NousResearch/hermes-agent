@@ -165,6 +165,26 @@ def test_pending_response_does_not_mask_later_terminal_exit(
     assert agent._handle_max_iterations_called is False
 
 
+def test_governance_budget_exhaustion_never_calls_summary_model(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+    agent._token_budget_state = {
+        "status": "budget_exhausted",
+        "action": "handoff",
+        "prompt_tokens": 1_000_000,
+    }
+
+    result = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="budget_exhausted",
+    )
+
+    assert agent._handle_max_iterations_called is False
+    assert result["turn_exit_reason"] == "budget_exhausted"
+    assert result["completed"] is False
+
+
 def test_pending_response_records_kanban_timeout(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")

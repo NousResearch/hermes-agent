@@ -1541,6 +1541,17 @@ def run_conversation(
     # stale prior turn's usage.
     agent._last_turn_usage = None
 
+    # Deterministic zero-token preflight applies to every runtime, including
+    # codex_app_server which otherwise bypasses the normal Hermes loop.
+    _preflight = getattr(agent, "_token_preflight", {"status": "ready"})
+    if _preflight.get("status") != "ready":
+        return {
+            "final_response": json.dumps(_preflight, ensure_ascii=False),
+            "messages": messages,
+            "api_call_count": 0,
+            "end_reason": f"preflight_{_preflight.get('status', 'blocked')}",
+        }
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.
@@ -3548,6 +3559,28 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+                    # Optional prompt-token budget. It deliberately counts cache
+                    # read/write as prompt processing; input_tokens alone is not
+                    # the consumption denominator. Budget exhaustion prevents a
+                    # subsequent model call after this safe API-call boundary.
+                    _prompt_budget = getattr(agent, "_token_prompt_budget", None)
+                    if _prompt_budget is not None:
+                        _budget_state = _prompt_budget.record(
+                            input_tokens=canonical_usage.input_tokens,
+                            cache_read_tokens=canonical_usage.cache_read_tokens,
+                            cache_write_tokens=canonical_usage.cache_write_tokens,
+                            output_tokens=canonical_usage.output_tokens,
+                        )
+                        agent._token_budget_state = _budget_state
+                        if _budget_state["action"] in {"summarize", "freeze_scope"}:
+                            agent._emit_warning(
+                                f"Token budget: {_budget_state['action']} "
+                                f"({_budget_state['prompt_tokens']:,} prompt tokens)"
+                            )
+                        elif _budget_state["status"] == "budget_exhausted":
+                            agent.iteration_budget = type(agent.iteration_budget)(0)
+                            _turn_exit_reason = "budget_exhausted"
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""

@@ -1567,13 +1567,8 @@ def _print_tui_exit_summary(
         cache_read_tokens = int(session.get("cache_read_tokens") or 0)
         cache_write_tokens = int(session.get("cache_write_tokens") or 0)
         reasoning_tokens = int(session.get("reasoning_tokens") or 0)
-        total_tokens = (
-            input_tokens
-            + output_tokens
-            + cache_read_tokens
-            + cache_write_tokens
-            + reasoning_tokens
-        )
+        prompt_tokens = input_tokens + cache_read_tokens + cache_write_tokens
+        total_tokens = prompt_tokens + output_tokens
     except Exception:
         return
     finally:

@@ -95,8 +95,13 @@ def finalize_turn(
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
     )
+    governance_budget_exhausted = (
+        isinstance(getattr(agent, "_token_budget_state", None), dict)
+        and agent._token_budget_state.get("status") == "budget_exhausted"
+    )
     budget_fallback_eligible = (
         budget_exhausted
+        and not governance_budget_exhausted
         and not interrupted
         and not failed
         and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}

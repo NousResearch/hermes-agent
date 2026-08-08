@@ -27,6 +27,7 @@ from gateway.run import GatewayRunner
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     SUPPORTED_VIDEO_TYPES,
     SendResult,
@@ -2582,6 +2583,7 @@ class TestReactions:
             "ts": "1234567890.000001",
         }
         await adapter._handle_slack_message(event)
+        await asyncio.sleep(0)  # initial ACK is intentionally fire-and-forget
 
         # _handle_slack_message should register the message for reactions
         assert "1234567890.000001" in adapter._reacting_message_ids
@@ -2622,6 +2624,128 @@ class TestReactions:
 
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
+    async def test_processed_scope_reacts_to_accepted_unmentioned_channel_message(
+        self, adapter
+    ):
+        adapter.config.extra.update(
+            {"require_mention": False, "reaction_ack_scope": "processed"}
+        )
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        event = {
+            "text": "ordinary project-channel turn",
+            "user": "U_USER",
+            "channel": "C_PROJECT",
+            "channel_type": "channel",
+            "ts": "1234567890.000002",
+        }
+
+        await adapter._handle_slack_message(event)
+        await asyncio.sleep(0)
+
+        msg_event = adapter.handle_message.await_args.args[0]
+        adapter._app.client.reactions_add.assert_awaited_once_with(
+            channel="C_PROJECT",
+            timestamp="1234567890.000002",
+            name="eyes",
+        )
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
+        assert (
+            adapter._app.client.reactions_add.await_args_list[-1].kwargs["name"]
+            == "white_check_mark"
+        )
+        adapter._app.client.reactions_remove.assert_awaited_once_with(
+            channel="C_PROJECT",
+            timestamp="1234567890.000002",
+            name="eyes",
+        )
+
+    @pytest.mark.asyncio
+    async def test_default_scope_keeps_unmentioned_free_response_channel_quiet(
+        self, adapter
+    ):
+        adapter.config.extra["require_mention"] = False
+        adapter._app.client.reactions_add = AsyncMock()
+        await adapter._handle_slack_message(
+            {
+                "text": "accepted but not directly addressed",
+                "user": "U_USER",
+                "channel": "C_SHARED",
+                "channel_type": "channel",
+                "ts": "1234567890.000003",
+            }
+        )
+        await asyncio.sleep(0)
+
+        adapter.handle_message.assert_awaited_once()
+        adapter._app.client.reactions_add.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_processed_scope_does_not_react_to_message_rejected_by_gates(
+        self, adapter
+    ):
+        adapter.config.extra["reaction_ack_scope"] = "processed"
+        adapter._app.client.reactions_add = AsyncMock()
+        await adapter._handle_slack_message(
+            {
+                "text": "unmentioned in a mention-gated channel",
+                "user": "U_USER",
+                "channel": "C_GATED",
+                "channel_type": "channel",
+                "ts": "1234567890.000004",
+            }
+        )
+        await asyncio.sleep(0)
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._app.client.reactions_add.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_processed_scope_dispatches_ack_before_slow_preprocessing(
+        self, adapter
+    ):
+        adapter.config.extra.update(
+            {"require_mention": False, "reaction_ack_scope": "processed"}
+        )
+        ack_seen = asyncio.Event()
+        release_preprocessing = asyncio.Event()
+
+        async def add_reaction(**kwargs):
+            ack_seen.set()
+
+        async def slow_user_lookup(*args, **kwargs):
+            await release_preprocessing.wait()
+            return "Test User"
+
+        adapter._app.client.reactions_add = AsyncMock(side_effect=add_reaction)
+        adapter._resolve_user_name = AsyncMock(side_effect=slow_user_lookup)
+        handler = asyncio.create_task(
+            adapter._handle_slack_message(
+                {
+                    "text": "please handle this project task",
+                    "user": "U_USER",
+                    "channel": "C_PROJECT",
+                    "channel_type": "channel",
+                    "ts": "1234567890.000005",
+                }
+            )
+        )
+
+        await asyncio.wait_for(ack_seen.wait(), timeout=1)
+        assert not handler.done()
+        release_preprocessing.set()
+        await handler
+
+    def test_reaction_ack_scope_normalization(self, adapter):
+        assert adapter._reaction_ack_scope() == "addressed"
+        adapter.config.extra["reaction_ack_scope"] = " PROCESSED "
+        assert adapter._reaction_ack_scope() == "processed"
+        adapter.config.extra["reaction_ack_scope"] = "off"
+        assert adapter._reaction_ack_scope() == "off"
+        adapter.config.extra["reaction_ack_scope"] = "unexpected"
+        assert adapter._reaction_ack_scope() == "addressed"
 
 
 # ---------------------------------------------------------------------------

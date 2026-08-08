@@ -5726,12 +5726,18 @@ class BasePlatformAdapter(ABC):
                 # (Registry-derived: busy_policy == "interrupt_then_dispatch".)
                 if cmd and is_interrupt_then_dispatch(cmd):
                     self._discard_text_debounce(session_key)
+                    _bypass_outcome = ProcessingOutcome.SUCCESS
                     try:
                         await self._dispatch_active_session_command(event, session_key, cmd)
                     except Exception as e:
+                        _bypass_outcome = ProcessingOutcome.FAILURE
                         logger.error(
                             "[%s] Command '/%s' dispatch failed: %s",
                             self.name, cmd, e, exc_info=True,
+                        )
+                    finally:
+                        await self._run_processing_hook(
+                            "on_processing_complete", event, _bypass_outcome
                         )
                     return
 
@@ -5742,6 +5748,7 @@ class BasePlatformAdapter(ABC):
                     "[%s] Command '/%s' bypassing active-session guard for %s",
                     self.name, cmd, session_key,
                 )
+                _bypass_outcome = ProcessingOutcome.SUCCESS
                 try:
                     _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     response = await self._message_handler(event)
@@ -5760,7 +5767,12 @@ class BasePlatformAdapter(ABC):
                                 ttl_seconds=_eph_ttl,
                             )
                 except Exception as e:
+                    _bypass_outcome = ProcessingOutcome.FAILURE
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
+                finally:
+                    await self._run_processing_hook(
+                        "on_processing_complete", event, _bypass_outcome
+                    )
                 return
 
             # Clarify reply bypass: if the agent is blocked on a

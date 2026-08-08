@@ -466,6 +466,165 @@ async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monke
 # --------------------------------------------------------------------------
 
 
+def _isolate_sent_index(monkeypatch, tmp_path):
+    """Pin the rich_sent_store read AND write paths inside this test's tmpdir.
+
+    ``lookup_entry`` scans ``get_default_hermes_root()`` (derived from HOME,
+    which the hermetic fixture deliberately does not redirect), so both hooks
+    must be patched for a deterministic index.
+    """
+    from gateway import rich_sent_store
+
+    monkeypatch.setattr(
+        rich_sent_store,
+        "_store_path",
+        lambda: str(tmp_path / "state" / "rich_sent_index.json"),
+    )
+    monkeypatch.setattr(
+        "hermes_constants.get_default_hermes_root",
+        lambda: tmp_path / "base",
+    )
+    return rich_sent_store
+
+
+@pytest.mark.asyncio
+async def test_legacy_send_preserves_requested_general_topic_when_reply_omits_it(
+    monkeypatch, tmp_path
+):
+    """Exercise the exact ordinary final-message path used by live Telegram.
+
+    A forum's General topic has logical thread id "1", but Telegram rejects
+    ``message_thread_id=1`` on sends — the request must omit it and the
+    response omits it as well. The sent index must still record the logical
+    topic, otherwise an incoming reaction to the final answer is fail-closed
+    rejected (reactions carry no topic identity of their own).
+    """
+    rich_sent_store = _isolate_sent_index(monkeypatch, tmp_path)
+
+    adapter = _make_adapter(extra={"rich_messages": False, "inbound_reactions": True})
+    bot = adapter._bot
+    assert bot is not None
+    bot.id = 111
+    bot.send_message = AsyncMock(
+        return_value=SimpleNamespace(message_id=700, message_thread_id=None)
+    )
+
+    result = await adapter.send(
+        "-100",
+        "A normal final reply.",
+        metadata={"thread_id": "1", "notify": True},
+    )
+
+    assert result.success is True
+    # Live transport constraint: the request really omitted the topic id.
+    assert bot.send_message.await_args.kwargs["message_thread_id"] is None
+    entry = rich_sent_store.lookup_entry("-100", "700")
+    assert entry is not None
+    assert entry["thread_id"] == "1"
+    assert entry["sender_id"] == "111"
+
+
+@pytest.mark.asyncio
+async def test_rich_send_preserves_requested_general_topic_when_reply_omits_it(
+    monkeypatch, tmp_path
+):
+    """Same General-topic invariant through the production sendRichMessage path."""
+    rich_sent_store = _isolate_sent_index(monkeypatch, tmp_path)
+
+    adapter = _make_adapter()
+    bot = adapter._bot
+    assert bot is not None
+    bot.id = 111
+    bot.do_api_request = AsyncMock(
+        return_value=SimpleNamespace(message_id=701, message_thread_id=None)
+    )
+
+    result = await adapter.send(
+        "-100",
+        RICH_CONTENT,
+        metadata={"thread_id": "1", "notify": True},
+    )
+
+    assert result is not None and result.success is True
+    bot.do_api_request.assert_awaited_once()
+    # The rich payload must not carry a General topic id either.
+    assert "message_thread_id" not in _rich_api_kwargs(adapter)
+    entry = rich_sent_store.lookup_entry("-100", "701")
+    assert entry is not None
+    assert entry["thread_id"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_edit_overflow_continuation_preserves_general_topic_when_reply_omits_it(
+    monkeypatch, tmp_path
+):
+    """Overflow continuations sent to the General topic keep logical id "1"."""
+    rich_sent_store = _isolate_sent_index(monkeypatch, tmp_path)
+
+    adapter = _make_adapter(extra={"rich_messages": False, "inbound_reactions": True})
+    bot = adapter._bot
+    assert bot is not None
+    bot.id = 111
+    bot.edit_message_text = AsyncMock(return_value=MagicMock(message_id=500))
+    bot.send_message = AsyncMock(
+        return_value=SimpleNamespace(message_id=501, message_thread_id=None)
+    )
+
+    # > MAX_MESSAGE_LENGTH so the edit splits into first-chunk edit + one
+    # continuation send (the continuation goes through the changed capture).
+    long_content = "word " * 1200
+
+    result = await adapter._edit_overflow_split(
+        "-100",
+        "500",
+        long_content,
+        finalize=True,
+        metadata={"thread_id": "1", "notify": True},
+    )
+
+    assert result.success is True
+    first = rich_sent_store.lookup_entry("-100", "500")
+    continuation = rich_sent_store.lookup_entry("-100", "501")
+    assert first is not None and first["thread_id"] == "1"
+    assert continuation is not None and continuation["thread_id"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_stale_topic_fallback_to_root_still_records_no_topic(
+    monkeypatch, tmp_path
+):
+    """A genuinely deleted (non-General) topic falls back to a root send.
+
+    The fallback message must NOT inherit the dead topic id — and must not
+    gain the General id either — so reaction routing stays fail-closed for it.
+    """
+    rich_sent_store = _isolate_sent_index(monkeypatch, tmp_path)
+
+    adapter = _make_adapter(extra={"rich_messages": False, "inbound_reactions": True})
+    bot = adapter._bot
+    assert bot is not None
+    bot.id = 111
+    bot.send_message = AsyncMock(
+        side_effect=[
+            BadRequest("Message thread not found"),
+            BadRequest("Message thread not found"),
+            SimpleNamespace(message_id=800, message_thread_id=None),
+        ]
+    )
+
+    result = await adapter.send(
+        "-100",
+        "A reply to a deleted topic.",
+        metadata={"thread_id": "77", "notify": True},
+    )
+
+    assert result.success is True
+    assert result.raw_response["thread_fallback"] is True
+    entry = rich_sent_store.lookup_entry("-100", "800")
+    assert entry is not None
+    assert entry.get("thread_id") is None
+
+
 def _reply_message(reply_to_id, *, reply_text=None, reply_caption=None, quote_text=None):
     """Build a mock inbound reply Message for _build_message_event."""
     replied = SimpleNamespace(

@@ -115,6 +115,14 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
     return notify_metadata
 
 
+def _is_deferred_followup_event(event) -> bool:
+    """Return whether an event must wait rather than satisfy interactive prompts."""
+    if bool(getattr(event, "internal", False)):
+        return True
+    metadata = getattr(event, "metadata", None) or {}
+    return bool(metadata.get("deferred_followup_event"))
+
+
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics.
 
@@ -145,6 +153,12 @@ def _reply_anchor_for_event(event) -> str | None:
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "telegram" and thread_id:
         return None
+    if platform == "telegram":
+        reaction_target = (getattr(event, "metadata", None) or {}).get(
+            "telegram_reaction_target_message_id"
+        )
+        if reaction_target is not None:
+            return str(reaction_target)
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)
@@ -5990,7 +6004,7 @@ class BasePlatformAdapter(ABC):
             # Same shape as the /approve deadlock fix (PR #4926) — both
             # cases are "agent thread blocked on Event.wait, message must
             # reach the resolver before being treated as a new turn."
-            if not cmd:
+            if not cmd and not _is_deferred_followup_event(event):
                 try:
                     from tools import clarify_gateway as _clarify_mod
                     _has_text_clarify = (

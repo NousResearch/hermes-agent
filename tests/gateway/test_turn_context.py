@@ -64,3 +64,23 @@ class TestTurnRunner:
         ctx = TurnContext(progress_queue=queue_mod.Queue())
         runner = _make_runner(ctx)  # stub adapter resolver returns None
         assert asyncio.run(runner.send_progress_messages()) is None
+
+    @pytest.mark.parametrize("tool_name", ["clarify", "telegram_react"])
+    def test_progress_callback_suppresses_self_rendering_tools(self, tool_name):
+        progress_queue = queue_mod.Queue()
+        ctx = TurnContext(
+            progress_queue=progress_queue,
+            progress_mode="all",
+            tool_progress_enabled=True,
+            _run_still_current=lambda: True,
+        )
+        runner = _make_runner(ctx)
+
+        runner.progress_callback(
+            "tool.started",
+            tool_name,
+            preview="test",
+            args={"emoji": "👍"},
+        )
+
+        assert progress_queue.empty()

@@ -2405,6 +2405,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _is_deferred_followup_event,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     build_auto_tts_output_path,
@@ -3825,15 +3826,12 @@ class TurnRunner:
         if event_type not in {"tool.started",}:
             return
 
-        # Never render a progress bubble for the clarify tool.  The
-        # adapter's send_clarify IS the user-facing rendering (interactive
-        # buttons or the numbered-text fallback), so a progress bubble is
-        # pure duplication — and in verbose mode it dumps the raw
-        # tool-call args JSON ({"question": ..., "choices": [...]}) into
-        # the chat.  Because the progress queue drains on a background
-        # task, that raw JSON typically lands right underneath the
-        # rendered prompt (#52374).
-        if tool_name == "clarify":
+        # Never render a progress bubble for tools whose own side effect is the
+        # complete user-facing interaction. ``clarify`` renders its prompt via
+        # the adapter; ``telegram_react`` applies a native Telegram reaction.
+        # A separate progress message is duplicate output and breaks silent
+        # reaction-only turns (it can also expose raw arguments in verbose mode).
+        if tool_name in {"clarify", "telegram_react"}:
             return
 
         # Suppress tool-progress bubbles once the user has sent `stop`.
@@ -8999,7 +8997,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter:
             return False  # let default path handle it
 
-        # --- Internal synthetic events must never interrupt/steer ---
+        # --- Synthetic and weak-signal events must never interrupt/steer ---
         # Async-delegation completions (delegate_task(background=true)) and
         # background-process completions (terminal notify_on_complete) re-enter
         # the originating session as internal MessageEvents. When the session
@@ -9010,7 +9008,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # never splices into a running turn. Fall through to the base adapter,
         # which queues internal events silently (no interrupt, no ack) so they
         # cascade after the current turn finishes.
-        if getattr(event, "internal", False):
+        if _is_deferred_followup_event(event):
             return False
 
         _busy_state = self._peek_session_state(session_key)
@@ -14615,6 +14613,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
+        is_deferred_followup = _is_deferred_followup_event(event)
 
         # Ignored-channel guard runs FIRST — before startup-restore queueing,
         # plugin hooks, auth, and session setup — so a configured ignored
@@ -14846,7 +14845,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
         _up_state = self._peek_session_state(_quick_key)
-        if _up_state is not None and _up_state.persistent.update_prompt_pending:
+        if (
+            not is_deferred_followup
+            and _up_state is not None
+            and _up_state.persistent.update_prompt_pending
+        ):
             raw = (event.text or "").strip()
             # Accept /approve and /deny as shorthand for yes/no
             cmd = event.get_command()
@@ -14918,13 +14921,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # to the second option, arbitrary text becomes a custom answer). Slash
         # commands still bypass this path so /stop and friends keep working.
         _clarify_mod = None
-        try:
-            from tools import clarify_gateway as _clarify_mod
-            _pending_clarify = _clarify_mod.get_pending_for_session(
-                _quick_key, include_choice_prompts=True,
-            )
-        except Exception:
-            _pending_clarify = None
+        _pending_clarify = None
+        if not is_deferred_followup:
+            try:
+                from tools import clarify_gateway as _clarify_mod
+                _pending_clarify = _clarify_mod.get_pending_for_session(
+                    _quick_key, include_choice_prompts=True,
+                )
+            except Exception:
+                _pending_clarify = None
         if _pending_clarify is not None and _clarify_mod is not None:
             _clarify_has_audio = bool(self._pending_event_audio_paths(event))
             _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
@@ -14980,7 +14985,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # precedence — /approve there unblocks the waiting tool thread.
         # Slash-confirm only catches /approve when no tool approval is live.
         from tools import slash_confirm as _slash_confirm_mod
-        _pending_confirm = _slash_confirm_mod.get_pending(_quick_key)
+        _pending_confirm = (
+            None if is_deferred_followup
+            else _slash_confirm_mod.get_pending(_quick_key)
+        )
         _tool_approval_live = False
         try:
             from tools.approval import has_blocking_approval

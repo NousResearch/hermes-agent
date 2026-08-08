@@ -31,6 +31,7 @@ from agent.prompt_builder import (
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
+    SKILLS_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -43,12 +44,37 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 
 
 class TestGuidanceConstants:
+    def test_default_identity_preserves_truthful_ai_and_act_now_guidance(self):
+        assert "not human" in DEFAULT_AGENT_IDENTITY
+        assert "should not claim uninterrupted subjective consciousness" in DEFAULT_AGENT_IDENTITY
+        assert "When an action can be done now" in DEFAULT_AGENT_IDENTITY
+        assert "do not promise future action without acting" in DEFAULT_AGENT_IDENTITY
+
     def test_memory_guidance_discourages_task_logs(self):
         assert "durable facts" in MEMORY_GUIDANCE
+        assert "Never store raw secrets" in MEMORY_GUIDANCE
+        assert "credentials" in MEMORY_GUIDANCE
+        assert "one-off sensitive data" in MEMORY_GUIDANCE
         assert "Do NOT save task progress" in MEMORY_GUIDANCE
         assert "session_search" in MEMORY_GUIDANCE
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
+
+    def test_skills_guidance_preserves_difficult_work_maintenance_contract(self):
+        assert "complex task (5+ tool calls)" in SKILLS_GUIDANCE
+        assert "fixing a tricky error" in SKILLS_GUIDANCE
+        assert "non-trivial workflow" in SKILLS_GUIDANCE
+        assert "skill with skill_manage" in SKILLS_GUIDANCE
+        assert "reuse it next time" in SKILLS_GUIDANCE
+        assert "outdated, incomplete, or wrong" in SKILLS_GUIDANCE
+        assert "patch it immediately" in SKILLS_GUIDANCE
+
+    def test_discord_hint_is_privacy_conservative_for_shared_channels(self):
+        assert "privacy conservative" in PLATFORM_HINTS["discord"]
+        assert "shared channels" in PLATFORM_HINTS["discord"]
+        assert "avoid unnecessary local operational detail" in PLATFORM_HINTS["discord"]
+        assert "stay concise" in PLATFORM_HINTS["discord"]
+        assert "artifact is more appropriate" in PLATFORM_HINTS["discord"]
 
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE

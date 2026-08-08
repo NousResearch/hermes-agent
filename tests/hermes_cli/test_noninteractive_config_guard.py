@@ -146,6 +146,47 @@ def test_interactive_chat_keeps_existing_repair_behavior(tmp_path):
     assert list(tmp_path.glob("config.yaml.corrupt.*.bak")) == []
 
 
+def test_empty_query_keeps_interactive_repair_behavior(tmp_path):
+    from hermes_cli import main as main_mod
+
+    (tmp_path / "config.yaml").write_text("model: [unterminated\n")
+    args = _args(query="")
+
+    main_mod._guard_noninteractive_user_config(args)
+
+    assert not hasattr(args, "_noninteractive_config_validated")
+    assert list(tmp_path.glob("config.yaml.corrupt.*.bak")) == []
+
+
+def test_env_only_config_bypass_allows_noninteractive_recovery(monkeypatch, tmp_path):
+    from hermes_cli import main as main_mod
+
+    (tmp_path / "config.yaml").write_text("model: [unterminated\n")
+    monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+    args = _args()
+
+    main_mod._guard_noninteractive_user_config(args)
+
+    assert args._noninteractive_config_validated is True
+    assert list(tmp_path.glob("config.yaml.corrupt.*.bak")) == []
+
+
+def test_reused_args_can_retry_after_config_repair(tmp_path):
+    from hermes_cli import main as main_mod
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model: [unterminated\n")
+    args = _args()
+
+    with pytest.raises(SystemExit):
+        main_mod._guard_noninteractive_user_config(args)
+
+    config_path.write_text("model:\n  default: local/test\n")
+    main_mod._guard_noninteractive_user_config(args)
+
+    assert args._noninteractive_config_validated is True
+
+
 def test_ignore_user_config_is_applied_before_oneshot_startup(monkeypatch):
     from hermes_cli import main as main_mod
 

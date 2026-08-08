@@ -12743,7 +12743,7 @@ def _guard_noninteractive_user_config(args) -> None:
 
     is_noninteractive = (
         bool(getattr(args, "oneshot", None))
-        or getattr(args, "query", None) is not None
+        or bool(getattr(args, "query", None))
         or bool(getattr(args, "quiet", False))
     )
     if not is_noninteractive:

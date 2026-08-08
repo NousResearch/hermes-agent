@@ -201,7 +201,12 @@ export function ReviewPane() {
             ) : diff ? (
               <FileDiffPanel className="mx-0 mb-0 h-full max-h-none" diff={diff} path={selectedFile.path} virtualized />
             ) : (
-              <div className="py-6 text-center text-[0.66rem] text-muted-foreground/60">{c.noDiff}</div>
+              // A folder row with nothing to expand is its own case (an empty
+              // untracked dir, or a nested git repo the outer repo can't see
+              // into) — say which, rather than implying the folder is clean.
+              <div className="py-6 text-center text-[0.66rem] text-muted-foreground/60">
+                {selectedFile.path.endsWith('/') ? c.noDiffFolder : c.noDiff}
+              </div>
             )}
           </div>
         </div>

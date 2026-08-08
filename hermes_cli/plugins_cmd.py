@@ -23,6 +23,7 @@ from typing import Any, Optional
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.config import cfg_get
+from hermes_cli.fs_remove import rmtree_force
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
@@ -561,7 +562,8 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
                     f"Plugin '{plugin_name}' already exists. Use force reinstall "
                     f"or run `hermes plugins update {plugin_name}`.",
                 )
-            shutil.rmtree(target)
+            # Force reinstall wipes the previous checkout, .git and all.
+            rmtree_force(target)
 
         shutil.move(str(tmp_target), str(target))
 
@@ -725,7 +727,9 @@ def cmd_remove(name: str) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
-    shutil.rmtree(target)
+    # Plugins are git checkouts, and git writes .git/objects/** read-only.
+    # Plain rmtree fails on Windows there; rmtree_force clears the bit.
+    rmtree_force(target)
     _display_removed(name, plugins_dir)
 
 
@@ -2083,7 +2087,8 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
             "error": f"Plugin '{name}' was not found under {plugins_dir}.",
         }
 
-    shutil.rmtree(target)
+    # Same read-only .git/objects problem as the CLI ``plugins remove`` path.
+    rmtree_force(target)
     return {"ok": True, "name": name}
 
 

@@ -33,6 +33,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli.fs_remove import rmtree_force
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -1438,36 +1439,6 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     print(f"✓ Stopped {len(pids)} profile backend process(es)")
 
 
-def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
-    """``shutil.rmtree`` with a short retry loop for transient races.
-
-    Even after stopping the gateway and profile backends, a just-terminated
-    process can leave in-flight writes (SQLite ``-wal``/``-shm`` checkpoints,
-    sandbox temp files) that land after ``rmtree`` has walked past a directory,
-    surfacing as ``ENOTEMPTY`` (POSIX) or a transient ``PermissionError``
-    (Windows file lock still releasing).  A few spaced retries let those settle
-    instead of failing the whole delete on a race the next attempt would win.
-    """
-    attempts = 3
-    last_exc: OSError | None = None
-    for attempt in range(attempts):
-        try:
-            # ``onexc`` was added in 3.12; fall back to ``onerror`` on 3.11.
-            try:
-                shutil.rmtree(profile_dir, onexc=onexc_handler)
-            except TypeError:
-                shutil.rmtree(profile_dir, onerror=onexc_handler)
-            return
-        except OSError as e:
-            last_exc = e
-            if not profile_dir.exists():
-                return
-            if attempt < attempts - 1:
-                time.sleep(0.3 * (attempt + 1))
-    if last_exc is not None:
-        raise last_exc
-
-
 def delete_profile(name: str, yes: bool = False) -> Path:
     """Delete a profile, its wrapper script, and its gateway service.
 
@@ -1560,44 +1531,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # 4. Remove profile directory
     remove_error: Exception | None = None
     try:
-        def _make_writable(func, path, exc):
-            """onexc/onerror handler: add +w on PermissionError so rmtree can proceed.
-
-            Handles two cases on NixOS (and other systems with read-only
-            copies from immutable stores):
-            1. The path itself isn't writable (e.g. a file with mode 0444)
-            2. The *parent* directory isn't writable (e.g. mode 0555)
-
-            Compatible with both the ``onexc`` API (3.12+, receives an
-            exception instance) and the ``onerror`` API (3.11-, receives
-            ``sys.exc_info()`` tuple).
-            """
-            import stat as _stat
-
-            # Normalise the two callback signatures:
-            #   onexc(func, path, exc_instance)   — 3.12+
-            #   onerror(func, path, exc_info_tuple) — 3.11
-            if isinstance(exc, tuple):
-                exc = exc[1]  # exc_info → actual exception object
-
-            if isinstance(exc, PermissionError):
-                # Make the path writable
-                try:
-                    os.chmod(path, os.stat(path).st_mode | _stat.S_IWUSR)
-                except OSError:
-                    pass
-                # Also make the parent writable (needed for unlink/rmdir)
-                parent = os.path.dirname(path)
-                if parent:
-                    try:
-                        os.chmod(parent, os.stat(parent).st_mode | _stat.S_IWUSR)
-                    except OSError:
-                        pass
-                func(path)
-            else:
-                raise
-
-        _rmtree_with_retry(profile_dir, _make_writable)
+        # Clears read-only files (NixOS store copies, git objects under any
+        # plugin/MCP checkout in the profile) and retries transient locks.
+        rmtree_force(profile_dir)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")

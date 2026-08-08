@@ -168,6 +168,73 @@ class TestMcpRemove:
         cmd_mcp_remove(_make_args(name="oauth-srv"))
         assert not token_file.exists()
 
+    def test_remove_deletes_all_three_oauth_files(self, tmp_path, capsys, monkeypatch):
+        """Regression for issue #81050.
+
+        `hermes mcp remove` must delete the .json, .client.json, and
+        .meta.json siblings under mcp-tokens/, not just the token file.
+        """
+        _seed_config(tmp_path, {
+            "oauth-srv": {"url": "https://example.com/mcp", "auth": "oauth"},
+        })
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
+        )
+
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        names = ["oauth-srv.json", "oauth-srv.client.json", "oauth-srv.meta.json"]
+        for fname in names:
+            (token_dir / fname).write_text("{}")
+
+        from hermes_cli.mcp_config import cmd_mcp_remove
+
+        cmd_mcp_remove(_make_args(name="oauth-srv"))
+
+        remaining = sorted(p.name for p in token_dir.iterdir())
+        assert remaining == [], (
+            "expected all three oauth files deleted, leftover: " + repr(remaining)
+        )
+
+    def test_remove_orphan_cleans_token_files(self, tmp_path, capsys, monkeypatch):
+        """Regression for issue #81050.
+
+        If a server has already been removed from config but its token
+        files survive on disk (orphan state), `hermes mcp remove` must
+        still clean the leftover files so the server cannot be revived
+        on the next gateway restart.
+        """
+        # No config seeding — server is absent from mcp_servers, but
+        # token files still present on disk.
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        for fname in ("ghost.json", "ghost.client.json", "ghost.meta.json"):
+            (token_dir / fname).write_text("{}")
+
+        from hermes_cli.mcp_config import cmd_mcp_remove
+
+        cmd_mcp_remove(_make_args(name="ghost"))
+
+        remaining = sorted(p.name for p in token_dir.iterdir())
+        assert remaining == [], (
+            "expected orphan token files deleted, leftover: " + repr(remaining)
+        )
+
+    def test_remove_keeps_config_when_orphan(self, tmp_path, capsys, monkeypatch):
+        """The orphan-cleanup branch must not create a config entry."""
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        (token_dir / "ghost.json").write_text("{}")
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import cmd_mcp_remove
+
+        cmd_mcp_remove(_make_args(name="ghost"))
+
+        config = load_config()
+        assert "ghost" not in config.get("mcp_servers", {})
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_add

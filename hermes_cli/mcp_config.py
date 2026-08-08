@@ -104,17 +104,50 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     return True
 
 
-def _remove_mcp_server(name: str) -> bool:
-    """Remove a server from config.yaml.  Returns True if it existed."""
+def _remove_mcp_token_files(name: str) -> bool:
+    """Delete all per-server files under ``HERMES_HOME/mcp-tokens/``.
+
+    Always routes through :class:`tools.mcp_oauth.HermesTokenStorage` so
+    the ``.json``, ``.client.json``, and ``.meta.json`` siblings are
+    handled together — fixing the orphan-``.meta.json`` revival bug
+    where ``hermes mcp remove`` left cached OAuth metadata on disk and
+    the gateway bootstrap re-read it on the next restart (#81050).
+    """
+    from tools.mcp_oauth import HermesTokenStorage
+
+    storage = HermesTokenStorage(name)
+    paths = (
+        storage._tokens_path(),
+        storage._client_info_path(),
+        storage._meta_path(),
+    )
+    removed_any = any(p.exists() for p in paths)
+    storage.remove()
+    return removed_any
+
+
+def _remove_mcp_server(name: str, *, clean_token_files: bool = True) -> bool:
+    """Remove a server from config.yaml.  Returns True if it existed.
+
+    When ``clean_token_files`` is True (the default), also deletes the
+    per-server OAuth files under ``mcp-tokens/``. This is what callers
+    want for ``hermes mcp remove`` and the dashboard DELETE endpoint —
+    the orphan-``.meta.json`` revival bug (#81050) was caused by these
+    two paths each cleaning only part of the per-server state.
+    """
     config = load_config()
     servers = config.get("mcp_servers", {})
-    if name not in servers:
-        return False
-    del servers[name]
-    if not servers:
-        config.pop("mcp_servers", None)
-    save_config(config)
-    return True
+    existed = name in servers
+    if existed:
+        del servers[name]
+        if not servers:
+            config.pop("mcp_servers", None)
+        save_config(config)
+
+    if clean_token_files:
+        _remove_mcp_token_files(name)
+
+    return existed
 
 
 def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
@@ -620,33 +653,53 @@ def cmd_mcp_add(args):
 # ─── hermes mcp remove ───────────────────────────────────────────────────────
 
 def cmd_mcp_remove(args):
-    """Remove an MCP server from config."""
+    """Remove an MCP server from config AND clean up all on-disk state.
+
+    Always deletes the per-server files under ``mcp-tokens/`` so an
+    orphan ``.meta.json`` (or ``.client.json``) cannot be re-read by the
+    gateway bootstrap on the next restart (#81050).
+    """
     name = args.name
     existing = _get_mcp_servers()
 
-    if name not in existing:
-        _error(f"Server '{name}' not found in config.")
+    in_config = name in existing
+    if not in_config:
+        _warning(f"Server '{name}' not found in config; checking for orphan token files...")
         servers = list(existing.keys())
         if servers:
             _info(f"Available servers: {', '.join(servers)}")
+
+    cleaned_tokens = _remove_mcp_token_files(name)
+
+    if in_config:
+        if not _confirm(f"Remove server '{name}'?", default=True):
+            _info("Cancelled.")
+            # Token cleanup already happened; surface it so the user
+            # knows the disk state is now clean even though config remains.
+            if cleaned_tokens:
+                _success("Cleaned up OAuth tokens (config left intact)")
+            return
+
+        # _remove_mcp_server also re-cleans tokens; the explicit call
+        # above made the orphan case observable to the user.
+        _remove_mcp_token_files(name)
+        _remove_mcp_server(name, clean_token_files=False)
+        _success(f"Removed '{name}' from config")
+    elif cleaned_tokens:
+        _success(f"Removed orphan token files for '{name}'")
+    else:
+        _error(f"Server '{name}' not found in config.")
         return
 
-    if not _confirm(f"Remove server '{name}'?", default=True):
-        _info("Cancelled.")
-        return
-
-    _remove_mcp_server(name)
-    _success(f"Removed '{name}' from config")
-
-    # Clean up OAuth tokens if they exist — route through MCPOAuthManager so
-    # any provider instance cached in the current process (e.g. from an
-    # earlier `hermes mcp test` in the same session) is evicted too.
+    # Best-effort: evict any cached provider from this process. A failure
+    # here is not fatal — the on-disk cleanup already happened above.
     try:
         from tools.mcp_oauth_manager import get_manager
         get_manager().remove(name)
-        _success("Cleaned up OAuth tokens")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("MCPOAuthManager.remove(%r) failed (non-fatal): %s", name, exc)
+
+    _success("Cleaned up OAuth tokens")
 
 
 # ─── hermes mcp list ──────────────────────────────────────────────────────────

@@ -125,10 +125,19 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
 
 @router.delete("/api/mcp/servers/{name}")
 async def remove_mcp_server(name: str, profile: Optional[str] = None):
-    from hermes_cli.mcp_config import _remove_mcp_server
+    from hermes_cli.mcp_config import _remove_mcp_server, _remove_mcp_token_files
 
     with _profile_scope(profile):
         removed = _remove_mcp_server(name)
+        # _remove_mcp_server also cleans token files, but if the server
+        # wasn't in config (orphan state) it still won't have been
+        # removed — heal the orphan so the next gateway restart can't
+        # revive the server (#81050).
+        if not removed:
+            _remove_mcp_token_files(name)
+            # Re-check: token files may have just been cleaned but config
+            # never had the server, so it's still a 404. We deliberately
+            # do NOT create a server here.
     if not removed:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
     return {"ok": True}

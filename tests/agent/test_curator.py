@@ -274,6 +274,100 @@ def test_prune_builtins_never_touches_hub_skills(curator_env, monkeypatch):
     assert (skills_dir / "hubskill").exists()
 
 
+def test_prune_builtins_reanchors_preseeded_never_used_builtin(curator_env, monkeypatch):
+    """A pre-seeded built-in record must not mark the skill stale on the first
+    curator run.
+
+    Telemetry writes a usage record the moment a built-in is seeded — possibly
+    weeks before the first curator run with ``curator.prune_builtins`` on. That
+    record has use_count 0, no activity, and a created_at older than
+    stale_after_days; anchoring the inactivity clock there marks every fresh
+    built-in stale on the first pass. The curator re-anchors created_at to now
+    on first sight instead, so the clock starts from this run (#79295).
+    """
+    u = curator_env["usage"]
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled-helper")
+    (skills_dir / ".bundled_manifest").write_text(
+        "bundled-helper:abc\n", encoding="utf-8"
+    )
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    # Pure-telemetry record batch-created before the first curator run.
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["bundled-helper"] = u._empty_record()
+    data["bundled-helper"]["created_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["marked_stale"] == 0
+    assert counts["archived"] == 0
+    rec = u.get_record("bundled-helper")
+    assert rec["state"] == "active"
+    # Clock was re-anchored to this run, not left at the telemetry timestamp.
+    assert rec["first_seen_at"] is not None
+    reanchored = datetime.fromisoformat(rec["created_at"])
+    assert reanchored > datetime.fromisoformat(super_old)
+    assert reanchored > datetime.now(timezone.utc) - timedelta(minutes=5)
+
+
+def test_prune_builtins_reanchored_builtin_still_ages_out(curator_env, monkeypatch):
+    """Re-anchoring is one-shot: after first sight, the re-anchored clock keeps
+    ticking, so a still-unused built-in goes stale after a full stale window
+    instead of being deferred forever."""
+    u = curator_env["usage"]
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled-helper")
+    (skills_dir / ".bundled_manifest").write_text(
+        "bundled-helper:abc\n", encoding="utf-8"
+    )
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["bundled-helper"] = u._empty_record()
+    data["bundled-helper"]["created_at"] = super_old
+    u.save_usage(data)
+
+    t0 = datetime.now(timezone.utc)
+    assert c.apply_automatic_transitions(now=t0)["marked_stale"] == 0
+
+    # A month later (past stale_after_days=30) with still no use: stale.
+    counts = c.apply_automatic_transitions(now=t0 + timedelta(days=31))
+    assert counts["marked_stale"] == 1
+    assert u.get_record("bundled-helper")["state"] == "stale"
+
+
+def test_prune_builtins_used_builtin_still_marked_stale(curator_env, monkeypatch):
+    """The never-used re-anchor must not shield built-ins that were actually
+    used long ago — their activity anchor governs and they age out normally."""
+    u = curator_env["usage"]
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled-used")
+    (skills_dir / ".bundled_manifest").write_text(
+        "bundled-used:abc\n", encoding="utf-8"
+    )
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    # Last used 45 days ago: inside the stale window (>30d) but well before
+    # the archive window (90d) — an unequivocal stale candidate.
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+    data = u.load_usage()
+    data["bundled-used"] = u._empty_record()
+    data["bundled-used"]["created_at"] = old
+    data["bundled-used"]["last_used_at"] = old
+    data["bundled-used"]["use_count"] = 1
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["marked_stale"] == 1
+    assert u.get_record("bundled-used")["state"] == "stale"
+
+
 # ---------------------------------------------------------------------------
 # run_curator_review orchestration
 # ---------------------------------------------------------------------------

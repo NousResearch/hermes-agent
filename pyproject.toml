@@ -84,7 +84,12 @@ dependencies = [
   "urllib3>=2.7.0,<3",
   # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
   # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==48.0.1",  # CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf; ==48.0.1 (not 49.x): msal and alibabacloud-tea-openapi cap <49, hindsight-api-slim needs >=48.0.1
+  # Floor: 48.0.1 (CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf). Open
+  # upper range so installs without [dingtalk] resolve to the patched releases
+  # (GHSA-jwv3-5hgf-82ww / GHSA-m2h6-j472-r4p4 fixed in 49.0.0, GHSA-g6cj-pr64-35w5
+  # in 50.0.0); [dingtalk]'s alibabacloud-tea-openapi caps <49, so dingtalk
+  # installs keep 48.0.1 until upstream relaxes (#78543).
+  "cryptography>=48.0.1,<51",
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package

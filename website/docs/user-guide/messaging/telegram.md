@@ -1135,9 +1135,10 @@ In some restricted networks, `api.telegram.org` may resolve to an IP that is unr
 
 1. If `TELEGRAM_FALLBACK_IPS` is set, those IPs are used directly.
 2. Otherwise, the adapter automatically queries **Google DNS** and **Cloudflare DNS** via DNS-over-HTTPS (DoH) to discover alternative IPs for `api.telegram.org`.
-3. IPs returned by DoH that differ from the system DNS result are used as fallbacks.
-4. If DoH is also blocked, a hardcoded seed IP (`149.154.167.220`) is used as a last resort.
-5. Once a fallback IP succeeds, it becomes "sticky" — subsequent requests use it directly without retrying the primary path first.
+3. Valid IPs returned by DoH are kept first in discovery order, including an IP that matches the system DNS result.
+4. The built-in seed IPs are appended as last-resort alternatives, even when DoH succeeds, so a partial DoH answer does not become a single point of failure.
+5. The combined list is deduplicated while preserving that DoH-first, seed-last order.
+6. Once a fallback IP succeeds, it becomes "sticky" — subsequent requests use it directly without retrying the primary path first.
 
 ### Configuration
 
@@ -1157,7 +1158,7 @@ platforms:
 ```
 
 :::tip
-You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network.
+You usually don't need to configure this manually. DoH discovery plus the retained seed pool handles most restricted-network scenarios. Set `TELEGRAM_FALLBACK_IPS` only when you need to override the automatically assembled fallback pool.
 :::
 
 ## Proxy Support

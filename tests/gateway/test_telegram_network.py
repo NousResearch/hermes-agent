@@ -435,24 +435,22 @@ class TestDiscoverFallbackIps:
         assert ips == ["149.154.166.110", "149.154.167.220"]
 
     @pytest.mark.asyncio
-    async def test_doh_results_deduplicated(self, monkeypatch):
+    async def test_doh_results_deduplicated_and_seed_pool_retained(self, monkeypatch):
         self._patch_doh(monkeypatch, {
             "https://dns.google": (200, _doh_answer("149.154.167.220")),
             "https://cloudflare-dns.com": (200, _doh_answer("149.154.167.220")),
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.167.220"]
+        assert ips == ["149.154.167.220", "149.154.166.110"]
 
 
     @pytest.mark.asyncio
     async def test_all_doh_ips_same_as_system_dns_kept(self, monkeypatch):
         """DoH agrees with system DNS — keep that IP instead of seed list (#14520).
 
-        Previous behavior fell through to ``_SEED_FALLBACK_IPS`` here, but the
-        seed addresses are not routable on every network.  When DoH confirms
-        the system IP, that IP is the best candidate we have and should be
-        used as the fallback target.
+        The confirmed system IP remains the preferred fallback target while
+        the seed pool supplies additional paths if that edge later fails.
         """
         self._patch_doh(monkeypatch, {
             "https://dns.google": (200, _doh_answer("149.154.166.110")),
@@ -460,7 +458,7 @@ class TestDiscoverFallbackIps:
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.166.110"]
+        assert ips == ["149.154.166.110", "149.154.167.220"]
 
 
     @pytest.mark.asyncio
@@ -486,6 +484,5 @@ class TestDiscoverFallbackIps:
         ips = await tnet.discover_fallback_ips()
         elapsed = _time.monotonic() - start
 
-        assert ips == ["149.154.167.220"]
+        assert ips == ["149.154.167.220", "149.154.166.110"]
         assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
-

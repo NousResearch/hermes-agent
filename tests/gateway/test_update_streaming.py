@@ -16,7 +16,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionSource
 
 
@@ -250,6 +250,79 @@ class TestWatchUpdateProgress:
         # Check session was marked as having pending prompt
         # (may be cleared by the time we check since update finished)
 
+    @pytest.mark.parametrize(
+        ("native_result", "uses_text_fallback"),
+        [
+            pytest.param(None, False, id="legacy-none"),
+            pytest.param(SendResult(success=True), False, id="success"),
+            pytest.param(
+                SendResult(success=False, error="native delivery failed"),
+                True,
+                id="failure",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_native_prompt_send_uses_text_fallback_only_on_failure(
+        self, tmp_path, caplog, native_result, uses_text_fallback
+    ):
+        """Only an explicit native SendResult failure uses the text prompt."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": "agent:main:telegram:dm:111",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": "Restore local changes? [Y/n]",
+            "default": "y",
+        }))
+
+        class NativePromptAdapter:
+            def __init__(self):
+                self.native_prompt_calls = []
+                self.sent = []
+
+            async def send_update_prompt(self, **kwargs):
+                self.native_prompt_calls.append(kwargs)
+                return native_result
+
+            async def send(self, chat_id, content, metadata=None):
+                self.sent.append((chat_id, content, metadata))
+                return SendResult(success=True)
+
+        adapter = NativePromptAdapter()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        async def finish_update():
+            await asyncio.sleep(0.2)
+            (hermes_home / ".update_exit_code").write_text("0")
+
+        with caplog.at_level("DEBUG", logger="gateway.run"):
+            with patch("gateway.run._hermes_home", hermes_home):
+                task = asyncio.create_task(finish_update())
+                await runner._watch_update_progress(
+                    poll_interval=0.05,
+                    stream_interval=0.1,
+                    timeout=10.0,
+                )
+                await task
+
+        assert len(adapter.native_prompt_calls) == 1
+        prompt_sends = [
+            content for _, content, _ in adapter.sent
+            if "Restore local changes" in content
+        ]
+        assert len(prompt_sends) == int(uses_text_fallback)
+        if uses_text_fallback:
+            assert "native delivery failed" in caplog.text
+        else:
+            assert "Native update prompt send reported failure" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_prompt_is_recovered_after_watcher_restart(self, tmp_path):

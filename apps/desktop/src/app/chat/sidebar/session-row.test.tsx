@@ -114,6 +114,14 @@ function makeSession(overrides: Partial<SessionInfo> & { title: string }): Sessi
 
 const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
 
+// The status dot always paints an aria-hidden placeholder so every row's title
+// keeps the same left edge, so "the row's aria-hidden span" no longer names the
+// avatar on its own. `inline-grid` is PlatformAvatar's own layout class in both
+// of its branches — brand glyph and first-letter fallback — and the row passes
+// it no display class that tailwind-merge could drop it for.
+const handoffAvatar = (container: HTMLElement) =>
+  container.querySelector<HTMLElement>('span[aria-hidden="true"].inline-grid')
+
 const noop = vi.fn()
 
 describe('SidebarSessionRow', () => {
@@ -149,11 +157,7 @@ describe('SidebarSessionRow', () => {
       />
     )
 
-    // PlatformAvatar's span is the only aria-hidden SPAN this row ever
-    // renders (idle dot / arc-border / branch-stem are all inactive here) —
-    // Codicon icons (e.g. the kebab trigger) are also aria-hidden but render
-    // as <i>, not <span>, so this selector doesn't accidentally match them.
-    expect(container.querySelector('span[aria-hidden="true"]')).toBeNull()
+    expect(handoffAvatar(container)).toBeNull()
   })
 
   it('wraps the handoff platform avatar in a Tip for a session started on another platform', () => {
@@ -176,11 +180,11 @@ describe('SidebarSessionRow', () => {
 
     // PlatformAvatar is the REAL component here (see the note above the vi.mock
     // block, #67500 third pass) — it renders the Telegram brand SVG rather
-    // than the platform name as text, so query the avatar span itself (the
-    // row's only aria-hidden span in this state) rather than text content,
-    // and confirm its tooltip trigger actually attaches to it — proving the
-    // real forwardRef/...rest path works, not a mock that fakes it.
-    const avatar = container.querySelector('span[aria-hidden="true"]')
+    // than the platform name as text, so query the avatar span itself rather
+    // than text content, and confirm its tooltip trigger actually attaches to
+    // it — proving the real forwardRef/...rest path works, not a mock that
+    // fakes it.
+    const avatar = handoffAvatar(container)
     expect(avatar).toBeTruthy()
     expect(tipTrigger(avatar as HTMLElement)).toBeTruthy()
   })

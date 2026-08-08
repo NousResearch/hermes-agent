@@ -54,6 +54,7 @@ from hermes_cli.fallback_config import get_fallback_chain
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 from hermes_cli.cli_billing_mixin import CLIBillingMixin
+from hermes_cli.cli_tui_hooks_mixin import CLITUIHooksMixin
 from agent.interrupt_compat import request_hard_interrupt
 
 # prompt_toolkit for fixed input area TUI
@@ -4222,7 +4223,7 @@ class _VoiceInputMessage:
         return self.text
 
 
-class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
+class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITUIHooksMixin):
     """
     Interactive CLI for the Hermes Agent.
     
@@ -14949,89 +14950,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             pass
         return style_dict
 
-    def _apply_tui_skin_style(self) -> bool:
-        """Refresh prompt_toolkit styling for a running interactive TUI."""
-        if not getattr(self, "_app", None) or not getattr(self, "_tui_style_base", None):
-            return False
-        self._app.style = PTStyle.from_dict(self._build_tui_style_dict())
-        self._invalidate(min_interval=0.0)
-        return True
-
-    # --- Protected TUI extension hooks for wrapper CLIs ---
-
-    def _get_extra_tui_widgets(self) -> list:
-        """Return extra prompt_toolkit widgets to insert into the TUI layout.
-
-        Wrapper CLIs can override this to inject widgets (e.g. a mini-player,
-        overlay menu) into the layout without overriding ``run()``.  Widgets
-        are inserted between the spacer and the status bar.
-        """
-        return []
-
-    def _register_extra_tui_keybindings(self, kb, *, input_area) -> None:
-        """Register extra keybindings on the TUI ``KeyBindings`` object.
-
-        Wrapper CLIs can override this to add keybindings (e.g. transport
-        controls, modal shortcuts) without overriding ``run()``.
-
-        Parameters
-        ----------
-        kb : KeyBindings
-            The active keybinding registry for the prompt_toolkit application.
-        input_area : TextArea
-            The main input widget, for wrappers that need to inspect or
-            manipulate user input from a keybinding handler.
-        """
-
-    def _build_tui_layout_children(
-        self,
-        *,
-        sudo_widget,
-        secret_widget,
-        approval_widget,
-        slash_confirm_widget=None,
-        clarify_widget,
-        model_picker_widget=None,
-        spinner_widget=None,
-        spacer,
-        status_bar,
-        input_rule_top,
-        image_bar,
-        input_area,
-        input_rule_bot,
-        voice_status_bar,
-        completions_menu,
-    ) -> list:
-        """Assemble the ordered list of children for the root ``HSplit``.
-
-        Wrapper CLIs typically override ``_get_extra_tui_widgets`` instead of
-        this method.  Override this only when you need full control over widget
-        ordering.
-        """
-        return [
-            item for item in [
-                Window(height=0),
-                sudo_widget,
-                secret_widget,
-                approval_widget,
-                slash_confirm_widget,
-                clarify_widget,
-                model_picker_widget,
-                spinner_widget,
-                spacer,
-                *self._get_extra_tui_widgets(),
-                getattr(self, "_pet_widget", None),
-                getattr(self, "_stash_panel_widget", None),
-                status_bar,
-                input_rule_top,
-                image_bar,
-                input_area,
-                input_rule_bot,
-                voice_status_bar,
-                completions_menu,
-            ] if item is not None
-        ]
-
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         if not self._claim_active_session("cli"):
@@ -17990,95 +17908,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 # Main Entry Point
 # ============================================================================
 
-def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
-    """Drive a kanban goal_mode worker through the Ralph-style goal loop.
-
-    Called from the quiet single-query path AFTER the worker's first turn,
-    only when ``HERMES_KANBAN_GOAL_MODE`` is set (dispatcher-spawned
-    goal_mode card). Wires the worker's ``run_conversation`` and the kanban
-    DB into ``goals.run_kanban_goal_loop``. All errors are swallowed by the
-    caller — a broken goal loop must never wedge a worker, the dispatcher's
-    claim TTL / crash detection is the backstop.
-    """
-    import os as _os
-
-    task_id = (_os.environ.get("HERMES_KANBAN_TASK") or "").strip()
-    if not task_id:
-        return
-
-    from hermes_cli import kanban_db as _kb
-    from hermes_cli.goals import run_kanban_goal_loop as _run_loop, DEFAULT_MAX_TURNS as _DEF_TURNS
-
-    # Resolve goal text from the card (title + body = the acceptance
-    # criteria the judge evaluates against).
-    conn = _kb.connect()
-    try:
-        task = _kb.get_task(conn, task_id)
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    if task is None:
-        return
-
-    goal_parts = [task.title or ""]
-    if task.body:
-        goal_parts.append(task.body)
-    goal_text = "\n\n".join(p for p in goal_parts if p).strip()
-    if not goal_text:
-        return
-
-    max_turns = task.goal_max_turns or _DEF_TURNS
-
-    def _run_turn(prompt: str) -> str:
-        result = cli.agent.run_conversation(
-            user_message=prompt,
-            conversation_history=cli.conversation_history,
-        )
-        # Keep session_id in sync if mid-run compression rotated it.
-        if (
-            getattr(cli.agent, "session_id", None)
-            and cli.agent.session_id != cli.session_id
-        ):
-            cli.session_id = cli.agent.session_id
-        resp = result.get("final_response", "") if isinstance(result, dict) else str(result)
-        if resp:
-            print(resp)
-        return resp or ""
-
-    def _task_status() -> "str | None":
-        c = _kb.connect()
-        try:
-            t = _kb.get_task(c, task_id)
-            return t.status if t is not None else None
-        finally:
-            try:
-                c.close()
-            except Exception:
-                pass
-
-    def _block(reason: str) -> None:
-        c = _kb.connect()
-        try:
-            _kb.block_task(c, task_id, reason=reason)
-        finally:
-            try:
-                c.close()
-            except Exception:
-                pass
-
-    _run_loop(
-        task_id=task_id,
-        goal_text=goal_text,
-        run_turn=_run_turn,
-        task_status_fn=_task_status,
-        block_fn=_block,
-        max_turns=max_turns,
-        first_response=first_response or "",
-        log=lambda m: logger.info("%s", m),
-    )
-
 
 def main(
     query: str = None,
@@ -18540,6 +18369,7 @@ def main(
                         # normal worker and every non-kanban `-q` run.
                         if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
                             try:
+                                from hermes_cli.goals import _run_kanban_goal_loop_q
                                 _run_kanban_goal_loop_q(cli, response)
                             except Exception as _goal_exc:
                                 logger.debug("kanban goal loop failed: %s", _goal_exc)

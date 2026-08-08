@@ -50,11 +50,24 @@ def test_kanban_list_json_includes_session_id(kanban_home):
         )
     raw = kc.run_slash("list --json")
     payload = json.loads(raw)
-    assert any(
-        row.get("title") == "acp task"
-        and row.get("session_id") == "acp-x"
-        for row in payload
-    )
+    task = next(row for row in payload if row.get("title") == "acp task")
+    assert task["session_id"] == "acp-x"
+    assert task["current_run_id"] is None
+
+
+def test_kanban_show_json_includes_authoritative_current_run_id(kanban_home):
+    """JSON show exposes the task pointer needed to reject stale run snapshots."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="active task", assignee="alice")
+        kb.recompute_ready(conn)
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        expected_run_id = claimed.current_run_id
+
+    payload = json.loads(kc.run_slash(f"show {tid} --json"))
+
+    assert type(payload["task"]["current_run_id"]) is int
+    assert payload["task"]["current_run_id"] == expected_run_id
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):

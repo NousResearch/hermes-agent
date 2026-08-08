@@ -128,8 +128,41 @@ _IMPORT_SKIP_NAMES = {
     "processes.json",
 }
 
+# Files that must never be readable by group/other, wherever they are written.
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
+# Quick snapshots need the same treatment for the opposite reason: shutil.copy2
+# PRESERVES the source mode and sqlite3's backup() creates the destination with
+# 0666 & ~umask, so without an explicit chmod the copy's protection is inherited
+# (or invented by umask) rather than enforced.
 _SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+
+# Owner-only mode for snapshot copies of _SECRET_FILE_NAMES and the directories
+# that hold them. Directories additionally need the execute bit to be traversable
+# by their owner.
+_SECRET_FILE_MODE = 0o600
+_SECRET_DIR_MODE = 0o700
+
+
+def _harden_secret_copy(path: Path) -> None:
+    """chmod *path* to 0600 when it is a copy of a known secret-bearing file.
+
+    Best-effort: mode bits are not enforced on Windows and the copy may live on
+    a filesystem that rejects chmod, neither of which should fail a snapshot.
+    """
+    if path.name not in _SECRET_FILE_NAMES:
+        return
+    try:
+        os.chmod(path, _SECRET_FILE_MODE)
+    except (OSError, NotImplementedError):
+        logger.debug("Could not tighten permissions on %s", path, exc_info=True)
+
+
+def _harden_secret_dir(path: Path) -> None:
+    """chmod *path* to 0700. Best-effort, same rationale as _harden_secret_copy."""
+    try:
+        os.chmod(path, _SECRET_DIR_MODE)
+    except (OSError, NotImplementedError):
+        logger.debug("Could not tighten permissions on %s", path, exc_info=True)
 
 # Reserved archive subtree for provider state that lives OUTSIDE HERMES_HOME
 # (e.g. ~/.honcho, ~/.hindsight). The active memory provider declares these via
@@ -1199,6 +1232,12 @@ def _create_quick_snapshot_locked(
     staging_dir = root / f".{snap_id}.{os.getpid()}.partial"
     shutil.rmtree(staging_dir, ignore_errors=True)
     staging_dir.mkdir(parents=True, exist_ok=False)
+    # Snapshots hold copies of .env / auth.json / state.db. Tighten the staging
+    # directory before anything is written into it, and the shared root, so a
+    # snapshot is never exposed by a traversable parent. os.replace() below
+    # preserves the staging directory's mode for the final snapshot dir.
+    _harden_secret_dir(staging_dir)
+    _harden_secret_dir(root)
     logger.info("quick snapshot phase=copy status=started id=%s", snap_id)
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
@@ -1252,6 +1291,7 @@ def _create_quick_snapshot_locked(
                             continue
                     else:
                         shutil.copy2(sub, dst)
+                    _harden_secret_copy(dst)
                     manifest[sub_rel] = dst.stat().st_size
                 except (OSError, PermissionError) as exc:
                     logger.warning("Could not snapshot %s: %s", sub_rel, exc)
@@ -1284,6 +1324,7 @@ def _create_quick_snapshot_locked(
                     continue
             else:
                 shutil.copy2(src, dst)
+            _harden_secret_copy(dst)
             manifest[rel] = dst.stat().st_size
         except (OSError, PermissionError) as exc:
             logger.warning("Could not snapshot %s: %s", rel, exc)
@@ -1456,10 +1497,21 @@ def restore_quick_snapshot(
                 # Atomic-ish replace for databases
                 tmp = dst.parent / f".{dst.name}.snap_restore"
                 shutil.copy2(src, tmp)
+                # Harden the staged file before publishing it, so the live path
+                # is never briefly readable by group/other. The temp name is not
+                # a secret name, so chmod against the FINAL name.
+                if dst.name in _SECRET_FILE_NAMES:
+                    try:
+                        os.chmod(tmp, _SECRET_FILE_MODE)
+                    except (OSError, NotImplementedError):
+                        logger.debug(
+                            "Could not tighten permissions on %s", tmp, exc_info=True
+                        )
                 dst.unlink(missing_ok=True)
                 shutil.move(str(tmp), str(dst))
             else:
                 shutil.copy2(src, dst)
+                _harden_secret_copy(dst)
             restored += 1
         except (OSError, PermissionError) as exc:
             logger.error("Failed to restore %s: %s", rel, exc)

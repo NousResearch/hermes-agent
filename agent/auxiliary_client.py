@@ -3327,6 +3327,49 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _build_minimax_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+    """Build an Anthropic auxiliary client for MiniMax OAuth."""
+    if not model:
+        logger.warning(
+            "Auxiliary client: minimax-oauth requested without a model; "
+            "pass model explicitly (auxiliary.<task>.model in config.yaml)."
+        )
+        return None, None
+    try:
+        from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+    except ImportError:
+        logger.debug("hermes_cli.auth not available for minimax-oauth")
+        return None, None
+    try:
+        creds = resolve_minimax_oauth_runtime_credentials(as_token_provider=True)
+    except Exception as exc:
+        logger.warning(
+            "resolve_provider_client: minimax-oauth requested but no valid "
+            "MiniMax OAuth token found (run: hermes model -> MiniMax OAuth): %s",
+            exc,
+        )
+        return None, None
+    api_key = creds["api_key"]
+    base_url = creds["base_url"].rstrip("/")
+    logger.debug("Auxiliary client: MiniMax OAuth (%s via Anthropic API)", model)
+    try:
+        from agent.anthropic_adapter import build_anthropic_client
+        real_client = build_anthropic_client(api_key, base_url)
+    except ImportError as exc:
+        logger.warning(
+            "resolve_provider_client: minimax-oauth requested but the anthropic "
+            "SDK is not installed: %s", exc,
+        )
+        return None, None
+    except Exception as exc:
+        logger.warning(
+            "resolve_provider_client: minimax-oauth failed to build Anthropic "
+            "client: %s", exc,
+        )
+        return None, None
+    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url, is_oauth=True), model
+
+
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     """Build a CodexAuxiliaryClient for an explicitly-requested model.
 
@@ -6002,6 +6045,16 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # MiniMax OAuth uses the Anthropic-compatible Messages endpoint and a
+    # refreshable bearer token supplied by the runtime credential resolver.
+    if provider == "minimax-oauth":
+        client, default = _build_minimax_oauth_aux_client(model)
+        if client is None:
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         custom_base = ""
@@ -6497,7 +6550,7 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
+    elif pconfig.auth_type in {"oauth_device_code", "oauth_external", "oauth_minimax"}:
         # OAuth providers — route through their specific try functions
         if provider == "nous":
             return resolve_provider_client("nous", model, async_mode)
@@ -6505,6 +6558,8 @@ def resolve_provider_client(
             return resolve_provider_client("openai-codex", model, async_mode)
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
+        if provider == "minimax-oauth":
+            return resolve_provider_client("minimax-oauth", model, async_mode)
         # Other OAuth providers not directly supported
         if provider not in _LOGGED_UNSUPPORTED_OAUTH_KEYS:
             _LOGGED_UNSUPPORTED_OAUTH_KEYS.add(provider)

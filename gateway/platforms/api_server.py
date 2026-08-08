@@ -6088,6 +6088,34 @@ class APIServerAdapter(BasePlatformAdapter):
             cron_session="",
         )
 
+    async def _prune_failed_session_if_empty(
+        self,
+        session_id: Optional[str],
+        *,
+        request_profile: Optional[str],
+    ) -> None:
+        """Best-effort cleanup of an empty session left by a failed API turn."""
+        if not session_id:
+            return
+        try:
+            with self._profile_scope(request_profile):
+                from hermes_constants import get_hermes_home
+
+                sessions_dir = get_hermes_home() / "sessions"
+                db = await self._ensure_session_db_async()
+            if db is not None:
+                await asyncio.to_thread(
+                    db.delete_session_if_empty,
+                    session_id,
+                    sessions_dir=sessions_dir,
+                )
+        except Exception:
+            logger.debug(
+                "Could not prune failed API session %s",
+                session_id,
+                exc_info=True,
+            )
+
     async def _run_agent(
         self,
         user_message: str,
@@ -6321,7 +6349,25 @@ class APIServerAdapter(BasePlatformAdapter):
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
         try:
-            return await loop.run_in_executor(None, _run)
+            result, usage = await loop.run_in_executor(None, _run)
+            if isinstance(result, dict) and result.get("failed"):
+                await self._prune_failed_session_if_empty(
+                    result.get("session_id") or session_id,
+                    request_profile=request_profile,
+                )
+            return result, usage
+        except asyncio.CancelledError:
+            await self._prune_failed_session_if_empty(
+                session_id,
+                request_profile=request_profile,
+            )
+            raise
+        except Exception:
+            await self._prune_failed_session_if_empty(
+                session_id,
+                request_profile=request_profile,
+            )
+            raise
         finally:
             self._inflight_agent_runs -= 1
 
@@ -6582,6 +6628,10 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 self._set_run_status(run_id, "running")
                 if run_id in self._stopping_run_ids:
+                    await self._prune_failed_session_if_empty(
+                        session_id,
+                        request_profile=request_profile,
+                    )
                     _put_event_if_active({
                         "event": "run.cancelled",
                         "run_id": run_id,
@@ -6707,6 +6757,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
                 if run_id in self._stopping_run_ids:
+                    await self._prune_failed_session_if_empty(
+                        session_id,
+                        request_profile=request_profile,
+                    )
                     _put_event_if_active({
                         "event": "run.cancelled",
                         "run_id": run_id,
@@ -6721,6 +6775,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 # 401/400 return failed=True instead of raising, so the except
                 # block below never fires — issue #15561).
                 elif isinstance(result, dict) and result.get("failed"):
+                    await self._prune_failed_session_if_empty(
+                        result.get("session_id") or session_id,
+                        request_profile=request_profile,
+                    )
                     error_msg = _redact_api_error_text(result.get("error") or "agent run failed")
                     _put_event_if_active({
                         "event": "run.failed",
@@ -6734,8 +6792,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         error=error_msg,
                         last_event="run.failed",
                     )
-                else:
-                    final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                elif isinstance(result, dict) and "final_response" in result:
+                    final_response = result.get("final_response", "")
                     _put_event_if_active({
                         "event": "run.completed",
                         "run_id": run_id,
@@ -6750,7 +6808,29 @@ class APIServerAdapter(BasePlatformAdapter):
                         usage=usage,
                         last_event="run.completed",
                     )
+                else:
+                    await self._prune_failed_session_if_empty(
+                        session_id,
+                        request_profile=request_profile,
+                    )
+                    error_msg = "agent returned a malformed result"
+                    _put_event_if_active({
+                        "event": "run.failed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "error": error_msg,
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "failed",
+                        error=error_msg,
+                        last_event="run.failed",
+                    )
             except asyncio.CancelledError:
+                await self._prune_failed_session_if_empty(
+                    session_id,
+                    request_profile=request_profile,
+                )
                 self._set_run_status(
                     run_id,
                     "cancelled",
@@ -6774,6 +6854,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 # failure, instead of falling through to the generic
                 # except-Exception branch below.
                 logger.warning("Provider authentication failed for run=%s: %s", run_id, exc)
+                await self._prune_failed_session_if_empty(
+                    session_id,
+                    request_profile=request_profile,
+                )
                 error_msg = f"⚠️ Provider authentication failed: {exc}"
                 self._set_run_status(
                     run_id,
@@ -6792,6 +6876,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
+                await self._prune_failed_session_if_empty(
+                    session_id,
+                    request_profile=request_profile,
+                )
                 self._set_run_status(
                     run_id,
                     "failed",

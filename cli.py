@@ -3885,6 +3885,27 @@ def _collect_query_images(query: str | None, image_arg: str | None = None) -> tu
     return message, deduped
 
 
+
+
+def _history_navigation_action(buffer, direction):
+    """Return ``history`` only for a genuinely empty buffer.
+
+    A non-empty buffer must never invoke prompt_toolkit's ``auto_up`` /
+    ``auto_down`` because a visually wrapped single logical line can otherwise
+    recall command history instead of moving the cursor. Whitespace-only input
+    is treated as empty by contract.
+    """
+    try:
+        text = getattr(buffer, "text", "") or ""
+    except Exception:
+        text = ""
+    if text.strip() and direction in ("up", "down"):
+        return "cursor"
+    if direction not in ("up", "down"):
+        return "cursor"
+    return "history"
+
+
 # Strip OSC escape sequences (e.g. OSC-8 hyperlinks) that prompt_toolkit's
 # ANSI parser can't handle — it strips \x1b but passes the payload through
 # as literal text, garbling the TUI output.
@@ -15934,8 +15955,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             """Run a history-navigation move, suppressing paste-collapse.
 
             Recalled history can hold the full text of a paste that was
-            collapsed to a placeholder at submit time. Loading it back into the
-            buffer looks exactly like a fresh large paste to ``_on_text_changed``
+            collapsed to a placeholder at submit time. Loading it back into
+            the buffer looks exactly like a fresh large paste to ``_on_text_changed``
             and would be re-collapsed. Set the skip flag around the move; if the
             move didn't change the text (plain cursor movement), clear the flag
             so a later real paste still collapses.
@@ -15948,15 +15969,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
+            """Up arrow: browse history only with an empty buffer."""
             buf = event.app.current_buffer
-            _recall_without_recollapse(buf, lambda: buf.auto_up(count=event.arg))
+            if _history_navigation_action(buf, "up") == "history":
+                _recall_without_recollapse(buf, lambda: buf.auto_up(count=event.arg))
+            else:
+                buf.cursor_up()
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
+            """Down arrow: browse history only with an empty buffer."""
             buf = event.app.current_buffer
-            _recall_without_recollapse(buf, lambda: buf.auto_down(count=event.arg))
+            if _history_navigation_action(buf, "down") == "history":
+                _recall_without_recollapse(buf, lambda: buf.auto_down(count=event.arg))
+            else:
+                buf.cursor_down()
 
         @kb.add('c-l')
         def handle_ctrl_l(event):

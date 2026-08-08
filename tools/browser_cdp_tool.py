@@ -489,6 +489,21 @@ def browser_cdp(
     if blocked:
         return blocked
 
+    # --- Background-tab enforcement (2026-08-02 operator directive) ------
+    # The CDP browser on the Windows host is shared infrastructure. A
+    # Target.createTarget WITHOUT background:True activates the new tab and
+    # raises the Chrome window, stealing focus from the user's desktop. This
+    # raw tool is an agent escape hatch, so enforce the background flag here
+    # rather than relying on every agent to remember it. See 3xstanbrain
+    # 2026-06-03 cdp-windows-focus-steal and the 2026-08-02 enforcement pass.
+    if method == "Target.createTarget":
+        if not isinstance(call_params, dict):
+            return tool_error(
+                "Target.createTarget params must be an object/dict",
+                method=method,
+            )
+        call_params["background"] = True
+
     try:
         safe_timeout = float(timeout) if timeout else 30.0
     except (TypeError, ValueError):

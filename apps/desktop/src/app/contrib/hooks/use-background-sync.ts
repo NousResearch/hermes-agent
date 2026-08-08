@@ -296,9 +296,24 @@ interface BackgroundSyncParams {
  *  safety-net refreshes, not the live path, so they're the right thing to slow
  *  when the machine is spending its charge. Returns nothing — meant to live
  *  inside an effect. */
+export function windowIsActivelyViewed({
+  focused,
+  visibilityState
+}: {
+  focused: boolean
+  visibilityState: DocumentVisibilityState
+}): boolean {
+  return visibilityState === 'visible' && focused
+}
+
 function visiblePoll(intervalMs: number, tick: () => void): () => void {
   const run = () => {
-    if (document.visibilityState === 'visible') {
+    // On macOS an unfocused or app-hidden BrowserWindow commonly remains
+    // `visibilityState === "visible"`. Visibility alone therefore kept every
+    // safety-net gateway poll alive while the user was in another app. These
+    // are stale-data backstops, not the live event path, so pause them until
+    // the window is actually being viewed and catch up immediately on focus.
+    if (windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })) {
       tick()
     }
   }
@@ -311,11 +326,13 @@ function visiblePoll(intervalMs: number, tick: () => void): () => void {
   })
 
   document.addEventListener('visibilitychange', run)
+  window.addEventListener('focus', run)
 
   return () => {
     unsubscribeBattery()
     window.clearInterval(intervalId)
     document.removeEventListener('visibilitychange', run)
+    window.removeEventListener('focus', run)
   }
 }
 

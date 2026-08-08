@@ -17,7 +17,8 @@ import {
   reconcileActiveTranscript,
   rehydrateLiveSessionStatuses,
   resolveActiveTranscriptSession,
-  useBackgroundSync
+  useBackgroundSync,
+  windowIsActivelyViewed
 } from './use-background-sync'
 
 vi.mock('@/hermes', async importOriginal => ({
@@ -302,6 +303,14 @@ describe('reconcileActiveTranscript', () => {
     await request
 
     expect(fixture.updateSessionState).not.toHaveBeenCalled()
+  })
+})
+
+describe('windowIsActivelyViewed', () => {
+  it('requires both DOM visibility and keyboard focus', () => {
+    expect(windowIsActivelyViewed({ focused: true, visibilityState: 'visible' })).toBe(true)
+    expect(windowIsActivelyViewed({ focused: false, visibilityState: 'visible' })).toBe(false)
+    expect(windowIsActivelyViewed({ focused: true, visibilityState: 'hidden' })).toBe(false)
   })
 })
 

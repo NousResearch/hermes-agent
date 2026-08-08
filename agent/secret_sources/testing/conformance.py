@@ -5,7 +5,7 @@ itself against the contract by subclassing :class:`SecretSourceConformance`
 and providing a ``source`` fixture (plus optional per-source config
 fixtures).  Example::
 
-    from tests.secret_sources.conformance import SecretSourceConformance
+    from agent.secret_sources.testing import SecretSourceConformance
 
     class TestMySourceConformance(SecretSourceConformance):
         @pytest.fixture
@@ -30,9 +30,9 @@ from agent.secret_sources.base import (
     SecretSource,
 )
 from agent.secret_sources.registry import (
-    _reset_registry_for_tests,
     apply_all,
     register_source,
+    reset_registry_for_testing,
 )
 
 
@@ -106,7 +106,7 @@ class SecretSourceConformance:
     def test_registers_and_applies_via_orchestrator(self, source, tmp_path,
                                                     monkeypatch):
         """The source must survive a full apply_all() pass without breaking it."""
-        _reset_registry_for_tests()
+        reset_registry_for_testing()
         # Prevent the bundled sources from interfering.
         monkeypatch.setattr(
             "agent.secret_sources.registry._ensure_builtin_sources", lambda: None
@@ -120,4 +120,4 @@ class SecretSourceConformance:
             names = [sr.name for sr in report.sources]
             assert source.name in names
         finally:
-            _reset_registry_for_tests()
+            reset_registry_for_testing()

@@ -30,7 +30,7 @@ from agent.secret_sources.base import (  # noqa: E402
 )
 from agent.secret_sources import registry as reg  # noqa: E402
 from agent.secret_sources.bitwarden import BitwardenSource  # noqa: E402
-from tests.secret_sources.conformance import SecretSourceConformance  # noqa: E402
+from agent.secret_sources.testing import SecretSourceConformance  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

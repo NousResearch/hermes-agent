@@ -115,6 +115,8 @@ export interface Translations {
     managingProfile?: string;
     currentProfileOption?: string;
     managingProfileBanner?: string;
+    dashboardOffline?: string;
+    dashboardRetrying?: string;
   };
 
   // ── Status page ──

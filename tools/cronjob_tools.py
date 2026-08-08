@@ -279,6 +279,52 @@ def _scan_cron_prompt(prompt: str) -> str:
     return ""
 
 
+def _required_skills_violation(
+    skills: Any,
+    no_agent: bool,
+    *,
+    force: bool = False,
+) -> str:
+    """Return an error string when a job violates ``cron.required_skills``.
+
+    Reads ``cron.required_skills``, ``cron.required_skills_agent_only``, and
+    ``cron.required_skills_enforce`` from the merged config (issue #79797).
+    Returns an empty string when the job is compliant, when the check is
+    disabled, or when *force* is set (the CLI-only escape hatch). When
+    enforcement is downgraded to warning mode (``required_skills_enforce:
+    false``), the violation is logged and the operation proceeds.
+    """
+    if force:
+        return ""
+    from hermes_cli.config import (
+        cron_required_skills,
+        cron_required_skills_agent_only,
+        cron_required_skills_enforce,
+    )
+
+    if no_agent and cron_required_skills_agent_only():
+        return ""
+    required = cron_required_skills()
+    if not required:
+        return ""
+    present = {s.strip().lower() for s in (skills or []) if isinstance(s, str)}
+    missing = [r for r in required if r.strip().lower() not in present]
+    if not missing:
+        return ""
+    if not cron_required_skills_enforce():
+        logger.warning(
+            "Cron job is missing required skill(s) %s from cron.required_skills; "
+            "enforcement disabled (cron.required_skills_enforce=false), allowing.",
+            ", ".join(missing),
+        )
+        return ""
+    return (
+        "Blocked: job missing required skill(s) configured in cron.required_skills: "
+        + ", ".join(missing)
+        + ". Add them (agent tool: skills=[...]; CLI: --skill) or use --force on the CLI."
+    )
+
+
 def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
     """Scan an ASSEMBLED cron prompt that includes loaded skill content.
 
@@ -1052,6 +1098,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    force: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1084,6 +1131,16 @@ def cronjob(
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
                     return tool_error(scan_error, success=False)
+
+            # Config-enforced required skills (cron.required_skills, #79797).
+            # Agent tool + CLI both land here via cronjob(); the dashboard API
+            # writes through cron.jobs directly and is intentionally out of
+            # scope for this first pass.
+            required_skills_error = _required_skills_violation(
+                canonical_skills, _no_agent, force=bool(force)
+            )
+            if required_skills_error:
+                return tool_error(required_skills_error, success=False)
 
             # Validate script path before storing
             if script:
@@ -1426,6 +1483,33 @@ def cronjob(
                 if job.get("state") != "paused":
                     updates["state"] = "scheduled"
                     updates["enabled"] = True
+            # Config-enforced required skills (#79797): gate updates that
+            # change the skills axis (skills/skill) or the agent mode
+            # (no_agent). The check runs against the EFFECTIVE post-update
+            # state — stored skills merged with this update's changes — so a
+            # --clear-skills / skills=[] that strips a required skill is
+            # rejected, while updates that leave the skills axis untouched
+            # (name, schedule, deliver, ...) stay allowed even on a legacy
+            # noncompliant job, so it can still be remediated field-by-field.
+            if "skills" in updates or "no_agent" in updates:
+                effective_skills = (
+                    updates["skills"]
+                    if "skills" in updates
+                    else list(
+                        job.get("skills")
+                        or ([] if not job.get("skill") else [job.get("skill")])
+                    )
+                )
+                effective_no_agent = (
+                    updates["no_agent"]
+                    if "no_agent" in updates
+                    else bool(job.get("no_agent"))
+                )
+                required_skills_error = _required_skills_violation(
+                    effective_skills, effective_no_agent, force=bool(force)
+                )
+                if required_skills_error:
+                    return tool_error(required_skills_error, success=False)
             if not updates:
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)

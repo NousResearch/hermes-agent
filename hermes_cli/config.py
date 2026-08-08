@@ -4560,6 +4560,77 @@ def cron_model_drift_guard_enabled(
     return cron_config.get("model_drift_guard", True) is not False
 
 
+def cron_required_skills(
+    config: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Return the skills every agent-driven cron job must load.
+
+    Read from ``cron.required_skills``. A single comma-separated string is
+    tolerated alongside the list form. Missing or malformed values yield an
+    empty list, which disables enforcement. When *config* is omitted, load
+    the active merged configuration.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return []
+    if not isinstance(config, dict):
+        return []
+    cron_config = config.get("cron")
+    if not isinstance(cron_config, dict):
+        return []
+    value = cron_config.get("required_skills")
+    if isinstance(value, str):
+        return [s.strip() for s in value.split(",") if s.strip()]
+    if isinstance(value, (list, tuple)):
+        return [s for s in value if isinstance(s, str) and s.strip()]
+    return []
+
+
+def cron_required_skills_enforce(
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return whether a required-skills violation hard-rejects the operation.
+
+    Only the literal YAML boolean ``false`` downgrades enforcement to a
+    warning log. Missing, malformed, or non-boolean values stay enforced.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return True
+    if not isinstance(config, dict):
+        return True
+    cron_config = config.get("cron")
+    if not isinstance(cron_config, dict):
+        return True
+    return cron_config.get("required_skills_enforce", True) is not False
+
+
+def cron_required_skills_agent_only(
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return whether ``cron.required_skills`` applies only to agent jobs.
+
+    Default True: a no_agent job owns its stdout via a script, so loading a
+    presentation skill there is meaningless. Only the literal YAML boolean
+    ``false`` extends the check to no_agent jobs.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return True
+    if not isinstance(config, dict):
+        return True
+    cron_config = config.get("cron")
+    if not isinstance(cron_config, dict):
+        return True
+    return cron_config.get("required_skills_agent_only", True) is not False
+
+
 def _cron_fleet_default_covers_axis(
     axis: str,
     config: Optional[Dict[str, Any]] = None,

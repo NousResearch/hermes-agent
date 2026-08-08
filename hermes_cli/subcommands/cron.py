@@ -105,6 +105,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         dest="model_provider",
         help="Inference provider paired with --model (e.g. 'openrouter', 'nous').",
     )
+    cron_create.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Bypass the cron.required_skills gate for this one job. Human-only: "
+            "the agent's cronjob tool cannot pass this flag."
+        ),
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -196,6 +204,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--provider",
         dest="model_provider",
         help="Inference provider paired with --model. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Bypass the cron.required_skills gate for this one edit. Human-only: "
+            "the agent's cronjob tool cannot pass this flag."
+        ),
     )
 
     # lifecycle actions

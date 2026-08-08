@@ -121,6 +121,41 @@ global defaults. A switch to a paid provider or model can therefore spend money
 on every scheduled run.
 :::
 
+## Enforcing required skills on cron jobs
+
+Some skills are load-bearing for cron output: presentation skills that format
+briefs, `[SILENT]` rules, character limits, or language enforcement. If an
+agent-driven job forgets to load them, the job still runs — it just produces
+unstructured or mis-formatted output.
+
+Set `cron.required_skills` to the list of skills every agent-driven job must
+load. Jobs created or updated without them are rejected:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  required_skills:
+    - cron-output
+```
+
+Behavior:
+
+- The check runs at create and update time, on both the agent's `cronjob`
+  tool and the `hermes cron create` / `hermes cron edit` CLI.
+- Updates that change the job's skills (including `--clear-skills`) or toggle
+  `no_agent` are checked against the effective post-update state. Updating an
+  unrelated field (name, schedule, deliver) on an already-noncompliant job is
+  still allowed, so it can be fixed field-by-field.
+- `no_agent` jobs are exempt by default — a script owns their stdout, not a
+  skill. Set `cron.required_skills_agent_only: false` to apply the check to
+  them too.
+- `cron.required_skills_enforce: false` downgrades the hard reject to a
+  warning log, for a nudge without a block.
+- `hermes cron create --force` / `hermes cron edit --force` bypasses the check
+  for a one-off job that legitimately does not need the skill. The flag is
+  human-only: the agent's `cronjob` tool cannot pass it.
+- An empty list (the default) disables enforcement entirely.
+
 ## Skill-backed cron jobs
 
 A cron job can load one or more skills before it runs the prompt.

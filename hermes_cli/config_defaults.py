@@ -2297,6 +2297,19 @@ DEFAULT_CONFIG = {
         # wedges the job's dispatch guard forever. Also overridable via
         # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
         "session_db_timeout_seconds": 10,
+        # Skills every agent-driven cron job must load, enforced at create and
+        # update time (issue #79797). A job whose skills[] misses an entry
+        # here is rejected (or warned — see required_skills_enforce). Empty
+        # list = no enforcement, current behaviour preserved.
+        "required_skills": [],
+        # Apply required_skills only to agent-driven (no_agent=False) jobs.
+        # A no_agent job owns its stdout via a script, not a skill, so loading
+        # a presentation skill there is meaningless. Set to false to check
+        # no_agent jobs too.
+        "required_skills_agent_only": True,
+        # true = reject create/update that violates required_skills; false =
+        # downgrade to a warning log and allow the operation.
+        "required_skills_enforce": True,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

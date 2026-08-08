@@ -344,7 +344,7 @@ _MAX_BACKOFF_SECONDS = 60
 # wakes on this cadence and attempts one revival probe. Without it a parked
 # server is unrevivable: its tools are out of the registry, so no tool call
 # can ever reach the circuit-breaker half-open probe or _signal_reconnect.
-_PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
+_PARKED_RETRY_INTERVAL = 30      # seconds between parked self-probes
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
 # Jitter applied to reconnect backoff sleeps. Without it, every server that
 # lost the same backend retries in lockstep (thundering herd) and log lines
@@ -356,6 +356,21 @@ def _jittered(seconds: float) -> float:
     """Return ``seconds`` with +/-20% uniform jitter, floored at 0."""
     return max(0.0, seconds * random.uniform(1.0 - _BACKOFF_JITTER,
                                              1.0 + _BACKOFF_JITTER))
+
+
+def _flatten_exc(exc, _depth=0):
+    """Render an exception, unwrapping ExceptionGroup/TaskGroup sub-exceptions.
+
+    anyio TaskGroup failures surface as "unhandled errors in a TaskGroup
+    (1 sub-exception)", which discards the only useful information — what
+    actually broke. Losing an MCP server is an operational incident, so the
+    real cause must reach the log.  (canon-mcpresilience)
+    """
+    subs = getattr(exc, "exceptions", None)
+    if subs and _depth < 4:
+        inner = "; ".join(_flatten_exc(e, _depth + 1) for e in subs[:5])
+        return "%s: %s -> [%s]" % (type(exc).__name__, exc, inner)
+    return "%s: %s" % (type(exc).__name__, exc)
 
 # Keepalive cadence for HTTP/SSE sessions. The MCP spec lets a server expire
 # idle sessions on any TTL it chooses (Streamable HTTP "Session Management"),
@@ -3474,13 +3489,13 @@ class MCPServerTask:
 
                 self._reconnect_retries += 1
                 if self._reconnect_retries > _MAX_RECONNECT_RETRIES:
-                    logger.warning(
-                        "MCP server '%s' failed after %d reconnection attempts, "
-                        "parking; will self-probe every %ds until it recovers "
-                        "(state: degraded → parked): %s: %s",
-                        self.name, _MAX_RECONNECT_RETRIES,
-                        _PARKED_RETRY_INTERVAL,
-                        type(root).__name__, root,
+                    _lost = len(getattr(self, "_registered_tool_names", []))
+                    logger.error(
+                        "MCP server '%s' UNREACHABLE - parking after %d "
+                        "reconnection attempts; LOSING %d tool(s); self-probing "
+                        "every %ds (state: degraded -> parked). Cause: %s",
+                        self.name, _MAX_RECONNECT_RETRIES, _lost,
+                        _PARKED_RETRY_INTERVAL, _flatten_exc(exc),
                     )
                     # Do NOT return — exiting the task orphans the server:
                     # nothing would ever listen for _reconnect_event again
@@ -3494,7 +3509,7 @@ class MCPServerTask:
                     # An explicit _reconnect_event.set() (OAuth recovery,
                     # manual /mcp refresh) still wakes us immediately.
                     self._was_parked = True
-                    self._deregister_tools()
+                    self._deregister_tools(reason="server unreachable (parked)")
                     self._reconnect_event.clear()
                     parked = await self._wait_for_reconnect_or_shutdown(
                         timeout=_PARKED_RETRY_INTERVAL
@@ -3519,9 +3534,9 @@ class MCPServerTask:
                 # carry the WARNINGs — one line per transition, not per try.
                 logger.debug(
                     "MCP server '%s' connection lost (attempt %d/%d), "
-                    "reconnecting in %.0fs: %s: %s",
+                    "reconnecting in %.0fs: %s",
                     self.name, self._reconnect_retries, _MAX_RECONNECT_RETRIES,
-                    backoff, type(root).__name__, root,
+                    backoff, _flatten_exc(exc),
                 )
                 await asyncio.sleep(_jittered(backoff))
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
@@ -3581,7 +3596,7 @@ class MCPServerTask:
         self._deregister_tools()
         self.session = None
 
-    def _deregister_tools(self) -> None:
+    def _deregister_tools(self, reason: str = "") -> None:
         """Drop this server's tools from the global registry (idempotent).
 
         Pulls the server's tool schemas out of the registry so the agent
@@ -3592,10 +3607,20 @@ class MCPServerTask:
         """
         from tools.registry import registry
 
+        _count = len(getattr(self, "_registered_tool_names", []))
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
             registry.deregister(tool_name)
             _forget_mcp_tool_server(tool_name)
         self._registered_tool_names = []
+        # ALERT on the transition to zero tools. An agent that cannot act must
+        # page someone, not silently apologise to a paying client. Suppressed
+        # on ordinary shutdown (reason="").  (canon-mcpresilience)
+        if reason and _count:
+            logger.error(
+                "MCP ALERT: server '%s' dropped to ZERO tools (%d lost) - %s. "
+                "Any agent depending on this server is now toolless.",
+                self.name, _count, reason,
+            )
 
     async def _wait_for_lazy_reconnect(self) -> None:
         """Wait while an intentionally recycled stdio server is dormant."""
@@ -3711,7 +3736,7 @@ def _connect_cooldown_active(server_name: str) -> bool:
 _server_error_counts: Dict[str, int] = {}
 _server_breaker_opened_at: Dict[str, float] = {}
 _CIRCUIT_BREAKER_THRESHOLD = 3
-_CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0
+_CIRCUIT_BREAKER_COOLDOWN_SEC = 15.0
 
 # ---------------------------------------------------------------------------
 # Trust-tier gating state (per-server trust + per-tool readOnlyHint).

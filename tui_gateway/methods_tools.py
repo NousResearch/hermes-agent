@@ -1803,10 +1803,10 @@ def _(rid, params: dict) -> dict:
     agree on what's installed and what's enabled.
 
     Actions:
-      - ``list``   → {"plugins": [{name, version, description, source,
-                       status}], "user_count": N, "bundled_count": M}
-      - ``toggle`` → flip ``name`` based on ``enable`` (bool). Returns the
-                       refreshed row plus {"ok", "unchanged"}.
+      - ``list``   → {"plugins": [{name, key, version, description, source,
+                       status, portable}], "user_count": N, "bundled_count": M}
+      - ``toggle`` → flip ``key`` (or ``name``) based on ``enable`` (bool).
+                       Returns the refreshed row plus {"ok", "unchanged"}.
     """
     action = params.get("action", "list")
     try:
@@ -1814,6 +1814,7 @@ def _(rid, params: dict) -> dict:
             _discover_all_plugins,
             _get_disabled_set,
             _get_enabled_set,
+            _is_portable_plugin_dir,
             _plugin_status,
         )
 
@@ -1827,10 +1828,17 @@ def _(rid, params: dict) -> dict:
                 out.append(
                     {
                         "name": name,
+                        # Canonical registry key (e.g. ``image_gen/fal``). Names
+                        # can collide across category dirs — both fal backends
+                        # are named "fal" — so toggles must address the key.
+                        "key": key,
                         "version": str(version or ""),
                         "description": desc or "",
                         "source": source,
                         "status": _plugin_status(name, enabled, disabled, key=key),
+                        # Agent Plugins v1 package (plugin.json — the portable
+                        # skills/MCP format) vs a native Hermes plugin.
+                        "portable": _is_portable_plugin_dir(_dir),
                     }
                 )
             return out
@@ -1850,20 +1858,24 @@ def _(rid, params: dict) -> dict:
         if action == "toggle":
             from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
 
-            name = (params.get("name") or "").strip()
-            if not name:
-                return _err(rid, 4019, "plugins.toggle requires a 'name'")
+            # Prefer the canonical key — bare names are ambiguous when two
+            # category plugins share one (image_gen/fal vs video_gen/fal).
+            ident = (params.get("key") or params.get("name") or "").strip()
+            if not ident:
+                return _err(rid, 4019, "plugins.toggle requires a 'key' or 'name'")
             enable = bool(params.get("enable"))
-            result = dashboard_set_agent_plugin_enabled(name, enabled=enable)
+            result = dashboard_set_agent_plugin_enabled(ident, enabled=enable)
             if not result.get("ok"):
                 return _err(rid, 5026, result.get("error") or "toggle failed")
-            row = next((r for r in _rows() if r["name"] == name), None)
+            row = next(
+                (r for r in _rows() if ident in (r["key"], r["name"])), None
+            )
             return _ok(
                 rid,
                 {
                     "ok": True,
                     "unchanged": bool(result.get("unchanged")),
-                    "name": name,
+                    "name": ident,
                     "plugin": row,
                 },
             )

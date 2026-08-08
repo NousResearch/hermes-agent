@@ -1061,6 +1061,21 @@ def _read_manifest_info(d: Path, prefix: str):
     return name, version, description, key
 
 
+def _is_portable_plugin_dir(dir_path) -> bool:
+    """True when *dir_path* is an Agent Plugins v1 package (``plugin.json``
+    only — a native ``plugin.yaml`` takes precedence, matching the loader)."""
+    try:
+        d = Path(dir_path)
+        if not d.is_dir():
+            return False
+        if (d / "plugin.yaml").exists() or (d / "plugin.yml").exists():
+            return False
+        portable_file = d / "plugin.json"
+        return portable_file.exists() or portable_file.is_symlink()
+    except OSError:
+        return False
+
+
 def _scan_level(
     base: Path,
     source: str,

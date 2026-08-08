@@ -494,6 +494,30 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(sub), skip_soul=True)
         assert result.count("Same rules everywhere.") == 1
 
+    def test_agents_md_chain_truncation_names_every_source(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+        (tmp_path / ".git").mkdir()
+        root_agents = tmp_path / "AGENTS.md"
+        root_agents.write_text("R" * 12_000)
+        package = tmp_path / "packages"
+        package.mkdir()
+        package_agents = package / "AGENTS.md"
+        package_agents.write_text("P" * 12_000)
+        cwd = package / "app"
+        cwd.mkdir()
+
+        result = build_context_files_prompt(
+            cwd=str(cwd), skip_soul=True, context_length=8_000
+        )
+
+        assert "truncated AGENTS.md (directory chain)" in result
+        assert str(root_agents) in result
+        assert str(package_agents) in result
+        assert str(cwd / "AGENTS.md") not in result
+
     def test_agents_md_single_file_output_unchanged(self, tmp_path):
         # Zero-regression guarantee: with one AGENTS.md at cwd (git repo or
         # not), the section is byte-identical to historical single-file form.

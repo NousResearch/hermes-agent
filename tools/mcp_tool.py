@@ -3680,6 +3680,12 @@ _server_connect_errors: Dict[str, str] = {}
 _lazy_server_configs: Dict[str, dict] = {}
 _lazy_server_fingerprints: Dict[str, str] = {}
 _lazy_server_tool_names: Dict[str, List[str]] = {}
+# Names that were disabled while a connect was still in flight (present in
+# ``_server_connecting`` but not yet adopted into ``_servers``). Checked at
+# the end of ``_discover_and_register_server`` so a mid-flight disable does
+# not leave a parked/retrying task behind after the user flipped
+# ``enabled: false``.
+_pending_disable: set[str] = set()
 # Discovery installs a task-local claim before calling ``_connect_server`` so
 # it can retain a recoverable parked task without making standalone probe calls
 # publish failed servers into module-global ownership.
@@ -6510,6 +6516,46 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
         )
     return registered_names
 
+def _server_disabled_now(name: str, fallback_config: Optional[dict] = None) -> bool:
+    """True when ``name`` should not stay connected (config or mid-flight disable)."""
+    with _lock:
+        if name in _pending_disable:
+            return True
+    live = _load_mcp_config().get(name)
+    cfg = live if isinstance(live, dict) else fallback_config
+    if not isinstance(cfg, dict):
+        return False
+    return not _parse_boolish(cfg.get("enabled", True), default=True)
+
+
+async def _drop_disabled_server(
+    name: str, server: Optional["MCPServerTask"]
+) -> None:
+    """Tear down a server that became disabled during/after connect."""
+    if server is not None:
+        await server.shutdown()
+    with _lock:
+        _pending_disable.discard(name)
+        _server_connecting.discard(name)
+        _server_connect_errors.pop(name, None)
+        if _servers.get(name) is server:
+            _servers.pop(name, None)
+        _lazy_server_configs.pop(name, None)
+        _lazy_server_fingerprints.pop(name, None)
+        cached_names = _lazy_server_tool_names.pop(name, None) or []
+        _clear_connect_failure(name)
+    if cached_names:
+        from tools.registry import registry
+
+        for tool_name in cached_names:
+            registry.deregister(tool_name)
+            _forget_mcp_tool_server(tool_name)
+    logger.info(
+        "MCP server '%s': dropped because it is disabled (enabled: false)",
+        name,
+    )
+
+
 async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     """Connect to a single MCP server, discover tools, and register them.
 
@@ -6530,7 +6576,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
             _connect_server(name, config),
             timeout=connect_timeout,
         )
-    except BaseException:
+    except BaseException as exc:
         server = claimed[0] if claimed else None
         task = server._task if server is not None else None
         task_cancelling = (
@@ -6538,6 +6584,13 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
             if task is not None and hasattr(task, "cancelling")
             else 0
         )
+        if _server_disabled_now(name, config):
+            # User disabled mid-flight — do not adopt a parked retry loop,
+            # and do not surface this as a connect failure.
+            await _drop_disabled_server(name, server)
+            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
+                raise
+            return []
         if (
             server is not None
             and server._error is not None
@@ -6555,7 +6608,12 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     finally:
         _connect_server_claim.reset(claim_token)
 
+    if _server_disabled_now(name, config):
+        await _drop_disabled_server(name, server)
+        return []
+
     with _lock:
+        _pending_disable.discard(name)
         _server_connecting.discard(name)
         _server_connect_errors.pop(name, None)
         _servers[name] = server
@@ -6576,11 +6634,104 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def shutdown_mcp_server(name: str) -> bool:
+    """Shut down a single MCP server by name (live, parked, lazy, or connecting).
+
+    Used when the user sets ``enabled: false`` so the process stops retrying
+    immediately instead of waiting for a full ``shutdown_mcp_servers`` /
+    ``/reload-mcp`` cycle. Safe to call when the server is already gone.
+
+    Returns:
+        True if any live/lazy/connecting state was cleared for ``name``.
+    """
+    with _lock:
+        server = _servers.pop(name, None)
+        was_connecting = name in _server_connecting
+        _server_connecting.discard(name)
+        _server_connect_errors.pop(name, None)
+        _clear_connect_failure(name)
+        _lazy_server_configs.pop(name, None)
+        _lazy_server_fingerprints.pop(name, None)
+        cached_names = list(_lazy_server_tool_names.pop(name, None) or [])
+        if was_connecting and server is None:
+            # Connect still in flight — ask discover to drop it on completion.
+            _pending_disable.add(name)
+        else:
+            _pending_disable.discard(name)
+        _parallel_safe_servers.discard(name)
+
+    if cached_names:
+        from tools.registry import registry
+
+        for tool_name in cached_names:
+            registry.deregister(tool_name)
+            _forget_mcp_tool_server(tool_name)
+
+    if server is None:
+        if was_connecting or cached_names:
+            logger.info(
+                "MCP server '%s': disable requested (no live session; "
+                "pending connect will be dropped)",
+                name,
+            )
+            return True
+        return False
+
+    async def _shutdown_one():
+        try:
+            await server.shutdown()
+        except Exception as exc:
+            logger.debug(
+                "Error closing MCP server '%s' on disable: %s", name, exc,
+            )
+
+    with _lock:
+        loop = _mcp_loop
+    if loop is not None and loop.is_running():
+        from agent.async_utils import safe_schedule_threadsafe
+
+        future = safe_schedule_threadsafe(
+            _shutdown_one(),
+            loop,
+            logger=logger,
+            log_message=f"MCP disable shutdown for '{name}': failed to schedule",
+        )
+        if future is not None:
+            try:
+                future.result(timeout=15)
+            except BaseException as exc:
+                logger.debug(
+                    "Error during MCP disable shutdown for '%s': %s", name, exc,
+                )
+    else:
+        # No running loop — best-effort sync teardown of registered tools.
+        try:
+            server._deregister_tools()
+        except Exception:
+            logger.debug(
+                "MCP server '%s': sync tool deregister on disable failed",
+                name,
+                exc_info=True,
+            )
+        server.session = None
+
+    # If a mid-flight connect re-adopted the same name after we popped it,
+    # leave _pending_disable set so _discover_and_register_server drops it.
+    with _lock:
+        if name in _servers and _servers.get(name) is not server:
+            _pending_disable.add(name)
+
+    logger.info("MCP server '%s': shut down (disabled)", name)
+    return True
+
+
 def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     """Connect to explicit MCP servers and register their tools.
 
     Idempotent for already-connected server names. Servers with
-    ``enabled: false`` are skipped without disconnecting existing sessions.
+    ``enabled: false`` are shut down if still live/parked (so a disable
+    takes effect without waiting for a full ``/reload-mcp``), and are not
+    woken for reconnect.
 
     Args:
         servers: Mapping of ``{server_name: server_config}``.
@@ -6596,6 +6747,18 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     if not servers:
         logger.debug("No explicit MCP servers provided")
         return []
+
+    # Tear down anything the user has disabled since the last pass. Without
+    # this, a parked oauth_lab (etc.) keeps self-probing / getting woken by
+    # the stale-cache nudge below and keeps logging connection WARNINGs
+    # after ``enabled: false`` was written.
+    disabled_names = [
+        name
+        for name, cfg in servers.items()
+        if not _parse_boolish(cfg.get("enabled", True), default=True)
+    ]
+    for name in disabled_names:
+        shutdown_mcp_server(name)
 
     # Only attempt servers that aren't already connected (or currently
     # connecting) and are enabled.  Checking ``_server_connecting`` prevents
@@ -6625,10 +6788,14 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         # _signal_reconnect — without this nudge a new session silently
         # waits up to _PARKED_RETRY_INTERVAL for the next self-probe
         # (#50170). Wake them now so their tools come back promptly.
+        # Skip disabled servers — shutdown_mcp_server above already reaped
+        # them; never re-signal a disabled parked task.
         stale_cached = [
             _servers[k]
-            for k in servers
-            if k in _servers and getattr(_servers[k], "session", None) is None
+            for k, cfg in servers.items()
+            if k in _servers
+            and getattr(_servers[k], "session", None) is None
+            and _parse_boolish(cfg.get("enabled", True), default=True)
         ]
         _server_connecting.update(new_servers)
         for srv_name in new_servers:
@@ -7286,6 +7453,7 @@ def shutdown_mcp_servers():
         with _lock:
             _server_connect_retry_after.clear()
             _server_connect_failures.clear()
+            _pending_disable.clear()
         _stop_mcp_loop()
         return
 
@@ -7306,6 +7474,7 @@ def shutdown_mcp_servers():
             # stale per-server backoff from before the restart (#50394).
             _server_connect_retry_after.clear()
             _server_connect_failures.clear()
+            _pending_disable.clear()
 
     with _lock:
         loop = _mcp_loop
@@ -7329,6 +7498,7 @@ def shutdown_mcp_servers():
     with _lock:
         _server_connect_retry_after.clear()
         _server_connect_failures.clear()
+        _pending_disable.clear()
 
     _stop_mcp_loop()
 

@@ -108,3 +108,45 @@ def test_undo_returns_prefill_with_target_text(server, session_with_history):
     assert "Undid" in result["notice"]
 
 
+def test_session_undo_persists_rewind_for_resume(server, db, session_with_history):
+    sid, session_key, s, _agent = session_with_history
+
+    resp = _call(server, "session.undo", session_id=sid)
+
+    assert resp["result"]["removed"] == 2
+    assert [m["content"] for m in s["history"]] == [
+        "question 1",
+        "answer 1",
+        "question 2",
+        "answer 2",
+    ]
+
+    # Restart/resume reloads from SessionDB's active rows.  The toolbar/RPC
+    # undo must therefore soft-delete durable rows, not just mutate memory.
+    resumed = db.get_messages_as_conversation(session_key)
+    assert [m["content"] for m in resumed] == [
+        "question 1",
+        "answer 1",
+        "question 2",
+        "answer 2",
+    ]
+
+
+def test_session_undo_falls_back_for_transient_history(server):
+    sid = "sid-transient-undo"
+    server._sessions[sid] = {
+        "session_key": "",
+        "history": [
+            {"role": "user", "content": "draft"},
+            {"role": "assistant", "content": "reply"},
+        ],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "agent": None,
+    }
+
+    resp = _call(server, "session.undo", session_id=sid)
+
+    assert resp["result"]["removed"] == 2
+    assert server._sessions[sid]["history"] == []

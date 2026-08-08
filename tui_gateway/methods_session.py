@@ -2477,6 +2477,59 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid, 4009, "session busy — /interrupt the current turn before /undo"
         )
+
+    # Prefer the durable SessionDB rewind path whenever this is a persisted
+    # session.  The Ink/TUI toolbar undo RPC used to only mutate the in-memory
+    # session["history"] list; that made the current view look rewound, but a
+    # restart + resume reloaded the soft-undone turn from state.db.  Mirror the
+    # slash-command /undo semantics here: find the most recent real user turn,
+    # soft-delete that row and everything after it, then refresh active history.
+    session_key = str(session.get("session_key") or "").strip()
+    db = _get_db() if session_key else None
+    if db is not None:
+        try:
+            recents = db.list_recent_user_messages(session_key, limit=10)
+            if not recents:
+                return _ok(rid, {"removed": 0})
+            result = db.rewind_to_message(session_key, recents[0]["id"])
+            active = db.get_messages_as_conversation(
+                session_key, repair_alternation=True
+            )
+            removed = int(result.get("rewound_count") or 0)
+        except Exception as exc:
+            return _err(rid, 5008, f"undo: {exc}")
+
+        with session["history_lock"]:
+            session["history"] = list(active)
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+
+        agent = session.get("agent")
+        if agent is not None:
+            mm = getattr(agent, "_memory_manager", None)
+            if mm is not None:
+                try:
+                    mm.on_session_switch(
+                        session_key,
+                        parent_session_id="",
+                        reset=False,
+                        rewound=True,
+                    )
+                except Exception:
+                    pass
+            if hasattr(agent, "_invalidate_system_prompt"):
+                try:
+                    agent._invalidate_system_prompt()
+                except Exception:
+                    pass
+            if hasattr(agent, "_last_flushed_db_idx"):
+                try:
+                    agent._last_flushed_db_idx = len(active)
+                except Exception:
+                    pass
+
+        return _ok(rid, {"removed": removed})
+
+    # Fallback for purely transient sessions that have not written a DB row yet.
     removed = 0
     with session["history_lock"]:
         history = session.get("history", [])

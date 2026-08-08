@@ -167,6 +167,21 @@ hermes plugins disable <name>     # remove from allow-list + add to disabled
 
 After `hermes plugins install owner/repo`, you're asked `Enable 'name' now? [y/N]` — defaults to no. Skip the prompt for scripted installs with `--enable` or `--no-enable`.
 
+For a reproducible install, pin a full immutable commit (tags, branches, and
+abbreviated SHAs are not accepted):
+
+```bash
+hermes plugins install owner/repo --ref 0123456789abcdef0123456789abcdef01234567
+```
+
+Hermes checks out the commit detached, verifies that `HEAD` exactly matches the
+requested SHA, and records the canonical source, installed revision, and pin
+status in the current profile. `hermes plugins update` refuses to move a pinned
+plugin; choose a new exact commit explicitly with
+`hermes plugins install <source> --force --ref <new-commit>`. The
+profile-local install metadata contains no config values, environment values,
+secrets, or capability grants.
+
 ### What the allow-list does NOT gate
 
 Several categories of plugin bypass `plugins.enabled` — they're part of Hermes' built-in surface and would break basic functionality if gated off by default:

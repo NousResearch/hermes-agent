@@ -14,9 +14,12 @@ import importlib.metadata
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,6 +27,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.config import cfg_get
 from hermes_cli.secret_prompt import masked_secret_prompt
+from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -459,31 +463,202 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, str]:
-    """Clone Git plugin into ``~/.hermes/plugins``.
+_EXACT_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+_INSTALL_METADATA_FILE = ".install-metadata.json"
 
-    Returns ``(target_dir, installed_manifest, canonical_name)``.
-    Raises ``PluginOperationError`` on failure.
-    """
-    import tempfile
 
+def _install_metadata_path() -> Path:
+    return get_hermes_home() / "plugins" / _INSTALL_METADATA_FILE
+
+
+def _read_install_metadata() -> dict[str, dict[str, object]]:
+    """Read profile-local, non-secret plugin source metadata from disk."""
+    path = _install_metadata_path()
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PluginOperationError(f"Could not read plugin install metadata: {exc}") from exc
+    if not isinstance(value, dict):
+        raise PluginOperationError("Plugin install metadata must be a JSON object.")
+    return value
+
+
+def _write_install_metadata(metadata: dict[str, dict[str, object]]) -> None:
+    """Atomically replace the profile-local plugin install metadata sidecar."""
+    path = _install_metadata_path()
+    atomic_write_text(
+        path,
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        tmp_prefix=f"{path.name}.tmp-",
+    )
+
+
+def _normalize_exact_revision(ref: str) -> str:
+    if not isinstance(ref, str) or not _EXACT_COMMIT_RE.fullmatch(ref):
+        raise PluginOperationError("--ref must be a full 40-character commit SHA.")
+    return ref.lower()
+
+
+def _safe_git_error(result: subprocess.CompletedProcess, source_url: str = "") -> str:
+    """Return diagnosable Git output without echoing embedded credentials."""
+    from agent.redact import redact_sensitive_text
+
+    error = (result.stderr or result.stdout or "").strip()
+    if source_url:
+        error = error.replace(source_url, _scrub_git_url(source_url))
+    return redact_sensitive_text(error)
+
+
+def _git_head_revision(repo: Path, git_exe: str) -> str:
+    result = subprocess.run(
+        [git_exe, "rev-parse", "HEAD"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        stdin=subprocess.DEVNULL,
+        env=noninteractive_git_env(),
+    )
+    if result.returncode != 0:
+        err = _safe_git_error(result)
+        raise PluginOperationError(f"Could not determine installed Git revision:\n{err}")
+    return result.stdout.strip().lower()
+
+
+def _checkout_exact_revision(repo: Path, git_exe: str, revision: str) -> None:
+    """Fetch and detach at one immutable commit, then verify the resulting HEAD."""
+    try:
+        fetched = subprocess.run(
+            [git_exe, "fetch", "--depth", "1", "origin", revision],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PluginOperationError(
+            f"Git fetch of commit '{revision}' timed out after 60 seconds."
+        ) from exc
+    if fetched.returncode != 0:
+        err = _safe_git_error(fetched)
+        raise PluginOperationError(
+            f"Git commit '{revision}' could not be fetched:\n{err}"
+        )
+    try:
+        checked_out = subprocess.run(
+            [git_exe, "checkout", "--detach", revision],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PluginOperationError(
+            f"Git checkout of commit '{revision}' timed out after 60 seconds."
+        ) from exc
+    if checked_out.returncode != 0:
+        err = _safe_git_error(checked_out)
+        raise PluginOperationError(
+            f"Git checkout of commit '{revision}' failed:\n{err}"
+        )
+    actual = _git_head_revision(repo, git_exe)
+    if actual != revision:
+        raise PluginOperationError(
+            f"Checked-out revision '{actual}' does not match requested commit '{revision}'."
+        )
+
+
+def _scrub_git_url(git_url: str) -> str:
+    """Strip credentials and query/fragment data from an HTTP Git URL."""
+    parsed = urllib.parse.urlsplit(git_url)
+    if parsed.scheme in {"http", "https"} and parsed.hostname:
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        return urllib.parse.urlunsplit(
+            (parsed.scheme, host, parsed.path, "", "")
+        )
+    return git_url
+
+
+def _canonical_source(git_url: str, subdir: Optional[str]) -> str:
+    scrubbed = _scrub_git_url(git_url)
+    return f"{scrubbed}#{subdir}" if subdir else scrubbed
+
+
+def _scrub_cloned_origin(repo: Path, git_exe: str, git_url: str) -> None:
+    """Ensure credentials used for cloning do not survive in ``.git/config``."""
+    scrubbed = _scrub_git_url(git_url)
+    if scrubbed == git_url:
+        return
+    result = subprocess.run(
+        [git_exe, "remote", "set-url", "origin", scrubbed],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        stdin=subprocess.DEVNULL,
+        env=noninteractive_git_env(),
+    )
+    if result.returncode != 0:
+        err = _safe_git_error(result, git_url)
+        raise PluginOperationError(f"Could not sanitize installed Git remote:\n{err}")
+
+
+def _install_plugin_core(
+    identifier: str, *, force: bool, ref: Optional[str] = None
+) -> tuple[Path, dict, str]:
+    """Clone a Git plugin and atomically record its source and exact revision."""
+    requested_revision = _normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _resolve_git_url(identifier)
     except ValueError as e:
         raise PluginOperationError(str(e)) from e
 
     plugins_dir = _plugins_dir()
+    source = _canonical_source(git_url, subdir)
+    old_metadata = _read_install_metadata()
 
-    with tempfile.TemporaryDirectory() as tmp:
+    # Reinstalling the same pinned source retains its pin, even if its plugin
+    # directory was manually removed. Moving a pin requires an explicit --ref.
+    if requested_revision is None:
+        matching_pins = [
+            entry
+            for entry in old_metadata.values()
+            if entry.get("source") == source and entry.get("pinned") is True
+        ]
+        if len(matching_pins) == 1:
+            revision = matching_pins[0].get("revision")
+            if isinstance(revision, str):
+                requested_revision = _normalize_exact_revision(revision)
+
+    with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins_dir) as tmp:
         tmp_clone = Path(tmp) / "plugin"
-
         git_exe = _resolve_git_executable()
         if not git_exe:
             raise PluginOperationError("git is not installed or not in PATH.")
 
+        clone_args = [git_exe, "clone", "--depth", "1"]
+        if requested_revision:
+            clone_args.append("--no-checkout")
+        clone_args.extend([git_url, str(tmp_clone)])
         try:
             result = subprocess.run(
-                [git_exe, "clone", "--depth", "1", git_url, str(tmp_clone)],
+                clone_args,
                 capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
                 timeout=60,
@@ -491,24 +666,21 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
                 env=noninteractive_git_env(),
             )
         except FileNotFoundError as e:
-            raise PluginOperationError(
-                "git is not installed or not in PATH.",
-            ) from e
+            raise PluginOperationError("git is not installed or not in PATH.") from e
         except subprocess.TimeoutExpired as e:
-            raise PluginOperationError(
-                "Git clone timed out after 60 seconds.",
-            ) from e
-
+            raise PluginOperationError("Git clone timed out after 60 seconds.") from e
         if result.returncode != 0:
-            err = (result.stderr or result.stdout or "").strip()
+            err = _safe_git_error(result, git_url)
             raise PluginOperationError(f"Git clone failed:\n{err}")
 
-        # Resolve the directory within the clone that holds the plugin.
-        if subdir:
-            tmp_target = _resolve_subdir_within(tmp_clone, subdir)
-        else:
-            tmp_target = tmp_clone
+        _scrub_cloned_origin(tmp_clone, git_exe, git_url)
+        if requested_revision:
+            _checkout_exact_revision(tmp_clone, git_exe, requested_revision)
+        installed_revision = _git_head_revision(tmp_clone, git_exe)
 
+        tmp_target = (
+            _resolve_subdir_within(tmp_clone, subdir) if subdir else tmp_clone
+        )
         has_native_manifest = (tmp_target / "plugin.yaml").exists() or (
             tmp_target / "plugin.yml"
         ).exists()
@@ -531,7 +703,6 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
         )
-
         try:
             target = _sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
@@ -555,15 +726,46 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
                     f"Run {recommended_update_command()} to update Hermes.",
                 ) from None
 
-        if target.exists():
-            if not force:
-                raise PluginOperationError(
-                    f"Plugin '{plugin_name}' already exists. Use force reinstall "
-                    f"or run `hermes plugins update {plugin_name}`.",
-                )
-            shutil.rmtree(target)
+        if target.exists() and not force:
+            raise PluginOperationError(
+                f"Plugin '{plugin_name}' already exists. Use force reinstall "
+                f"or run `hermes plugins update {plugin_name}`."
+            )
+        prior = old_metadata.get(plugin_name)
+        if (
+            target.exists()
+            and requested_revision is None
+            and isinstance(prior, dict)
+            and prior.get("pinned") is True
+        ):
+            raise PluginOperationError(
+                f"Plugin '{plugin_name}' is pinned. Reinstall it with an explicit "
+                "--ref <40-character commit SHA> to change its source or revision."
+            )
 
-        shutil.move(str(tmp_target), str(target))
+        new_metadata = dict(old_metadata)
+        new_metadata[plugin_name] = {
+            "pinned": requested_revision is not None,
+            "revision": installed_revision,
+            "source": source,
+        }
+        backup = Path(tmp) / "previous-plugin"
+        replaced_existing = target.exists()
+        if replaced_existing:
+            os.replace(target, backup)
+        try:
+            os.replace(tmp_target, target)
+            _write_install_metadata(new_metadata)
+        except Exception:
+            if target.exists():
+                shutil.rmtree(target)
+            if replaced_existing and backup.exists():
+                os.replace(backup, target)
+            if old_metadata:
+                _write_install_metadata(old_metadata)
+            else:
+                _install_metadata_path().unlink(missing_ok=True)
+            raise
 
     has_yaml = (target / "plugin.yaml").exists() or (target / "plugin.yml").exists()
     has_portable = (target / "plugin.json").exists()
@@ -585,6 +787,7 @@ def cmd_install(
     identifier: str,
     force: bool = False,
     enable: Optional[bool] = None,
+    ref: Optional[str] = None,
 ) -> None:
     """Install a plugin from a Git URL or owner/repo shorthand.
 
@@ -616,6 +819,7 @@ def cmd_install(
         target, installed_manifest, installed_name = _install_plugin_core(
             identifier,
             force=force,
+            ref=ref,
         )
     except PluginOperationError as e:
         console.print(f"[red]Error:[/red] {e}")
@@ -670,6 +874,7 @@ def cmd_install(
 def cmd_update(name: str) -> None:
     """Update an installed plugin by pulling latest from its git remote."""
     from rich.console import Console
+    from rich.markup import escape
 
     console = Console()
     plugins_dir = _plugins_dir()
@@ -678,6 +883,22 @@ def cmd_update(name: str) -> None:
         target = _require_installed_plugin(name, plugins_dir, console)
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    try:
+        metadata = _read_install_metadata()
+    except PluginOperationError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        sys.exit(1)
+    install_record = metadata.get(target.name, {})
+    if install_record.get("pinned") is True:
+        recorded_source = escape(str(install_record.get("source", "<source>")))
+        console.print(
+            f"[red]Error:[/red] Plugin '{name}' is pinned to "
+            f"{install_record.get('revision')}. To move it, run "
+            f"`hermes plugins install {recorded_source} --force "
+            "--ref <40-character commit SHA>`."
+        )
         sys.exit(1)
 
     if not (target / ".git").exists():
@@ -693,6 +914,13 @@ def cmd_update(name: str) -> None:
     if not ok:
         console.print(f"[red]Error:[/red] {output}")
         sys.exit(1)
+
+    if install_record:
+        git_exe = _resolve_git_executable()
+        if git_exe:
+            install_record["revision"] = _git_head_revision(target, git_exe)
+            metadata[target.name] = install_record
+            _write_install_metadata(metadata)
 
     # Same stale-bytecode class as the main checkout (#6207/#60242): the
     # pull just changed .py files under this plugin dir, so drop any
@@ -712,6 +940,35 @@ def cmd_update(name: str) -> None:
         console.print(f"[dim]{out}[/dim]")
 
 
+def _remove_plugin_core(target: Path) -> None:
+    """Remove one plugin and its metadata without splitting their state."""
+    metadata = _read_install_metadata()
+    if target.name not in metadata:
+        shutil.rmtree(target)
+        return
+
+    updated = dict(metadata)
+    updated.pop(target.name)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{target.name}.remove-", dir=target.parent)
+    )
+    backup = staging / "plugin"
+    os.replace(target, backup)
+    try:
+        _write_install_metadata(updated)
+    except Exception:
+        try:
+            os.replace(backup, target)
+        except OSError as restore_exc:
+            raise PluginOperationError(
+                f"Plugin metadata update failed and '{target.name}' could not be "
+                f"restored automatically; recovery copy remains at {backup}."
+            ) from restore_exc
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    shutil.rmtree(staging)
+
+
 def cmd_remove(name: str) -> None:
     """Remove an installed plugin by name."""
     from rich.console import Console
@@ -725,7 +982,11 @@ def cmd_remove(name: str) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
-    shutil.rmtree(target)
+    try:
+        _remove_plugin_core(target)
+    except (OSError, PluginOperationError) as exc:
+        console.print(f"[red]Error:[/red] Could not remove plugin '{name}': {exc}")
+        sys.exit(1)
     _display_removed(name, plugins_dir)
 
 
@@ -2040,6 +2301,22 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
             "error": f"Plugin '{name}' was not found under {_plugins_dir()}.",
         }
 
+    try:
+        metadata = _read_install_metadata()
+    except PluginOperationError as exc:
+        return {"ok": False, "error": str(exc)}
+    install_record = metadata.get(target.name, {})
+    if install_record.get("pinned") is True:
+        recorded_source = install_record.get("source", "<source>")
+        return {
+            "ok": False,
+            "error": (
+                f"Plugin '{name}' is pinned to {install_record.get('revision')}; "
+                f"run `hermes plugins install {recorded_source} --force "
+                "--ref <40-character commit SHA>` to move it."
+            ),
+        }
+
     if not (target / ".git").exists():
         return {
             "ok": False,
@@ -2049,6 +2326,13 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     ok, msg = _git_pull_plugin_dir(target)
     if not ok:
         return {"ok": False, "error": msg}
+
+    if install_record:
+        git_exe = _resolve_git_executable()
+        if git_exe:
+            install_record["revision"] = _git_head_revision(target, git_exe)
+            metadata[target.name] = install_record
+            _write_install_metadata(metadata)
 
     # Sibling of the CLI ``hermes plugins update`` path: drop bytecode
     # compiled from the pre-pull plugin revision.
@@ -2105,7 +2389,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         return False, "Git pull timed out after 60 seconds."
 
     if result.returncode != 0:
-        err = (result.stderr or "").strip() or result.stdout.strip()
+        err = _safe_git_error(result)
         return False, err or "git pull failed."
     return True, result.stdout.strip()
 
@@ -2124,7 +2408,10 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
             "error": f"Plugin '{name}' was not found under {plugins_dir}.",
         }
 
-    shutil.rmtree(target)
+    try:
+        _remove_plugin_core(target)
+    except (OSError, PluginOperationError) as exc:
+        return {"ok": False, "error": f"Could not remove plugin '{name}': {exc}"}
     return {"ok": True, "name": name}
 
 
@@ -2155,6 +2442,7 @@ def plugins_command(args) -> None:
             args.identifier,
             force=getattr(args, "force", False),
             enable=enable_arg,
+            ref=getattr(args, "ref", None),
         )
     elif action == "update":
         cmd_update(args.name)

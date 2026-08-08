@@ -1374,8 +1374,8 @@ Unified plugin management — general plugins, memory providers, and context eng
 | Subcommand | Description |
 |------------|-------------|
 | *(none)* | Composite interactive UI — general plugin toggles + provider plugin configuration. |
-| `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
-| `update <name>` | Pull latest changes for an installed plugin. |
+| `install <identifier> [--force] [--ref COMMIT_SHA]` | Install a plugin from a Git URL or `owner/repo`. `--ref` accepts only a full 40-character commit SHA and installs that exact immutable revision. |
+| `update <name>` | Pull latest changes for an unpinned installed plugin. Pinned plugins must be reinstalled with `--force --ref <new-commit>` to move. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
 | `enable <name>` | Enable a disabled plugin. |
 | `disable <name>` | Disable a plugin without removing it. |
@@ -1387,6 +1387,9 @@ Provider plugin selections are saved to `config.yaml`:
 - `context.engine` — active context engine (`"compressor"` = built-in default)
 
 General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
+Git installs also record only their canonical source, exact installed revision, and
+pin status in the profile-local `plugins/.install-metadata.json` sidecar. It does
+not contain plugin config, environment values, secrets, or capability grants.
 
 See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../developer-guide/plugins/index.md).
 

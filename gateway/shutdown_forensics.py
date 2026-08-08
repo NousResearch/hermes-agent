@@ -220,25 +220,37 @@ def spawn_async_diagnostic(
     except OSError:
         return None
 
-    # Inline shell so we don't have to ship a helper script.  bash -c is
+    # Inline shell so we don't have to ship a helper script.  bash is
     # available on every POSIX target we support; on Windows we just skip
     # the snapshot (the platform doesn't ship ps anyway).
     if sys.platform == "win32":
         return None
 
-    script = (
+    common = (
         f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
         "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        "echo '--- ps auxf (top 60 by cpu) ---'; "
-        "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
-        "echo '--- pstree of self ---'; "
-        f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
-        "echo '--- /proc/loadavg ---'; "
-        "cat /proc/loadavg 2>/dev/null || true; "
-        "echo '--- recent dmesg (oom/killed) ---'; "
-        "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
-        "echo '=== end ==='"
     )
+    if sys.platform == "darwin":
+        script = common + (
+            "echo '--- processes (top 60 by cpu) ---'; "
+            "ps -Ao pid,ppid,state,pcpu,pmem,command -r 2>/dev/null | head -60; "
+            "echo '--- gateway process ---'; "
+            f"ps -o pid,ppid,state,command -p {os.getpid()} 2>/dev/null || true; "
+            "echo '--- load ---'; uptime 2>/dev/null || true; "
+            "echo '=== end ==='"
+        )
+    else:
+        script = common + (
+            "echo '--- ps auxf (top 60 by cpu) ---'; "
+            "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
+            "echo '--- pstree of self ---'; "
+            f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
+            "echo '--- /proc/loadavg ---'; "
+            "cat /proc/loadavg 2>/dev/null || true; "
+            "echo '--- recent dmesg (oom/killed) ---'; "
+            "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
+            "echo '=== end ==='"
+        )
 
     try:
         # Open the log file in append mode and let the subprocess inherit.
@@ -248,6 +260,22 @@ def spawn_async_diagnostic(
     except OSError:
         return None
 
+    # Use Hermes' Python rather than the GNU-only `timeout` executable (absent
+    # on stock macOS).  The helper owns the shell's process group and kills the
+    # entire group at the deadline, preserving the original bounded contract.
+    helper = (
+        "import os, signal, subprocess, sys\n"
+        "p = subprocess.Popen(['bash', '-c', sys.argv[1]], start_new_session=True)\n"
+        "try:\n"
+        "    p.wait(timeout=float(sys.argv[2]))\n"
+        "except subprocess.TimeoutExpired:\n"
+        "    try:\n"
+        "        os.killpg(p.pid, signal.SIGKILL)\n"  # windows-footgun: ok -- helper only runs after the Windows early return
+        "    except ProcessLookupError:\n"
+        "        pass\n"
+        "    p.wait()\n"
+    )
+
     try:
         # Detach from our process group so the subprocess survives even
         # if systemd kills our cgroup with KillMode=control-group (which
@@ -255,7 +283,7 @@ def spawn_async_diagnostic(
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            [sys.executable, "-c", helper, script, str(timeout_seconds)],
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

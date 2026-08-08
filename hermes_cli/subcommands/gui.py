@@ -60,4 +60,9 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         action="store_true",
         help="Force a full rebuild even if the content stamp matches",
     )
+    gui_parser.add_argument(
+        "--install-desktop-only",
+        action="store_true",
+        help="Install ONLY the desktop app (skip Python/agent setup; implies --build-only). Useful for connecting to a remote Hermes gateway.",
+    )
     gui_parser.set_defaults(func=cmd_gui)

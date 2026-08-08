@@ -1556,6 +1556,10 @@ class FeishuAdapter(BasePlatformAdapter):
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        # Clarify button state (clarify_id → {session_key, message_id, chat_id})
+        self._clarify_state: Dict[str, Dict[str, str]] = {}
+        # Slash-confirm button state (confirm_id → {session_key, chat_id})
+        self._slash_confirm_state: Dict[str, Dict[str, str]] = {}
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
@@ -2195,6 +2199,119 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_update_prompt failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
+    # =========================================================================
+    # Clarify prompt (interactive card with choice buttons)
+    # =========================================================================
+
+    @staticmethod
+    def _build_clarify_card(
+        *, question: str, choices: Optional[List[str]], clarify_id: str, multi_select: bool = False,
+    ) -> Dict[str, Any]:
+        """Build an interactive card for a clarify prompt.
+
+        Multi-choice mode: one button per choice plus an "Other" button.
+        Open-ended mode (no choices): question only — the next message in
+        the session is captured by the gateway's text-intercept.
+        """
+        elements: List[Dict[str, Any]] = [
+            {"tag": "markdown", "content": question},
+        ]
+
+        if choices:
+            option_lines = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(choices))
+            elements.append({"tag": "markdown", "content": option_lines})
+
+            def _btn(label: str, choice_idx: int) -> dict:
+                return {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": label},
+                    "type": "default",
+                    "value": {
+                        "hermes_clarify_action": "choice",
+                        "clarify_id": clarify_id,
+                        "choice_idx": choice_idx,
+                    },
+                }
+
+            actions = [_btn(str(i + 1), i) for i in range(len(choices))]
+            actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "✏️ 其他（输入回答）"},
+                "type": "default",
+                "value": {
+                    "hermes_clarify_action": "other",
+                    "clarify_id": clarify_id,
+                },
+            })
+            elements.append({"tag": "action", "actions": actions})
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "❓ 需要你的输入", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": elements,
+        }
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[List[str]],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive clarify prompt with choice buttons.
+
+        Multi-choice mode (``choices`` non-empty): renders one button per
+        option plus a final "✏️ 其他（输入回答）" button.  Picking "Other"
+        flips the entry into text-capture mode so the next message becomes
+        the response.
+
+        Open-ended mode (``choices`` empty): renders the question as a card
+        with no buttons — the next message in the session is captured by the
+        gateway's text-intercept and resolves the clarify.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            from tools.clarify_gateway import _entries as _clarify_entries
+            entry = _clarify_entries.get(clarify_id)
+            multi_select = bool(entry.multi_select) if entry else False
+        except Exception:
+            multi_select = False
+
+        try:
+            payload = json.dumps(
+                self._build_clarify_card(
+                    question=question, choices=choices,
+                    clarify_id=clarify_id, multi_select=multi_select,
+                ),
+                ensure_ascii=False,
+            )
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+
+            result = self._finalize_send_result(response, "send_clarify failed")
+            if result.success:
+                self._clarify_state[clarify_id] = {
+                    "session_key": session_key,
+                    "message_id": result.message_id or "",
+                    "chat_id": chat_id,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_clarify failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
         """Build raw card JSON for a resolved approval action."""
@@ -2735,10 +2852,31 @@ class FeishuAdapter(BasePlatformAdapter):
             if isinstance(action_value, dict) else None
         )
 
+        clarify_action = (
+            action_value.get("hermes_clarify_action")
+            if isinstance(action_value, dict) else None
+        )
+        slash_confirm_action = (
+            action_value.get("hermes_slash_confirm_action")
+            if isinstance(action_value, dict) else None
+        )
+
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
+                event=event,
+                action_value=action_value,
+                loop=loop,
+            )
+        if clarify_action:
+            return self._handle_clarify_card_action(
+                event=event,
+                action_value=action_value,
+                loop=loop,
+            )
+        if slash_confirm_action:
+            return self._handle_slash_confirm_card_action(
                 event=event,
                 action_value=action_value,
                 loop=loop,
@@ -2890,6 +3028,303 @@ class FeishuAdapter(BasePlatformAdapter):
             card.data = self._build_resolved_update_prompt_card(answer=answer, user_name=user_name)
             response.card = card
         return response
+
+    # =========================================================================
+    # Clarify card-action handling
+    # =========================================================================
+
+    def _handle_clarify_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Schedule clarify resolution and build the synchronous callback response.
+
+        Two action kinds:
+          * ``choice`` — a numbered option button; resolves immediately with
+            the chosen text.
+          * ``other``  — flips the entry into text-capture mode so the user's
+            next message becomes the answer (gateway text-intercept resolves).
+        """
+        clarify_id = action_value.get("clarify_id")
+        if not clarify_id:
+            logger.debug("[Feishu] Clarify card action missing clarify_id, ignoring")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        state = self._clarify_state.get(clarify_id)
+        if not state:
+            logger.debug("[Feishu] Clarify %s already resolved or unknown", clarify_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            logger.warning("[Feishu] Unauthorized clarify click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning(
+                "[Feishu] Clarify callback chat mismatch for %s (expected=%s, got=%s)",
+                clarify_id, expected_chat_id, callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        user_name = self._get_cached_sender_name(open_id) or open_id
+        action_kind = str(action_value.get("hermes_clarify_action", "") or "")
+
+        if action_kind == "other":
+            # Flip into text-capture mode; do NOT pop state yet — the entry
+            # must survive until the typed answer arrives (or times out).
+            flipped = False
+            try:
+                from tools.clarify_gateway import mark_awaiting_text
+                flipped = mark_awaiting_text(clarify_id)
+            except Exception as exc:
+                logger.warning("[Feishu] mark_awaiting_text failed: %s", exc)
+            if not flipped:
+                self._clarify_state.pop(clarify_id, None)
+                resolved_card = self._build_resolved_clarify_card(
+                    label="已过期", template="grey", body="该提问已超时或被取消，请重新发起。",
+                )
+            else:
+                resolved_card = self._build_resolved_clarify_card(
+                    label="等待输入", template="blue",
+                    body=f"✏️ 请在聊天中直接输入回答（由 **{user_name}** 发起）",
+                )
+            if P2CardActionTriggerResponse is None:
+                return None
+            response = P2CardActionTriggerResponse()
+            if CallBackCard is not None:
+                card = CallBackCard()
+                card.type = "raw"
+                card.data = resolved_card
+                response.card = card
+            return response
+
+        # Numeric choice → resolve immediately with the chosen text.
+        choice_idx = action_value.get("choice_idx")
+        resolved_text: Optional[str] = None
+        try:
+            idx = int(choice_idx)
+        except (ValueError, TypeError):
+            idx = -1
+        try:
+            from tools.clarify_gateway import _entries as _clarify_entries
+            entry = _clarify_entries.get(clarify_id)
+            if entry and entry.choices and 0 <= idx < len(entry.choices):
+                resolved_text = entry.choices[idx]
+        except Exception:
+            resolved_text = None
+
+        if resolved_text is None:
+            resolved_text = str(idx + 1) if idx >= 0 else ""
+
+        # Pop state now so a second click is a no-op.
+        self._clarify_state.pop(clarify_id, None)
+
+        if not self._submit_on_loop(
+            loop,
+            self._resolve_clarify(clarify_id, resolved_text, user_name),
+        ):
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_resolved_clarify_card(
+                label="已回答", template="green",
+                body=f"✅ **{resolved_text}**\n\n回答者：**{user_name}**",
+            )
+            response.card = card
+        return response
+
+    @staticmethod
+    def _build_resolved_clarify_card(*, label: str, template: str, body: str) -> Dict[str, Any]:
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": f"❓ {label}", "tag": "plain_text"},
+                "template": template,
+            },
+            "elements": [{"tag": "markdown", "content": body}],
+        }
+
+    async def _resolve_clarify(self, clarify_id: str, response: str, user_name: str) -> None:
+        """Unblock the agent thread waiting on ``clarify_id``."""
+        try:
+            from tools.clarify_gateway import resolve_gateway_clarify
+            ok = resolve_gateway_clarify(clarify_id, response)
+            if ok:
+                logger.info(
+                    "Feishu clarify button resolved %s (response=%r, user=%s)",
+                    clarify_id, response, user_name,
+                )
+            else:
+                logger.debug("[Feishu] Clarify %s already resolved or expired", clarify_id)
+        except Exception as exc:
+            logger.error("Failed to resolve Feishu clarify: %s", exc)
+
+    # =========================================================================
+    # Slash-command confirmation (destructive /new, /reset, /undo)
+    # =========================================================================
+
+    @staticmethod
+    def _build_slash_confirm_card(*, title: str, message: str, confirm_id: str) -> Dict[str, Any]:
+        """Build an interactive card with Approve / Always / Cancel buttons."""
+        def _btn(label: str, choice: str, btn_type: str = "default") -> dict:
+            return {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "type": btn_type,
+                "value": {
+                    "hermes_slash_confirm_action": choice,
+                    "confirm_id": confirm_id,
+                },
+            }
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": f"⚠️ {title}", "tag": "plain_text"},
+                "template": "orange",
+            },
+            "elements": [
+                {"tag": "markdown", "content": message},
+                {
+                    "tag": "action",
+                    "actions": [
+                        _btn("✅ 仅本次批准", "once", "primary"),
+                        _btn("🔒 始终批准", "always"),
+                        _btn("❌ 取消", "cancel", "danger"),
+                    ],
+                },
+            ],
+        }
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a three-button slash-command confirmation card."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            payload = json.dumps(
+                self._build_slash_confirm_card(
+                    title=title, message=message, confirm_id=confirm_id,
+                ),
+                ensure_ascii=False,
+            )
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+
+            result = self._finalize_send_result(response, "send_slash_confirm failed")
+            if result.success:
+                self._slash_confirm_state[confirm_id] = {
+                    "session_key": session_key,
+                    "message_id": result.message_id or "",
+                    "chat_id": chat_id,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_slash_confirm failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    def _handle_slash_confirm_card_action(
+        self, *, event: Any, action_value: Dict[str, Any], loop: Any,
+    ) -> Any:
+        """Resolve a slash-confirm button click and rebuild the card inline."""
+        confirm_id = action_value.get("confirm_id")
+        if not confirm_id:
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        state = self._slash_confirm_state.get(confirm_id)
+        if not state:
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            logger.warning("[Feishu] Unauthorized slash-confirm click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning(
+                "[Feishu] Slash-confirm callback chat mismatch (expected=%s, got=%s)",
+                expected_chat_id, callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        choice = str(action_value.get("hermes_slash_confirm_action", "") or "")
+        session_key = state["session_key"]
+        chat_id = state["chat_id"]
+
+        # Pop state so a second click is a no-op.
+        self._slash_confirm_state.pop(confirm_id, None)
+
+        user_name = self._get_cached_sender_name(open_id) or open_id
+        label_map = {
+            "once": "✅ 已批准（仅本次）",
+            "always": "🔒 已始终批准",
+            "cancel": "❌ 已取消",
+        }
+        label = label_map.get(choice, "已处理")
+
+        if not self._submit_on_loop(
+            loop,
+            self._resolve_slash_confirm(session_key, confirm_id, choice, chat_id, user_name),
+        ):
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            template = "grey" if choice == "cancel" else "green"
+            card.data = {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {"content": label, "tag": "plain_text"},
+                    "template": template,
+                },
+                "elements": [
+                    {"tag": "markdown", "content": f"操作者：**{user_name}**"},
+                ],
+            }
+            response.card = card
+        return response
+
+    async def _resolve_slash_confirm(
+        self, session_key: str, confirm_id: str, choice: str, chat_id: str, user_name: str,
+    ) -> None:
+        """Run the registered slash-confirm handler and post its result."""
+        try:
+            from tools import slash_confirm as _slash_confirm_mod
+            result_text = await _slash_confirm_mod.resolve(session_key, confirm_id, choice)
+            logger.info(
+                "Feishu slash-confirm resolved %s (choice=%r, user=%s)",
+                confirm_id, choice, user_name,
+            )
+            if result_text:
+                await self.send(chat_id=chat_id, content=str(result_text))
+        except Exception as exc:
+            logger.error("Failed to resolve Feishu slash-confirm: %s", exc)
 
     async def _resolve_approval(
         self,

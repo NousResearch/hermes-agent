@@ -339,6 +339,7 @@ gateway:
     not_active:            "No hay ningún chat temporal activo.\nUsa /temp para iniciar uno."
     status_on:             "🕵️ Chat temporal: activado\nNada de este chat se guarda. Usa /temp off para finalizarlo."
     status_off:            "Chat temporal: desactivado\nEsta sesión se guarda con normalidad. Usa /temp para iniciar un chat temporal."
+    reminder:              "🕵️ Sigues en un chat temporal — no se guarda nada. Envía /temp off para terminarlo."
   title:
     db_unavailable:        "Base de datos de sesiones no disponible."
     warn_prefix:           "⚠️ {error}"

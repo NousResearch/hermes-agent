@@ -355,6 +355,7 @@ gateway:
     not_active:            "Not in a temporary chat — this session is already being saved.\nSend `/temp` to start one."
     status_on:             "🕵️ *Temporary chat is ON.*\nNothing in this conversation is being saved.\nSend `/temp off` to go back to a normal, saved session."
     status_off:            "Temporary chat is *off* — this session is being saved normally.\nSend `/temp` to start a temporary chat."
+    reminder:              "🕵️ Still in a temporary chat — nothing is being saved. Send /temp off to end it."
 
   title:
     db_unavailable:        "Session database not available."

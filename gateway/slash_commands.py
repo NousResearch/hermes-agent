@@ -184,6 +184,18 @@ class GatewaySlashCommandsMixin:
             self.session_store._save_entry(session_key)
         except Exception:
             pass
+        # Reminder cadence bookkeeping (see run._maybe_append_temp_reminder):
+        # seeding 0 on start means the reply right after the started-banner is
+        # not immediately re-nagged; a missing key is reserved to mean "first
+        # reply after a gateway restart", which IS reminded.
+        counts = getattr(self, "_temp_reminder_turns", None)
+        if counts is None:
+            counts = {}
+            self._temp_reminder_turns = counts
+        if value:
+            counts[session_key] = 0
+        else:
+            counts.pop(session_key, None)
         try:
             self._evict_cached_agent(session_key)
         except Exception:

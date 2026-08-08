@@ -342,6 +342,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     not_active:            "Geen tydelike gesprek is aktief nie.\nGebruik /temp om een te begin."
     status_on:             "🕵️ Tydelike gesprek: aan\nNiks van hierdie gesprek word gestoor nie. Gebruik /temp off om dit te beëindig."
     status_off:            "Tydelike gesprek: af\nHierdie sessie word normaalweg gestoor. Gebruik /temp om 'n tydelike gesprek te begin."
+    reminder:              "🕵️ Steeds in 'n tydelike gesprek — niks word gestoor nie. Stuur /temp off om dit te beëindig."
   title:
     db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
     warn_prefix:           "⚠️ {error}"

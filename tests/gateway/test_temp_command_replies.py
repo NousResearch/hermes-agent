@@ -21,6 +21,7 @@ TEMP_KEYS = (
     "not_active",
     "status_on",
     "status_off",
+    "reminder",
 )
 
 
@@ -143,3 +144,62 @@ def test_on_is_accepted_as_the_mirror_of_off(arg):
     h = _Harness(ephemeral=False)
     assert _run(h, arg) == t("gateway.temp.started")
     assert h.flag is True
+
+
+# ---------------------------------------------------------------------------
+# Periodic reminder cadence. Chat platforms have no persistent badge and the
+# ephemeral flag survives restarts, so replies carry a reminder line: never
+# right after the started-banner, every Nth reply thereafter, and immediately
+# on the first reply a fresh gateway process sends into a temp chat it did
+# not itself start (the restart case).
+# ---------------------------------------------------------------------------
+def _reminded(text: str) -> bool:
+    return t("gateway.temp.reminder") in text
+
+
+def test_reminder_cadence_after_temp_start():
+    from types import SimpleNamespace
+
+    from gateway.run import _TEMP_REMINDER_EVERY, _maybe_append_temp_reminder
+
+    runner = SimpleNamespace()
+    # /temp seeds the counter at 0 (see _set_session_ephemeral).
+    runner._temp_reminder_turns = {"k": 0}
+
+    outcomes = [
+        _reminded(_maybe_append_temp_reminder(runner, "k", "reply"))
+        for _ in range(_TEMP_REMINDER_EVERY * 2)
+    ]
+    # Replies 1..N-1 are clean; reply N and reply 2N carry the reminder.
+    assert outcomes.count(True) == 2
+    assert outcomes[_TEMP_REMINDER_EVERY - 1] is True
+    assert outcomes[-1] is True
+    assert not any(outcomes[: _TEMP_REMINDER_EVERY - 1]), (
+        "the reply right after the started-banner must not be re-nagged"
+    )
+
+
+def test_reminder_fires_immediately_after_gateway_restart():
+    from types import SimpleNamespace
+
+    from gateway.run import _maybe_append_temp_reminder
+
+    runner = SimpleNamespace()  # no counter dict at all — fresh process
+    first = _maybe_append_temp_reminder(runner, "k", "reply")
+    assert _reminded(first), (
+        "a restarted gateway's first reply into a temp chat must restate "
+        "that nothing is being saved"
+    )
+    second = _maybe_append_temp_reminder(runner, "k", "reply")
+    assert not _reminded(second)
+
+
+def test_reminder_appends_rather_than_replaces():
+    from types import SimpleNamespace
+
+    from gateway.run import _maybe_append_temp_reminder
+
+    runner = SimpleNamespace()
+    out = _maybe_append_temp_reminder(runner, "k", "the actual answer")
+    assert out.startswith("the actual answer")
+    assert _reminded(out)

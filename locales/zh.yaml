@@ -342,6 +342,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     not_active:            "当前没有进行中的临时对话。\n使用 /temp 开始一个。"
     status_on:             "🕵️ 临时对话：已开启\n此对话的内容不会被保存。使用 /temp off 结束。"
     status_off:            "临时对话：已关闭\n此会话会正常保存。使用 /temp 开始临时对话。"
+    reminder:              "🕵️ 仍在临时聊天中 — 不会保存任何内容。发送 /temp off 即可结束。"
   title:
     db_unavailable:        "会话数据库不可用。"
     warn_prefix:           "⚠️ {error}"

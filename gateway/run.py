@@ -702,6 +702,45 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+# Remind every Nth reply that the chat is temporary. Chat platforms have no
+# persistent badge (unlike the desktop's amber indicator and the CLI's
+# `temp >` prompt) and the flag deliberately survives gateway restarts, so
+# without a periodic nudge a user who forgets stays in "nothing is saved"
+# mode silently and indefinitely.
+_TEMP_REMINDER_EVERY = 10
+
+
+def _maybe_append_temp_reminder(runner, session_key: str, text: str) -> str:
+    """Append the temporary-chat reminder to *text* when the cadence hits.
+
+    Counter semantics (in-memory, keyed by session_key):
+      * ``/temp`` seeds the counter at 0, so the reply right after the
+        "started" banner is NOT reminded — two amber blocks making the same
+        point reads as a bug (same rationale as the desktop hero/badge
+        split). Reminders then fire on every ``_TEMP_REMINDER_EVERY``th
+        reply.
+      * A MISSING counter means this process has never replied to this
+        temporary chat — i.e. the gateway restarted mid-chat. That first
+        reply IS reminded: the user may have forgotten during the downtime
+        and no started-banner exists in this process's lifetime.
+    """
+    counts = getattr(runner, "_temp_reminder_turns", None)
+    if counts is None:
+        counts = {}
+        runner._temp_reminder_turns = counts
+    n = counts.get(session_key)
+    if n is None:
+        counts[session_key] = 0
+        remind = True
+    else:
+        n += 1
+        counts[session_key] = n
+        remind = (n % _TEMP_REMINDER_EVERY == 0)
+    if not remind:
+        return text
+    return f"{text}\n\n{t('gateway.temp.reminder')}"
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
@@ -5745,6 +5784,16 @@ class TurnRunner:
                 )
             except Exception:
                 pass
+
+        # Temporary chat: periodically restate that nothing is being saved.
+        # See _maybe_append_temp_reminder for the cadence contract.
+        if final_response and bool(getattr(agent, "ephemeral", False)):
+            try:
+                final_response = _maybe_append_temp_reminder(
+                    self._runner, ctx.session_key, final_response
+                )
+            except Exception:
+                logger.debug("temp reminder append failed", exc_info=True)
 
         return {
             "final_response": final_response,

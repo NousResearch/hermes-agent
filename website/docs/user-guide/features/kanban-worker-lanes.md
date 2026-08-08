@@ -66,12 +66,26 @@ For most code-changing tasks, the work isn't truly *done* the moment the worker 
 
 The injected `KANBAN_GUIDANCE` covers both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
 
+## Block-loop escalation and recovery
+
+A task that keeps getting unblocked and re-blocked for the same cause is an automation loop, not a genuine blocker. `block_task` counts those cycles in `block_recurrences`; once a task is re-blocked for the same kind a second time (`BLOCK_RECURRENCE_LIMIT`), the **unblock-loop breaker** routes it to `triage` instead of `blocked` and emits a `block_loop_detected` event. The card now sits in **escalated triage**: it is waiting on a human decision, and it must not be re-specified or re-dispatched by automation.
+
+The gateway's auto-decomposer treats escalated triage differently from fresh triage:
+
+- **Fresh triage** (a card created via `kanban_create` / the Triage column) is auto-decomposed on the dispatcher tick when `kanban.auto_decompose` is enabled.
+- **Escalated triage** (a card that reached triage via `block_loop_detected`) is skipped by the auto-decomposer feed (`list_triage_ids`) and refused by `decompose_task` on the automated path — re-specifying it would re-dispatch the very worker that keeps blocking.
+
+The operator recovery paths, both audited via a `triage_escalation_recovered` event:
+
+- `hermes kanban unblock --recover-escalated <task_id>` acknowledges the escalation explicitly: it clears `block_kind`, resets `block_recurrences` (fresh loop budget), and returns the card to the auto-decompose feed.
+- `hermes kanban decompose <task_id>` on an escalated card is itself the human-in-the-loop decision: it acknowledges the escalation and proceeds with the decomposition.
+
 ## Logs and audit trail
 
 The dispatcher writes per-task worker stdout/stderr to `<board-root>/logs/<task_id>.log`. Logs are auditable from kanban metadata:
 
 - `task_runs` rows carry the `log_path`, exit code (where available), summary, and metadata.
-- `task_events` rows carry every state transition (`promoted`, `claimed`, `heartbeat`, `completed`, `blocked`, `gave_up`, `crashed`, `timed_out`, `reclaimed`, `claim_extended`).
+- `task_events` rows carry every state transition (`promoted`, `claimed`, `heartbeat`, `completed`, `blocked`, `block_loop_detected`, `triage_escalation_recovered`, `gave_up`, `crashed`, `timed_out`, `reclaimed`, `claim_extended`).
 - `kanban_show` returns both, so a reviewer (or a follow-up worker) reading the task gets the full history without needing dashboard access.
 
 The dashboard renders run history with summaries, metadata blocks, and exit-status badges. CLI users can run `hermes kanban tail <task_id>` to follow live, or `hermes kanban runs <task_id>` for the historical attempt list.

@@ -1370,6 +1370,7 @@ CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_task_kind      ON task_events(task_id, kind);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
@@ -5896,6 +5897,61 @@ def promote_task(
         )
 
     return True, None
+
+
+_BLOCK_LOOP_ESCALATED_SQL = (
+    "EXISTS (SELECT 1 FROM task_events e "
+    "WHERE e.task_id = tasks.id AND e.kind = 'block_loop_detected' "
+    "AND e.id > COALESCE((SELECT MAX(e2.id) FROM task_events e2 "
+    "WHERE e2.task_id = tasks.id "
+    "AND e2.kind = 'triage_escalation_recovered'), 0))"
+)
+
+
+def is_block_loop_escalated(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True when ``task_id`` reached ``triage`` via the unblock-loop
+    breaker and no audited operator recovery has happened since (#79738).
+
+    ``block_task`` routes a task to ``triage`` (instead of ``blocked``) once
+    ``block_recurrences`` hits ``BLOCK_RECURRENCE_LIMIT`` for the same cause,
+    appending a ``block_loop_detected`` event. Such cards are waiting on a
+    human decision — auto-decomposition must never re-specify them. The
+    operator recovery action (:func:`recover_escalated_triage_task`) appends
+    ``triage_escalation_recovered``, which flips this predicate back.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM tasks WHERE id = ? AND " + _BLOCK_LOOP_ESCALATED_SQL,
+        (task_id,),
+    ).fetchone()
+    return row is not None
+
+
+def recover_escalated_triage_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Audited operator acknowledgment for a block-loop-escalated card.
+
+    Clears ``block_kind`` and resets ``block_recurrences`` so the card is
+    auto-decomposable again with a fresh loop budget, and appends a
+    ``triage_escalation_recovered`` event as the durable audit trail. The
+    recurrence reset is essential: without it, one re-block would instantly
+    re-hit ``BLOCK_RECURRENCE_LIMIT`` and re-escalate the card.
+
+    Deliberately not restricted to ``status='triage'``: a successful manual
+    ``decompose_task`` transitions the card out of triage (todo/ready)
+    BEFORE calling this to record the acknowledgment, and the escalation
+    event predicate is the semantic gate in every path. Returns False when
+    the card is not escalated (or was already recovered).
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks "
+            "SET block_kind = NULL, block_recurrences = 0 "
+            "WHERE id = ? AND " + _BLOCK_LOOP_ESCALATED_SQL,
+            (task_id,),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(conn, task_id, "triage_escalation_recovered", None)
+        return True
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:

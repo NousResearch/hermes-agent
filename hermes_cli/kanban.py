@@ -653,6 +653,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
     )
+    p_unblock.add_argument(
+        "--recover-escalated",
+        action="store_true",
+        help="Acknowledge a block-loop triage escalation (audited) so the "
+        "auto-decomposer can retry the card — use instead of unblocking when "
+        "the task sits in triage after repeated same-cause blocks",
+    )
     p_unblock.add_argument("task_ids", nargs="+")
 
     p_promote = sub.add_parser(
@@ -2323,14 +2330,24 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     if reason is not None:
         reason = reason.strip() or None
     author = _profile_author() if reason else None
+    recover = bool(getattr(args, "recover_escalated", False))
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            ok = (
+                kb.recover_escalated_triage_task(conn, tid)
+                if recover
+                else kb.unblock_task(conn, tid)
+            )
+            if not ok:
                 failed.append(tid)
-                print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
+                print(
+                    f"cannot unblock {tid} "
+                    "(not blocked/scheduled or escalated triage?)",
+                    file=sys.stderr,
+                )
             else:
                 print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1

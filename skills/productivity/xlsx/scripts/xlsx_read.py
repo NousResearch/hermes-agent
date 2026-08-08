@@ -6,6 +6,8 @@ Modes (pick one):
   --json       dump one sheet's rows as a JSON array of arrays
   --csv        dump one sheet as CSV to stdout or --out
   --formulas   JSON list of formula cells {"cell", "formula", "cached"}
+  --notes      JSON list of cell notes/comments across sheets
+  --names      JSON map of workbook defined names
 
 Options:
   --sheet NAME     sheet to dump (default: active sheet)
@@ -20,6 +22,8 @@ Usage:
   xlsx_read.py book.xlsx --json --sheet Data
   xlsx_read.py book.xlsx --csv --sheet Data --out data.csv
   xlsx_read.py book.xlsx --formulas
+  xlsx_read.py book.xlsx --notes
+  xlsx_read.py book.xlsx --names
 """
 from __future__ import annotations
 
@@ -54,8 +58,30 @@ def cmd_sheets(wb):
             "charts": len(getattr(ws, "_charts", [])),
             "freeze_panes": ws.freeze_panes,
             "autofilter": ws.auto_filter.ref,
+            "tables": {t.displayName: t.ref for t in ws.tables.values()},
+            "protected": bool(ws.protection.sheet),
         })
-    print(json.dumps({"sheets": info}, ensure_ascii=False, indent=2))
+    names = {name: dn.attr_text for name, dn in wb.defined_names.items()}
+    print(json.dumps({"sheets": info, "defined_names": names},
+                     ensure_ascii=False, indent=2))
+
+
+def cmd_notes(wb, sheet):
+    out = []
+    sheets = [sheet] if sheet else wb.sheetnames
+    for name in sheets:
+        for row in wb[name].iter_rows():
+            for cell in row:
+                if cell.comment is not None:
+                    out.append({"sheet": name, "cell": cell.coordinate,
+                                "text": cell.comment.text,
+                                "author": cell.comment.author})
+    print(json.dumps({"notes": out}, ensure_ascii=False, indent=2))
+
+
+def cmd_names(wb):
+    names = {name: dn.attr_text for name, dn in wb.defined_names.items()}
+    print(json.dumps({"defined_names": names}, ensure_ascii=False, indent=2))
 
 
 def cmd_formulas(path, sheet):
@@ -85,6 +111,8 @@ def main(argv=None):
     mode.add_argument("--json", action="store_true")
     mode.add_argument("--csv", action="store_true")
     mode.add_argument("--formulas", action="store_true")
+    mode.add_argument("--notes", action="store_true")
+    mode.add_argument("--names", action="store_true")
     ap.add_argument("--sheet", help="sheet name (default: active)")
     ap.add_argument("--data-only", action="store_true",
                     help="return cached formula results (see module docstring)")
@@ -99,6 +127,12 @@ def main(argv=None):
     wb = load_workbook(args.file, data_only=args.data_only)
     if args.sheets:
         cmd_sheets(wb)
+        return 0
+    if args.notes:
+        cmd_notes(wb, args.sheet)
+        return 0
+    if args.names:
+        cmd_names(wb)
         return 0
 
     ws = wb[args.sheet] if args.sheet else wb.active

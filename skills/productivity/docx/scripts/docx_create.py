@@ -26,9 +26,15 @@ Spec (JSON object):
      "rows": [["1", "2"]], "style": "Light Grid Accent 1",
      "header_bold": true},
     {"type": "image", "path": "pic.png", "width_mm": 60},
-    {"type": "page_break"}
+    {"type": "page_break"},
+    {"type": "toc"}
   ]
 }
+
+Extras: `"footer_page_numbers": true` at the top level adds a
+"Page X of Y" footer built from PAGE/NUMPAGES fields, and a `toc` block
+inserts a Table of Contents field. Field results are computed by
+Word/LibreOffice when the file is opened, not by python-docx.
 """
 from __future__ import annotations
 
@@ -122,6 +128,12 @@ def add_block(doc, block: dict) -> None:
         doc.add_picture(block["path"], width=width)
     elif btype == "page_break":
         doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+    elif btype == "toc":
+        from docx_edit import _add_field
+        para = doc.add_paragraph()
+        _add_field(para, r' TOC \o "1-3" \h \z \u ',
+                   "Table of contents - open in Word/LibreOffice and "
+                   "update fields to populate.")
     else:
         raise ValueError(f"unknown block type: {btype}")
 
@@ -148,6 +160,13 @@ def main() -> int:
         doc.sections[0].footer.paragraphs[0].text = spec["footer"]
     for block in spec.get("blocks", []):
         add_block(doc, block)
+    if spec.get("footer_page_numbers"):
+        from docx_edit import _add_field
+        para = doc.sections[0].footer.paragraphs[0]
+        para.add_run("Page ")
+        _add_field(para, " PAGE ", "1")
+        para.add_run(" of ")
+        _add_field(para, " NUMPAGES ", "1")
     doc.save(args.output)
     print(json.dumps({"ok": True, "output": args.output,
                       "blocks": len(spec.get("blocks", []))}))

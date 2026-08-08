@@ -171,3 +171,244 @@ def test_compress(report_pdf: Path, workdir: Path):
     run("pdf_split.py", str(report_pdf), "--pages", "1-2", "--compress", "-o", str(out))
     data = json.loads(run("pdf_read.py", str(out), "--text").stdout)
     assert "UNIQUEMARK42" in data["pages"][0]
+
+
+# ---------------------------------------------------------------- form creation
+
+FORM_SPEC = {
+    "title": "Example Intake Form",
+    "page_size": "A4",
+    "fields": [
+        {"name": "surname", "type": "text", "page": 1, "label": "Surname",
+         "label_box": [72, 700, 150, 714], "entry_box": [160, 696, 400, 716]},
+        {"name": "agree", "type": "checkbox", "page": 1, "label": "I agree",
+         "label_box": [72, 660, 150, 674], "entry_box": [160, 658, 176, 674]},
+        {"name": "color", "type": "radio", "page": 1, "label": "Color",
+         "label_box": [72, 620, 150, 634], "entry_box": [160, 616, 400, 636],
+         "options": ["red", "blue"], "value": "blue"},
+        {"name": "size", "type": "dropdown", "page": 1, "label": "Size",
+         "label_box": [72, 580, 150, 594], "entry_box": [160, 576, 300, 596],
+         "options": ["small", "large"], "value": "small"},
+    ],
+}
+
+
+@pytest.fixture(scope="module")
+def built_form(workdir: Path) -> Path:
+    spec_path = workdir / "formspec.json"
+    spec_path.write_text(json.dumps(FORM_SPEC), encoding="utf-8")
+    out = workdir / "built_form.pdf"
+    result = json.loads(run("pdf_make_form.py", str(spec_path), "-o", str(out)).stdout)
+    assert len(result["fields"]) == 4
+    return out
+
+
+def test_make_form_lists_all_fields(built_form: Path):
+    data = json.loads(run("pdf_read.py", str(built_form), "--fields").stdout)
+    fields = data["fields"]
+    assert set(fields) == {"surname", "agree", "color", "size"}
+    assert fields["surname"]["type"] == "text"
+    assert fields["agree"]["options"] == ["/Off", "/Yes"]
+    assert fields["color"]["value"] == "/blue"  # pre-selected radio
+    assert set(fields["size"]["options"]) == {"small", "large"}
+    # label text is drawn on the page, not just stored in the widget
+    text = json.loads(run("pdf_read.py", str(built_form), "--text").stdout)
+    assert "Surname" in text["pages"][0] and "Size" in text["pages"][0]
+
+
+def test_make_form_fill_roundtrip(built_form: Path, workdir: Path):
+    values = {"surname": "Smith", "agree": True, "color": "/red", "size": "large"}
+    vals = workdir / "builtvals.json"
+    vals.write_text(json.dumps(values), encoding="utf-8")
+    filled = workdir / "built_filled.pdf"
+    run("pdf_fill_form.py", str(built_form), "--fields-json", str(vals), "-o", str(filled))
+    fields = json.loads(run("pdf_read.py", str(filled), "--fields").stdout)["fields"]
+    assert fields["surname"]["value"] == "Smith"
+    assert fields["agree"]["value"] == "/Yes"
+    assert fields["color"]["value"] == "/red"
+    assert fields["size"]["value"] == "large"
+
+
+# ------------------------------------------------------------- layout validation
+
+def test_form_layout_valid_spec(workdir: Path):
+    spec_path = workdir / "layout_ok.json"
+    spec_path.write_text(json.dumps(FORM_SPEC), encoding="utf-8")
+    report = json.loads(run("pdf_form_layout.py", str(spec_path)).stdout)
+    assert report["ok"] is True
+    assert report["errors"] == 0
+    assert all(f["ok"] for f in report["fields"])
+
+
+def test_form_layout_detects_problems(workdir: Path):
+    bad = {
+        "page_size": "A4",
+        "fields": [
+            # out of bounds (x1 beyond A4 width)
+            {"name": "wide", "type": "text", "page": 1, "label": "Wide",
+             "label_box": [10, 700, 60, 714], "entry_box": [70, 696, 900, 716]},
+            # two overlapping entry boxes
+            {"name": "one", "type": "text", "page": 1, "label": "One",
+             "label_box": [10, 600, 60, 614], "entry_box": [70, 596, 300, 616]},
+            {"name": "two", "type": "text", "page": 1, "label": "Two",
+             "label_box": [10, 560, 60, 574], "entry_box": [200, 600, 400, 620]},
+            # label far away from its entry
+            {"name": "lost", "type": "text", "page": 1, "label": "Lost",
+             "label_box": [10, 100, 60, 114], "entry_box": [400, 500, 500, 520]},
+            # too small
+            {"name": "tiny", "type": "text", "page": 1,
+             "entry_box": [10, 50, 14, 54]},
+        ],
+    }
+    spec_path = workdir / "layout_bad.json"
+    spec_path.write_text(json.dumps(bad), encoding="utf-8")
+    proc = run("pdf_form_layout.py", str(spec_path), expect=1)
+    report = json.loads(proc.stdout)
+    assert report["ok"] is False
+    by_name = {f["name"]: f for f in report["fields"]}
+    assert any("bounds" in p for p in by_name["wide"]["problems"])
+    assert any("overlaps field" in p for p in by_name["two"]["problems"])
+    assert any("from its entry" in p for p in by_name["lost"]["problems"])
+    assert any("minimum size" in p for p in by_name["tiny"]["problems"])
+    assert by_name["one"]["ok"]  # first of the overlapping pair reports clean
+
+
+# ------------------------------------------------- rasterization (overlay, pages)
+
+def _raster_available() -> bool:
+    import shutil
+    try:
+        import pypdfium2  # noqa: F401
+        return True
+    except ImportError:
+        return shutil.which("pdftoppm") is not None
+
+
+def test_form_layout_overlay(built_form: Path, workdir: Path):
+    spec_path = workdir / "formspec.json"
+    out_png = workdir / "overlay.png"
+    report = json.loads(run("pdf_form_layout.py", str(spec_path), "--pdf", str(built_form),
+                            "--render-overlay", str(out_png)).stdout)
+    overlay = report["overlay"]
+    if _raster_available():
+        assert overlay["rendered"] is True
+        assert out_png.exists() and out_png.stat().st_size > 1000
+        from PIL import Image
+        with Image.open(out_png) as img:
+            assert img.width > 100 and img.height > 100
+    else:
+        assert overlay["rendered"] is False
+        assert overlay["missing"]  # install hints present
+
+
+def test_form_layout_overlay_blank_page(workdir: Path):
+    # No --pdf: overlay is drawn on a blank page, PIL-only, always renders.
+    spec_path = workdir / "formspec.json"
+    out_png = workdir / "overlay_blank.png"
+    report = json.loads(run("pdf_form_layout.py", str(spec_path),
+                            "--render-overlay", str(out_png)).stdout)
+    assert report["overlay"]["rendered"] is True
+    assert out_png.exists()
+
+
+def test_page_image_export(report_pdf: Path, workdir: Path):
+    out_dir = workdir / "pageimgs"
+    result = json.loads(run("pdf_page_image.py", str(report_pdf), "--pages", "1-2",
+                            "--dpi", "72", "--out-dir", str(out_dir)).stdout)
+    if _raster_available():
+        assert result["rendered"] is True
+        assert len(result["files"]) == 2
+        from PIL import Image
+        with Image.open(result["files"][0]) as img:
+            # A4 at 72 dpi is ~595x842 px
+            assert 500 < img.width < 700
+    else:
+        assert result["rendered"] is False
+        assert result["missing"]
+
+
+def test_page_image_bad_range(report_pdf: Path, workdir: Path):
+    if not _raster_available():
+        pytest.skip("no rasterizer available")
+    run("pdf_page_image.py", str(report_pdf), "--pages", "9",
+        "--out-dir", str(workdir / "nope"), expect=4)
+
+
+# --------------------------------------------------------------------- stamping
+
+def test_stamp_text(report_pdf: Path, workdir: Path):
+    out = workdir / "stamp_text.pdf"
+    run("pdf_stamp.py", str(report_pdf), "-o", str(out),
+        "--text", "STAMPMARK77", "--x", "150", "--y", "500",
+        "--font-size", "30", "--color", "#cc0000", "--pages", "1")
+    data = json.loads(run("pdf_read.py", str(out), "--text").stdout)
+    assert "STAMPMARK77" in data["pages"][0]
+    assert "STAMPMARK77" not in data["pages"][1]  # only page 1 stamped
+
+
+def test_stamp_text_rotated_opacity(report_pdf: Path, workdir: Path):
+    out = workdir / "stamp_rot.pdf"
+    run("pdf_stamp.py", str(report_pdf), "-o", str(out),
+        "--text", "DRAFT", "--x", "150", "--y", "400", "--font-size", "60",
+        "--rotation", "45", "--opacity", "0.3")
+    # Rotated glyphs confuse pdfplumber's line grouping; verify via pypdf.
+    from pypdf import PdfReader
+    text = PdfReader(str(out)).pages[0].extract_text()
+    assert "DRAFT" in text
+
+
+def test_stamp_image(report_pdf: Path, sample_image: Path, workdir: Path):
+    out = workdir / "stamp_img.pdf"
+    run("pdf_stamp.py", str(report_pdf), "-o", str(out),
+        "--image", str(sample_image), "--x", "400", "--y", "60",
+        "--width", "100", "--pages", "2")
+    from pypdf import PdfReader
+    before = PdfReader(str(report_pdf))
+    after = PdfReader(str(out))
+
+    def image_xobjects(page):
+        res = page.get("/Resources", {})
+        xo = res.get("/XObject")
+        if xo is None:
+            return 0
+        return sum(1 for k in xo if xo[k].get("/Subtype") == "/Image")
+
+    assert image_xobjects(after.pages[1]) > image_xobjects(before.pages[1])
+    assert image_xobjects(after.pages[0]) == image_xobjects(before.pages[0])
+
+
+# --------------------------------------------------------- metadata + attachments
+
+def test_meta_set_and_clear(report_pdf: Path, workdir: Path):
+    out = workdir / "meta_set.pdf"
+    run("pdf_meta.py", str(report_pdf), "--set-meta", "-o", str(out),
+        "--title", "Retitled Example", "--author", "example-author",
+        "--subject", "Testing", "--keywords", "alpha, beta")
+    meta = json.loads(run("pdf_read.py", str(out), "--meta").stdout)["metadata"]
+    assert meta["Title"] == "Retitled Example"
+    assert meta["Author"] == "example-author"
+    assert meta["Subject"] == "Testing"
+    assert meta["Keywords"] == "alpha, beta"
+
+    cleared = workdir / "meta_clear.pdf"
+    run("pdf_meta.py", str(out), "--clear-meta", "-o", str(cleared))
+    meta = json.loads(run("pdf_read.py", str(cleared), "--meta").stdout)["metadata"]
+    assert "Title" not in meta or meta.get("Title") in ("", None)
+
+
+def test_attachments_roundtrip(report_pdf: Path, workdir: Path):
+    payload = workdir / "payload.txt"
+    payload.write_text("attachment payload UNIQUEATTACH99\n", encoding="utf-8")
+    with_att = workdir / "with_att.pdf"
+    run("pdf_meta.py", str(report_pdf), "--attach", str(payload), "-o", str(with_att))
+
+    listing = json.loads(run("pdf_meta.py", str(with_att), "--list-attachments").stdout)
+    assert listing["attachment_count"] == 1
+    assert listing["attachments"] == ["payload.txt"]
+
+    ext_dir = workdir / "extracted"
+    result = json.loads(run("pdf_meta.py", str(with_att),
+                            "--extract-attachments", str(ext_dir)).stdout)
+    assert len(result["extracted"]) == 1
+    extracted = Path(result["extracted"][0])
+    assert "UNIQUEATTACH99" in extracted.read_text(encoding="utf-8")

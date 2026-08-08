@@ -10,7 +10,11 @@ Spec format (all positions/sizes in inches, colors as RRGGBB hex):
      "bullets": ["Top item",
                  {"text": "Sub item", "level": 1, "bold": true,
                   "size": 18, "color": "CC0000", "font": "Arial",
-                  "italic": false}],
+                  "italic": false,
+                  "link": "https://example.com/agenda"}],
+     "background": "1F2937",           // solid slide background (hex)
+     "footer": "Confidential",         // footer placeholder text
+     "slide_number": true,             // enable slide-number placeholder
      "notes": "Speaker notes for this slide"},
     {"layout": "blank", "title": "Widgets",
      "images":  [{"path": "logo.png", "left": 1, "top": 1, "width": 3}],
@@ -30,6 +34,7 @@ Chart types: bar, bar_h, line, pie   Shape types: rectangle,
 rounded_rectangle, oval, diamond, right_arrow, chevron
 """
 import argparse
+import copy
 import json
 import sys
 
@@ -66,6 +71,8 @@ def style_run(run, spec):
         font.name = spec["font"]
     if spec.get("color"):
         font.color.rgb = RGBColor.from_string(spec["color"])
+    if spec.get("link"):
+        run.hyperlink.address = spec["link"]
 
 
 def add_bullets(text_frame, bullets):
@@ -80,9 +87,33 @@ def add_bullets(text_frame, bullets):
         style_run(run, item)
 
 
+def copy_layout_placeholder(slide, ph_idx):
+    """Copy a layout placeholder (footer=11, slide number=12) onto the
+    slide so it actually renders; returns the shape or None if the layout
+    does not provide it."""
+    for ph in slide.slide_layout.placeholders:
+        if ph.placeholder_format.idx == ph_idx:
+            slide.shapes._spTree.append(copy.deepcopy(ph._element))
+            for shape in slide.placeholders:
+                if shape.placeholder_format.idx == ph_idx:
+                    return shape
+    return None
+
+
 def build_slide(prs, spec):
     layout_idx = LAYOUTS.get(spec.get("layout", "title_content"), 1)
     slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
+
+    if spec.get("background"):
+        fill = slide.background.fill
+        fill.solid()
+        fill.fore_color.rgb = RGBColor.from_string(spec["background"])
+    if spec.get("slide_number"):
+        copy_layout_placeholder(slide, 12)
+    if spec.get("footer"):
+        shape = copy_layout_placeholder(slide, 11)
+        if shape is not None:
+            shape.text_frame.text = spec["footer"]
 
     if spec.get("title") is not None and slide.shapes.title is not None:
         slide.shapes.title.text = spec["title"]

@@ -8,6 +8,9 @@ Subcommands:
   insert    insert a paragraph before a given body paragraph index
   delete    delete a body paragraph by index
   style     apply a paragraph style to a body paragraph by index
+  normalize merge adjacent runs with identical formatting
+  toc       insert a Table of Contents field at a body paragraph index
+  page-numbers  add "Page X of Y" (PAGE/NUMPAGES fields) to the footer
 
 Examples:
   docx_edit.py replace in.docx --find old --replace new -o out.docx
@@ -15,6 +18,13 @@ Examples:
   docx_edit.py insert in.docx --index 3 --text "New para" --style Normal
   docx_edit.py delete in.docx --index 3
   docx_edit.py style in.docx --index 0 --style "Heading 1"
+  docx_edit.py normalize in.docx -o out.docx
+  docx_edit.py toc in.docx --index 1 -o out.docx
+  docx_edit.py page-numbers in.docx -o out.docx
+
+Field results (TOC entries, page numbers) are computed by Word or
+LibreOffice when the document is opened, not by python-docx; until then
+the fields show placeholder text.
 """
 from __future__ import annotations
 
@@ -25,6 +35,12 @@ import sys
 from docx import Document
 
 from docx_common import iter_all_paragraphs, replace_in_paragraph
+
+W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+
+def _q(tag: str) -> str:
+    return f"{{{W}}}{tag}"
 
 
 def cmd_replace(doc, args) -> dict:
@@ -60,6 +76,90 @@ def cmd_delete(doc, args) -> dict:
 def cmd_style(doc, args) -> dict:
     doc.paragraphs[args.index].style = doc.styles[args.style]
     return {"index": args.index, "style": args.style}
+
+
+def _run_format_key(r_el) -> str:
+    """Canonical string for a run's w:rPr (None when absent)."""
+    from lxml import etree
+    rpr = r_el.find(_q("rPr"))
+    return "" if rpr is None else etree.tostring(rpr).decode("utf-8")
+
+
+def cmd_normalize(doc) -> dict:
+    """Merge adjacent sibling runs with identical formatting."""
+    merged = 0
+    for para in iter_all_paragraphs(doc):
+        prev = None
+        for r_el in list(para._p):
+            if r_el.tag != _q("r"):
+                prev = None
+                continue
+            # only merge plain-text runs (no breaks, tabs, drawings...)
+            kids = {c.tag for c in r_el} - {_q("rPr"), _q("t")}
+            if kids:
+                prev = None
+                continue
+            if (prev is not None
+                    and _run_format_key(prev) == _run_format_key(r_el)):
+                pt = prev.find(_q("t"))
+                ct = r_el.find(_q("t"))
+                if pt is None:
+                    pt = prev.makeelement(_q("t"), {})
+                    prev.append(pt)
+                pt.text = (pt.text or "") + ((ct.text or "")
+                                             if ct is not None else "")
+                pt.set("{http://www.w3.org/XML/1998/namespace}space",
+                       "preserve")
+                r_el.getparent().remove(r_el)
+                merged += 1
+            else:
+                prev = r_el
+    return {"runs_merged": merged}
+
+
+def _add_field(para, instr: str, placeholder: str) -> None:
+    """Append a complex field (begin/instrText/separate/result/end)."""
+    p = para._p
+    for ftype, extra in (("begin", None), (None, instr),
+                         ("separate", None), (None, placeholder),
+                         ("end", None)):
+        r = p.makeelement(_q("r"), {})
+        p.append(r)
+        if ftype is not None:
+            fld = r.makeelement(_q("fldChar"), {_q("fldCharType"): ftype})
+            r.append(fld)
+        elif extra is instr:
+            it = r.makeelement(_q("instrText"), {})
+            it.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            it.text = instr
+            r.append(it)
+        else:
+            t = r.makeelement(_q("t"), {})
+            t.text = extra
+            r.append(t)
+
+
+def cmd_toc(doc, args) -> dict:
+    paras = doc.paragraphs
+    if args.index < len(paras):
+        para = paras[args.index].insert_paragraph_before("")
+    else:
+        para = doc.add_paragraph("")
+    _add_field(para, r' TOC \o "1-3" \h \z \u ',
+               "Table of contents - open in Word/LibreOffice and update "
+               "fields to populate.")
+    return {"toc_inserted_at": args.index}
+
+
+def cmd_page_numbers(doc, args) -> dict:
+    footer = doc.sections[0].footer
+    para = footer.paragraphs[0] if footer.paragraphs \
+        else footer.add_paragraph()
+    para.add_run("Page ")
+    _add_field(para, " PAGE ", "1")
+    para.add_run(" of ")
+    _add_field(para, " NUMPAGES ", "1")
+    return {"footer_fields": ["PAGE", "NUMPAGES"]}
 
 
 def main() -> int:
@@ -100,6 +200,19 @@ def main() -> int:
     p.add_argument("--index", type=int, required=True)
     p.add_argument("--style", required=True)
 
+    p = sub.add_parser("normalize",
+                       help="merge adjacent runs with identical formatting")
+    common(p)
+
+    p = sub.add_parser("toc", help="insert a TOC field (Word computes it)")
+    common(p)
+    p.add_argument("--index", type=int, default=0,
+                   help="body paragraph index to insert before (default 0)")
+
+    p = sub.add_parser("page-numbers",
+                       help="add PAGE/NUMPAGES fields to the footer")
+    common(p)
+
     args = ap.parse_args()
     doc = Document(args.path)
 
@@ -117,6 +230,12 @@ def main() -> int:
         result = cmd_insert(doc, args)
     elif args.cmd == "delete":
         result = cmd_delete(doc, args)
+    elif args.cmd == "normalize":
+        result = cmd_normalize(doc)
+    elif args.cmd == "toc":
+        result = cmd_toc(doc, args)
+    elif args.cmd == "page-numbers":
+        result = cmd_page_numbers(doc, args)
     else:
         result = cmd_style(doc, args)
 

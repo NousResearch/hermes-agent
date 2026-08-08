@@ -255,3 +255,221 @@ def test_help_flags():
             [sys.executable, os.path.join(SCRIPTS, script), "--help"],
             capture_output=True, text=True, encoding="utf-8")
         assert proc.returncode == 0 and "usage" in proc.stdout.lower()
+
+
+# ---------------------------------------------------------------------------
+# parity features: render, run-merge replace, chart ops, duplication,
+# polish (background/hyperlink/slide-number/footer), notes editing
+# ---------------------------------------------------------------------------
+
+def run_raw(script, *args):
+    env = dict(os.environ, LC_ALL="C", PYTHONIOENCODING="utf-8")
+    return subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS, script), *args],
+        capture_output=True, text=True, encoding="utf-8", env=env)
+
+
+def test_render_all_slides(workdir):
+    import shutil
+    spec_path = workdir / "render_spec.json"
+    write_json(spec_path, {"slides": [
+        {"layout": "title", "title": "One"},
+        {"layout": "title_content", "title": "Two", "bullets": ["b"]},
+        {"layout": "blank"}]})
+    deck3 = workdir / "render_me.pptx"
+    run("pptx_create.py", str(spec_path), str(deck3))
+    out_dir = workdir / "render_out"
+    result = run("pptx_render.py", str(deck3), "--outdir", str(out_dir))
+    have_tools = shutil.which("soffice") and (
+        shutil.which("pdftoppm") or shutil.which("pdftocairo"))
+    if have_tools:
+        assert result["rendered"] is True
+        assert len(result["files"]) == 3
+        for png in result["files"]:
+            with open(png, "rb") as fh:
+                assert fh.read(8) == b"\x89PNG\r\n\x1a\n"
+    else:
+        assert result["rendered"] is False
+        assert result["missing"]
+        assert "guidance" in result
+
+
+def test_replace_across_identically_formatted_runs(workdir):
+    """A match split mid-word into equal-format runs keeps formatting."""
+    import copy as cp
+    from pptx import Presentation
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches, Pt
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    box = slide.shapes.add_textbox(Inches(1), Inches(1),
+                                   Inches(6), Inches(1))
+    para = box.text_frame.paragraphs[0]
+    run_obj = para.add_run()
+    run_obj.text = "Say TotalWord now"
+    run_obj.font.bold = True
+    run_obj.font.size = Pt(20)
+    run_obj.font.color.rgb = RGBColor.from_string("CC0000")
+    # simulate PowerPoint's spell-check split: same rPr, seam mid-match
+    second = cp.deepcopy(run_obj._r)
+    run_obj._r.addnext(second)
+    run_obj.text = "Say Total"
+    para.runs[1].text = "Word now"
+    path = workdir / "split_runs.pptx"
+    prs.save(str(path))
+
+    edited = workdir / "split_runs_edited.pptx"
+    result = run("pptx_edit.py", str(path), "--output", str(edited),
+                 "--replace-text", "TotalWord", "MergedWord")
+    assert result["replacements"] == 1
+
+    prs2 = Presentation(str(edited))
+    para2 = prs2.slides[0].shapes[0].text_frame.paragraphs[0]
+    assert "".join(r.text for r in para2.runs) == "Say MergedWord now"
+    for r in para2.runs:
+        assert r.font.bold is True
+        assert r.font.size == Pt(20)
+        assert str(r.font.color.rgb) == "CC0000"
+
+
+def test_chart_surgical_ops(deck, workdir):
+    from pptx import Presentation
+    spec = workdir / "chart_ops.json"
+    write_json(spec, {"slide": 3, "chart": 0, "ops": [
+        {"op": "update_series", "name": "North", "values": [99, 88]},
+        {"op": "add_series", "name": "East", "values": [1, 2]},
+        {"op": "remove_series", "name": "South"},
+        {"op": "rename_category", "from": "Q1", "to": "Q1 FY26"},
+        {"op": "set_title", "title": "Updated Sales"}]})
+    edited = workdir / "chart_ops.pptx"
+    run("pptx_edit.py", deck, "--output", str(edited),
+        "--chart-data", str(spec))
+    outline = run("pptx_read.py", str(edited))
+    bar = outline["slides"][3]["charts"][0]
+    assert bar["categories"] == ["Q1 FY26", "Q2"]
+    names = [s["name"] for s in bar["series"]]
+    assert "South" not in names and "East" in names
+    north = next(s for s in bar["series"] if s["name"] == "North")
+    assert north["values"] == [99.0, 88.0]
+    east = next(s for s in bar["series"] if s["name"] == "East")
+    assert east["values"] == [1.0, 2.0]
+    chart = next(s.chart for s in Presentation(str(edited)).slides[3].shapes
+                 if s.has_chart)
+    assert chart.chart_title.text_frame.text == "Updated Sales"
+
+
+def test_chart_op_unknown_series_fails(deck, workdir):
+    spec = workdir / "chart_bad.json"
+    write_json(spec, {"slide": 3, "chart": 0, "ops": [
+        {"op": "update_series", "name": "Nowhere", "values": [1, 2]}]})
+    proc = run_raw("pptx_edit.py", deck, "--output",
+                   str(workdir / "never.pptx"), "--chart-data", str(spec))
+    assert proc.returncode != 0
+    assert "Nowhere" in proc.stderr
+
+
+def test_duplicate_image_slide_is_independent(deck, workdir):
+    import base64
+    dup = workdir / "dup.pptx"
+    result = run("pptx_edit.py", deck, "--output", str(dup),
+                 "--duplicate-slide", "2")
+    assert result["duplicated_to"] == 4
+    outline = run("pptx_read.py", str(dup))  # re-opens cleanly
+    assert outline["slide_count"] == 5
+    s4 = outline["slides"][4]
+    assert len(s4["images"]) == 1
+    assert s4["tables"][0][0] == ["Region", "Sales"]
+    assert "Callout" in s4["texts"]
+
+    # independence: swap the image on the COPY, original stays red
+    blue = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg"
+        "YPj/HwADAgH/p5UronAAAAAASUVORK5CYII=")
+    blue_path = workdir / "blue2.png"
+    blue_path.write_bytes(blue)
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    prs = Presentation(str(dup))
+    name = next(s.name for s in prs.slides[4].shapes
+                if s.shape_type == MSO_SHAPE_TYPE.PICTURE)
+    run("pptx_edit.py", str(dup), "--swap-image", "4", name,
+        str(blue_path))
+    prs = Presentation(str(dup))
+    orig = next(s for s in prs.slides[2].shapes
+                if s.shape_type == MSO_SHAPE_TYPE.PICTURE)
+    copy_pic = next(s for s in prs.slides[4].shapes
+                    if s.shape_type == MSO_SHAPE_TYPE.PICTURE)
+    assert copy_pic.image.blob == blue
+    assert orig.image.blob != blue
+
+
+def test_duplicate_chart_slide_refused(deck, workdir):
+    proc = run_raw("pptx_edit.py", deck, "--output",
+                   str(workdir / "never2.pptx"), "--duplicate-slide", "3")
+    assert proc.returncode != 0
+    assert "chart" in proc.stderr.lower()
+
+
+def test_create_polish_features(workdir):
+    from pptx import Presentation
+    spec_path = workdir / "polish.json"
+    write_json(spec_path, {"slides": [
+        {"layout": "title_content", "title": "Polished",
+         "background": "112233", "footer": "Confidential draft",
+         "slide_number": True,
+         "bullets": [{"text": "Visit example",
+                      "link": "https://example.com/info"}]}]})
+    out = workdir / "polish.pptx"
+    run("pptx_create.py", str(spec_path), str(out))
+    prs = Presentation(str(out))
+    slide = prs.slides[0]
+    assert str(slide.background.fill.fore_color.rgb) == "112233"
+    ph_idx = [ph.placeholder_format.idx for ph in slide.placeholders]
+    assert 12 in ph_idx  # slide number enabled
+    footer = next(ph for ph in slide.placeholders
+                  if ph.placeholder_format.idx == 11)
+    assert footer.text_frame.text == "Confidential draft"
+    link_runs = [r for sh in slide.shapes if sh.has_text_frame
+                 for p in sh.text_frame.paragraphs for r in p.runs
+                 if r.hyperlink.address]
+    assert link_runs[0].hyperlink.address == "https://example.com/info"
+
+
+def test_edit_polish_features(deck, workdir):
+    from pptx import Presentation
+    edited = workdir / "polish_edit.pptx"
+    result = run("pptx_edit.py", deck, "--output", str(edited),
+                 "--set-background", "0", "004400",
+                 "--hyperlink", "1", "Overview", "https://example.com/x",
+                 "--enable-slide-number", "1",
+                 "--set-footer", "1", "Footer via edit")
+    assert result["background_set"] and result["footer_set"]
+    assert result["hyperlinked_runs"] == 1
+    assert result["slide_number_enabled"] is True
+    prs = Presentation(str(edited))
+    assert str(prs.slides[0].background.fill.fore_color.rgb) == "004400"
+    s1 = prs.slides[1]
+    assert any(ph.placeholder_format.idx == 12 for ph in s1.placeholders)
+    footer = next(ph for ph in s1.placeholders
+                  if ph.placeholder_format.idx == 11)
+    assert footer.text_frame.text == "Footer via edit"
+    links = [r.hyperlink.address for sh in s1.shapes if sh.has_text_frame
+             for p in sh.text_frame.paragraphs for r in p.runs
+             if r.hyperlink.address]
+    assert links == ["https://example.com/x"]
+
+
+def test_set_and_append_notes(deck, workdir):
+    edited = workdir / "notes_edit.pptx"
+    result = run("pptx_edit.py", deck, "--output", str(edited),
+                 "--set-notes", "0", "Fresh notes")
+    assert result["notes_set"]
+    run("pptx_edit.py", str(edited), "--append-notes", "0", "Second line")
+    notes = run("pptx_read.py", str(edited), "--notes")
+    assert notes["notes"][0] == "Fresh notes\nSecond line"
+
+
+def test_render_help_flag():
+    proc = run_raw("pptx_render.py", "--help")
+    assert proc.returncode == 0 and "usage" in proc.stdout.lower()

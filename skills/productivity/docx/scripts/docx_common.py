@@ -34,6 +34,21 @@ def _iter_table(table):
                 yield from _iter_table(nested)
 
 
+def iter_part_roots(doc):
+    """Yield the XML root of the body plus every header/footer part."""
+    yield doc.element.body
+    seen = set()
+    for section in doc.sections:
+        for part in (
+            section.header, section.footer,
+            section.first_page_header, section.first_page_footer,
+            section.even_page_header, section.even_page_footer,
+        ):
+            if part is not None and id(part._element) not in seen:
+                seen.add(id(part._element))
+                yield part._element
+
+
 def replace_in_paragraph(para, old: str, new: str) -> int:
     """Replace `old` with `new` in a paragraph, preserving run formatting.
 

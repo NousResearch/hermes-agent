@@ -4,6 +4,7 @@
 Spec (JSON object):
   {
     "full_calc_on_load": true,          # force recalculation on open (optional)
+    "defined_names": {"Rates": "'Data'!$B$2:$B$4"},   # workbook scope
     "sheets": [
       {
         "name": "Data",
@@ -25,7 +26,13 @@ Spec (JSON object):
         ],
         "validations": [
           {"range": "D2:D9", "type": "list", "formula1": "\"Yes,No,Maybe\""}
-        ]
+        ],
+        "tables": [
+          {"name": "Sales", "range": "A1:C4",
+           "style": "TableStyleMedium9"}        # native Excel table
+        ],
+        "protection": {"password": "your-password",   # NOT security --
+                       "unlock": ["B2:B9"]}           # see SKILL.md Pitfalls
       }
     ]
   }
@@ -34,6 +41,8 @@ Cell object keys (all optional except value/formula):
   value          scalar; JSON true/false -> bool, numbers stay numeric
   type           "date" or "datetime" -> value parsed from ISO string
   formula        e.g. "=SUM(A2:A9)" (leading '=' optional)
+  hyperlink      URL; value becomes the display text
+  note           cell note text (or {"text": ..., "author": ...})
   format         Excel number format, e.g. "$#,##0.00", "0.0%", "yyyy-mm-dd"
   bold, italic   booleans
   font_size      points
@@ -59,10 +68,14 @@ from datetime import date, datetime
 
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+from openpyxl.comments import Comment
 from openpyxl.formatting.rule import CellIsRule, ColorScaleRule
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import (Alignment, Border, Font, PatternFill,
+                             Protection, Side)
 from openpyxl.utils import column_index_from_string, range_boundaries
+from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 
 def parse_typed(value, type_hint=None):
@@ -81,6 +94,18 @@ def apply_cell(ws, coord, spec):
             cell.value = f if f.startswith("=") else "=" + f
         elif "value" in spec:
             cell.value = parse_typed(spec["value"], spec.get("type"))
+        if "hyperlink" in spec:
+            cell.hyperlink = spec["hyperlink"]
+            if cell.value is None:
+                cell.value = spec["hyperlink"]
+            cell.style = "Hyperlink"
+        if "note" in spec:
+            note = spec["note"]
+            if isinstance(note, dict):
+                cell.comment = Comment(note.get("text", ""),
+                                       note.get("author", "xlsx-skill"))
+            else:
+                cell.comment = Comment(str(note), "xlsx-skill")
         if "format" in spec:
             cell.number_format = spec["format"]
         font_kw = {}
@@ -181,6 +206,22 @@ def build_sheet(ws, spec):
                             allow_blank=dv_spec.get("allow_blank", True))
         dv.add(dv_spec["range"])
         ws.add_data_validation(dv)
+    for t_spec in spec.get("tables", []):
+        table = Table(displayName=t_spec["name"], ref=t_spec["range"])
+        table.tableStyleInfo = TableStyleInfo(
+            name=t_spec.get("style", "TableStyleMedium9"),
+            showRowStripes=t_spec.get("row_stripes", True),
+            showColumnStripes=t_spec.get("column_stripes", False))
+        ws.add_table(table)
+    prot = spec.get("protection")
+    if prot:
+        for rng in prot.get("unlock", []):
+            for row in ws[rng]:
+                for cell in row:
+                    cell.protection = Protection(locked=False)
+        if prot.get("password"):
+            ws.protection.password = prot["password"]
+        ws.protection.sheet = True
 
 
 def main(argv=None):
@@ -200,6 +241,8 @@ def main(argv=None):
     for sheet_spec in spec.get("sheets", []):
         ws = wb.create_sheet(sheet_spec.get("name", "Sheet1"))
         build_sheet(ws, sheet_spec)
+    for name, ref in spec.get("defined_names", {}).items():
+        wb.defined_names[name] = DefinedName(name, attr_text=ref)
     if spec.get("full_calc_on_load"):
         wb.calculation.fullCalcOnLoad = True
     wb.save(args.output)

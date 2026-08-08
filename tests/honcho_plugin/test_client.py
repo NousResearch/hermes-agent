@@ -372,6 +372,37 @@ class TestGetHonchoClient:
         mock_h2.assert_called_once()
         assert mock_h2.call_args.kwargs["timeout"] == 99.0
 
+    def test_local_dot_form_profile_host_uses_configured_api_key(self, tmp_path, monkeypatch):
+        """Local Honcho auth must respect legacy dot-form host blocks (#37436)."""
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "baseUrl": "http://localhost:8000",
+            "hosts": {
+                "hermes.profile_a": {
+                    "workspace": "ws-profile-a",
+                    "apiKey": "jwt-for-local-honcho",
+                }
+            },
+        }))
+        cfg = HonchoClientConfig.from_global_config(
+            host="hermes_profile_a",
+            config_path=config_file,
+        )
+        captured_kwargs = {}
+
+        class FakeHoncho:
+            def __init__(self, **kwargs):
+                captured_kwargs.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "honcho", types.SimpleNamespace(Honcho=FakeHoncho))
+        with patch("tools.lazy_deps.ensure", return_value=None), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            client = get_honcho_client(cfg)
+
+        assert isinstance(client, FakeHoncho)
+        assert cfg.api_key == "jwt-for-local-honcho"
+        assert captured_kwargs["api_key"] == "jwt-for-local-honcho"
+
 
 class TestResolveSessionNameGatewayKey:
     """Regression tests for gateway_session_key priority in resolve_session_name.

@@ -4479,6 +4479,37 @@ def show_config():
     except Exception:
         pass
 
+    # Integrations
+    #
+    # These are the keys an operator reaches for when an integration misbehaves,
+    # and previously they were readable only by opening config.yaml.  Print names
+    # and counts ONLY — a route's ``api_key`` and an MCP server's command/env are
+    # upstream credentials, so no per-entry value is iterated except each route's
+    # ``model`` target (never a secret).  This is the explicit regression guard
+    # for suffix-shaped-secret leakage (#68040).
+    routes = cfg_get(config, "platforms", "api_server", "extra", "model_routes", default={})
+    mcp_servers = config.get("mcp_servers") or {}
+    plugins_cfg = config.get("plugins") or {}
+    plugins_enabled = plugins_cfg.get("enabled") or []
+    plugins_disabled = plugins_cfg.get("disabled") or []
+
+    if (isinstance(routes, dict) and routes) or (isinstance(mcp_servers, dict) and mcp_servers) \
+            or plugins_enabled or plugins_disabled:
+        print()
+        print(color("◆ Integrations", Colors.CYAN, Colors.BOLD))
+        if isinstance(routes, dict) and routes:
+            print(f"  Model routes: {len(routes)}")
+            for alias in sorted(routes):
+                route_cfg = routes[alias]
+                target = route_cfg.get("model", "") if isinstance(route_cfg, dict) else ""
+                print(f"    {alias} → {target or color('(no model — ignored at load)', Colors.YELLOW)}")
+        if isinstance(mcp_servers, dict) and mcp_servers:
+            print(f"  MCP servers:  {len(mcp_servers)} ({', '.join(sorted(mcp_servers))})")
+        if plugins_enabled:
+            print(f"  Plugins on:   {', '.join(sorted(map(str, plugins_enabled)))}")
+        if plugins_disabled:
+            print(f"  Plugins off:  {', '.join(sorted(map(str, plugins_disabled)))}")
+
     print()
     print(color("─" * 60, Colors.DIM))
     print(color("  hermes config edit     # Edit config file", Colors.DIM))

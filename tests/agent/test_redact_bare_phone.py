@@ -17,6 +17,12 @@ def test_redacts_plus_prefixed_e164():
     assert "+15551234567" not in result
 
 
+def test_preserves_established_plus_e164_matching_after_identifier_prefix():
+    text = "value=x+15551234567"
+    result = redact_sensitive_text(text)
+    assert "+15551234567" not in result
+
+
 def test_redacts_bare_wa_id_in_gateway_log_identity():
     log_line = (
         "inbound message: platform=whatsapp_cloud user=15551234567 "

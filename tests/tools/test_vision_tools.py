@@ -282,6 +282,61 @@ class TestVisionConfig:
         assert kwargs["temperature"] == 0.1
         assert kwargs["timeout"] == 120.0
 
+    @pytest.mark.asyncio
+    async def test_max_tokens_omitted_by_default_not_hardcoded(self, tmp_path):
+        """Regression for issue #80025: vision analysis must NOT hardcode
+        a max_tokens cap. auxiliary_client.py's documented policy is to
+        omit max_tokens by default for auxiliary tasks (including
+        vision) so the model sizes its own response -- an explicit cap
+        only risks truncating a long image description. Only an
+        explicitly configured integer should be forwarded; unset or
+        "auto" must omit the field entirely."""
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        async def call_with(config):
+            mock_response = MagicMock()
+            mock_choice = MagicMock()
+            mock_choice.message.content = "Configured image analysis"
+            mock_response.choices = [mock_choice]
+
+            with (
+                patch("hermes_cli.config.load_config", return_value=config),
+                patch(
+                    "tools.vision_tools._image_to_base64_data_url",
+                    return_value="data:image/png;base64,abc",
+                ),
+                patch(
+                    "tools.vision_tools.async_call_llm",
+                    new_callable=AsyncMock,
+                    return_value=mock_response,
+                ) as mock_llm,
+            ):
+                result = json.loads(
+                    await vision_analyze_tool(str(img), "describe this", "test/model")
+                )
+            assert result["success"] is True
+            return mock_llm.await_args.kwargs
+
+        # No vision config at all: no cap.
+        kwargs = await call_with({})
+        assert "max_tokens" not in kwargs, (
+            f"vision analysis must not hardcode a max_tokens cap by default: {kwargs}"
+        )
+
+        # Explicit "auto": still no cap.
+        kwargs = await call_with({"auxiliary": {"vision": {"max_tokens": "auto"}}})
+        assert "max_tokens" not in kwargs
+
+        # Explicit user-configured integer: forwarded.
+        kwargs = await call_with({"auxiliary": {"vision": {"max_tokens": 8000}}})
+        assert kwargs["max_tokens"] == 8000
+
+        # Malformed config value (non-numeric string): must not crash the
+        # call -- omit max_tokens rather than raise ValueError from int().
+        kwargs = await call_with({"auxiliary": {"vision": {"max_tokens": "not-a-number"}}})
+        assert "max_tokens" not in kwargs
+
 
 class TestVisionSafetyGuards:
     @pytest.mark.asyncio

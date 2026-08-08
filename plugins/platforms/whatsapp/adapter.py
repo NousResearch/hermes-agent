@@ -290,6 +290,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
@@ -487,6 +488,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        """Interpret common config truthy and falsy values."""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
 
@@ -505,6 +515,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not math.isfinite(parsed) or parsed < 0:
             return float(default)
         return parsed
+
+    def _reactions_enabled(self) -> bool:
+        """Check whether WhatsApp processing-status reactions are enabled."""
+        configured = None
+        extra = getattr(self.config, "extra", None)
+        if isinstance(extra, dict):
+            configured = extra.get("reactions")
+        if configured is not None:
+            return self._coerce_bool(configured)
+        return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
@@ -1286,6 +1306,100 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 pass
         except Exception:
             pass  # Ignore typing indicator failures
+
+    async def _send_reaction_to_bridge(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str,
+        *,
+        sender_id: Optional[str] = None,
+        from_me: bool = False,
+    ) -> None:
+        """Send a native WhatsApp reaction via the Node bridge."""
+        if not self._running or not self._http_session:
+            return
+        if await self._check_managed_bridge_exit():
+            return
+        # Baileys removes an existing reaction by sending the same key with an
+        # empty text value, so only None is invalid here.
+        if not chat_id or not message_id or emoji is None:
+            return
+
+        try:
+            import aiohttp
+
+            payload: Dict[str, Any] = {
+                "chatId": to_whatsapp_jid(chat_id),
+                "messageId": str(message_id),
+                "emoji": emoji,
+                "fromMe": bool(from_me),
+            }
+            if sender_id:
+                payload["senderId"] = to_whatsapp_jid(str(sender_id))
+
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/react",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if getattr(resp, "status", 200) >= 400:
+                    logger.debug(
+                        "[%s] WhatsApp reaction bridge returned HTTP %s",
+                        self.name,
+                        getattr(resp, "status", "unknown"),
+                    )
+        except Exception as exc:
+            logger.debug("[%s] WhatsApp reaction failed: %s", self.name, exc)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """React with 👀 when processing begins."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None) if event.source else None
+        message_id = event.message_id
+        if not chat_id or not message_id:
+            return
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        await self._send_reaction_to_bridge(
+            chat_id,
+            message_id,
+            "👀",
+            sender_id=raw.get("senderId"),
+            from_me=bool(raw.get("fromMe", False)),
+        )
+
+    async def on_processing_complete(
+        self,
+        event: MessageEvent,
+        outcome: ProcessingOutcome,
+    ) -> None:
+        """Swap the in-progress reaction for a final success/failure reaction."""
+        if not self._reactions_enabled():
+            return
+        if outcome == ProcessingOutcome.SUCCESS:
+            emoji = "✅"
+        elif outcome == ProcessingOutcome.FAILURE:
+            emoji = "❌"
+        elif outcome == ProcessingOutcome.CANCELLED:
+            # Clear the in-progress reaction so a cancelled run does not leave
+            # a permanent false "still processing" indicator.
+            emoji = ""
+        else:
+            return
+
+        chat_id = getattr(event.source, "chat_id", None) if event.source else None
+        message_id = event.message_id
+        if not chat_id or not message_id:
+            return
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        await self._send_reaction_to_bridge(
+            chat_id,
+            message_id,
+            emoji,
+            sender_id=raw.get("senderId"),
+            from_me=bool(raw.get("fromMe", False)),
+        )
     
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a WhatsApp chat."""

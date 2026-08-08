@@ -6,8 +6,10 @@ import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
-  instanceWindowBounds
+  instanceWindowBounds,
+  secondaryWindowVibrancy
 } from './session-windows'
+import { MACOS_TAHOE_DARWIN_MAJOR } from './titlebar-overlay-width'
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
 // test fire the 'closed' event, mirroring the slice of the Electron API the
@@ -98,6 +100,19 @@ test('instanceWindowBounds falls back to the persisted geometry with no source w
   const fallback = { width: 1280, height: 800 }
 
   assert.equal(instanceWindowBounds(null, fallback), fallback)
+})
+
+test('secondary windows omit vibrancy on Tahoe and later so their renderer remains visible', () => {
+  assert.equal(secondaryWindowVibrancy({ isMac: true, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR }), undefined)
+  assert.equal(secondaryWindowVibrancy({ isMac: true, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR + 1 }), undefined)
+})
+
+test('secondary windows preserve sidebar vibrancy before Tahoe', () => {
+  assert.equal(secondaryWindowVibrancy({ isMac: true, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR - 1 }), 'sidebar')
+})
+
+test('secondary windows never request macOS vibrancy on other platforms', () => {
+  assert.equal(secondaryWindowVibrancy({ isMac: false, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR }), undefined)
 })
 
 test('registry opens one window per session and focuses on re-open', () => {

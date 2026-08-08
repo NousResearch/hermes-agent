@@ -45,7 +45,10 @@ class TestZeroMatchProbe:
         (d / ".secretdir" / "conf.cfg").write_text("HIDDEN_ONLY_TOKEN = true\n")
         r = json.loads(search_tool("HIDDEN_ONLY_TOKEN", path=str(d), task_id="t-zm"))
         assert r["total_count"] == 0
-        assert "hidden or gitignored" in r.get("warning", "")
+        # "hidden" (not the full rg-only "hidden or gitignored" wording) so
+        # the assertion holds on both engines: rg names gitignored files,
+        # the grep fallback has no .gitignore awareness and only names hidden.
+        assert "hidden" in r.get("warning", "")
 
     def test_matching_search_unaffected(self, proj):
         r = json.loads(search_tool("TOKEN_ALPHA", path=str(proj / "proj"), task_id="t-zm"))
@@ -106,11 +109,11 @@ class TestZeroMatchProbeEngineParity:
     Fixed in 794d6c434e; these tests pin the wiring per engine so a future
     early return can't silently orphan it again.
 
-    The probe itself shells out to rg (by design: bounded, count-only), so a
-    grep-only host gets no hints even with correct wiring. The probe is
+    The probe shells out to the host's search engine (rg when installed,
+    grep otherwise), so the hint text differs per engine. The probe is
     therefore stubbed to a sentinel here — this isolates the *wiring* rather
-    than the probe's own dependency, and a naive parity test asserting real
-    hint text would fail on the grep leg for an unrelated reason.
+    than the probe's own engine dependency, and a naive parity test asserting
+    real hint text would fail on the grep leg for an unrelated reason.
     """
 
     @pytest.mark.parametrize("engine", ["rg", "grep"])
@@ -159,3 +162,64 @@ class TestZeroMatchProbeEngineParity:
             pytest.skip("rg not installed")
         r = ops.search("TOKEN_ALPHA\\nother", path=str(proj / "proj"), target="content")
         assert "line-oriented" not in (r.warning or "")
+
+
+class TestZeroMatchProbeGrepFallback:
+    """The real zero-match probe must fire on the grep fallback too.
+
+    Issue #79512: _zero_match_probe returned None immediately when rg was
+    missing, so grep-only hosts silently lost the case-insensitive / literal /
+    hidden-only hints. These tests pin the real probe (not a stub) against
+    the grep engine by faking rg's absence via _has_command.
+    """
+
+    @pytest.fixture
+    def grep_ops(self, proj, monkeypatch):
+        from tools.file_tools import _get_file_ops
+
+        ops = _get_file_ops(task_id="t-grep-probe")
+        real = ops._has_command
+        if not real("grep"):
+            pytest.skip("grep not installed")
+
+        def no_rg(cmd, _real=real):
+            # Forces the grep engine for content search AND the probe;
+            # other capability lookups pass through.
+            if cmd == "rg":
+                return False
+            return _real(cmd)
+
+        monkeypatch.setattr(ops, "_has_command", no_rg)
+        return ops
+
+    def test_case_mismatch_hint_without_rg(self, proj, grep_ops):
+        r = grep_ops.search("token_alpha", path=str(proj / "proj"), target="content")
+        assert r.total_count == 0
+        assert "case-insensitive" in (r.warning or "")
+
+    def test_literal_hint_without_rg(self, proj, grep_ops):
+        d = proj / "proj"
+        (d / "meta.py").write_text("result = lookup[key+1]\n")
+        r = grep_ops.search("lookup[key+1]", path=str(d), target="content")
+        assert r.total_count == 0
+        assert "literal match" in (r.warning or "")
+
+    def test_hidden_only_hint_without_rg(self, proj, grep_ops):
+        d = proj / "proj"
+        (d / ".secretdir").mkdir()
+        (d / ".secretdir" / "conf.cfg").write_text("HIDDEN_ONLY_TOKEN = true\n")
+        r = grep_ops.search("HIDDEN_ONLY_TOKEN", path=str(d), target="content")
+        assert r.total_count == 0
+        assert "hidden" in (r.warning or "")
+
+    def test_true_zero_match_no_hint_without_rg(self, proj, grep_ops):
+        r = grep_ops.search(
+            "zzz_totally_absent_zzz", path=str(proj / "proj"), target="content"
+        )
+        assert r.total_count == 0
+        assert not r.warning
+
+    def test_matching_search_unaffected_without_rg(self, proj, grep_ops):
+        r = grep_ops.search("TOKEN_ALPHA", path=str(proj / "proj"), target="content")
+        assert r.total_count >= 2
+        assert not r.warning

@@ -2340,11 +2340,17 @@ class ShellFileOperations(FileOperations):
         13.9% of production content searches return zero matches and give
         the model nothing to steer by. Run ONE cheap case-insensitive count
         probe; if it hits, say so. If the pattern contains regex
-        metacharacters, also probe it as a fixed string. Bounded: two rg
-        invocations max, count-only output.
+        metacharacters, also probe it as a fixed string. Bounded: two
+        invocations max, count-only output. Works on BOTH engines: rg when
+        installed, otherwise the grep fallback (issue #79512).
         """
-        if not self._has_command('rg'):
-            return None
+        if self._has_command('rg'):
+            return self._zero_match_probe_rg(pattern, path, file_glob)
+        return self._zero_match_probe_grep(pattern, path, file_glob)
+
+    def _zero_match_probe_rg(self, pattern: str, path: str,
+                             file_glob: Optional[str]) -> Optional[str]:
+        """rg-backed zero-match probe (preferred engine)."""
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
         probe = self._exec(
             f"rg -i --count-matches{glob_expr} "
@@ -2399,6 +2405,86 @@ class ShellFileOperations(FileOperations):
                 for line in (fixed.stdout or "").strip().splitlines()
                 if line.rpartition(":")[2].isdigit()
             )
+            if f_total > 0:
+                return (
+                    f"0 regex matches, but {f_total} literal match(es) — the "
+                    "pattern contains regex metacharacters that likely need "
+                    "escaping (or pass a simpler substring)."
+                )
+        return None
+
+    def _zero_match_probe_grep(self, pattern: str, path: str,
+                               file_glob: Optional[str]) -> Optional[str]:
+        """grep-backed zero-match probe for hosts without ripgrep.
+
+        The grep fallback excludes hidden directories (``--exclude-dir='.*'``)
+        and has no .gitignore awareness, so the probe variants map as:
+
+          - case-insensitive -> ``grep -i``
+          - literal -> ``grep -F`` (only when the pattern has regex metachars)
+          - hidden-only -> re-run without ``--exclude-dir`` (gitignored
+            files are already visible to plain grep, so only the hidden
+            axis applies)
+
+        Count-only (-c) output keeps it bounded, mirroring the rg probe.
+        """
+        if not self._has_command('grep'):
+            return None
+        include_expr = (
+            f" --include {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        )
+        # Mirrors the --exclude-dir='.*' used by the main grep fallback search.
+        hidden_excl = "--exclude-dir='.*'"
+
+        def _grep_counts(result) -> tuple:
+            total = 0
+            files = 0
+            for line in (result.stdout or "").strip().splitlines():
+                _p, _sep, n = line.rpartition(":")
+                if n.isdigit():
+                    total += int(n)
+                    files += 1
+            return total, files
+
+        ci = self._exec(
+            f"grep -r -i -c -H {hidden_excl}{include_expr} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"2>/dev/null | head -50",
+            timeout=30,
+        )
+        ci_total, ci_files = _grep_counts(ci)
+        if ci_total > 0:
+            return (
+                f"0 exact matches, but {ci_total} case-insensitive match(es) "
+                f"in {ci_files} file(s) — the pattern's casing may be wrong."
+            )
+        # Hidden probe: matches that live only in dot-directories are skipped
+        # by the default search; surface them instead of a bare zero.
+        hidden = self._exec(
+            f"grep -r -c -H {include_expr} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"2>/dev/null | head -50",
+            timeout=30,
+        )
+        h_total, h_files = _grep_counts(hidden)
+        if h_total > 0:
+            return (
+                f"0 matches in visible files, but {h_total} match(es) in "
+                f"{h_files} hidden file(s) — hidden files are excluded by "
+                "default. Search the hidden path explicitly to include them."
+            )
+        if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
+            fixed = self._exec(
+                f"grep -r -F -c -H {hidden_excl}{include_expr} "
+                f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+                f"2>/dev/null | head -50",
+                timeout=30,
+            )
+            f_total = 0
+            for line in (fixed.stdout or "").strip().splitlines():
+                _p, _sep, n = line.rpartition(":")
+                if n.isdigit():
+                    f_total += int(n)
             if f_total > 0:
                 return (
                     f"0 regex matches, but {f_total} literal match(es) — the "

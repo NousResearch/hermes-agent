@@ -46,15 +46,18 @@
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
 // exiting. Logs go to stderr; Python supervises restart.
 //
-// Requires spectrum-ts 8.x — pinned exactly in package.json because the SDK
+// Requires Spectrum 12.x — pinned exactly in package.json because the SDK
 // ships breaking majors; see README "Upgrading spectrum-ts".
 //
 // Env vars (required):
-//   PHOTON_PROJECT_ID      (== the project's spectrumProjectId)
-//   PHOTON_PROJECT_SECRET
 //   PHOTON_SIDECAR_PORT
 //   PHOTON_SIDECAR_TOKEN
 // Optional:
+//   PHOTON_IMESSAGE_MODE   "cloud" (default) or "local". Local mode uses the
+//                          open-source macOS Messages path and the Apple ID
+//                          signed in on this Mac.
+//   PHOTON_PROJECT_ID      (== the project's spectrumProjectId; cloud only)
+//   PHOTON_PROJECT_SECRET  (cloud only)
 //   PHOTON_SIDECAR_BIND    (default 127.0.0.1)
 //   PHOTON_SIDECAR_WATCH_STDIN  "1" = exit when stdin hits EOF (set by the
 //                          adapter, which holds our stdin pipe — parent-death
@@ -65,7 +68,8 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { once } from "node:events";
-import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
+import { normalizeReplyContent } from "./reply-content.mjs";
+import { createSpectrumRuntime } from "./spectrum-runtime.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
 import {
   classifyProbeRejection,
@@ -75,6 +79,10 @@ import {
 
 const projectId = process.env.PHOTON_PROJECT_ID;
 const projectSecret = process.env.PHOTON_PROJECT_SECRET;
+const imessageMode = (process.env.PHOTON_IMESSAGE_MODE || "cloud")
+  .trim()
+  .toLowerCase();
+const localMode = imessageMode === "local";
 const port = parseInt(process.env.PHOTON_SIDECAR_PORT || "8789", 10);
 const bind = process.env.PHOTON_SIDECAR_BIND || "127.0.0.1";
 const sharedToken = process.env.PHOTON_SIDECAR_TOKEN;
@@ -269,35 +277,17 @@ console.log = (...args) => {
 const PROBE_SPACE_ID = process.env.PHOTON_PROBE_SPACE_ID || "any;-;+10000000000";
 const PROBE_MSG_PREFIX = "hermes-liveness-probe-";
 
-if (!projectId || !projectSecret || !sharedToken) {
+if (!sharedToken || (!localMode && (!projectId || !projectSecret))) {
   console.error(
-    "photon-sidecar: PHOTON_PROJECT_ID, PHOTON_PROJECT_SECRET and " +
-      "PHOTON_SIDECAR_TOKEN must all be set."
+    localMode
+      ? "photon-sidecar: PHOTON_SIDECAR_TOKEN must be set."
+      : "photon-sidecar: PHOTON_PROJECT_ID, PHOTON_PROJECT_SECRET and " +
+          "PHOTON_SIDECAR_TOKEN must all be set."
   );
   process.exit(2);
 }
 
-// Lazy-load spectrum-ts so a missing install fails with a clear message
-// instead of a cryptic module-resolution error during import. Apply Hermes'
-// pinned-sdk compatibility patch first so existing installs self-heal at
-// runtime, not only during npm postinstall.
-try {
-  const patchResult = patchSpectrumTs();
-  if (patchResult.patched) {
-    console.error(
-      `photon-sidecar: spectrum mixed attachment patch applied: ${patchResult.file}`
-    );
-  }
-} catch (e) {
-  console.error(
-    "photon-sidecar: spectrum mixed attachment patch failed. " +
-      "Run `npm install` inside plugins/platforms/photon/sidecar/ or " +
-      "upgrade the Photon sidecar patch for the pinned spectrum-ts version. " +
-      "Original error: " +
-      (e && e.stack ? e.stack : String(e))
-  );
-}
-let Spectrum,
+let app,
   imessage,
   attachment,
   voice,
@@ -306,41 +296,40 @@ let Spectrum,
   spectrumRichlink,
   spectrumTyping,
   spectrumPoll,
-  imessageEffect;
+  imessageEffect,
+  messageEffects;
 try {
   ({
-    Spectrum,
+    app,
+    provider: imessage,
     attachment,
     voice,
-    poll: spectrumPoll,
-    text: spectrumText,
-    markdown: spectrumMarkdown,
-    richlink: spectrumRichlink,
-    typing: spectrumTyping,
-  } = await import("spectrum-ts"));
-  ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
+    spectrumText,
+    spectrumMarkdown,
+    spectrumRichlink,
+    spectrumTyping,
+    spectrumPoll,
+    imessageEffect,
+    messageEffects,
+  } = await createSpectrumRuntime({
+    localMode,
+    projectId,
+    projectSecret,
+    telemetry,
+  }));
 } catch (e) {
   console.error(
-    "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
+    "photon-sidecar: Spectrum dependencies could not be loaded. Run `npm install` " +
       "inside plugins/platforms/photon/sidecar/. Original error: " +
       (e && e.stack ? e.stack : String(e))
   );
   process.exit(3);
 }
 
-const app = await Spectrum({
-  projectId,
-  projectSecret,
-  providers: [imessage.config()],
-  options: { flattenGroups: true },
-  telemetry,
-});
-
 // Effect-name → native effect id map. Optional chaining: an SDK build
 // without the iMessage effect surface (or a test stub) must not crash the
 // sidecar at import — /send-effect then rejects with "unsupported effect".
-const MESSAGE_EFFECTS = imessage?.effect?.message || {};
-
+const MESSAGE_EFFECTS = messageEffects || {};
 // ---------------------------------------------------------------------------
 // Inbound: forward `app.messages` (gRPC stream) to the Python consumer.
 
@@ -380,8 +369,9 @@ function rememberKnownMessage(message) {
 
 function phoneTargetFromSpaceId(spaceId) {
   if (typeof spaceId !== "string") return null;
-  if (E164_RE.test(spaceId)) return spaceId;
-  const dmGuid = spaceId.match(DM_CHAT_GUID_RE);
+  const trimmed = spaceId.trim();
+  if (E164_RE.test(trimmed)) return trimmed;
+  const dmGuid = trimmed.match(DM_CHAT_GUID_RE);
   return dmGuid ? dmGuid[1] : null;
 }
 
@@ -484,31 +474,33 @@ async function normalizeBinaryContent(content) {
 // Python adapter can populate the gateway's `reply_to_text` (context: WHAT was
 // tapped back). The SDK only emits a reaction once it has resolved the full
 // target Message (toReactionMessages bails otherwise), so `target.content` is
-// hydrated here — no extra round trip. Handles plain text and our patched mixed
+// hydrated here — no extra round trip. Handles plain text, replies, and mixed
 // text+attachment groups (first text child); null for attachment/voice-only
 // targets. Capped so one long bubble can't balloon the NDJSON line.
 const REACTION_TARGET_TEXT_CAP = 2000;
-function reactionTargetText(target) {
-  const c = target && typeof target === "object" ? target.content : null;
+function contentTextPreview(c) {
   if (!c || typeof c !== "object") return null;
-  let text = null;
   if (c.type === "text") {
-    text = c.text;
-  } else if (c.type === "richlink") {
-    text = c.url;
-  } else if (c.type === "group") {
+    return typeof c.text === "string" && c.text ? c.text : null;
+  }
+  if (c.type === "richlink") {
+    return typeof c.url === "string" && c.url ? c.url : null;
+  }
+  if (c.type === "reply") {
+    return contentTextPreview(c.content);
+  }
+  if (c.type === "group") {
     for (const item of Array.isArray(c.items) ? c.items : []) {
-      const ic = item && typeof item === "object" ? item.content : null;
-      if (ic && ic.type === "text" && ic.text) {
-        text = ic.text;
-        break;
-      }
-      if (ic && ic.type === "richlink" && ic.url) {
-        text = ic.url;
-        break;
-      }
+      const text = contentTextPreview(item?.content);
+      if (text) return text;
     }
   }
+  return null;
+}
+
+function reactionTargetText(target) {
+  const c = target && typeof target === "object" ? target.content : null;
+  const text = contentTextPreview(c);
   if (typeof text !== "string" || !text) return null;
   return text.length > REACTION_TARGET_TEXT_CAP
     ? text.slice(0, REACTION_TARGET_TEXT_CAP)
@@ -544,6 +536,13 @@ async function normalizeContent(content) {
       });
     }
     return { type: "group", items };
+  }
+  if (content.type === "reply") {
+    return await normalizeReplyContent(
+      content,
+      normalizeContent,
+      reactionTargetText
+    );
   }
   if (content.type === "reaction") {
     const target = content.target;
@@ -1019,7 +1018,7 @@ const server = http.createServer(async (req, res) => {
       if (format !== "text" && format !== "markdown") {
         return badRequest(res, "format must be text or markdown");
       }
-      const space = await resolveSpace(spaceId);
+
       // iMessage renders markdown natively; spectrum-ts degrades it to
       // readable plain text on platforms that don't.
       // spectrumMarkdown() enables enableDataDetection in the underlying
@@ -1032,6 +1031,7 @@ const server = http.createServer(async (req, res) => {
         chooseSendFormat(format, text) === "markdown"
           ? spectrumMarkdown(text)
           : spectrumText(text);
+      const space = await resolveSpace(spaceId);
       const result = await space.send(builder);
       return ok(res, { messageId: result?.id || null });
     }
@@ -1050,6 +1050,7 @@ const server = http.createServer(async (req, res) => {
       if (!spaceId || typeof path !== "string" || !path) {
         return badRequest(res, "spaceId and path are required");
       }
+
       const space = await resolveSpace(spaceId);
 
       // spectrum-ts infers name + MIME from the file extension; pass

@@ -67,6 +67,32 @@ async def test_dispatch_text_dm(monkeypatch: pytest.MonkeyPatch) -> None:
     assert src.user_id == "+15551234567"
 
 
+@pytest.mark.asyncio
+async def test_dispatch_reply_preserves_text_and_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    event = _dm_event("unused", msg_id="reply-msg")
+    event["content"] = {
+        "type": "reply",
+        "content": {"type": "text", "text": "answering this"},
+        "targetMessageId": "bot-msg-1",
+        "targetDirection": "outbound",
+        "targetText": "the earlier answer",
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    reply = captured[0]
+    assert reply.text == "answering this"
+    assert reply.message_type == MessageType.TEXT
+    assert reply.reply_to_message_id == "bot-msg-1"
+    assert reply.reply_to_text == "the earlier answer"
+    assert reply.reply_to_is_own_message is True
+
+
 # A real 1x1 transparent PNG (passes base.py's _looks_like_image magic check).
 _PNG_1X1_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhf"
@@ -96,6 +122,106 @@ def _voice_event(
         "content": {"type": "voice", **content},
         "timestamp": "2026-05-14T19:06:32.000Z",
     }
+
+
+@pytest.mark.asyncio
+async def test_dispatch_group_preserves_text_and_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spectrum group content from a mixed text+image iMessage must not drop text."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    raw = base64.b64decode(_PNG_1X1_B64)
+
+    event = _attachment_event(
+        {},
+        msg_id="spc-msg-mixed",
+    )
+    event["content"] = {
+        "type": "group",
+        "items": [
+            {
+                "id": "p:0/spc-msg-mixed",
+                "content": {"type": "text", "text": "请分析这张图的重点"},
+            },
+            {
+                "id": "p:1/spc-msg-mixed",
+                "content": {
+                    "type": "attachment",
+                    "name": "photo.png",
+                    "mimeType": "image/png",
+                    "size": len(raw),
+                    "data": _PNG_1X1_B64,
+                    "encoding": "base64",
+                },
+            },
+        ],
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.text == "请分析这张图的重点"
+    assert ev.message_type == MessageType.PHOTO
+    assert ev.media_types == ["image/png"]
+    assert len(ev.media_urls) == 1
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.is_file()
+        assert cached.read_bytes() == raw
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reply_preserves_group_attachment_and_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    raw = base64.b64decode(_PNG_1X1_B64)
+    event = _dm_event("unused", msg_id="reply-with-photo")
+    event["content"] = {
+        "type": "reply",
+        "content": {
+            "type": "group",
+            "items": [
+                {"id": "part-0", "content": {"type": "text", "text": "see photo"}},
+                {
+                    "id": "part-1",
+                    "content": {
+                        "type": "attachment",
+                        "name": "photo.png",
+                        "mimeType": "image/png",
+                        "size": len(raw),
+                        "data": _PNG_1X1_B64,
+                        "encoding": "base64",
+                    },
+                },
+            ],
+        },
+        "targetMessageId": "human-msg-1",
+        "targetDirection": "inbound",
+        "targetText": "the earlier photo",
+    }
+
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    reply = captured[0]
+    assert reply.text == "see photo"
+    assert reply.message_type == MessageType.PHOTO
+    assert reply.reply_to_message_id == "human-msg-1"
+    assert reply.reply_to_text == "the earlier photo"
+    assert reply.reply_to_is_own_message is False
+    assert reply.media_types == ["image/png"]
+    assert len(reply.media_urls) == 1
+    cached = Path(reply.media_urls[0])
+    try:
+        assert cached.read_bytes() == raw
+    finally:
+        cached.unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio

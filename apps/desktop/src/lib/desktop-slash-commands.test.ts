@@ -65,6 +65,21 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/personality')).toBeNull()
   })
 
+  it('unblocks /reasoning as a desktop exec command (config.get/set reasoning)', () => {
+    // #77945 — /reasoning used to be gated behind NO_DESKTOP_SURFACE.advanced;
+    // the desktop must expose the same reasoning effort/display control the
+    // terminal has. It routes through the slash worker to the backend's
+    // /reasoning handler (config.get/config.set reasoning), so it runs with an
+    // exec surface and shows in the slash palette.
+    expect(resolveDesktopCommand('/reasoning')?.surface).toEqual({ kind: 'exec' })
+    expect(isDesktopSlashSuggestion('/reasoning')).toBe(true)
+    expect(isDesktopSlashCommand('/reasoning')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/reasoning')).toBeNull()
+    // Free-form level input (minimal/low/medium/.../ultra) plus finite display
+    // toggles (show/hide/on/off/full/clamp) — mixed keeps both typeable.
+    expect(desktopSlashCommandArgumentMode('/reasoning')).toBe('mixed')
+  })
+
   it('routes /pet through the desktop action handler and drops /pets', () => {
     expect(resolveDesktopCommand('/pet')?.surface).toEqual({ kind: 'action', action: 'pet' })
     expect(desktopSlashCommandArgumentMode('/pet')).toBe('options')

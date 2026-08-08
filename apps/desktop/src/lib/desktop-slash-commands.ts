@@ -236,6 +236,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     argumentMode: 'options'
   },
   {
+    name: '/reasoning',
+    description: 'Show or set reasoning effort and display [show|hide|on|off|full|clamp|<level>]',
+    surface: exec(),
+    argumentMode: 'mixed'
+  },
+  {
     name: '/agents',
     description: 'Show active desktop sessions and running tasks',
     aliases: ['/tasks'],
@@ -363,7 +369,7 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
   ],
   messaging: ['/approve', '/deny'],
   settings: ['/skills', '/pets'],
-  advanced: ['/curator', '/fast', '/insights', '/kanban', '/reasoning', '/voice']
+  advanced: ['/curator', '/fast', '/insights', '/kanban', '/voice']
 }
 
 const ALL_SPECS: readonly DesktopCommandSpec[] = [

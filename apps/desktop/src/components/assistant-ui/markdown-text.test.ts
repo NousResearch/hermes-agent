@@ -306,4 +306,58 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('\\$5')
     expect(output).toContain('\\$10')
   })
+
+  it('moves hugging $$ delimiters of multiline display math onto their own lines', () => {
+    const input = [
+      '$$\\begin{aligned}',
+      '\\nabla \\cdot \\mathbf{E} &= \\frac{\\rho}{\\varepsilon_0} \\\\',
+      '\\nabla \\cdot \\mathbf{B} &= 0',
+      '\\end{aligned}$$'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(
+      [
+        '$$',
+        '\\begin{aligned}',
+        '\\nabla \\cdot \\mathbf{E} &= \\frac{\\rho}{\\varepsilon_0} \\\\',
+        '\\nabla \\cdot \\mathbf{B} &= 0',
+        '\\end{aligned}',
+        '$$'
+      ].join('\n')
+    )
+  })
+
+  it('keeps hugging display math inside its markdown container', () => {
+    const input = ['> $$\\begin{aligned}', '> a &= b', '> \\end{aligned}$$'].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(['> $$', '> \\begin{aligned}', '> a &= b', '> \\end{aligned}', '> $$'].join('\n'))
+  })
+
+  it('splits the hugging $$ form that the bracket rewrite itself produces', () => {
+    const input = ['\\[\\begin{aligned}', 'a &= b', '\\end{aligned}\\]'].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(['$$', '\\begin{aligned}', 'a &= b', '\\end{aligned}', '$$'].join('\n'))
+  })
+
+  it('keeps CRLF line endings consistent when splitting hugging delimiters', () => {
+    const input = '$$\\begin{aligned}\r\na &= b\r\n\\end{aligned}$$'
+
+    expect(preprocessMarkdown(input)).toBe('$$\r\n\\begin{aligned}\r\na &= b\r\n\\end{aligned}\r\n$$')
+  })
+
+  it('leaves single-line display math alone', () => {
+    expect(preprocessMarkdown('$$x^2 + y^2 = r^2$$')).toBe('$$x^2 + y^2 = r^2$$')
+  })
+
+  it('leaves a multiline $$ block that sits wholly inside one inline code span alone', () => {
+    const input = '`$$a\nb$$`'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
 })

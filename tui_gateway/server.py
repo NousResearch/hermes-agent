@@ -3988,7 +3988,72 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         logger.debug("failed to persist model switch marker", exc_info=True)
 
 
+class ManagedKeyError(Exception):
+    """A config key pinned by the managed (administrator) scope was written.
+
+    Raised by the write primitives rather than returned, so every
+    ``_write_config_key`` call site inside ``config.set`` is covered by a
+    single handler wrapper instead of one guard apiece.
+    """
+
+    def __init__(self, key: str):
+        # A descriptive message, not the bare key: paths that stringify the
+        # exception (``_apply_pending_model_switch``, the live-session slash
+        # mirror) would otherwise render "Could not switch model: model.default".
+        # ``.key`` stays authoritative for the structured 4030 mapping in
+        # ``_managed_err``, which never reads str(exc).
+        super().__init__(
+            f"'{key}' is managed by your administrator and cannot be changed"
+        )
+        self.key = key
+
+
+def _managed_block(*key_paths: str) -> str | None:
+    """First dotted key in *key_paths* pinned by the managed scope, else None.
+
+    Fail-open on any managed-scope error, mirroring :func:`_apply_managed`: a
+    broken/absent managed scope must never block a write the administrator did
+    not actually pin.
+    """
+    try:
+        from hermes_cli import managed_scope
+
+        for key_path in key_paths:
+            if managed_scope.is_key_managed(key_path):
+                return key_path
+    except Exception:
+        return None
+    return None
+
+
+def _managed_err(rid, key: str) -> dict:
+    """4030 refusal naming the managed source, mirroring hermes_cli/config.py."""
+    try:
+        from hermes_cli import managed_scope
+
+        managed_dir = managed_scope.get_managed_dir()
+    except Exception:
+        managed_dir = None
+    src = (
+        str(managed_dir / "config.yaml")
+        if managed_dir is not None
+        else "the managed scope"
+    )
+    return _err(
+        rid,
+        4030,
+        f"Cannot set '{key}': it is managed by your administrator ({src}) "
+        f"and cannot be changed. Contact your administrator to modify it.",
+    )
+
+
 def _write_config_key(key_path: str, value):
+    # Administrator policy is enforced on the CLI surface (hermes_cli/config.py
+    # set_config_value/unset_config_value); without this the TUI/desktop wrote
+    # the pinned key, reported success, and the next read re-applied the managed
+    # value anyway — the control silently lied.
+    if (blocked := _managed_block(key_path)) is not None:
+        raise ManagedKeyError(blocked)
     # Write-back round-trip: raw read is mandatory — saving the managed-
     # overlaid / env-expanded view would persist those values into the file.
     cfg = _load_cfg_raw()
@@ -4480,6 +4545,18 @@ def _apply_model_switch(
             explicit_provider=explicit_provider,
         )
     )
+    # A global switch persists model.default/provider/base_url through
+    # cli.save_config_value, which has no managed-scope guard of its own.
+    # Refuse HERE, before switch_model()/agent.switch_model() mutate the live
+    # session, so a pinned model can't leave the session switched while
+    # config.yaml keeps the administrator's value. Session- and once-scoped
+    # switches never persist, so they stay allowed.
+    if persist_global:
+        blocked_model = _managed_block(
+            "model.default", "model.provider", "model.base_url"
+        )
+        if blocked_model is not None:
+            raise ManagedKeyError(blocked_model)
     if not model_input:
         raise ValueError("model value required")
 
@@ -10658,8 +10735,7 @@ def _respond(rid, params, key, *, allow_expired=False):
 # NOTE: config.set intentionally stays in server.py for now — the in-flight
 # opt/model-resolution-core PR touches its body; move it to methods_config.py
 # in a follow-up once that PR lands.
-@method("config.set")
-def _(rid, params: dict) -> dict:
+def _config_set(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
     session = _sessions.get(params.get("session_id", ""))
 
@@ -10668,7 +10744,10 @@ def _(rid, params: dict) -> dict:
             if not value:
                 return _err(rid, 4002, "model value required")
             if session:
-                from hermes_cli.model_switch import parse_model_switch_args
+                from hermes_cli.model_switch import (
+                    parse_model_switch_args,
+                    resolve_persist_behavior,
+                )
 
                 # A live swap can't run in-place while a turn streams:
                 # agent.switch_model() mutates self.model / self.provider /
@@ -10682,6 +10761,26 @@ def _(rid, params: dict) -> dict:
                 # the new model without waiting for the swap or interrupting.
                 if session.get("running"):
                     parsed = parse_model_switch_args(value)
+                    # Refuse a persisting pick BEFORE it is stashed. Deferring
+                    # first would ack the write with {"deferred": true}, and the
+                    # ManagedKeyError would not surface until the next turn, where
+                    # _apply_pending_model_switch's blanket handler downgrades it
+                    # to a generic error event — the caller never sees 4030.
+                    # Resolve the full persistence policy rather than testing
+                    # parsed.is_global: with model.persist_switch_by_default set,
+                    # a bare `/model X` persists too (resolve_persist_behavior
+                    # rule 5), and a --global-only check would let it through.
+                    if resolve_persist_behavior(
+                        parsed.is_global,
+                        parsed.is_session,
+                        is_once=parsed.is_once,
+                        explicit_provider=parsed.explicit_provider,
+                    ):
+                        blocked_model = _managed_block(
+                            "model.default", "model.provider", "model.base_url"
+                        )
+                        if blocked_model is not None:
+                            raise ManagedKeyError(blocked_model)
                     try:
                         pending_model = parsed.model_input
                     except Exception:
@@ -10751,6 +10850,8 @@ def _(rid, params: dict) -> dict:
                     "scope": result.get("scope", "session"),
                 },
             )
+        except ManagedKeyError:
+            raise  # surfaced as 4030 by the config.set wrapper
         except Exception as e:
             return _err(rid, 5001, str(e))
 
@@ -11030,6 +11131,8 @@ def _(rid, params: dict) -> dict:
                     os.environ.pop("HERMES_YOLO_MODE", None)
                     nv = "0"
             return _ok(rid, {"key": key, "value": nv, "scope": "session"})
+        except ManagedKeyError:
+            raise  # surfaced as 4030 by the config.set wrapper
         except Exception as e:
             return _err(rid, 5001, str(e))
 
@@ -11041,6 +11144,12 @@ def _(rid, params: dict) -> dict:
             scope = str(params.get("scope") or "").strip().lower()
             global_scope = scope == "global"
             if arg in {"show", "on"}:
+                if (
+                    blocked := _managed_block(
+                        "display.show_reasoning", "display.sections.thinking"
+                    )
+                ) is not None:
+                    return _managed_err(rid, blocked)
                 cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -11059,6 +11168,12 @@ def _(rid, params: dict) -> dict:
                     session["show_reasoning"] = True
                 return _ok(rid, {"key": key, "value": "show"})
             if arg in {"hide", "off"}:
+                if (
+                    blocked := _managed_block(
+                        "display.show_reasoning", "display.sections.thinking"
+                    )
+                ) is not None:
+                    return _managed_err(rid, blocked)
                 cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -11084,6 +11199,12 @@ def _(rid, params: dict) -> dict:
             # display.reasoning_full is persisted too so the config key stays
             # consistent across the CLI and TUI surfaces.
             if arg in {"full", "all"}:
+                if (
+                    blocked := _managed_block(
+                        "display.reasoning_full", "display.sections.thinking"
+                    )
+                ) is not None:
+                    return _managed_err(rid, blocked)
                 cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -11100,6 +11221,12 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 return _ok(rid, {"key": key, "value": "full"})
             if arg in {"clamp", "collapse", "short"}:
+                if (
+                    blocked := _managed_block(
+                        "display.reasoning_full", "display.sections.thinking"
+                    )
+                ) is not None:
+                    return _managed_err(rid, blocked)
                 cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -11139,6 +11266,8 @@ def _(rid, params: dict) -> dict:
                     _session_info(session["agent"], session),
                 )
             return _ok(rid, {"key": key, "value": arg})
+        except ManagedKeyError:
+            raise  # surfaced as 4030 by the config.set wrapper
         except Exception as e:
             return _err(rid, 5001, str(e))
 
@@ -11146,6 +11275,15 @@ def _(rid, params: dict) -> dict:
         nv = str(value or "").strip().lower()
         if nv not in _DETAIL_MODES:
             return _err(rid, 4002, f"unknown details_mode: {value}")
+        # This branch fans out to every section leaf, so each one has to be
+        # validated — not just the head key.
+        if (
+            blocked := _managed_block(
+                "display.details_mode",
+                *(f"display.sections.{s}" for s in _DETAIL_SECTION_NAMES),
+            )
+        ) is not None:
+            return _managed_err(rid, blocked)
         cfg = _load_cfg_raw()  # write-back round-trip
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         sections = (
@@ -11167,6 +11305,11 @@ def _(rid, params: dict) -> dict:
         section = key.split(".", 1)[1]
         if section not in _DETAIL_SECTION_NAMES:
             return _err(rid, 4002, f"unknown section: {section}")
+
+        # Covers both the set path and the empty-value clear path below —
+        # clearing a pinned leaf is just as much a write.
+        if (blocked := _managed_block(f"display.sections.{section}")) is not None:
+            return _managed_err(rid, blocked)
 
         cfg = _load_cfg_raw()  # write-back round-trip
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -11312,6 +11455,12 @@ def _(rid, params: dict) -> dict:
         )
 
     if key in {"prompt", "personality", "skin"}:
+        # Only "prompt" mutates-and-saves directly (top-level custom_prompt, not
+        # under display.). "personality"/"skin" route through
+        # _write_config_key and are covered by the wrapper, so guarding the
+        # whole branch here would refuse them with the wrong key name.
+        if key == "prompt" and (blocked := _managed_block("custom_prompt")) is not None:
+            return _managed_err(rid, blocked)
         try:
             cfg = _load_cfg_raw()  # write-back round-trip ("prompt" saves cfg)
             if key == "prompt":
@@ -11346,10 +11495,28 @@ def _(rid, params: dict) -> dict:
                 if info is not None:
                     resp["info"] = info
             return _ok(rid, resp)
+        except ManagedKeyError:
+            raise  # surfaced as 4030 by the config.set wrapper
         except Exception as e:
             return _err(rid, 5001, str(e))
 
     return _err(rid, 4002, f"unknown config key: {key}")
+
+
+@method("config.set")
+def _(rid, params: dict) -> dict:
+    """Map an administrator-managed-key write to a 4030 refusal.
+
+    Every ``_write_config_key()`` call in the body raises ManagedKeyError
+    rather than persisting a pinned key, so the funnel call sites are covered
+    in one place. Branches that mutate-and-save directly pre-check their own
+    leaves with ``_managed_block`` (they write several leaves per call, so a
+    refusal has to happen before the first mutation).
+    """
+    try:
+        return _config_set(rid, params)
+    except ManagedKeyError as exc:
+        return _managed_err(rid, exc.key)
 
 
 # ---------------------------------------------------------------------------

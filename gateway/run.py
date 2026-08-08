@@ -2714,6 +2714,29 @@ def _event_media_is_image(event, index: int) -> bool:
     return getattr(event, "message_type", None) == MessageType.PHOTO
 
 
+# Feishu adapters render embedded image elements as ``[Image]`` (when no alt
+# text is available) or ``[Image: <alt>]`` (when alt text is set). These markers
+# stand in for the actual attachments, which are carried separately in
+# ``event.media_urls``; the same file is delivered to the vision tool by the
+# normal media-routing block. They must NEVER be resolved as a clarify answer
+# (e.g. when a user replies to a pending clarify with a Feishu post that
+# embeds an image) because downstream vision tooling treats the literal
+# string as a path and errors out with ``media file not found: '[Image]'``.
+# Stripping them lets a real caption survive while neutralising the
+# placeholder (#81117).
+_CLARIFY_IMAGE_PLACEHOLDER_RE = re.compile(r"\s*\[Image(?::[^\]]*)?\]\s*")
+
+
+def _strip_clarify_image_placeholders(text: str) -> str:
+    """Return ``text`` with Feishu image placeholders removed.
+
+    Preserves the surrounding words and collapses adjacent whitespace, so
+    ``"Use [Image] now"`` becomes ``"Use now"`` and ``"[Image]"`` becomes
+    ``""``. Voice transcripts and non-image text are untouched.
+    """
+    return _CLARIFY_IMAGE_PLACEHOLDER_RE.sub(" ", text).strip()
+
+
 def _event_media_is_audio(event, index: int) -> bool:
     """True if the attachment at *index* is audio (per-attachment MIME first)."""
     mtype = _event_media_type_at(event, index)
@@ -14936,6 +14959,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pending_clarify.clarify_id,
                 )
                 return ""
+            # An image-only reply (no real caption after stripping the
+            # Feishu ``[Image]`` placeholder) cannot answer a text clarify
+            # and the attachment is carried separately on the event — leave
+            # the prompt pending and ask the user to reply with text instead
+            # of resolving the clarify with the placeholder (#81117).
+            _clarify_has_images = bool(self._pending_event_image_paths(event))
+            if _clarify_has_images and not _raw_clarify_reply:
+                logger.info(
+                    "Gateway retained pending clarify after an image-only reply "
+                    "(session=%s, id=%s)",
+                    _quick_key,
+                    _pending_clarify.clarify_id,
+                )
+                return (
+                    "I'm still waiting for your text reply to my question. "
+                    "Image-only replies can't be used as the answer — "
+                    "please reply with text."
+                )
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks
@@ -16560,9 +16601,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
     async def _prepare_clarify_reply_text(self, event) -> str:
-        """Return raw text or successful voice transcripts for a clarify reply."""
+        """Return raw text or successful voice transcripts for a clarify reply.
+
+        Feishu image placeholders (``[Image]`` / ``[Image: alt]``) are
+        stripped so they can never be resolved as a clarify answer; the
+        real attachment is carried separately in ``event.media_urls`` and
+        is delivered to the vision tool by the normal media-routing block
+        (#81117).
+        """
         if not self._pending_event_audio_paths(event):
-            return (event.text or "").strip()
+            return _strip_clarify_image_placeholders((event.text or "").strip())
 
         _, successful_transcripts = await self._transcribe_pending_audio_event_once(
             event, "",
@@ -22167,6 +22215,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _event_media_is_stt_input(event, i):
                 audio_paths.append(path)
         return audio_paths
+
+    def _pending_event_image_paths(self, event) -> List[str]:
+        """Return image attachment paths carried by a pending event.
+
+        Mirrors :meth:`_pending_event_audio_paths` for the image-routing
+        path so the pending-clarify branch can tell an image-only reply
+        apart from a real caption. Classification trusts the per-attachment
+        MIME (falling back to ``PHOTO``) so a document uploaded alongside
+        an image is never mis-classified here (#81117).
+        """
+        image_paths: List[str] = []
+        media_urls = getattr(event, "media_urls", None) or []
+        for i, path in enumerate(media_urls):
+            if _event_media_is_image(event, i):
+                image_paths.append(path)
+        return image_paths
 
     async def _transcribe_pending_audio_event_once(
         self,

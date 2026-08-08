@@ -60,6 +60,8 @@ def _get_wsecret(name, default=None):
 
 logger = logging.getLogger(__name__)
 
+_MISSING_SECRET = object()
+
 
 class WhatsAppBehaviorMixin:
     """Shared behavior for all WhatsApp adapters (Baileys + Cloud API).
@@ -169,11 +171,12 @@ class WhatsAppBehaviorMixin:
         """
         source = getattr(self, "_dm_allowlist_source", None)
         if isinstance(source, str) and source != "config":
-            if source in os.environ:
-                return self._coerce_allow_list(os.environ.get(source, ""))
-            # Key removed (e.g. sole-entry pairing revoke) — do not revive the
-            # stale construction snapshot.
-            return set()
+            raw = _get_wsecret(source, _MISSING_SECRET)
+            if raw is _MISSING_SECRET:
+                # Key removed (e.g. sole-entry pairing revoke) — do not revive
+                # the stale construction snapshot.
+                return set()
+            return self._coerce_allow_list(raw)
         return set(self._allow_from or ())
 
     # ------------------------------------------------------------------ JID helpers

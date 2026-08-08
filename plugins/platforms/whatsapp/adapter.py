@@ -34,7 +34,7 @@ from hermes_constants import (
     with_hermes_node_path,
 )
 
-def _wenv(name: str, default: str = "") -> str:
+def _wenv(name: str, default: Any = "") -> Any:
     """Read a WHATSAPP_* env var through the profile secret scope.
 
     Under multiplexing, ``os.getenv`` bypasses the per-profile ``.env`` and
@@ -355,6 +355,36 @@ def _file_content_hash(path: Path) -> str:
         return ""
 
 
+def _serialize_bridge_allowlist(values) -> str:
+    """Return a stable bridge env representation for an effective allowlist."""
+    return ",".join(
+        sorted(str(value).strip() for value in (values or ()) if str(value).strip())
+    )
+
+
+def _bridge_access_policy_hash(
+    *,
+    mode: str,
+    dm_policy: str,
+    allowed_users,
+    group_policy: str,
+    group_allowed_users,
+    forward_owner_messages: bool,
+) -> str:
+    """Fingerprint access settings that are snapshotted by the Node bridge."""
+    import hashlib
+
+    fields = (
+        str(mode or "self-chat"),
+        str(dm_policy or "open").strip().lower(),
+        _serialize_bridge_allowlist(allowed_users),
+        str(group_policy or "pairing").strip().lower(),
+        _serialize_bridge_allowlist(group_allowed_users),
+        "true" if forward_owner_messages else "false",
+    )
+    return hashlib.sha256("\0".join(fields).encode("utf-8")).hexdigest()[:16]
+
+
 def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
@@ -449,7 +479,25 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             allow_raw = None
         self._allow_from = self._coerce_allow_list(allow_raw)
         self._group_policy = str(config.extra.get("group_policy") or _wenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        if "group_allow_from" in config.extra:
+            self._group_allowlist_source = "config"
+            group_allow_raw = config.extra.get("group_allow_from")
+        elif "groupAllowFrom" in config.extra:
+            self._group_allowlist_source = "config"
+            group_allow_raw = config.extra.get("groupAllowFrom")
+        else:
+            canonical_group_allow = _wenv("WHATSAPP_GROUP_ALLOWED_USERS", None)
+            legacy_group_allow = _wenv("WHATSAPP_GROUP_ALLOW_FROM", None)
+            if canonical_group_allow is not None:
+                self._group_allowlist_source = "WHATSAPP_GROUP_ALLOWED_USERS"
+                group_allow_raw = canonical_group_allow
+            elif legacy_group_allow is not None:
+                self._group_allowlist_source = "WHATSAPP_GROUP_ALLOW_FROM"
+                group_allow_raw = legacy_group_allow
+            else:
+                self._group_allowlist_source = None
+                group_allow_raw = None
+        self._group_allow_from = self._coerce_allow_list(group_allow_raw)
         read_receipts = config.extra.get("send_read_receipts", False)
         self._send_read_receipts = (
             read_receipts if isinstance(read_receipts, bool)
@@ -614,7 +662,62 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
             
-            # Check if bridge is already running and connected
+            # Check if bridge is already running and connected. Access-policy
+            # settings are snapshotted by Node at process start, so bridge reuse
+            # requires both the script and effective policy fingerprints to match.
+            whatsapp_mode = _wenv("WHATSAPP_MODE", "self-chat")
+            effective_dm_policy = getattr(
+                self,
+                "_dm_policy",
+                str(_wenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower(),
+            )
+            # Pairing approve/revoke updates env-backed DM allowlists live. Read
+            # that source through _wenv so multiplexed profiles cannot borrow a
+            # process-global allowlist from another profile; explicit config
+            # remains authoritative over any env carrier.
+            dm_allowlist_source = getattr(self, "_dm_allowlist_source", None)
+            if dm_allowlist_source == "config":
+                effective_allowed_users = set(getattr(self, "_allow_from", ()) or ())
+            elif isinstance(dm_allowlist_source, str):
+                effective_allowed_users = self._coerce_allow_list(
+                    _wenv(dm_allowlist_source, "")
+                )
+            elif hasattr(self, "_allow_from"):
+                effective_allowed_users = set(self._allow_from or ())
+            else:
+                effective_allowed_users = self._coerce_allow_list(
+                    _wenv("WHATSAPP_ALLOWED_USERS", "")
+                )
+            effective_group_policy = getattr(
+                self,
+                "_group_policy",
+                str(_wenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower(),
+            )
+            group_allowlist_source = getattr(self, "_group_allowlist_source", None)
+            if group_allowlist_source == "config":
+                effective_group_allowed_users = set(
+                    getattr(self, "_group_allow_from", ()) or ()
+                )
+            elif isinstance(group_allowlist_source, str):
+                live_group_allow = _wenv(group_allowlist_source, None)
+                effective_group_allowed_users = self._coerce_allow_list(
+                    live_group_allow
+                )
+            elif hasattr(self, "_group_allow_from"):
+                effective_group_allowed_users = set(self._group_allow_from or ())
+            else:
+                effective_group_allowed_users = set()
+            effective_forward_owner_messages = _wenv(
+                "WHATSAPP_FORWARD_OWNER_MESSAGES", "false"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            expected_policy_hash = _bridge_access_policy_hash(
+                mode=whatsapp_mode,
+                dm_policy=effective_dm_policy,
+                allowed_users=effective_allowed_users,
+                group_policy=effective_group_policy,
+                group_allowed_users=effective_group_allowed_users,
+                forward_owner_messages=effective_forward_owner_messages,
+            )
             import aiohttp
             try:
                 async with aiohttp.ClientSession() as session:
@@ -627,36 +730,38 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             bridge_status = data.get("status", "unknown")
                             if bridge_status == "connected":
                                 # Staleness handshake: only reuse a running
-                                # bridge if it is serving the same bridge.js
-                                # that is on disk right now.  A long-lived
-                                # bridge survives gateway restarts AND
-                                # `hermes update`, so without this check it
-                                # keeps serving pre-update code forever
-                                # (e.g. no inbound media download).  Old
-                                # bridges that don't report scriptHash are
-                                # treated as stale by definition.
+                                # bridge when both its bridge.js source and its
+                                # snapshotted access policy match current state.
+                                # A long-lived bridge survives gateway restarts
+                                # AND `hermes update`; either mismatch can retain
+                                # stale behavior or authorization. Old bridges
+                                # missing either hash are stale by definition.
                                 running_hash = data.get("scriptHash", "")
+                                running_policy_hash = data.get("policyHash", "")
                                 disk_hash = _file_content_hash(bridge_path)
                                 running_read_receipts = bool(data.get("sendReadReceipts", False))
+                                code_matches = bool(
+                                    running_hash and disk_hash and running_hash == disk_hash
+                                )
+                                policy_matches = bool(
+                                    running_policy_hash
+                                    and running_policy_hash == expected_policy_hash
+                                )
                                 config_matches = running_read_receipts == self._send_read_receipts
-                                if (
-                                    running_hash
-                                    and disk_hash
-                                    and running_hash == disk_hash
-                                    and config_matches
-                                ):
+                                if code_matches and policy_matches and config_matches:
                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                                     self._mark_connected()
                                     self._bridge_process = None  # Not managed by us
                                     self._http_session = aiohttp.ClientSession()
                                     self._poll_task = asyncio.create_task(self._poll_messages())
                                     return True
-                                stale_reason = (
-                                    f"running={running_hash or 'unversioned'}, disk={disk_hash}"
-                                    if running_hash != disk_hash
-                                    else "send_read_receipts config changed"
+                                print(
+                                    f"[{self.name}] Running bridge is stale "
+                                    f"(script={running_hash or 'unversioned'}/{disk_hash}, "
+                                    f"policy={running_policy_hash or 'unversioned'}/{expected_policy_hash}, "
+                                    f"send_read_receipts={running_read_receipts}/{self._send_read_receipts}), "
+                                    "restarting"
                                 )
-                                print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
@@ -670,7 +775,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Start the bridge process in its own process group.
             # Route output to a log file so QR codes, errors, and reconnection
             # messages are preserved for troubleshooting.
-            whatsapp_mode = _wenv("WHATSAPP_MODE", "self-chat")
             self._bridge_log = self._session_path.parent / "bridge.log"
             bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_log_fh = bridge_log_fh
@@ -709,6 +813,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 _v = _wenv(_key)
                 if _v:
                     bridge_env[_key] = _v
+            # Config-derived access values are authoritative over copied/profile
+            # environment values and must exactly match the policy fingerprint.
+            bridge_env["WHATSAPP_DM_POLICY"] = effective_dm_policy
+            bridge_env["WHATSAPP_ALLOWED_USERS"] = _serialize_bridge_allowlist(
+                effective_allowed_users
+            )
+            bridge_env["WHATSAPP_GROUP_POLICY"] = effective_group_policy
+            bridge_env["WHATSAPP_GROUP_ALLOWED_USERS"] = _serialize_bridge_allowlist(
+                effective_group_allowed_users
+            )
+            bridge_env["WHATSAPP_FORWARD_OWNER_MESSAGES"] = (
+                "true" if effective_forward_owner_messages else "false"
+            )
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
             # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges

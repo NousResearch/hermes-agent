@@ -574,6 +574,99 @@ class TestRenameProfile:
 
 
 # ===================================================================
+# TestMigrateHonchoProfileHostWrite
+# ===================================================================
+
+class TestMigrateHonchoProfileHostWrite:
+    """The rename-time Honcho rewrite must not degrade the file it rewrites.
+
+    ``_migrate_honcho_profile_host`` rewrites files that carry the Honcho
+    ``apiKey`` — under a browser OAuth grant that is the auto-refreshing
+    access token — and one of its candidates is the global
+    ``~/.honcho/config.json`` shared with every other Honcho-enabled app.
+    """
+
+    @staticmethod
+    def _host_block(profile):
+        return {
+            "hosts": {
+                f"hermes_{profile}": {
+                    "apiKey": "test-honcho-access-token",
+                    "aiPeer": profile,
+                    "workspace": "hermes",
+                    "enabled": True,
+                }
+            }
+        }
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    def test_rewrite_keeps_credential_config_owner_only(self, profile_env):
+        """A rename must not widen the mode of a file holding the apiKey."""
+        tmp_path = profile_env
+        path = tmp_path / ".hermes" / "honcho.json"
+        path.write_text(json.dumps(self._host_block("oldname")))
+        os.chmod(path, 0o600)
+
+        # Pin the umask so the pre-fix temp file is deterministically 0o644.
+        old_umask = os.umask(0o022)
+        try:
+            profiles._migrate_honcho_profile_host("oldname", "newname", tmp_path / "absent")
+        finally:
+            os.umask(old_umask)
+
+        assert path.stat().st_mode & 0o777 == 0o600
+        cfg = json.loads(path.read_text())
+        assert "hermes_oldname" not in cfg["hosts"]
+        assert cfg["hosts"]["hermes_newname"]["apiKey"] == "test-honcho-access-token"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+    def test_rewrite_preserves_a_symlinked_config(self, profile_env):
+        """A managed deployment symlinks honcho.json; the link must survive."""
+        tmp_path = profile_env
+        real = tmp_path / "dotfiles" / "honcho.json"
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_text(json.dumps(self._host_block("oldname")))
+        os.chmod(real, 0o600)
+        link = tmp_path / ".hermes" / "honcho.json"
+        link.symlink_to(real)
+
+        profiles._migrate_honcho_profile_host("oldname", "newname", tmp_path / "absent")
+
+        assert link.is_symlink()
+        assert link.resolve() == real.resolve()
+        assert real.stat().st_mode & 0o777 == 0o600
+        cfg = json.loads(real.read_text())
+        assert cfg["hosts"]["hermes_newname"]["apiKey"] == "test-honcho-access-token"
+
+    def test_unwritable_candidate_still_advances_to_the_next(self, profile_env, monkeypatch):
+        """The fail-soft ``continue`` must survive the switch to the helper."""
+        import utils
+
+        tmp_path = profile_env
+        new_dir = tmp_path / ".hermes" / "profiles" / "newname"
+        new_dir.mkdir(parents=True, exist_ok=True)
+        first = new_dir / "honcho.json"
+        first.write_text(json.dumps(self._host_block("oldname")))
+        second = tmp_path / ".hermes" / "honcho.json"
+        second.write_text(json.dumps(self._host_block("oldname")))
+
+        real_write = utils.atomic_json_write
+
+        def _fail_on_first(path, data, **kwargs):
+            if Path(path) == first:
+                raise OSError("read-only file system")
+            return real_write(path, data, **kwargs)
+
+        monkeypatch.setattr(utils, "atomic_json_write", _fail_on_first)
+
+        profiles._migrate_honcho_profile_host("oldname", "newname", new_dir)
+
+        assert "hermes_oldname" in json.loads(first.read_text())["hosts"]
+        assert "hermes_newname" in json.loads(second.read_text())["hosts"]
+        assert not list(second.parent.glob("*.tmp"))
+
+
+# ===================================================================
 # TestExportImport
 # ===================================================================
 

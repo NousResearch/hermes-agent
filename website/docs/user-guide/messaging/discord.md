@@ -455,6 +455,35 @@ discord:
 
 Useful for channels dedicated to bot interaction where threads would add unnecessary noise.
 
+#### `discord.guilds`
+
+**Type:** mapping of guild ID → settings — **Default:** `{}`
+
+Per-guild overrides for the settings above. Key the map by Discord server (guild) ID, and each entry accepts the same keys as the global `discord` block — `require_mention`, `allowed_channels`, `ignored_channels`, `free_response_channels`, `no_thread_channels`, and `auto_thread`. Guild entries take priority over the global setting for messages and slash commands in that server; everything else keeps the global behavior. This lets one bot behave differently in each server it is invited to (e.g. free responses in your own server, mention-gated elsewhere):
+
+```yaml
+discord:
+  require_mention: true            # global default
+  guilds:
+    "123456789012345678":          # your home server: relaxed
+      require_mention: false
+      free_response_channels:
+        - 111111111111111111       # announcements channel
+    "876543210987654321":          # a public server: locked down
+      require_mention: true
+      allowed_channels:
+        - 222222222222222222       # bot only answers here
+        - 333333333333333333
+      auto_thread: false
+```
+
+Notes:
+
+- Guild IDs are strings. Quote them in YAML — Discord snowflake IDs can exceed 64-bit signed range and bare numbers may be misparsed.
+- DM channels have no guild and always use the global settings.
+- A guild-scoped `allowed_channels` acts as that server's fail-closed whitelist, just like the global one. If a guild has no `allowed_channels` entry, the global allowlist (or `DISCORD_ALLOWED_CHANNELS`) still applies to it.
+- Per-guild config is read from `config.yaml` only; there is no per-guild environment variable form.
+
 #### `discord.channel_prompts`
 
 **Type:** mapping — **Default:** `{}`

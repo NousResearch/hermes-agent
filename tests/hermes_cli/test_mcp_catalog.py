@@ -179,6 +179,118 @@ class TestManifestParsing:
             _parse_manifest(path)
 
 
+class TestCatalogPathVariables:
+    def test_posix_bootstrap_paths_are_shell_quoted(self):
+        from hermes_cli.mcp_catalog import _expand_catalog_vars
+
+        install_dir = Path("/tmp/MCP installs/n8n")
+        command = _expand_catalog_vars(
+            "${PYTHON} -m venv .venv && ${VENV_PYTHON} -m pip --version",
+            install_dir,
+            for_shell=True,
+            os_name="posix",
+            python_executable="/opt/Hermes Python/bin/python",
+        )
+
+        assert command == (
+            "'/opt/Hermes Python/bin/python' -m venv .venv && "
+            "'/tmp/MCP installs/n8n/.venv/bin/python' -m pip --version"
+        )
+
+    def test_windows_transport_path_uses_scripts_python(self):
+        from hermes_cli.mcp_catalog import _expand_catalog_vars
+
+        command = _expand_catalog_vars(
+            "${VENV_PYTHON}",
+            Path("C:/MCP installs/n8n"),
+            os_name="nt",
+        )
+
+        assert command == (
+            r"C:\MCP installs\n8n\.venv\Scripts\python.exe"
+        )
+
+    def test_windows_bootstrap_paths_are_cmd_quoted(self):
+        from hermes_cli.mcp_catalog import _expand_catalog_vars
+
+        command = _expand_catalog_vars(
+            "${PYTHON} -m venv .venv && ${VENV_PYTHON} -m pip --version",
+            Path("C:/MCP installs/n8n"),
+            for_shell=True,
+            os_name="nt",
+            python_executable=r"C:\Program Files\Python\python.exe",
+        )
+
+        assert command == (
+            '"C:\\Program Files\\Python\\python.exe" -m venv .venv && '
+            '"C:\\MCP installs\\n8n\\.venv\\Scripts\\python.exe" '
+            "-m pip --version"
+        )
+
+    @pytest.mark.parametrize("variable", ["${INSTALL_DIR}", "${VENV_PYTHON}"])
+    def test_install_scoped_variable_requires_install_block(self, variable):
+        from hermes_cli.mcp_catalog import CatalogError, _expand_catalog_vars
+
+        with pytest.raises(CatalogError, match="no install block"):
+            _expand_catalog_vars(variable, None)
+
+    def test_n8n_server_config_uses_windows_venv_interpreter(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli import mcp_catalog
+
+        entry = mcp_catalog._parse_manifest(
+            mcp_catalog._catalog_root() / "n8n" / "manifest.yaml"
+        )
+        monkeypatch.setattr(mcp_catalog, "_runtime_os_name", lambda: "nt")
+
+        cfg = mcp_catalog._build_server_config(
+            entry, Path("C:/MCP installs/n8n")
+        )
+
+        assert cfg["command"] == (
+            r"C:\MCP installs\n8n\.venv\Scripts\python.exe"
+        )
+        assert cfg["args"] == ["C:/MCP installs/n8n/server.py"]
+
+    def test_bootstrap_expands_runtime_paths_before_shell_execution(
+        self, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        from hermes_cli import mcp_catalog
+
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(mcp_catalog, "_runtime_os_name", lambda: "posix")
+        monkeypatch.setattr(
+            mcp_catalog,
+            "_runtime_python_executable",
+            lambda: "/opt/Hermes Python/bin/python",
+        )
+        monkeypatch.setattr(mcp_catalog.subprocess, "run", fake_run)
+
+        cwd = Path("/tmp/MCP installs/n8n")
+        mcp_catalog._run_bootstrap(
+            cwd,
+            [
+                "${PYTHON} -m venv .venv",
+                "${VENV_PYTHON} -m pip --version",
+            ],
+        )
+
+        assert [call[0] for call in calls] == [
+            "'/opt/Hermes Python/bin/python' -m venv .venv",
+            "'/tmp/MCP installs/n8n/.venv/bin/python' -m pip --version",
+        ]
+        assert all(call[1] == {"cwd": str(cwd), "shell": True} for call in calls)
+
+
 
 
 
@@ -636,3 +748,18 @@ class TestShippedCatalog:
                     )
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)
+
+    def test_n8n_uses_portable_pinned_python_bootstrap(self, monkeypatch):
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _catalog_root, _parse_manifest
+
+        entry = _parse_manifest(_catalog_root() / "n8n" / "manifest.yaml")
+
+        assert entry.transport.command == "${VENV_PYTHON}"
+        assert entry.install is not None
+        bootstrap = entry.install.bootstrap
+        assert bootstrap[0] == "${PYTHON} -m venv .venv"
+        assert "mcp==1.4.1" in bootstrap[1]
+        assert "pydantic>=2.7,<2.10" in bootstrap[1]
+        assert "python3" not in "\n".join(bootstrap)
+        assert ".venv/bin" not in "\n".join(bootstrap)

@@ -47,6 +47,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
+from plugins.platforms.email.uid_cursor import EmailUidCursor
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,35 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
         )
     except Exception as e:  # noqa: BLE001 — best-effort, never fatal
         logger.debug("[Email] IMAP ID command not accepted: %s", e)
+
+
+def _uid_int(uid: Any) -> int:
+    """Numeric value of an IMAP UID token, or 0 when it is not a number."""
+    try:
+        return int(uid)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _read_uidvalidity(imap: "imaplib.IMAP4") -> str:
+    """UIDVALIDITY of the selected mailbox, or '' when the server sent none.
+
+    SELECT already carries UIDVALIDITY in an untagged response that imaplib
+    buffers, so reading it here costs no extra round trip.  STATUS would cost
+    one, and RFC 3501 discourages STATUS against the mailbox that is currently
+    selected.
+    """
+    try:
+        _typ, data = imap.response("UIDVALIDITY")
+    except Exception as e:  # noqa: BLE001 — best-effort; '' just re-baselines
+        logger.debug("[Email] Could not read UIDVALIDITY: %s", e)
+        return ""
+    if not data or not data[0]:
+        return ""
+    value = data[0]
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("ascii", errors="replace")
+    return str(value).strip()
 
 
 def _is_automated_sender(address: str, headers: dict) -> bool:
@@ -526,6 +556,24 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
+        # Resume the INBOX where the last run stopped instead of re-baselining
+        # against the whole mailbox on every start, so mail that arrived while
+        # the gateway was down still gets answered (#80925). Opt in via
+        # config.yaml:
+        #   platforms:
+        #     email:
+        #       resume_after_downtime: true
+        # Default off: an existing install keeps today's behavior exactly, and
+        # nothing is read from or written to disk. See uid_cursor.py for what is
+        # persisted and why it is one integer rather than a set of UIDs.
+        # The cursor exists only when the option is on, so `is not None` is the
+        # single test for "resume mode" everywhere below.
+        self._uid_cursor: Optional[EmailUidCursor] = (
+            EmailUidCursor(self._address)
+            if bool(extra.get("resume_after_downtime", False))
+            else None
+        )
+
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
@@ -550,6 +598,63 @@ class EmailAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
+
+    def _establish_resume_point(
+        self, imap: "imaplib.IMAP4", cursor: EmailUidCursor
+    ) -> None:
+        """Decide which UID this run resumes after. INBOX must be selected.
+
+        A cursor stored in the same UIDVALIDITY generation is resumed from:
+        everything above it is mail that arrived while the gateway was down, and
+        the ordinary poll loop dispatches it on its first tick — there is no
+        separate catch-up path.
+
+        With no usable cursor — first opted-in start, an unreadable file, or a
+        mailbox whose UIDVALIDITY changed — we baseline at the highest UID
+        present. That is exactly the default path's promise that mail already in
+        the INBOX is never answered.
+
+        A failed baseline search is not an empty mailbox: the 0 it leaves
+        behind is indistinguishable from one, and recording it would make the
+        first poll search UID 1:* and answer the whole INBOX. The run drops
+        the cursor and behaves as if the option were off instead; the next
+        start tries the baseline again.
+        """
+        uidvalidity = _read_uidvalidity(imap)
+        if not uidvalidity:
+            logger.warning(
+                "[Email] Mailbox reported no UIDVALIDITY — resume_after_downtime "
+                "cannot store a resume point and behaves as if it were off."
+            )
+
+        resume = cursor.resume_from(uidvalidity)
+        if resume is not None:
+            logger.info(
+                "[Email] IMAP connection test passed. Resuming after UID %d — "
+                "mail that arrived since then will be answered.",
+                resume,
+            )
+            return
+
+        status, data = imap.uid("search", None, "ALL")
+        if status != "OK":
+            logger.warning(
+                "[Email] Baseline UID search failed (%s) — no resume point "
+                "this run; behaving as if resume_after_downtime were off.",
+                status,
+            )
+            self._uid_cursor = None
+            return
+        highest = 0
+        if data and data[0]:
+            for uid in data[0].split():
+                highest = max(highest, _uid_int(uid))
+        cursor.baseline(uidvalidity, highest)
+        logger.info(
+            "[Email] IMAP connection test passed. No usable resume point — "
+            "baselined at UID %d; mail already in the INBOX is not answered.",
+            highest,
+        )
 
     def _connect_smtp(self) -> smtplib.SMTP:
         """Create an SMTP connection, selecting the correct protocol for the port.
@@ -630,16 +735,20 @@ class EmailAdapter(BasePlatformAdapter):
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
             _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
+            cursor = self._uid_cursor
+            if cursor is not None:
+                self._establish_resume_point(imap, cursor)
+            else:
+                # Mark all existing messages as seen so we only process new ones
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    for uid in data[0].split():
+                        self._seen_uids.add(uid)
+                # Keep only the most recent UIDs to prevent unbounded growth
+                self._trim_seen_uids()
+                logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
             imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             return False
@@ -695,6 +804,7 @@ class EmailAdapter(BasePlatformAdapter):
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
+        cursor = self._uid_cursor
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
@@ -702,17 +812,43 @@ class EmailAdapter(BasePlatformAdapter):
                 _send_imap_id(imap)
                 imap.select("INBOX")
 
-                status, data = imap.uid("search", None, "UNSEEN")
+                if cursor is not None:
+                    # The persisted cursor is the queue, not the server-side
+                    # \Seen flag: a human opening the mailbox in a mail client
+                    # sets \Seen without the agent having answered anything,
+                    # which would hide that mail from an UNSEEN search forever.
+                    status, data = imap.uid(
+                        "search", None, "UID", f"{cursor.uid + 1}:*"
+                    )
+                else:
+                    status, data = imap.uid("search", None, "UNSEEN")
                 if status != "OK" or not data or not data[0]:
                     return results
 
+                # Snapshot the cursor: it advances inside the loop, and filtering
+                # against a moving value would drop a lower UID if the server
+                # returned the batch out of order.
+                resume_after = cursor.uid if cursor is not None else 0
+
                 for uid in data[0].split():
-                    if uid in self._seen_uids:
-                        continue
-                    self._seen_uids.add(uid)
-                    # Trim periodically to prevent unbounded memory growth
-                    if len(self._seen_uids) > self._seen_uids_max:
-                        self._trim_seen_uids()
+                    if cursor is not None:
+                        # RFC 3501: a UID range ending in '*' always includes the
+                        # last message in the mailbox, even when the range starts
+                        # above it — so filter what the server hands back.
+                        if _uid_int(uid) <= resume_after:
+                            continue
+                        # Commit here, before the FETCH that sets \Seen, which is
+                        # exactly where the in-memory skip set commits on the
+                        # default path. The cursor therefore means precisely what
+                        # that set already means, and this path is never worse.
+                        cursor.advance(_uid_int(uid))
+                    else:
+                        if uid in self._seen_uids:
+                            continue
+                        self._seen_uids.add(uid)
+                        # Trim periodically to prevent unbounded memory growth
+                        if len(self._seen_uids) > self._seen_uids_max:
+                            self._trim_seen_uids()
 
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":
@@ -786,6 +922,10 @@ class EmailAdapter(BasePlatformAdapter):
                     imap.logout()
                 except Exception:
                     pass
+                # One write per poll that moved the cursor, including the polls
+                # that returned early above.
+                if cursor is not None:
+                    cursor.flush()
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
         return results

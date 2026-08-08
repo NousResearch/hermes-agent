@@ -907,5 +907,409 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertFalse(ok, reason)
 
 
+class TestUidCursorFile(unittest.TestCase):
+    """The persisted resume point itself (plugins/platforms/email/uid_cursor.py)."""
+
+    def _path(self, tmp):
+        from pathlib import Path
+        return Path(tmp) / "email_uid_cursor_hermes_test.com.json"
+
+    def _cursor(self, tmp):
+        from plugins.platforms.email.uid_cursor import EmailUidCursor
+        return EmailUidCursor("hermes@test.com", path=self._path(tmp))
+
+    def test_missing_file_means_no_resume_point(self):
+        """A mailbox that was never tracked must re-baseline, not resume from 0."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            cursor = self._cursor(tmp)
+            self.assertIsNone(cursor.resume_from("42"))
+            self.assertEqual(cursor.uid, 0)
+
+    def test_baseline_round_trips_across_instances(self):
+        """A restart reads back the UID the previous run stopped at."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            self._cursor(tmp).baseline("42", 40)
+            self.assertEqual(self._cursor(tmp).resume_from("42"), 40)
+
+    def test_other_uidvalidity_generation_is_not_resumed(self):
+        """UIDs are only comparable inside one UIDVALIDITY generation."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            self._cursor(tmp).baseline("42", 40)
+            self.assertIsNone(self._cursor(tmp).resume_from("99"))
+
+    def test_advance_is_monotonic(self):
+        """An out-of-order UID must never drag the cursor backwards."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            cursor = self._cursor(tmp)
+            cursor.baseline("42", 40)
+            cursor.advance(50)
+            cursor.advance(20)
+            cursor.flush()
+            self.assertEqual(self._cursor(tmp).resume_from("42"), 50)
+
+    def test_corrupt_file_degrades_to_no_resume_point(self):
+        """A truncated write must re-baseline rather than raise on startup."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            self._path(tmp).write_text("{not json", encoding="utf-8")
+            self.assertIsNone(self._cursor(tmp).resume_from("42"))
+
+    def test_baseline_at_zero_is_a_resume_point(self):
+        """An empty mailbox baselines at UID 0; that cursor must still resume.
+
+        Treating a stored 0 as "no cursor" would re-baseline past mail that
+        arrived during the next outage — the #80925 hole again.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            self._cursor(tmp).baseline("42", 0)
+            self.assertEqual(self._cursor(tmp).resume_from("42"), 0)
+
+    def test_unwritable_path_does_not_raise(self):
+        """Persistence is best-effort: polling must not break on a bad path."""
+        import tempfile
+        from pathlib import Path
+        from plugins.platforms.email.uid_cursor import EmailUidCursor
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = Path(tmp) / "blocker"
+            blocker.write_text("not a directory", encoding="utf-8")
+            cursor = EmailUidCursor("hermes@test.com", path=blocker / "cursor.json")
+            cursor.baseline("42", 40)          # must not raise
+            cursor.advance(41)
+            cursor.flush()                     # must not raise
+            self.assertEqual(cursor.uid, 41)
+
+    def test_path_is_per_mailbox_address(self):
+        """Two addresses under one profile must not share a cursor file.
+
+        Profile multiplexing can resolve two email adapters to the same home; a
+        shared file would make each mailbox invalidate the other's cursor on
+        every connect and silently re-baseline.
+        """
+        import tempfile
+        from pathlib import Path
+        from plugins.platforms.email.uid_cursor import cursor_path
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"HERMES_HOME": tmp}):
+                one = cursor_path("one@test.com")
+                two = cursor_path("two@test.com")
+            self.assertNotEqual(one, two)
+            self.assertEqual(one.parent, Path(tmp) / "gateway")
+
+
+class TestResumeAfterDowntime(unittest.TestCase):
+    """platforms.email.resume_after_downtime — the #80925 downtime backlog."""
+
+    ADDRESS = "hermes@test.com"
+
+    def _make_adapter(self, home, resume=True):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": self.ADDRESS,
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "HERMES_HOME": home,
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            extra = {"resume_after_downtime": True} if resume else {}
+            return EmailAdapter(PlatformConfig(enabled=True, extra=extra))
+
+    def _cursor_path(self, home):
+        from plugins.platforms.email.uid_cursor import cursor_path
+        with patch.dict(os.environ, {"HERMES_HOME": home}):
+            return cursor_path(self.ADDRESS)
+
+    def _seed_cursor(self, home, uidvalidity, uid):
+        """Write the cursor a previous run would have left behind."""
+        from plugins.platforms.email.uid_cursor import EmailUidCursor
+        path = self._cursor_path(home)
+        EmailUidCursor(self.ADDRESS, path=path).baseline(uidvalidity, uid)
+        return path
+
+    def _email(self, subject):
+        msg = MIMEText("body", "plain", "utf-8")
+        msg["From"] = "user@test.com"
+        msg["Subject"] = subject
+        msg["Message-ID"] = f"<{subject}@test.com>"
+        return msg
+
+    def _mock_imap(self, uidvalidity=b"42", search=b"", messages=None):
+        messages = messages or {}
+        mock_imap = MagicMock()
+        mock_imap.response.return_value = ("UIDVALIDITY", [uidvalidity])
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [search])
+            if command == "fetch":
+                uid = args[0]
+                if uid in messages:
+                    return ("OK", [(uid, messages[uid].as_bytes())])
+                return ("NO", [])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+        return mock_imap
+
+    def _connect(self, adapter, mock_imap):
+        """Run connect() against a mocked IMAP/SMTP, with the poll loop stubbed.
+
+        connect() starts the poll task, and asyncio.run() gives it one step
+        during shutdown cancellation — enough for run_in_executor to submit a
+        real _fetch_new_messages to a thread. That thread outlives the patch
+        context (racing the assertions, or worse, dialing the real IMAP host),
+        so the loop itself is stubbed out instead of cancelled after the fact.
+        """
+        import asyncio
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP", return_value=MagicMock()), \
+             patch.object(type(adapter), "_poll_loop", new=AsyncMock()):
+            result = asyncio.run(adapter.connect())
+        adapter._running = False
+        if adapter._poll_task:
+            adapter._poll_task.cancel()
+        return result
+
+    def _search_args(self, mock_imap):
+        """Arguments of the IMAP UID SEARCH the adapter issued."""
+        for call in mock_imap.uid.call_args_list:
+            if call.args and call.args[0] == "search":
+                return call.args
+        return ()
+
+    def test_first_enable_baselines_and_answers_nothing(self):
+        """Turning the option on must not answer mail already in the INBOX."""
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            adapter = self._make_adapter(home)
+            mock_imap = self._mock_imap(search=b"1 2 3")
+
+            self.assertTrue(self._connect(adapter, mock_imap))
+
+            self.assertEqual(adapter._uid_cursor.uid, 3)
+            # The startup skip set is what swallowed downtime mail; the resume
+            # path must not populate it at all.
+            self.assertEqual(adapter._seen_uids, set())
+            stored = json.loads(self._cursor_path(home).read_text(encoding="utf-8"))
+            self.assertEqual(stored["uid"], 3)
+            self.assertEqual(stored["uidvalidity"], "42")
+
+    def test_downtime_mail_is_answered_after_restart(self):
+        """The reported bug: mail that arrived while down is dispatched."""
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            path = self._seed_cursor(home, "42", 3)
+            adapter = self._make_adapter(home)
+            mock_imap = self._mock_imap(
+                search=b"4 5",
+                messages={b"4": self._email("Downtime one"),
+                          b"5": self._email("Downtime two")},
+            )
+
+            with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+                results = adapter._fetch_new_messages()
+
+            self.assertEqual([r["subject"] for r in results],
+                             ["Downtime one", "Downtime two"])
+            # Searched the UID range above the cursor, not UNSEEN.
+            self.assertEqual(self._search_args(mock_imap),
+                             ("search", None, "UID", "4:*"))
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["uid"], 5
+            )
+
+    def test_answered_mail_is_not_reanswered_after_restart(self):
+        """A UID at or below the cursor must never be dispatched again.
+
+        RFC 3501 makes an ``n:*`` range always include the mailbox's highest UID
+        even when n is above it, so the server hands back already-answered mail
+        on every poll; the cursor filter is what stops the reply loop.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            self._seed_cursor(home, "42", 5)
+            adapter = self._make_adapter(home)
+            mock_imap = self._mock_imap(
+                search=b"5", messages={b"5": self._email("Already answered")}
+            )
+
+            with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+                results = adapter._fetch_new_messages()
+
+            self.assertEqual(results, [])
+            self.assertEqual(adapter._uid_cursor.uid, 5)
+
+    def test_empty_mailbox_baseline_still_resumes(self):
+        """A stored cursor of UID 0 must resume, not trigger a re-baseline.
+
+        The baseline of a mailbox that was empty when the option kicked in is
+        0. Re-baselining on the next start would set the cursor past mail that
+        arrived during the outage — the #80925 hole again.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            self._seed_cursor(home, "42", 0)
+            adapter = self._make_adapter(home)
+            mock_imap = self._mock_imap(
+                search=b"1 2",
+                messages={b"1": self._email("Outage one"),
+                          b"2": self._email("Outage two")},
+            )
+
+            self.assertTrue(self._connect(adapter, mock_imap))
+            # Resumed at 0; a re-baseline here would move the cursor to 2 and
+            # swallow both waiting messages.
+            self.assertEqual(adapter._uid_cursor.uid, 0)
+
+            with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+                results = adapter._fetch_new_messages()
+
+            self.assertEqual(len(results), 2)
+            self.assertEqual(self._search_args(mock_imap),
+                             ("search", None, "UID", "1:*"))
+
+    def test_mail_a_human_already_read_is_still_answered(self):
+        """The server-side \\Seen flag must not act as the queue.
+
+        A person opening the mailbox in a mail client sets \\Seen without the
+        agent having answered anything, which hides that mail from an UNSEEN
+        search forever. The resume path must not ask for UNSEEN.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            self._seed_cursor(home, "42", 3)
+            adapter = self._make_adapter(home)
+            mock_imap = self._mock_imap(
+                search=b"4", messages={b"4": self._email("Read on a phone")}
+            )
+
+            with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+                results = adapter._fetch_new_messages()
+
+            self.assertEqual(len(results), 1)
+            self.assertNotIn("UNSEEN", self._search_args(mock_imap))
+
+    def test_uidvalidity_change_rebaselines_without_replay(self):
+        """A recreated mailbox must not be answered from UID 1."""
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            path = self._seed_cursor(home, "42", 3)
+            adapter = self._make_adapter(home)
+            mock_imap = self._mock_imap(uidvalidity=b"99", search=b"1 2 3 4 5")
+
+            self.assertTrue(self._connect(adapter, mock_imap))
+
+            self.assertEqual(adapter._uid_cursor.uid, 5)
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(stored["uidvalidity"], "99")
+            self.assertEqual(stored["uid"], 5)
+
+    def test_corrupt_cursor_file_rebaselines_without_replay(self):
+        """An unreadable cursor must degrade to today's behavior, not crash."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            path = self._seed_cursor(home, "42", 3)
+            path.write_text("{ truncated", encoding="utf-8")
+            adapter = self._make_adapter(home)
+            mock_imap = self._mock_imap(search=b"1 2 3 4")
+
+            self.assertTrue(self._connect(adapter, mock_imap))
+
+            self.assertEqual(adapter._uid_cursor.uid, 4)
+
+    def test_missing_uidvalidity_does_not_resume(self):
+        """Without a generation to pin UIDs to, re-baseline rather than guess."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            self._seed_cursor(home, "42", 3)
+            adapter = self._make_adapter(home)
+            mock_imap = self._mock_imap(search=b"1 2 3 4 5")
+            mock_imap.response.return_value = ("UIDVALIDITY", [None])
+
+            self.assertTrue(self._connect(adapter, mock_imap))
+
+            self.assertEqual(adapter._uid_cursor.uid, 5)
+
+    def test_failed_baseline_search_disables_resume_for_the_run(self):
+        """A non-OK baseline search must not record baseline 0.
+
+        Baseline 0 also means "empty mailbox", so recording it would make the
+        first poll search UID 1:* and answer the whole INBOX. The run must
+        degrade to the option-off UNSEEN path and write no cursor file.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            adapter = self._make_adapter(home)
+            mock_imap = self._mock_imap(search=b"")
+            ok_handler = mock_imap.uid.side_effect
+
+            def uid_handler(command, *args):
+                if command == "search" and args == (None, "ALL"):
+                    return ("NO", [])
+                return ok_handler(command, *args)
+
+            mock_imap.uid.side_effect = uid_handler
+
+            self.assertTrue(self._connect(adapter, mock_imap))
+
+            self.assertIsNone(adapter._uid_cursor)
+            self.assertFalse(self._cursor_path(home).exists())
+
+            fetch_imap = self._mock_imap(search=b"")
+            with patch("imaplib.IMAP4_SSL", return_value=fetch_imap):
+                adapter._fetch_new_messages()
+            self.assertEqual(self._search_args(fetch_imap),
+                             ("search", None, "UNSEEN"))
+
+    def test_default_keeps_todays_behavior(self):
+        """With the option off nothing changes and no state file is written."""
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as home:
+            adapter = self._make_adapter(home, resume=False)
+            self.assertIsNone(adapter._uid_cursor)
+
+            mock_imap = self._mock_imap(search=b"1 2 3")
+            self.assertTrue(self._connect(adapter, mock_imap))
+            self.assertEqual(len(adapter._seen_uids), 3)
+
+            fetch_imap = self._mock_imap(search=b"")
+            with patch("imaplib.IMAP4_SSL", return_value=fetch_imap):
+                adapter._fetch_new_messages()
+            self.assertEqual(self._search_args(fetch_imap),
+                             ("search", None, "UNSEEN"))
+            self.assertFalse((Path(home) / "gateway").exists())
+
+    def test_default_path_still_swallows_mail_present_at_startup(self):
+        """The #80925 behavior itself, pinned on the default path.
+
+        Mail sitting in the INBOX at connect() is marked seen and never
+        dispatched, however unread it is. This is the bug the opt-in path fixes
+        — see test_downtime_mail_is_answered_after_restart for the contrast —
+        and it must stay exactly this way when the option is off.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            adapter = self._make_adapter(home, resume=False)
+            self._connect(adapter, self._mock_imap(search=b"1 2 3"))
+
+            # UID 3 arrived while the gateway was down and is still UNSEEN.
+            fetch_imap = self._mock_imap(
+                search=b"3", messages={b"3": self._email("Sent during downtime")}
+            )
+            with patch("imaplib.IMAP4_SSL", return_value=fetch_imap):
+                results = adapter._fetch_new_messages()
+
+            self.assertEqual(results, [])
+
+
 if __name__ == "__main__":
     unittest.main()

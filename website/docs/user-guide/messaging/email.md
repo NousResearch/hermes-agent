@@ -138,6 +138,27 @@ platforms:
 
 When enabled, attachment and inline parts are skipped before payload decoding. The email body text is still processed normally.
 
+### Answering Mail That Arrived While the Gateway Was Down
+
+By default the adapter marks everything already in the INBOX as seen when it starts, so mail that arrived while the gateway was down is never answered — on that start or any later one. To resume where the previous run stopped instead, add to your `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    resume_after_downtime: true
+```
+
+Hermes then records the highest INBOX UID it has handled in `~/.hermes/gateway/email_uid_cursor_<address>.json` and, on the next start, processes everything above it.
+
+Turning the option on does not answer mail that is already sitting in the INBOX. The first start after enabling it records a baseline, and only mail arriving after that point is answered — so there is no burst of replies to old threads.
+
+Two consequences worth knowing:
+
+- The stored UID is the queue, not the `\Seen` flag. Mail you have already opened in a mail client is still answered, because a human reading a message is not the agent handling it.
+- If the mailbox's UIDVALIDITY changes — it was recreated, migrated, or restored from backup — the stored UID no longer refers to the same messages. Hermes records a fresh baseline and does not answer the existing mail.
+
+The record means the adapter accepted a message for processing, not that a reply was delivered. If the agent dies while composing an answer, that message is not retried.
+
 ---
 
 ## Access Control

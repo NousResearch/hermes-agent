@@ -1,6 +1,6 @@
 import type { useSensors } from '@dnd-kit/core'
 import type * as React from 'react'
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
+import { orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
   EnteredProjectContent,
   ProjectOverviewRow,
@@ -64,7 +65,9 @@ function SidebarSectionHeader({
     <div className="group/section flex shrink-0 items-center justify-between gap-1 pb-1 pt-1.5">
       {collapsible ? (
         <button
-          className="group/section-label flex w-fit items-center gap-1 bg-transparent text-left leading-none"
+          // min-w-0 lets the label truncate at narrow sidebar widths instead of
+          // pushing the header's trailing action icons out of view.
+          className="group/section-label flex w-fit min-w-0 items-center gap-1 bg-transparent text-left leading-none"
           onClick={onToggle}
           type="button"
         >
@@ -75,7 +78,7 @@ function SidebarSectionHeader({
           />
         </button>
       ) : (
-        <div className="flex w-fit items-center gap-1 leading-none">{labelBody}</div>
+        <div className="flex w-fit min-w-0 items-center gap-1 leading-none">{labelBody}</div>
       )}
       {action}
     </div>
@@ -130,6 +133,11 @@ interface SidebarSessionsSectionProps {
   // When false the section header is static (no caret/toggle) and always open.
   collapsible?: boolean
   sortable?: boolean
+  // The persisted drag order, applied WITHIN each date group (see
+  // orderRowsWithinGroups). Chronology decides the groups; this decides the
+  // sequence inside one, so a reorder no longer costs the whole list its
+  // dividers. Pinned passes nothing — its rows arrive in pin order already.
+  manualOrderIds?: string[]
   // The flat session list is the only hand-reorderable surface (grouped/project
   // views sort deterministically), so it owns the one ReorderableList.
   onReorderSessions?: (ids: string[]) => void
@@ -183,6 +191,7 @@ export function SidebarSessionsSection({
   labelIcon,
   collapsible = true,
   sortable = false,
+  manualOrderIds,
   onReorderSessions,
   onReorderProjects,
   projectBackRow,
@@ -212,65 +221,104 @@ export function SidebarSessionsSection({
   // The flat recents/pinned list is the only place sessions reorder by hand;
   // grouped/tree views always sort by creation date and never drag.
   const sessionsDraggable = sortable && !!onReorderSessions
-  // Pinned and manual-drag lists pass sessions already in the caller's order.
-  // Default recents stay dateGrouped and still re-sort roots by group recency
-  // so partition buckets stay truthful — but NEVER for pins, where a turn
-  // finishing was floating background tasks over the user's fixed ranking.
-  const preserveInputOrder = pinned || (sessionsDraggable && !dateGrouped)
 
+  // Only Pinned arrives pre-ordered as a flat sequence. Recents keeps its
+  // recency sort — the drag order is layered on per date group below, so the
+  // buckets stay truthful and a reorder never costs the list its dividers.
   const displayEntries = useMemo(
-    () => flattenSessionsWithBranches(sessions, { preserveOrder: preserveInputOrder }),
-    [sessions, preserveInputOrder]
+    () => flattenSessionsWithBranches(sessions, { preserveOrder: pinned }),
+    [sessions, pinned]
   )
 
-  const renderRow = (session: SessionInfo, draggable: boolean, branchStem?: string) => {
-    const rowProps = {
-      branchStem,
-      isPinned: pinned,
-      isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
-      onArchive: () => onArchiveSession(session.id),
-      onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
-      onDelete: () => onDeleteSession(session.id),
-      onPin: () => onTogglePin(sessionPinId(session)),
-      onResume: () => onResumeSession(session.id),
-      reorderable: draggable && !branchStem,
-      session,
-      showProfile: showProfileTags
-    }
+  const renderRow = useCallback(
+    (session: SessionInfo, draggable: boolean, branchStem?: string) => {
+      const rowProps = {
+        branchStem,
+        isPinned: pinned,
+        isSelected: session.id === activeSessionId,
+        isWorking: workingSessionIdSet.has(session.id),
+        onArchive: () => onArchiveSession(session.id),
+        onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
+        onDelete: () => onDeleteSession(session.id),
+        onPin: () => onTogglePin(sessionPinId(session)),
+        onResume: () => onResumeSession(session.id),
+        reorderable: draggable && !branchStem,
+        session,
+        showProfile: showProfileTags
+      }
 
-    return draggable && !branchStem ? (
-      <SortableSidebarSessionRow key={session.id} {...rowProps} />
-    ) : (
-      <SidebarSessionRow key={session.id} {...rowProps} />
-    )
-  }
+      return draggable && !branchStem ? (
+        <SortableSidebarSessionRow key={session.id} {...rowProps} />
+      ) : (
+        <SidebarSessionRow key={session.id} {...rowProps} />
+      )
+    },
+    [
+      activeSessionId,
+      onArchiveSession,
+      onBranchSession,
+      onDeleteSession,
+      onResumeSession,
+      onTogglePin,
+      pinned,
+      showProfileTags,
+      workingSessionIdSet
+    ]
+  )
 
   // A single flat/virtual/lane list row — either a date divider or a session.
-  const renderListRow = (row: SidebarListRow, draggable: boolean) =>
-    row.kind === 'divider' ? (
-      <SidebarDateDivider key={row.key} label={sessionBucketLabel(row.bucket, dividerLabels)} />
-    ) : (
-      renderRow(row.entry.session, draggable, row.entry.branchStem)
-    )
+  const renderListRow = useCallback(
+    (row: SidebarListRow, draggable: boolean) =>
+      row.kind === 'divider' ? (
+        <SidebarDateDivider key={row.key} label={sessionBucketLabel(row.bucket, dividerLabels)} />
+      ) : (
+        renderRow(row.entry.session, draggable, row.entry.branchStem)
+      ),
+    [dividerLabels, renderRow]
+  )
 
   // Sessions inside repos/worktrees are date-ordered and static.
-  const renderRows = (items: SessionInfo[]) =>
-    flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem))
+  const renderRows = useCallback(
+    (items: SessionInfo[]) =>
+      flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem)),
+    [renderRow]
+  )
 
   // Same as `renderRows`, but with date dividers folded in — used for
   // entered-project lanes so a lane spanning multiple days reads
   // chronologically, matching the flat recents list.
-  const renderRowsDated = (items: SessionInfo[]) => {
-    const entries = flattenSessionsWithBranches(items)
+  const renderRowsDated = useCallback(
+    (items: SessionInfo[]) => {
+      const entries = flattenSessionsWithBranches(items)
 
-    return (dateGrouped ? groupEntriesByRecency(entries) : toSessionRows(entries)).map(row => renderListRow(row, false))
-  }
+      return (dateGrouped ? groupEntriesByRecency(entries) : toSessionRows(entries)).map(row =>
+        renderListRow(row, false)
+      )
+    },
+    [dateGrouped, renderListRow]
+  )
 
   // Flat recents as list rows: grouped by recency when enabled, plain otherwise.
-  const flatRows: SidebarListRow[] = dateGrouped ? groupEntriesByRecency(displayEntries) : toSessionRows(displayEntries)
+  // The hand-picked order is then applied INSIDE each date group, so dragging a
+  // row ranks it among its own day's chats instead of freezing the whole list
+  // into an undated manual mode.
+  const flatRows: SidebarListRow[] = useMemo(() => {
+    const rows = dateGrouped ? groupEntriesByRecency(displayEntries) : toSessionRows(displayEntries)
 
+    return manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
+  }, [dateGrouped, displayEntries, manualOrderIds])
+
+  // dnd-kit must see exactly the ids it renders, in render order: the sortable
+  // set is derived from the rows, not from `sessions`. Feeding it the unrendered
+  // session order made a drop compute its target index against a list the user
+  // wasn't looking at — the drag that landed a row in the wrong slot.
+  const sortableRowIds = useMemo(() => reorderableRowIds(flatRows), [flatRows])
+
+  // Pinned never virtualizes. Virtualization needs a bounded viewport to
+  // measure against, and Pinned deliberately has none — however many chats you
+  // pin, all of them render and the sidebar's own scroll carries the length.
   const flatVirtualized =
+    !pinned &&
     !showEmptyState &&
     !groups?.length &&
     !projectOverview?.length &&
@@ -381,7 +429,7 @@ export function SidebarSessionsSection({
 
     inner =
       sessionsDraggable && onReorderSessions ? (
-        <ReorderableList ids={sessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>
+        <ReorderableList ids={sortableRowIds} onReorder={onReorderSessions} sensors={dndSensors}>
           {virtual}
         </ReorderableList>
       ) : (
@@ -389,7 +437,7 @@ export function SidebarSessionsSection({
       )
   } else if (sessionsDraggable && onReorderSessions) {
     inner = (
-      <ReorderableList ids={sessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>
+      <ReorderableList ids={sortableRowIds} onReorder={onReorderSessions} sensors={dndSensors}>
         {flatRows.map(row => renderListRow(row, true))}
       </ReorderableList>
     )

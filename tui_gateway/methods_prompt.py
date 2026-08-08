@@ -6,9 +6,62 @@ are rebound onto server.py's globals at install time — see method_ctx.py.
 
 from .method_ctx import HandlerRegistry
 
+import types
+
 _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
+
+
+def _pending_reaction_notes(session: dict) -> str:
+    """Note block describing reactions the user added since the last turn, or "".
+
+    Applied to the MODEL INPUT only (``run_message``, beside the
+    speech-interrupted note) — never to the text that gets persisted. Prefixing
+    the persisted prompt bakes scaffolding into the transcript, which every
+    surface then renders as a garbled user message on reload. Each reaction is
+    announced once — the row is stamped ``seen`` on read.
+    """
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return ""
+
+    # Feature-gated (off by default, Settings → Appearance): when disabled the
+    # model hears nothing, even about reactions set while it was on.
+    try:
+        display = _load_cfg().get("display")
+        if not (isinstance(display, dict) and bool(display.get("message_reactions", False))):
+            return ""
+    except Exception:
+        return ""
+
+    try:
+        with _session_db(session) as db:
+            if db is None:
+                return ""
+            pending = db.take_unseen_reactions(session_key, author="user")
+    except Exception:
+        logger.debug("Failed to read pending reactions", exc_info=True)
+        return ""
+
+    if not pending:
+        return ""
+
+    notes = []
+    for entry in pending:
+        snippet = (entry.get("text") or "").strip().replace("\n", " ")
+        if len(snippet) > 120:
+            snippet = snippet[:120] + "…"
+        emoji = entry.get("emoji") or ""
+        whose = "their own" if entry.get("role") == "user" else "your"
+        if snippet:
+            notes.append(f'[The user reacted {emoji} to {whose} message: "{snippet}"]')
+        else:
+            # A row with no plain text (attachment-only, or a tool-call-only
+            # assistant turn) — an empty quote reads worse than no quote.
+            notes.append(f"[The user reacted {emoji} to {whose} earlier message]")
+
+    return "\n".join(notes)
 
 
 @method("prompt.submit")
@@ -110,6 +163,31 @@ def _(rid, params: dict) -> dict:
             except (TypeError, ValueError):
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
+            # An ordinal alone is not consent. A client that carries a leftover
+            # ordinal into an ORDINARY submit sends a request that is
+            # indistinguishable, field by field, from a real rewind — same
+            # method, same shape, an in-range target — and the cut it asks for
+            # is a destructive replace_messages() the user never requested
+            # (#80763: 296 -> 52 messages, 244 durable rows gone). Only the
+            # client knows whether this submit is a rewind/edit/regenerate, so
+            # it has to say so; refuse the cut when it doesn't.
+            if not is_truthy_value(params.get("confirm_truncate")):
+                logger.warning(
+                    "prompt.submit: REFUSED unconfirmed truncation of session %s "
+                    "(%d messages held; ordinal=%d). The client attached "
+                    "truncate_before_user_ordinal without confirm_truncate — "
+                    "likely a stale ordinal on an ordinary submit.",
+                    sid,
+                    len(history),
+                    ordinal,
+                )
+                return _err(
+                    rid,
+                    4029,
+                    "truncate_before_user_ordinal requires confirm_truncate=true; "
+                    "an ordinary prompt.submit must not drop session history "
+                    "(update your Hermes client if a rewind was intended)",
+                )
             user_indices = [
                 i for i, m in enumerate(history)
                 if m.get("role") == "user" and not m.get("display_kind")
@@ -122,12 +200,11 @@ def _(rid, params: dict) -> dict:
             if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
-            # Stale clients can attach truncate_before_user_ordinal=0 to an
-            # ordinary submit. That resolves to history[:0] == [] and
-            # replace_messages() DELETEs every durable row — silent total
-            # transcript loss. Refuse the empty-truncation edge unless the
-            # client explicitly opts in (legitimate restore/regenerate of the
-            # first user turn).
+            # Second gate, on top of confirm_truncate: ordinal 0 resolves to
+            # history[:0] == [] and replace_messages() DELETEs every durable
+            # row. A confirmed rewind that happens to erase the whole
+            # transcript still needs its own opt-in (legitimate restore/
+            # regenerate of the first user turn).
             if (
                 not truncated
                 and history
@@ -157,13 +234,44 @@ def _(rid, params: dict) -> dict:
                 len(truncated),
                 ordinal,
             )
-            session["history"] = truncated
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+            # Write-before-memory (mirrors gateway hygiene / manual /compress):
+            # persist the truncated transcript first. If replace_messages fails
+            # after we already rewrote session["history"], the turn still runs
+            # against the short list while state.db keeps the old tail. The
+            # agent flush is append-only for history-dict identities, so the
+            # new exchange is appended on top of the "undone" turns — durable
+            # zombie history on resume, and the edit/regenerate never sticks.
+            # Fail closed: refuse the turn and leave memory/DB unchanged.
             if (db := _get_db()) is not None:
                 try:
-                    db.replace_messages(session["session_key"], truncated)
+                    # active_only=True: replace only the live (active=1) rows.
+                    # In-place compaction (#38763) keeps the pre-compaction
+                    # transcript as active=0/compacted=1 rows under this same
+                    # session key; a bare replace_messages() would DELETE that
+                    # durable archive on every edit/regenerate — the same bug
+                    # class #80216 fixed for /retry. On an uncompacted session
+                    # all rows are active=1, so this is behaviorally identical
+                    # to the full replace.
+                    db.replace_messages(
+                        session["session_key"], truncated, active_only=True
+                    )
                 except Exception as exc:
-                    print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+                    logger.error(
+                        "prompt.submit: replace_messages failed for session %s "
+                        "(ordinal=%d); refusing turn so memory and DB stay "
+                        "aligned: %s",
+                        sid,
+                        ordinal,
+                        exc,
+                        exc_info=True,
+                    )
+                    return _err(
+                        rid,
+                        5008,
+                        f"failed to persist history truncation: {exc}",
+                    )
+            session["history"] = truncated
+            session["history_version"] = int(session.get("history_version", 0)) + 1
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
@@ -180,10 +288,32 @@ def _(rid, params: dict) -> dict:
         )
 
     # Persist the DB row lazily, now that the user has actually sent a message.
-    _ensure_session_db_row(session)
-    # A branch becomes real here: copy its parent's transcript into the row so it
-    # resumes with full context (the agent won't persist the seed itself).
-    _persist_branch_seed(session)
+    # Disk-full must fail the RPC (not stream silently): desktop maps the error
+    # string to a "disk full" toast so the user knows why the send vanished.
+    try:
+        _ensure_session_db_row(session)
+        # A branch becomes real here: copy its parent's transcript into the row so it
+        # resumes with full context (the agent won't persist the seed itself).
+        _persist_branch_seed(session)
+    except Exception as exc:
+        from hermes_state import is_disk_full_error
+
+        with session["history_lock"]:
+            session["running"] = False
+            session["last_active"] = time.time()
+            _clear_inflight_turn(session)
+        if is_disk_full_error(exc):
+            return _err(
+                rid,
+                5070,
+                "disk full: session storage could not be written — free some disk space and try again",
+            )
+        logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
+        return _err(
+            rid,
+            5071,
+            f"session storage could not be written: {exc}",
+        )
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
@@ -248,7 +378,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
 
     session["image_counter"] = session.get("image_counter", 0) + 1
-    img_dir = _hermes_home / "images"
+    img_dir = _session_images_dir(session)
     img_dir.mkdir(parents=True, exist_ok=True)
     img_path = (
         img_dir
@@ -798,6 +928,14 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "text", allow_expired=True)
 
 
+@method("preview.read.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string of the active preview tab's serialized contents.
+    # allow_expired=True for the same reason as terminal.read: the tool's
+    # bounded wait can expire while a slow page extraction is still running.
+    return _respond(rid, params, "text", allow_expired=True)
+
+
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
     return _respond(rid, params, "password", allow_expired=True)
@@ -833,3 +971,13 @@ def _(rid, params: dict) -> dict:
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server)
+    # Module-level helpers aren't @method handlers, so install() doesn't see
+    # them — but server.py's run path calls this one (run_message enrichment,
+    # beside the speech-interrupted note). Rebind and publish it the same way.
+    server._pending_reaction_notes = types.FunctionType(
+        _pending_reaction_notes.__code__,
+        vars(server),
+        _pending_reaction_notes.__name__,
+        _pending_reaction_notes.__defaults__,
+        _pending_reaction_notes.__closure__,
+    )

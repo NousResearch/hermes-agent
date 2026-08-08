@@ -104,7 +104,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # Google Vertex AI provider — OAuth2 token minting for the Gemini
     # OpenAI-compatible endpoint. Only loaded when provider=vertex is selected;
     # google-auth is NOT in [all] so plain installs don't carry it.
-    "provider.vertex": ("google-auth==2.55.1",),
+    "provider.vertex": (
+        "google-auth==2.55.1",
+        "pyasn1==0.6.4",
+    ),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
     # service principal, az login, VS Code, azd, PowerShell). Only loaded
     # when model.auth_mode=entra_id is selected; key-based azure-foundry
@@ -257,8 +260,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (
         "google-api-python-client==2.194.0",
+        "google-auth==2.55.1",
         "google-auth-oauthlib==1.3.1",
         "google-auth-httplib2==0.3.1",
+        # Transitive via google-api-python-client/google-auth-httplib2; keep explicit
+        # so lazy installs do not resolve vulnerable transitives: httplib2 0.31.2
+        # (GHSA-j5g9-f88f-gfj3 decompression bomb DoS), stale pyasn1/google-auth.
+        "httplib2==0.32.0",
+        "pyasn1==0.6.4",
     ),
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
@@ -277,14 +286,23 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # for stripped/source-build installs that somehow dropped it. The vision
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
-    "tool.vision": ("Pillow==12.2.0",),
+    "tool.vision": ("Pillow==12.3.0",),
+    # Document-to-Markdown extraction for read_file (firecrawl-anydoc, Rust
+    # core, imports as `anydoc`). Widens read_file's auto-extraction beyond
+    # the stdlib .ipynb/.docx/.xlsx to PDF, legacy Office (.doc/.ppt/.xls),
+    # OpenDocument, RTF, and EPUB. Installed on first read of such a file;
+    # the call site uses prompt=False so read_file never blocks on a prompt.
+    # NOTE: lazy-only for now — no pyproject `doc-extract` extra until the
+    # package clears the uv exclude-newer 14-day quarantine (first release
+    # 2026-08-04); add the mirrored extra then.
+    "tool.doc_extract": ("firecrawl-anydoc==0.1.6",),
     # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
     # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
     # extras in pyproject.toml. The one-liner installer pulls this in via
     # `[all]`; lazy-installing here covers lean / partial / broken-extra
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
-        "mcp==1.26.0",
+        "mcp==1.28.1",
         "starlette==1.3.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
@@ -723,7 +741,18 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         uv_env["VIRTUAL_ENV"] = str(venv_root)
 
         # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
-        uv_bin = shutil.which("uv")
+        # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare
+        # which() misses the uv Hermes installed and falls through to the
+        # slower pip tier. Deliberately a lookup and not ensure_uv(): this runs
+        # mid-turn to install an optional dependency, and downloading uv +
+        # migrating the Python runtime as a side effect of that is a far bigger
+        # action than the caller asked for. Tier 2 pip covers the no-uv case.
+        try:
+            from hermes_cli.managed_uv import resolve_uv
+
+            uv_bin = resolve_uv() or shutil.which("uv")
+        except Exception:
+            uv_bin = shutil.which("uv")
         if uv_bin:
             try:
                 r = subprocess.run(
@@ -827,6 +856,35 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     if unsupported:
         raise FeatureUnavailable(feature, missing, unsupported)
 
+    # Package-manager installs (NixOS, and any other distro that ships Hermes
+    # from a read-only store) cannot receive lazy pip installs: the venv's
+    # site-packages lives in the store, so the uv -> pip -> ensurepip ladder
+    # below burns ~15s bootstrapping ensurepip only to fail on a read-only
+    # target. Fail fast with an actionable message instead.
+    #
+    # Skipped when a durable install target is configured: the container
+    # deployment sets HERMES_MANAGED=true *and* HERMES_LAZY_INSTALL_TARGET
+    # (a writable volume), where lazy installs legitimately work.
+    #
+    # The reason string starts with "unsupported " on purpose:
+    # refresh_active_features classifies FeatureUnavailable by that prefix and
+    # reports anything else as a hard failure rather than a skip.
+    if _lazy_install_target() is None:
+        try:
+            from hermes_cli.config import get_managed_system
+
+            managed_by = get_managed_system()
+        except Exception:
+            managed_by = ""  # config unreadable — proceed with the install
+        if managed_by:
+            raise FeatureUnavailable(
+                feature, missing,
+                f"unsupported on {managed_by}-managed installs: this build's "
+                f"packages come from {managed_by}, so Hermes cannot install "
+                f"them at runtime. Add the dependencies for {feature!r} via "
+                f"{managed_by} (or run a pip/uv install of Hermes instead)."
+            )
+
     # Validate every spec against the allowlist + safety regex. Belt and
     # braces — the keys-in-LAZY_DEPS check above already constrains this.
     for spec in missing:
@@ -913,12 +971,23 @@ def is_available(feature: str) -> bool:
     return not feature_missing(feature)
 
 
-def feature_install_command(feature: str) -> Optional[str]:
-    """Return the ``pip install`` command a user could run manually, or None."""
+def feature_install_command(feature: str, *, venv_pip: bool = False) -> Optional[str]:
+    """Return the ``pip install`` command a user could run manually, or None.
+
+    ``venv_pip=True`` targets the running interpreter's pip
+    (``{sys.executable} -m pip install …``) — correct in every layout
+    (default install, ``HERMES_HOME`` overrides, profile installs) and
+    immune to Ubuntu 24.04's PEP 668 ``externally-managed-environment``
+    failure that a bare/system ``pip install`` hint invites.  The default
+    ``uv pip install`` form is kept for contexts that document uv usage.
+    """
     if feature not in LAZY_DEPS:
         return None
     specs = LAZY_DEPS[feature]
-    return "uv pip install " + " ".join(repr(s) for s in specs)
+    joined = " ".join(repr(s) for s in specs)
+    if venv_pip:
+        return f"{sys.executable} -m pip install {joined}"
+    return "uv pip install " + joined
 
 
 @dataclass

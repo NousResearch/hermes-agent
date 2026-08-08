@@ -35,21 +35,51 @@ DEFAULT_CONFIG = {
         # tools or receiving API responses.  Only fires when the agent has
         # been completely idle for this duration.  0 = unlimited.
         "gateway_timeout": 1800,
-        # Graceful drain timeout for gateway stop/restart (seconds).
-        # The gateway stops accepting new work, waits for running agents
-        # to finish, then interrupts any remaining runs after the timeout.
-        # 0 = no drain, interrupt immediately (the default).
+        # Maximum time an alias routing key waits for the active turn holding
+        # the same resolved session lease. On expiry the inbound message is
+        # rejected with a resend notice rather than run without serialization.
+        # Non-positive values fall back to 1800 seconds.
+        "gateway_turn_lease_timeout": 1800,
+        # Per-session AIAgent cache in the gateway. Each cached agent keeps a
+        # warm prompt prefix AND the session's full transcript, so the cache
+        # trades memory for cost: too small and every turn re-pays an uncached
+        # prompt, too large and tool-heavy transcripts fill the heap.
+        "agent_cache": {
+            # LRU entry cap.
+            "max_size": 128,
+            # Evict an agent that has been idle this long (seconds).
+            "idle_ttl_secs": 3600,
+            # Anonymous-RSS budget (MB) above which the gateway starts shedding
+            # least-recently-used transcripts, which reload from the persisted
+            # session on the next turn. "auto" derives the budget from the
+            # cgroup memory limit the gateway runs under (or total RAM when
+            # uncapped); a number sets it explicitly; 0/off disables the pass
+            # and lets memory grow to whatever the two bounds above allow.
+            "memory_high_mb": "auto",
+            # Upper bound on how many sessions one pressure pass sheds, so a
+            # burst of teardowns cannot stall the gateway.
+            "max_evictions_per_pass": 16,
+            # Most-recently-used sessions the pressure pass never touches —
+            # they are the ones actively paying for a warm prompt cache.
+            "protect_recent": 8,
+        },
+        # Force-interrupt budget once gateway stop()/drain has begun
+        # (seconds). Applies to SIGTERM/external stop and to the final
+        # phase of in-band restart after any after-turn wait. 0 = interrupt
+        # immediately (the default).
         #
-        # Contract: if you restart the gateway, in-flight work stops. We do
-        # not hold the restart open for a grace window — a drain timeout
-        # large enough to "save" a long agent turn would have to outlast an
-        # unbounded task (some runs take days), which is impossible, and a
-        # drain timeout shorter than systemd's TimeoutStopSec invites a
-        # SIGKILL-mid-cleanup race that leaves a stale lock and crash-loops
-        # the service. 0 sidesteps both: interrupt now, clean up, exit fast.
-        # Set a positive value in config.yaml only if you explicitly want a
-        # grace window on /restart (and keep it well under TimeoutStopSec).
+        # Keep this short and under systemd TimeoutStopSec — a long value
+        # here invites SIGKILL-mid-cleanup. For in-band restart
+        # (/restart, SIGUSR1), prefer restart_after_turn_timeout below so
+        # active turns finish *before* stop() begins (#77184).
         "restart_drain_timeout": 0,
+        # In-band restart wait for active turns to finish before stop()
+        # (seconds). /restart and SIGUSR1 refuse new work, then wait up to
+        # this cap for in-flight agents/cron/api runs to complete naturally
+        # so the requesting turn is not amputated by restart_drain_timeout.
+        # 0 = legacy behaviour (enter stop()/drain immediately). Default
+        # 6h is a safety valve for wedged agents, not a target latency.
+        "restart_after_turn_timeout": 21600,
         # Upper bound (seconds) a submitted prompt waits for the deferred
         # agent build (MCP discovery, model metadata, skills scan) before
         # failing with a visible error (#63078). The gateway's wait is
@@ -178,6 +208,17 @@ DEFAULT_CONFIG = {
         # (60+ tool iterations with tiny output) before users assume the
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
+        # Session stall watchdog (seconds). Scope (#76354): this is a
+        # RECOVERY notifier for an in-process AIAgent that has an
+        # adapter-queued follow-up (pending inbound / queued event) while its
+        # activity clock is stale — NOT a general gateway/session stall
+        # detector. It does not observe startup restoration, build sentinels,
+        # turn leases, debounce state, or work owned by another process; the
+        # scan cadence is per AIAgent instance, not globally coordinated per
+        # durable session. Notify-only: warns the user to try /new. Distinct
+        # from gateway_timeout (which kills the turn) and
+        # gateway_notify_interval ("still working" heartbeats). 0 = disable.
+        "session_stall_timeout": 300,
         # Freshness window for the gateway auto-continue note (seconds).
         # After a gateway crash/restart/SIGTERM mid-run, the next user
         # message gets a "[System note: your previous turn was
@@ -238,7 +279,21 @@ DEFAULT_CONFIG = {
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
+        # Remote-backend graceful degradation: when a connection-class
+        # infrastructure failure occurs (SSH host unreachable, Docker daemon
+        # down), "warn" (default) returns a structured degraded tool result
+        # with a reason + retry hint so the model can act on it; "fail"
+        # preserves the historical error + traceback behavior.
+        "degraded_mode": "warn",
         "cwd": ".",  # Use current directory
+        # Terminal font family for the desktop app's embedded xterm.js terminal.
+        # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),
+        # the desktop terminal uses this as the CSS font-family value, with the
+        # built-in default ("'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo,
+        # Consolas, monospace") as fallback when the field is empty or unset.
+        # This lets users install a Nerd Font (or any custom font) and configure
+        # it here without patching the built desktop app.
+        "font_family": "",
         "timeout": 180,
         # Bounded grace period (seconds) between SIGTERM and an escalated
         # SIGKILL when terminating a host process tree (browser daemons, etc.).
@@ -317,6 +372,11 @@ DEFAULT_CONFIG = {
         # Docker runs with --network=none so commands cannot reach the network.
         "docker_network": True,
         "docker_extra_args": [],        # Extra flags passed verbatim to docker run
+        # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently
+        # breaks Chromium/Playwright and PyTorch DataLoader workers; tmpfs is
+        # lazily allocated so the higher ceiling costs nothing until used.
+        # Set to "" (or "0") to omit the flag and use Docker's default.
+        "docker_shm_size": "1g",
         # Explicit opt-in: run the Docker container as the host user's uid:gid
         # (via `--user`).  When enabled, files written into bind-mounted dirs
         # (docker_volumes, the persistent workspace, or the auto-mounted cwd)
@@ -458,6 +518,16 @@ DEFAULT_CONFIG = {
     # small so a slow/dead server adds little to first-response latency.
     "mcp_discovery_timeout": 1.5,
 
+    # Single-query (``hermes -q/-z "..."``) variant of mcp_discovery_timeout.
+    # In one-shot mode there is only ONE turn, so the between-turns late-binding
+    # refresh never runs: a server that misses the small interactive bound is
+    # invisible to the LLM for the whole session.  This larger bound gives slow
+    # cold-start servers (npx, uvx, remote HTTP) a chance to land in the one
+    # tool snapshot.  ``thread.join(timeout)`` returns the instant discovery
+    # completes, so reachable servers only wait for their real handshake time
+    # while unavailable servers remain bounded.
+    "mcp_single_query_discovery_timeout": 15.0,
+
     # MCP runtime behavior (distinct from the per-server definitions in
     # mcp_servers: and from the auxiliary.mcp side-LLM task settings).
     "mcp": {
@@ -574,10 +644,33 @@ DEFAULT_CONFIG = {
                                       # itself be re-summarized.
         "proactive_prune_min_reclaim_tokens": 4096,  # a proactive prune only commits
                                       # when it reclaims at least this many tokens
-                                      # (measured on the pruned output). Keeps
-                                      # prompt-cache invalidation amortized: one big
-                                      # episodic break instead of a tiny break every
-                                      # tool iteration. 0 = commit any non-zero prune.
+                                      # (measured on the pruned output), then waits
+                                      # for a full trigger-sized token runway to
+                                      # regrow before rearming. Keeps prompt-cache
+                                      # breaks episodic. 0 = no minimum-savings gate.
+        "micro_compact": False,       # opt-in: after each completed turn, fold the
+                                      # oldest un-absorbed exchange into a rolling
+                                      # summary, amortizing compression cost instead
+                                      # of paying it in one batch stall. Default False
+                                      # because a pass rewrites already-sent history
+                                      # and so breaks the provider prompt-cache prefix
+                                      # EVERY turn — the per-turn cache break that
+                                      # `proactive_prune_min_reclaim_tokens` above
+                                      # exists to avoid. Enable only when you have
+                                      # measured that the amortized stall is worth
+                                      # more to you than the cached-prefix discount.
+                                      # See docs/micro-compaction.md.
+        "micro_compact_every_n_turns": 1,  # cadence: run a pass every Nth completed
+                                      # turn. Since each pass costs one prompt-cache
+                                      # break, this is the dial for how often that
+                                      # cost is paid — 1 reclaims most aggressively
+                                      # at one break per turn, 5 trades reclaim rate
+                                      # for a fifth of the breaks. Clamped to >= 1.
+                                      # Ignored unless `micro_compact` is true.
+        "micro_compact_defrag_threshold_tokens": 2000,  # once the rolling summary
+                                      # exceeds this many tokens, the next pass
+                                      # re-summarizes the summary itself instead of
+                                      # letting it grow without bound.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
                                       # WITHOUT forward progress. The summary call streams, so
@@ -588,6 +681,27 @@ DEFAULT_CONFIG = {
                                       # while tokens are still moving — bounds a degenerate
                                       # trickle stream. Clamped to >= hygiene_timeout_seconds.
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
+        "context_timeout_seconds": 120,  # inactivity budget for in-agent compress_context
+                                      # (conversation loop, /compress, preflight, etc.).
+                                      # Same progress-aware semantics as hygiene_timeout_seconds:
+                                      # streamed summary tokens extend the wait; only a silent
+                                      # worker is cut off. 0 = disable the owned wrapper
+                                      # (callers that already pass commit_fence, e.g. gateway
+                                      # hygiene, never use this path).
+        "context_total_ceiling_seconds": 600,  # absolute cap on the *pre-commit*
+                                      # in-agent compress_context wait (summary /
+                                      # stream phase) even while tokens are still
+                                      # moving. Clamped to >= context_timeout_seconds
+                                      # when the idle budget is > 0. Guarantee:
+                                      # the summary phase is bounded by this
+                                      # ceiling; an already-started SessionDB
+                                      # commit is never abandoned mid-flight —
+                                      # if the commit itself runs past the
+                                      # ceiling it is logged (WARNING, then
+                                      # ERROR) and surfaced to the user via the
+                                      # warning channel while the host keeps
+                                      # waiting in bounded increments for the
+                                      # commit to finish.
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to
@@ -674,7 +788,9 @@ DEFAULT_CONFIG = {
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
-    # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
+    # cache_ttl: "5m" or "1h" (Anthropic-supported tiers). Other non-falsy
+    # values are silently ignored. Falsy values (false, null, "off",
+    # "disabled", "no", "none") disable prompt caching entirely.
     "prompt_caching": {
         "cache_ttl": "5m",
     },
@@ -754,6 +870,20 @@ DEFAULT_CONFIG = {
         # not a meaningful recovery, so an unretried blip silently loses the
         # call.
         "transient_retries": 2,
+        # Restrict the auxiliary auto-chain's OpenRouter fallback to free
+        # (:free) SKUs. When true, the OpenRouter step is skipped entirely
+        # unless the resolved fallback model ends in ":free" — a PAID lane
+        # is never engaged for background auxiliary traffic (compression,
+        # title generation, session search, vision, web extract) even when
+        # OPENROUTER_API_KEY is present. Default false keeps the historical
+        # paid fallback for users who want it.
+        "free_only": False,
+        # Override the auxiliary auto-chain's OpenRouter fallback model
+        # (default: google/gemini-3.6-flash, a PAID model). Set e.g.
+        # "nvidia/nemotron-3-ultra-550b-a55b:free" together with
+        # free_only: true to keep auxiliary traffic free-only. A one-time
+        # WARNING is logged whenever a non-":free" model is engaged.
+        "openrouter_model": "",
         # Endpoints that reject NON-streaming chat requests outright (e.g.
         # Tencent Copilot returns HTTP 400 "Non-stream chat request is
         # currently not supported"). Auxiliary calls to a matching endpoint
@@ -1418,6 +1548,14 @@ DEFAULT_CONFIG = {
         # "STT transcribed the wrong language". Set to "" to restore
         # auto-detect, or to your language code ("es", "zh", "uk", ...).
         "language": "en",
+        # Pre-upload silence trim for cloud providers (groq/openai/mistral/
+        # xai/elevenlabs/deepinfra). Local whisper gets Silero VAD; cloud
+        # endpoints otherwise receive raw audio — silence inflates upload
+        # time, per-audio-minute billing, and hallucination risk. Collapses
+        # pauses with ffmpeg client-side; any failure uploads the original.
+        "cloud_trim_silence": True,
+        "cloud_trim_threshold_db": -40,  # audio quieter than this counts as silence
+        "cloud_trim_keep_ms": 300,  # how much of each pause survives (keeps natural pacing)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -1428,6 +1566,7 @@ DEFAULT_CONFIG = {
             "vad_min_silence_ms": 500,  # min silence (ms) that splits speech chunks when vad is on
             "no_speech_prob_threshold": 0.6,  # drop a segment only if no_speech_prob is ABOVE this...
             "logprob_threshold": -1.0,  # ...AND its avg_logprob is BELOW this (both must hit)
+            "unload_after_idle_seconds": 0,  # 0=never (default); e.g. 300 releases the model after 5min idle
         },
         "groq": {
             "model": "whisper-large-v3-turbo",  # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en
@@ -1481,6 +1620,7 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "surface": "auto",            # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
         "input_device": None,          # PortAudio input device index/name; null uses the process default
+        "capture": "auto",            # auto | local | client — where PCM is captured (client = desktop streams mic via wake.feed)
         "provider": "openwakeword",   # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine" (premium; needs PORCUPINE_ACCESS_KEY)
         "phrase": "hey hermes",       # for "sherpa" this IS the detected phrase (any text works); for other engines it's a cosmetic label — detection is keyed by the model/keyword below
         "sensitivity": 0.6,           # 0.0-1.0 detection threshold, consistent across engines (higher = stricter, fewer false triggers)
@@ -1525,6 +1665,18 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        # Return freed glibc allocator pages after long-running agent/TUI
+        # cleanup boundaries. Unsupported platforms are safe no-ops.
+        "memory_trim": {
+            "enabled": True,
+            "cooldown_seconds": 60.0,
+            # Successful trim calls are INFO logged every Nth periodic call;
+            # force paths always log so process-close behavior is visible.
+            "log_every_n": 1,
+            # Suppress INFO logs only when a readable RSS change is smaller.
+            # 0 reports every successful configured trim.
+            "info_log_min_delta_mb": 0.0,
+        },
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt
@@ -2023,6 +2175,12 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/
+        # .cursorrules, project-local .hermes config) always require human
+        # approval — even under auto-approve/yolo. Extra patterns are
+        # fnmatch globs matched against the basename (e.g. "*.mdc").
+        "protected_instruction_files": True,
+        "protected_instruction_extra_patterns": [],
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
@@ -2050,6 +2208,14 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Pre-dispatch configuration validation (T1-26): before constructing
+        # any agent machinery for a job, verify the provider API key resolves
+        # (unless a fallback chain is configured), attached skills are ready
+        # (required env/commands present), and delivery platforms are
+        # configured. A failing job is recorded as last_status=blocked_config
+        # with ONE alert (no re-alert every tick) and NO LLM call is made.
+        # Set to false to restore the old behavior (fail during the run).
+        "preflight": True,
         # Fail closed when an unpinned job's current global model/provider
         # differs from its creation-time snapshot. This prevents unattended
         # jobs from silently inheriting a paid default. Set to false only when
@@ -2200,6 +2366,12 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Orphaned-card reconciliation: each dispatcher tick, requeue
+        # 'running' cards whose claim bookkeeping is broken (claim_lock or
+        # claim_expires NULL with a dead/gone worker) — zombies invisible
+        # to the TTL/crash/stale recovery paths. Set false to keep orphans
+        # frozen for manual forensics.
+        "reconcile_orphans": True,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
@@ -2262,7 +2434,7 @@ DEFAULT_CONFIG = {
             "listing": "auto",
             # Absolute cap on the embedded listing in tokens (chars/4
             # estimate), regardless of context size. Range 200..60000.
-            "listing_max_tokens": 20000,
+            "listing_max_tokens": 4000,
         },
     },
 
@@ -2563,6 +2735,9 @@ DEFAULT_CONFIG = {
         # 100MB, so it only runs at startup, and only when prune deleted
         # ≥1 session.
         "vacuum_after_prune": True,
+        # Minimum days between successful VACUUM rewrites. Pruning can still
+        # run on its normal cadence while SQLite reuses the freed pages.
+        "min_vacuum_interval_days": 30,
         # Minimum hours between auto-maintenance runs (avoids repeating
         # the sweep on every CLI invocation).  Tracked via state_meta in
         # state.db itself, so it's shared across all processes.
@@ -2628,6 +2803,13 @@ DEFAULT_CONFIG = {
         "shared_metrics": {
             "enabled": False,
         },
+    },
+
+    # ``hermes doctor`` behaviour.
+    "doctor": {
+        # Per-probe timeout (seconds) for the opt-in `hermes doctor --live`
+        # real-call backend probes (Firecrawl/FAL/browser/MCP/TTS/STT).
+        "live_probe_timeout": 10,
     },
 
     # ``hermes update`` behaviour.
@@ -3217,6 +3399,22 @@ OPTIONAL_ENV_VARS = {
     "GMI_BASE_URL": {
         "description": "GMI Cloud base URL override",
         "prompt": "GMI Cloud base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ACTUAL_API_KEY": {
+        "description": "Actual Computer inference key (ac_...)",
+        "prompt": "Actual Computer inference key",
+        "url": "https://actual.inc/user/keys",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ACTUAL_BASE_URL": {
+        "description": "Actual Computer base URL override (set to http://127.0.0.1:8080 for the local offline daemon)",
+        "prompt": "Actual Computer base URL (leave empty for hosted relay)",
         "url": None,
         "password": False,
         "category": "provider",

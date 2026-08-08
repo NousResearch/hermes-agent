@@ -49,11 +49,25 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # reported "0 tests passed" (which reads green at a glance even though the
 # exit code is 1). Skip such a venv and keep probing instead.
 VENV=""
+VENV_PYTHON=""
 SKIPPED_VENVS=""
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
     if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
       VENV="$candidate"
+      VENV_PYTHON="$candidate/bin/python"
+      break
+    fi
+    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
+  fi
+  # Native Windows venv layout: python.exe and activate live under
+  # Scripts/, and there is no bin/. Anyone running this script from
+  # Git Bash / MSYS with a `python -m venv`- or uv-created venv hits
+  # this branch — without it the canonical runner refuses to start.
+  if [ -f "$candidate/Scripts/activate" ]; then
+    if "$candidate/Scripts/python.exe" -c 'import pytest' 2>/dev/null; then
+      VENV="$candidate"
+      VENV_PYTHON="$candidate/Scripts/python.exe"
       break
     fi
     SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
@@ -67,7 +81,7 @@ if [ -n "$SKIPPED_VENVS" ]; then
 fi
 
 if [ -n "$VENV" ]; then
-  PYTHON="$VENV/bin/python"
+  PYTHON="$VENV_PYTHON"
 elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
     && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
   # Guard with an import check: HERMES_PYTHON may point at the RELEASE
@@ -109,6 +123,32 @@ for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT T
   fi
 done
 
+# ── Test-runner knobs (computed before we drop env) ────────────────────────
+# The runner's own documented environment knobs must survive the hermetic
+# `env -i` below, or they are silent no-ops for anyone invoking this script:
+#
+#   * HERMES_TEST_WORKERS / PATHS / FILE_TIMEOUT / FILE_RETRIES / SLICE are
+#     read by run_tests_parallel.py at argparse-default time — inside the
+#     stripped environment.
+#   * HERMES_TEST_IMAGE is read by tests/docker/conftest.py to skip its
+#     session-scoped `docker build`. CI's docker.yml sets it to the image
+#     the build step just loaded; stripping it made every per-file pytest
+#     subprocess rebuild the 5GB image from a cold builder cache instead
+#     (~4 min per worker per run, and the rebuilt image lacked the
+#     HERMES_GIT_SHA build-arg the workflow bakes in).
+#
+# These are test-infrastructure knobs, not credentials — same class as the
+# HERMES_RUN_SLOW_PET_TESTS / HERMES_E2E_BROWSER opt-ins already forwarded.
+# Keep this an explicit allowlist (no HERMES_TEST_* glob) so the "no
+# credential can leak" property stays auditable at a glance.
+TEST_ENV=()
+for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
+  HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE; do
+  if [ -n "${!_test_var:-}" ]; then
+    TEST_ENV+=("$_test_var=${!_test_var}")
+  fi
+done
+
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
 # No credential var can leak — you'd have to explicitly add it here.
@@ -130,6 +170,7 @@ exec env -i \
   PATH="$PATH" \
   HOME="$HOME" \
   ${WIN_ENV[@]+"${WIN_ENV[@]}"} \
+  ${TEST_ENV[@]+"${TEST_ENV[@]}"} \
   TZ=UTC \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \

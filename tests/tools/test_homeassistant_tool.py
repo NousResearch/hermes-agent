@@ -5,7 +5,7 @@ handler validation, and availability gating.
 """
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -141,16 +141,20 @@ class TestDomainBlocklist:
         assert "error" in result
         assert "blocked" in result["error"].lower()
 
-    def test_safe_domain_not_blocked(self):
-        """Safe domains like 'light' should not be blocked (will fail on network, not blocklist)."""
-        # This will try to make a real HTTP call and fail, but the important thing
-        # is it does NOT return a "blocked" error
+    @patch("tools.homeassistant_tool._async_call_service", new_callable=AsyncMock)
+    def test_safe_domain_not_blocked(self, mock_call_service):
+        """Safe domains like ``light`` reach the service-call layer."""
+        mock_call_service.return_value = {"success": True}
         result = json.loads(_handle_call_service({
             "domain": "light", "service": "turn_on", "entity_id": "light.test"
         }))
-        # Should fail with a network/connection error, not a "blocked" error
-        if "error" in result:
-            assert "blocked" not in result["error"].lower()
+        assert result["result"]["success"] is True
+        mock_call_service.assert_awaited_once_with(
+            "light",
+            "turn_on",
+            "light.test",
+            None,
+        )
 
     def test_blocked_domains_include_shell_command(self):
         assert "shell_command" in _BLOCKED_DOMAINS
@@ -179,14 +183,20 @@ class TestEntityIdValidation:
         assert _ENTITY_ID_RE.match("../api/config") is None
 
 
-    def test_call_service_allows_no_entity_id(self):
+    @patch("tools.homeassistant_tool._async_call_service", new_callable=AsyncMock)
+    def test_call_service_allows_no_entity_id(self, mock_call_service):
         """Some services (like scene.turn_on) don't need entity_id."""
-        # Will fail on network, but should NOT fail on entity_id validation
+        mock_call_service.return_value = {"success": True}
         result = json.loads(_handle_call_service({
             "domain": "scene", "service": "turn_on"
         }))
-        if "error" in result:
-            assert "Invalid entity_id" not in result["error"]
+        assert result["result"]["success"] is True
+        mock_call_service.assert_awaited_once_with(
+            "scene",
+            "turn_on",
+            None,
+            None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +307,40 @@ class TestCheckAvailable:
     def test_empty_token_is_unavailable(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "")
         assert _check_ha_available() is False
+
+    def test_multiplex_scope_does_not_fall_back_to_another_profile(self, monkeypatch):
+        from agent import secret_scope
+
+        monkeypatch.setenv("HASS_TOKEN", "default-profile-token")
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            assert _check_ha_available() is False
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_multiplex_scope_supplies_profile_url_and_token(self, monkeypatch):
+        from agent import secret_scope
+        from tools.homeassistant_tool import _get_config
+
+        monkeypatch.setattr("tools.homeassistant_tool._HASS_URL", "")
+        monkeypatch.setattr("tools.homeassistant_tool._HASS_TOKEN", "")
+        monkeypatch.setenv("HASS_URL", "http://default-profile:8123")
+        monkeypatch.setenv("HASS_TOKEN", "default-profile-token")
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({
+            "HASS_URL": "http://secondary-profile:8123/",
+            "HASS_TOKEN": "secondary-profile-token",
+        })
+        try:
+            assert _get_config() == (
+                "http://secondary-profile:8123",
+                "secondary-profile-token",
+            )
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
 
 
 # ---------------------------------------------------------------------------

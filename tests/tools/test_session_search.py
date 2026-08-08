@@ -113,6 +113,29 @@ class TestBrowseShape:
 # =========================================================================
 
 class TestDiscoveryShape:
+    def test_discovery_field_plan_preserves_full_default_result(self, db, monkeypatch):
+        _seed_modpack_sessions(db)
+        original = db.search_messages
+        requested_fields = None
+
+        def search_spy(*args, **kwargs):
+            nonlocal requested_fields
+            requested_fields = kwargs.get("fields")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(db, "search_messages", search_spy)
+
+        result = json.loads(session_search(query="modpack", limit=1, db=db))
+
+        assert result["success"] is True
+        assert requested_fields is not None
+        assert "context" not in requested_fields
+        assert len(result["results"]) == 1
+        hit = result["results"][0]
+        assert "bookend_start" in hit
+        assert hit["messages"]
+        assert "bookend_end" in hit
+
     def test_discovery_result_has_bookends_and_window(self, db):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(query="modpack", limit=3, db=db))
@@ -271,6 +294,19 @@ class TestReadShape:
         assert result["truncated"] is False
         assert len(result["messages"]) == 5
         assert result["session_meta"]["title"] == "Building the Modpack"
+
+    def test_read_strips_ansi_sequences_from_messages(self, db):
+        db.create_session("s_ansi", source="cli")
+        db.append_message("s_ansi", role="user", content="plain")
+        db.append_message(
+            "s_ansi", role="assistant", content="\u001b[31mred text\u001b[0m and more"
+        )
+        db._conn.commit()
+        result = json.loads(session_search(session_id="s_ansi", db=db))
+        assert result["success"] is True
+        rendered = [m["content"] for m in result["messages"] if m.get("content")]
+        assert any(text == "red text and more" for text in rendered)
+        assert all("\u001b" not in text for text in rendered)
 
     def test_read_truncates_large_session(self, db):
         db.create_session("s_big", source="cli")

@@ -137,3 +137,53 @@ class TestDeepseekCanonicalAndReasonerMapping:
     def test_reasoner_keywords_map_to_v4_flash(self, model):
         assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
 
+
+# ── Regression: issue #78796 ───────────────────────────────────────────
+
+class TestIssue78796NvidiaPrefixRepair:
+    """A bare NVIDIA model id must regain its ``vendor/`` prefix.
+
+    build.nvidia.com serves ``nvidia/nemotron-…``; a bare
+    ``nemotron-3-ultra-550b-a55b`` returns a naked ``404 page not found``
+    that never names the model, so the failure reads like an outage.
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        ("nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-ultra-550b-a55b"),
+        ("nemotron-3-super-120b-a12b", "nvidia/nemotron-3-super-120b-a12b"),
+        (
+            "nemotron-3-nano-omni-30b-a3b-reasoning",
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        ),
+    ])
+    def test_bare_nemotron_regains_prefix(self, model, expected):
+        assert normalize_model_for_provider(model, "nvidia") == expected
+
+    def test_third_party_model_gets_its_own_vendor(self):
+        """NIM also hosts third-party models — the prefix is the catalogue's,
+        not a hardcoded ``nvidia/``."""
+        assert normalize_model_for_provider("glm-5.2", "nvidia") == "z-ai/glm-5.2"
+
+    @pytest.mark.parametrize("model", [
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "z-ai/glm-5.2",
+    ])
+    def test_already_prefixed_is_untouched(self, model):
+        assert normalize_model_for_provider(model, "nvidia") == model
+
+    @pytest.mark.parametrize("model", [
+        "my-local-nim-container",
+        "some-finetune-v2",
+    ])
+    def test_unknown_names_pass_through(self, model):
+        """The same provider id fronts local NIM containers. An id absent from
+        the catalogue is a lookup miss, not a guess — leave it alone."""
+        assert normalize_model_for_provider(model, "nvidia") == model
+
+    def test_other_providers_unaffected(self):
+        assert normalize_model_for_provider("my-model", "custom") == "my-model"
+        assert (
+            normalize_model_for_provider("claude-sonnet-4.6", "openrouter")
+            == "anthropic/claude-sonnet-4.6"
+        )
+

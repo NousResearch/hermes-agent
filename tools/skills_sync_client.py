@@ -744,12 +744,24 @@ class SyncError(RuntimeError):
 
 
 class SyncConflict(RuntimeError):
-    """CAS lost (409). ``actual`` is the current head to merge against
-    (contract §4.4). NOT a rejection -- pushed objects are already durable."""
+    """CAS lost (409). NOT a rejection -- pushed objects are already durable.
 
-    def __init__(self, actual: str):
-        super().__init__(f"CAS conflict; actual head {actual}")
-        self.actual = actual
+    ``actual`` is the current head to merge against, or **None** when the ref
+    does not exist server-side (the server reports that as an empty string).
+    None means "there is nothing to merge against, retry as a create" -- it
+    must never be fetched as an object.
+    """
+
+    def __init__(self, actual: Optional[str]):
+        # Normalize here, not at the call site: the server sends "" for a
+        # non-existent ref, and every consumer must see that as None rather
+        # than an empty hash it might try to fetch.
+        self.actual: Optional[str] = actual or None
+        super().__init__(
+            f"CAS conflict; actual head {self.actual}"
+            if self.actual
+            else "CAS conflict; the ref does not exist yet"
+        )
 
 
 class SyncClient:
@@ -777,22 +789,39 @@ class SyncClient:
             raise SyncError(f"capabilities failed: {r.status_code}", status=r.status_code)
         return r.json()
 
-    def get_refs(self, prefix: str) -> List[Dict[str, str]]:
-        """GET /v1/sync/refs?prefix=... (sync contract)."""
-        r = self._session.get(
-            self._url("refs"), params={"prefix": prefix}, timeout=self.timeout
-        )
+    def get_refs(self, prefix: str, *, org_scope: bool = False) -> List[Dict[str, str]]:
+        """GET /v1/sync/refs?prefix=... (or the org route when ``org_scope``).
+
+        Org refs live behind a SEPARATE endpoint, not behind a prefix filter on
+        the personal one: the personal route is hard-scoped to the token's own
+        owner, so asking it for ``refs/org/<id>/`` silently returns the
+        caller's personal refs instead of an error. Callers reading an org ref
+        MUST pass ``org_scope=True``.
+        """
+        path = "org/refs" if org_scope else "refs"
+        params = None if org_scope else {"prefix": prefix}
+        r = self._session.get(self._url(path), params=params, timeout=self.timeout)
         if r.status_code != 200:
             raise SyncError(f"get_refs failed: {r.status_code}", status=r.status_code)
-        return (r.json() or {}).get("refs", [])
+        refs = (r.json() or {}).get("refs", [])
+        if org_scope:
+            # The org route returns the org's refs unfiltered; apply the
+            # prefix client-side so both modes have the same contract.
+            refs = [r_ for r_ in refs if str(r_.get("name", "")).startswith(prefix)]
+        return refs
 
-    def get_object(self, obj_hash: str) -> Tuple[str, bytes]:
-        """GET /v1/sync/objects/:hash (sync contract). Returns (kind, bytes).
+    def get_object(self, obj_hash: str, *, org_scope: bool = False) -> Tuple[str, bytes]:
+        """GET /v1/sync/objects/:hash (or the org route when ``org_scope``).
 
         Kind comes from the object-type response header for tree/commit; a blob
         (application/octet-stream) is returned as ``blob``.
+
+        Org objects are stored under the ``org:<org_id>`` scope key and are NOT
+        readable through the personal route (it scopes to the token's owner),
+        so walking an org commit requires ``org_scope=True`` on every hop.
         """
-        r = self._session.get(self._url(f"objects/{obj_hash}"), timeout=self.timeout)
+        path = f"org/objects/{obj_hash}" if org_scope else f"objects/{obj_hash}"
+        r = self._session.get(self._url(path), timeout=self.timeout)
         if r.status_code == 404:
             raise SyncError(f"object {obj_hash} not found", status=404)
         if r.status_code == 403:
@@ -802,16 +831,20 @@ class SyncClient:
         kind = r.headers.get("X-HSP-Object-Type") or KIND_BLOB
         return kind, r.content
 
-    def get_commit_json(self, commit_hash: str) -> Dict[str, Any]:
+    def get_commit_json(
+        self, commit_hash: str, *, org_scope: bool = False
+    ) -> Dict[str, Any]:
         """Fetch a commit object and parse its canonical JSON."""
-        kind, data = self.get_object(commit_hash)
+        kind, data = self.get_object(commit_hash, org_scope=org_scope)
         if kind != KIND_COMMIT:
             raise SyncError(f"{commit_hash} is {kind}, expected commit")
         return json.loads(data.decode("utf-8"))
 
-    def get_tree_json(self, tree_hash: str) -> Dict[str, Any]:
+    def get_tree_json(
+        self, tree_hash: str, *, org_scope: bool = False
+    ) -> Dict[str, Any]:
         """Fetch a tree object and parse its canonical JSON."""
-        kind, data = self.get_object(tree_hash)
+        kind, data = self.get_object(tree_hash, org_scope=org_scope)
         if kind != KIND_TREE:
             raise SyncError(f"{tree_hash} is {kind}, expected tree")
         return json.loads(data.decode("utf-8"))
@@ -884,8 +917,10 @@ class SyncClient:
             body = r.json() if r.content else {}
             return {"proposal_pending": True, **body}
         if r.status_code == 409:
-            actual = (r.json() or {}).get("actual", "")
-            raise SyncConflict(actual)
+            # An EMPTY `actual` means the ref does not exist server-side (the
+            # CAS lost against "no head"), NOT that there is a commit to merge
+            # against. Callers must not try to fetch it as an object.
+            raise SyncConflict((r.json() or {}).get("actual", ""))
         if r.status_code == 403:
             raise SyncError("forbidden (403) -- owner/permission", status=403)
         if r.status_code != 200:
@@ -983,7 +1018,9 @@ def write_sync_state(data: Dict[str, Any]) -> None:
 # Tree materialization (pull) -- write a tree back to a skill directory
 # ---------------------------------------------------------------------------
 
-def materialize_tree(client: SyncClient, tree_hash: str, dest: Path) -> None:
+def materialize_tree(
+    client: SyncClient, tree_hash: str, dest: Path, *, org_scope: bool = False
+) -> None:
     """Write the tree at *tree_hash* into *dest* (created if needed).
 
     Blobs become files (with +x restored for ``exec`` mode), nested trees
@@ -991,7 +1028,7 @@ def materialize_tree(client: SyncClient, tree_hash: str, dest: Path) -> None:
     caller decides removal semantics. Refuses path traversal via entry names.
     """
     dest.mkdir(parents=True, exist_ok=True)
-    tree = client.get_tree_json(tree_hash)
+    tree = client.get_tree_json(tree_hash, org_scope=org_scope)
     for entry in tree.get("entries", []):
         name = entry.get("name", "")
         if not name or "/" in name or name in (".", ".."):
@@ -1000,9 +1037,9 @@ def materialize_tree(client: SyncClient, tree_hash: str, dest: Path) -> None:
         target = dest / name
         kind = entry.get("kind")
         if kind == KIND_TREE:
-            materialize_tree(client, entry["hash"], target)
+            materialize_tree(client, entry["hash"], target, org_scope=org_scope)
         elif kind == KIND_BLOB:
-            _, data = client.get_object(entry["hash"])
+            _, data = client.get_object(entry["hash"], org_scope=org_scope)
             target.write_bytes(data)
             if entry.get("mode") == MODE_EXEC:
                 try:
@@ -1140,12 +1177,16 @@ def user_conflict_ref(owner: str, n: int) -> str:
     return f"refs/user/{owner}/conflict/{n}"
 
 
-def _root_tree_of_commit(client: "SyncClient", commit_hash: str) -> str:
+def _root_tree_of_commit(
+    client: "SyncClient", commit_hash: str, *, org_scope: bool = False
+) -> str:
     """Return the tree hash referenced by a commit."""
-    return client.get_commit_json(commit_hash)["tree"]
+    return client.get_commit_json(commit_hash, org_scope=org_scope)["tree"]
 
 
-def _skill_trees_of_root(client: "SyncClient", root_tree_hash: str) -> Dict[str, str]:
+def _skill_trees_of_root(
+    client: "SyncClient", root_tree_hash: str, *, org_scope: bool = False
+) -> Dict[str, str]:
     """Flatten a profile-root tree into ``{posix_rel_path: skill_tree_hash}``.
 
     A skill tree is any tree containing a ``SKILL.md`` blob entry. We walk the
@@ -1155,7 +1196,7 @@ def _skill_trees_of_root(client: "SyncClient", root_tree_hash: str) -> Dict[str,
     result: Dict[str, str] = {}
 
     def _walk(tree_hash: str, prefix: str) -> None:
-        tree = client.get_tree_json(tree_hash)
+        tree = client.get_tree_json(tree_hash, org_scope=org_scope)
         entries = tree.get("entries", [])
         has_skill_md = any(
             e.get("name") == "SKILL.md" and e.get("kind") == KIND_BLOB for e in entries
@@ -1272,6 +1313,20 @@ def push_skills(
         write_sync_state(manifest)
         return {"ok": True, "head": commit_hash, "pushed_objects": len(objects)}
     except SyncConflict as conflict:
+        if not conflict.actual:
+            # The ref does not exist server-side: our `from` was a stale head
+            # (commonly a local state file carried over from another sync
+            # plane). There is nothing to merge — redo the CAS as a create.
+            client.cas_ref(ref, None, commit_hash)
+            manifest["head"] = commit_hash
+            manifest["root"] = root_hash
+            write_sync_state(manifest)
+            return {
+                "ok": True,
+                "head": commit_hash,
+                "pushed_objects": len(objects),
+                "recovered_stale_head": True,
+            }
         return _resolve_push_conflict(
             client, identity, conflict.actual, root_hash, commit_hash,
             objects, skill_names, message, base_head,
@@ -1718,6 +1773,26 @@ def org_sync_available() -> bool:
         return False
 
 
+# How many times a propose will re-splice onto a moved org HEAD before giving
+# up. Small: contention means other members are actively proposing, and an
+# unbounded loop would spin.
+_ORG_CAS_MAX_ATTEMPTS = 5
+
+
+def _read_org_head(client: "SyncClient", org_id: str) -> Optional[str]:
+    """Current ``refs/org/<org_id>/HEAD``, or None if the org has no content.
+
+    Reads through the ORG endpoint. The personal refs route is scoped to the
+    caller's own owner and answers an ``refs/org/...`` prefix with the caller's
+    PERSONAL refs, so a personal-route read here silently reports "no org head"
+    and every subsequent CAS races against a head it never saw.
+    """
+    refs = client.get_refs(f"refs/org/{org_id}/", org_scope=True)
+    return next(
+        (r["hash"] for r in refs if r.get("name") == org_head_ref(org_id)), None
+    )
+
+
 def org_head_ref(org_id: str) -> str:
     return f"refs/org/{org_id}/HEAD"
 
@@ -1755,10 +1830,7 @@ def pull_org_skills(
     if "org" not in (caps.get("features") or []):
         raise SyncInertError("this server does not support org-shared skills")
 
-    refs = client.get_refs(f"refs/org/{org_id}/")
-    head = next(
-        (r["hash"] for r in refs if r.get("name") == org_head_ref(org_id)), None
-    )
+    head = _read_org_head(client, org_id)
     # TOKEN-GATED resolution marker (agent/skill_utils.read_active_org_id):
     # written HERE because this function only runs after resolve_org_identity
     # verified the token's org_id + org_role. Discovery scans only the marked
@@ -1768,9 +1840,9 @@ def pull_org_skills(
     if not head:
         return {"ok": True, "org_id": org_id, "head": None, "updated": []}
 
-    head_commit = client.get_commit_json(head)
+    head_commit = client.get_commit_json(head, org_scope=True)
     root_tree = head_commit["tree"]
-    skill_trees = _skill_trees_of_root(client, root_tree)
+    skill_trees = _skill_trees_of_root(client, root_tree, org_scope=True)
 
     dest_root = _org_dir() / org_id
     updated: List[str] = []
@@ -1797,7 +1869,7 @@ def pull_org_skills(
 
                 shutil.rmtree(dest)
             dest.mkdir(parents=True, exist_ok=True)
-            materialize_tree(client, tree_hash, dest)
+            materialize_tree(client, tree_hash, dest, org_scope=True)
             baseline[rel_path] = {
                 "fingerprint": _skill_dir_fingerprint(dest),
                 "tree": tree_hash,
@@ -1991,29 +2063,51 @@ def propose_skill(
     # Base = current org HEAD (None for the org's first content). The proposed
     # root is HEAD's skill-tree map with this one skill spliced in — proposals
     # are per-skill deltas, never a wholesale replace of the org set.
-    refs = client.get_refs(f"refs/org/{org_id}/")
-    base_head = next(
-        (r["hash"] for r in refs if r.get("name") == org_head_ref(org_id)), None
-    )
-    if base_head:
-        base_root = _root_tree_of_commit(client, base_head)
-        skill_map = _skill_trees_of_root(client, base_root)
-    else:
-        skill_map = {}
-    skill_map[str(rel)] = skill_tree
+    #
+    # Wrapped in a bounded retry: between reading HEAD and the CAS, another
+    # member's propose (or an admin merge) can advance it. The server answers
+    # 409 with the new head; we re-splice this one skill onto THAT head and try
+    # again rather than surfacing a raw conflict. Re-splicing (not replaying
+    # the old root) is what keeps the other member's skill from being dropped.
+    attempts = 0
+    while True:
+        attempts += 1
+        base_head = _read_org_head(client, org_id)
+        if base_head:
+            base_root = _root_tree_of_commit(client, base_head, org_scope=True)
+            skill_map = _skill_trees_of_root(client, base_root, org_scope=True)
+        else:
+            skill_map = {}
+        skill_map[str(rel)] = skill_tree
 
-    root_hash = _assemble_root_from_skill_trees(client, skill_map, objects)
-    commit_hash = build_commit(
-        root_hash,
-        [base_head] if base_head else [],
-        owner=identity["owner"],
-        device=stable_device_id(),
-        message=message or f"propose {skill_name}",
-        objects=objects,
-    )
+        root_hash = _assemble_root_from_skill_trees(client, skill_map, objects)
+        commit_hash = build_commit(
+            root_hash,
+            [base_head] if base_head else [],
+            owner=identity["owner"],
+            device=stable_device_id(),
+            message=message or f"propose {skill_name}",
+            objects=objects,
+        )
 
-    client.put_objects(objects.objects, org_scope=True)
-    result = client.cas_ref(org_head_ref(org_id), base_head, commit_hash)
+        client.put_objects(objects.objects, org_scope=True)
+        try:
+            result = client.cas_ref(org_head_ref(org_id), base_head, commit_hash)
+            break
+        except SyncConflict as conflict:
+            if attempts >= _ORG_CAS_MAX_ATTEMPTS:
+                raise SyncError(
+                    "the organisation's skills changed while this was being "
+                    f"proposed, and {attempts} attempts to catch up all lost "
+                    "the race — run the command again",
+                    status=409,
+                ) from conflict
+            logger.debug(
+                "propose_skill: org HEAD moved (actual=%r), re-splicing (attempt %d)",
+                conflict.actual,
+                attempts,
+            )
+            continue
 
     if result.get("proposal_pending"):
         return {

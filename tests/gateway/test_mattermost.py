@@ -244,8 +244,8 @@ class TestMattermostSend:
 
 
     @pytest.mark.asyncio
-    async def test_progress_send_with_invalid_thread_root_never_falls_back_flat(self):
-        """Tool/status/progress bubbles must stay quiet when the thread is broken."""
+    async def test_progress_send_with_broken_thread_and_no_recorded_error_stays_quiet(self):
+        """Same rule when no post error was recorded: still no flat fallback."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
         self.adapter._api_post = AsyncMock(return_value={})

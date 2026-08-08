@@ -289,10 +289,12 @@ _ENV_DETECT_CACHE: Dict[str, bool] = {}
 def _detect_environment(env: str) -> bool:
     """Return True when the named runtime environment is currently active.
 
-    Cached per process. Unknown env names return True (fail-open: never hide a
-    skill because of a tag we don't understand).
+    Cached per process, EXCEPT ``kanban``: that verdict is context-dependent
+    (a delegate_task child or an in-process cron job sees the worker's
+    HERMES_KANBAN_* vars without owning them), so caching it process-wide would
+    freeze whichever context asked first and leak it to the others.
     """
-    if env in _ENV_DETECT_CACHE:
+    if env != "kanban" and env in _ENV_DETECT_CACHE:
         return _ENV_DETECT_CACHE[env]
 
     result = True
@@ -304,6 +306,20 @@ def _detect_environment(env: str) -> bool:
         # gate on (``tools/kanban_tools.py``) so the offer filter agrees with
         # tool availability.
         if os.getenv("HERMES_KANBAN_TASK") or os.getenv("HERMES_KANBAN_BOARD"):
+            # ...but only when this execution actually owns the dispatcher's
+            # task. A delegate_task child or a cron job fired in-process from a
+            # worker sees the worker's vars without being that worker.
+            try:
+                from agent.delegation_context import (
+                    is_dispatcher_owned_worker_context,
+                )
+
+                _owns_dispatcher_task = is_dispatcher_owned_worker_context()
+            except Exception:
+                _owns_dispatcher_task = True
+        else:
+            _owns_dispatcher_task = False
+        if _owns_dispatcher_task:
             result = True
         else:
             try:

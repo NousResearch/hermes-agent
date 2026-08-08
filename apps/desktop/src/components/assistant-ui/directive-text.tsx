@@ -6,53 +6,46 @@ import type { FC } from 'react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 
 import { ZoomableImage } from '@/components/chat/zoomable-image'
+import type { I18nContextValue } from '@/i18n'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
+import { openExternalLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
 import { useSessionLinkTitle } from '@/lib/session-link-title'
 import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
 
-const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
+import { referenceKind, referenceRe, referenceStyle, WIRE_REFERENCE_KINDS } from './reference-kinds'
+
+const HERMES_REF_TYPES = WIRE_REFERENCE_KINDS
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
 
-/** Single source of truth for chip icon glyphs (Tabler outline @ 24×24).
- * Used both by the rendered <DirectiveIcon> and the raw SVG markup the
- * contenteditable composer embeds via `directiveIconSvg`. */
-const ICON_PATHS: Record<HermesRefType, string[]> = {
-  file: [
-    'M14 3v4a1 1 0 0 0 1 1h4',
-    'M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2',
-    'M9 9l1 0',
-    'M9 13l6 0',
-    'M9 17l6 0'
-  ],
-  folder: [
-    'M5 19l2.757 -7.351a1 1 0 0 1 .936 -.649h12.307a1 1 0 0 1 .986 1.164l-.996 5.211a2 2 0 0 1 -1.964 1.625h-14.026a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v2'
-  ],
-  url: [
-    'M9 15l6 -6',
-    'M11 6l.463 -.536a5 5 0 0 1 7.071 7.072l-.534 .464',
-    'M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463'
-  ],
-  image: [
-    'M15 8h.01',
-    'M3 6a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v12a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3v-12',
-    'M3 16l5 -5c.928 -.893 2.072 -.893 3 0l5 5',
-    'M14 14l1 -1c.928 -.893 2.072 -.893 3 0l3 3'
-  ],
-  tool: ['M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5'],
-  line: ['M5 9l14 0', 'M5 15l14 0', 'M11 4l-4 16', 'M17 4l-4 16'],
-  terminal: ['M5 7l5 5l-5 5', 'M12 19l7 0'],
-  session: ['M4 4h16v2.172a2 2 0 0 1 -.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48 -4.928a2 2 0 0 1 -.52 -1.345v-2.227']
-}
-
-const ICON_FALLBACK = ['M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0', 'M16 12v1.5a2.5 2.5 0 0 0 5 0v-1.5a9 9 0 1 0 -5.5 8.28']
+/** Icon glyphs come from the shared reference vocabulary, so the popover row
+ *  and the chip can never drift apart. */
+const iconPathsFor = (type: string) => referenceStyle(type).paths
 
 const SVG_ATTRS =
   'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
 
-const iconPathsFor = (type: string) => ICON_PATHS[type as HermesRefType] ?? ICON_FALLBACK
+/**
+ * The class + attributes that make any element an inline reference. Pair with
+ * the `.ref` rules in styles.css, which own the per-kind accent — pass the kind
+ * and the theme decides the colour.
+ *
+ * One helper for every surface: the composer's contenteditable chips, a sent
+ * message's mentions, a markdown link, a completion row's glyph. If it points
+ * at something from inside text, it goes through here.
+ */
+export function refAttrs(kind?: string, extra?: string): { className: string; 'data-ref'?: string } {
+  const className = extra ? `ref ${extra}` : 'ref'
+
+  return kind ? { className, 'data-ref': referenceKind(kind) } : { className }
+}
+
+/** The same thing as a raw attribute string, for HTML built by hand. */
+export function refAttrsHtml(kind?: string): string {
+  return kind ? `class="ref" data-ref="${referenceKind(kind)}"` : 'class="ref"'
+}
 
 /** SVG markup string for embedding directly in HTML (composer contenteditable). */
 export function directiveIconSvg(type: string) {
@@ -60,12 +53,11 @@ export function directiveIconSvg(type: string) {
     .map(d => `<path d="${d}"/>`)
     .join('')
 
-  return `<svg ${SVG_ATTRS} class="size-3 shrink-0 opacity-80">${inner}</svg>`
+  return `<svg ${SVG_ATTRS}>${inner}</svg>`
 }
 
 function iconElementFromPaths(paths: string[]) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  svg.setAttribute('class', 'size-3 shrink-0 opacity-80')
   svg.setAttribute('fill', 'none')
   svg.setAttribute('stroke', 'currentColor')
   svg.setAttribute('stroke-linecap', 'round')
@@ -87,46 +79,17 @@ export function directiveIconElement(type: string) {
   return iconElementFromPaths(iconPathsFor(type))
 }
 
-/** Per-type slash-command pill styling. The composer inserts these chips when a
- *  command is picked; the kind drives a theme-aware accent so commands, skills,
- *  and themes read distinctly (Cursor-style). */
+/** Commands, skills, and themes are three more reference kinds — no separate
+ *  pill styling, just the shared `.ref` treatment with their own accent. */
 export type SlashChipKind = 'command' | 'skill' | 'theme'
 
-const SLASH_ICON_PATHS: Record<SlashChipKind, string[]> = {
-  command: ['M5 7l5 5l-5 5', 'M12 19l7 0'],
-  skill: ['M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11'],
-  theme: [
-    'M3 21v-4a4 4 0 1 1 4 4h-4',
-    'M21 3a16 16 0 0 0 -12.8 10.2',
-    'M21 3a16 16 0 0 1 -10.2 12.8',
-    'M10.6 9a9 9 0 0 1 4.4 4.4'
-  ]
-}
-
-const SLASH_CHIP_VARIANT: Record<SlashChipKind, string> = {
-  command:
-    'bg-[color-mix(in_srgb,var(--ui-accent)_14%,transparent)] text-[color-mix(in_srgb,var(--ui-accent)_82%,var(--foreground))]',
-  skill:
-    'bg-[color-mix(in_srgb,var(--ui-warm)_18%,transparent)] text-[color-mix(in_srgb,var(--ui-warm)_82%,var(--foreground))]',
-  theme:
-    'bg-[color-mix(in_srgb,var(--ui-accent-secondary)_16%,transparent)] text-[color-mix(in_srgb,var(--ui-accent-secondary)_82%,var(--foreground))]'
-}
-
-export const SLASH_CHIP_BASE_CLASS =
-  'mx-0.5 inline-flex max-w-64 items-center gap-1 rounded px-1.5 py-0.5 align-[-0.12em] text-[0.86em] font-medium leading-none'
-
-export function slashChipClass(kind: SlashChipKind): string {
-  return `${SLASH_CHIP_BASE_CLASS} ${SLASH_CHIP_VARIANT[kind]}`
-}
-
 export function slashIconElement(kind: SlashChipKind) {
-  return iconElementFromPaths(SLASH_ICON_PATHS[kind])
+  return iconElementFromPaths(iconPathsFor(kind))
 }
 
-const DirectiveIcon: FC<{ type: string; className?: string }> = ({
-  type,
-  className = 'size-3 shrink-0 opacity-80'
-}) => (
+/** The glyph for a reference kind. Size, spacing, and opacity come from the
+ *  `.ref > svg` rules — the icon only has to say which shape it is. */
+const DirectiveIcon: FC<{ type: string; className?: string }> = ({ type, className }) => (
   <svg
     className={className}
     fill="none"
@@ -143,18 +106,6 @@ const DirectiveIcon: FC<{ type: string; className?: string }> = ({
   </svg>
 )
 
-/** Shared chip styling — used by both the rendered <DirectiveChip> and the
- * raw HTML composer chips in `rich-editor.ts`. Neutral subtle wash + plain
- * muted-foreground text so chips read as quiet tags on any bubble color.
- *
- * `align-[-0.12em]` rather than `align-middle`: `middle` centers the pill on
- * the x-height midpoint, which sits above the center of the surrounding text
- * box, so the chip visibly rides low next to the words it's nestled in. The
- * em nudge lands the chip's own text baseline on the line's baseline (measured
- * to within 0.08px) without growing the line box. */
-export const DIRECTIVE_CHIP_CLASS =
-  'mx-0.5 inline-flex max-w-56 items-center gap-1 rounded px-1.5 py-0.5 align-[-0.12em] text-[0.86em] font-normal leading-none bg-[color-mix(in_srgb,currentColor_8%,transparent)] text-muted-foreground'
-
 /**
  * Parses our composer's `@type:value` references into directive segments
  * so they render as inline chips in user messages instead of raw text.
@@ -167,15 +118,7 @@ export const DIRECTIVE_CHIP_CLASS =
  */
 const CANONICAL_DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/g
 
-const HERMES_DIRECTIVE_RE = new RegExp(
-  '@(file|folder|url|image|tool|line|terminal|session):(' +
-    '`[^`\\n]+`' +
-    '|"[^"\\n]+"' +
-    "|'[^'\\n]+'" +
-    '|\\S+' +
-    ')',
-  'g'
-)
+const HERMES_DIRECTIVE_RE = referenceRe()
 
 // A skill referenced in a sent message — either the invocation that opens it
 // (`/work fix the leak`, which is all a skill turn ever renders as) or one
@@ -332,10 +275,18 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
   return segments
 }
 
-/** Display text for a `@kind:value` chip. Shared with the composer's
- *  contenteditable chips so a link reads the same before and after send: the
- *  host leads (scheme and `www.` are noise) and the path rides along for the
- *  chip's `truncate` to cut — a bare hostname can't tell two links apart. */
+/** The single display label for a `@kind:value` reference — used by the `@`
+ *  popover row, the composer chip, and the sent-message chip alike, so a
+ *  reference reads the same everywhere. Upstream keeps one label on the
+ *  directive node and hands it to every consumer verbatim; our wire format
+ *  (`@kind:value`) can't carry a label, so this is the shared deriver that
+ *  holds the same invariant.
+ *
+ *  Paths keep their directory for the reason links keep theirs: a bare
+ *  basename can't tell two references apart (`src`, `index.ts`, `main.tsx`
+ *  repeat all over a repo), and browsing into `apps/desktop/` only to be
+ *  handed a chip reading `desktop` throws away the context you navigated for.
+ *  The chip's `truncate` cuts the overflow. */
 export function refChipLabel(type: string, id: string): string {
   if (type === 'terminal') {
     return id || 'terminal'
@@ -356,9 +307,9 @@ export function refChipLabel(type: string, id: string): string {
     }
   }
 
-  const tail = id.split(/[\\/]/).filter(Boolean).pop()
-
-  return tail || id
+  // `./` is noise the completer emits, not part of the reference. A trailing
+  // slash is kept — it's what distinguishes a folder from a file.
+  return id.replace(/^\.\//, '') || id
 }
 
 function safeEmbeddedImages(text: string) {
@@ -418,7 +369,7 @@ export function DirectiveContent({ text }: { text: string }) {
           {images.map((src, index) => (
             <ZoomableImage
               alt=""
-              className="max-h-48 max-w-full rounded-lg border border-border/60 object-contain"
+              className="max-h-48 max-w-full rounded-lg border border-(--ui-stroke-tertiary) object-contain"
               draggable={false}
               key={`img-${index}`}
               slot="aui_embedded-image"
@@ -481,7 +432,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
   return (
     <ZoomableImage
       alt={label}
-      className="max-h-48 max-w-full rounded-lg border border-border/60 object-contain"
+      className="max-h-48 max-w-full rounded-lg border border-(--ui-stroke-tertiary) object-contain"
       draggable={false}
       slot="aui_directive-image"
       src={src}
@@ -493,7 +444,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
  *  it's already a tile/main, otherwise open a stacked tab (never steals main
  *  from under the chat you're reading). Lazy-imports so the composer's rich
  *  editor can pull this module in without booting the profile/REST stack. */
-function openSessionRef(value: string) {
+export function openSessionRef(value: string) {
   const { sessionId } = parseSessionRefValue(value)
 
   if (!sessionId) {
@@ -503,6 +454,33 @@ function openSessionRef(value: string) {
   triggerHaptic('selection')
   // navigate is unused for the `tab` intent (focus-or-tile only).
   void import('@/app/open-session').then(({ openSession }) => openSession(sessionId, () => undefined, 'tab'))
+}
+
+/** What activating a directive of a given kind does. The single source of truth
+ *  for "you can act on this reference," shared by every surface that renders a
+ *  chip: the composer's hover pill (`ComposerDirectiveActions`) and the sent
+ *  message's clickable chip below. A kind with no entry is inert everywhere.
+ *
+ *  Add a kind here and both surfaces light up — that's the whole point of one
+ *  table. `icon`/`label` are for the pill; the transcript chip carries its own
+ *  glyph and only reads `run`. */
+export interface DirectiveAction {
+  icon: string
+  label: (t: I18nContextValue['t']) => string
+  run: (value: string) => void
+}
+
+export const DIRECTIVE_ACTIONS: Record<string, DirectiveAction> = {
+  session: {
+    icon: 'link-external',
+    label: t => t.composer.openDirective,
+    run: openSessionRef
+  },
+  url: {
+    icon: 'link-external',
+    label: t => t.composer.openDirective,
+    run: openExternalLink
+  }
 }
 
 /** A `@session:<profile>/<id>` reference in the user transcript (directive
@@ -528,7 +506,7 @@ export const SessionRefLink: FC<{
 
   return (
     <a
-      className="link-chip wrap-anywhere"
+      {...refAttrs('session', 'wrap-anywhere')}
       href="#"
       onClick={event => {
         event.preventDefault()
@@ -537,7 +515,7 @@ export const SessionRefLink: FC<{
       }}
       title={value}
     >
-      <DirectiveIcon className="mr-1 inline size-[0.82em] align-[-0.08em] opacity-70" type="session" />
+      <DirectiveIcon type="session" />
       {resolved}
     </a>
   )
@@ -546,50 +524,40 @@ export const SessionRefLink: FC<{
 /** A skill referenced inside a sent message — the rendered twin of the
  *  composer's slash pill, so a picked skill stays a chip after send. */
 const SlashChip: FC<{ kind: SlashChipKind; label: string; value: string }> = ({ kind, label, value }) => (
-  <span className={slashChipClass(kind)} data-slot="aui_slash-chip" title={value}>
-    <svg
-      className="size-3 shrink-0 opacity-80"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      viewBox="0 0 24 24"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      {SLASH_ICON_PATHS[kind].map(d => (
-        <path d={d} key={d} />
-      ))}
-    </svg>
-    <span className="truncate">{label}</span>
+  <span {...refAttrs(kind)} data-slot="aui_slash-chip" title={value}>
+    <DirectiveIcon type={kind} />
+    {label}
   </span>
 )
 
-/** Inert by default; `onClick` promotes the chip to a real button (session
- *  refs, which open the session they name). */
+/** A directive reference in a sent message. A kind with a `DIRECTIVE_ACTIONS`
+ *  entry (a url, …) renders as a real button that runs it on click; everything
+ *  else is inert text. `onClick` overrides for chips that resolve their target
+ *  themselves (session, which needs the async navigator). */
 const DirectiveChip: FC<{
   type: string
   label: string
   id: string
   onClick?: () => void
 }> = ({ type, label, id, onClick }) => {
+  const activate = onClick ?? (DIRECTIVE_ACTIONS[type] ? () => DIRECTIVE_ACTIONS[type]!.run(id) : undefined)
+
   const body = (
     <>
       <DirectiveIcon type={type} />
-      <span className="truncate">{label}</span>
+      {label}
     </>
   )
 
   const props = {
-    className: cn(DIRECTIVE_CHIP_CLASS, onClick && 'cursor-pointer transition-colors hover:text-foreground'),
+    ...refAttrs(type, cn('wrap-anywhere', activate && 'cursor-pointer')),
     'data-directive-id': id,
-    'data-directive-type': type,
     'data-slot': 'aui_directive-chip',
     title: id
   }
 
-  return onClick ? (
-    <button {...props} onClick={onClick} type="button">
+  return activate ? (
+    <button {...props} onClick={activate} type="button">
       {body}
     </button>
   ) : (

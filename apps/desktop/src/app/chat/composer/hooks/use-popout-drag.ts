@@ -49,15 +49,7 @@ function gestureTargetOk(target: EventTarget | null) {
     return false
   }
 
-  // `composer-no-drag`: chrome that lives inside the composer root but isn't
-  // part of the draggable frame — the floating pill strips. The pills are
-  // `button`s and already excluded, but the strip's own box (the gaps between
-  // pills) isn't, so without this a press landing between two badges still
-  // drags. The strips are `w-fit`, so this costs the grab band only the width
-  // of the badges themselves.
-  return !target.closest(
-    'button, a, input, textarea, select, [role="menuitem"], [data-radix-popper-content-wrapper], [data-slot="composer-no-drag"]'
-  )
+  return !target.closest('button, a, input, textarea, select, [role="menuitem"], [data-radix-popper-content-wrapper]')
 }
 
 /** Floating composer's 5px outer frame — grab here to drag without long-press. */

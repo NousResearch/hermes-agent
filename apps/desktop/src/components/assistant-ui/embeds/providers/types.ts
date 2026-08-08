@@ -3,15 +3,7 @@
 // the lazy renderers (see ../registry.tsx) keyed off `renderer`.
 
 export type EmbedProvider =
-  | 'googlemaps'
-  | 'instagram'
-  | 'openstreetmap'
-  | 'pinterest'
-  | 'spotify'
-  | 'tiktok'
-  | 'twitter'
-  | 'vimeo'
-  | 'youtube'
+  'googlemaps' | 'instagram' | 'openstreetmap' | 'pinterest' | 'spotify' | 'tiktok' | 'twitter' | 'vimeo' | 'youtube'
 
 /** Which lazy renderer materialises the descriptor. */
 export type EmbedRenderer = 'frame' | 'tweet'

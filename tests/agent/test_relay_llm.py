@@ -714,3 +714,158 @@ def test_codec_baseline_failure_is_explicit(relay_turn, monkeypatch, caplog):
     assert "ignoring request rewrites" in caplog.text
 
 
+def test_stream_current_unwraps_completed_response(tmp_path, monkeypatch):
+    """Auxiliary streaming (the MoA aggregator) must surface a completed
+    provider response raw instead of crashing when the client ignores
+    ``stream=True`` and returns a response object (AnthropicAuxiliaryClient
+    and other OpenAI-compatible shims).
+
+    Pre-Relay, ``call_llm(stream=True)`` returned the raw response and the
+    consumer's ``hasattr(stream, "choices")`` check handled it (#11732,
+    #55933). The Relay integration wrapped the call in a ManagedLlmStream
+    without threading ``completed_response_predicate``, regressing that path
+    into ``TypeError: 'types.SimpleNamespace' object is not iterable``.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    relay_runtime._reset_for_tests()
+    lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id="session-moa",
+        platform="cli",
+    )
+    turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+        lease,
+        turn_id="turn-moa",
+        task_id="task-moa",
+    )
+    try:
+        completed = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="done"),
+                    finish_reason="stop",
+                )
+            ],
+            model="kimi-k3",
+        )
+        result = relay_llm.stream_current(
+            {"model": "kimi-k3", "stream": True},
+            lambda request: completed,
+            name="kimi-coding",
+            model_name="kimi-k3",
+            finalizer=dict,
+            completed_response_predicate=lambda value: hasattr(value, "choices"),
+        )
+        # Unwrapped raw response — NOT a stream wrapper whose iteration would
+        # have raised TypeError pre-fix.
+        assert result is completed
+    finally:
+        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+        relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
+        relay_runtime._reset_for_tests()
+
+
+def test_stream_current_streams_iterators_with_predicate(tmp_path, monkeypatch):
+    """A genuine chunk iterator still flows through as a stream when the
+    completed-response predicate is supplied."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    relay_runtime._reset_for_tests()
+    lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id="session-moa",
+        platform="cli",
+    )
+    turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+        lease,
+        turn_id="turn-moa",
+        task_id="task-moa",
+    )
+    try:
+        result = relay_llm.stream_current(
+            {"model": "m", "stream": True},
+            lambda request: iter([{"delta": "a"}, {"delta": "b"}]),
+            name="provider",
+            model_name="m",
+            finalizer=dict,
+            completed_response_predicate=lambda value: hasattr(value, "choices"),
+        )
+        assert list(result) == [{"delta": "a"}, {"delta": "b"}]
+    finally:
+        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+        relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
+        relay_runtime._reset_for_tests()
+
+
+
+def _completed_response(content: str = "done") -> SimpleNamespace:
+    return SimpleNamespace(
+        model="test-model",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    role="assistant",
+                    content=content,
+                    tool_calls=None,
+                ),
+                finish_reason="stop",
+            )
+        ],
+        usage=None,
+    )
+
+
+def _choices_predicate(value) -> bool:
+    return hasattr(value, "choices")
+
+
+def test_stream_managed_traps_direct_completed_response(relay_turn):
+    """Managed path: a factory returning a completed response (adapter
+    ignoring stream=True) is trapped as final_response instead of iterated."""
+    relay, turn = relay_turn
+    del relay, turn
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda request: _completed_response(),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {},
+        completed_response_predicate=_choices_predicate,
+    )
+    assert list(stream) == []
+    assert stream.final_response is not None
+    assert stream.final_response.choices[0].message.content == "done"
+
+
+def test_stream_current_inside_managed_callback_returns_raw(relay_turn):
+    """Managed path: an auxiliary stream_current() call made from inside a
+    managed provider callback (the MoA facade's call_llm(stream=True) shape)
+    must return the raw factory result; the outer stream traps a completed
+    response as its final_response instead of crashing on a nested event
+    loop or surfacing an empty stream."""
+    relay, turn = relay_turn
+    del relay, turn
+
+    def outer_factory(request):
+        return relay_llm.stream_current(
+            {"model": "test-model", "messages": []},
+            lambda inner_request: _completed_response(),
+            name="moa-aggregator",
+            model_name="test-model",
+            finalizer=lambda: {},
+            completed_response_predicate=_choices_predicate,
+        )
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        outer_factory,
+        session_id="session-1",
+        name="moa",
+        model_name="test-model",
+        finalizer=lambda: {},
+        completed_response_predicate=_choices_predicate,
+    )
+    assert list(stream) == []
+    assert stream.final_response is not None
+    assert stream.final_response.choices[0].message.content == "done"

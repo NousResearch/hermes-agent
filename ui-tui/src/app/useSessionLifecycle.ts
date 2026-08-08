@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
-import { type RefObject, useCallback, useEffect, useRef } from 'react'
+import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
@@ -178,7 +178,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     setHistoryItems([])
     setLastUserMsg('')
     setStickyPrompt('')
-    composerActions.setPasteSnips([])
+    composerActions.setComposerTokens([])
     // Half-prune: new session has new keys, but keep a warm pool in case
     // the user resumes back to the prior session.
     evictInkCaches('half')
@@ -202,7 +202,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       setHistoryItems(info ? [introMsg(info)] : [])
       setStickyPrompt('')
       setLastUserMsg('')
-      composerActions.setPasteSnips([])
+      composerActions.setComposerTokens([])
       patchTurnState({ activity: [] })
       patchUiState({ info, usage: usageFrom(info) })
     },
@@ -423,15 +423,28 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     [sys]
   )
 
-  return {
-    activateLiveSession,
-    closeSession,
-    guardBusySessionSwitch,
-    newLiveSession,
-    newSession,
-    resetSession,
-    resetVisibleHistory,
-    resumeById,
-    trimLastExchange: trimTail
-  }
+  return useMemo(
+    () => ({
+      activateLiveSession,
+      closeSession,
+      guardBusySessionSwitch,
+      newLiveSession,
+      newSession,
+      resetSession,
+      resetVisibleHistory,
+      resumeById,
+      trimLastExchange: trimTail
+    }),
+    [
+      activateLiveSession,
+      closeSession,
+      guardBusySessionSwitch,
+      newLiveSession,
+      newSession,
+      resetSession,
+      resetVisibleHistory,
+      resumeById,
+      trimTail
+    ]
+  )
 }

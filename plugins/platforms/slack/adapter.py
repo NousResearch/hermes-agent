@@ -283,6 +283,17 @@ class _ThreadContextCache:
     messages: List[Dict[str, Any]] = field(default_factory=list)
 
 
+def slack_deps_present() -> bool:
+    """PASSIVE probe: are slack-bolt/slack-sdk importable right now?
+
+    Registry ``check_fn`` — called from status displays and config loading,
+    so it must never install anything.  The ACTIVE lazy-installer
+    (``check_slack_requirements``) is registered as ``ensure_deps_fn``
+    and runs from ``create_adapter()`` when this returns False (#79812).
+    """
+    return SLACK_AVAILABLE
+
+
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
@@ -3936,10 +3947,13 @@ class SlackAdapter(BasePlatformAdapter):
             return ""
         return (
             f"You are connected to this Slack workspace as the bot "
-            f'"@{name}". In messages, each line is prefixed with the sender\'s '
-            f"name, and mentions are shown as @DisplayName. Only treat a "
-            f'message as directed at you when it mentions "@{name}" '
-            f"specifically; a mention of any other participant is not a "
+            f'"@{name}". The adapter already applied mention and channel '
+            f"routing; treat every delivered turn as intentionally routed to "
+            f'you. Your routing mention "@{name}" may have been stripped from '
+            f'the visible text — do not reject or ignore a message solely '
+            f'because "@{name}" is absent. In messages, each line is prefixed '
+            f"with the sender's name, and visible mentions are shown as "
+            f"@DisplayName; a mention of any other participant is not a "
             f"mention of you, even if their name is similar."
         )
 
@@ -8606,7 +8620,10 @@ async def _standalone_send(
     ``chat.postMessage``.
     """
     del force_document  # signature parity with other standalone senders
-    raw_token = getattr(pconfig, "token", None) or os.getenv("SLACK_BOT_TOKEN", "")
+    # Profile-scoped read: under multiplex os.environ may hold ANOTHER
+    # profile's bot token (first-writer-wins env bridges), so honor the
+    # secret scope's verdict instead of reading the process env directly.
+    raw_token = getattr(pconfig, "token", None) or get_secret("SLACK_BOT_TOKEN", "")
 
     # ``SLACK_BOT_TOKEN`` can be a comma-separated list in multi-workspace
     # gateways, and OAuth installs persist per-workspace tokens in
@@ -9049,7 +9066,8 @@ def register(ctx) -> None:
         name="slack",
         label="Slack",
         adapter_factory=_build_adapter,
-        check_fn=check_slack_requirements,
+        check_fn=slack_deps_present,
+        ensure_deps_fn=check_slack_requirements,
         is_connected=_is_connected,
         required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
         install_hint="Run `hermes setup` to install Slack support.",

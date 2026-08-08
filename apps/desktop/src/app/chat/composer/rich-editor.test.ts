@@ -230,6 +230,82 @@ describe('insertComposerContentsAtCaret', () => {
 
     editor.remove()
   })
+
+  // A directive typed by hand chips; the same directive pasted has to chip too,
+  // or copy/pasting a prompt silently drops every command in it.
+  it('chips a pasted slash command, including one that ends the paste', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertComposerContentsAtCaret(editor, '/some-skill')
+
+    expect(editor.querySelector('[data-slash-kind]')?.getAttribute('data-ref-text')).toBe('/some-skill')
+    // Committed pills carry the trailing space the typed path appends, so a
+    // later full re-render doesn't read the token as half-typed.
+    expect(composerPlainText(editor)).toBe('/some-skill ')
+
+    editor.remove()
+  })
+
+  it('chips a skill named mid-paste alongside a ref', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertComposerContentsAtCaret(editor, 'clean @file:`a.ts` with /some-skill then ship')
+
+    expect(editor.querySelectorAll('[data-slash-kind]').length).toBe(1)
+    expect(editor.querySelectorAll('[data-ref-kind="file"]').length).toBe(1)
+    expect(composerPlainText(editor)).toBe('clean @file:`a.ts` with /some-skill then ship')
+
+    editor.remove()
+  })
+
+  it('leaves a pasted path alone — /usr/local is not a command', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertComposerContentsAtCaret(editor, 'see /usr/local/bin and /goal ship it')
+
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+    expect(composerPlainText(editor)).toBe('see /usr/local/bin and /goal ship it')
+
+    editor.remove()
+  })
+
+  it('does not chip a command pasted against a word — foo/clean is not a command', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.textContent = 'foo'
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertComposerContentsAtCaret(editor, '/some-skill')
+
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+    expect(composerPlainText(editor)).toBe('foo/some-skill')
+
+    editor.remove()
+  })
+
+  it('chips a command pasted right after an existing chip', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.append(refChipElement('file', '`a.ts`'))
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertComposerContentsAtCaret(editor, '/some-skill')
+
+    expect(editor.querySelector('[data-slash-kind]')).not.toBeNull()
+
+    editor.remove()
+  })
 })
 
 describe('replaceBeforeCaret', () => {

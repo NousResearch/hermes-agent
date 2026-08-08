@@ -16,6 +16,7 @@ import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useI18n } from '@/i18n'
 import { generatedImageFromResult } from '@/lib/generated-images'
+import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 
@@ -50,6 +51,13 @@ const DelegateToolPart: FC<ToolCallMessagePartProps> = props => {
 const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
   // todo parts are hoisted to a dedicated panel above the message content.
   if (props.toolName === 'todo') {
+    return null
+  }
+
+  // A reaction's UI is the emoji landing on the bubble (message.reaction
+  // event) — a "React To Message" tool block next to it would be the agent
+  // narrating its own tapback. Failures still render so they're debuggable.
+  if (props.toolName === 'react_to_message' && !props.isError) {
     return null
   }
 
@@ -242,7 +250,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
       disableArtifacts
       isRunning={status.type === 'running' || messageRunning}
-      text={text.trimStart()}
+      text={separateGluedReasoningBlocks(text.trimStart())}
     />
   )
 }

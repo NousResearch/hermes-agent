@@ -11,14 +11,14 @@ Three tiers are joined with ``\\n\\n``:
 
 * ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), tool
   guidance, computer-use guidance, nous subscription block, tool-use
-  enforcement guidance + per-model operational guidance, skills prompt,
+  enforcement guidance + per-model operational guidance,
   alibaba model-name workaround, environment hints, coding guidance,
   platform hints.
 * ``context``  — caller-supplied ``system_message`` plus context files
   (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``,
   plus the session's coding-workspace snapshot.
-* ``volatile`` — memory snapshot, USER.md profile, external memory
-  provider block, timestamp/session/model/provider line.
+* ``volatile`` — skills index, memory snapshot, USER.md profile, external
+  memory provider block, timestamp/session/model/provider line.
 
 Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 """
@@ -158,8 +158,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
       * ``context``  — the workspace snapshot followed by the remaining
         session-stable guidance, context files, and caller-supplied
         system_message.
-      * ``volatile`` — memory snapshot, user profile, external
-        memory provider block, timestamp line.
+      * ``volatile`` — skills index, memory snapshot, user profile,
+        external memory provider block, timestamp line.
 
     Joined into a single string by :func:`build_system_prompt` and
     cached on ``agent._cached_system_prompt`` for the lifetime of the
@@ -325,8 +325,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         )
     else:
         skills_prompt = ""
-    if skills_prompt:
-        stable_parts.append(skills_prompt)
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
@@ -497,8 +495,22 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 
-    # ── Volatile tier (changes per session/turn — never cached) ───
+    # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     volatile_parts: List[str] = []
+    # Skills are runtime-mutable: the agent adds and patches them across a
+    # session (SKILLS_GUIDANCE tells it to patch a skill the moment it goes
+    # stale). The built prompt is cached per session and only rebuilt on
+    # compaction/restore (see build_system_prompt), so a skill change is not
+    # byte-stable across rebuilds. With the index in the stable band, a rebuild
+    # that picked up a skill change would bust the cached prefix from the index
+    # down, taking the whole scaffold with it. Render it at the FRONT of the
+    # volatile band instead, ahead of the turn-varying memory/timestamp tail:
+    # on an implicit longest-prefix backend an unchanged index still falls
+    # inside the reused prefix, and a changed one only re-prefills from here on.
+    # (No effect for single-block cache_control backends, where the whole
+    # system message is one cache unit regardless of internal order.)
+    if skills_prompt:
+        volatile_parts.append(skills_prompt)
 
     if agent._memory_store:
         if agent._memory_enabled:
@@ -556,10 +568,12 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
 
     Layers are ordered cache-friendly: stable identity/guidance first,
     then session-stable context files, then per-call volatile content
-    (memory, USER profile, timestamp).  The whole string is treated as
-    one cached block — Hermes never rebuilds or reinjects parts of it
-    mid-session, which is the only way to keep upstream prompt caches
-    warm across turns.
+    (skills index, memory, USER profile, timestamp). For explicit
+    cache_control backends the whole string is one cached block. For
+    implicit longest-prefix backends the order is what matters: the
+    content most likely to change is rendered last, so when the prompt is
+    rebuilt (on compaction/restore) the unchanged stable scaffold ahead of
+    the change stays in the reused prefix.
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
     joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
@@ -602,8 +616,8 @@ def reconstruct_static_prefix(
     Safety: the rebuilt stable tier is used ONLY when the stored prompt
     literally starts with it (checked here AND re-checked by
     ``_apply_system_cache_markers``'s ``startswith`` gate). If any
-    stable-tier input changed since the prompt was persisted (skills
-    edited, identity changed), the prefix mismatches, the static stays
+    stable-tier input changed since the prompt was persisted (identity
+    changed, SOUL.md edited), the prefix mismatches, the static stays
     None, and requests fall back to the legacy layout with the stored
     prompt bytes untouched — never a rewritten prompt.
 

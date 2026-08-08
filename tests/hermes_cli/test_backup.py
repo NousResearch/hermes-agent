@@ -1004,10 +1004,9 @@ class TestRunPreUpdateBackup:
         monkeypatch.setenv("HERMES_HOME", str(root))
         # Make Path.home() point at tmp_path for anything that uses it
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        # Bust caches for hermes_cli.config + hermes_constants so they pick up HERMES_HOME
-        for mod in list(__import__("sys").modules.keys()):
-            if mod.startswith("hermes_cli.config") or mod == "hermes_constants":
-                del __import__("sys").modules[mod]
+        # Config reads resolve HERMES_HOME dynamically and their caches are
+        # keyed by config path. Do not remove shared modules from sys.modules:
+        # other test modules may retain imports from the existing module object.
         return root
 
     @staticmethod
@@ -1017,10 +1016,6 @@ class TestRunPreUpdateBackup:
             "_config_version": 22,
             "updates": {"pre_update_backup": value},
         }))
-        import sys as _sys
-        for mod in list(_sys.modules.keys()):
-            if mod.startswith("hermes_cli.config"):
-                del _sys.modules[mod]
 
     @staticmethod
     def _zips(hermes_home):

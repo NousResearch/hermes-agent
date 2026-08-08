@@ -1,6 +1,7 @@
 """Tests for _detect_file_drop — file path detection that prevents
 dragged/pasted absolute paths from being mistaken for slash commands."""
 
+import os
 
 import pytest
 
@@ -157,6 +158,8 @@ class TestEscapedSpaces:
         img.parent.mkdir(parents=True, exist_ok=True)
         img.write_bytes(b"\x89PNG\r\n\x1a\n")
         monkeypatch.setenv("HOME", str(home))
+        # ntpath.expanduser ignores HOME (Python 3.8+) — it wants USERPROFILE.
+        monkeypatch.setenv("USERPROFILE", str(home))
 
         result = _detect_file_drop("~/storage/shared/Pictures/cat.png what is this?")
 
@@ -164,6 +167,19 @@ class TestEscapedSpaces:
         assert result["path"] == img
         assert result["is_image"] is True
         assert result["remainder"] == "what is this?"
+
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows drive-letter URI contract")
+    def test_windows_drive_letter_file_uri_drops_url_leading_slash(self, tmp_path):
+        image = tmp_path / "drive-uri.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        uri = image.as_uri()
+        assert uri.startswith("file:///") and ":/" in uri
+
+        result = _detect_file_drop(uri)
+
+        assert result is not None
+        assert result["path"] == image
 
 
 # ---------------------------------------------------------------------------

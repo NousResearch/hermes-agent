@@ -13,6 +13,7 @@ import {
   useState
 } from 'react'
 
+import { ComposerDirectiveActions } from '@/app/chat/composer/directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
   type ComposerInsertMode,
@@ -23,7 +24,9 @@ import {
   releaseActiveComposer
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
+import { rebuildAroundCaret } from '@/app/chat/composer/hooks/use-composer-trigger'
 import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
+import { useEmojiCompletions } from '@/app/chat/composer/hooks/use-emoji-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
 import {
   dragHasAttachments,
@@ -41,7 +44,7 @@ import {
   replaceBeforeCaret,
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
-import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
+import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
 import { chipTypedUrlOnSpace, linkifyUrls } from '@/app/chat/composer/url-refs'
@@ -112,6 +115,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
   const slash = useSlashCompletions({ gateway })
+  const emoji = useEmojiCompletions()
 
   // This is the one composer that routinely unmounts, so it is where the focus
   // bus leaks: confirming or cancelling an edit tears the composer down while
@@ -166,7 +170,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       const editor = editorRef.current
 
       if (editor) {
-        renderComposerContents(editor, next)
+        renderComposerContents(editor, next, { trailingCommitted: true })
         placeCaretEnd(editor)
       }
 
@@ -185,7 +189,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       editor &&
       (editor.childNodes.length === 0 || (document.activeElement !== editor && composerPlainText(editor) !== draft))
     ) {
-      renderComposerContents(editor, draft)
+      // Inert by construction — this repaints on mount or when the editor
+      // isn't the one being typed into. A message opened for edit is finished
+      // text, so a `/command` ending it is committed and chips, matching how
+      // the transcript rendered that same message a moment ago.
+      renderComposerContents(editor, draft, { trailingCommitted: true })
 
       if (document.activeElement === editor) {
         placeCaretEnd(editor)
@@ -282,7 +290,13 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   }, [])
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
-    trigger?.kind === '@' ? at.adapter : trigger?.kind === '/' ? slash.adapter : null
+    trigger?.kind === '@'
+      ? at.adapter
+      : trigger?.kind === '/'
+        ? slash.adapter
+        : trigger?.kind === ':'
+          ? emoji.adapter
+          : null
 
   useEffect(() => {
     if (!trigger || !triggerAdapter?.search) {
@@ -298,7 +312,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     setTriggerActive(idx => Math.min(idx, Math.max(0, triggerItems.length - 1)))
   }, [triggerItems.length])
 
-  const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
+  const triggerLoading =
+    trigger?.kind === '@'
+      ? at.loading
+      : trigger?.kind === '/'
+        ? slash.loading
+        : trigger?.kind === ':'
+          ? emoji.loading
+          : false
 
   const replaceTriggerWithChip = useCallback(
     (item: Unstable_TriggerItem) => {
@@ -333,9 +354,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         : fragment.append(document.createTextNode(text))
 
       if (!replaceBeforeCaret(editor, trigger.tokenLength, fragment)) {
-        const current = composerPlainText(editor)
-        renderComposerContents(editor, `${current.slice(0, Math.max(0, current.length - trigger.tokenLength))}${text}`)
-        placeCaretEnd(editor)
+        rebuildAroundCaret(editor, trigger.tokenLength, text)
       }
 
       finish()
@@ -536,8 +555,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     rememberInitialDraft()
     recordUndoPoint()
 
-    // Links land as `@url:` chips, same as the main composer.
-    insertComposerContentsAtCaret(event.currentTarget, pathifyRefs(linkifyUrls(pastedText)))
+    // Links land as `@url:` chips, same as the main composer — including
+    // consuming an open `@url:` scope rather than stacking a second directive
+    // in front of the chip.
+    insertComposerContentsAtCaret(
+      event.currentTarget,
+      pathifyRefs(linkifyUrls(pastedText)),
+      openDirectiveScope(event.currentTarget)
+    )
     syncDraftFromEditor(event.currentTarget)
   }
 
@@ -748,7 +773,6 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               autoCorrect="off"
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
-                'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
                 '**:data-ref-text:cursor-default',
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
               )}
@@ -770,6 +794,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               spellCheck={false}
               suppressContentEditableWarning
             />
+            <ComposerDirectiveActions editorRef={editorRef} />
             <ComposerPrimitive.Input
               asChild
               className="sr-only"

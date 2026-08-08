@@ -173,7 +173,7 @@ export function PetInlineToggle() {
   const toggle = () => {
     void setPetEnabled(requestGateway, !enabled, {
       noneAvailable: copy.noneAvailable,
-      fallback: copy.toggleFailed
+      fallback: copy.toggleFailed(!enabled)
     }).then(ok => ok && triggerHaptic('crisp'))
   }
 

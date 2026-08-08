@@ -256,7 +256,9 @@ class TestPostStopInterruptSwallow:
         assert "send it again" in response
 
     @pytest.mark.asyncio
-    async def test_interrupt_and_clear_session_evicts_cached_agent(self):
+    async def test_interrupt_and_clear_session_evicts_cached_agent(
+        self, monkeypatch
+    ):
         """The control-interrupt path must evict the session's cached agent
         so its ``_interrupt_requested`` flag cannot leak into the next turn."""
         import threading
@@ -271,6 +273,8 @@ class TestPostStopInterruptSwallow:
                 self.interrupt_reasons.append(reason)
 
         agent = _RecordingAgent()
+        agent._gateway_turn_process_task_id = "session-123"
+        agent._gateway_turn_process_baseline = frozenset({"proc_existing"})
         session_key = "agent:main:telegram:dm:12345"
         source = SessionSource(
             platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"
@@ -291,6 +295,16 @@ class TestPostStopInterruptSwallow:
         runner._release_running_agent_state = (
             lambda key, **kw: released.append(key)
         )
+        reaped = []
+        reaped_event = threading.Event()
+        from tools.process_registry import process_registry
+
+        def _record_reap(task_id, baseline, *, source):
+            reaped.append((task_id, baseline, source))
+            reaped_event.set()
+            return 1
+
+        monkeypatch.setattr(process_registry, "kill_started_since", _record_reap)
 
         await runner._interrupt_and_clear_session(
             session_key,
@@ -301,6 +315,14 @@ class TestPostStopInterruptSwallow:
 
         assert agent.interrupt_reasons == [_INTERRUPT_REASON_STOP]
         assert released == [session_key]
+        assert reaped_event.wait(1)
+        assert reaped == [
+            (
+                "session-123",
+                frozenset({"proc_existing"}),
+                "gateway_turn_interrupt",
+            )
+        ]
         assert session_key not in runner._agent_cache, (
             "Cached agent with a set interrupt flag must be evicted on /stop "
             "so the flag cannot kill the session's next message (#44212)"

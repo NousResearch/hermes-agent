@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import {
   AlignLeft,

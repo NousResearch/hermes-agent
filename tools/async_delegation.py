@@ -548,6 +548,20 @@ def active_count() -> int:
         )
 
 
+def active_for_session(origin_ui_session_id: str) -> int:
+    """Number of live async delegations owned by one UI session."""
+    if not origin_ui_session_id:
+        return 0
+    with _records_lock:
+        return sum(
+            1
+            for r in _records.values()
+            if r.get("status") in {"running", "stalling", "finalizing"}
+            and str(r.get("origin_ui_session_id") or "")
+            == origin_ui_session_id
+        )
+
+
 def active_task_count() -> int:
     """Number of async delegation TASKS (child subagents) currently running.
 
@@ -569,6 +583,45 @@ def active_task_count() -> int:
             else:
                 total += 1
         return total
+
+
+def _matches_session_selectors(
+    record: Dict[str, Any],
+    *,
+    session_key: str = "",
+    origin_ui_session_id: str = "",
+    parent_session_id: str = "",
+) -> bool:
+    return (
+        (origin_ui_session_id and str(record.get("origin_ui_session_id") or "") == origin_ui_session_id)
+        or (session_key and str(record.get("session_key") or "") == session_key)
+        or (parent_session_id and str(record.get("parent_session_id") or "") == parent_session_id)
+    )
+
+
+def has_live_for_session(
+    session_key: str = "",
+    origin_ui_session_id: str = "",
+    parent_session_id: str = "",
+) -> bool:
+    """Whether a session still owns any live async delegation.
+
+    Live = running / stalling / finalizing — the same states the reapers'
+    keepalive treats as active work.
+    """
+    if not session_key and not origin_ui_session_id and not parent_session_id:
+        return False
+    with _records_lock:
+        return any(
+            r.get("status") in {"running", "stalling", "finalizing"}
+            and _matches_session_selectors(
+                r,
+                session_key=session_key,
+                origin_ui_session_id=origin_ui_session_id,
+                parent_session_id=parent_session_id,
+            )
+            for r in _records.values()
+        )
 
 
 def _new_delegation_id() -> str:
@@ -1418,10 +1471,11 @@ def interrupt_for_session(
         targets = [
             r for r in _records.values()
             if r.get("status") in ("running", "stalling")
-            and (
-                (origin_ui_session_id and str(r.get("origin_ui_session_id") or "") == origin_ui_session_id)
-                or (session_key and str(r.get("session_key") or "") == session_key)
-                or (parent_session_id and str(r.get("parent_session_id") or "") == parent_session_id)
+            and _matches_session_selectors(
+                r,
+                session_key=session_key,
+                origin_ui_session_id=origin_ui_session_id,
+                parent_session_id=parent_session_id,
             )
         ]
     for r in targets:

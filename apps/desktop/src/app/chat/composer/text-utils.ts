@@ -1,13 +1,34 @@
 import { DATA_IMAGE_URL_RE, dataUrlToBlob } from '@/lib/embedded-images'
+import { $reactionsEnabled } from '@/store/reactions-enabled'
+
+import { serializeTextBefore } from './rich-editor'
 
 export interface TriggerState {
   /** True for a `/` typed mid-message — an inline skill/command reference in
    *  prose rather than a command invocation. Arg completion doesn't apply. */
   inline?: boolean
-  kind: '@' | '/'
+  kind: '@' | '/' | ':'
   query: string
+  /** The `@kind:` prefix the user scoped the browse to, when there is one. */
+  scope?: DirectiveScope
   tokenLength: number
+  /** `query` minus the `scope:` prefix — the value actually being typed. */
+  value: string
 }
+
+/** Directive kinds the `@` popover can scope a browse to. Mirrors the starter
+ *  rows in use-at-completions and the gateway's `complete.path` prefixes. */
+export const DIRECTIVE_SCOPES = ['file', 'folder', 'url', 'image', 'tool', 'git'] as const
+
+export type DirectiveScope = (typeof DIRECTIVE_SCOPES)[number]
+
+// Picking "attach a folder" types `@folder:` into the editor, and everything
+// after it is the value being browsed. Parsing that prefix off the query is
+// what lets the rest of the composer treat it as the BROWSE MODE it is rather
+// than characters the user has to maintain by hand — Tab-descending has to
+// carry it down, Backspace has to drop it whole, and a chip landing on it has
+// to consume it.
+const AT_SCOPE_RE = new RegExp(`^(${DIRECTIVE_SCOPES.join('|')}):(.*)$`)
 
 // `@` triggers stop at the first whitespace — `@file:path` and `@diff` are
 // single tokens, and a path is part of that token: `@./src/`, `@~/Desktop/`,
@@ -44,6 +65,15 @@ export interface TriggerState {
 const AT_TRIGGER_RE = /(?:^|[\s\uFFFC])(@)([^\s@\uFFFC]*)$/
 const SLASH_COMMAND_TRIGGER_RE = /^(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
 const SLASH_INLINE_TRIGGER_RE = /[\s\uFFFC](\/)([a-zA-Z][\w-]*)?$/
+// `:joy` → emoji completions, Slack-style. Boundary-anchored so a mid-word
+// colon (`localhost:8080`, `note:`) never fires; two chars minimum so a bare
+// `:` or `:D` smiley doesn't open a popover the user didn't ask for.
+const EMOJI_TRIGGER_RE = /(?:^|[\s\uFFFC])(:)([a-zA-Z0-9_+-]{2,})$/
+
+const INLINE_IMAGE_SRC_RE = /<img\b[^>]*?\bsrc\s*=\s*["'](data:image\/[^"']+)["']/gi
+// Below this, an inline data URL is chrome rather than content — a spacer, a
+// 1×1 tracker, or a blurhash placeholder. Real pasted artwork clears it easily.
+const MIN_INLINE_IMAGE_BYTES = 4096
 
 /** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
 export function blobDedupeKey(blob: Blob): string {
@@ -100,16 +130,22 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
 
   if (DATA_IMAGE_URL_RE.test(text)) {
     push(dataUrlToBlob(text))
+
+    return blobs
   }
 
-  if (blobs.length === 0) {
-    const html = clipboard.getData('text/html')
+  // Inline `<img src="data:…">` in the clipboard's HTML — but only for a copy
+  // that carried no text of its own. A rich-text copy WITH prose is a text
+  // paste that happens to contain images, and its data URLs are the page's
+  // decorations rather than content: Discord ships a 32×5 blurhash placeholder
+  // beside every image embed, so copying a thread attached a blank thumbnail
+  // and (because an image paste swallows the event) dropped the text entirely.
+  if (!text) {
+    for (const match of clipboard.getData('text/html').matchAll(INLINE_IMAGE_SRC_RE)) {
+      const blob = dataUrlToBlob(match[1])
 
-    if (html) {
-      const matches = html.matchAll(/<img\b[^>]*?\bsrc\s*=\s*["'](data:image\/[^"']+)["']/gi)
-
-      for (const match of matches) {
-        push(dataUrlToBlob(match[1]))
+      if (blob && blob.size >= MIN_INLINE_IMAGE_BYTES) {
+        push(blob)
       }
     }
   }
@@ -136,23 +172,16 @@ export function textBeforeCaret(editor: HTMLDivElement): string | null {
     return null
   }
 
-  const before = range.cloneRange()
-  before.selectNodeContents(editor)
-  before.setEnd(range.startContainer, range.startOffset)
+  return serializeTextBefore(editor, range.startContainer, range.startOffset)
+}
 
-  const scratch = document.createElement('div')
+/** How many characters of directive scope the caret is sitting inside (`@url:`
+ *  with nothing typed after it), or 0. A paste lands INTO that scope: the scope
+ *  text is consumed rather than left in front of the chip as leftover syntax. */
+export function openDirectiveScope(editor: HTMLDivElement): number {
+  const trigger = detectTrigger(textBeforeCaret(editor) ?? '')
 
-  scratch.append(before.cloneContents())
-
-  for (const chip of scratch.querySelectorAll('[data-ref-text]')) {
-    chip.replaceWith('\uFFFC')
-  }
-
-  for (const br of scratch.querySelectorAll('br')) {
-    br.replaceWith('\n')
-  }
-
-  return scratch.textContent ?? ''
+  return trigger?.kind === '@' && trigger.scope && !trigger.value ? trigger.tokenLength : 0
 }
 
 export function detectTrigger(textBefore: string): TriggerState | null {
@@ -165,19 +194,37 @@ export function detectTrigger(textBefore: string): TriggerState | null {
   if (inline) {
     const query = inline[2] ?? ''
 
-    return { inline: true, kind: '/', query, tokenLength: 1 + query.length }
+    return { inline: true, kind: '/', query, tokenLength: 1 + query.length, value: query }
   }
 
   const command = SLASH_COMMAND_TRIGGER_RE.exec(textBefore)
 
   if (command) {
-    return { kind: '/', query: command[2], tokenLength: 1 + command[2].length }
+    return { kind: '/', query: command[2], tokenLength: 1 + command[2].length, value: command[2] }
   }
 
   const at = AT_TRIGGER_RE.exec(textBefore)
 
   if (at) {
-    return { kind: '@', query: at[2], tokenLength: 1 + at[2].length }
+    const query = at[2]
+    const scoped = AT_SCOPE_RE.exec(query)
+
+    return {
+      kind: '@',
+      query,
+      ...(scoped ? { scope: scoped[1] as DirectiveScope } : {}),
+      tokenLength: 1 + query.length,
+      value: scoped ? (scoped[2] ?? '') : query
+    }
+  }
+
+  // After `@` so a directive starter's colon (`@file:`) stays an `@` query.
+  // Rides the reactions opt-in (Settings → Appearance) — both are one
+  // "emoji features" surface, off by default.
+  const emoji = $reactionsEnabled.get() ? EMOJI_TRIGGER_RE.exec(textBefore) : null
+
+  if (emoji) {
+    return { kind: ':', query: emoji[2], tokenLength: 1 + emoji[2].length, value: emoji[2] }
   }
 
   return null

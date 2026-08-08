@@ -485,6 +485,8 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
             # Append to batch output file
             with open(batch_output_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(trajectory_entry, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         
         # Aggregate tool statistics
         for tool_name, stats in result.get("tool_stats", {}).items():
@@ -978,8 +980,15 @@ class BatchRunner:
                         except Exception as ckpt_err:
                             # Don't fail the run if checkpoint write fails
                             print(f"⚠️  Warning: Failed to save incremental checkpoint: {ckpt_err}")
+                except KeyboardInterrupt:
+                    print("\n⚠️  Interrupted — terminating batch workers...")
+                    pool.terminate()
+                    pool.join()
+                    raise
                 except Exception as e:
                     logger.error("Batch worker failed: %s", e, exc_info=True)
+                    pool.terminate()
+                    pool.join()
                     raise
                 finally:
                     root_logger.setLevel(original_level)

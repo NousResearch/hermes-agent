@@ -24,10 +24,34 @@ Three concerns live here:
 ``run_agent`` keeps thin wrappers for each so existing call sites
 (``self._compress_context(...)``) keep working.  Tests that exercise
 these paths see no behavioural change.
+
+Thread-safety contract for extension points (#76354 review)
+------------------------------------------------------------
+
+When the host-level progress-aware timeout is enabled (the default:
+``compression.context_timeout_seconds > 0``), the WHOLE compression pass —
+including plugin/legacy **context engines** (``compress()`` /
+``on_session_start`` / boundary callbacks) and **memory providers**
+(``on_pre_compress`` / ``on_session_switch``) — runs on a pooled daemon
+thread, not the conversation thread. Extension authors must assume:
+
+* Calls may arrive on an arbitrary pooled thread; do not rely on
+  thread-affinity or ``threading.local`` state shared with the caller.
+* The input message list is a private deep snapshot owned by the worker;
+  engines MAY mutate it in place (legacy contract preserved), and that
+  mutation is invisible to the live conversation unless the pass commits.
+* Publication to caller-visible / durable state happens ONLY on an admitted
+  commit (:class:`CompressionCommitFence`); after a host timeout the still-
+  running engine's work is discarded.
+* Two compression passes never run concurrently for one session (durable
+  per-session lock), but passes for DIFFERENT sessions may run concurrently
+  on pool siblings — engine/provider instances shared across sessions must
+  be thread-safe or internally locked.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import inspect
 import json
@@ -40,15 +64,29 @@ import uuid
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import (
     automatic_compaction_status_message,
     sanitize_memory_context,
 )
 from agent.model_metadata import estimate_request_tokens_rough
+from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 
 logger = logging.getLogger(__name__)
+
+# Terminal compression outcomes published by host/hygiene timeout or cooldown
+# writers. Detached heartbeat workers must not clobber these back to
+# agent.compression after cancel (otherwise timeout is unobservable). Observing
+# a terminal stamp (or a cancelled commit fence) also latches the heartbeat
+# silent so a later UNKNOWN rewrite cannot re-arm a zombie worker.
+_TERMINAL_COMPRESSION_PROVENANCES = frozenset(
+    {
+        ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
+        ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
+    }
+)
 
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
 # status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
@@ -207,6 +245,203 @@ def _cached_prompt_reflects_builtin_memory(agent: Any, cached_prompt: str) -> bo
     return True
 
 
+_COMPRESSOR_ATTEMPT_STATE_FIELDS = (
+    "_previous_summary",
+    "_summary_has_user_turn",
+    "compression_count",
+    "_last_compression_savings_pct",
+    "_ineffective_compression_count",
+    "_anti_thrash_recovery_deadline",
+    "_fallback_compression_streak",
+    "_verify_compaction_cleared_threshold",
+    "_last_compression_made_progress",
+    "_summary_failure_cooldown_until",
+    "_cooldown_persist_failed",
+    "_last_summary_error",
+    "_consecutive_timeout_failures",
+    "_last_summary_dropped_count",
+    "_last_summary_fallback_used",
+    "_last_compress_aborted",
+    "_last_summary_auth_failure",
+    "_last_summary_network_failure",
+    "_last_aux_model_failure_error",
+    "_last_aux_model_failure_model",
+    "_summary_model_fallen_back",
+    "summary_model",
+    "_last_compression_telemetry",
+    "_active_compression_telemetry",
+    "_compression_telemetry_seed",
+    "_proactive_prune_rearm_tokens",
+)
+
+_COMPRESSOR_COOLDOWN_STATE_FIELDS = (
+    "_summary_failure_cooldown_until",
+    "_last_summary_error",
+    "_cooldown_persist_failed",
+)
+
+
+def _snapshot_compressor_attempt_state(compressor: Any) -> dict[str, Any]:
+    """Copy only mutable bookkeeping owned by one compression attempt.
+
+    The explicit allow-list avoids copying provider clients, SessionDB handles,
+    locks, and plugin resources. Missing fields are intentionally ignored so
+    legacy and third-party compressors keep their existing contract.
+    """
+    try:
+        values = vars(compressor)
+    except TypeError:
+        return {}
+    selected = {
+        name: values[name]
+        for name in _COMPRESSOR_ATTEMPT_STATE_FIELDS
+        if name in values
+    }
+    # Copy the collection as one object so aliases between fields (notably
+    # _active_compression_telemetry and _last_compression_telemetry) survive.
+    return copy.deepcopy(selected)
+
+
+def _restore_compressor_attempt_state(
+    compressor: Any,
+    snapshot: dict[str, Any],
+    *,
+    durable_cooldown_authoritative: Optional[bool] = None,
+    durable_cooldown_state: Optional[dict[str, Any]] = None,
+) -> None:
+    """Restore the safe per-attempt snapshot after a pre-commit hard cancel."""
+    # A successful summary clears the durable cooldown before the outer commit
+    # boundary. Recreate (or clear) that row before restoring exact in-memory
+    # values, otherwise the next refresh would overwrite this rollback. Unknown
+    # durable state and intentionally unpersisted local cooldowns are never
+    # converted into destructive DB writes during cancellation.
+    if (
+        "_summary_failure_cooldown_until" in snapshot
+        and durable_cooldown_authoritative is not False
+        and (
+            durable_cooldown_authoritative is True
+            or not bool(snapshot.get("_cooldown_persist_failed", False))
+        )
+    ):
+        session_db = vars(compressor).get("_session_db")
+        session_id = vars(compressor).get("_session_id")
+        if session_db is not None and session_id:
+            if durable_cooldown_authoritative is True:
+                restorer = getattr(
+                    type(session_db),
+                    "restore_compression_failure_cooldown_row",
+                    None,
+                )
+                if not callable(restorer) or durable_cooldown_state is None:
+                    raise RuntimeError(
+                        "exact compression cooldown rollback API is unavailable"
+                    )
+                # This API restores raw columns (including expired and null
+                # combinations), verifies the read-back, and propagates failure.
+                restorer(
+                    session_db,
+                    session_id,
+                    copy.deepcopy(durable_cooldown_state),
+                )
+            else:
+                try:
+                    deadline = float(
+                        snapshot["_summary_failure_cooldown_until"] or 0.0
+                    )
+                    remaining = max(0.0, deadline - time.monotonic())
+                    durable_deadline = time.time() + remaining
+                    durable_error = snapshot.get("_last_summary_error")
+                    if remaining > 0:
+                        recorder = getattr(
+                            type(session_db),
+                            "record_compression_failure_cooldown",
+                            None,
+                        )
+                        if callable(recorder):
+                            recorder(
+                                session_db,
+                                session_id,
+                                durable_deadline,
+                                durable_error,
+                            )
+                    else:
+                        clearer = getattr(
+                            type(session_db),
+                            "clear_compression_failure_cooldown",
+                            None,
+                        )
+                        if callable(clearer):
+                            clearer(session_db, session_id)
+                except Exception:
+                    # Legacy/third-party compatibility path: its existing APIs
+                    # do not provide a verifiable transaction contract.
+                    logger.debug(
+                        "compression cooldown persistence rollback failed",
+                        exc_info=True,
+                    )
+    restored = copy.deepcopy(snapshot)
+    for name, value in restored.items():
+        setattr(compressor, name, value)
+
+
+def _capture_authoritative_cooldown_under_lease(
+    compressor: Any,
+    attempt_snapshot: dict[str, Any],
+) -> tuple[Optional[bool], Optional[dict[str, Any]]]:
+    """Refresh and snapshot built-in durable cooldown state under the lease.
+
+    Third-party compressors are deliberately not invoked here: arbitrary plugin
+    callbacks must not run while the session lease is held. A durable read
+    failure returns ``False`` so rollback cannot mistake unknown durable state
+    for an authoritative empty row and clear it; an unavailable legacy API
+    returns ``None`` and preserves the compatibility path.
+    """
+    try:
+        from agent.context_compressor import ContextCompressor
+
+        if not isinstance(compressor, ContextCompressor):
+            return None, None
+        values = vars(compressor)
+        session_db = values.get("_session_db")
+        session_id = values.get("_session_id")
+        raw_reader = (
+            getattr(
+                type(session_db), "get_compression_failure_cooldown_row", None
+            )
+            if session_db is not None
+            else None
+        )
+        if session_db is None or not session_id:
+            # Unbound compressors have no durable row to mutate or restore.
+            return None, None
+        if not callable(raw_reader):
+            return False, None
+        # Capture the exact persisted representation first. The active getter
+        # intentionally filters expired rows and therefore cannot serve as a
+        # lossless rollback snapshot.
+        durable_state = raw_reader(session_db, session_id)
+        if not isinstance(durable_state, dict):
+            raise TypeError("raw compression cooldown snapshot must be a mapping")
+        ContextCompressor.get_active_compression_failure_cooldown(
+            compressor,
+            refresh=True,
+        )
+    except Exception as exc:
+        logger.debug("authoritative compression cooldown capture failed: %s", exc)
+        return False, None
+    authoritative = getattr(
+        compressor, "_last_cooldown_refresh_was_authoritative", None
+    )
+    if authoritative is not True:
+        return authoritative, None
+
+    values = vars(compressor)
+    for name in _COMPRESSOR_COOLDOWN_STATE_FIELDS:
+        if name in values:
+            attempt_snapshot[name] = copy.deepcopy(values[name])
+    return True, copy.deepcopy(durable_state)
+
+
 class CompressionCommitFence:
     """Fence timeout cancellation against post-summary session mutation.
 
@@ -221,6 +456,31 @@ class CompressionCommitFence:
         self._lock = threading.Lock()
         self._cancelled = False
         self._commit_started = False
+        # Lock-free commit-phase marker (#76354 review F1). ``begin_commit``
+        # RETAINS ``self._lock`` until ``finish_commit``, so any host-side
+        # observation that needs the lock (``try_cancel_before_commit``)
+        # blocks/space-outs for the whole commit. This Event is set inside
+        # ``begin_commit`` while the lock is held but is READABLE WITHOUT the
+        # lock, so a host can observe "a commit was admitted and may be in
+        # flight" even while the commit itself is hung — which is exactly when
+        # the overrun warning must be able to fire.
+        self._commit_phase = threading.Event()
+        # Lock-free admission revocation (#76354 review F2). Set by
+        # :meth:`revoke_commit_admission` on ANY host unwind (KeyboardInterrupt,
+        # cancellation, unexpected exception) without touching the fence lock,
+        # so a host that cannot afford to block behind an in-flight commit can
+        # still guarantee no FUTURE commit is admitted. Plain bool store —
+        # atomic in CPython.
+        self._admission_revoked = False
+        # Holder-qualified durable-lock release hook (#76354 review F4;
+        # transplanted from PR #71569 by @ciabata-git). The worker publishes an
+        # idempotent, holder-scoped release callable once it owns the durable
+        # compression lock; a timed-out host invokes it to free the lease
+        # without racing a NEW holder (DB release is holder-qualified, so a
+        # stale release can never delete a replacement's row — no ABA).
+        self._lock_release_guard = threading.Lock()
+        self._cancelled_lock_release: Optional[Callable[[], None]] = None
+        self._cancelled_lock_release_requested = False
         # Forward-progress telemetry: the compression worker touches this
         # whenever the streamed summary call produces a token (see
         # ContextCompressor._call_summary_llm). Waiters use it to distinguish
@@ -241,7 +501,7 @@ class CompressionCommitFence:
         """Seconds since the worker last reported forward progress."""
         return max(0.0, time.monotonic() - self._last_progress)
 
-    def cancel_before_commit(self) -> bool:
+    def cancel_before_commit(self, cancel_event: Any = None) -> bool:
         """Cancel a pending commit, or wait for an active commit to finish.
 
         Returns ``True`` when cancellation won before the commit boundary.
@@ -250,8 +510,12 @@ class CompressionCommitFence:
         """
         with self._lock:
             if self._commit_started:
+                if cancel_event is not None:
+                    cancel_event.set()
                 return False
             self._cancelled = True
+            if cancel_event is not None:
+                cancel_event.set()
             return True
 
     def try_cancel_before_commit(self) -> Optional[bool]:
@@ -270,18 +534,558 @@ class CompressionCommitFence:
         finally:
             self._lock.release()
 
-    def begin_commit(self) -> bool:
-        """Enter the commit boundary unless cancellation already won."""
+    def begin_commit(self, cancel_event: Any = None) -> bool:
+        """Atomically admit commit unless a hard cancellation already won."""
         self._lock.acquire()
-        if self._cancelled:
+        if (
+            self._cancelled
+            or self._admission_revoked
+            or (cancel_event is not None and bool(cancel_event.is_set()))
+        ):
+            self._cancelled = True
             self._lock.release()
+            if self._admission_revoked:
+                # Round-2 #1: a revoke that lost the fence-lock race to this
+                # very begin_commit deferred its lease release; the commit was
+                # refused, so the release is safe (and idempotent with the
+                # worker's own holder-qualified cleanup) right now.
+                self.release_cancelled_compression_lock()
             return False
         self._commit_started = True
+        # Set while the fence lock is held so observers can never see
+        # commit_in_flight=True for a commit that lost to cancellation.
+        self._commit_phase.set()
         return True
 
     def finish_commit(self) -> None:
         """Leave a commit boundary entered by :meth:`begin_commit`."""
+        self._commit_phase.clear()
         self._lock.release()
+        if self._admission_revoked:
+            # Round-2 #1: a revoke that arrived while THIS commit was in
+            # flight deferred its durable-lease release rather than freeing
+            # the lock out from under an active SessionDB mutation. The
+            # commit is now fully complete, so perform the deferred release
+            # here — promptly, without relying on the (possibly parked)
+            # worker thread's outer cleanup. Idempotent with that cleanup:
+            # the DB release is holder-qualified.
+            self.release_cancelled_compression_lock()
+
+    @property
+    def commit_in_flight(self) -> bool:
+        """Lock-free read: an admitted commit has begun and not yet finished.
+
+        Safe to call from the host while the worker holds the fence lock for
+        the whole commit (a hung SessionDB write). Hosts use this to reach
+        their overrun-warning loop WHILE the commit is blocked instead of
+        spinning on ``try_cancel_before_commit`` (which needs the lock the
+        worker retains until ``finish_commit``).
+        """
+        return self._commit_phase.is_set()
+
+    @property
+    def is_cancelled(self) -> bool:
+        """True after cancellation won before the commit boundary."""
+        return self._cancelled or self._admission_revoked
+
+    def revoke_commit_admission(self) -> None:
+        """Revoke FUTURE commit admission without blocking on the fence lock.
+
+        #76354 review F2: every host unwind path (KeyboardInterrupt, task
+        cancellation, unexpected exception while waiting) must guarantee a
+        detached worker cannot later enter the commit boundary and mutate
+        durable/session state. The flag store is lock-free: a commit that is
+        ALREADY in flight cannot be safely abandoned (the invariant "commit
+        never abandoned mid-mutation" holds), but no NEW commit will be
+        admitted after this call — ``begin_commit`` re-checks the flag under
+        the fence lock.
+
+        Round-2 #1 (durable-lease timing): the worker's holder-qualified
+        lease release (F4) must NOT run while an admitted commit is still
+        mutating SessionDB — a second compressor could otherwise acquire the
+        durable lock mid-commit and interleave with the first commit's
+        writes. The release decision is therefore made under the fence lock:
+
+        - non-blocking acquire succeeds → no commit is in flight (an
+          admitted commit RETAINS the lock until ``finish_commit``), so the
+          lease is released immediately, while still holding the lock so a
+          concurrent ``begin_commit`` cannot slip in between the check and
+          the release (it would be refused anyway — the flag is already set).
+        - acquire fails → the lock holder is either an in-flight commit or a
+          transient boundary (lock-setup / cancel admission). Defer: the
+          release then runs in ``finish_commit`` (after the mutation fully
+          completes) or on the ``begin_commit``-refusal path, whichever the
+          worker reaches first. Both are idempotent with the worker's own
+          outer cleanup because the DB release is holder-qualified.
+        """
+        self._admission_revoked = True
+        if self._lock.acquire(blocking=False):
+            try:
+                self.release_cancelled_compression_lock()
+            finally:
+                self._lock.release()
+        # else: deferred — finish_commit()/begin_commit() re-check
+        # _admission_revoked and perform the release once no commit can be
+        # mid-mutation.
+
+    # ── Holder-qualified durable-lease cancellation (#76354 F4) ──────────
+    # Transplanted from PR #71569 (@ciabata-git): the worker publishes an
+    # idempotent, holder-scoped release hook once it owns the durable
+    # compression lock, and the host invokes it after winning cancellation.
+    # ABA safety comes from SessionDB.release_compression_lock being
+    # holder-qualified (DELETE ... WHERE holder = ?), so a stale release can
+    # never free a NEW holder's lease.
+
+    def begin_lock_setup(self) -> bool:
+        """Fence durable-lock acquisition and release-hook publication.
+
+        The caller keeps the fence until it has either published the exact
+        holder-qualified release hook or established that no lock was
+        acquired. A timeout cannot therefore win in the gap between acquiring
+        the durable lock and making its cancellation cleanup callable.
+        """
+        self._lock.acquire()
+        if self._cancelled or self._admission_revoked:
+            self._lock.release()
+            return False
+        return True
+
+    def finish_lock_setup(self) -> None:
+        """Leave a lock setup boundary entered by :meth:`begin_lock_setup`."""
+        self._lock.release()
+
+    def register_cancelled_lock_release(
+        self, release: Callable[[], None]
+    ) -> bool:
+        """Publish the timed-out worker's holder-qualified lock release.
+
+        Returns whether cancellation cleanup was requested before publication.
+        In that race, the release runs synchronously before this method returns.
+        """
+        with self._lock_release_guard:
+            self._cancelled_lock_release = release
+            requested = self._cancelled_lock_release_requested
+        if requested:
+            release()
+        return requested
+
+    def clear_cancelled_lock_release(self, release: Callable[[], None]) -> None:
+        """Forget ``release`` after the worker's normal cleanup finishes."""
+        with self._lock_release_guard:
+            if self._cancelled_lock_release is release:
+                self._cancelled_lock_release = None
+
+    def release_cancelled_compression_lock(self) -> None:
+        """Release the cancelled worker's lock without finalizing its clients.
+
+        Callers invoke this only after cancellation won (fence cancelled or
+        admission revoked). A request that races ahead of lock-hook
+        publication is retained and fulfilled synchronously when the worker
+        publishes the hook.
+        """
+        with self._lock_release_guard:
+            self._cancelled_lock_release_requested = True
+            release = self._cancelled_lock_release
+        if release is not None:
+            release()
+
+
+# Defaults for the in-agent (non-hygiene) progress-aware compress_context wrap.
+# Mirror hermes_cli.config.DEFAULT_CONFIG["compression"] keys of the same name.
+DEFAULT_CONTEXT_TIMEOUT_SECONDS = 120.0
+DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS = 600.0
+
+# Shared daemon pool for sync compress_context timeout wraps — analogous to
+# asyncio's default executor used by gateway session hygiene's
+# ``loop.run_in_executor(None, ...)``, but daemon so a fence-cancelled hung
+# worker cannot block interpreter exit via concurrent.futures' atexit join.
+# Created lazily; never shut down per call (a timed-out worker may still be
+# winding down after fence cancel).
+_compress_timeout_executor = None
+_compress_timeout_executor_lock = threading.Lock()
+
+# Commit-phase overrun wait slice: once an in-flight SessionDB commit runs
+# past the total ceiling, keep waiting in bounded increments of this size so
+# every overrun window produces a fresh (escalating) log line instead of one
+# silent unbounded future.result(). Clamped down to the ceiling for tiny test
+# ceilings so overrun reporting stays observable at test timescales.
+_COMMIT_OVERRUN_WAIT_SLICE_SECONDS = 30.0
+
+# Bounded admission for the shared compress-timeout pool (#76354 review F6).
+# The stdlib executor queue is unbounded: with all four workers wedged in hung
+# summaries, a fifth compression would queue silently, wait out its whole
+# timeout without ever starting, and remain eligible to run as a stale job
+# whenever a worker recovered. Admission is therefore capped at the worker
+# count — when every worker slot is occupied (running OR admitted-not-started)
+# submission FAILS FAST and the caller continues without compression.
+#
+# Recovery contract when all workers are wedged: new compressions fail fast
+# (no queue growth, conversation continues uncompressed, a warning is logged
+# each attempt); wedged workers are fence-cancelled so they cannot publish
+# anything when they eventually return, and each recovery frees its admission
+# slot via the future done-callback, restoring normal service. If a worker
+# NEVER returns, its slot is lost for the process lifetime — bounded,
+# observable degradation instead of an unbounded stale-job queue.
+_COMPRESS_EXECUTOR_MAX_WORKERS = 4
+_compress_admission_lock = threading.Lock()
+_compress_admitted_count = 0
+
+
+class CompressionExecutorSaturatedError(RuntimeError):
+    """All compression pool slots are occupied; submission was refused."""
+
+
+def _try_admit_compression_job() -> bool:
+    """Reserve one bounded compression-pool admission slot (F6)."""
+    global _compress_admitted_count
+    with _compress_admission_lock:
+        if _compress_admitted_count >= _COMPRESS_EXECUTOR_MAX_WORKERS:
+            return False
+        _compress_admitted_count += 1
+        return True
+
+
+def _release_compression_admission(_future=None) -> None:
+    """Free an admission slot (future done-callback or failed submit)."""
+    global _compress_admitted_count
+    with _compress_admission_lock:
+        if _compress_admitted_count > 0:
+            _compress_admitted_count -= 1
+
+
+def _get_compress_timeout_executor():
+    """Return the process-wide compress-timeout DaemonThreadPoolExecutor."""
+    global _compress_timeout_executor
+    executor = _compress_timeout_executor
+    if executor is not None:
+        return executor
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+
+    with _compress_timeout_executor_lock:
+        if _compress_timeout_executor is None:
+            # Small pool: compress is rare and heavy. Sized for a few
+            # overlapping calls (live compress + fence-cancelled workers
+            # still winding down), not asyncio's min(32, cpu+4) fan-out.
+            _compress_timeout_executor = DaemonThreadPoolExecutor(
+                max_workers=_COMPRESS_EXECUTOR_MAX_WORKERS,
+                thread_name_prefix="compress-ctx-timeout",
+            )
+        return _compress_timeout_executor
+
+
+def resolve_context_compression_timeouts(
+    compression_cfg: Optional[dict] = None,
+) -> Tuple[float, float]:
+    """Return ``(idle_timeout_seconds, total_ceiling_seconds)``.
+
+    ``idle_timeout_seconds <= 0`` disables the owned progress-aware wrapper.
+    The ceiling is clamped to at least one idle window when the idle budget
+    is positive, matching gateway hygiene semantics.
+    """
+    idle = DEFAULT_CONTEXT_TIMEOUT_SECONDS
+    ceiling = DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS
+    cfg = compression_cfg
+    if cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            raw = load_config()
+            maybe = raw.get("compression", {}) if isinstance(raw, dict) else {}
+            cfg = maybe if isinstance(maybe, dict) else {}
+        except Exception:
+            cfg = {}
+    if isinstance(cfg, dict):
+        raw_idle = cfg.get("context_timeout_seconds")
+        if raw_idle is not None:
+            try:
+                parsed = float(raw_idle)
+                # Explicit 0/negative disables; positive values win.
+                idle = parsed
+            except (TypeError, ValueError):
+                pass
+        raw_ceiling = cfg.get("context_total_ceiling_seconds")
+        if raw_ceiling is not None:
+            try:
+                parsed = float(raw_ceiling)
+                if parsed > 0:
+                    ceiling = parsed
+            except (TypeError, ValueError):
+                pass
+    if idle > 0:
+        ceiling = max(ceiling, idle)
+    return idle, ceiling
+
+
+def run_compress_context_with_progress_timeout(
+    *,
+    worker: Callable[[CompressionCommitFence], Tuple[list, str]],
+    messages: list,
+    system_prompt_fallback: Any,
+    idle_timeout_seconds: float,
+    total_ceiling_seconds: float,
+    on_timeout: Optional[Callable[[float, float, float], None]] = None,
+    on_commit_overrun: Optional[Callable[[float, float], None]] = None,
+    fence: Optional[CompressionCommitFence] = None,
+    telemetry_agent: Any = None,
+) -> Tuple[list, str]:
+    """Run ``worker(fence)`` under a sync progress-aware timeout.
+
+    The idle budget is inactivity-based (same idea as gateway session hygiene):
+    streamed summary progress via :meth:`CompressionCommitFence.touch_progress`
+    extends the wait. A hard ceiling still bounds a degenerate trickle stream.
+
+    When cancellation wins before the commit boundary, returns
+    ``(messages, system_prompt_fallback)`` immediately and leaves the worker
+    thread detached — the fence prevents a late commit from mutating session
+    state. When the worker already entered the commit boundary, waits for that
+    commit to finish and returns its result.
+
+    Timeout budgets (``idle_timeout_seconds`` / ``total_ceiling_seconds``) cover
+    the **pre-commit** wait only — the summary / stream phase before
+    :meth:`CompressionCommitFence.begin_commit`. Once the worker holds the
+    commit fence, SessionDB mutation is already in flight and cannot be safely
+    abandoned without risking transcript divergence; the commit is therefore
+    always allowed to complete. The commit-phase wait is still *bounded in
+    increments* against the remaining total ceiling: if the commit runs past
+    ``total_ceiling_seconds``, the overrun is logged loudly (escalating from
+    WARNING to ERROR on repeat) and surfaced once via ``on_commit_overrun``,
+    while the host keeps waiting in bounded slices until the commit finishes.
+    The documented guarantee is: **summary phase bounded by the ceiling;
+    commit phase logged + surfaced if it exceeds it** (never silently hung,
+    never abandoned mid-commit).
+
+    ``system_prompt_fallback`` may be a string or a zero-arg callable resolved
+    only on the timeout path, so successful compression never pays for (or
+    fails on) an eager prompt rebuild.
+    """
+    if idle_timeout_seconds <= 0:
+        raise ValueError(
+            "run_compress_context_with_progress_timeout requires "
+            "idle_timeout_seconds > 0; call compress_context directly to disable"
+        )
+
+    def _resolve_fallback_prompt() -> str:
+        if callable(system_prompt_fallback):
+            return system_prompt_fallback()
+        return system_prompt_fallback
+
+    fence = fence if fence is not None else CompressionCommitFence()
+    ceiling = max(float(total_ceiling_seconds), float(idle_timeout_seconds))
+    idle = float(idle_timeout_seconds)
+    # Sync mirror of gateway session-hygiene's run_in_executor(None, ...) +
+    # wait_for loop (gateway/run.py): offload compress_context onto the shared
+    # daemon pool, poll with an inactivity budget + total ceiling, then
+    # fence-cancel on timeout so a late commit cannot land. Daemon workers
+    # match tool_executor: a cancelled hung summary must not block process exit.
+    from tools.thread_context import propagate_context_to_thread
+
+    executor = _get_compress_timeout_executor()
+    # Bounded admission (#76354 F6): refuse rather than queue when every pool
+    # slot is occupied. A queued job would silently wait out its whole budget
+    # without starting and stay eligible to run as a stale cancelled job when
+    # a worker recovers. Fail fast: continue without compression this cycle.
+    if not _try_admit_compression_job():
+        logger.warning(
+            "Context compression pool saturated (%d workers busy) — "
+            "refusing new compression this cycle and continuing without "
+            "compression. Wedged workers are fence-cancelled and free their "
+            "slot when they return; if this persists, check the summary "
+            "provider health.",
+            _COMPRESS_EXECUTOR_MAX_WORKERS,
+        )
+        # Round-2 #6: saturation refusals must be visible in the same
+        # telemetry stream as every other failed attempt, or a wedged pool
+        # looks like compression simply stopped being attempted.
+        if telemetry_agent is not None:
+            _emit_compression_attempt_telemetry(
+                telemetry_agent,
+                started_at=time.monotonic(),
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class="pool_saturated",
+            )
+        return messages, _resolve_fallback_prompt()
+
+    def _fence_gated_worker(worker_fence: CompressionCommitFence):
+        # F6: an admitted job can still start after the host stopped waiting
+        # (worker slot freed late). Check the fence BEFORE any expensive
+        # summary work so a stale job never burns an LLM call; its return
+        # value is discarded by the already-departed host.
+        if worker_fence.is_cancelled:
+            logger.info(
+                "Skipping stale compression job: fence cancelled before start"
+            )
+            return messages, ""
+        return worker(worker_fence)
+
+    # Bare pool workers start with an empty ContextVar map; propagate the
+    # parent conversation/approval context into the worker.
+    try:
+        future = executor.submit(
+            propagate_context_to_thread(_fence_gated_worker), fence
+        )
+    except BaseException:
+        _release_compression_admission()
+        raise
+    future.add_done_callback(_release_compression_admission)
+    wait_started = time.monotonic()
+    # F2: EVERY host unwind (KeyboardInterrupt, task cancellation, unexpected
+    # exception while waiting) must revoke future commit admission before the
+    # host resumes, or a detached worker could later commit and mutate durable
+    # state behind the caller's back. ``handled_exit`` marks the paths that
+    # settle admission themselves (worker result returned, or fence cancel
+    # won); everything else revokes in the ``finally``.
+    handled_exit = False
+    try:
+        while True:
+            waited = time.monotonic() - wait_started
+            remaining_ceiling = ceiling - waited
+            if remaining_ceiling <= 0:
+                break
+            # #76354 S3 analogue for this wait: charge the idle budget from
+            # the LAST PROGRESS event, not from the start of this wait slice.
+            # Waiting a full ``idle`` after progress that landed early in the
+            # previous slice would allow silence to approach 2x the budget.
+            since_progress = fence.seconds_since_progress()
+            wait_slice = min(
+                max(idle - since_progress, 0.005), remaining_ceiling
+            )
+            try:
+                result = future.result(timeout=wait_slice)
+                handled_exit = True
+                return result
+            except concurrent.futures.TimeoutError:
+                waited = time.monotonic() - wait_started
+                since_progress = fence.seconds_since_progress()
+                if since_progress < idle and waited < ceiling:
+                    logger.info(
+                        "Context compression still streaming after %.0fs "
+                        "(last progress %.1fs ago) — extending wait "
+                        "(ceiling %.0fs)",
+                        waited,
+                        since_progress,
+                        ceiling,
+                    )
+                    continue
+                break
+
+        # F6: a not-yet-started future must not linger as a stale queued job.
+        # cancel() is a no-op for a running worker (fence handles that path).
+        future.cancel()
+
+        cancelled: Optional[bool] = None
+        while cancelled is None:
+            # F1: ``begin_commit`` retains the fence lock until
+            # ``finish_commit``, so a hung commit makes
+            # ``try_cancel_before_commit`` return None forever. The lock-free
+            # phase marker breaks the spin so the overrun-warning loop below
+            # is reachable WHILE the commit is still blocked.
+            if fence.commit_in_flight:
+                cancelled = False
+                break
+            cancelled = fence.try_cancel_before_commit()
+            if cancelled is None:
+                # Round-2 #5: the fence is only held transiently here (lock
+                # setup / cancel admission — an in-flight commit is caught by
+                # the commit_in_flight check above), but that window rides
+                # SessionDB write patience and can last seconds. 25ms keeps
+                # sub-tick latency without a 1kHz spin.
+                time.sleep(0.025)
+        if not cancelled:
+            # Pre-commit ceiling already elapsed, but begin_commit() won the
+            # race. Waiting is intentional: SessionDB mutation cannot be
+            # fence-cancelled. The wait is bounded in increments against the
+            # remaining ceiling: a commit that overruns total_ceiling_seconds
+            # is logged loudly and surfaced once (on_commit_overrun), then
+            # waited on in bounded slices with escalating log level until it
+            # completes. Guarantee: summary phase bounded by ceiling; commit
+            # phase logged + surfaced if it exceeds it — never silently hung,
+            # never abandoned mid-commit. F1: this loop is reachable WHILE
+            # the commit is blocked (commit_in_flight is lock-free), so the
+            # warning + on_commit_overrun fire during the hang, not after it.
+            overrun_surfaced = False
+            overrun_reports = 0
+            while True:
+                waited = time.monotonic() - wait_started
+                remaining = ceiling - waited
+                if remaining <= 0:
+                    # Ceiling breached while the commit is in flight. Wait in
+                    # bounded increments so each overrun window is visible in
+                    # logs rather than one silent unbounded block.
+                    remaining = min(
+                        _COMMIT_OVERRUN_WAIT_SLICE_SECONDS,
+                        max(ceiling, 0.05),
+                    )
+                    overrun_reports += 1
+                    log = (
+                        logger.warning if overrun_reports <= 2 else logger.error
+                    )
+                    log(
+                        "Context compression SessionDB commit still running "
+                        "%.1fs past the total ceiling (waited %.1fs, ceiling "
+                        "%.1fs); commit cannot be abandoned mid-flight — "
+                        "continuing to wait (check SessionDB health if this "
+                        "persists)",
+                        waited - ceiling,
+                        waited,
+                        ceiling,
+                    )
+                    if not overrun_surfaced and on_commit_overrun is not None:
+                        overrun_surfaced = True
+                        try:
+                            on_commit_overrun(waited, ceiling)
+                        except Exception:
+                            logger.debug(
+                                "compress_context commit-overrun callback "
+                                "failed",
+                                exc_info=True,
+                            )
+                try:
+                    result = future.result(timeout=remaining)
+                    handled_exit = True
+                    return result
+                except concurrent.futures.TimeoutError:
+                    # Fence progress (commit-phase touch_progress) is
+                    # informative only — the commit must complete regardless;
+                    # loop and re-report with the updated overrun window.
+                    continue
+
+        # Idle-timeout path: cancellation won before the commit boundary.
+        # The fence already blocks any future commit; F4 additionally frees
+        # the timed-out worker's durable lease via the holder-qualified hook
+        # so a NEW compressor can acquire the lock immediately (no ABA: the
+        # DB release is holder-scoped).
+        handled_exit = True
+        fence.release_cancelled_compression_lock()
+        waited = time.monotonic() - wait_started
+        since_progress = fence.seconds_since_progress()
+        if on_timeout is not None:
+            try:
+                on_timeout(idle, waited, since_progress)
+            except Exception:
+                logger.debug(
+                    "compress_context timeout callback failed",
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "Context compression made no progress for %.1fs "
+                "(total wait %.1fs, ceiling %.1fs); continuing without "
+                "compression",
+                since_progress,
+                waited,
+                ceiling,
+            )
+        # Leave the future on the shared pool: fence cancel won, so a late
+        # commit cannot land (same detachment model as gateway hygiene).
+        return messages, _resolve_fallback_prompt()
+    finally:
+        if not handled_exit:
+            # F2: KeyboardInterrupt / cancellation / any unexpected exception
+            # while waiting — revoke commit admission (and release the
+            # worker's durable lease via the holder-qualified hook) before
+            # the host unwinds, so the detached worker can never publish.
+            fence.revoke_commit_admission()
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
@@ -307,13 +1111,21 @@ def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
         return False
 
 
-def _refresh_persisted_compression_guards(compressor: Any) -> None:
+def _refresh_persisted_compression_guards(
+    compressor: Any,
+    *,
+    include_cooldown: bool = True,
+) -> None:
     """Refresh durable automatic-compression guards on a built-in compressor."""
-    method_calls = (
-        ("get_active_compression_failure_cooldown", {"refresh": True}),
+    method_calls = [
         ("_load_fallback_compression_streak", {}),
         ("_load_ineffective_compression_count", {}),
-    )
+    ]
+    if include_cooldown:
+        method_calls.insert(
+            0,
+            ("get_active_compression_failure_cooldown", {"refresh": True}),
+        )
     for method_name, kwargs in method_calls:
         method = getattr(type(compressor), method_name, None)
         if not callable(method):
@@ -498,6 +1310,27 @@ def recover_rotated_compression_session(
                 return recovered
             holder = holder_getter(session_id) if callable(holder_getter) else None
             if not holder or attempt == 20:
+                if not holder:
+                    orphan_reopener = getattr(
+                        type(session_db),
+                        "reopen_orphaned_compression_session",
+                        None,
+                    )
+                    if callable(orphan_reopener):
+                        try:
+                            if orphan_reopener(session_db, session_id):
+                                logger.warning(
+                                    "compression recovery: reopened orphaned "
+                                    "session=%s with no continuation",
+                                    session_id,
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "orphaned compression session reopen failed "
+                                "for %s: %s",
+                                session_id,
+                                exc,
+                            )
                 return None
             time.sleep(0.05)
         return None
@@ -573,8 +1406,17 @@ def _supported_compression_kwargs(
 class _CompressionActivityHeartbeat:
     """Refresh the agent inactivity tracker while compression blocks in an aux call."""
 
-    def __init__(self, agent: Any, interval_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        agent: Any,
+        interval_seconds: float | None = None,
+        commit_fence: Optional[CompressionCommitFence] = None,
+    ) -> None:
         self._agent = agent
+        self._commit_fence = commit_fence
+        # Latched once host cancel/timeout wins or a terminal stamp is observed,
+        # so a later UNKNOWN rewrite cannot re-arm a detached zombie heartbeat.
+        self._suppressed = False
         if interval_seconds is None:
             interval_seconds = getattr(agent, "_compression_activity_heartbeat_interval", 60.0)
         try:
@@ -592,7 +1434,10 @@ class _CompressionActivityHeartbeat:
         )
 
     def start(self) -> "_CompressionActivityHeartbeat":
-        self._touch("context compression started")
+        # A new compression episode always republishes agent.compression even
+        # if a prior timeout/cooldown stamp is still on the agent.
+        self._suppressed = False
+        self._touch("context compression started", allow_terminal_overwrite=True)
         self._thread.start()
         return self
 
@@ -600,18 +1445,63 @@ class _CompressionActivityHeartbeat:
         self._stop.set()
         if self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(timeout=1.0)
-        self._touch(desc)
+        # Host timeout already owns the terminal stamp; a detached worker's
+        # late stop must not republish agent.compression / "completed".
+        if self._should_suppress():
+            return
+        # Terminal completed/failed must reach SessionDB even inside the
+        # ordinary 60s activity persist window — otherwise durable labels
+        # stay on "context compression in progress" after /compress (which
+        # never hits run_conversation's turn-end clear).
+        self._touch(desc, force_persist=True)
 
-    def _touch(self, desc: str) -> None:
+    def _fence_cancelled(self) -> bool:
+        fence = self._commit_fence
+        return fence is not None and fence.is_cancelled
+
+    def _should_suppress(self) -> bool:
+        if self._suppressed:
+            return True
+        if self._fence_cancelled():
+            self._suppressed = True
+            return True
+        return False
+
+    def _touch(
+        self,
+        desc: str,
+        *,
+        allow_terminal_overwrite: bool = False,
+        force_persist: bool = False,
+    ) -> None:
         try:
+            if not allow_terminal_overwrite:
+                if self._should_suppress():
+                    return
+                current = normalize_activity_provenance(
+                    getattr(self._agent, "_last_activity_provenance", None)
+                )
+                if current in _TERMINAL_COMPRESSION_PROVENANCES:
+                    self._suppressed = True
+                    return
             touch = getattr(self._agent, "_touch_activity", None)
             if callable(touch):
-                touch(desc)
+                # Re-check after reading provenance: host may cancel/stamp
+                # TIMEOUT between the earlier guard and the write.
+                if not allow_terminal_overwrite and self._should_suppress():
+                    return
+                touch(
+                    desc,
+                    provenance=ActivityProvenance.AGENT_COMPRESSION,
+                    force_persist=force_persist,
+                )
         except Exception:
             logger.debug("compression activity heartbeat touch failed", exc_info=True)
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval_seconds):
+            if self._should_suppress():
+                return
             self._touch("context compression in progress")
 
 
@@ -1298,6 +2188,11 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    _compressor_attempt_snapshot = _snapshot_compressor_attempt_state(
+        agent.context_compressor
+    )
+    _durable_cooldown_authoritative: Optional[bool] = None
+    _durable_cooldown_state: Optional[dict[str, Any]] = None
     if (
         defer_context_engine_notification
         and callable(getattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None))
@@ -1343,8 +2238,13 @@ def compress_context(
     if getattr(agent, "api_mode", None) == "codex_app_server":
         _codex_fence_entered = False
         if commit_fence is not None:
-            _codex_fence_entered = commit_fence.begin_commit()
+            _codex_fence_entered = commit_fence.begin_commit(
+                getattr(agent, "_hard_interrupt_requested", None)
+            )
             if not _codex_fence_entered:
+                _restore_compressor_attempt_state(
+                    agent.context_compressor, _compressor_attempt_snapshot
+                )
                 existing_prompt = getattr(agent, "_cached_system_prompt", None)
                 if not existing_prompt:
                     existing_prompt = agent._build_system_prompt(system_message)
@@ -1505,6 +2405,19 @@ def compress_context(
         _lock_ttl = 300.0
     _lock_refresh_interval = getattr(agent, "_compression_lock_refresh_interval", None)
     _lock_refresher: Optional[_CompressionLockLeaseRefresher] = None
+    # F4 (#76354, transplanted from PR #71569 by @ciabata-git): fence the
+    # durable-lock acquisition + release-hook publication so a host timeout
+    # can never win in the gap between acquiring the durable lock and having
+    # a holder-qualified way to release it.
+    _lock_setup_entered = False
+
+    def _finish_lock_setup() -> None:
+        nonlocal _lock_setup_entered
+        if not _lock_setup_entered or commit_fence is None:
+            return
+        _lock_setup_entered = False
+        commit_fence.finish_lock_setup()
+
     if _lock_db is not None and _lock_sid:
         _lock_holder = _compression_lock_holder(agent)
         if _lock_lookup_error is not None:
@@ -1533,6 +2446,27 @@ def compress_context(
                 )
             _lock_acquired = True  # acquired-but-unlocked compatibility path
         else:
+            if commit_fence is not None:
+                _lock_setup_entered = commit_fence.begin_lock_setup()
+                if not _lock_setup_entered:
+                    logger.info(
+                        "Compression commit cancelled before lock acquisition "
+                        "(session=%s).",
+                        agent.session_id or "none",
+                    )
+                    agent._last_compaction_in_place = False
+                    _existing_sp = getattr(agent, "_cached_system_prompt", None)
+                    if not _existing_sp:
+                        _existing_sp = agent._build_system_prompt(system_message)
+                    _emit_compression_attempt_telemetry(
+                        agent,
+                        started_at=_attempt_started_at,
+                        commit_status="aborted",
+                        split_status="aborted",
+                        failure_class="commit_fence_cancelled",
+                    )
+                    _complete_compaction_lifecycle()
+                    return messages, _existing_sp
             try:
                 _lock_acquired = _try_acquire_lock(
                     _lock_sid, _lock_holder, ttl_seconds=_lock_ttl
@@ -1560,6 +2494,7 @@ def compress_context(
                 )
                 _lock_acquired = False
         if not _lock_acquired:
+            _finish_lock_setup()
             try:
                 existing = _lock_db.get_compression_lock_holder(_lock_sid)
             except Exception:
@@ -1604,29 +2539,83 @@ def compress_context(
             _complete_compaction_lifecycle()
             return messages, _existing_sp
     _lock_released = False
+    _lock_release_guard = threading.Lock()
+
+    def _release_lock_holder_only() -> None:
+        """Stop this holder's refresher and release only its durable lock.
+
+        Holder-qualified and idempotent (#76354 F4, from PR #71569): safe for
+        the HOST to invoke after a timeout without an ABA race — the DB
+        release is scoped to this worker's holder token, so a NEW holder's
+        lease can never be deleted by this stale release.
+        """
+        nonlocal _lock_released
+        with _lock_release_guard:
+            if _lock_released:
+                return
+            _lock_released = True
+            if getattr(agent, "_active_compression_lock_holder", None) == _lock_holder:
+                agent._active_compression_lock_holder = None
+            if _lock_refresher is not None:
+                try:
+                    _lock_refresher.stop()
+                except Exception as _stop_err:
+                    logger.debug("compression lock refresher stop failed: %s", _stop_err)
+            if _lock_db is not None and _lock_sid and _lock_holder:
+                try:
+                    _lock_db.release_compression_lock(_lock_sid, _lock_holder)
+                except Exception as _rel_err:
+                    logger.debug("compression lock release failed: %s", _rel_err)
 
     def _release_lock() -> None:
-        """Release the lock keyed on the OLD session_id (before rotation)."""
-        nonlocal _lock_released
-        _complete_compaction_lifecycle()
-        if _lock_released:
-            return
-        _lock_released = True
-        if getattr(agent, "_active_compression_lock_holder", None) == _lock_holder:
-            agent._active_compression_lock_holder = None
-        if _lock_refresher is not None:
+        """Finish lifecycle cleanup and release the OLD session lock once."""
+        try:
+            _complete_compaction_lifecycle()
+        finally:
             try:
-                _lock_refresher.stop()
-            except Exception as _stop_err:
-                logger.debug("compression lock refresher stop failed: %s", _stop_err)
-        if _lock_db is not None and _lock_sid and _lock_holder:
-            try:
-                _lock_db.release_compression_lock(_lock_sid, _lock_holder)
-            except Exception as _rel_err:
-                logger.debug("compression lock release failed: %s", _rel_err)
+                _release_lock_holder_only()
+            finally:
+                try:
+                    if commit_fence is not None:
+                        commit_fence.clear_cancelled_lock_release(
+                            _release_lock_holder_only
+                        )
+                finally:
+                    _finish_lock_setup()
 
     if _lock_holder is not None:
         agent._active_compression_lock_holder = _lock_holder
+        if (
+            commit_fence is not None
+            and commit_fence.register_cancelled_lock_release(
+                _release_lock_holder_only
+            )
+        ):
+            # Cancellation already won while we were inside lock setup: the
+            # hook just ran synchronously, our lease is gone — abort before
+            # any summary work.
+            logger.info(
+                "Compression commit cancelled before summary dispatch "
+                "(session=%s).",
+                agent.session_id or "none",
+            )
+            agent._last_compaction_in_place = False
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            _emit_compression_attempt_telemetry(
+                agent,
+                started_at=_attempt_started_at,
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class="commit_fence_cancelled",
+            )
+            _release_lock()
+            return messages, _existing_sp
+
+    # Publish the holder-qualified release hook before a timeout can win the
+    # fence. If no durable lock was acquired there is no hook to publish.
+    _finish_lock_setup()
 
     # A delayed contender can acquire the parent lock after the winning path
     # has released it and completed rotation. The lock serializes work but does
@@ -1671,13 +2660,36 @@ def compress_context(
             )
             return messages, _existing_sp
 
+    # Snapshot the authoritative durable cooldown only after this attempt owns
+    # the session lease. This runs for force=True too, but does not apply the
+    # automatic breaker gate: manual compression still retries immediately.
+    _durable_cooldown_authoritative, _durable_cooldown_state = (
+        _capture_authoritative_cooldown_under_lease(
+            agent.context_compressor,
+            _compressor_attempt_snapshot,
+        )
+    )
+    if _durable_cooldown_authoritative is False:
+        # A bound built-in compressor reached its durable getter and the read
+        # failed. Proceeding with force=True could clear an unknown newer row
+        # before cancellation has enough information to restore it. This is a
+        # persistence-safety abort, not automatic breaker gating.
+        _release_lock()
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
+
     # The agent may have been constructed before another path completed an
     # in-place compaction on the same session. Re-read durable breaker state
     # after acquiring the session lock so this final gate cannot act on the
     # stale snapshot loaded by bind_session_state().
     if not force:
         compressor = agent.context_compressor
-        _refresh_persisted_compression_guards(compressor)
+        _refresh_persisted_compression_guards(
+            compressor,
+            include_cooldown=False,
+        )
         blocked = getattr(
             type(compressor),
             "_automatic_compression_blocked",
@@ -1691,16 +2703,24 @@ def compress_context(
             return messages, existing_prompt
 
     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
+    messages_before_compression = None
     try:
         if _lock_holder is not None:
-            _lock_refresher = _CompressionLockLeaseRefresher(
+            _candidate_refresher = _CompressionLockLeaseRefresher(
                 _lock_db,
                 _lock_sid,
                 _lock_holder,
                 _lock_ttl,
                 _lock_refresh_interval,
             )
-            _lock_refresher.start()
+            # Cancellation may release the holder after hook publication but
+            # before this refresher starts. Serialize that check/start with
+            # the idempotent release path so a refresher is never started for
+            # an already-released lock (#76354 F4 / PR #71569).
+            with _lock_release_guard:
+                if not _lock_released:
+                    _lock_refresher = _candidate_refresher
+                    _lock_refresher.start()
 
         # The caller's history snapshot predates lease acquisition. Reload the
         # durable parent after the lease is live; MORE durable rows than the
@@ -1782,7 +2802,9 @@ def compress_context(
                 )
 
         messages_before_compression = copy.deepcopy(messages)
-        _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
+        _activity_heartbeat = _CompressionActivityHeartbeat(
+            agent, commit_fence=commit_fence
+        ).start()
         # Publish forward progress to the commit fence while the summary LLM
         # call streams. Async hosts (gateway session hygiene) poll
         # ``commit_fence.seconds_since_progress()`` to extend their deadline
@@ -1791,21 +2813,118 @@ def compress_context(
         # thread-local and the compress call is synchronous on this thread,
         # so it cannot leak into unrelated auxiliary calls.
         #
-        # Fenceless callers (CLI /compress, in-loop auto-compress) install a
-        # no-op hook: nobody polls their progress, but an ACTIVE hook is what
-        # switches the summary call onto the streamed path — giving every
-        # compression path the same two guarantees: the configured timeout
-        # acts on inactivity (slow models finish), and a byte-trickling
-        # provider that keeps the connection alive forever is cut off at the
+        # Callers that pass no commit_fence install a no-op progress hook
+        # here.  AIAgent._compress_context injects an owned fence for
+        # fenceless callers so the host-level progress-aware wait can
+        # extend on streamed tokens; gateway hygiene already passes its
+        # own fence.  An ACTIVE hook (even a no-op) is what switches the
+        # summary call onto the streamed path — giving every compression
+        # path the same two guarantees: the configured timeout acts on
+        # inactivity (slow models finish), and a byte-trickling provider
+        # that keeps the connection alive forever is cut off at the
         # streamed total ceiling (see _aux_stream_total_ceiling) instead of
         # outliving the SDK's inactivity timeout indefinitely.
-        from agent.auxiliary_client import aux_progress_hook
+        from agent.auxiliary_client import (
+            aux_interrupt_protection,
+            aux_progress_hook,
+        )
         _progress_hook = (
             commit_fence.touch_progress if commit_fence is not None
             else (lambda: None)
         )
-        with aux_progress_hook(_progress_hook):
-            compressed = compress_fn(messages, **compress_kwargs)
+        # F4 state-ordering (#76354): a LATE successful summary must not undo
+        # the timeout cooldown the host recorded. Install a cancellation
+        # check the compressor consults BEFORE clearing the failure cooldown;
+        # removed in the finally below so it cannot leak into later attempts
+        # (e.g. a manual /compress force-clear).
+        if commit_fence is not None:
+            try:
+                agent.context_compressor._compression_cancelled_check = (
+                    lambda: commit_fence.is_cancelled
+                )
+            except Exception:
+                pass
+        # Incoming-message interrupts and active-turn redirects must not tear an
+        # atomic summary in half (#23975). Explicit stop surfaces set a separate
+        # Event atomically; never infer cause from the racy message fields.
+        _hard_cancel_event = getattr(agent, "_hard_interrupt_requested", None)
+        try:
+            # F6: never start expensive summary work for an already-cancelled
+            # fence (a stale queued job admitted after host departure).
+            if commit_fence is not None and commit_fence.is_cancelled:
+                logger.info(
+                    "Compression cancelled before summary dispatch "
+                    "(session=%s) — skipping summary work.",
+                    agent.session_id or "none",
+                )
+                compressed = messages
+            else:
+                with aux_progress_hook(_progress_hook), aux_interrupt_protection(
+                    cancel_event=_hard_cancel_event
+                ):
+                    compressed = compress_fn(messages, **compress_kwargs)
+                    # Freeze a hard stop that arrived after the final provider
+                    # attempt unwound but before this transaction can rotate
+                    # session state.
+                    if (
+                        _hard_cancel_event is not None
+                        and _hard_cancel_event.is_set()
+                    ):
+                        raise AuxiliaryExplicitCancellation()
+        finally:
+            if commit_fence is not None:
+                try:
+                    agent.context_compressor._compression_cancelled_check = None
+                except Exception:
+                    pass
+    except AuxiliaryExplicitCancellation:
+        try:
+            _restore_compressor_attempt_state(
+                agent.context_compressor,
+                _compressor_attempt_snapshot,
+                durable_cooldown_authoritative=_durable_cooldown_authoritative,
+                durable_cooldown_state=_durable_cooldown_state,
+            )
+        except BaseException as _rollback_exc:
+            # Compensation failure must surface, but it must not strand the
+            # session lease or retain an in-memory transcript mutation.
+            if (
+                messages_before_compression is not None
+                and messages != messages_before_compression
+            ):
+                messages[:] = copy.deepcopy(messages_before_compression)
+            if _activity_heartbeat is not None:
+                _activity_heartbeat.stop("context compression rollback failed")
+                _activity_heartbeat = None
+            _release_lock()
+            _emit_compression_attempt_telemetry(
+                agent,
+                started_at=_attempt_started_at,
+                commit_status="aborted",
+                split_status="aborted",
+                failure_class=f"rollback:{type(_rollback_exc).__name__}",
+            )
+            raise
+        if (
+            messages_before_compression is not None
+            and messages != messages_before_compression
+        ):
+            messages[:] = copy.deepcopy(messages_before_compression)
+        if _activity_heartbeat is not None:
+            _activity_heartbeat.stop("context compression cancelled")
+            _activity_heartbeat = None
+        _release_lock()
+        _emit_compression_attempt_telemetry(
+            agent,
+            started_at=_attempt_started_at,
+            commit_status="aborted",
+            split_status="aborted",
+            failure_class="explicit_interrupt",
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        return messages, _existing_sp
     except BaseException as _compress_exc:
         # ANY exception after lock acquisition — memory hook, capability
         # inspection, engine lookup, or compress() — must release the lock so
@@ -1837,6 +2956,9 @@ def compress_context(
         )
         _compression_used_fallback = bool(
             getattr(agent.context_compressor, "_last_summary_fallback_used", False)
+        )
+        _compression_feasibility_skip = bool(
+            getattr(agent.context_compressor, "_last_feasibility_skip", False)
         )
 
         # If compression aborted (aux LLM failed to produce a usable summary)
@@ -1915,8 +3037,19 @@ def compress_context(
             return messages, _existing_sp
 
         if commit_fence is not None:
-            _commit_fence_entered = commit_fence.begin_commit()
+            _commit_fence_entered = commit_fence.begin_commit(_hard_cancel_event)
             if not _commit_fence_entered:
+                _restore_compressor_attempt_state(
+                    agent.context_compressor,
+                    _compressor_attempt_snapshot,
+                    durable_cooldown_authoritative=_durable_cooldown_authoritative,
+                    durable_cooldown_state=_durable_cooldown_state,
+                )
+                if (
+                    messages_before_compression is not None
+                    and messages != messages_before_compression
+                ):
+                    messages[:] = copy.deepcopy(messages_before_compression)
                 logger.info(
                     "Compression commit cancelled before session mutation "
                     "(session=%s).",
@@ -2081,7 +3214,17 @@ def compress_context(
                     # for search/recovery (Teknium review — keep one durable id
                     # WITHOUT destroying history, unlike a hard replace_messages).
                     # See #38763.
-                    agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    from agent.context_compressor import (
+                        PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY,
+                    )
+
+                    agent._session_db.archive_and_compact(
+                        agent.session_id,
+                        compressed,
+                        model_config_patch={
+                            PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None,
+                        },
+                    )
                     split_status = "in_place_committed"
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
@@ -2182,6 +3325,12 @@ def compress_context(
                         migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
                     except Exception as _goal_err:
                         logger.debug("Could not migrate goal on compression: %s", _goal_err)
+                    # Same boundary hazard for /heartbeat state — carry it too.
+                    try:
+                        from hermes_cli.heartbeat import migrate_heartbeat_to_session
+                        migrate_heartbeat_to_session(old_session_id, agent.session_id)
+                    except Exception as _hb_err:
+                        logger.debug("Could not migrate heartbeat on compression: %s", _hb_err)
                     # Auto-number the title for the continuation session
                     if old_title:
                         try:
@@ -2218,6 +3367,24 @@ def compress_context(
                     messages[:] = copy.deepcopy(messages_before_compression)
                     compressed = messages
                     _compression_made_progress = False
+                    # Restore ONLY the prune runway, not the full attempt
+                    # snapshot: _restore_compressor_attempt_state is reserved
+                    # for pre-commit cancels (fence deny / explicit cancel),
+                    # while this branch is post-attempt — the other snapshot
+                    # fields (telemetry, aborted flags) must keep the failed
+                    # attempt's values. The runway is a property of transcript
+                    # state, and the transcript was just rolled back to its
+                    # pre-compression copy, so the runway rolls back with it.
+                    # (compress() zeroed it in-memory on summary success; the
+                    # durable copy was never cleared — that clear only rides
+                    # the atomic archive_and_compact / child-row publication
+                    # that just failed.)
+                    if "_proactive_prune_rearm_tokens" in _compressor_attempt_snapshot:
+                        agent.context_compressor._proactive_prune_rearm_tokens = (
+                            _compressor_attempt_snapshot[
+                                "_proactive_prune_rearm_tokens"
+                            ]
+                        )
                 split_status = (
                     "aborted"
                     if locals().get("old_session_id") is None and not in_place
@@ -2246,6 +3413,31 @@ def compress_context(
             bool(_old_sid) or compacted_in_place
         )
         _boundary_parent = _old_sid or agent.session_id or ""
+
+        # Round-2 #4: the activity heartbeat's terminal "context compression
+        # completed" stamp landed on the PARENT row (force-persisted before
+        # the rotation re-pointed agent.session_id at the child). Without a
+        # cleanup, the archived parent advertises a fresh last_activity_at +
+        # "context compression completed" forever — a permanent false-fresh
+        # row for any activity consumer that scans ended sessions. Clear the
+        # labels on the parent best-effort (keeps last_activity_at so idle
+        # clocks stay continuous; the CHILD carries the live labels).
+        if _old_sid and _session_commit_succeeded:
+            try:
+                _labels_db = getattr(agent, "_session_db", None)
+                _clear_labels = getattr(
+                    type(_labels_db) if _labels_db is not None else None,
+                    "clear_session_activity_labels",
+                    None,
+                )
+                if callable(_clear_labels):
+                    _clear_labels(_labels_db, _old_sid)
+            except Exception:
+                logger.debug(
+                    "failed to clear archived compression parent's activity "
+                    "labels (ignored)",
+                    exc_info=True,
+                )
 
         # Notify the context engine that a compaction boundary occurred. Plugin
         # engines (e.g. hermes-lcm) use boundary_reason="compression" to preserve
@@ -2348,6 +3540,7 @@ def compress_context(
                 record_boundary(
                     agent.context_compressor,
                     used_fallback=_compression_used_fallback,
+                    feasibility_skip=_compression_feasibility_skip,
                 )
             else:
                 agent.context_compressor._verify_compaction_cleared_threshold = True
@@ -2358,6 +3551,13 @@ def compress_context(
         try:
             from tools.file_tools import reset_file_dedup
             reset_file_dedup(task_id)
+        except Exception:
+            pass
+        # Same for the skill_view repeat-view dedup: a post-compression
+        # re-view must return the full skill content again.
+        try:
+            from tools.skills_tool import reset_skill_view_dedup
+            reset_skill_view_dedup(task_id)
         except Exception:
             pass
 

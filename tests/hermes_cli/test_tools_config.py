@@ -6,9 +6,11 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.nous_account import NousPortalAccountInfo
+from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
+from hermes_cli.nous_subscription import NousSubscriptionFeatures
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
+    _RECENTLY_SHIPPED_TOOLSETS,
     _apply_toolset_change,
     _checklist_toolset_keys,
     _configure_provider,
@@ -97,6 +99,20 @@ def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_tok
 
     cli_enabled = _get_platform_tools({}, "cli")
     assert "homeassistant" in cli_enabled
+
+
+def test_get_platform_tools_homeassistant_uses_active_profile_token(monkeypatch):
+    from agent import secret_scope
+
+    monkeypatch.delenv("HASS_TOKEN", raising=False)
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({"HASS_TOKEN": "profile-token"})
+    try:
+        assert "homeassistant" in _get_platform_tools({}, "cron")
+        assert "homeassistant" in _get_platform_tools({}, "cli")
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(False)
 
 
 # ─── #35527: platform-restricted default-off toolsets (discord/discord_admin)
@@ -529,6 +545,74 @@ def _fake_features(*, logged_in: bool, paid: bool = True):
     return SimpleNamespace(nous_auth_present=logged_in, account_info=account)
 
 
+def test_visible_providers_reuses_logged_out_feature_snapshot(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+
+    account = NousPortalAccountInfo(
+        logged_in=False,
+        source="none",
+        fresh=False,
+        paid_service_access=None,
+    )
+    features = NousSubscriptionFeatures(
+        subscribed=False,
+        nous_auth_present=False,
+        provider_is_nous=False,
+        features={},
+        account_info=account,
+    )
+    monkeypatch.setattr(
+        tools_config,
+        "get_nous_subscription_features",
+        lambda *args, **kwargs: pytest.fail("feature snapshot was resolved again"),
+    )
+
+    providers = _visible_providers(
+        TOOL_CATEGORIES["image_gen"], {}, features=features
+    )
+
+    assert any(
+        provider.get("managed_nous_feature") == "image_gen"
+        for provider in providers
+    )
+
+
+def test_visible_providers_reuses_pool_video_feature_snapshot(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+
+    account = NousPortalAccountInfo(
+        logged_in=True,
+        source="jwt",
+        fresh=False,
+        paid_service_access=False,
+        tool_access=NousToolAccessInfo(
+            enabled=True,
+            coverage={"fal-video": False},
+        ),
+    )
+    features = NousSubscriptionFeatures(
+        subscribed=True,
+        nous_auth_present=True,
+        provider_is_nous=False,
+        features={},
+        account_info=account,
+    )
+    monkeypatch.setattr(
+        tools_config,
+        "get_nous_subscription_features",
+        lambda *args, **kwargs: pytest.fail("feature snapshot was resolved again"),
+    )
+
+    providers = _visible_providers(
+        TOOL_CATEGORIES["video_gen"], {}, features=features
+    )
+
+    assert not any(
+        provider.get("managed_nous_feature") == "video_gen"
+        for provider in providers
+    )
+
+
 
 
 # ── Windows console-flash guard for post-setup subprocess spawns ──────────────
@@ -553,3 +637,108 @@ def _fake_features(*, logged_in: bool, paid: bool = True):
 # ("browserbase") only the CLI, and camofox its npm package.
 
 
+# ── Toolsets that shipped after a platform's last `hermes tools` save ────────
+#
+# Saving the picker (or one toggle in the desktop Toolsets UI) replaces a
+# platform's composite (``[hermes-cli]``) with a frozen explicit list, and
+# nothing ever adds to that list — so a toolset shipped later stays off
+# forever, while everyone still on the composite inherits it on upgrade.
+# ``_RECENTLY_SHIPPED_TOOLSETS`` closes that gap for toolsets new enough that
+# absence from a saved list cannot mean the user declined them.
+#
+# Every assertion here is a subset test against that set, which passes
+# vacuously once it empties out — and empty is the steady state between
+# releases. Skip loudly rather than going quietly green.
+_requires_recently_shipped = pytest.mark.skipif(
+    not _RECENTLY_SHIPPED_TOOLSETS,
+    reason="no toolset is currently inside its first release",
+)
+
+
+def _saved_list_from_before(platform="cli"):
+    """A saved explicit list as it looked before the new toolsets existed."""
+    from hermes_cli.tools_config import (
+        _CONFIG_ONLY_TOOLSETS,
+        _toolset_allowed_for_platform,
+    )
+
+    return {
+        "platform_toolsets": {
+            platform: sorted(
+                ts_key
+                for ts_key, _, _ in CONFIGURABLE_TOOLSETS
+                if ts_key not in _RECENTLY_SHIPPED_TOOLSETS
+                and ts_key not in _DEFAULT_OFF_TOOLSETS
+                and ts_key not in _CONFIG_ONLY_TOOLSETS
+                and _toolset_allowed_for_platform(ts_key, platform)
+            )
+        }
+    }
+
+
+@_requires_recently_shipped
+def test_saved_list_gains_toolsets_that_shipped_after_it_was_written():
+    """The bug: a frozen list never gained bfl, so composite users got Nous
+    Portal video generation on upgrade and picker users silently did not."""
+    on_composite = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["hermes-cli"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    on_saved_list = _get_platform_tools(
+        _saved_list_from_before(), "cli", include_default_mcp_servers=False
+    )
+
+    assert _RECENTLY_SHIPPED_TOOLSETS <= (on_composite & on_saved_list)
+
+
+@_requires_recently_shipped
+def test_unchecking_the_new_toolset_sticks():
+    """Saving records it as offered, so the next read reads absence as a
+    decline instead of turning it back on."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", enabled - _RECENTLY_SHIPPED_TOOLSETS)
+
+    reread = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & reread)
+
+
+@_requires_recently_shipped
+def test_agent_disabled_toolsets_still_wins():
+    """The other way to say no — a global suppression list applied last."""
+    config = _saved_list_from_before()
+    config["agent"] = {"disabled_toolsets": sorted(_RECENTLY_SHIPPED_TOOLSETS)}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
+def test_platforms_whose_composite_excludes_it_are_left_narrow():
+    """Parity is the justification, so don't widen a deliberately small
+    composite (hermes-acp, hermes-webhook) that never carried the toolset."""
+    from toolsets import TOOLSETS, resolve_toolset
+
+    narrow = [
+        platform
+        for platform in ("acp", "webhook")
+        if f"hermes-{platform}" in TOOLSETS
+        and not any(
+            set(resolve_toolset(ts, include_registry=False))
+            <= set(resolve_toolset(f"hermes-{platform}"))
+            for ts in _RECENTLY_SHIPPED_TOOLSETS
+        )
+    ]
+    assert narrow, "expected a composite that excludes the new toolset"
+
+    for platform in narrow:
+        enabled = _get_platform_tools(
+            _saved_list_from_before(platform),
+            platform,
+            include_default_mcp_servers=False,
+        )
+        assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled), platform

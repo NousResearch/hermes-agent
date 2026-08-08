@@ -180,3 +180,46 @@ def test_final_response_fills_pure_tool_call_tail(monkeypatch):
 
 
 
+
+
+def test_final_response_fill_invalidates_flush_scan_cursor():
+    """The fill's marker pop must invalidate the bounded flush-scan cursor.
+
+    The cursor (run_agent.py) skips the identity-matched prefix of its
+    previous snapshot assuming no live dict loses ``_db_persisted`` in place
+    — the fill is the one path that pops it. Without invalidation, the
+    turn-end flush skips the filled row as 'already stamped' and the
+    delivered answer never reaches state.db (the #43849 class resurfacing).
+    """
+    agent = FakeAgent()
+    agent._db_flush_scan_prefix = ["prior-snapshot"]
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "t1", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}}
+            ],
+            "_db_persisted": True,
+        },
+    ]
+
+    finalize_turn(
+        agent,
+        final_response="Here is your answer.",
+        api_call_count=3,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="t",
+        turn_id="tid",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert agent._db_flush_scan_prefix is None

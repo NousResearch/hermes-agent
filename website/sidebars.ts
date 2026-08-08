@@ -99,6 +99,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/kanban-tutorial',
             'user-guide/features/kanban-worker-lanes',
             'user-guide/features/goals',
+            'user-guide/features/heartbeat',
             'user-guide/features/code-execution',
             'user-guide/features/hooks',
             'user-guide/features/batch-processing',
@@ -256,6 +257,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/productivity/productivity-airtable',
+                    'user-guide/skills/bundled/productivity/productivity-document-to-action-items',
                     'user-guide/skills/bundled/productivity/productivity-docx',
                     'user-guide/skills/bundled/productivity/productivity-google-workspace',
                     'user-guide/skills/bundled/productivity/productivity-maps',
@@ -276,8 +278,8 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/research/research-arxiv',
                     'user-guide/skills/bundled/research/research-blogwatcher',
+                    'user-guide/skills/bundled/research/research-grounded-citations',
                     'user-guide/skills/bundled/research/research-llm-wiki',
-                    'user-guide/skills/bundled/research/research-polymarket',
                     'user-guide/skills/bundled/research/research-research-paper-writing',
                   ],
                 },
@@ -431,6 +433,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/finance/finance-excel-author',
                     'user-guide/skills/optional/finance/finance-lbo-model',
                     'user-guide/skills/optional/finance/finance-merger-model',
+                    'user-guide/skills/optional/finance/finance-polymarket',
                     'user-guide/skills/optional/finance/finance-pptx-author',
                     'user-guide/skills/optional/finance/finance-stocks',
                   ],
@@ -656,6 +659,7 @@ const sidebars: SidebarsConfig = {
           type: 'category',
           label: 'Other',
           items: [
+            'user-guide/messaging/a2a',
             'user-guide/messaging/homeassistant',
             'user-guide/messaging/mattermost',
             'user-guide/messaging/matrix',
@@ -711,6 +715,7 @@ const sidebars: SidebarsConfig = {
         'guides/cron-troubleshooting',
         'guides/work-with-skills',
         'guides/delegation-patterns',
+        'guides/agent-email-address',
         'guides/github-pr-review-agent',
         'guides/webhook-github-pr-review',
         'guides/migrate-from-openclaw',
@@ -735,6 +740,7 @@ const sidebars: SidebarsConfig = {
           label: 'Architecture',
           items: [
             'developer-guide/architecture',
+            'developer-guide/codebase-ownership',
             'developer-guide/agent-loop',
             'developer-guide/prompt-assembly',
             'developer-guide/context-compression-and-caching',

@@ -21,6 +21,12 @@ def _restore_stdout():
 
 @pytest.fixture()
 def server():
+    # The sys.modules mocks only need to cover the *initial* import — once
+    # tui_gateway.server is cached, they are inert. Keeping them active for
+    # the whole test poisons any module first imported inside a test body:
+    # e.g. hermes_cli.active_sessions would bind the mocked get_hermes_home
+    # (a fixed shared path) forever, leaking active-session registry entries
+    # across every later test in the process. Scope the patch to the import.
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -29,19 +35,59 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
-        yield mod
-        # Reset module-level session state without re-importing. importlib.reload
-        # would re-register the module's atexit hooks (ThreadPoolExecutor
-        # shutdown, _shutdown_sessions); the duplicates race the stderr
-        # buffer at interpreter shutdown and surface as Fatal Python error:
-        # _enter_buffered_busy. Clearing the per-session dicts gives the
-        # next test a clean slate; _methods is NOT cleared because it's
-        # populated at module import time and re-registration only happens
-        # via reload (which we don't do).
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
-        mod._live_transports.clear()
+
+    # Snapshot the RPC registry: several tests below stub handlers
+    # ("slash.exec", "fast.ping", ...) directly in the module-level dict,
+    # which is shared with every other test file in the process.
+    methods = dict(mod._methods)
+    real_stdout = mod._real_stdout
+    yield mod
+    # Reset module-level state without re-importing. importlib.reload
+    # would re-register the module's atexit hooks (ThreadPoolExecutor
+    # shutdown, _shutdown_sessions); the duplicates race the stderr
+    # buffer at interpreter shutdown and surface as Fatal Python error:
+    # _enter_buffered_busy. Restoring the dicts in place gives the next
+    # test a clean slate.
+    mod._methods.clear()
+    mod._methods.update(methods)
+    mod._real_stdout = real_stdout
+    for sid in list(mod._sessions):
+        mod._close_session_by_id(sid, end_reason="test_cleanup")
+    mod._pending.clear()
+    mod._answers.clear()
+    mod._live_transports.clear()
+
+
+def test_shared_fixture_cleanup_uses_full_session_teardown(server, monkeypatch):
+    """The cross-file autouse cleanup must close every retained resource."""
+    from tests import conftest
+
+    closed = {"worker": 0, "agent": 0, "lease": 0}
+
+    class _Closable:
+        def __init__(self, key):
+            self.key = key
+
+        def close(self):
+            closed[self.key] += 1
+
+    class _Lease:
+        def release(self):
+            closed["lease"] += 1
+
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    server._sessions["leaked"] = {
+        "session_key": "leaked",
+        "agent": _Closable("agent"),
+        "slash_worker": _Closable("worker"),
+        "active_session_lease": _Lease(),
+        "history": [],
+    }
+
+    conftest._teardown_tui_server_sessions(server)
+
+    assert server._sessions == {}
+    assert closed == {"worker": 1, "agent": 1, "lease": 1}
 
 
 @pytest.fixture()
@@ -72,7 +118,54 @@ def test_err_envelope(server):
     }
 
 
-# ── write_json ───────────────────────────────────────────────────────
+@pytest.mark.parametrize("kind", ["legacy", "hard-only", "dynamic-getattr"])
+def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch, kind):
+    calls = []
+
+    class _Legacy:
+        def interrupt(self):
+            calls.append("legacy")
+
+    class _HardOnly:
+        def hard_interrupt(self):
+            calls.append("hard")
+
+    class _Dynamic:
+        def interrupt(self):
+            calls.append("legacy")
+
+        def __getattr__(self, name):
+            if name == "hard_interrupt":
+                return lambda: calls.append("fabricated-hard")
+            raise AttributeError(name)
+
+    agent = {
+        "legacy": _Legacy(),
+        "hard-only": _HardOnly(),
+        "dynamic-getattr": _Dynamic(),
+    }[kind]
+    session = {
+        "agent": agent,
+        "history_lock": threading.Lock(),
+        "running": True,
+        "queued_prompt": "later",
+        "session_key": "session-key",
+        "_run_thread": None,
+    }
+    monkeypatch.setattr(server, "_tts_stream_stop", lambda: None)
+    monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_sess", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    response = server._methods["session.interrupt"](
+        "stop", {"session_id": "ui-session"}
+    )
+
+    assert response["result"]["status"] == "interrupted"
+    assert calls == ["hard" if kind == "hard-only" else "legacy"]
+
+
+# ── write_json ────────────────────────────────────────────────
 
 
 def test_write_json(capture):
@@ -263,7 +356,9 @@ def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"max_live_sessions": 2})
     evicted: list[str] = []
     monkeypatch.setattr(
-        server, "_close_session_by_id", lambda sid, end_reason=None: evicted.append(sid)
+        server,
+        "_close_session_by_id",
+        lambda sid, end_reason=None, predicate=None: evicted.append(sid),
     )
 
     def _ready() -> threading.Event:
@@ -506,13 +601,13 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
 
     # Baseline (default) — seeds the signature.
-    (tmp_path / "config.yaml").write_text("display:\n  skin: default\n")
+    (tmp_path / "config.yaml").write_text("display:\n  skin: default\n", encoding="utf-8")
     server._broadcast_skin_if_changed()
     emitted.clear()
 
     # Activate midnight, as `hermes config set display.skin midnight` would.
     time.sleep(0.01)  # ensure the config mtime moves
-    (tmp_path / "config.yaml").write_text("display:\n  skin: midnight\n")
+    (tmp_path / "config.yaml").write_text("display:\n  skin: midnight\n", encoding="utf-8")
     server._broadcast_skin_if_changed()
 
     assert [ev for ev, _ in emitted] == ["skin.changed"]

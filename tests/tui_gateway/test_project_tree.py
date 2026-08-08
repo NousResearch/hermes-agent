@@ -189,6 +189,52 @@ def test_unrecorded_and_recorded_main_share_one_lane():
     assert len(main_lanes[0]["sessions"]) == 2
 
 
+def test_main_checkout_detected_when_roots_differ_only_in_path_spelling():
+    # The two roots come from DIFFERENT git probes: `rev-parse --show-toplevel`
+    # emits forward slashes, while the `--git-common-dir` path goes through
+    # os.path.dirname and keeps Windows backslashes. The main checkout must be
+    # recognized by path IDENTITY, not by raw string equality — otherwise the
+    # repo's own checkout is misread as a linked worktree and the sidebar shows
+    # both a dir-labeled lane and a branch-labeled "main" lane for one checkout.
+    resolve = _resolver(
+        {
+            "C:/repo": ("C:\\repo", "C:/repo"),
+        }
+    )
+    sessions = [_session("C:/repo", branch="main")]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
+    project = next(p for p in tree["projects"] if pt._path_key(p["id"]) == pt._path_key("C:/repo"))
+    lanes = [g for repo in project["repos"] for g in repo["groups"]]
+
+    assert len(lanes) == 1
+    assert lanes[0]["isMain"] is True
+    # Labeled by branch (a main checkout), never by the directory basename.
+    assert lanes[0]["label"] == "main"
+
+
+def test_main_and_linked_worktree_do_not_duplicate_one_checkout():
+    # End-to-end shape of the reported bug: the repo's own checkout plus a real
+    # linked worktree. Mixed separators across probes must still yield exactly
+    # one lane per checkout — a branch lane for main, a dir lane for the linked
+    # worktree — not three lanes for two checkouts.
+    resolve = _resolver(
+        {
+            "C:/repo": ("C:\\repo", "C:/repo"),
+            "C:/repo-wt": ("C:\\repo", "C:/repo-wt"),
+        }
+    )
+    sessions = [_session("C:/repo", branch="main"), _session("C:/repo-wt", branch="feature")]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
+    project = next(p for p in tree["projects"] if pt._path_key(p["id"]) == pt._path_key("C:/repo"))
+    lanes = [g for repo in project["repos"] for g in repo["groups"]]
+
+    assert len(lanes) == 2
+    assert [g["label"] for g in lanes] == ["main", "repo-wt"]
+    assert [g["isMain"] for g in lanes] == [True, False]
+
+
 def test_persisted_repo_root_used_when_no_live_probe():
     # No resolver (remote backend): fall back to the persisted git_repo_root and
     # split the main checkout by the session's recorded branch.

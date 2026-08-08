@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
+import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $gateway } from '@/store/gateway'
@@ -62,6 +63,7 @@ export function useComposerVoice({
   const { $messages } = useComposerScope()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   const lastSpokenIdRef = useRef<string | null>(null)
+  const ownsWakeIndicatorRef = useRef(false)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
 
   const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
@@ -149,6 +151,26 @@ export function useComposerVoice({
     // to finish releasing the capture device (see wakePauseBarrierRef).
     beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined
   })
+
+  // eslint-disable-next-line no-restricted-syntax -- ownership token used only by unmount cleanup
+  useEffect(() => {
+    if (target !== 'main') {
+      return
+    }
+
+    if (syncWakeIndicatorWithVoice(voiceConversationActive, conversation.status)) {
+      ownsWakeIndicatorRef.current = voiceConversationActive
+    }
+  }, [conversation.status, target, voiceConversationActive])
+
+  useEffect(
+    () => () => {
+      if (ownsWakeIndicatorRef.current) {
+        clearWakeIndicator()
+      }
+    },
+    []
+  )
 
   // The `composer.voice` hotkey (Ctrl+B) toggles the conversation. Starting
   // with STT unconfigured lets the conversation surface its own "configure

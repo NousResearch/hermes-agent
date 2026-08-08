@@ -702,8 +702,10 @@ export function discardSessionTile(storedSessionId: string) {
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
 }
 
-/** ⌘⇧T — reopen the most recently closed tab where it was. Skips ids that are
- *  live again (reopened, or now the primary). */
+/** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.
+ *  Adoption alone is silent (won't steal the active tab), so restore has to
+ *  front the pane explicitly. Skips ids that are live again (reopened / now
+ *  the primary). */
 export function reopenLastClosedTile(): void {
   const stack = closedStack()
 
@@ -716,6 +718,7 @@ export function reopenLastClosedTile(): void {
 
     if (!$sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
       openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before)
+      focusOpenSession(storedSessionId)
 
       return
     }
@@ -796,7 +799,7 @@ $selectedStoredSessionId.listen(selected => {
 })
 
 // Dev hook for automation (mirrors __HERMES_LAYOUT_TREE__).
-if (import.meta.env.DEV && typeof window !== 'undefined') {
+if ((import.meta.env.DEV || import.meta.env.VITE_PERF_PROBE === '1') && typeof window !== 'undefined') {
   ;(window as unknown as Record<string, unknown>).__HERMES_SESSION_TILES__ = {
     close: closeSessionTile,
     open: openSessionTile,

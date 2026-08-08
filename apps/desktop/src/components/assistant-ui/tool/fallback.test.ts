@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { isCardTool, splitRunItems, technicalTrace } from './fallback'
+import { isCardTool, isSilentTool } from '@/lib/tool-render-class'
+
+import { splitRunItems, technicalTrace } from './fallback'
 
 describe('isCardTool', () => {
   it('keeps what the user has to look at out of a summary', () => {
@@ -16,6 +18,16 @@ describe('isCardTool', () => {
     for (const toolName of ['read_file', 'search_files', 'terminal', 'execute_code', 'web_search']) {
       expect(isCardTool(toolName)).toBe(false)
     }
+  })
+})
+
+describe('isSilentTool', () => {
+  it('names the rows that render nothing in the transcript', () => {
+    // `todo` is hoisted to its own panel; a reaction's UI is the emoji on the
+    // bubble. The render budget must not charge for either.
+    expect(isSilentTool('todo')).toBe(true)
+    expect(isSilentTool('react_to_message')).toBe(true)
+    expect(isSilentTool('terminal')).toBe(false)
   })
 })
 

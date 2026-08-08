@@ -82,15 +82,12 @@ def _make_discord_adapter(reply_to_mode: str = "first"):
     config = PlatformConfig(enabled=True, token="test-token", reply_to_mode=reply_to_mode)
     adapter = DiscordAdapter(config)
 
-    # Mock the Discord client and channel.
-    # ref_message.to_reference() → a distinct sentinel: the adapter now wraps
-    # the fetched Message via to_reference(fail_if_not_exists=False) so a
-    # deleted target degrades to "send without reply chip" instead of a 400.
+    # Mock the Discord client and channel. Reply references are built from
+    # ids via discord.MessageReference — no fetch round trip — so the
+    # harness only needs a send() capture; the auto-attribute covers the
+    # fetch_message.assert_not_called() assertions below.
     mock_channel = AsyncMock()
-    ref_message = MagicMock()
     ref_reference = MagicMock(name="MessageReference")
-    ref_message.to_reference = MagicMock(return_value=ref_reference)
-    mock_channel.fetch_message = AsyncMock(return_value=ref_message)
 
     sent_msg = MagicMock()
     sent_msg.id = 42
@@ -100,7 +97,6 @@ def _make_discord_adapter(reply_to_mode: str = "first"):
     mock_client.get_channel = MagicMock(return_value=mock_channel)
 
     adapter._client = mock_client
-    # Return the reference sentinel alongside so tests can assert identity.
     adapter._test_expected_reference = ref_reference
     return adapter, mock_channel, ref_reference
 
@@ -133,6 +129,23 @@ class TestSendWithReplyToMode:
         calls = channel.send.call_args_list
         assert len(calls) == 1
         assert calls[0].kwargs.get("reference") is None
+
+
+    @pytest.mark.asyncio
+    async def test_first_mode_constructs_reference_without_fetch(self):
+        """Pin: replies build the MessageReference from ids — no
+        fetch_message round trip. Fails pre-fix, which fetched the target
+        just to call to_reference() on it."""
+        adapter, channel, _ = _make_discord_adapter("first")
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
+
+        await adapter.send("12345", "test content", reply_to="999")
+
+        channel.fetch_message.assert_not_called()
+        calls = channel.send.call_args_list
+        assert len(calls) == 2
+        assert calls[0].kwargs.get("reference") is not None  # first chunk
+        assert calls[1].kwargs.get("reference") is None      # later chunks
 
 
 class TestConfigSerialization:
@@ -281,3 +294,24 @@ class TestYamlConfigLoading:
         load_gateway_config()
 
         assert os.environ.get("DISCORD_REPLY_TO_MODE") == "all"
+
+
+class TestVoiceReplyReference:
+    """send_voice builds its reply reference from ids too — same no-fetch
+    pin as the text path (construction happens before the file read)."""
+
+    @pytest.mark.asyncio
+    async def test_voice_reply_constructs_reference_without_fetch(self, tmp_path, monkeypatch):
+        adapter, channel, _ = _make_discord_adapter("first")
+        audio = tmp_path / "clip.ogg"
+        audio.write_bytes(b"OggS" + b"\x00" * 64)
+        monkeypatch.setattr(adapter, "_is_forum_parent", lambda _c: True)
+        forum_posts = []
+        async def fake_forum_post(_channel, **kwargs):
+            forum_posts.append(kwargs)
+            return MagicMock(success=True, message_id="77")
+        monkeypatch.setattr(adapter, "_forum_post_file", fake_forum_post)
+
+        await adapter.send_voice("12345", str(audio), reply_to="999")
+
+        channel.fetch_message.assert_not_called()

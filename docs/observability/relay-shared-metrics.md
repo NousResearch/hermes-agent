@@ -55,11 +55,13 @@ dependency does not change the collection or privacy policy.
 
 ## Current Slices
 
-The current vertical slices record logical model calls and top-level task runs:
+The current vertical slices record pseudonymous profile activity, logical
+model calls, top-level task runs, tool and approval outcomes, and skill
+lifecycle and reuse:
 
 ```text
-Hermes turn, API, and tool hooks
-  -> Relay session, task, and LLM lifecycle
+Hermes turn, API, tool, and approval hooks
+  -> Relay session, task, LLM, tool, and mark lifecycle
   -> Hermes shared-metrics subscriber
   -> SQLite counters
   -> immutable JSON delta package
@@ -67,10 +69,25 @@ Hermes turn, API, and tool hooks
 
 Hermes sends an empty `LLMRequest` into the metrics-owned lifecycle. This does
 not describe the separate managed-execution call through the native runtime
-documented above. The terminal metrics event contains only bounded model
-family, provider family, locality, call role, and outcome values. Prompts,
-responses, exact model IDs, endpoints, errors, session IDs, task IDs, and
-request IDs are not included in the metrics event or package.
+documented above. The terminal metrics event contains the model identifier and
+provider route that Hermes used for the logical call, such as
+`nvidia/nemotron-3-ultra` through `openrouter`. These identifiers are
+lowercased and structurally bounded, but they are not normalized through a
+checked-in model catalog. Pricing and model-family classification belong to
+the metrics backend. Prompts, responses, endpoints, errors, session IDs, task
+IDs, and request IDs are not included in the metrics event or package.
+New calls use `hermes.model_route.count`. The previous
+`hermes.model_call.count` contract remains readable only so pending local
+counters created by older builds can be exported without losing data.
+
+The first consented session start emits an empty `hermes.client.active` Relay
+mark. The profile-scoped subscriber creates a random UUID install identity and
+uses a transactional compare-and-set to record at most one client-active
+counter in any rolling 24-hour window. The metric has no dimensions; Hermes
+version, OS family, architecture, and install method remain bounded package
+resources. Concurrent Hermes processes share the SQLite latch, so simultaneous
+starts cannot double-count one install. A later session or task can attempt the
+mark again, but the subscriber suppresses it until the rolling window expires.
 
 Each task run is a Relay `Function` scope named `hermes.task_run`, parented to
 the owning Hermes session. The start counter contains only bounded execution
@@ -84,6 +101,32 @@ boundary closes the task for normal returns, early returns, exceptions, and
 cancellations. Active task ownership follows the task ID if Hermes rotates its
 conversation session during context compression.
 
+Each tool invocation is represented by a Relay tool lifecycle named
+`hermes.tool_call`. The terminal counter contains only bounded tool category,
+outcome, approval outcome, latency, and explicit retry-count buckets. Hermes
+derives the category from the toolset already declared in its runtime registry;
+custom and unrecognized toolsets collapse to `other` rather than exporting
+tool or plugin names. Hermes does not infer retries from repeated tool names or
+adjacent calls; when the
+hook does not provide an explicit retry relationship, the retry bucket is
+`unknown`. Approval decisions are emitted as `hermes.tool_approval` marks and
+recorded as attributed to a tool call or explicitly `unattributed`. Tool names,
+call IDs, arguments, results, commands, descriptions, and error text are not
+included in shared-metrics events or packages. A started tool that is still
+open when its task terminates is closed as failed, timed out, or cancelled and
+remains in the task's tool-count bucket.
+
+Successful skill mutations emit `hermes.skill.lifecycle` marks with only a
+bounded action and provenance. Successful loads emit `hermes.skill.load`
+marks with bounded provenance, first-use or reuse state, reuse-after-patch
+state, and a use-count bucket. Hermes derives reuse and patch-generation
+continuity transactionally in its existing `skills/.usage.json` state; skill
+names and exact counts or generations never enter Relay metrics events,
+SQLite dimensions, or packages. A use after a new patch is counted once as
+`reused_after_patch`; later uses remain ordinary reuse until another patch.
+Task-outcome attribution after a patch remains deferred until its window and
+multi-skill semantics are defined.
+
 Local state is written under:
 
 ```text
@@ -93,9 +136,16 @@ $HERMES_HOME/telemetry/shared_metrics/outbox/*.json
 
 The database keeps transactional aggregate and package-outbox state. Package
 files are immutable delta documents that conform to a closed JSON schema and
-are written with atomic replacement. Fully packaged aggregate rows and
-successfully exported package rows and files are retained locally for 30 days.
-Pending package rows and counters with unexported deltas are never pruned.
+are written with atomic replacement. Each package records the Hermes version,
+OS family, architecture, and install method as bounded client resources.
+Unrecognized platform or installation values are exported as `unknown`; raw
+platform strings, hostnames, and paths are never included. Fully packaged
+aggregate rows and successfully exported package rows and files are retained
+locally for 30 days. Pending package rows and counters with unexported deltas
+are never pruned.
+Package schema v1 remains unchanged for existing outbox files. New packages
+use v2, which accepts both the retired model-call contract and the current
+model-route contract so upgrades can drain pending counters safely.
 
 Each package contains an `install_id` generated as a random UUID. Despite the
 schema field name, its current scope is one `HERMES_HOME`, so it is more
@@ -110,6 +160,13 @@ the persistent local identifier by default. It requires a separate product and
 privacy decision covering consent, identity scope, rotation or keyed
 pseudonymization, reset behavior, retention, and deletion.
 
+The install identity is scoped to one `HERMES_HOME`. To reset it, stop Hermes
+processes and remove `$HERMES_HOME/telemetry/shared_metrics`. This deliberately
+removes the old identity, aggregate database, and queued local packages
+together; the next consented session creates a new identity. Disabling shared
+metrics stops new collection but does not silently delete previously collected
+local state.
+
 ## Smoke Test
 
 Run a real Hermes CLI turn against the deterministic local model server:
@@ -122,6 +179,10 @@ The script uses the installed `nemo-relay` dependency by default. Pass
 `--relay-python ../nemo-relay/python` only when testing a locally built Relay
 binding.
 
-The smoke verifies the model request reached the local server, model and task
-counters were stored, one package was exported, and prompt, response, and
-exact-model canaries are absent from the package.
+The smoke has the local model request a real `read_file` tool call before its
+final response, then drives create, load, reuse, patch, edit, stale, archive,
+restore, and install skill transitions through the installed Relay binding. It
+verifies model, provider, task, tool, and skill counters in SQLite, validates
+all exported delta packages against the closed schema, verifies the
+pseudonymous client-active counter, and checks that prompt, response, tool-call
+ID, tool-result, and skill-name canaries are absent from the packages.

@@ -9,12 +9,17 @@ booleans (one per lane) to ``$GITHUB_OUTPUT`` and stdout. The
 Lanes:
 
 * ``python``      — pytest / ruff / ty / footguns.
+* ``python_prod`` — Python changes OUTSIDE tests/ — gates jobs that ship or
+  run the product (Desktop E2E backend, Docker image) but never import the
+  test suite. A tests-only PR keeps ``python`` (pytest must run) while
+  skipping those product jobs.
 * ``docker_meta`` — Dockerfiles etc.
 * ``frontend``    — TS typecheck matrix + desktop build.
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.
+* ``installer``   — PowerShell installer tests (Windows runner).
 * ``mcp_catalog`` — bundled MCP catalog / installer review.
 
 Docker is not a lane — it builds on push-to-main and release only,
@@ -64,6 +69,11 @@ _SCAN_FILES = {"setup.cfg", "pyproject.toml"}
 _MCP_CATALOG_PATHS = ("optional-mcps/",)
 _MCP_CATALOG_FILES = {"hermes_cli/mcp_catalog.py"}
 
+# Windows installer + its PowerShell tests. These only run on a Windows runner,
+# so they get their own lane rather than riding along with ``python``.
+_INSTALLER_PATHS = ("scripts/tests/",)
+_INSTALLER_FILES = {"scripts/install.ps1", "scripts/install.cmd"}
+
 def _is_docs(p: str) -> bool:
     if p.startswith(("skills/", "optional-skills/")):
         return False
@@ -74,12 +84,28 @@ def _py_irrelevant(p: str) -> bool:
     return _is_docs(p) or p in _ROOT_NPM or p.startswith(_PY_SKIP) or p.startswith(_DOCKER_META)
 
 
+def _py_test_only(p: str) -> bool:
+    """Is ``p`` inside the test suite (never shipped / imported by the product)?
+
+    Product jobs (Desktop E2E's ``hermes serve`` backend, the Docker image)
+    run installed code — nothing under ``tests/`` is packaged or importable
+    there. scripts/run_tests.sh and run_tests_parallel.py are deliberately
+    NOT test-only: they are runner infrastructure, and a bad edit there can
+    mask real failures, so they stay conservative (python_prod=true).
+    """
+    return p.startswith("tests/")
+
+
 def _is_scan(p: str) -> bool:
     return p.endswith(_SCAN_EXTS) or p in _SCAN_FILES
 
 
 def _is_mcp_catalog(p: str) -> bool:
     return p.startswith(_MCP_CATALOG_PATHS) or p in _MCP_CATALOG_FILES
+
+
+def _is_installer(p: str) -> bool:
+    return p.startswith(_INSTALLER_PATHS) or p in _INSTALLER_FILES
 
 
 def _is_ci_review(p: str) -> bool:
@@ -100,23 +126,27 @@ def classify(files: list[str]) -> dict[str, bool]:
     files = [f.strip() for f in files if f.strip()]
     ret = {
         "python": any(not _py_irrelevant(f) for f in files),
+        "python_prod": any(not _py_irrelevant(f) and not _py_test_only(f) for f in files),
         "docker_meta":  any(f.startswith(_DOCKER_META) for f in files),
         "frontend": any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files),
         "site": any(f.startswith(_SITE) for f in files),
         "scan": any(_is_scan(f) for f in files),
         "deps": any(f == "pyproject.toml" for f in files),
         "npm_lock": any(f.split("/")[-1] == "package-lock.json" for f in files),
+        "installer": any(_is_installer(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
     }
     if not files or any(f.startswith(".github/") for f in files):
         ret["python"] = True
+        ret["python_prod"] = True
         ret["docker_meta"] = True
         ret["frontend"] = True
         ret["site"] = True
         ret["scan"] = True
         ret["deps"] = True
         ret["npm_lock"] = True
+        ret["installer"] = True
         ret["ci_review"] = True
 
         # explicitly skip mcp catalog here. it's not needed unless those files are modified.

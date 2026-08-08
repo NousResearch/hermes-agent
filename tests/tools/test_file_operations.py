@@ -242,11 +242,43 @@ def file_ops(mock_env):
     return ShellFileOperations(mock_env)
 
 
+def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMock:
+    """Mock env whose execute() runs the command in a real subprocess.
+
+    For tests that need the generated shell scripts to actually run
+    (search fallback, atomic-write permissions) instead of being
+    intercepted by a bare MagicMock.  ``include_stderr`` folds stderr
+    into ``output`` for tests that surface shell error text; leave it
+    off for tests that parse structured stdout (e.g. find results).
+    """
+    env = MagicMock()
+    env.cwd = cwd
+
+    def execute(command, **kwargs):
+        completed = subprocess.run(
+            command,
+            shell=True,
+            text=True,
+            capture_output=True,
+            input=kwargs.get("stdin_data"),
+        )
+        output = completed.stdout
+        if include_stderr:
+            output += completed.stderr
+        return {
+            "output": output,
+            "returncode": completed.returncode,
+        }
+
+    env.execute = execute
+    return env
+
+
 class TestShellFileOpsHelpers:
     def test_normalize_read_pagination_clamps_invalid_values(self):
         assert normalize_read_pagination(offset=0, limit=0) == (1, 1)
         assert normalize_read_pagination(offset=-10, limit=-5) == (1, 1)
-        assert normalize_read_pagination(offset="bad", limit="bad") == (1, 500)
+        assert normalize_read_pagination(offset="bad", limit="bad") == (1, 2000)
         assert normalize_read_pagination(offset=2, limit=999999) == (2, 2000)
 
 
@@ -287,7 +319,7 @@ class TestShellFileOpsHelpers:
         assert result.error is None
         assert commands[0] == "wc -c < '/c/Users/alice/notes.txt' 2>/dev/null"
         assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null"
-        assert commands[2] == "sed -n '1,500p' '/c/Users/alice/notes.txt'"
+        assert commands[2] == "sed -n '1,2000p' '/c/Users/alice/notes.txt'"
         assert commands[3] == "wc -l < '/c/Users/alice/notes.txt'"
 
     def test_is_likely_binary_by_extension(self, file_ops):
@@ -393,23 +425,7 @@ class TestSearchPathValidation:
 
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
-        env = MagicMock()
-        env.cwd = "/"
-
-        def execute(command, **kwargs):
-            completed = subprocess.run(
-                command,
-                shell=True,
-                text=True,
-                capture_output=True,
-            )
-            return {
-                "output": completed.stdout,
-                "returncode": completed.returncode,
-            }
-
-        env.execute = execute
-        return env
+        return make_real_subprocess_env("/")
 
     def test_hidden_root_with_hidden_ancestor_includes_files(self, tmp_path, monkeypatch):
         """Fallback find should include visible files when path is inside hidden root."""
@@ -552,3 +568,108 @@ class _DeletedTestGitBaselineCheck:
     helper is restored or replaced.
     """
     pass
+
+
+# =========================================================================
+# Atomic write: umask-default permissions for new files
+# =========================================================================
+
+class TestAtomicWriteNewFilePermissions:
+    """_atomic_write should apply umask-default perms to new files (not 0600)."""
+
+    @pytest.mark.parametrize("test_umask", [0o022, 0o002, 0o077])
+    def test_new_file_gets_umask_default_permissions(self, tmp_path, test_umask):
+        """Newly created file should get umask-computed perms, not mktemp's 0600.
+
+        Uses a real subprocess so the shell script actually runs.
+        """
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        dest = tmp_path / "new_file.txt"
+        assert not dest.exists()
+
+        old_umask = os.umask(test_umask)
+        try:
+            result = ops.write_file(str(dest), "test content\n")
+        finally:
+            os.umask(old_umask)
+
+        assert result.error is None, f"write failed: {result.error}"
+        assert dest.read_text() == "test content\n"
+        expected_mode = 0o666 & ~test_umask
+        actual_mode = dest.stat().st_mode & 0o777
+        assert actual_mode == expected_mode, (
+            f"Expected mode {expected_mode:04o} (umask {test_umask:04o}), "
+            f"got {actual_mode:04o}"
+        )
+
+    def test_overwrite_still_preserves_existing_mode(self, tmp_path):
+        """The new-file branch must not disturb the overwrite path's
+        mode preservation (e.g. an executable script stays 0755)."""
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        dest = tmp_path / "existing.sh"
+        dest.write_text("#!/bin/sh\n")
+        dest.chmod(0o755)
+
+        result = ops.write_file(str(dest), "#!/bin/sh\necho updated\n")
+
+        assert result.error is None, f"write failed: {result.error}"
+        assert dest.read_text() == "#!/bin/sh\necho updated\n"
+        assert dest.stat().st_mode & 0o777 == 0o755
+
+
+class TestAtomicWriteThroughSymlink:
+    """_atomic_write must edit a symlink's target, not replace the link.
+
+    Regression: the temp-file + ``mv`` swap replaced the symlink itself with a
+    plain file, orphaning the real target and destroying the link (data-loss).
+    """
+
+    def test_write_follows_symlink_and_preserves_link(self, tmp_path):
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        real = tmp_path / "real.txt"
+        link = tmp_path / "link.txt"
+        real.write_text("original\n")
+        link.symlink_to(real)
+
+        result = ops.write_file(str(link), "newcontent\n")
+
+        assert result.error is None, f"write failed: {result.error}"
+        # The link must survive as a symlink...
+        assert link.is_symlink(), "symlink was replaced by a plain file"
+        # ...and the real target must carry the new content.
+        assert real.read_text() == "newcontent\n"
+        assert os.path.realpath(link) == str(real)
+
+    def test_write_through_broken_symlink_falls_back(self, tmp_path):
+        """A broken link resolves through readlink -f and creates the target."""
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        target = tmp_path / "target.txt"
+        link = tmp_path / "broken.lnk"
+        link.symlink_to(target)  # target does not exist yet
+
+        result = ops.write_file(str(link), "data\n")
+
+        assert result.error is None, f"write failed: {result.error}"
+        assert target.exists()
+        assert target.read_text() == "data\n"
+
+
+class TestReadNonUtf8IsBinary:
+    """Non-UTF-8 content must be flagged binary, not returned as lossy text.
+
+    Regression: the terminal env decodes stdout with errors="replace", turning
+    every non-UTF-8 byte into U+FFFD before _is_likely_binary sees it. U+FFFD is
+    "printable", so the non-printable ratio never caught it, and a
+    read→edit→write round-trip would overwrite the original bytes with mojibake.
+    """
+
+    def test_replacement_char_sample_flagged_binary(self, tmp_path):
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        # A latin-1 file decoded with errors="replace" yields U+FFFD chars.
+        lossy_sample = "caf\ufffd r\ufffdsum\ufffd\n"
+        assert ops._is_likely_binary("notes.txt", lossy_sample) is True
+
+    def test_plain_utf8_text_not_flagged(self, tmp_path):
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        # Proper UTF-8 (including non-ASCII) must still read as text.
+        assert ops._is_likely_binary("notes.txt", "café résumé\nsecond\n") is False

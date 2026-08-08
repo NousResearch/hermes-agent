@@ -148,6 +148,9 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
     "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
     "hermes-agent", "backups", "profiles", ".worktrees",
+    # User-authored project trees — never sweep empty directories
+    # inside these (#75403).
+    "patches", "projects", "skins", "themes", "contributors",
 })
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
@@ -334,6 +337,21 @@ def quick() -> Dict[str, Any]:
                     f"(re-classified as {re_cat!r})"
                 )
                 # Drop the stale entry — it was misclassified.
+                continue
+
+        # ---- stale-state migration for 'test' category (fixes #75403) ----
+        # Old tracked.json entries may carry a "test" category for paths
+        # that are now under protected project directories (patches/,
+        # projects/, etc.).  guess_category() was tightened in the fix for
+        # #75403, but existing entries are never re-validated.  Re-classify
+        # here so stale entries for protected paths are not deleted.
+        if cat == "test":
+            re_cat = guess_category(p)
+            if re_cat != "test":
+                _log(
+                    f"SKIP stale test entry: {p} "
+                    f"(re-classified as {re_cat!r} — under protected tree)"
+                )
                 continue
 
         # Hard safety net: never delete cron control-plane state even if
@@ -563,6 +581,11 @@ def guess_category(path: Path) -> Optional[str]:
             "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
             "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
             "auth.json", "hermes-agent",
+            # User-authored and project trees — never auto-delete files
+            # inside these just because they happen to be named test_* or
+            # tmp_* (#75403, also #32164, #37721).
+            "patches", "projects", "skins", "themes", "contributors",
+            "profiles", "backups", "optional-skills",
         }:
             return None
         if top == "cron" or top == "cronjobs":

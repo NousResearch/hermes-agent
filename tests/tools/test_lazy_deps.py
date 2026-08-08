@@ -83,6 +83,20 @@ class TestAllowlist:
 
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
+        assert ld.feature_install_command("not.real", venv_pip=True) is None
+
+    def test_feature_install_command_venv_pip_targets_interpreter(self):
+        # venv_pip=True must target the running interpreter's pip (correct in
+        # every install layout, immune to PEP 668) and carry the same specs
+        # as the default uv form.
+        import sys as _sys
+        default = ld.feature_install_command("platform.teams")
+        venv = ld.feature_install_command("platform.teams", venv_pip=True)
+        assert default is not None and venv is not None
+        assert venv.startswith(f"{_sys.executable} -m pip install ")
+        assert default.startswith("uv pip install ")
+        # Same spec tail on both forms.
+        assert venv.split(" -m pip install ", 1)[1] == default.split("uv pip install ", 1)[1]
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +238,59 @@ class TestIsSatisfiedVersionAware:
         self._fake_version(monkeypatch, {"huggingface-hub": pinned})
         assert ld._is_satisfied(spec) is True
         assert ld.feature_missing("tool.trace_upload") == ()
+
+    @pytest.mark.parametrize(
+        ("feature", "installed_versions", "expected_repairs"),
+        [
+            (
+                "skill.google_workspace",
+                {
+                    "google-api-python-client": "2.194.0",
+                    "google-auth": "2.55.0",
+                    "google-auth-oauthlib": "1.3.1",
+                    "google-auth-httplib2": "0.3.1",
+                    "httplib2": "0.31.2",
+                    "pyasn1": "0.6.3",
+                },
+                (
+                    "google-auth==2.55.1",
+                    "httplib2==0.32.0",
+                    "pyasn1==0.6.4",
+                ),
+            ),
+            (
+                "provider.vertex",
+                {
+                    "google-auth": "2.55.1",
+                    "pyasn1": "0.6.3",
+                },
+                ("pyasn1==0.6.4",),
+            ),
+        ],
+    )
+    def test_google_features_repair_stale_transitives(
+        self,
+        monkeypatch,
+        feature,
+        installed_versions,
+        expected_repairs,
+    ):
+        self._fake_version(monkeypatch, installed_versions)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        installed = []
+
+        def fake_install(specs, **kwargs):
+            installed.extend(specs)
+            for spec in specs:
+                package, wanted = spec.split("==", 1)
+                installed_versions[package] = wanted
+            return ld._InstallResult(True, "ok", "")
+
+        monkeypatch.setattr(ld, "_venv_pip_install", fake_install)
+
+        ld.ensure(feature, prompt=False)
+
+        assert tuple(installed) == expected_repairs
 
 
 # ---------------------------------------------------------------------------

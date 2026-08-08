@@ -9,6 +9,7 @@
 
 import type * as React from 'react'
 
+import type { PaneStripTool } from '@/components/ui/pane-tab'
 import type { Contribution } from '@/contrib/types'
 
 import type { GroupNode, LayoutNode } from '../model'
@@ -18,6 +19,15 @@ import type { DoubleTapContext } from './drag-session'
 import type { FloatingAnchor } from './floating-rect'
 
 export const MIN_PANE_PX = 80
+
+/**
+ * The floor for a TOOL PANEL zone (terminal / logs) instead of `MIN_PANE_PX`.
+ * A tool panel is meant to be draggable down to nothing — the minimized rail
+ * (its header strip, `h-7`) is the smallest meaningful form, so the sash lets
+ * it shrink to exactly that and then collapses the zone rather than jamming
+ * against an 80px floor with a sliver of unusable content still showing.
+ */
+export const COLLAPSED_ZONE_PX = 28
 
 /** Optional CSS sizing a pane contributes (`data.width` / `data.minWidth`…).
  *  Applied to the pane's GROUP along the axis of the split that contains it —
@@ -71,6 +81,12 @@ interface PaneChrome extends PaneSizing {
    *  the tab and the sidebar row render status/color from the ONE primitive
    *  (self-subscribing — it updates without the strip re-registering). */
   tabLead?: () => React.ReactNode
+  /** Glyph buttons this pane contributes to the strip, rendered after the last
+   *  tab (where "+" sits) while the pane is ACTIVE — controls that act on the
+   *  pane, not on any one tab: a preview's console / DevTools toggles. DATA, not
+   *  markup: `PaneStripGlyph` owns the styling so every glyph on every strip
+   *  matches. Read on each render, so a live store drives `active`/`disabled`. */
+  stripTools?: () => readonly PaneStripTool[]
 }
 
 export const paneChrome = (c: Contribution | undefined) => (c?.data ?? {}) as PaneChrome
@@ -148,6 +164,36 @@ export const cssMax = (values: (string | null | undefined)[]): string | undefine
 /** A minimized zone IS its strip: the vertical rail (row) / header (column)
  *  are both 28px thick. */
 export const MINIMIZED_TRACK = '1.75rem'
+
+/**
+ * In an all-fixed split, the last uncapped track may absorb leftover space
+ * (terminal/logs stacked at 38vh with nothing else to fill the column). A
+ * CAPPED track must never be the absorber: review/files declare maxWidth
+ * 20rem, and promoting them to grow-1 + dropping the clamp made ⌘G / ⌘J open
+ * a half-window rail and ignore sash-remembered sizes (flex-basis alone
+ * can't hold against grow).
+ *
+ * Returns the child index to absorb, or -1 when every fixed track is capped
+ * (leave dead space — better than a ballooned sidebar).
+ */
+export function allFixedAbsorberIndex(
+  growable: readonly number[],
+  maxAlongAxis: (index: number) => string | undefined
+): number {
+  if (growable.length === 0) {
+    return -1
+  }
+
+  for (let i = growable.length - 1; i >= 0; i--) {
+    const index = growable[i]
+
+    if (!maxAlongAxis(index)) {
+      return index
+    }
+  }
+
+  return -1
+}
 
 export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: TrackContext): string | null {
   if (node.type === 'group') {

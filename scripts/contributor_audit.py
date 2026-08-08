@@ -51,6 +51,12 @@ IGNORED_PATTERNS = [
     re.compile(r"^Hermes\s+(Agent|Audit)$", re.IGNORECASE),
     re.compile(r"^nousbot(-eng)?$", re.IGNORECASE),
     re.compile(r"^Ubuntu$", re.IGNORECASE),
+    # v0.20.0 audit additions:
+    re.compile(r"^Blut-?Agent$", re.IGNORECASE),          # self-described AI agent account
+    re.compile(r".*\[bot\]$", re.IGNORECASE),             # any GitHub [bot] suffix (hermes-seaeye[bot] etc.)
+    re.compile(r"^TRON$", re.IGNORECASE),                 # AgentMail agent
+    re.compile(r"^Happy$", re.IGNORECASE),                # happy.engineering AI agent
+    re.compile(r"^Orca$", re.IGNORECASE),                 # Stably AI agent
 ]
 
 IGNORED_EMAILS = {
@@ -65,6 +71,10 @@ IGNORED_EMAILS = {
     "omx@oh-my-codex.dev",
     "codex@openai.com",
     "noreply@commandcode.ai",
+    # v0.20.0 audit additions — AI-agent co-author trailers:
+    "tron-agent@agentmail.to",      # TRON (AgentMail agent)
+    "yesreply@happy.engineering",   # Happy (AI coding agent)
+    "help@stably.ai",               # Orca (Stably AI agent)
 }
 
 

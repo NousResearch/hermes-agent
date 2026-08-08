@@ -35,7 +35,7 @@ import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
-import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
+import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
   canImportHermesCli,
@@ -47,6 +47,7 @@ import {
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
+import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
@@ -150,6 +151,7 @@ import {
   tokenNeedsRefresh
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
+import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
@@ -183,10 +185,11 @@ import {
   redactSecrets,
   SshConnection
 } from './ssh-connection'
+import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
-import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
+import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
 import {
   buildRelaunchScript,
@@ -198,9 +201,14 @@ import {
   sandboxPreflight
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
-import { spawnUpdaterProcess } from './updater-process'
+import {
+  resolveStagedUpdaterBinary,
+  spawnUpdaterProcess,
+  stagedUpdaterSupportsPrewrittenMarker
+} from './updater-process'
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
+import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import {
   computeWindowOptions,
   debounce,
@@ -421,18 +429,24 @@ if (IS_WINDOWS) {
 
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 
-// Keep the renderer running at full speed while the window is in the background
-// or occluded. The chat transcript streams to screen through a bounded timer
-// flush; Chromium clamps timers for backgrounded/occluded renderers, so without
-// these the live answer stalls
-// whenever the window loses focus (switching to your editor mid-turn, detached
-// devtools, another window covering it) and only paints on refocus or refresh.
-// `backgroundThrottling: false` on the BrowserWindow covers the blurred case;
-// these process-level switches additionally stop Chromium from backgrounding or
-// occlusion-throttling the renderer. Must run before app `ready`.
+// Keep the renderer's PROCESS priority normal while its windows are hidden —
+// a deprioritized renderer streams a live answer visibly slower once the
+// window is minimized. This switch only affects scheduling priority; it does
+// not exempt timers from throttling and costs nothing at idle.
+//
+// The timer/rAF throttling story is deliberately NOT handled here anymore.
+// The old process-wide `disable-background-timer-throttling` /
+// `disable-backgrounding-occluded-windows` switches (plus a static
+// `backgroundThrottling: false` on every chat window) pinned every renderer's
+// `document.visibilityState` to 'visible' forever — which silently turned all
+// the renderer's visibility-gated backstop polls and clock ticks into
+// always-on timers. A completely idle, minimized Hermes burned ~20% CPU
+// around the clock. Throttling is now a runtime dial scoped to streaming:
+// see createStreamThrottle() — chat windows are unthrottled while any turn is
+// in flight (so a live answer keeps painting while blurred, occluded, or
+// minimized, exactly as before) and return to Chromium's default throttling
+// once the work settles.
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
-app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
-app.commandLine.appendSwitch('disable-background-timer-throttling')
 
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
@@ -564,19 +578,10 @@ function resolveHermesHome() {
 
 const HERMES_HOME = resolveHermesHome()
 
-function hermesManagedNodePathEntries() {
-  // NOTE: keep this ordering in sync with iter_hermes_node_dirs() in
-  // hermes_constants.py — this Node main process cannot import the Python
-  // module, so the platform-ordering rule is mirrored here.
-  const root = path.join(HERMES_HOME, 'node')
-  const bin = path.join(root, 'bin')
-  const entries = IS_WINDOWS ? [root, bin] : [bin, root]
-
-  return entries.filter(directoryExists)
-}
-
 function pathWithHermesManagedNode(...entries) {
-  return [...hermesManagedNodePathEntries(), ...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
+  const managed = hermesManagedNodePathEntries(HERMES_HOME).filter(directoryExists)
+
+  return [...managed, ...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
 }
 
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
@@ -672,7 +677,15 @@ const WINDOW_BUTTON_POSITION = {
 // (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
 // It's only the pre-layout fallback — the renderer measures the exact overlay
 // width live via the Window Controls Overlay API.
+// The apple-touch PNG bakes in the macOS-style ~10% margin, which is correct
+// for the dock but renders visibly smaller than neighboring taskbar icons on
+// Windows, where icons are full-bleed. Windows prefers the full-bleed
+// assets/icon.ico (shipped to resources/ via extraResources) and only falls
+// back to the padded PNG if the ico is missing.
 const APP_ICON_PATHS = [
+  ...(IS_WINDOWS
+    ? [path.join(process.resourcesPath ?? '', 'icon.ico'), path.join(APP_ROOT, 'assets', 'icon.ico')]
+    : []),
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
   path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
@@ -849,6 +862,7 @@ const MEDIA_MIME_TYPES = {
   '.mp4': 'video/mp4',
   '.ogg': 'audio/ogg',
   '.opus': 'audio/ogg; codecs=opus',
+  '.pdf': 'application/pdf',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.wav': 'audio/wav',
@@ -857,6 +871,7 @@ const MEDIA_MIME_TYPES = {
 }
 
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
+const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
 const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -1091,6 +1106,14 @@ let bootstrapAbortController = null
 // repair can force the installer without destroying provenance about how the
 // install was created. Cleared once the reinstall is under way.
 let bootstrapRepairRequested = false
+// Counter for in-flight repair attempts. Reset on a clean boot completion
+// (see runBootstrap -> ensureRuntime resolve path). Each successive repair
+// in the same failure episode increments this; once it crosses
+// MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS the guard escalates from "soft restart"
+// to "hard reinstall" so a transient backend stall (issue #74874) stops
+// looping the user through a destructive venv reinstall.
+let bootstrapRepairAttempt = 0
+const MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS = 3
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
@@ -2594,18 +2617,14 @@ let isQuittingForHandoff = false
 let quitPromptOpen = false
 let quitConfirmedWithActiveWork = false
 
-// Resolve the staged updater binary. The Tauri installer copies itself to
-// HERMES_HOME/hermes-setup.exe on a successful install (see
-// apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
-// ALL repo mutation — running `hermes update` + rebuilding the desktop — so
-// the desktop never touches its own bits while running. Returns null when the
-// updater isn't staged (e.g. a dev/source run that never went through the
-// installer); callers degrade gracefully.
+// Resolve the staged updater binary the desktop may hand an update to. On
+// Windows that binary owns ALL repo mutation — running `hermes update` +
+// rebuilding the desktop — so the desktop never touches its own bits while
+// running. macOS/Linux stage the same binary but deliberately do not use it;
+// see resolveStagedUpdaterBinary for the policy and for #74836. Returns null
+// whenever no hand-off applies; callers degrade gracefully.
 function resolveUpdaterBinary() {
-  const name = IS_WINDOWS ? 'hermes-setup.exe' : 'hermes-setup'
-  const candidate = path.join(HERMES_HOME, name)
-
-  return fileExists(candidate) ? candidate : null
+  return resolveStagedUpdaterBinary(HERMES_HOME, { fileExists, isWindows: IS_WINDOWS })
 }
 
 function repairMacUpdaterHelper(updater) {
@@ -2833,12 +2852,13 @@ async function applyUpdates(opts = {}) {
     const updater = resolveUpdaterBinary()
 
     if (!updater && !IS_WINDOWS) {
-      // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
-      // (where a venv-shim file lock forces the quit→hand-off→rebuild dance),
-      // there's no mandatory file locking here, so the desktop can drive the
-      // whole update itself: `hermes update` (backend) + `hermes desktop
-      // --build-only` (OS-aware GUI rebuild), then swap the running .app bundle
-      // with the freshly built one and relaunch.
+      // macOS/Linux: never hand off, staged hermes-setup or not — the resolver
+      // returns null there by policy. Unlike Windows (where a venv-shim file
+      // lock forces the quit→hand-off→rebuild dance), there's no mandatory file
+      // locking here, so the desktop can drive the whole update itself:
+      // `hermes update` (backend) + `hermes desktop --build-only` (OS-aware GUI
+      // rebuild), then swap the running .app bundle with the freshly built one
+      // and relaunch.
       return await applyUpdatesPosixInApp(opts)
     }
 
@@ -2874,6 +2894,19 @@ async function applyUpdates(opts = {}) {
       emitUpdateProgress({ stage: 'manual', message: command, percent: null })
 
       return { ok: true, manual: true, command, hermesRoot: updateRoot }
+    }
+
+    const handoffConflict = updateHandoffConflict(HERMES_HOME)
+
+    if (handoffConflict) {
+      // A different updater already owns the marker — most often a previous
+      // "Update" click whose updater is still alive and parked mid-run.
+      // Spawning another here would overwrite its claim and let two updaters
+      // mutate the checkout at once (#75778); refuse instead.
+      rememberLog(`[updates] refusing hand-off: ${handoffConflict.message}`)
+      emitUpdateProgress({ stage: 'error', message: handoffConflict.message, percent: null })
+
+      return { ok: false, error: 'update-already-running', message: handoffConflict.message }
     }
 
     emitUpdateProgress({
@@ -2976,8 +3009,20 @@ async function applyUpdates(opts = {}) {
     // the venv. By writing the marker ourselves the renderer's
     // waitForUpdateToFinish() gate sees a live update and parks instead.
     // The updater overwrites this with its own PID later; same format.
-    if (Number.isInteger(child.pid)) {
+    //
+    // SKIPPED for pre-#74782 staged updaters: those have no self-PID
+    // exclusion, so they read this very marker as a foreign live owner and
+    // abort with "Another Hermes update is already running (PID <itself>)" —
+    // an unbreakable loop, because the update that would replace the stale
+    // binary is the one being refused. Losing the anti-respawn hardening is
+    // strictly better than never updating again, and the updater still writes
+    // its own marker moments later.
+    if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
       writeUpdateMarker(HERMES_HOME, child.pid)
+    } else if (Number.isInteger(child.pid)) {
+      rememberLog(
+        `[updates] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
+      )
     }
 
     rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
@@ -3007,6 +3052,24 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   if (!updater) {
     return false
+  }
+
+  const handoffConflict = updateHandoffConflict(HERMES_HOME)
+
+  if (handoffConflict) {
+    // Same hazard as applyUpdates (#75778): a live foreign updater already
+    // owns the marker. Spawning another here would overwrite its claim and
+    // race a second updater over the same install tree. The live updater
+    // is already working on this exact install and will restart us when
+    // it finishes, so treat this the same as a successful hand-off instead
+    // of clobbering it with our own.
+    rememberLog(`[bootstrap] refusing recovery hand-off: ${handoffConflict.message}`)
+    isQuittingForHandoff = true
+    setTimeout(() => {
+      app.quit()
+    }, UPDATE_HANDOFF_DWELL_MS)
+
+    return true
   }
 
   const updateRoot = resolveUpdateRoot()
@@ -3046,9 +3109,15 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   // Same marker pre-write as applyUpdates — see comment there. The recovery
   // hand-off has the same window where the renderer can respawn a backend
-  // before the updater writes its own marker.
-  if (Number.isInteger(child.pid)) {
+  // before the updater writes its own marker, and the same stale-updater
+  // exclusion: a pre-#74782 binary would refuse its own pre-written claim and
+  // strand the very recovery meant to heal the install.
+  if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
     writeUpdateMarker(HERMES_HOME, child.pid)
+  } else if (Number.isInteger(child.pid)) {
+    rememberLog(
+      `[bootstrap] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
+    )
   }
 
   rememberLog(
@@ -4032,6 +4101,7 @@ async function ensureRuntime(backend) {
     // The repair request has been honoured by reaching the installer; clear it
     // so a later boot isn't forced through bootstrap again.
     bootstrapRepairRequested = false
+    bootstrapRepairAttempt = 0
 
     const bootstrapResult = await runBootstrap({
       installStamp: backend.installStamp,
@@ -4836,7 +4906,8 @@ async function previewFileTarget(rawTarget, baseDir) {
   const metadata = previewFileMetadata(resolved, mimeType)
   const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
   const isImage = mimeType.startsWith('image/')
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : metadata.binary ? 'binary' : 'text'
+  const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext) || mimeType === 'application/pdf'
+  const previewKind = isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : metadata.binary ? 'binary' : 'text'
 
   return {
     binary: metadata.binary,
@@ -5155,6 +5226,20 @@ function sendClosePreviewRequested() {
   webContents.send('hermes:close-preview-requested')
 }
 
+function sendOpenFolderRequested() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  const webContents = mainWindow.webContents
+
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send('hermes:open-folder-requested')
+}
+
 // Tell the renderer the machine just woke. Sleep silently drops the
 // renderer's WebSocket to the local backend; the renderer reconnects on this
 // signal so the chat composer doesn't stay stuck on "Starting Hermes...".
@@ -5174,6 +5259,31 @@ function sendPowerResume() {
 
 let powerResumeRegistered = false
 
+// Mirror of powerMonitor's AC/battery state, broadcast to every window so
+// renderer backstop polls can slow down on battery (see store/power.ts).
+// `null` until the first powerMonitor read after app ready.
+let onBatteryPower: boolean | null = null
+
+// Renderer-side battery gating seeds from this and stays current via the
+// 'hermes:power-battery' push below.
+ipcMain.handle('hermes:power-battery:get', () => onBatteryPower === true)
+
+function broadcastBatteryState(next: boolean) {
+  if (onBatteryPower === next) {
+    return
+  }
+
+  onBatteryPower = next
+
+  for (const win of BrowserWindow.getAllWindows()) {
+    const { webContents } = win
+
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('hermes:power-battery', next)
+    }
+  }
+}
+
 function registerPowerResumeListeners() {
   if (powerResumeRegistered) {
     return
@@ -5186,6 +5296,9 @@ function registerPowerResumeListeners() {
     // full suspend. Either can drop an idle socket.
     powerMonitor.on('resume', sendPowerResume)
     powerMonitor.on('unlock-screen', sendPowerResume)
+    powerMonitor.on('on-battery', () => broadcastBatteryState(true))
+    powerMonitor.on('on-ac', () => broadcastBatteryState(false))
+    onBatteryPower = powerMonitor.isOnBatteryPower()
   } catch {
     // powerMonitor is unavailable before app 'ready' on some platforms; the
     // caller registers after 'ready', so this should not normally throw.
@@ -5272,6 +5385,10 @@ function buildApplicationMenu() {
       // a menu accelerator would fight the rebind panel and (on macOS) be
       // swallowed before the renderer sees it. Here purely for discoverability.
       { click: () => createInstanceWindow(), label: 'New Window' },
+      // Same no-accelerator rationale: ⌘O is the rebindable renderer keybind
+      // (workspace.openFolder). Clicking runs the same open-folder-as-project
+      // flow through the renderer.
+      { click: () => sendOpenFolderRequested(), label: 'Open Folder…' },
       { type: 'separator' },
       IS_MAC
         ? {
@@ -5296,6 +5413,12 @@ function buildApplicationMenu() {
       { role: 'cut' },
       { role: 'copy' },
       { role: 'paste' },
+      // ⌘⇧V is only wired up by this item existing: an accelerator with no menu
+      // entry is never translated into an editor command, so the chord was a
+      // no-op in every input in the app. The composer inserts plain text on
+      // every paste anyway, so this is the same result as ⌘V there — it's the
+      // terminal, preview, and other editable surfaces that need the strip.
+      { role: 'pasteAndMatchStyle' },
       { role: 'delete' },
       { role: 'selectAll' }
     ]
@@ -5624,8 +5747,12 @@ function installContextMenu(window) {
       }
     }
 
+    // Bare right-click on non-editable, non-selected, non-media content (a pane
+    // body, the sidebar, chrome): the renderer's own context menus own those
+    // surfaces, and anywhere without one shows nothing — not a lone, useless
+    // "Select All" from the native fallback.
     if (!template.length) {
-      template.push({ role: 'selectAll' })
+      return
     }
 
     Menu.buildFromTemplate(template).popup({ window })
@@ -6167,35 +6294,24 @@ function _nativeTokenStorePath() {
   return path.join(app.getPath('userData'), 'native-oauth-tokens.json')
 }
 
-function _readNativeTokenStore(): Record<string, any> {
-  try {
-    const raw = fs.readFileSync(_nativeTokenStorePath(), 'utf8')
-    const parsed = JSON.parse(raw)
-
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
+// The electron-coupled half of the token store: safeStorage encryption plus the
+// userData file. native-token-store.ts owns the serialization/parse round trip
+// so it can be tested without an Electron runtime.
+function _nativeTokenStoreIo(): NativeTokenStoreIo {
+  return {
+    encrypt: encryptDesktopSecret,
+    decrypt: decryptDesktopSecret,
+    readStoreText: () => fs.readFileSync(_nativeTokenStorePath(), 'utf8'),
+    writeStoreText: (text: string) => {
+      fs.mkdirSync(path.dirname(_nativeTokenStorePath()), { recursive: true })
+      fs.writeFileSync(_nativeTokenStorePath(), text, { mode: 0o600 })
+    },
+    rememberLog
   }
 }
 
 function _persistNativeTokens(baseUrl: string, tokens: NativeTokenSet | null) {
-  const store = _readNativeTokenStore()
-
-  if (tokens) {
-    // Encrypt the whole token set as one blob so the refresh token never
-    // lands in plaintext on disk. Reuse the hardened encrypt helper.
-    const secret = encryptDesktopSecret(JSON.stringify(tokens))
-    store[baseUrl] = secret
-  } else {
-    delete store[baseUrl]
-  }
-
-  try {
-    fs.mkdirSync(path.dirname(_nativeTokenStorePath()), { recursive: true })
-    fs.writeFileSync(_nativeTokenStorePath(), JSON.stringify(store), { mode: 0o600 })
-  } catch (error) {
-    rememberLog(`[native-oauth] failed to persist tokens: ${(error as Error).message}`)
-  }
+  persistNativeTokenSet(baseUrl, tokens, _nativeTokenStoreIo())
 }
 
 function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
@@ -6205,27 +6321,13 @@ function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
     return cached
   }
 
-  const store = _readNativeTokenStore()
-  const secret = store[baseUrl]
+  const tokens = loadNativeTokenSet(baseUrl, _nativeTokenStoreIo())
 
-  if (!secret) {
-    return null
-  }
-
-  try {
-    const plaintext = decryptDesktopSecret(secret)
-
-    if (!plaintext) {
-      return null
-    }
-
-    const tokens = parseTokenResponse(JSON.parse(plaintext))
+  if (tokens) {
     _nativeTokens.set(baseUrl, tokens)
-
-    return tokens
-  } catch {
-    return null
   }
+
+  return tokens
 }
 
 function _storeNativeTokens(baseUrl: string, tokens: NativeTokenSet) {
@@ -6916,6 +7018,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     sshPort: (ssh || savedSsh)?.port || null,
     sshKeyPath: (ssh || savedSsh)?.keyPath || '',
     sshRemoteHermesPath: (ssh || savedSsh)?.remoteHermesPath || '',
+    sshRemoteProfile: (ssh || savedSsh)?.remoteProfile || '',
     // The env override only forces the global/primary connection; a per-profile
     // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
     envOverride
@@ -7048,7 +7151,8 @@ function buildSshBlock(input: any, existingBlock: any = {}) {
     user: input.sshUser ?? existingBlock.user,
     port: input.sshPort ?? existingBlock.port,
     keyPath: input.sshKeyPath ?? existingBlock.keyPath,
-    remoteHermesPath: input.sshRemoteHermesPath ?? existingBlock.remoteHermesPath
+    remoteHermesPath: input.sshRemoteHermesPath ?? existingBlock.remoteHermesPath,
+    remoteProfile: input.sshRemoteProfile ?? existingBlock.remoteProfile
   })
 
   if (!merged) {
@@ -7337,7 +7441,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
     result = await lifecycle({
       ssh,
-      profile: connectionScopeKey(profile) || '',
+      profile: sshConfig.remoteProfile || connectionScopeKey(profile) || '',
       remoteHermesPath: sshConfig.remoteHermesPath || '',
       ownershipId: sshOwnershipKey(profile),
       reuseToken: reuseToken || '',
@@ -8517,6 +8621,13 @@ async function startHermes() {
       error: null
     })
 
+    // A successful boot (including a soft restart that the repair-guard
+    // chose over a hard reinstall, see #74874) means any in-flight repair
+    // attempt counter has been honoured — reset it so the next genuine
+    // failure starts fresh from attempt 1 instead of inheriting the
+    // accumulated count of the resolved episode.
+    bootstrapRepairAttempt = 0
+
     return {
       baseUrl,
       mode: 'local',
@@ -8675,6 +8786,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
   win.on('enter-full-screen', () => sendWindowStateChanged(true))
   win.on('leave-full-screen', () => sendWindowStateChanged(false))
 
+  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
   loadWindowUrl(
@@ -8717,7 +8829,7 @@ function nextInstanceBounds() {
 }
 
 // Open a new full-chrome instance window. Mirrors createWindow()'s window
-// options (shared chatWindowWebPreferences keeps backgroundThrottling:false so a
+// options (shared chatWindowWebPreferences + streamThrottle registration so a
 // streamed answer never stalls in the background) but is a peer, not the
 // primary: it never overwrites the mainWindow global, doesn't start the backend
 // (the renderer's getConnection() joins the already-running one), and loads the
@@ -8758,6 +8870,7 @@ function createInstanceWindow() {
   win.on('enter-full-screen', () => sendWindowStateChanged(true, win))
   win.on('leave-full-screen', () => sendWindowStateChanged(false, win))
 
+  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
   win.on('closed', () => {
@@ -8768,6 +8881,17 @@ function createInstanceWindow() {
 
   return win
 }
+
+// A macOS-only ambient wake cue. It is deliberately a gateway-less helper
+// window: the active renderer owns voice state and sends only the visual phase.
+const wakeIndicatorController = createWakeIndicatorWindowController({
+  devServer: DEV_SERVER,
+  isMac: IS_MAC,
+  loadWindowUrl,
+  preloadPath: PRELOAD_PATH,
+  rendererIndex: resolveRendererIndex,
+  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
+})
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
 // hosts ONLY the floating mascot. Shift-clicking the in-window pet "pops it out"
@@ -9140,10 +9264,11 @@ function createWindow() {
     // material before the renderer paints the app theme. See createSessionWindow.
     show: false,
     backgroundColor: getWindowBackgroundColor(),
-    // Shared with the secondary session windows (chatWindowWebPreferences) so
-    // both keep `backgroundThrottling: false` — the chat transcript uses a
-    // bounded timer flush that Chromium clamps for blurred windows, stalling
-    // the live answer until refocus. See session-windows.ts.
+    // Shared with the secondary session windows (chatWindowWebPreferences);
+    // stream-aware throttling is applied per-window via streamThrottle so a
+    // live answer keeps painting while the window is blurred or minimized,
+    // without pinning visibilityState to 'visible' at idle. See
+    // session-windows.ts and stream-throttle.ts.
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -9228,6 +9353,7 @@ function createWindow() {
   const createdMainWindow = mainWindow
   mainWindow.on('closed', () => {
     closePetOverlay()
+    wakeIndicatorController.close()
 
     if (mainWindow === createdMainWindow) {
       mainWindow = null
@@ -9236,6 +9362,7 @@ function createWindow() {
     }
   })
 
+  streamThrottle.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
@@ -9427,6 +9554,10 @@ ipcMain.handle('hermes:window:openInstance', async () => {
 
   return { ok: true }
 })
+ipcMain.handle('hermes:wake-indicator:get', () => wakeIndicatorController.getState())
+ipcMain.on('hermes:wake-indicator:set', (_event, state) => {
+  wakeIndicatorController.setState(state)
+})
 
 // --- Text size (zoom) -------------------------------------------------------
 // The settings UI drives the same clamped zoom scale as the Ctrl/Cmd
@@ -9594,9 +9725,41 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   // transient backend errors on a perfectly healthy install, and deleting the
   // marker in that case stranded the app in first-run setup with no way back
   // (#72166). The explicit flag carries the intent instead.
-  rememberLog('[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure')
+  bootstrapRepairAttempt += 1
 
-  bootstrapRepairRequested = true
+  // Probe the live backend process so the guard can distinguish "venv is
+  // genuinely broken" (force reinstall) from "backend is just transiently
+  // stalled under GIL pressure" (#74874 — `event loop stalled` followed by
+  // `ws ready frame send failed`, then renderer keeps reporting dead).
+  const primaryProc = backendConnectionState.getProcess()
+
+  const primaryBackendAlive = Boolean(
+    primaryProc &&
+    (primaryProc as { exitCode?: number | null }).exitCode === null &&
+    (primaryProc as { signalCode?: string | null }).signalCode === null
+  )
+
+  const repairDecision = decideBootstrapRepair({
+    attempt: bootstrapRepairAttempt,
+    maxSoftAttempts: MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS,
+    primaryBackendAlive
+  })
+
+  rememberLog(
+    `[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure ` +
+      `(attempt=${repairDecision.attempt}/${MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS}, ` +
+      `primaryBackendAlive=${primaryBackendAlive}, ` +
+      `hardReinstall=${repairDecision.hardReinstall}): ${repairDecision.reason}`
+  )
+
+  // The guard may decide the install is healthy enough that a restart
+  // (without touching the venv) is the right answer. Translate that into
+  // the existing flag: if the guard said "soft restart", we skip the
+  // "bypass active runtime" path inside startHermes() and fall through
+  // to the normal restart branch, which just kills the current child
+  // and respawns it against the same venv. See #74874 — this is what
+  // breaks the infinite reinstall loop the user hit.
+  bootstrapRepairRequested = repairDecision.hardReinstall
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null
@@ -10173,7 +10336,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   // kind+session can arrive here twice. Collapse it at this single choke point.
   // Return true (not false): a notification for the event IS being shown by the
   // first caller, so the settings "send test" success probe stays honest.
-  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? ''}`)) {
+  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? payload?.tag ?? ''}`)) {
     return true
   }
 
@@ -10350,6 +10513,22 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   return true
 })
 
+// Native save-location picker (profile export etc.) — the write itself happens
+// elsewhere (the backend, for profile archives); this only picks the path.
+ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: options?.title || 'Save',
+    defaultPath: options?.defaultPath ? String(options.defaultPath) : undefined,
+    filters: Array.isArray(options?.filters) ? options.filters : undefined
+  })
+
+  if (result.canceled || !result.filePath) {
+    return null
+  }
+
+  return result.filePath
+})
+
 // Paired reader for the GUI terminal's paste chord: the renderer's
 // navigator.clipboard.readText() throws "Document is not focused" whenever a
 // portaled overlay has focus, and there's no way to route a read through the
@@ -10405,14 +10584,27 @@ ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWat
 // merged picture. Keyed by webContents id so a closed window stops counting.
 const activeWorkByWebContents = new Map<number, ActiveWork>()
 
+// The same merged picture drives background throttling: chat windows run
+// unthrottled while any turn is in flight (streaming must paint while hidden)
+// and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
+const streamThrottle = createStreamThrottle()
+
+function updateStreamThrottleFromActiveWork() {
+  streamThrottle.update(mergeActiveWork(activeWorkByWebContents.values()).count > 0)
+}
+
 ipcMain.on('hermes:active-work', (event, payload) => {
   const id = event.sender.id
 
   if (!activeWorkByWebContents.has(id)) {
-    event.sender.once('destroyed', () => activeWorkByWebContents.delete(id))
+    event.sender.once('destroyed', () => {
+      activeWorkByWebContents.delete(id)
+      updateStreamThrottleFromActiveWork()
+    })
   }
 
   activeWorkByWebContents.set(id, normalizeActiveWork(payload))
+  updateStreamThrottleFromActiveWork()
 })
 
 ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
@@ -11661,6 +11853,17 @@ app.whenReady().then(() => {
   // it without the renderer visiting Settings. A failed registration is logged
   // here and surfaced in Settings via the IPC state (never silent).
   applyQuickEntrySettings(readQuickEntrySettings())
+
+  if (IS_MAC) {
+    const reposition = () => wakeIndicatorController.reposition()
+
+    screen.on('display-added', reposition)
+
+    screen.on('display-metrics-changed', reposition)
+
+    screen.on('display-removed', reposition)
+  }
+
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
@@ -11789,6 +11992,7 @@ app.on('before-quit', event => {
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
+  wakeIndicatorController.close()
 
   // Same for the Quick Entry composer — and release its global accelerator so a
   // quitting Hermes never keeps another app's chord hostage.

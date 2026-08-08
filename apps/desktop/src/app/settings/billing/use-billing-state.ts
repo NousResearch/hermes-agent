@@ -82,8 +82,7 @@ export interface BillingAccountRowView {
  * (the whole plan lapses), so the grid shows no marker for it.
  */
 export type PendingPlanTransition =
-  | { kind: 'cancellation'; when: string }
-  | { kind: 'downgrade'; tierName: string; when: string }
+  { kind: 'cancellation'; when: string } | { kind: 'downgrade'; tierName: string; when: string }
 
 /**
  * The current-plan summary that replaces the old subscription row. Carries EITHER

@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +19,45 @@ class TestKnownPrefixes:
 
 
 
+
+    def test_gitlab_token_prefixes(self):
+        """GitLab token families redact via their literal prefixes.
+
+        Ported from openclaw/openclaw#112954; follow-up invited in #4541.
+        """
+        tokens = [
+            # NOTE: every token is prefix + suffix CONCATENATION so no
+            # contiguous token literal exists in this file — GitHub push
+            # protection blocks realistic GitLab-token-shaped literals.
+            "glpat-" + "Zx9AbCdEfGhIjKlMnOpQ",       # personal access token
+            "gloas-" + "a" * 64,                     # OAuth application secret
+            "gldt-" + "AbCdEfGhIjKlMnOpQrSt",        # deploy token
+            "glrt-" + "t1_AbCdEfGhIjKlMnOpQrSt",     # runner auth token
+            "glrt-" + "A" * 27 + ".01." + "a" * 9,   # routable (dotted) runner token
+            "glrtr-" + "B" * 27 + ".01." + "b" * 9,  # routable runner registration
+            "glcbt-" + "a1B2_AbCdEfGhIjKlMnOpQ",     # CI/CD job token
+            "glptt-" + "c" * 40,                     # pipeline trigger token
+            "glft-" + "AbCdEfGhIjKlMnOp",            # feed token
+            "glimt-" + "AbCdEfGhIjKlMnOpQrStUvWxY",  # incoming mail token
+            "glagent-" + "d" * 50,                   # agent (KAS) token
+            "glsoat-" + "AbCdEfGhIjKlMnOpQrSt",      # service-account token
+            "glffct-" + "AbCdEfGhIjKlMnOpQrSt",      # feature-flags client token
+            "glwt-" + "AbCdEfGhIjKlMnOpQrSt",        # workspace token
+            "GR1348941" + "E" * 20,                  # legacy runner registration
+        ]
+        for token in tokens:
+            result = redact_sensitive_text(f"leaked {token} in output")
+            secret_body = token.split("-", 1)[-1] if "-" in token else token[9:]
+            assert secret_body not in result, f"{token!r} survived redaction: {result!r}"
+
+    def test_gitlab_prefix_requires_word_boundary_and_length(self):
+        """Prose and embedded identifiers must not false-positive."""
+        for benign in [
+            "the glossary explains gitlab tokens",   # no prefix at all
+            "glpat-short",                            # suffix under 10 chars
+            "myglpat-AbCdEfGhIjKlMnOpQrSt",           # embedded — lookbehind blocks
+        ]:
+            assert redact_sensitive_text(benign) == benign
 
     def test_slack_token(self):
         token = "xoxb-" + "0" * 12 + "-" + "a" * 14
@@ -73,6 +112,99 @@ class TestEnvAssignments:
         assert result.startswith("export ")
         assert "SECRET_TOKEN=" in result
         assert "mypassword" not in result
+
+
+class TestBareSecretEnvSuffixes:
+    """Bare *_KEY / *_PASS / *_PW env suffixes mask, incl. lowercase — #77484."""
+
+    def test_upper_suffix_keys_mask(self):
+        for text in ("FAL_KEY=sk-abc123def456", "OPENAI_KEY=sk-abc123def456",
+                     "MYSQL_PASS=ghi789", "DB_PW=jkl012"):
+            result = redact_sensitive_text(text, force=True)
+            assert "=" in result and result.split("=", 1)[1] != text.split("=", 1)[1]
+
+    def test_lowercase_env_name_masks(self):
+        # Opaque value with NO known prefix: only the env-name regex can
+        # catch it — a sk-/ghp_ value would be masked by _PREFIX_RE on old
+        # code too, making this test false-pass (review finding).
+        result = redact_sensitive_text("openai_key=xyzzyplugh1234567890abcd", force=True)
+        assert "xyzzyplugh1234567890abcd" not in result
+
+    def test_prose_words_with_keyword_unchanged(self):
+        # KEYBOARD / PASSAGE embed the bare keyword but are prose, not creds
+        for text in ("KEYBOARD=notsecret", "PASSAGE=notsecret"):
+            result = redact_sensitive_text(text, force=True)
+            assert result == text
+
+    def test_form_body_not_swallowed(self):
+        # A bare `password=`/`token=` in a form body must not be eaten greedily
+        text = "password=mysecret&username=bob&token=opaqueValue"
+        result = redact_sensitive_text(text, force=True)
+        assert "mysecret" not in result
+        assert "opaqueValue" not in result
+        assert "username=bob" in result
+
+
+class TestControlCharSplitTokens:
+    """Tokens split by control/zero-width chars must still mask — #77484."""
+
+    def _assert_split_masked(self, text, tok):
+        # Bare token (no KEY= context). Assert the LONGEST FRAGMENT is gone
+        # from the result: the token is split in the input, so `tok` (whole,
+        # contiguous) is absent from ANY output — even one that leaks every
+        # fragment verbatim (review finding: whole-token assertion is a false
+        # negative; the tail fragment appears contiguously in the leak).
+        result = redact_sensitive_text(text, force=True)
+        longest = max(tok[10:], tok[:10], key=len)
+        assert longest not in result
+
+    def test_newline_split_token_masks(self):
+        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        self._assert_split_masked(f"{tok[:10]}\n{tok[10:]}", tok)
+
+    def test_esc_split_token_masks(self):
+        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        self._assert_split_masked(f"{tok[:10]}\x1b{tok[10:]}", tok)
+
+    def test_zero_width_split_token_masks(self):
+        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        self._assert_split_masked(f"{tok[:10]}\u200b{tok[10:]}", tok)
+
+    def test_complete_token_does_not_swallow_next_line(self):
+        # A COMPLETE token at end-of-line followed by ordinary text must not
+        # be joined across the newline — the ordinary prefix pass masks the
+        # token; joining would swallow the adjacent line (browser
+        # accessibility annotations regressed this way: "button [ref=e3]"
+        # disappeared into the mask).
+        tok = "ghp_" + "F" * 29
+        text = f"text: Token: {tok}\nbutton [ref=e3]: Copy\n"
+        result = redact_sensitive_text(text, force=True)
+        assert "F" * 20 not in result
+        assert "button" in result
+        assert "ref=e3" in result
+
+    def test_selfmatching_head_esc_split_tail_masked(self):
+        # A split where the HEAD fragment alone already matches _PREFIX_RE
+        # (>= 10 body chars) but the tail doesn't: the join must still run
+        # for non-newline controls, or the tail leaks in cleartext. Only
+        # LINE-crossing spans skip the join (see the annotation test).
+        head = "sk-" + "a" * 15
+        tail = "b" * 25
+        result = redact_sensitive_text(head + "\x1b" + tail, force=True)
+        assert tail not in result
+        assert "a" * 12 not in result
+
+    def test_env_dump_lines_not_joined(self):
+        # Control-stripping must not join unrelated env lines into one match
+        env_dump = (
+            "HOME=/home/user\n"
+            "ELEVENLABS_API_KEY=sk_abc123def456ghi789jkl\n"
+            "EXA_API_KEY=exa_XY789abcdef01234\n"
+            "SHELL=/bin/bash\n"
+        )
+        result = redact_sensitive_text(env_dump, force=True)
+        assert "SHELL=/bin/bash" in result
+        assert "HOME=/home/user" in result
 
 
 class TestEnvLookupPreserved:
@@ -506,6 +638,65 @@ class TestLowercaseDottedConfigKeys:
 
 
 
+class TestConfigKeyRedosResistance:
+    """The dotted-key patterns must not backtrack exponentially (ReDoS).
+
+    Before the possessive-quantifier rewrite, a non-matching run of ~40
+    dotted segments took ~30ms and doubled every ~4 segments; 100 segments
+    would effectively hang the redactor (it runs on every log line).
+    """
+
+    def test_long_dotted_run_completes_fast(self):
+        import time
+
+        # 100 dotted segments with no '=' — worst case for the old pattern.
+        text = ".".join(["segment"] * 100) + " end"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text) == text
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_long_dotted_run_with_keyword_completes_fast(self):
+        """Exercise _CFG_DOTTED_RE directly (bypasses the keyword pre-gate).
+
+        The pre-gate skips the regex when no secret keyword is present, so
+        test_long_dotted_run_completes_fast only guards the pre-gate.  This
+        test includes a keyword but no '=' so the regex runs and must still
+        complete quickly thanks to the possessive quantifiers.
+        """
+        import time
+
+        text = ".".join(["segment"] * 100) + ".token end"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text) == text
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_long_dotted_secret_still_redacted(self):
+        # Possessive quantifiers must not change matching behavior.
+        text = ".".join(["seg"] * 50) + ".password=Sup3rS3cret!"
+        result = redact_sensitive_text(text)
+        assert "Sup3rS3cret!" not in result
+        assert ".password=" in result
+
+    def test_yaml_assign_redos_resistance(self):
+        """_YAML_ASSIGN_RE must not backtrack excessively on long inputs."""
+        import time
+
+        # 100 lines of a long dotted key with a secret keyword but no
+        # matching colon-value form — stresses the regex without matching.
+        line = "a." * 50 + "token not_an_assignment"
+        text = "\n".join([line] * 100)
+        t0 = time.perf_counter()
+        redact_sensitive_text(text)
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_yaml_assign_secret_still_redacted(self):
+        # Possessive quantifiers must not change YAML matching behavior.
+        text = "spring.datasource.password: hunter2"
+        result = redact_sensitive_text(text)
+        assert "hunter2" not in result
+        assert "password:" in result
+
+
 class TestXaiToken:
     KEY = "xai-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstu"
 
@@ -579,9 +770,10 @@ class TestTerminalOutputRedaction:
     """is_env_dump_command + redact_terminal_output — issue #43025.
 
     Terminal/process stdout must be redacted on every surface (foreground
-    `terminal` AND background `process(poll/log/wait)`). Env-dump commands get
-    the ENV-assignment pass so opaque tokens (no vendor prefix) are masked;
-    other commands stay on the code_file path to avoid false positives.
+    `terminal` AND background `process(poll/log/wait)`). Env-dump commands
+    and commands that read ``.env`` files get the ENV-assignment pass so
+    opaque tokens (no vendor prefix) are masked; other commands stay on
+    the code_file path to avoid false positives.
     """
 
     def test_is_env_dump_command_detection(self):
@@ -599,6 +791,114 @@ class TestTerminalOutputRedaction:
         assert not is_env_dump_command("")
         assert not is_env_dump_command(None)
 
+    # ── .env file detection (issue #61352 v2) ──
+
+    def test_command_reads_env_file_detection(self):
+        from agent.redact import _command_reads_env_file
+        # Basic detection
+        assert _command_reads_env_file("cat .env")
+        assert _command_reads_env_file("cat .env.local")
+        assert _command_reads_env_file("cat .env.production")
+        assert _command_reads_env_file("cat .envrc")
+        assert _command_reads_env_file("head .env")
+        assert _command_reads_env_file("tail .env")
+        assert _command_reads_env_file("type .env")
+        assert _command_reads_env_file("nl .env")
+        assert _command_reads_env_file("bat .env")
+        # With flags
+        assert _command_reads_env_file("cat -n .env")
+        assert _command_reads_env_file("cat -A .env")
+        # With paths
+        assert _command_reads_env_file("cat ~/.hermes/.env")
+        assert _command_reads_env_file("cat /home/user/project/.env")
+        assert _command_reads_env_file("cat ./config/.env.local")
+        # In a pipeline / sequence
+        assert _command_reads_env_file("cat .env | grep KEY")
+        assert _command_reads_env_file("echo '---' && cat .env")
+        # Windows-style backslash paths
+        assert _command_reads_env_file("cat C:\\Users\\test\\.env")
+        # Quoted paths (plain split leaves the quotes attached)
+        assert _command_reads_env_file('cat ".env"')
+        assert _command_reads_env_file("cat '.env'")
+        # Case-insensitive basename (macOS/Windows filesystems)
+        assert _command_reads_env_file("cat .ENV")
+
+    def test_command_reads_env_file_excludes_templates(self):
+        from agent.redact import _command_reads_env_file
+        # Templates/examples should NOT trigger
+        assert not _command_reads_env_file("cat .env.example")
+        assert not _command_reads_env_file("cat .env.sample")
+        assert not _command_reads_env_file("cat .env.template")
+        assert not _command_reads_env_file("cat .env.dist")
+
+    def test_command_reads_env_file_rejects_non_env_files(self):
+        from agent.redact import _command_reads_env_file
+        assert not _command_reads_env_file("cat config.py")
+        assert not _command_reads_env_file("cat README.md")
+        assert not _command_reads_env_file("cat .envrc.bak")  # .bak not in list
+        assert not _command_reads_env_file("python app.py")
+        assert not _command_reads_env_file("echo .env")  # echo is not a file-read cmd
+        assert not _command_reads_env_file("")
+        assert not _command_reads_env_file(None)
+
+    def test_cat_env_file_masks_opaque_token(self):
+        """cat .env → code_file=False → generic ENV pass redacts opaque keys."""
+        from agent.redact import redact_terminal_output
+        out = (
+            "MISTRAL_API_KEY=abc123opaqueSecretValue\n"
+            "NOUS_API_KEY=xyz789opaqueKey\n"
+            "DEBUG=true\n"
+        )
+        red = redact_terminal_output(out, "cat .env")
+        assert "abc123opaqueSecretValue" not in red
+        assert "xyz789opaqueKey" not in red
+        assert "DEBUG=true" in red  # non-secret key preserved
+
+    def test_cat_env_file_with_flags_masks_opaque_token(self):
+        """cat -n .env → still detected as .env read."""
+        from agent.redact import redact_terminal_output
+        out = "     1\tMISTRAL_API_KEY=abc123opaqueSecretValue\n"
+        red = redact_terminal_output(out, "cat -n .env")
+        assert "abc123opaqueSecretValue" not in red
+
+    def test_cat_env_file_in_pipeline_masks_opaque_token(self):
+        """cat .env | grep KEY → still detected as .env read."""
+        from agent.redact import redact_terminal_output
+        out = "MISTRAL_API_KEY=abc123opaqueSecretValue"
+        red = redact_terminal_output(out, "cat .env | grep MISTRAL")
+        assert "abc123opaqueSecretValue" not in red
+
+    def test_cat_env_example_not_redacted_as_env(self):
+        """cat .env.example → NOT treated as .env read (template file)."""
+        from agent.redact import redact_terminal_output
+        out = "MISTRAL_API_KEY=placeholder_value_here"
+        red = redact_terminal_output(out, "cat .env.example")
+        # Should NOT be redacted by the ENV-assignment pass (code_file=True).
+        # The placeholder value should survive since it has no vendor prefix.
+        assert "placeholder_value_here" in red
+
+    def test_cat_env_local_masks_opaque_token(self):
+        """cat .env.local → detected as .env read."""
+        from agent.redact import redact_terminal_output
+        out = "CUSTOM_API_KEY=opaquecustomkey123456"
+        red = redact_terminal_output(out, "cat .env.local")
+        assert "opaquecustomkey123456" not in red
+
+    def test_cat_env_inline_comment_preserved(self):
+        """Inline comments after env values are preserved (issue #61352 review)."""
+        from agent.redact import redact_terminal_output
+        out = "MISTRAL_API_KEY=abc123secret # used for tests"
+        red = redact_terminal_output(out, "cat .env")
+        assert "abc123secret" not in red
+        assert "MISTRAL_API_KEY=*** # used for tests" in red
+
+    def test_cat_env_export_inline_comment_preserved(self):
+        """export KEY=VALUE # comment — comment preserved."""
+        from agent.redact import redact_terminal_output
+        out = "export MISTRAL_API_KEY=abc123secret # prod key"
+        red = redact_terminal_output(out, "cat .env")
+        assert "abc123secret" not in red
+        assert "export MISTRAL_API_KEY=*** # prod key" in red
 
 
 
@@ -733,3 +1033,21 @@ class TestKeywordWordBoundary:
         assert "hunter2hunter2hunter2hh" not in result
 
 
+class TestMaskSecretControlStripping:
+    """Issue #55319/#55321: mask_secret() must not emit control bytes
+    (newline, NUL, DEL, C1) in the visible head/tail of a masked secret —
+    they corrupt config/status/dump display output."""
+
+    def test_newline_stripped_from_mask(self):
+        # The #55319 probe: a newline inside the preserved head.
+        assert mask_secret("ab\ncd0123456789zzzz") == "abcd...zzzz"
+
+    def test_c1_control_stripped_from_mask(self):
+        assert mask_secret("abcd0123456789zz\x85q") == "abcd...9zzq"
+
+    def test_printable_mask_unchanged(self):
+        assert mask_secret("abcdef0123456789zzzz") == "abcd...zzzz"
+
+    def test_all_control_value_returns_empty_fallback(self):
+        assert mask_secret("\n\x85\u200b") == ""
+        assert mask_secret("\n\x85\u200b", empty="(not set)") == "(not set)"

@@ -1,6 +1,3 @@
-import { useStore } from '@nanostores/react'
-
-import { useSessionView } from '@/app/chat/session-view'
 import {
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -13,21 +10,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import {
-  DEFAULT_REASONING_EFFORT,
-  isThinkingEnabled,
-  REASONING_EFFORTS,
-  resolveReasoningEffort
-} from '@/lib/reasoning-effort'
-import { setModelPreset } from '@/store/model-presets'
-import { notifyError } from '@/store/notifications'
-import {
-  $defaultReasoningEffort,
-  markComposerSelectionManual,
-  setCurrentFastMode,
-  setCurrentReasoningEffort
-} from '@/store/session'
-import { sessionTileDelegate } from '@/store/session-states'
+import { isThinkingEnabled, REASONING_EFFORTS, resolveReasoningEffort } from '@/lib/reasoning-effort'
 
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
 // by the Thinking toggle, not the radio.
@@ -37,9 +20,7 @@ import { sessionTileDelegate } from '@/store/session-states'
  *  - `variant`: a separate `…-fast` sibling model selected via the model field.
  */
 export type FastControl =
-  | { kind: 'none' }
-  | { kind: 'param'; on: boolean }
-  | { kind: 'variant'; baseId: string; fastId: string; on: boolean }
+  { kind: 'none' } | { kind: 'param'; on: boolean } | { kind: 'variant'; baseId: string; fastId: string; on: boolean }
 
 /** Resolve the fast mechanism for a model: prefer the speed=fast parameter
  *  when the backend supports it, else fall back to a `…-fast` sibling model. */
@@ -78,6 +59,9 @@ export function resolveFastControl(
 }
 
 interface ModelEditSubmenuProps {
+  /** The profile's configured default effort — what an unset row inherits.
+   *  Passed in (not read from a store) so this submenu stays pure. */
+  defaultEffort: string
   /** This row's effective reasoning effort (live for the active model, else its
    *  preset) — the submenu shows and edits from this, never the raw session. */
   effort: string
@@ -85,15 +69,19 @@ interface ModelEditSubmenuProps {
   fastControl: FastControl
   /** Whether this row's model is the active one. */
   isActive: boolean
-  /** This row's model id — edits persist as its global preset. */
+  /** This row's model id. */
   model: string
   /** Switch to a specific model id (used to swap base ⇄ -fast variant). */
-  onSelectModel: (model: string) => Promise<boolean> | void
-  /** This row's provider slug — edits persist as its global preset. */
+  onSelectModel: (model: string) => Promise<boolean | void> | void
+  /** Report an option change. This submenu is PURE: it never writes to a
+   *  session, a preset store, or the gateway itself — the owning surface's
+   *  controller decides what an edit means. That's what lets the same submenu
+   *  drive a live chat session and a detached per-task override. */
+  onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
+  /** This row's provider slug. */
   provider: string
   /** Whether this model supports reasoning effort. */
   reasoning: boolean
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
 export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
@@ -110,72 +98,26 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
 }
 
 function ModelEditSubmenuBody({
+  defaultEffort,
   effort,
   fastControl,
   isActive,
-  model,
   onSelectModel,
-  provider,
-  reasoning,
-  requestGateway
+  onSetOptions,
+  reasoning
 }: ModelEditSubmenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelOptions
-  const view = useSessionView()
-  const activeSessionId = useStore(view.$runtimeId)
-  const touchesPrimary = view.kind === 'primary'
 
-  const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
   const effortValue = resolveReasoningEffort(effort, defaultEffort)
   const thinkingOn = isThinkingEnabled(effort, defaultEffort)
 
-  // Editing always records the model's global preset (keyed by provider::model,
-  // not per-surface — a tile edit re-applies to that model everywhere); the
-  // active model also gets it pushed onto its OWN session (primary → globals,
-  // tile → its slice). Non-active edits stay preset-only — no model switch.
-  const patchReasoning = async (next: string) => {
-    setModelPreset(provider, model, { effort: next })
-
-    if (!isActive) {
-      return
-    }
-
-    if (touchesPrimary) {
-      markComposerSelectionManual()
-      setCurrentReasoningEffort(next)
-    } else if (activeSessionId) {
-      sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, reasoningEffort: next }))
-    }
-
-    // Preset-only without a session: `isActive` holds for the global/default
-    // row pre-session, and the gateway's `config.set` falls back to global
-    // config when none matches — so don't reach it (preset + optimistic store
-    // are the whole effect). Same guard in applyModelPreset / toggleFast.
-    if (!activeSessionId) {
-      return
-    }
-
-    try {
-      await requestGateway('config.set', { key: 'reasoning', session_id: activeSessionId, value: next })
-    } catch (err) {
-      if (touchesPrimary) {
-        setCurrentReasoningEffort(effort)
-      } else if (activeSessionId) {
-        sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, reasoningEffort: effort }))
-      }
-
-      setModelPreset(provider, model, { effort })
-      notifyError(err, copy.updateFailed)
-    }
-  }
-
-  const toggleFast = (enabled: boolean) => {
+  const setFast = (enabled: boolean) => {
     if (fastControl.kind === 'variant') {
-      // Fast is a separate model id. Record the choice on the base model's
-      // preset (selectFamily picks the `-fast` sibling later when set), and
-      // only swap models now if this is the active row — inactive edits must
-      // stay preset-only, same as the param path below.
-      setModelPreset(provider, fastControl.baseId, { fast: enabled })
+      // Fast is a separate model id. Report the choice so the controller can
+      // record it against the base model, and only swap models now if this is
+      // the active row — inactive edits stay preference-only.
+      onSetOptions({ fast: enabled })
 
       if (isActive) {
         void onSelectModel(enabled ? fastControl.fastId : fastControl.baseId)
@@ -185,41 +127,7 @@ function ModelEditSubmenuBody({
     }
 
     if (fastControl.kind === 'param') {
-      setModelPreset(provider, model, { fast: enabled })
-
-      if (!isActive) {
-        return
-      }
-
-      if (touchesPrimary) {
-        markComposerSelectionManual()
-        setCurrentFastMode(enabled)
-      } else if (activeSessionId) {
-        sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, fast: enabled }))
-      }
-
-      // Preset-only without a session (see patchReasoning).
-      if (!activeSessionId) {
-        return
-      }
-      void (async () => {
-        try {
-          await requestGateway('config.set', {
-            key: 'fast',
-            session_id: activeSessionId,
-            value: enabled ? 'fast' : 'normal'
-          })
-        } catch (err) {
-          if (touchesPrimary) {
-            setCurrentFastMode(!enabled)
-          } else if (activeSessionId) {
-            sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, fast: !enabled }))
-          }
-
-          setModelPreset(provider, model, { fast: !enabled })
-          notifyError(err, copy.fastFailed)
-        }
-      })()
+      onSetOptions({ fast: enabled })
     }
   }
 
@@ -237,7 +145,7 @@ function ModelEditSubmenuBody({
           <Switch
             checked={thinkingOn}
             className="ml-auto"
-            onCheckedChange={checked => void patchReasoning(checked ? effortValue || defaultEffort : 'none')}
+            onCheckedChange={checked => onSetOptions({ effort: checked ? effortValue || defaultEffort : 'none' })}
             size="xs"
           />
         </DropdownMenuItem>
@@ -245,14 +153,14 @@ function ModelEditSubmenuBody({
       {hasFast ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {copy.fast}
-          <Switch checked={fastOn} className="ml-auto" onCheckedChange={toggleFast} size="xs" />
+          <Switch checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
         </DropdownMenuItem>
       ) : null}
       {reasoning ? (
         <>
           <DropdownMenuSeparator className="mx-0" />
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
-          <DropdownMenuRadioGroup onValueChange={value => void patchReasoning(value)} value={effortValue}>
+          <DropdownMenuRadioGroup onValueChange={value => onSetOptions({ effort: value })} value={effortValue}>
             {REASONING_EFFORTS.map(value => (
               <DropdownMenuRadioItem
                 className={dropdownMenuRow}

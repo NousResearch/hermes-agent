@@ -151,6 +151,12 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
     for platform, adapter in adapters.items():
         try:
+            list_channels = getattr(adapter, "list_channels", None)
+            if callable(list_channels):
+                platform_channels = await list_channels()
+                if platform_channels is not None:
+                    platforms[platform.value] = _normalize_adapter_channels(platform_channels)
+                    continue
             if platform == Platform.DISCORD:
                 platforms["discord"] = await asyncio.to_thread(_build_discord, adapter)
             elif platform == Platform.SLACK:
@@ -259,6 +265,34 @@ def _slack_api_error_code(error: Exception) -> Optional[str]:
     return None
 
 
+def _normalize_adapter_channels(raw_channels: Any) -> List[Dict[str, Any]]:
+    """Validate and dedupe channel entries returned by an adapter's
+    ``list_channels()`` hook (see ``build_channel_directory``)."""
+    channels: List[Dict[str, Any]] = []
+    seen_ids = set()
+    if not isinstance(raw_channels, list):
+        return channels
+    for raw in raw_channels:
+        if not isinstance(raw, dict):
+            continue
+        channel_id = str(raw.get("id") or "").strip()
+        name = str(raw.get("name") or channel_id).strip()
+        if not channel_id or not name or channel_id in seen_ids:
+            continue
+        entry: Dict[str, Any] = {
+            "id": channel_id,
+            "name": name,
+            "type": str(raw.get("type") or "dm"),
+        }
+        if raw.get("thread_id"):
+            entry["thread_id"] = str(raw.get("thread_id"))
+        if raw.get("guild"):
+            entry["guild"] = str(raw.get("guild"))
+        channels.append(entry)
+        seen_ids.add(channel_id)
+    return channels
+
+
 async def _build_slack(adapter) -> List[Dict[str, Any]]:
     """List Slack channels the bot has joined across all workspaces.
 
@@ -321,49 +355,70 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
             continue
 
     # Merge in DM/group entries discovered from session history.
+    # Thread-qualified IDs are internal routing keys, not Slack API IDs.
+    def slack_lookup_id(entry_id: str) -> str:
+        return entry_id.split(":", 1)[0]
+
     # Build a lookup from API-discovered channels so we can enrich session entries.
     api_name_lookup = {ch["id"]: ch["name"] for ch in channels}
 
     for entry in await asyncio.to_thread(_build_from_sessions, "slack"):
         eid = entry.get("id")
+        if not isinstance(eid, str):
+            continue
         if eid not in seen_ids:
             # If the entry name is still a raw Slack ID (e.g. C0xxx / D0xxx),
-            # try to resolve it from the API lookup first.
+            # try to resolve it from the API lookup using the base conversation ID.
             if entry.get("name", "").startswith(("C0", "D0", "G0")):
-                if eid in api_name_lookup:
-                    entry["name"] = api_name_lookup[eid]
+                base_id = slack_lookup_id(eid)
+                if base_id in api_name_lookup:
+                    entry["name"] = api_name_lookup[base_id]
             channels.append(entry)
             seen_ids.add(eid)
 
     # Resolve remaining raw-ID entries (DMs, private channels not in bot scope)
-    # by calling conversations.info + users.info for each.
+    # by calling conversations.info + users.info once per base conversation,
+    # with all base-ID lookups running concurrently.
     unresolved = [ch for ch in channels if ch.get("name", "").startswith(("C0", "D0", "G0"))]
     if unresolved and team_clients:
         client = next(iter(team_clients.values()))
+        unresolved_by_base = {}
         for entry in unresolved:
+            unresolved_by_base.setdefault(slack_lookup_id(entry["id"]), []).append(entry)
+
+        async def _resolve_base(base_id: str, entries: list) -> None:
             try:
-                resp = await client.conversations_info(channel=entry["id"])
+                resp = await client.conversations_info(channel=base_id)
                 if not resp.get("ok"):
-                    continue
+                    return
                 ch_info = resp.get("channel", {})
+                resolved_name = None
+                resolved_type = None
                 if ch_info.get("is_im"):
                     peer_user = ch_info.get("user", "")
                     if peer_user:
                         user_resp = await client.users_info(user=peer_user)
                         if user_resp.get("ok"):
                             u = user_resp["user"]
-                            entry["name"] = (
+                            resolved_name = (
                                 u.get("profile", {}).get("display_name")
                                 or u.get("real_name")
                                 or u.get("name")
-                                or entry["id"]
                             )
-                            entry["type"] = "dm"
+                            resolved_type = "dm"
                 else:
-                    entry["name"] = ch_info.get("name") or ch_info.get("name_normalized") or entry["id"]
+                    resolved_name = ch_info.get("name") or ch_info.get("name_normalized")
+                if resolved_name:
+                    for entry in entries:
+                        entry["name"] = resolved_name
+                        if resolved_type:
+                            entry["type"] = resolved_type
             except Exception as e:
-                logger.debug("Channel directory: failed to resolve %s: %s", entry["id"], e)
-                continue
+                logger.debug("Channel directory: failed to resolve %s: %s", base_id, e)
+
+        await asyncio.gather(
+            *[_resolve_base(bid, ents) for bid, ents in unresolved_by_base.items()]
+        )
 
     return channels
 
@@ -543,18 +598,32 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     return None
 
 
-def format_directory_for_display() -> str:
-    """Format the channel directory as a human-readable list for the model."""
-    directory = load_directory()
-    platforms = directory.get("platforms", {})
+def format_directory_for_display(platforms: Optional[Dict[str, Any]] = None) -> str:
+    """Format the channel directory as a human-readable list for the model.
 
-    if not any(platforms.values()):
+    ``platforms`` overrides the on-disk directory when provided (used by
+    ``hermes send --list`` to merge in configured-but-undiscovered
+    platforms). Platforms present with an empty channel list are rendered
+    with a "(no channels discovered yet)" hint instead of being hidden —
+    a configured platform is a valid send target even before discovery.
+    """
+    if platforms is None:
+        directory = load_directory()
+        platforms = directory.get("platforms", {})
+
+    if not platforms:
         return "No messaging platforms connected or no channels discovered yet."
 
     lines = ["Available messaging targets:\n"]
 
     for plat_name, channels in sorted(platforms.items()):
         if not channels:
+            lines.append(f"{plat_name.title()}:")
+            lines.append(
+                f"  (no channels discovered yet — send directly with "
+                f"{plat_name}:<chat_id>, or bare '{plat_name}' for the home channel)"
+            )
+            lines.append("")
             continue
 
         # Group Discord channels by guild

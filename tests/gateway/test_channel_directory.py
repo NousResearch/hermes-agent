@@ -7,6 +7,7 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from gateway.config import Platform
 from gateway.channel_directory import (
     build_channel_directory,
     lookup_channel_type,
@@ -69,6 +70,25 @@ class TestBuildChannelDirectoryWrites:
             result = load_directory()
 
         assert result == previous
+
+    def test_uses_adapter_list_channels_when_available(self, tmp_path):
+        class AdapterWithChannels:
+            async def list_channels(self):
+                return [
+                    {"id": "default", "name": "主对话", "type": "dm"},
+                    {"id": "family_1", "name": "达拉崩吧", "type": "group"},
+                    {"id": "", "name": "ignored", "type": "dm"},
+                    {"id": "family_1", "name": "duplicate", "type": "group"},
+                ]
+
+        cache_file = tmp_path / "channel_directory.json"
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: AdapterWithChannels()}))
+
+        assert directory["platforms"]["telegram"] == [
+            {"id": "default", "name": "主对话", "type": "dm"},
+            {"id": "family_1", "name": "达拉崩吧", "type": "group"},
+        ]
 
 
 class TestBuildChannelDirectoryOffload:
@@ -184,6 +204,24 @@ class TestFormatDirectoryForDisplay:
             result = format_directory_for_display()
         assert "No messaging platforms" in result
 
+    def test_platform_with_no_channels_gets_hint(self):
+        """A configured platform with zero discovered channels is shown with
+        a hint instead of being hidden entirely."""
+        result = format_directory_for_display({
+            "simplex": [],
+            "telegram": [{"id": "1", "name": "home", "type": "dm"}],
+        })
+        assert "Simplex:" in result
+        assert "no channels discovered yet" in result
+        assert "telegram:home" in result
+
+    def test_explicit_platforms_override_disk(self, tmp_path):
+        with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "nope.json"):
+            result = format_directory_for_display(
+                {"irc": [{"id": "#chan", "name": "#chan", "type": "channel"}]}
+            )
+        assert "irc:#chan" in result
+
 
 class TestLookupChannelType:
     def _setup(self, tmp_path, platforms):
@@ -277,6 +315,28 @@ class TestBuildSlack:
 
         assert {e["id"] for e in entries} == {"C001", "C002"}
         assert client.users_conversations.await_count == 2
+
+    def test_thread_ids_use_base_conversation_and_dedupe_info_calls(self, tmp_path, monkeypatch):
+        client = _make_slack_client([{"ok": True, "channels": [], "response_metadata": {}}])
+        client.conversations_info = AsyncMock(side_effect=[
+            {"ok": True, "channel": {"name": "engineering"}},
+            {"ok": True, "channel": {"name": "support"}},
+        ])
+        monkeypatch.setattr(
+            "gateway.channel_directory._build_from_sessions",
+            lambda platform: [
+                {"id": "C001:111", "name": "C001:111", "type": "channel"},
+                {"id": "C001:222", "name": "C001:222", "type": "channel"},
+                {"id": "C002:333", "name": "C002:333", "type": "channel"},
+            ],
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
+
+        assert {entry["name"] for entry in entries} == {"engineering", "support"}
+        assert client.conversations_info.await_count == 2
+        assert [call.kwargs["channel"] for call in client.conversations_info.await_args_list] == ["C001", "C002"]
 
 
 class TestChannelAliases:

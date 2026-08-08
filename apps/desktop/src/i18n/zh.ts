@@ -129,6 +129,7 @@ export const zh: Translations = {
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒绝了该 API key (401)。',
+      diskFull: '磁盘已满 — 请腾出一些空间后再试。',
       gatewayAuthFailed: '网关认证失败 — 请检查你的 API_SERVER_KEY。',
       methodNotAllowed: '桌面后端拒绝了该请求 (405 Method Not Allowed)。请尝试重启 Hermes Desktop。',
       microphonePermission: '麦克风权限已被拒绝。',
@@ -246,6 +247,7 @@ export const zh: Translations = {
       'session.focusSearch': '搜索会话',
       'session.togglePin': '固定/取消固定当前会话',
       'workspace.newWorktree': '新建工作树',
+      'workspace.openFolder': '打开文件夹为项目',
       'composer.focus': '聚焦输入框',
       'composer.modelPicker': '打开模型选择器',
       'composer.voice': '开始 / 停止语音对话',
@@ -385,6 +387,10 @@ export const zh: Translations = {
         credits: {
           label: '额度提醒',
           description: '额度访问被暂停或恢复。'
+        },
+        plugin: {
+          label: '插件通知',
+          description: 'Hermes 在后台时，桌面插件发送了通知。'
         }
       },
       test: '发送测试通知',
@@ -429,10 +435,18 @@ export const zh: Translations = {
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      terminalFontTitle: '终端字体',
+      terminalFontDesc:
+        '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',
+      terminalFontPlaceholder: 'MesloLGS NF 或 CSS 字体栈',
+      terminalFontPreview: '字形预览',
+      terminalFontReset: '使用默认字体',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
       backdropTitle: '聊天背景',
       backdropDesc: '对话后方那张淡淡的雕像图片。',
+      reactionsTitle: '消息回应',
+      reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
       embedsTitle: '内嵌预览',
       embedsDesc:
         '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',
@@ -915,6 +929,8 @@ export const zh: Translations = {
       sshHermesPathTitle: 'Hermes 路径（可选）',
       sshHermesPathDesc: '远程 hermes 可执行文件的完整路径。留空 = 自动检测。',
       sshHermesPathPlaceholder: '自动检测',
+      sshRemoteProfileTitle: '远程配置文件（可选）',
+      sshRemoteProfileDesc: '远程主机上的配置文件名称。留空 = 使用 Desktop 配置文件名称。',
       sshTestConnection: '测试 SSH',
       sshConnect: '连接',
       sshButtonsHint: '“保存”将在下次启动时生效，“连接”则立即重新连接。',
@@ -971,7 +987,7 @@ export const zh: Translations = {
       disableServer: name => `禁用 ${name}`,
       serverEnabled: name => `${name} 已启用 — 对新会话生效。`,
       serverDisabled: name => `${name} 已禁用 — 对新会话生效。`,
-      toggleFailed: name => `切换 ${name} 失败`,
+      toggleFailed: (name, enabled) => `${enabled ? '开启' : '关闭'} ${name} 失败`,
       tabServers: '服务器',
       tabCatalog: '目录',
       catalogLoading: '正在加载 MCP 目录…',
@@ -1192,7 +1208,7 @@ export const zh: Translations = {
     visionModelLink: '在 设置 → 模型 中选择视觉模型',
     toolsetsEnabled: (enabled, total) => `已启用 ${enabled}/${total} 个工具集`,
     configureToolset: label => `配置 ${label}`,
-    toggleToolset: label => `切换 ${label} 工具集`,
+    toggleToolset: (label, enabled) => `${enabled ? '开启' : '关闭'} ${label} 工具集`,
     skillsLoadFailed: '技能加载失败',
     toolsetsRefreshFailed: '工具集刷新失败',
     skillEnabled: '技能已启用',
@@ -1340,6 +1356,10 @@ export const zh: Translations = {
     goTo: '前往',
     goToSession: '前往会话',
     branches: '分支',
+    projects: '项目',
+    openFolder: '打开文件夹为项目…',
+    openFolderAt: path => `打开文件夹为项目 — ${path}`,
+    newSessionInProject: project => `在 ${project} 中新建会话`,
     commands: '命令',
     startInBranch: branch => `在 ${branch} 中开始新对话`,
     commandCenter: '命令中心',
@@ -1359,7 +1379,7 @@ export const zh: Translations = {
       installed: '已安装',
       generatedTag: '生成',
       adoptFailed: '无法领养该宠物。',
-      toggleFailed: '无法切换宠物显示。',
+      toggleFailed: enabled => `无法${enabled ? '开启' : '关闭'}宠物显示。`,
       noneAvailable: '暂无可用宠物——请在下方选择一个安装。'
     },
     generatePet: {
@@ -1686,7 +1706,7 @@ export const zh: Translations = {
     deleteDescPrefix: '这将永久移除 ',
     deleteDescSuffix: '。此操作无法撤销。',
     deleteFailed: (name: string) => `删除“${name}”失败`,
-    toggleFailed: (name: string) => `更新“${name}”失败`,
+    toggleFailed: (name, enabled) => `${enabled ? '开启' : '关闭'}“${name}”失败`,
     newSubscription: '新建订阅',
     restarting: '网关正在重启…',
     restartNeeded: 'Webhook 已启用，但网关仍需重启后接收器才能上线。',
@@ -1737,6 +1757,12 @@ export const zh: Translations = {
     search: '搜索配置档案…',
     loading: '正在加载配置档案…',
     newProfile: '新建配置档案',
+    importProfile: '导入配置档案…',
+    exportProfile: '导出配置档案…',
+    imported: '配置档案已导入',
+    exported: '配置档案已导出',
+    failedImport: '导入配置档案失败',
+    failedExport: '导出配置档案失败',
     allProfiles: '全部配置档案',
     showAllProfiles: '显示全部配置档案',
     switchToProfile: name => `切换到 ${name}`,
@@ -2050,6 +2076,11 @@ export const zh: Translations = {
       menuAddFolder: '添加文件夹',
       menuSetActive: '设为活动',
       menuDelete: '删除',
+      moveToProject: '移动到项目',
+      movedTo: name => `已移动到 ${name}`,
+      moveFailed: '无法移动会话',
+      moveNoFolder: '该项目没有可移入的文件夹',
+      moveNoProjects: '没有其他项目',
       reveal: '在文件夹中显示',
       copyPath: '复制路径',
       removeFromSidebar: '从侧边栏移除',
@@ -2064,6 +2095,9 @@ export const zh: Translations = {
       baseBranchPlaceholder: '搜索分支…',
       baseBranchNone: '未找到分支',
       startWorkFailed: '无法创建工作树',
+      worktreeProjectLabel: '项目',
+      worktreeProjectPlaceholder: '搜索项目…',
+      worktreeProjectNone: '没有包含文件夹的项目',
       convertBranch: '转换分支…',
       convertBranchTitle: '转换分支',
       convertBranchDesc: '打开已检出的分支，或为可用分支创建工作树。',
@@ -2072,6 +2106,7 @@ export const zh: Translations = {
       branchOpenExisting: '打开',
       branchSwitchHome: '切回主检出',
       branchCreateWorktree: '新工作树',
+      branchTrackRemote: '跟踪远程',
       branchesLoading: '正在加载分支…',
       noBranches: '未找到分支',
       removeWorktree: '移除工作树',
@@ -2082,7 +2117,7 @@ export const zh: Translations = {
       forceRemove: '强制移除',
       enter: label => `打开 ${label}`,
       reorder: label => `重新排序 ${label}`,
-      toggle: label => `展开/收起 ${label} 会话`,
+      toggle: (label, open) => `${open ? '展开' : '收起'} ${label} 会话`,
       back: '全部项目'
     },
     newSessionIn: label => `在 ${label} 中新建会话`,
@@ -2157,6 +2192,7 @@ export const zh: Translations = {
       '调整或继续'
     ],
     startVoice: '开始语音对话',
+    openDirective: '打开',
     queueMessage: '排队消息',
     steer: '引导当前运行',
     stop: '停止',
@@ -2726,10 +2762,6 @@ export const zh: Translations = {
 
   preview: {
     tab: '预览',
-    closeTab: label => `关闭 ${label}`,
-    closeOthers: '关闭其他',
-    closeToRight: '关闭右侧',
-    closeAll: '全部关闭',
     closePane: '关闭预览面板',
     loading: '正在加载预览',
     unavailable: '预览不可用',
@@ -2824,21 +2856,16 @@ export const zh: Translations = {
     closeRunningTitle: '关闭正在运行的标签？',
     closeRunningBody: '此对话仍在运行（或正在等待你的输入）。关闭标签只会隐藏它——会话将保留进度，可从侧边栏重新打开。',
     closeRunningConfirm: '关闭标签',
+    reload: '重新加载',
     closeOthers: '关闭其他',
     closeToRight: '关闭右侧',
     closeAll: '全部关闭',
     newSessionTab: '新建会话标签',
-    split: dir => `向${dir}拆分`,
-    move: dir => `向${dir}移动`,
-    dirUp: '上',
-    dirDown: '下',
-    dirLeft: '左',
-    dirRight: '右',
     pluginDisabled: pluginId => `插件“${pluginId}”已禁用`,
     pluginDisabledBody: '在 设置 → 插件 中重新启用即可恢复面板。',
     missingPane: paneId => `缺少面板：${paneId}`,
     editTitle: '布局',
-    editHint: '选择一个布局，或在区域之间拖动面板。右键点击区域可拆分。',
+    editHint: '选择一个布局，或在区域之间拖动面板。',
     reset: '重置',
     templates: '模板',
     custom: '自定义',
@@ -2859,7 +2886,8 @@ export const zh: Translations = {
     layoutNamePlaceholder: fallback => `布局名称（${fallback}）`,
     saveApply: '保存并应用',
     notExpressible: '此排列互相咬合（风车形）——暂无法表示为嵌套拆分',
-    zoneCount: count => `${count} 个区域`
+    zoneCount: count => `${count} 个区域`,
+    tabCount: count => `${count} 个标签页`
   },
 
   assistant: {
@@ -2879,7 +2907,10 @@ export const zh: Translations = {
       refresh: '刷新',
       moreActions: '更多操作',
       branchNewChat: '在新对话中分支',
+      react: '回应',
       dismissError: '关闭错误',
+      filesChanged: count => `${count} 个文件已更改`,
+      reviewChanges: '查看',
       readAloudFailed: '朗读失败',
       preparingAudio: '正在准备音频...',
       stopReading: '停止朗读',
@@ -3108,7 +3139,7 @@ export const zh: Translations = {
     sidebar: {
       title: '侧边栏',
       description: '显示移动端侧边栏。',
-      toggle: '切换侧边栏'
+      toggle: open => `${open ? '显示' : '隐藏'}侧边栏`
     }
   }
 }

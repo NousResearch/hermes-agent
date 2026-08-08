@@ -1352,6 +1352,151 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     assert entries[0].base_url == "https://api.githubcopilot.com"
 
 
+def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
+    """A suppressed copilot source must NOT run the token exchange.
+
+    Regression test: the suppression gate used to sit AFTER
+    ``get_copilot_api_token`` (which retries 3x with backoff, ~13s worst
+    case), so every pool load — model picker open, /model, agent startup —
+    burned the full exchange dead time for a source the user had already
+    removed with ``hermes auth remove copilot gh_cli``.  The gate must run
+    BEFORE the network call.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {},
+            "suppressed_sources": {"copilot": ["gh_cli"]},
+        },
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_abc123", "gh auth token"),
+    )
+
+    exchange_called = False
+
+    def _boom(token):
+        nonlocal exchange_called
+        exchange_called = True
+        raise AssertionError("exchange must not run for a suppressed source")
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        _boom,
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert not exchange_called
+    assert not pool.has_credentials()
+    assert pool.entries() == []
+
+
+def test_load_pool_respects_env_var_copilot_suppression(tmp_path, monkeypatch):
+    """Suppressing env:GH_TOKEN must gate a GH_TOKEN-sourced token.
+
+    Regression test for the source_name classification: a substring match
+    (``"gh" in source.lower()``) classified GH_TOKEN/GITHUB_TOKEN as gh_cli,
+    so a user's env-var-specific suppression was silently bypassed and the
+    exchange ran anyway.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {},
+            "suppressed_sources": {"copilot": ["env:GH_TOKEN"]},
+        },
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_env", "GH_TOKEN"),
+    )
+
+    exchange_called = False
+
+    def _boom(token):
+        nonlocal exchange_called
+        exchange_called = True
+        raise AssertionError("exchange must not run for a suppressed env source")
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        _boom,
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert not exchange_called
+    assert pool.entries() == []
+
+
+def test_load_pool_gh_cli_suppression_does_not_block_env_tokens(tmp_path, monkeypatch):
+    """Suppressing gh_cli must NOT swallow an env-var-sourced token.
+
+    The inverse of the substring bug: GH_TOKEN misclassified as gh_cli meant
+    suppressing the CLI path also silently dropped env tokens.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {},
+            "suppressed_sources": {"copilot": ["gh_cli"]},
+        },
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_env", "GH_TOKEN"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        lambda token: ("capi_exchanged_token", None),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert [e.source for e in pool.entries()] == ["env:GH_TOKEN"]
+
+
+def test_load_pool_skips_resolve_when_all_copilot_sources_suppressed(tmp_path, monkeypatch):
+    """With every copilot source suppressed, resolve_copilot_token (which
+    shells out to ``gh auth token``) must not run at all."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from hermes_cli.copilot_auth import COPILOT_ENV_VARS
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {},
+            "suppressed_sources": {
+                "copilot": ["gh_cli"] + [f"env:{v}" for v in COPILOT_ENV_VARS],
+            },
+        },
+    )
+
+    def _boom():
+        raise AssertionError("resolve_copilot_token must not run when all sources are suppressed")
+
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", _boom)
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert pool.entries() == []
+
+
 
 
 def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
@@ -1508,23 +1653,6 @@ class TestLeastUsedStrategy:
 
 
 # ── OpenAI Codex OAuth cross-process sync tests ────────────────────────────
-
-def _codex_auth_store(access: str, refresh: str) -> dict:
-    return {
-        "version": 1,
-        "active_provider": "openai-codex",
-        "providers": {
-            "openai-codex": {
-                "auth_mode": "chatgpt",
-                "tokens": {
-                    "access_token": access,
-                    "refresh_token": refresh,
-                    "id_token": "id-" + access,
-                },
-                "last_refresh": "2026-04-28T00:00:00Z",
-            }
-        },
-    }
 
 
 

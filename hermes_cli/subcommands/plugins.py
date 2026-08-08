@@ -14,7 +14,10 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_parser = subparsers.add_parser(
         "plugins",
         help="Manage plugins — install, update, remove, list",
-        description="Install plugins from Git repositories, update, remove, or list them.",
+        description=(
+            "Install, update, remove, or list native Hermes plugins and "
+            "portable Agent Plugins v1 packages. Portable packages install disabled."
+        ),
     )
     plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
 

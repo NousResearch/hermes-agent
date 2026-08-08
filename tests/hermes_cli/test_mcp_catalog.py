@@ -143,6 +143,41 @@ class TestManifestParsing:
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
 
+    def test_http_api_key_builds_bearer_headers_template(self, catalog_dir):
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/sse"},
+            auth={
+                "type": "api_key",
+                "env": [{"name": "MCP_DEMO_API_KEY", "prompt": "key", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        cfg = _build_server_config(_entry("demo"), None)
+        assert cfg["url"] == "https://mcp.example.com/sse"
+        assert cfg["headers"] == {"Authorization": "Bearer ${MCP_DEMO_API_KEY}"}
+
+    def test_http_api_key_requires_matching_env_declaration(self, catalog_dir):
+        """http+api_key manifests must declare the env key the header references.
+
+        install_entry only persists auth.env-declared vars; a manifest naming
+        its key e.g. N8N_API_KEY would install cleanly but send a literal
+        ${MCP_DEMO_API_KEY} placeholder at connect time (silent 401).
+        """
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/sse"},
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_API_KEY", "prompt": "key", "secret": True}],
+            },
+        )
+        path = _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="MCP_DEMO_API_KEY"):
+            _parse_manifest(path)
+
 
 
 
@@ -192,6 +227,36 @@ class TestInstall:
 
         assert get_env_value("DEMO_KEY") == "secret-val"
         assert "demo" in load_config()["mcp_servers"]
+
+    def test_install_http_api_key_writes_bearer_headers(self, catalog_dir, monkeypatch):
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/sse"},
+            auth={
+                "type": "api_key",
+                "env": [{"name": "MCP_DEMO_API_KEY", "prompt": "key", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val")
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://mcp.example.com/sse"
+        assert server["headers"] == {"Authorization": "Bearer secret-val"}
+        # The raw file must carry the ${...} template, never the secret —
+        # load_config resolves it; config.yaml itself stays secret-free.
+        from hermes_cli.config import get_config_path
+
+        raw = get_config_path().read_text()
+        assert "${MCP_DEMO_API_KEY}" in raw
+        assert "secret-val" not in raw
 
 
 

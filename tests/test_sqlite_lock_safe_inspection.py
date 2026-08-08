@@ -162,6 +162,44 @@ def test_tracking_registry_does_not_leak_across_close_paths(tmp_path, clean_regi
     assert not has_live_connection(db)
 
 
+def test_failed_close_keeps_connection_tracked(tmp_path, clean_registry):
+    """A raising close must not release the registry (#75629).
+
+    Untracking before ``super().close()`` leaves the descriptor open while
+    ``has_live_connection`` reports false, so the byte-probe guard permits
+    ``open``/``close`` on a live database — cancelling POSIX advisory locks.
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    class ControllableConnection(sqlite3.Connection):
+        def close(self):
+            if getattr(self, "_hermes_fail_close", False):
+                raise sqlite3.ProgrammingError(
+                    "SQLite objects created in a thread can only be used in "
+                    "that same thread"
+                )
+            return super().close()
+
+    db = tmp_path / "state.db"
+    _make_db(db, "WAL")
+
+    conn = connect_tracked(db, factory=ControllableConnection)
+    assert has_live_connection(db)
+    assert read_header_bytes_preopen(db, length=16) is None
+
+    conn._hermes_fail_close = True
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.close()
+
+    assert has_live_connection(db), "failed close must leave the registry entry"
+    assert read_header_bytes_preopen(db, length=16) is None
+
+    conn._hermes_fail_close = False
+    conn.close()
+    assert not has_live_connection(db)
+    assert read_header_bytes_preopen(db, length=16) is not None
+
+
 def test_probe_and_connect_do_not_race(tmp_path, clean_registry, monkeypatch):
     """The check and the raw read must be atomic w.r.t. connection lifecycle.
 

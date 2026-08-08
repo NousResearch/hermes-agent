@@ -83,6 +83,17 @@ class TestChromeDebugLaunch:
         assert candidates == [brave, edge]
 
 
+    def test_wsl_install_candidates_keep_posix_separators_on_nt_host(self):
+        expected = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+
+        with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == expected):
+            candidates = get_chrome_debug_candidates("Linux")
+
+        assert candidates == [expected]
+        assert "\\" not in candidates[0]
+
+
     def test_wait_for_browser_debug_ready_or_exit_detects_early_exit(self, monkeypatch):
         class _Proc:
             def __init__(self):

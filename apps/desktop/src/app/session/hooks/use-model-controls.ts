@@ -4,6 +4,7 @@ import { useCallback, useRef } from 'react'
 import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
 import { manualPickRemoved, modelOptionsQueryKey } from '@/lib/model-options'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -206,16 +207,32 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       }
 
       try {
-        await requestGateway('config.set', {
+        const result = await requestGateway<{ deferred?: boolean }>('config.set', {
           session_id: liveSessionId,
           key: 'model',
           value: `${selection.model} --provider ${selection.provider} --session`
         })
 
-        void queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId) })
+        // A pick made DURING a turn is queued by the gateway and applied at the
+        // next turn start (`deferred`). Re-fetching now would answer with the
+        // model still running and repaint the old name over the user's choice —
+        // the switch publishes session.info when it lands, and that is what
+        // re-syncs every surface.
+        if (!result?.deferred) {
+          void queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId) })
+        }
 
         return true
       } catch (err) {
+        // An OLDER gateway refuses a mid-turn switch outright (4009) instead of
+        // deferring it. Don't punish the user for a backend they haven't
+        // updated: keep the pick painted as the composer's selection, which is
+        // what the NEXT turn runs anyway. Current gateways never take this
+        // path — they answer `deferred`.
+        if (isBusySessionModelSwitch(err)) {
+          return true
+        }
+
         if (touchesPrimary) {
           setCurrentModel(prevModel)
           setCurrentProvider(prevProvider)

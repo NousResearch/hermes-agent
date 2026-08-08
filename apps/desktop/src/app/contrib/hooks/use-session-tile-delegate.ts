@@ -6,6 +6,7 @@ import { publishSessionState, setSessionTileDelegate } from '@/store/session-sta
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
+import { withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
 import { resolveSessionProfile } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
 import type { GatewayRequester } from '../types'
@@ -41,6 +42,35 @@ export function useSessionTileDelegate({
   updateSessionState
 }: SessionTileDelegateParams): void {
   useEffect(() => {
+    // A tile's runtime binding can die the same way the foreground's does
+    // (sleep/wake, backend restart). The cache maps stored -> runtime, so walk
+    // it backwards to find the durable id this runtime belongs to.
+    const storedSessionIdForRuntime = (runtimeId: string): null | string => {
+      const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId
+
+      if (cached) {
+        return cached
+      }
+
+      for (const [storedId, mapped] of runtimeIdByStoredSessionIdRef.current) {
+        if (mapped === runtimeId) {
+          return storedId
+        }
+      }
+
+      return null
+    }
+
+    // Repoint the stored -> runtime mapping at the recovered id so subsequent
+    // tile actions use the live binding instead of re-recovering every call.
+    const rebindTileRuntime = (deadRuntimeId: string) => (recoveredId: string) => {
+      const storedId = storedSessionIdForRuntime(deadRuntimeId)
+
+      if (storedId) {
+        runtimeIdByStoredSessionIdRef.current.set(storedId, recoveredId)
+      }
+    }
+
     setSessionTileDelegate({
       archiveSession: async storedSessionId => {
         await archiveSession(storedSessionId)
@@ -55,7 +85,12 @@ export function useSessionTileDelegate({
         await executeSlashCommand(rawCommand, { sessionId })
       },
       interruptSession: async runtimeId => {
-        await requestGateway('session.interrupt', { session_id: runtimeId })
+        await withSessionNotFoundResume(
+          runtimeId,
+          storedSessionIdForRuntime(runtimeId),
+          liveId => requestGateway('session.interrupt', { session_id: liveId }),
+          { requestGateway, onRecovered: rebindTileRuntime(runtimeId) }
+        )
       },
       resumeTile: async storedSessionId => {
         const existing = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
@@ -79,6 +114,7 @@ export function useSessionTileDelegate({
           requestGateway<SessionResumeResponse>('session.resume', {
             session_id: storedSessionId,
             cols: 96,
+            omit_messages: true,
             ...(profile ? { profile } : {})
           })
         ])
@@ -103,7 +139,12 @@ export function useSessionTileDelegate({
         return runtimeId
       },
       submitToSession: async (runtimeId, text) => {
-        await requestGateway('prompt.submit', { session_id: runtimeId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+        await withSessionNotFoundResume(
+          runtimeId,
+          storedSessionIdForRuntime(runtimeId),
+          liveId => requestGateway('prompt.submit', { session_id: liveId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS),
+          { requestGateway, onRecovered: rebindTileRuntime(runtimeId) }
+        )
       },
       updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)
     })

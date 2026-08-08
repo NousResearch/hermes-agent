@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import { getSession, getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -431,6 +432,30 @@ describe('startFreshSessionDraft', () => {
     expect(navigate).not.toHaveBeenCalled()
     expect($currentCwd.get()).toBe('')
     expect($newChatWorkspaceTarget.get()).toBeNull()
+  })
+
+  it('fronts the workspace without closing a terminal that is merely behind a tab', async () => {
+    // Regression: a persisted terminal takeover kept the terminal fronted
+    // after New Session / ⌘N. The fix is to reveal the workspace — NOT to
+    // clear the takeover atom. That atom is the terminal's open/closed state
+    // in every layout: clearing it here closed a terminal sitting in its own
+    // zone (Default / Terminal deck / Quad), and persisted a `false` that left
+    // the Focus tab unable to mount its workspace after a restart. Behind a
+    // tab the terminal is hidden, not closed.
+    const navigate = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    setTerminalTakeover(true)
+    expect($terminalTakeover.get()).toBe(true)
+
+    render(<Harness navigate={navigate} onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    act(() => handle!.startFreshSessionDraft({ preserveRoute: true, workspaceTarget: null }))
+
+    expect(revealTreePane).toHaveBeenCalledWith('workspace')
+    expect($terminalTakeover.get()).toBe(true)
   })
 })
 
@@ -896,7 +921,7 @@ describe('resumeSession failure recovery', () => {
 
     expect(resumeParams).not.toHaveProperty('lazy')
     expect(resumeParams).not.toHaveProperty('eager_build')
-    expect(resumeParams).toMatchObject({ source: 'desktop' })
+    expect(resumeParams).toMatchObject({ source: 'desktop', omit_messages: true })
   })
 
   it('arms the failure latch when resume succeeds with an empty transcript for a non-empty stored session', async () => {
@@ -1431,6 +1456,10 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(methods).toContain('session.activate')
     expect(methods).not.toContain('session.resume')
     expect(getSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.activate',
+      expect.objectContaining({ omit_messages: true, session_id: 'rt-A' })
+    )
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
   })
 

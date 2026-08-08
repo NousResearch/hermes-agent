@@ -13,6 +13,7 @@ import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { middleClickHandlers } from '@/lib/middle-click'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -168,16 +169,11 @@ function SidebarSessionRowImpl({
         )}
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
-          // Middle-click = open in a new tab (browser muscle memory). Swallow
-          // the mousedown so Chromium doesn't enter autoscroll mode.
-          onAuxClick={event => {
-            if (event.button === 1) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              openSession(session.id, () => undefined, 'tab')
-            }
-          }}
+          // Middle-click = open in a new tab (browser muscle memory).
+          {...middleClickHandlers(() => {
+            triggerHaptic('selection')
+            openSession(session.id, () => undefined, 'tab')
+          })}
           onClick={event => {
             const mod = event.metaKey || event.ctrlKey
 
@@ -213,7 +209,6 @@ function SidebarSessionRowImpl({
 
             onResume()
           }}
-          onMouseDown={event => event.button === 1 && event.preventDefault()}
         >
           {reorderable ? (
             <SidebarRowGrab

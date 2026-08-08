@@ -382,6 +382,12 @@ def _(rid, params: dict) -> dict:
         # parent, this spawn otherwise flashes a console (#56747).
         from hermes_cli._subprocess_compat import windows_hide_flags
 
+        try:
+            timeout = int(params.get("timeout", 240) or 240)
+        except (TypeError, ValueError):
+            timeout = 240
+        timeout = max(1, min(timeout, 600))
+
         r = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", *argv],
             capture_output=True,
@@ -390,7 +396,7 @@ def _(rid, params: dict) -> dict:
             # the gateway thread on locale-mismatched Windows. See #53137.
             encoding="utf-8",
             errors="replace",
-            timeout=min(int(params.get("timeout", 240)), 600),
+            timeout=timeout,
             cwd=os.getcwd(),
             # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
             # needs provider credentials. Tier-1 secrets still stripped (#29157).
@@ -1875,7 +1881,13 @@ def _(rid, params: dict) -> dict:
 
 @method("shell.exec")
 def _(rid, params: dict) -> dict:
-    cmd = params.get("command", "")
+    # Present-but-null yields None from get(); a list/int would reach
+    # detect_hardline_command and raise TypeError — the ImportError-only
+    # catch below would not swallow it. Require a real string.
+    raw = params.get("command", "")
+    if not isinstance(raw, str):
+        return _err(rid, 4004, "command must be a string")
+    cmd = raw.strip()
     if not cmd:
         return _err(rid, 4004, "empty command")
     try:

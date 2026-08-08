@@ -1452,6 +1452,16 @@ def execute_code(
         # repo-root modules are available to child scripts.  We also prepend
         # the staging tmpdir so ``from hermes_tools import ...`` resolves even
         # when the subprocess CWD is not tmpdir (project mode).
+        #
+        # Before re-injecting PYTHONPATH, strip any mismatched site-packages
+        # entries that leaked through _scrub_child_env (PYTHONPATH is in
+        # _SAFE_ENV_PREFIXES so it passes the scrub).  The sandbox runs the
+        # SAME Python as Hermes, so same-version Hermes venv entries are
+        # harmless - but cross-version entries (e.g. python3.11 from a
+        # different venv injected by systemd/Electron) would poison the
+        # sandbox's sys.path with ABI-incompatible C extensions (#74817).
+        from tools.environments.local import _strip_mismatched_site_packages
+        _strip_mismatched_site_packages(child_env)
         _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         _existing_pp = child_env.get("PYTHONPATH", "")
         _pp_parts = [tmpdir, _hermes_root]

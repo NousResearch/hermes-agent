@@ -422,7 +422,7 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 | **Data storage** | Hindsight Cloud or local embedded PostgreSQL |
 | **Cost** | Hindsight pricing (cloud) or free (local) |
 
-**Tools:** `hindsight_retain` (store with entity extraction), `hindsight_recall` (multi-strategy search), `hindsight_reflect` (cross-memory synthesis)
+**Tools:** `hindsight_retain` (store with entity extraction), `hindsight_recall` (multi-strategy search, supports optional `types` param), `hindsight_reflect` (cross-memory synthesis), `hindsight_invalidate` (soft-delete/restore memories)
 
 **Setup:**
 ```bash

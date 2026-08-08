@@ -79,8 +79,8 @@ def _make_mock_client():
     client.arecall = AsyncMock(
         return_value=SimpleNamespace(
             results=[
-                SimpleNamespace(text="Memory 1"),
-                SimpleNamespace(text="Memory 2"),
+                SimpleNamespace(id="5e79c849-f3b6-4a1e-b789-123456789abc", text="Memory 1"),
+                SimpleNamespace(id="baee4d5b-84bd-4c3e-9f12-abcdef123456", text="Memory 2"),
             ]
         )
     )
@@ -233,11 +233,11 @@ class TestSchemas:
         assert "content" in RETAIN_SCHEMA["parameters"]["required"]
 
 
-    def test_get_tool_schemas_returns_three(self, provider):
+    def test_get_tool_schemas_returns_four(self, provider):
         schemas = provider.get_tool_schemas()
-        assert len(schemas) == 3
+        assert len(schemas) == 4
         names = {s["name"] for s in schemas}
-        assert names == {"hindsight_retain", "hindsight_recall", "hindsight_reflect"}
+        assert names == {"hindsight_retain", "hindsight_recall", "hindsight_reflect", "hindsight_invalidate"}
 
     def test_context_mode_returns_no_tools(self, provider_with_config):
         p = provider_with_config(memory_mode="context")
@@ -447,6 +447,35 @@ class TestToolHandlers:
         ))
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
+        assert "id=5e79c849-f3b6-4a1e-b789-123456789abc" in result["result"]
+
+    def test_recall_with_types_override(self, provider):
+        """Agent-provided types param overrides the default recall_types."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test", "types": ["world", "experience"]}
+        ))
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["types"] == ["world", "experience"]
+        assert "Memory 1" in result["result"]
+
+    def test_recall_without_types_uses_default(self, provider):
+        """When types is omitted, default observation filter applies."""
+        provider.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        )
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["types"] == ["observation"]
+
+    def test_recall_missing_id(self, provider, monkeypatch):
+        """Results without an id attribute show '?' gracefully."""
+        mock_resp = SimpleNamespace(results=[
+            SimpleNamespace(text="No ID memory"),
+        ])
+        provider._client.arecall = AsyncMock(return_value=mock_resp)
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        ))
+        assert "id=?" in result["result"]
 
 
     def test_reflect_success(self, provider):
@@ -480,10 +509,168 @@ class TestToolHandlers:
             "hindsight_recall", {"query": "test"}
         ))
 
-        assert result["result"] == "1. Recovered memory"
+        assert result["result"] == "1. id=? Recovered memory"
         assert provider._client is second_client
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()
+    def test_invalidate_success(self, provider, monkeypatch):
+        """Invalidate via SDK path successfully."""
+        mock_req_class = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(provider, "_try_import_update_memory_request", lambda: mock_req_class)
+        monkeypatch.setattr(provider, "_run_hindsight_operation", MagicMock())
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"memory_id": "abc-123-def", "reason": "stale info"},
+        ))
+        assert provider._run_hindsight_operation.called
+        assert "invalidated" in result["result"]
+        assert "abc-123-def" in result["result"]
+
+    def test_invalidate_restore(self, provider, monkeypatch):
+        """Restore=true sets state=valid."""
+        mock_req_class = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(provider, "_try_import_update_memory_request", lambda: mock_req_class)
+        monkeypatch.setattr(provider, "_run_hindsight_operation", MagicMock())
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"memory_id": "abc-123", "restore": True},
+        ))
+        assert "restored" in result["result"]
+
+    def test_invalidate_http_fallback(self, provider, monkeypatch):
+        """When SDK < 0.8.4, HTTP fallback is used."""
+        monkeypatch.setattr(provider, "_try_import_update_memory_request", lambda: None)
+        monkeypatch.setattr(provider, "_http_patch_memory", MagicMock())
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"memory_id": "abc-123-def"},
+        ))
+        assert provider._http_patch_memory.called
+        assert "invalidated" in result["result"]
+
+    def test_invalidate_missing_params(self, provider):
+        """Neither query nor memory_id returns error."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate", {}
+        ))
+        assert "error" in result
+
+    def test_invalidate_query_mode(self, provider, monkeypatch):
+        """Query mode searches invalidated memories."""
+        monkeypatch.setattr(
+            provider, "_http_list_invalidated",
+            MagicMock(return_value=[
+                {"id": "abc-123", "text": "old server address"},
+                {"id": "def-456", "text": "deprecated config"},
+            ]),
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate", {"query": "server"}
+        ))
+        assert "abc-123" in result["result"]
+        assert "old server address" in result["result"]
+        assert result["ids"] == ["abc-123", "def-456"]
+
+    def test_invalidate_query_no_results(self, provider, monkeypatch):
+        """Query mode with no matches returns empty message."""
+        monkeypatch.setattr(
+            provider, "_http_list_invalidated", MagicMock(return_value=[])
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate", {"query": "nonexistent"}
+        ))
+        assert "No invalidated memories" in result["result"]
+
+    def test_invalidate_query_and_id_mutually_exclusive(self, provider):
+        """Providing both query and memory_id returns error."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"query": "test", "memory_id": "abc-123"}
+        ))
+        assert "error" in result
+
+    def test_invalidate_error_handling(self, provider, monkeypatch):
+        """API errors are surfaced."""
+        monkeypatch.setattr(provider, "_try_import_update_memory_request", lambda: None)
+        monkeypatch.setattr(
+            provider, "_http_patch_memory",
+            MagicMock(side_effect=RuntimeError("HTTP 422: observation type cannot be invalidated")),
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"memory_id": "obs-123"},
+        ))
+        assert "error" in result
+        assert "422" in result["error"]
+
+
+class TestHttpHelpersWire:
+    """Wire-level tests for _http_list_invalidated and _http_patch_memory."""
+
+    @pytest.fixture()
+    def _http_server(self):
+        """Start a local ThreadingHTTPServer recording requests."""
+        import json as _json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        captured = {"path": "", "method": "", "body": b""}
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                captured["path"] = self.path
+                captured["method"] = "GET"
+                resp = _json.dumps({
+                    "items": [
+                        {"id": "abc-123", "text": "old server address"},
+                    ],
+                    "total": 1, "limit": 50, "offset": 0,
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+            def do_PATCH(self):
+                captured["path"] = self.path
+                captured["method"] = "PATCH"
+                length = int(self.headers.get("Content-Length", 0))
+                captured["body"] = self.rfile.read(length)
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        port = server.server_address[1]
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        yield f"http://127.0.0.1:{port}", captured
+        server.shutdown()
+
+    def test_list_invalidated_endpoint(self, provider, _http_server):
+        """_http_list_invalidated hits the correct endpoint with q= and state=."""
+        base_url, captured = _http_server
+        provider._api_url = base_url
+        provider._timeout = 5
+        result = provider._http_list_invalidated("server")
+        assert result == [{"id": "abc-123", "text": "old server address"}]
+        assert "/memories/list" in captured["path"]
+        assert "q=server" in captured["path"]
+        assert "state=invalidated" in captured["path"]
+        assert captured["method"] == "GET"
+
+    def test_patch_memory_quotes_id(self, provider, _http_server):
+        """_http_patch_memory URL-encodes the memory_id in the path."""
+        base_url, captured = _http_server
+        provider._api_url = base_url
+        provider._timeout = 5
+        provider._http_patch_memory("abc#frag?x=1", "invalidated")
+        assert captured["method"] == "PATCH"
+        assert "abc%23frag%3Fx%3D1" in captured["path"]
+        assert "#" not in captured["path"]
 
 
 # ---------------------------------------------------------------------------

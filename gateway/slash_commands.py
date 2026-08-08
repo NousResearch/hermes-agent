@@ -1741,6 +1741,14 @@ class GatewaySlashCommandsMixin:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
+                elif isinstance(model_cfg, str):
+                    # Flat-string form (``model: gpt-5.5``). The normal gateway
+                    # resolution accepts it (``_resolve_gateway_model``), so the
+                    # picker must too or /model opens with no current model and
+                    # the switch resolves against "". Root-level ``provider:``
+                    # is already folded into ``model.provider`` by
+                    # hermes_cli.config, so there's nothing else to read here.
+                    current_model = model_cfg
                 user_provs = cfg.get("providers")
                 try:
                     from hermes_cli.config import get_compatible_custom_providers

@@ -7908,6 +7908,34 @@ def _session_pending_kind(sid: str) -> str:
     return ""
 
 
+def _session_pending_request(sid: str) -> dict | None:
+    """The outstanding blocking request for *sid*, rebuilt for a reattaching client.
+
+    ``_block`` emits its request exactly once and then parks the turn thread.
+    A client that disconnected before answering lost that frame to the detached
+    drop-transport, and no reaper frees the session (both spare a running or
+    prompt-parked one), so a clarify configured with ``clarify_timeout <= 0``
+    waits forever. Replaying the live request is the only way back.
+
+    Read under ``_prompt_lock`` so the two registries can't be seen torn apart
+    by ``_block``'s teardown.
+    """
+    with _prompt_lock:
+        for rid, (owner_sid, _ev) in _pending.items():
+            if owner_sid != sid:
+                continue
+            event, payload = _pending_prompt_payloads.get(rid, (None, None))
+            if not event:
+                continue
+            return {
+                "kind": str(event).removesuffix(".request"),
+                "event": str(event),
+                "request_id": rid,
+                "payload": dict(payload or {}),
+            }
+    return None
+
+
 def _session_live_status(sid: str, session: dict) -> str:
     if _session_pending_kind(sid):
         return "waiting"
@@ -8127,6 +8155,10 @@ def _live_session_payload(
         payload["inflight"] = inflight
     if queued:
         payload["queued"] = queued
+    # Read outside history_lock: _prompt_lock is only ever taken alone.
+    pending = _session_pending_request(sid)
+    if pending:
+        payload["pending"] = pending
     return payload
 
 

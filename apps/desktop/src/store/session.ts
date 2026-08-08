@@ -6,7 +6,12 @@ import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
-import type { SessionInfo, UsageStats } from '@/types/hermes'
+import type { SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
+
+export interface ReplayedPendingPrompt {
+  pending: NonNullable<SessionResumeResponse['pending']>
+  sessionId: string
+}
 
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
@@ -495,6 +500,12 @@ export const $resumeFailedSessionId = atom<string | null>(null)
 // clears it and resets the retry counter. Null whenever the active route has a
 // healthy, in-flight, or still-auto-retrying resume.
 export const $resumeExhaustedSessionId = atom<string | null>(null)
+// A blocking prompt (clarify / sudo / secret / terminal.read) the backend
+// replayed in a resume/activate payload because the client disconnected before
+// answering it. Parked here by the resume path, which has no access to the
+// gateway-event handler, and drained by the wiring layer so the replayed
+// request lands through the exact same code path a live request takes.
+export const $replayedPendingPrompt = atom<ReplayedPendingPrompt | null>(null)
 export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')

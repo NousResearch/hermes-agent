@@ -104,6 +104,7 @@ import { useMessageStream } from '../session/hooks/use-message-stream'
 import { useModelControls } from '../session/hooks/use-model-controls'
 import { usePreviewRouting } from '../session/hooks/use-preview-routing'
 import { usePromptActions } from '../session/hooks/use-prompt-actions'
+import { useReplayedPendingPrompt } from '../session/hooks/use-replayed-pending-prompt'
 import { useRouteResume } from '../session/hooks/use-route-resume'
 import { useSessionActions } from '../session/hooks/use-session-actions'
 import { useSessionListActions } from '../session/hooks/use-session-list-actions'
@@ -742,6 +743,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshHermesConfig,
     refreshSessions
   })
+
+  // A blocking prompt the backend replayed on reattach goes through the exact
+  // handler the live stream uses, so the reconnect case needs no second
+  // implementation of clarify/sudo/secret/terminal.read.
+  useReplayedPendingPrompt(handleGatewayEventWithPlugins)
 
   useEffect(() => {
     if (gatewayState === 'open') {

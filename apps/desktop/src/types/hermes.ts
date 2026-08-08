@@ -603,6 +603,16 @@ export interface SessionResumeResponse {
   queued?: null | {
     user?: string
   }
+  /** A blocking prompt (clarify / sudo / secret / terminal.read) still
+   *  outstanding when this client reattached. The backend emits each request
+   *  exactly once, so replaying it here is the only way a client that
+   *  disconnected before answering can recover the dialog. */
+  pending?: null | {
+    event: string
+    kind: string
+    payload?: Record<string, unknown>
+    request_id: string
+  }
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]

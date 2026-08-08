@@ -138,10 +138,16 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 # Aligned with skills_guard.py INVISIBLE_CHARS — directional isolates
 # (U+2066-U+2069) and invisible math operators (U+2062-U+2064) are real
 # attack tools.
+#
+# NOTE: U+200D (zero-width joiner) is the exception — it is a legitimate,
+# required part of emoji ZWJ sequences (🏄♂️, 👨‍👩‍👧‍👦, ❤️🔥). Scanners
+# must allow it in that context and only flag bare ZWJs (e.g. glued between
+# ASCII letters to hide text from keyword scanners). See
+# is_zwj_in_emoji_sequence().
 INVISIBLE_CHARS = frozenset({
     '\u200b',  # zero-width space
     '\u200c',  # zero-width non-joiner
-    '\u200d',  # zero-width joiner
+    '\u200d',  # zero-width joiner (allowed inside emoji ZWJ sequences)
     '\u2060',  # word joiner
     '\u2062',  # invisible times
     '\u2063',  # invisible separator
@@ -157,6 +163,63 @@ INVISIBLE_CHARS = frozenset({
     '\u2068',  # first strong isolate
     '\u2069',  # pop directional isolate
 })
+
+# Codepoint ranges that can legitimately flank a U+200D inside an emoji ZWJ
+# sequence (``[emoji][U+FE0F]?[U+200D][emoji][U+FE0F]?...``). Emoji ZWJ
+# sequences are a standard Unicode feature (family emojis, gender-sign
+# emojis, skin-tone combinations) — not an injection vector. These ranges
+# mirror the ones used by the cron tripwire (tools/cronjob_tools.py) so the
+# scanners cannot drift apart.
+_EMOJI_ZWJ_NEIGHBOR_RANGES = (
+    (0x1F000, 0x1FFFF),
+    (0x2600, 0x27BF),
+    (0x2300, 0x23FF),
+    (0x1F1E6, 0x1F1FF),
+    (0x20E3, 0x20E3),
+)
+# Variation selectors that may sit between an emoji base and a U+200D joiner:
+# VS15 (U+FE0E, text presentation) and VS16 (U+FE0F, emoji presentation).
+_EMOJI_VARIATION_SELECTORS = frozenset({0xFE0E, 0xFE0F})
+
+
+def _is_emoji_zwj_neighbor(ch: str) -> bool:
+    """True when *ch* can legitimately flank a U+200D in an emoji sequence."""
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _EMOJI_ZWJ_NEIGHBOR_RANGES)
+
+
+def is_zwj_in_emoji_sequence(content: str, idx: int) -> bool:
+    """True when the U+200D at *idx* is part of an emoji ZWJ sequence.
+
+    Mirrors tools/cronjob_tools.py: a ZWJ only counts as an emoji sequence
+    member when it joins emoji bases on BOTH sides, after skipping optional
+    variation selectors VS15 (U+FE0E) / VS16 (U+FE0F) on either side.
+    ``A\\u200d🏄`` or ``🏄\\u200dA`` have an emoji on only one side and are
+    NOT legitimate sequences — they are still flagged as potential injections.
+
+    Shared with skills_guard.py so both scanners apply the same rule.
+    """
+    left = idx - 1
+    while left >= 0 and ord(content[left]) in _EMOJI_VARIATION_SELECTORS:
+        left -= 1
+    right = idx + 1
+    while right < len(content) and ord(content[right]) in _EMOJI_VARIATION_SELECTORS:
+        right += 1
+    return (
+        left >= 0
+        and right < len(content)
+        and _is_emoji_zwj_neighbor(content[left])
+        and _is_emoji_zwj_neighbor(content[right])
+    )
+
+
+def _zwjs_are_emoji_sequences(content: str) -> bool:
+    """True when EVERY U+200D in *content* sits inside an emoji sequence."""
+    return all(
+        is_zwj_in_emoji_sequence(content, i)
+        for i, ch in enumerate(content)
+        if ch == "\u200d"
+    )
 
 
 # Compiled pattern sets, indexed by scope.  Compiled once at import time;
@@ -234,6 +297,10 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     char_set = set(content)
     invisible_hits = char_set & INVISIBLE_CHARS
     for ch in invisible_hits:
+        if ch == "\u200d" and _zwjs_are_emoji_sequences(content):
+            # Legitimate emoji ZWJ sequence (🏄♂️, 👨‍👩‍👧‍👦) — the joiner is
+            # part of the emoji, not hidden text.
+            continue
         findings.append(f"invisible_unicode_U+{ord(ch):04X}")
 
     # Normalise to NFKC so full-width / compatibility Unicode variants

@@ -1,9 +1,34 @@
 """NVIDIA NIM provider profile."""
 
+import copy
+from typing import Any
+
 from providers import register_provider
 from providers.base import ProviderProfile
 
-nvidia = ProviderProfile(
+
+class NvidiaProviderProfile(ProviderProfile):
+    """NVIDIA NIM accepts a stricter ToolMessage schema than most OpenAI-compatible APIs."""
+
+    def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        needs_sanitize = any(
+            isinstance(msg, dict)
+            and msg.get("role") == "tool"
+            and ("name" in msg or "tool_name" in msg)
+            for msg in messages
+        )
+        if not needs_sanitize:
+            return messages
+
+        sanitized = copy.deepcopy(messages)
+        for msg in sanitized:
+            if isinstance(msg, dict) and msg.get("role") == "tool":
+                msg.pop("name", None)
+                msg.pop("tool_name", None)
+        return sanitized
+
+
+nvidia = NvidiaProviderProfile(
     name="nvidia",
     aliases=("nvidia-nim",),
     env_vars=("NVIDIA_API_KEY",),

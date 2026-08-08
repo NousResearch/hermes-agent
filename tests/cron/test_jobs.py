@@ -216,6 +216,33 @@ class TestJobCRUD:
         job = create_job(prompt="One-shot", schedule="1h")
         assert job["repeat"]["times"] == 1
 
+    def test_string_repeat_forever_is_infinite(self, tmp_cron_dir):
+        job = create_job(prompt="Forever", schedule="every 1h", repeat="forever")
+        assert job["repeat"]["times"] is None
+
+    def test_string_repeat_infinite_synonym(self, tmp_cron_dir):
+        job = create_job(prompt="Infinite", schedule="every 1h", repeat="infinite")
+        assert job["repeat"]["times"] is None
+
+    def test_string_repeat_once_on_one_shot_auto_sets_1(self, tmp_cron_dir):
+        job = create_job(prompt="Once", schedule="1h", repeat="once")
+        assert job["repeat"]["times"] == 1
+
+    def test_numeric_string_repeat_is_coerced(self, tmp_cron_dir):
+        job = create_job(prompt="Three", schedule="every 1h", repeat="3")
+        assert job["repeat"]["times"] == 3
+
+    def test_garbage_string_repeat_is_unset(self, tmp_cron_dir):
+        job = create_job(prompt="Banana", schedule="every 1h", repeat="banana")
+        assert job["repeat"]["times"] is None
+
+    def test_zero_and_negative_repeat_normalize_to_none(self, tmp_cron_dir):
+        assert create_job(prompt="Zero", schedule="every 1h", repeat=0)["repeat"]["times"] is None
+        assert create_job(prompt="Neg", schedule="every 1h", repeat=-3)["repeat"]["times"] is None
+
+    def test_int_repeat_passthrough(self, tmp_cron_dir):
+        assert create_job(prompt="Five", schedule="every 1h", repeat=5)["repeat"]["times"] == 5
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)

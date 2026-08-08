@@ -1,5 +1,6 @@
 """Verify load_transcript returns SQLite messages without any JSONL file."""
 
+from agent.message_sanitization import make_internal_system_marker
 
 from gateway.session import SessionStore
 from gateway.config import GatewayConfig
@@ -14,6 +15,7 @@ def test_load_transcript_returns_db_messages_when_no_jsonl(tmp_path, monkeypatch
     fires — the autouse fixture's HERMES_HOME override doesn't help here.)
     """
     import hermes_state
+
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
 
     config = GatewayConfig()
@@ -21,10 +23,19 @@ def test_load_transcript_returns_db_messages_when_no_jsonl(tmp_path, monkeypatch
 
     sid = "test-session-db-only"
     store._db.create_session(session_id=sid, source="test")
-    store.append_to_transcript(sid, {"role": "user", "content": "hello", "timestamp": 1.0})
-    store.append_to_transcript(sid, {"role": "assistant", "content": "world", "timestamp": 2.0})
+    store.append_to_transcript(
+        sid, {"role": "user", "content": "hello", "timestamp": 1.0}
+    )
+    store.append_to_transcript(
+        sid, {"role": "assistant", "content": "world", "timestamp": 2.0}
+    )
+    store.append_to_transcript(
+        sid, make_internal_system_marker("[System: model changed]")
+    )
 
     history = store.load_transcript(sid)
-    assert len(history) == 2
+    assert len(history) == 3
     assert history[0]["content"] == "hello"
     assert history[1]["content"] == "world"
+    assert history[2]["role"] == "system"
+    assert history[2]["_hermes_internal_system_marker"] is True

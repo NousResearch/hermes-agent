@@ -1748,7 +1748,6 @@ def test_codex_commentary_emits_before_tool_and_withholds_final_answer(monkeypat
 
 
 
-
 def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
     """Debug dumps should show /responses URL when in codex_responses mode."""
     import json

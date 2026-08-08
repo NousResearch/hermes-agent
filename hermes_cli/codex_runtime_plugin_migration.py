@@ -599,6 +599,12 @@ def _build_hermes_tools_mcp_entry() -> dict:
     }
     if env:
         out["env"] = env
+    # Session-id delivery: a NAME, never a value (burn-in rule — a literal id
+    # written at migrate time would be frozen into config.toml and name the
+    # wrong session forever). Codex snapshots the names listed here from its
+    # own process env at MCP spawn, so the shim's own-lineage exclusion
+    # follows the ACTIVE session (#26604 keep_open resolution, option (a)).
+    out["env_vars"] = ["HERMES_SESSION_ID"]
     # Generous timeouts — browser_navigate or delegate_task can take a
     # while; we don't want codex's MCP client to give up too early.
     out["startup_timeout_sec"] = 30.0

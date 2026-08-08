@@ -94,6 +94,11 @@ def resolve_hermes_bin() -> Optional[str]:
     fast-path when it points at a .py file and fall through to either
     ``hermes.exe`` on PATH or the ``sys.executable -m hermes_cli.main``
     fallback.
+
+    POSIX note: the git installer invokes the extensionless Python source
+    launcher with the managed venv interpreter.  Re-executing that file through
+    its ``#!/usr/bin/env python3`` shebang can select the system Python and lose
+    the venv, so Python-shebang launchers must also fall through.
     """
     argv0 = sys.argv[0]
     _is_windows = sys.platform == "win32"
@@ -101,21 +106,34 @@ def resolve_hermes_bin() -> Optional[str]:
     def _is_python_script(p: str) -> bool:
         return p.lower().endswith((".py", ".pyc"))
 
+    def _has_python_shebang(p: str) -> bool:
+        try:
+            with open(p, "rb") as fh:
+                shebang = fh.readline(256).lower()
+        except OSError:
+            return False
+        return shebang.startswith(b"#!") and b"python" in shebang
+
+    def _is_unsafe_python_launcher(p: str) -> bool:
+        if _is_windows:
+            return _is_python_script(p)
+        return _has_python_shebang(p)
+
     # Absolute path to an executable (covers nix store, venv wrappers, etc.)
     if os.path.isabs(argv0) and os.path.isfile(argv0) and os.access(argv0, os.X_OK):
-        if not (_is_windows and _is_python_script(argv0)):
+        if not _is_unsafe_python_launcher(argv0):
             return argv0
 
     # Relative path — resolve against CWD
     if not argv0.startswith("-") and os.path.isfile(argv0):
         abs_path = os.path.abspath(argv0)
         if os.access(abs_path, os.X_OK):
-            if not (_is_windows and _is_python_script(abs_path)):
+            if not _is_unsafe_python_launcher(abs_path):
                 return abs_path
 
     # PATH lookup
     path_bin = shutil.which("hermes")
-    if path_bin:
+    if path_bin and not _is_unsafe_python_launcher(path_bin):
         return path_bin
 
     return None

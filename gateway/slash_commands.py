@@ -5564,7 +5564,12 @@ class GatewaySlashCommandsMixin:
         import shutil
         import subprocess
         from datetime import datetime
-        from hermes_cli.config import is_managed, format_managed_message
+        from hermes_cli.config import (
+            format_docker_update_message,
+            format_managed_message,
+            is_managed,
+        )
+        from gateway.restart import is_container_restart_context
 
         # Block non-messaging platforms (API server, webhooks, ACP)
         platform = event.source.platform
@@ -5586,6 +5591,12 @@ class GatewaySlashCommandsMixin:
         git_dir = project_root / '.git'
 
         if not git_dir.exists():
+            # A containerized deployment has no working tree to pull into, so the
+            # generic "not a git repository" text is a dead end.  The CLI and web
+            # paths already surface container-specific instructions via
+            # format_docker_update_message(); route the gateway there too.
+            if is_container_restart_context():
+                return format_docker_update_message()
             return t("gateway.update.not_git_repo")
 
         hermes_cmd = _resolve_hermes_bin()

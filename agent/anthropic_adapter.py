@@ -2515,8 +2515,15 @@ def _manage_thinking_signatures(
             # Kimi does not enforce thinking signatures — replay as-is
             # (shared cleanup below still strips cache markers + the internal flag).
             pass
-        elif _is_deepseek_anthropic_endpoint(base_url):
+        elif _is_deepseek_anthropic_endpoint(base_url) or (
+            isinstance(model, str) and "deepseek" in model.lower()
+        ):
             # DeepSeek: strip signed, preserve unsigned.
+            # Model-name fallback mirrors the Kimi family check above:
+            # gateways/relays (e.g. ReachAPI) fronting DeepSeek enforce the
+            # same thinking round-trip contract regardless of hostname —
+            # stripping here causes HTTP 400 "The content[].thinking in the
+            # thinking mode must be passed back to the API."
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:

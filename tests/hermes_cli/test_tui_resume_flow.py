@@ -254,6 +254,95 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert env["NODE_ENV"] == "production"
 
 
+def test_main_top_level_oneshot_forwards_skills(monkeypatch, main_mod):
+    captured = {}
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes",
+            "-z",
+            "hello",
+            "--skills",
+            "demo-skill",
+            "--usage-file",
+            "usage.json",
+        ],
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: None),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(
+            register_from_config=lambda _cfg, accept_hooks=False: None
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_exit_after_oneshot", _raise_exit)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+
+    assert exc.value.code == 0
+    assert captured["prompt"] == "hello"
+    assert captured["skills"] == ["demo-skill"]
+    assert captured["usage_file"] == "usage.json"
+
+
+def test_termux_fast_oneshot_forwards_skills(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "-z", "hello", "--skills", "demo-skill"],
+    )
+    monkeypatch.setattr(main_mod, "_prepare_agent_startup", lambda _args: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_exit_after_oneshot", _raise_exit)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._try_termux_fast_cli_launch()
+
+    assert exc.value.code == 0
+    assert captured["prompt"] == "hello"
+    assert captured["skills"] == ["demo-skill"]
+
+
 
 
 def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path):
@@ -282,7 +371,5 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir
     assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
-
-
 
 

@@ -46,6 +46,15 @@ const HUD_COLLAPSE_MS = Math.round(HUD_FADE_MS * 0.66)
  *  so an empty transcript measures a true zero instead of a 12px strip. */
 const HUD_SHEET_OVERHANG_PX = 12
 
+/** Ceiling on the transcript band, which still auto-sizes up from 0. It reads
+ *  over another app, so it is a glance rather than a panel: whichever of these
+ *  is smaller wins, so a tall HUD doesn't turn the band into a second window
+ *  and a short one doesn't get swallowed by it. */
+const HUD_BAND_MAX_PX = 152
+const HUD_BAND_MAX_FRACTION = 0.42
+
+const hudBandMaxPx = () => Math.min(window.innerHeight * HUD_BAND_MAX_FRACTION, HUD_BAND_MAX_PX)
+
 /** Composer on top, transcript always hanging below it — Spotlight's shape,
  *  rather than flipping to follow the screen edge the HUD is parked against. */
 const HUD_THREAD_ALWAYS_BELOW = true
@@ -216,11 +225,7 @@ export function HudShell() {
     }
   }, [])
 
-  // Whether the thread actually overflows its band. Gates the band's no-drag
-  // carve-out (styles.css): a band with nothing to scroll stays part of the
-  // window's drag region, so a short conversation never blocks moving the HUD.
-  const [scrollable, setScrollable] = useState(false)
-  // Whether the sheet reaches the top of the window. Gates the frost, which is
+  // Whether bar + band actually cover the window. Gates the frost, which is
   // native vibrancy and therefore the WINDOW's content view — it fills the whole
   // rectangle and nothing in the page can clip it to the sheet. Whenever the
   // sheet is shorter than the window, the difference is frost over empty space:
@@ -255,33 +260,25 @@ export function HudShell() {
         }
       }
 
-      setScrollable(Boolean(el && el.scrollHeight > el.clientHeight + 4))
-
-      // How tall the band actually needs to be. The transcript is packed to the
-      // bottom, so this is the distance from the topmost visible row down to the
-      // bar — which is 0 on a fresh session, and the glass then collapses behind
-      // the bar instead of painting an empty slab over the whole window.
-      //
-      // Written straight to the element rather than through state: it changes on
-      // every stream flush, and the sheet resizing must not re-render the tree.
+      // How tall the band actually needs to be — the tight bbox of the message
+      // rows only. Measuring to the viewport edge counted the full-window scroll
+      // container (min-height: 100%) as transcript and painted a empty slab almost
+      // the size of the HUD.
       const rows = el?.querySelectorAll<HTMLElement>('[data-slot="aui_thread-content"] > *:not([data-slot])')
-      const box = el?.getBoundingClientRect()
 
-      // Measured from the bar outward, so it flips with the layout: parked at
-      // the bottom the transcript grows up from the bar, parked at the top it
-      // hangs down from it.
-      const span =
-        !rows?.length || !box
-          ? 0
-          : HUD_SHEET_OVERHANG_PX +
-            (root.dataset.hudEdge === 'top'
-              ? rows[rows.length - 1].getBoundingClientRect().bottom - box.top
-              : box.bottom - rows[0].getBoundingClientRect().top)
+      // Zero-height rows are not a transcript. A fresh thread still renders
+      // scaffolding inside the content box (clearance, empty state), so
+      // counting rows alone paid the overhang for nothing and left a sliver of
+      // sheet hanging under the bar with no text in it.
+      const text = !rows?.length
+        ? 0
+        : Math.max(0, rows[rows.length - 1].getBoundingClientRect().bottom - rows[0].getBoundingClientRect().top)
 
-      root.style.setProperty('--hud-band-height', `${Math.max(0, Math.round(span))}px`)
-      // The sheet is capped at the window (`min(100%, …)`), so reaching the
-      // window's height is the same question as covering it.
-      setFilled(span >= window.innerHeight)
+      const contentSpan = text < 1 ? 0 : text + HUD_SHEET_OVERHANG_PX
+
+      const visible = Math.min(hudBandMaxPx(), Math.max(0, Math.round(contentSpan)))
+
+      root.style.setProperty('--hud-band-height', `${visible}px`)
 
       // …and the bar's real height, which is what the thread has to clear.
       // --composer-measured-height would be the obvious source, but it is a
@@ -296,7 +293,7 @@ export function HudShell() {
         root.style.setProperty('--hud-bar-height', `${Math.round(barHeight)}px`)
       }
 
-      void barHeight
+      setFilled(barHeight + visible >= window.innerHeight - 1)
     }
 
     // The viewport mounts async (lazy chat surface); poll briefly until it
@@ -310,9 +307,9 @@ export function HudShell() {
     }
   }, [])
 
-  useHudThreadFocus(rootRef)
   useHudGlass(rootRef, recent || held, filled)
   useHudClickThrough(rootRef)
+  useHudThreadFocus(rootRef)
 
   // Force the HOST layers transparent. index.html's pre-paint script writes an
   // opaque themed background onto <html> as an INLINE style (the anti-white-

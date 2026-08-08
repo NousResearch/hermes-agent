@@ -2266,6 +2266,11 @@ button[data-slot='aui_msg-reactions'] svg {
 /* The scrollback — the chat BAND, straight from the nous-viz2d chat (which is
    the reference for this whole surface): a fixed-height smoked strip hugging
    the input, tinted from the theme, with the text simply sitting in it.
+  /* The band is narrower than the bar, centred under it, so the bar's corner
+     controls sit clear of the sheet's edge instead of on top of it. */
+  --hud-band-inset: 0.5rem;
+  /* Clear space above the composer for the exit chip. */
+  --hud-chip-strip: 1.625rem;
 
      - viz2d: `bg-black/20` at rest → `bg-black/60` on hover / focus-within /
        pending. Same mechanism here, theme-aware: the tint is the theme's own
@@ -2310,7 +2315,9 @@ button[data-slot='aui_msg-reactions'] svg {
      short transcript — the whole window on a fresh thread. Hit-testing honours
      clip-path, so clipping to the sheet bounds the surface the same way #81920
      bounded the frost. */
-  clip-path: inset(calc(100% - min(100%, var(--hud-band-height, 0px))) 0 0 0);
+  clip-path: inset(
+    calc(100% - var(--hud-band-height, 0px)) var(--hud-band-inset) 0 var(--hud-band-inset)
+  );
   background: transparent !important;
   /* Three opacity states: gone at rest, half strength when a turn is recent or
      you've just let go of the composer (there to glance at, not to demand
@@ -2349,9 +2356,9 @@ button[data-slot='aui_msg-reactions'] svg {
      transcript. */
   anchor-name: --hud-band;
   position: absolute;
-  right: 0;
+  right: var(--hud-band-inset);
   bottom: 0;
-  left: 0;
+  left: var(--hud-band-inset);
   z-index: 0;
   pointer-events: none;
   border-radius: 0.75rem 0.75rem 0 0;
@@ -2366,7 +2373,7 @@ button[data-slot='aui_msg-reactions'] svg {
      The height below still tracks the transcript; only the offset animates on
      exit, and it finishes ahead of the fade so the panel has left while the last
      of the text is still going. */
-  height: min(100%, var(--hud-band-height, 0px));
+  height: var(--hud-band-height, 0px);
   translate: 0 var(--hud-exit-shift, 2.5rem);
   opacity: 0;
   transition:
@@ -2397,7 +2404,7 @@ button[data-slot='aui_msg-reactions'] svg {
 
 /* Flipped, the sheet hangs from the bar instead of standing on it. */
 [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
-  top: 0;
+  top: var(--hud-bar-height, var(--composer-fallback-height));
   bottom: auto;
   --hud-exit-shift: -2.5rem;
   border-radius: 0 0 0.75rem 0.75rem;
@@ -2534,7 +2541,17 @@ button[data-slot='aui_msg-reactions'] svg {
 
 [data-hud-shell][data-hud-edge='top'] [data-slot='composer-bounds'] {
   border-radius: 0 0 0.75rem 0.75rem;
-  clip-path: inset(0 0 calc(100% - min(100%, var(--hud-band-height, 0px))) 0);
+  /* Band hangs below the bar — not from the window's top edge. Bottom inset is
+     clamped so an oversized measure cannot invert the clip and paint the whole
+     HUD as one empty slab. */
+  clip-path: inset(
+    var(--hud-bar-height, var(--composer-fallback-height)) var(--hud-band-inset)
+      max(
+        0px,
+        calc(100% - var(--hud-bar-height, var(--composer-fallback-height)) - var(--hud-band-height, 0px))
+      )
+      var(--hud-band-inset)
+  );
 }
 
 /* Flipped, the bar is at the TOP, so the clearance has to be too — the app's
@@ -2788,6 +2805,13 @@ button[data-slot='aui_msg-reactions'] svg {
    a HUD is a small window and a 400px menu cannot fit in it. */
 html:has([data-hud-shell]) [data-slot='dropdown-menu-content'] [class*='max-h-'],
 html:has([data-hud-shell]) [data-slot='popover-content'] [class*='max-h-'] {
+/* The composer's drop target is a full-window dashed sheet sized for the app's
+   chat column. In the HUD it is a white slab hanging under the bar on a fresh
+   thread, and there is nowhere to drop anything into a bar anyway. */
+[data-hud-shell] [data-slot='chat-drop-overlay'] {
+  display: none !important;
+}
+
   max-height: max(5rem, calc(100dvh - 9rem)) !important;
 }
 

@@ -281,6 +281,20 @@ def test_non_file_diagnostic_uri_preserves_opaque_identity(tmp_path: Path):
     assert client.diagnostics_for(lower_uri) == [lower_diagnostic]
 
 
+def test_relative_path_with_colon_uses_open_document_key(tmp_path: Path):
+    relative_path = "notes:2026.ts"
+    diagnostic = {"message": "relative POSIX path diagnostic"}
+    client = _client(tmp_path, "clean")
+    client._handle_publish_diagnostics(
+        {
+            "uri": file_uri(os.path.abspath(relative_path)),
+            "diagnostics": [diagnostic],
+        }
+    )
+
+    assert client.diagnostics_for(relative_path) == [diagnostic]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX URI behavior")
 def test_posix_file_uri_round_trip_preserves_case():
     path = "/tmp/MixedCase/File Name.ts"

@@ -36,8 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.config import get_hermes_home
-from hermes_constants import venv_python_path
+from hermes_constants import get_hermes_home, venv_python_path
 
 logger = logging.getLogger(__name__)
 
@@ -2518,15 +2517,17 @@ def _resolve_pre_update_backup_mode(args) -> str:
     if getattr(args, "backup", False):
         return "full"
 
-    try:
-        from hermes_cli.config import load_config
+    cfg = {}
+    if not _m()._windows_update_import_minimal():
+        try:
+            from hermes_cli.config import load_config
 
-        cfg = load_config()
-    except Exception as exc:
-        logging.getLogger(__name__).debug(
-            "Could not load config for pre-update backup: %s", exc
-        )
-        cfg = {}
+            cfg = load_config()
+        except Exception as exc:
+            logging.getLogger(__name__).debug(
+                "Could not load config for pre-update backup: %s", exc
+            )
+            cfg = {}
 
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
     raw = updates_cfg.get("pre_update_backup", "quick")
@@ -2807,8 +2808,10 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
         return True, ""
 
     # Core web/serve imports plus their newest transitive deps. Import (not
-    # just metadata) — a package can have intact dist-info but a missing
-    # module after an interrupted uninstall/install cycle.
+    # just metadata) because a package can have intact dist-info but a missing
+    # module after an interrupted uninstall/install cycle. PyYAML needs an
+    # attribute-level probe too: a failed Windows replace can leave `yaml` as an
+    # empty namespace package with no __file__, __version__, or SafeDumper.
     check = (
         "import importlib\n"
         "mods = ['fastapi', 'uvicorn', 'pydantic', 'openai', 'yaml']\n"
@@ -2816,6 +2819,16 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
         "for m in mods:\n"
         "    try: importlib.import_module(m)\n"
         "    except Exception as e: missing.append(f'{m}: {e}')\n"
+        "try:\n"
+        "    import yaml\n"
+        "    if not getattr(yaml, '__file__', None):\n"
+        "        missing.append('yaml: missing __file__')\n"
+        "    if not getattr(yaml, '__version__', None):\n"
+        "        missing.append('yaml: missing __version__')\n"
+        "    if not hasattr(yaml, 'SafeDumper'):\n"
+        "        missing.append('yaml: missing SafeDumper')\n"
+        "except Exception as e:\n"
+        "    missing.append(f'yaml: {e}')\n"
         "print('\\n'.join(missing))\n"
     )
     try:
@@ -3065,6 +3078,100 @@ def _leftover_pausable_gateway_pids(
     return pids
 
 
+def _gateway_run_argv_minimal(argv: list[str]) -> bool:
+    """Recognize ``hermes ... gateway run`` without gateway/config imports."""
+    tokens = [str(value).strip("\"'").replace("\\", "/").lower() for value in argv]
+    joined = " ".join(tokens)
+    if not (
+        "hermes_cli.main" in joined
+        or "hermes_cli/main.py" in joined
+        or any(token.rsplit("/", 1)[-1] in {"hermes", "hermes.exe"} for token in tokens)
+    ):
+        return False
+
+    filtered: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in {"-p", "--profile"}:
+            skip_next = True
+            continue
+        if token.startswith("-p=") or token.startswith("--profile="):
+            continue
+        filtered.append(token)
+    for index, token in enumerate(filtered):
+        if token == "gateway":
+            return index + 1 == len(filtered) or filtered[index + 1] == "run"
+    return False
+
+
+def _pause_windows_gateways_for_update_minimal() -> dict | None:
+    """Stop active gateways without importing PyYAML/config-dependent code."""
+    try:
+        import psutil
+    except Exception:
+        return None
+
+    gateways: list[dict] = []
+    for pid, _name, _command in _m()._detect_venv_python_processes():
+        try:
+            process = psutil.Process(int(pid))
+            argv = list(process.cmdline() or [])
+        except Exception:
+            continue
+        if not _gateway_run_argv_minimal(argv):
+            continue
+        try:
+            parent_pid = int(process.ppid())
+        except Exception:
+            parent_pid = 0
+        gateways.append(
+            {"pid": int(pid), "ppid": parent_pid, "argv": argv, "process": process}
+        )
+
+    # A Windows venv may expose both its launcher stub and child interpreter.
+    # Keep the child so one gateway is stopped and later restarted only once.
+    parents = {entry["ppid"] for entry in gateways}
+    gateways = [entry for entry in gateways if entry["pid"] not in parents]
+    if not gateways:
+        return None
+
+    print("→ Stopping Windows gateway process(es) before updating Hermes...")
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    stopped = []
+    for entry in gateways:
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(entry["pid"]), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=windows_hide_flags(),
+            )
+            if result.returncode == 0:
+                stopped.append(entry)
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            try:
+                entry["process"].kill()
+                stopped.append(entry)
+            except Exception:
+                pass
+
+    if stopped:
+        print(f"  → Paused {len(stopped)} Windows gateway process(es)")
+    return {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped_pids": [entry["pid"] for entry in stopped],
+        "unmapped": [
+            {"pid": entry["pid"], "argv": entry["argv"]} for entry in stopped
+        ],
+    } if stopped else None
+
+
 def _pause_windows_gateways_for_update() -> dict | None:
     """Stop running Windows gateways before mutating the checkout or venv.
 
@@ -3075,6 +3182,8 @@ def _pause_windows_gateways_for_update() -> dict | None:
     """
     if not _m()._is_windows():
         return None
+    if _m()._windows_update_import_minimal():
+        return _m()._pause_windows_gateways_for_update_minimal()
 
     try:
         from gateway.status import terminate_pid
@@ -3583,7 +3692,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         or not (sys.stdin.isatty() and sys.stdout.isatty())
     )
     discard_local_changes = False
-    if _non_interactive_update:
+    if _non_interactive_update and not _m()._windows_update_import_minimal():
         try:
             from hermes_cli.config import load_config
 

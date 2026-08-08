@@ -539,7 +539,13 @@ def _validate_name(name: str) -> Optional[str]:
 
 
 def _validate_category(category: Optional[str]) -> Optional[str]:
-    """Validate an optional category name used as a single directory segment."""
+    """Validate an optional category.
+
+    A category may be either a single directory segment (``\"devops\"``) or a
+    slash-separated relative category path (``\"org/team/domain\"``).  Each
+    segment is matched against ``VALID_NAME_RE`` and must be non-empty, with
+    no ``.`` / ``..`` segments and no absolute/UNC prefixes (#71290).
+    """
     if category is None:
         return None
     if not isinstance(category, str):
@@ -548,18 +554,55 @@ def _validate_category(category: Optional[str]) -> Optional[str]:
     category = category.strip()
     if not category:
         return None
-    if "/" in category or "\\" in category:
+
+    # Reject Windows drive prefixes and absolute paths up front, regardless
+    # of separator; nested UNDER root is fine, escapes are not.
+    if os.path.isabs(category):
         return (
-            f"Invalid category '{category}'. Use lowercase letters, numbers, "
-            "hyphens, dots, and underscores. Categories must be a single directory name."
+            f"Invalid category '{category}'. Categories must be a relative "
+            f"path under the skills root."
         )
-    if len(category) > MAX_NAME_LENGTH:
-        return f"Category exceeds {MAX_NAME_LENGTH} characters."
-    if not VALID_NAME_RE.match(category):
+    if len(category) > 1024:
+        # Defensive bound — real path length limit kicks in earlier.
+        return f"Category exceeds maximum length of 1024 characters."
+
+    raw_segments = category.replace("\\", "/").split("/")
+    segments = raw_segments
+
+    if not segments or any(seg == "" for seg in segments):
         return (
-            f"Invalid category '{category}'. Use lowercase letters, numbers, "
-            "hyphens, dots, and underscores. Categories must be a single directory name."
+            f"Invalid category '{category}'. Category segments must not be "
+            f"empty or contain leading/trailing/duplicate separators."
         )
+
+    for seg in segments:
+        if seg in (".", ".."):
+            return (
+                f"Invalid category '{category}'. Categories may not contain "
+                f"'.', '..', or other traversal segments."
+            )
+        if not VALID_NAME_RE.match(seg):
+            return (
+                f"Invalid category '{category}'. Each segment must use "
+                f"lowercase letters, numbers, hyphens, dots, and underscores, "
+                f"and start with a letter or digit."
+            )
+
+    # Final traversal check: build the resolved target under the skills root
+    # and verify it does not escape.  This is the authoritative safety gate —
+    # a malicious category like 'foo/../../bar' passes the per-segment regex
+    # but fails here because the resolved path leaves the root.
+    base = _skills_dir()
+    target = (base / "/".join(segments)).resolve()
+    base_resolved = base.resolve()
+    try:
+        target.relative_to(base_resolved)
+    except ValueError:
+        return (
+            f"Invalid category '{category}'. Resolved path escapes the "
+            f"skills root."
+        )
+
     return None
 
 

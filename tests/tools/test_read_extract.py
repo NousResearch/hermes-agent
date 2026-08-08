@@ -601,9 +601,12 @@ class TestPdfCoverageNote(unittest.TestCase):
     """The coverage footer flags PDFs whose pages yielded no text."""
 
     def _note_with_counts(self, counts):
+        """Drive _pdf_coverage_note with synthetic per-page texts whose
+        stripped lengths equal ``counts``."""
         from tools import read_extract
-        with mock.patch.object(read_extract, "_pdf_page_char_counts",
-                               return_value=counts):
+        texts = None if counts is None else ["x" * n for n in counts]
+        with mock.patch.object(read_extract, "_pdf_page_texts",
+                               return_value=texts):
             return read_extract._pdf_coverage_note("/x/doc.pdf")
 
     def test_mostly_scanned_pdf_warns_with_page_ranges(self):
@@ -611,9 +614,48 @@ class TestPdfCoverageNote(unittest.TestCase):
         note = self._note_with_counts([900, 800, 700, 0, 0, 3, 0, 0, 0])
         self.assertIn("EXTRACTION COVERAGE WARNING", note)
         self.assertIn("6 of 9 pages", note)
-        self.assertIn("4-9", note)          # contiguous empty range
+        self.assertIn("pages 4-9", note)        # contiguous empty gap
+        self.assertIn("(6 pages)", note)        # gap size stated
         self.assertIn("vision_analyze", note)   # recovery path is named
         self.assertIn("ocr-and-documents", note)
+        self.assertIn("do NOT OCR or render everything", note)
+
+    def test_gap_labels_carry_preceding_section_text(self):
+        """Each gap is labeled with the last text page before it (usually
+        a section divider), so the agent can pick which gaps to read."""
+        from tools import read_extract
+        texts = (
+            ["Section One: Bylaws of the Corporation"] + [""] * 5
+            + ["Section Two: Budget details here"] + [""] * 4
+        )
+        with mock.patch.object(read_extract, "_pdf_page_texts",
+                               return_value=texts):
+            note = read_extract._pdf_coverage_note("/x/doc.pdf")
+        self.assertIn(
+            'pages 2-6 (5 pages) — after "Section One: Bylaws of the Corporation" (p1)',
+            note,
+        )
+        self.assertIn(
+            'pages 8-11 (4 pages) — after "Section Two: Budget details here" (p7)',
+            note,
+        )
+
+    def test_gap_map_caps_pathological_alternation(self):
+        """Hundreds of alternating text/scan pages must not balloon the
+        warning — gaps beyond the cap collapse to one summary line."""
+        from tools import read_extract
+        texts = []
+        for i in range(60):  # 60 gaps of 1 page each
+            texts.extend([f"Divider page number {i} with enough text", ""])
+        with mock.patch.object(read_extract, "_pdf_page_texts",
+                               return_value=texts):
+            note = read_extract._pdf_coverage_note("/x/doc.pdf")
+        gap_lines = [ln for ln in note.splitlines() if ln.startswith("  ")]
+        self.assertEqual(
+            len(gap_lines), read_extract.PDF_GAP_MAP_MAX_ENTRIES + 1
+        )
+        self.assertIn("more gaps", gap_lines[-1])
+        self.assertIn("(40 pages)", gap_lines[-1])
 
     def test_full_text_pdf_is_silent(self):
         self.assertEqual(self._note_with_counts([500] * 20), "")

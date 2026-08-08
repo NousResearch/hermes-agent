@@ -30,13 +30,16 @@ Extraction works with remote terminal backends (Docker, Modal, SSH): the file's 
 
 PDF conversion reads the **text layer only**. Pages that are scanned images — common in legal documents, resale packages, signed contracts, faxes — contain no text layer and silently convert to nothing. The telltale signature is section headers with empty bodies.
 
-When a meaningful share of pages yields no text (over 20% of the document, or 10+ pages absolute), `read_file` prepends a warning to the extraction:
+When a meaningful share of pages yields no text (over 20% of the document, or 10+ pages absolute), `read_file` prepends a warning to the extraction. Each unreadable gap is labeled with the last text extracted before it — usually a section divider — so the agent can target only the gaps it actually needs instead of OCRing the whole document:
 
 ```
 [EXTRACTION COVERAGE WARNING: 198 of 311 pages in this PDF yielded no
-text (pages 2-29, 33-35, 42-77, 79-85, 92-213, 224, 226). Those pages
-are likely scanned images (or blank) — their content is MISSING from
-the extracted text below ...]
+text. ... Unreadable gaps, each labeled with the last text extracted
+before it:
+  pages 42-77 (36 pages) — after "Antigua Maintenance Corp Bylaws" (p41)
+  pages 92-213 (122 pages) — after "... Covenants, Codes and Regulations" (p91)
+  page 224 (1 page) — after "... Insurance Declaration Pages" (p223)
+Decide which gaps you actually need — do NOT OCR or render everything. ...]
 ```
 
 The warning lists the exact page ranges and the recovery paths:

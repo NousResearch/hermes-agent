@@ -199,6 +199,12 @@ def _flush_session_db_after_tool_progress(
                 agent._last_persistence_error_cause = "unknown"
         return persisted
     except Exception as exc:
+        from hermes_state import CompressionSessionBusyError as _CSBusy
+        if isinstance(exc, _CSBusy):
+            # Compression-lock timeout — not a disk/permission failure.
+            # Tag the exit reason so the user gets an actionable message
+            # instead of a misleading "disk full" dialog (#77386).
+            agent._persistence_failure_reason = "compression_lock_timeout"
         agent._incremental_persistence_failed = True
         from hermes_state import classify_persistence_error
         agent._last_persistence_error_cause = classify_persistence_error(exc)

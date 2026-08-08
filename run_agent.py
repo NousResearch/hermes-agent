@@ -3709,6 +3709,14 @@ class AIAgent:
                 "Check the state database health (`hermes doctor`), then "
                 "send your message again."
             )
+        if reason == "compression_lock_timeout":
+            return (
+                prefix
+                + "the turn was stopped because a context compression was "
+                "still running when this message arrived. The compression "
+                "has now finished — send your message again and it will "
+                "persist normally."
+            )
         # Unknown/diagnostic-only reasons (e.g. "unknown", guardrail_halt
         # which already surfaces its own message) — don't second-guess.
         return ""

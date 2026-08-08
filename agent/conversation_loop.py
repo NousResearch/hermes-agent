@@ -6511,9 +6511,18 @@ def run_conversation(
                 except Exception as exc:
                     _tool_turn_persisted = False
                     from hermes_state import classify_persistence_error
+                    from hermes_state import CompressionSessionBusyError as _CSBusy
                     agent._last_persistence_error_cause = (
                         classify_persistence_error(exc)
                     )
+                    # Distinguish compression-lock timeout from genuine
+                    # disk/permission errors so the user gets an actionable
+                    # message ("compression still running, resend") instead of
+                    # a misleading "disk full" dialog (#77386).
+                    if isinstance(exc, _CSBusy):
+                        _turn_exit_reason = "compression_lock_timeout"
+                    else:
+                        _turn_exit_reason = "session_persistence_failed"
                     logger.warning(
                         "Incremental tool-call persistence failed before execution "
                         "(session=%s): %s",
@@ -6530,7 +6539,7 @@ def run_conversation(
                     # nothing was recorded, the cause is genuinely unknown.
                     if getattr(agent, "_last_persistence_error_cause", None) is None:
                         agent._last_persistence_error_cause = "unknown"
-                    _turn_exit_reason = "session_persistence_failed"
+                    # _turn_exit_reason was already set in the except block above.
                     final_response = ""
                     failed = True
                     break
@@ -6559,7 +6568,9 @@ def run_conversation(
                     # A tool result could not be made canonical. Do not send
                     # the in-memory result back to the model or project any
                     # later events from this turn.
-                    _turn_exit_reason = "session_persistence_failed"
+                    _turn_exit_reason = getattr(
+                        agent, "_persistence_failure_reason", None
+                    ) or "session_persistence_failed"
                     final_response = ""
                     failed = True
                     break

@@ -127,3 +127,55 @@ def test_a_lost_compression_lease_still_fails_fast(db: SessionDB) -> None:
     assert time.monotonic() - started < 0.5, (
         "a lost lease is permanent and must not spend the retry budget"
     )
+
+
+def test_compression_busy_wait_budget_is_not_capped_by_write_patience(
+    db: SessionDB, monkeypatch
+) -> None:
+    """The compression wait budget must be independent of the write-lock
+    deadline (#77386).
+
+    Previously the compression deadline was ``min(now + busy_wait, write_deadline)``,
+    which clamped the compression wait to the (shorter) write patience even
+    after the budget was raised. Now the compression deadline stands on its
+    own, so a long compression wait survives even when the write patience
+    would have expired first.
+    """
+    # Set a tiny compression budget so the test is fast, but set an even
+    # tinier write patience to prove the compression budget is NOT capped
+    # by it.
+    monkeypatch.setattr(SessionDB, "_COMPRESSION_BUSY_WAIT_S", 1.0)
+    monkeypatch.setattr(SessionDB, "_TRANSCRIPT_WRITE_PATIENCE_S", 0.3)
+    assert db.try_acquire_compression_lock("sess1", "compressor") is True
+
+    started = time.monotonic()
+    with pytest.raises(CompressionSessionBusyError):
+        db.append_message("sess1", role="user", content="waits past write patience")
+    elapsed = time.monotonic() - started
+
+    # If the min() clamp were still in place, the wait would give up at
+    # ~0.3 s (write patience). With the fix, it spends the full 1.0 s
+    # compression budget.
+    assert elapsed >= 0.8, (
+        f"compression wait was cut short at {elapsed:.2f}s — "
+        "the write-deadline min() clamp may still be present"
+    )
+    assert elapsed < 10, "did not give up within a bounded time"
+
+
+def test_compression_busy_wait_default_covers_real_compression_durations(
+    db: SessionDB,
+) -> None:
+    """The default _COMPRESSION_BUSY_WAIT_S must be large enough to cover
+    observed real-world compression durations (129 s, 144 s, 148 s reported
+    in #77386 and confirmed by @ruizanthony on a live Linux/WebUI install),
+    while staying below the 600 s total ceiling.
+    """
+    assert SessionDB._COMPRESSION_BUSY_WAIT_S >= 300.0, (
+        f"_COMPRESSION_BUSY_WAIT_S={SessionDB._COMPRESSION_BUSY_WAIT_S} "
+        "must be >= 300 s to cover real LLM-streamed compression durations"
+    )
+    assert SessionDB._COMPRESSION_BUSY_WAIT_S <= 600.0, (
+        f"_COMPRESSION_BUSY_WAIT_S={SessionDB._COMPRESSION_BUSY_WAIT_S} "
+        "must be <= 600 s (the compression total ceiling)"
+    )

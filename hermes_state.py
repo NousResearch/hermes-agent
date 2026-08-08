@@ -2436,15 +2436,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # wait out the full routine patience under contention. Sub-second budget;
     # a skipped write is retried naturally at the next heartbeat window.
     _ACTIVITY_WRITE_PATIENCE_S = 0.5
-    # A live compression lock gets its own, much shorter budget than the write
-    # lock. Compression publishes in a couple of seconds, so a brief wait saves
-    # the overwhelming majority of concurrent turns (#75083). It deliberately
-    # stays short: the lease is a correctness boundary, not just a busy signal
-    # (see test_compression_lease_blocks_non_owner_but_allows_owner_flush), so
-    # a writer that is still locked out after this budget must still be
+    # A live compression lock gets its own budget, separate from the write
+    # lock patience. LLM-streamed context compression routinely takes 1–3
+    # minutes (the compression path's own ceiling is 600 s), so a 5 s wait
+    # loses every turn that lands mid-compression and surfaces as
+    # session_persistence_failed with a misleading "disk full" dialog (#77386).
+    # 300 s covers all observed compression durations with 2× margin
+    # (field data from @ruizanthony: 129 s, 144 s, 148 s on a live Linux/WebUI
+    # install with a healthy state store — 120 s was still too short) while
+    # staying well below the 600 s total ceiling. The lease is a correctness
+    # boundary, not just a busy signal (see
+    # test_compression_lease_blocks_non_owner_but_allows_owner_flush), so a
+    # writer that is still locked out after this budget must still be
     # refused rather than allowed to land a stale turn in a session whose
     # compression is genuinely long-running or wedged.
-    _COMPRESSION_BUSY_WAIT_S = 5.0
+    _COMPRESSION_BUSY_WAIT_S = 300.0
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     _WRITE_RETRY_SLOW_AFTER_S = 2.0
@@ -3135,20 +3141,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     self._try_incremental_merge_fts()
                 return result
             except SessionCompressionInProgressError:
-                # A live foreign compression lock is transient: the compressor
-                # publishes in a couple of seconds. Without any wait, a steer
-                # that lands mid-compression aborts the user's turn as
-                # session_persistence_failed and sends the operator hunting
-                # disk space that was never the problem (#75083).
+                # A live foreign compression lock is transient. LLM-streamed
+                # context compression routinely takes 1–3 minutes (the
+                # compression path's own ceiling is 600 s), so the wait must
+                # be long enough to cover real compressions — not just the
+                # "couple of seconds" the original #75083 fix assumed (#77386).
                 #
-                # The budget is _COMPRESSION_BUSY_WAIT_S, not the write-lock
-                # patience: the lease is a correctness boundary, so a writer
-                # still locked out after a short wait must be refused rather
-                # than left to land a stale turn once a long-running or wedged
-                # compression finally lets go.
+                # The budget is _COMPRESSION_BUSY_WAIT_S, NOT capped by the
+                # write-lock deadline: the lease is a correctness boundary,
+                # so a writer still locked out after the compression budget
+                # must be refused rather than left to land a stale turn once
+                # a long-running or wedged compression finally lets go.
+                # The compression budget is independent of (and can exceed)
+                # the write-lock patience, so we do NOT min() it against
+                # the write deadline.
                 if compression_deadline is None:
-                    compression_deadline = min(
-                        time.monotonic() + self._COMPRESSION_BUSY_WAIT_S, deadline
+                    compression_deadline = (
+                        time.monotonic() + self._COMPRESSION_BUSY_WAIT_S
                     )
                 if self._sleep_before_write_retry(
                     compression_deadline, self._COMPRESSION_BUSY_WAIT_S

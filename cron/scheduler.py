@@ -109,34 +109,42 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
-    # Provider/API failures are the common noisy path. Keep these short.
-    if "429" in text or "rate limit" in lower or "usage limit" in lower:
-        reason = "rate limit"
-        if "weekly usage limit" in lower:
-            reason = "weekly usage limit"
-        elif "quota" in lower:
-            reason = "quota limit"
-        return (
-            f"⚠️ Cron '{job_name}' failed: provider {reason}. "
-            "Fallback chain was exhausted or unavailable. "
-            "Full details saved in cron output."
-        )
+    # Provider/API failure classification only applies to jobs that actually
+    # talk to a provider. A no_agent job IS its bash script — there is no LLM
+    # call — and its whole stdout becomes this error string, so bare tokens
+    # like 401/403/429/"timeout" in ordinary script output (e.g. a passing
+    # auth-gate test printing "returns 401") would misattribute an unrelated
+    # script failure to a "provider error". Skip these branches for no_agent
+    # jobs and fall through to the generic summary. See #70908.
+    if not job.get("no_agent"):
+        # Provider/API failures are the common noisy path. Keep these short.
+        if "429" in text or "rate limit" in lower or "usage limit" in lower:
+            reason = "rate limit"
+            if "weekly usage limit" in lower:
+                reason = "weekly usage limit"
+            elif "quota" in lower:
+                reason = "quota limit"
+            return (
+                f"⚠️ Cron '{job_name}' failed: provider {reason}. "
+                "Fallback chain was exhausted or unavailable. "
+                "Full details saved in cron output."
+            )
 
-    if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
-        return (
-            f"⚠️ Cron '{job_name}' failed: provider timeout. "
-            "Fallback chain was exhausted or unavailable. "
-            "Full details saved in cron output."
-        )
+        if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+            return (
+                f"⚠️ Cron '{job_name}' failed: provider timeout. "
+                "Fallback chain was exhausted or unavailable. "
+                "Full details saved in cron output."
+            )
 
-    # Match authentication/authorization wording at a word boundary and the
-    # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
-    # not trip a misleading auth message.
-    if re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
-        return (
-            f"⚠️ Cron '{job_name}' failed: provider authentication error. "
-            "Full details saved in cron output."
-        )
+        # Match authentication/authorization wording at a word boundary and the
+        # 401/403 status codes as whole tokens, so "oauth", "4015" and similar
+        # do not trip a misleading auth message.
+        if re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
+            return (
+                f"⚠️ Cron '{job_name}' failed: provider authentication error. "
+                "Full details saved in cron output."
+            )
 
     # Strip common exception wrappers and collapse provider payloads. Bound
     # the input first so a multi-KB provider blob cannot slow the

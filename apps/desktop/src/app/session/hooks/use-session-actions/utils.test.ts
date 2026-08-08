@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
 import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
@@ -1184,6 +1184,33 @@ describe('appendLiveSessionProjection', () => {
       'newest prompt'
     ])
     expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('timestamps every synthetic live projection row with the current time', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-02T12:00:00Z'))
+
+    try {
+      const restored = appendLiveSessionProjection([], {
+        session_id: 'runtime-1',
+        inflight: {
+          user: 'current prompt',
+          corrections: ['mid-turn correction'],
+          assistant: 'partial answer',
+          streaming: true
+        },
+        queued: { user: 'queued prompt' }
+      })
+
+      expect(restored.map(message => [message.id, message.timestamp])).toEqual([
+        ['user-inflight-runtime-1', 1785672000],
+        ['user-inflight-correction-0-runtime-1', 1785672000],
+        ['assistant-stream-runtime-1', 1785672000],
+        ['user-queued-runtime-1', 1785672000]
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not duplicate a persisted inflight user after consecutive canceled user turns', () => {

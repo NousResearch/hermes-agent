@@ -15,7 +15,7 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import type { ClientSessionState } from '@/app/types'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { textPart } from '@/lib/chat-messages'
+import { liveUserCorrectionInsertionIndex, textPart } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
@@ -300,16 +300,14 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
         const message = {
           id: messageId,
           role: 'user' as const,
-          parts: [textPart(text)]
+          parts: [textPart(text)],
+          timestamp: Math.floor(Date.now() / 1000)
         }
 
-        const streamIndex = state.streamId ? state.messages.findIndex(candidate => candidate.id === state.streamId) : -1
-
-        const lastAssistantIndex = state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
-        const insertionIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
+        const insertionIndex = liveUserCorrectionInsertionIndex(state.messages, state.streamId)
 
         const messages =
-          insertionIndex >= 0
+          insertionIndex < state.messages.length
             ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
             : [...state.messages, message]
 

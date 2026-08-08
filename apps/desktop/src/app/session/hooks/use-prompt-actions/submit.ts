@@ -321,7 +321,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         id: optimisticId,
         role: 'user',
         parts: [textPart(bubbleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
-        attachmentRefs
+        attachmentRefs,
+        timestamp: Math.floor(Date.now() / 1000)
       })
 
       const releaseBusy = () => {

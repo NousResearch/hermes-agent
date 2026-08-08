@@ -5,7 +5,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
-import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, liveUserCorrectionInsertionIndex, textPart } from '@/lib/chat-messages'
 import { pathLabel, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { triggerHaptic } from '@/lib/haptics'
@@ -299,22 +299,16 @@ export function usePromptActions({
           const message: ChatMessage = {
             id: messageId,
             role,
-            parts: [textPart(body)]
+            parts: [textPart(body)],
+            timestamp: Math.floor(Date.now() / 1000)
           }
 
-          const streamIndex =
-            options.insertBeforeActiveReply && state.streamId
-              ? state.messages.findIndex(candidate => candidate.id === state.streamId)
-              : -1
-
-          const lastAssistantIndex = options.insertBeforeActiveReply
-            ? state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
-            : -1
-
-          const insertionIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
+          const insertionIndex = options.insertBeforeActiveReply
+            ? liveUserCorrectionInsertionIndex(state.messages, state.streamId)
+            : state.messages.length
 
           const messages =
-            insertionIndex >= 0
+            insertionIndex < state.messages.length
               ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
               : [...state.messages, message]
 

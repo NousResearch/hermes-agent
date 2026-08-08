@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { type ChatMessage, liveUserCorrectionInsertionIndex, textPart } from '@/lib/chat-messages'
 import type { ComposerAttachment } from '@/store/composer'
 
 import {
@@ -198,5 +199,36 @@ describe('messageCreatedAt', () => {
   it('treats a zero / non-finite timestamp as absent', () => {
     expect(messageCreatedAt({ timestamp: 0 }, NOW).getTime()).toBe(NOW)
     expect(messageCreatedAt({ timestamp: Number.NaN }, NOW).getTime()).toBe(NOW)
+  })
+})
+
+describe('liveUserCorrectionInsertionIndex', () => {
+  const message = (id: string, role: ChatMessage['role'], text: string): ChatMessage => ({
+    id,
+    role,
+    parts: [textPart(text)]
+  })
+
+  it('inserts before the active streaming assistant when streamId is current', () => {
+    const messages = [
+      message('u1', 'user', 'first prompt'),
+      message('a1', 'assistant', 'first answer'),
+      message('u2', 'user', 'second prompt'),
+      message('stream-current', 'assistant', 'partial answer')
+    ]
+
+    expect(liveUserCorrectionInsertionIndex(messages, 'stream-current')).toBe(3)
+  })
+
+  it('appends to the live tail when streamId is missing or stale', () => {
+    const messages = [
+      message('u1', 'user', 'first prompt'),
+      message('a1', 'assistant', 'first answer'),
+      message('u2', 'user', 'second prompt'),
+      message('a2', 'assistant', 'second answer')
+    ]
+
+    expect(liveUserCorrectionInsertionIndex(messages, null)).toBe(4)
+    expect(liveUserCorrectionInsertionIndex(messages, 'missing-stream')).toBe(4)
   })
 })

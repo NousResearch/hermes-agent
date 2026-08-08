@@ -2161,6 +2161,49 @@ describe('usePromptActions redirectPrompt', () => {
     })
   })
 
+  it('appends the redirect bubble at the live tail when the active stream id is missing', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-02T12:00:00Z'))
+
+    try {
+      const requestGateway = vi.fn(async () => ({ status: 'redirected' }) as never)
+      const capturedStates: Record<string, unknown>[] = []
+      let handle: HarnessHandle | null = null
+
+      await actRender(
+        <Harness
+          onReady={h => (handle = h)}
+          onSeedState={state => capturedStates.push(state)}
+          refreshSessions={async () => undefined}
+          requestGateway={requestGateway}
+          seedMessages={[
+            { id: 'u1', role: 'user', parts: [textPart('first prompt')] },
+            { id: 'a1', role: 'assistant', parts: [textPart('first answer')] },
+            { id: 'u2', role: 'user', parts: [textPart('second prompt')] },
+            { id: 'a2', role: 'assistant', parts: [textPart('second answer')] }
+          ]}
+        />
+      )
+
+      expect(await handle!.redirectPrompt('tail nudge')).toBe(true)
+
+      const messages = capturedStates.at(-1)?.messages as Array<{ id: string; parts: unknown[]; timestamp?: number }>
+      expect(messages.map(message => message.id)).toEqual([
+        'u1',
+        'a1',
+        'u2',
+        'a2',
+        expect.stringMatching(/^user-/)
+      ])
+      expect(messages.at(-1)).toMatchObject({
+        parts: [{ type: 'text', text: 'tail nudge' }],
+        timestamp: 1785672000
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('resumes the stored session and retries once when session.redirect reports "session not found"', async () => {
     const STORED_SESSION_ID = 'stored-db-xyz789'
     const RECOVERED_SESSION_ID = 'rt-recovered-456'

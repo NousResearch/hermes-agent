@@ -31,6 +31,16 @@ export type ChatMessage = {
   reactions?: MessageReaction[]
 }
 
+export function liveUserCorrectionInsertionIndex(messages: ChatMessage[], streamId?: null | string): number {
+  if (!streamId) {
+    return messages.length
+  }
+
+  const streamIndex = messages.findIndex(candidate => candidate.id === streamId)
+
+  return streamIndex >= 0 ? streamIndex : messages.length
+}
+
 export type GatewayEventPayload = {
   text?: string
   rendered?: string

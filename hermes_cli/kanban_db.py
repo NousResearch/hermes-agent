@@ -4557,12 +4557,16 @@ def release_stale_claims(
             )
             continue
         with write_txn(conn):
+            # Calculate reclaim backoff to prevent thundering-herd re-spawn.
+            # First reclaim: 0s (immediate), 2nd: 60s, 3rd: 300s, 4th+: 1800s.
+            backoff = _reclaim_backoff_seconds(row["id"], conn)
+            new_claim_expires = now + backoff if backoff > 0 else None
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = ?, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
+                (new_claim_expires, row["id"], row["claim_lock"], now),
             )
             if cur.rowcount != 1:
                 continue
@@ -4586,6 +4590,8 @@ def release_stale_claims(
                 "now": now,
                 "host_local": host_local,
                 "heartbeat_stale": bool(heartbeat_stale),
+                "backoff_seconds": backoff,
+                "backoff_until": new_claim_expires,
             }
             payload.update(termination)
             _append_event(
@@ -7308,6 +7314,40 @@ def enforce_max_runtime(
 # to match the original spec (">4h started + no commits in 1h").
 _STALE_HEARTBEAT_GAP_SECONDS = 3600
 
+# Reclaim backoff — exponential backoff after stale reclaim to prevent
+# thundering-herd re-spawn.  Steps are (attempt, delay_seconds):
+#   1st reclaim:  60s  (1 min)
+#   2nd reclaim: 300s  (5 min)
+#   3rd reclaim: 1800s (30 min)
+#   4th+ reclaim: kept at 1800s (cap)
+# If the task succeeds between reclaims, the counter resets.
+_RECLAIM_BACKOFF_STEPS = [60, 300, 1800]
+_RECLAIM_BACKOFF_CAP = 1800
+
+
+def _reclaim_backoff_seconds(task_id: str, conn: sqlite3.Connection) -> int:
+    """Return backoff delay (seconds) based on consecutive reclaim count.
+
+    Counts 'reclaimed' events since the last 'completed' event for this
+    task.  Returns 0 if no prior reclaims found (first reclaim → immediate
+    re-spawn allowed, matching current behavior).
+    """
+    rows = conn.execute(
+        "SELECT kind FROM task_events "
+        "WHERE task_id = ? AND kind IN ('completed', 'reclaimed') "
+        "ORDER BY created_at DESC LIMIT 20",
+        (task_id,),
+    ).fetchall()
+    consecutive = 0
+    for row in rows:
+        if row["kind"] == "completed":
+            break
+        consecutive += 1
+    if consecutive == 0:
+        return 0
+    idx = min(consecutive - 1, len(_RECLAIM_BACKOFF_STEPS) - 1)
+    return _RECLAIM_BACKOFF_STEPS[idx]
+
 
 def detect_stale_running(
     conn: sqlite3.Connection,
@@ -8463,7 +8503,9 @@ def _dispatch_once_locked(
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
+        "AND (claim_expires IS NULL OR claim_expires <= ?) "
+        "ORDER BY priority DESC, created_at ASC",
+        (now,),
     ).fetchall()
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,

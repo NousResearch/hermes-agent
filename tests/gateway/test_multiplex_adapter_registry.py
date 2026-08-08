@@ -467,6 +467,47 @@ class TestSecondaryProfileConfigHandling:
         assert second == 1
         assert runner._profile_adapters["later"][photon] is later
 
+    def test_port_binding_set_covers_known_listeners(self):
+        from gateway.run import _PORT_BINDING_PLATFORM_VALUES
+
+        # Every adapter that binds a TCP port must be in the guard set.
+        for platform in (
+            "webhook",
+            "api_server",
+            "msgraph_webhook",
+            "feishu",
+            "wecom_callback",
+            "bluebubbles",
+            "sms",
+            "whatsapp_cloud",
+            "line",
+            "teams",
+        ):
+            assert platform in _PORT_BINDING_PLATFORM_VALUES
+
+    @pytest.mark.asyncio
+    async def test_secondary_teams_uses_degradable_error(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.run import SecondaryPortBindingConfigError
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {
+            Platform("teams"): PlatformConfig(enabled=True, extra={"port": 3978}),
+        }
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: reviewer_cfg
+        )
+
+        with pytest.raises(SecondaryPortBindingConfigError) as exc_info:
+            await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+        assert "teams" in str(exc_info.value)
+        assert "reviewer" in str(exc_info.value)
+        assert "reviewer" not in runner._profile_adapters
+
 
 class TestFeishuPortBindingConditional:
     """Feishu websocket mode does NOT bind a port; only webhook mode does (#52563)."""

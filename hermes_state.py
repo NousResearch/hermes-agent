@@ -5872,6 +5872,58 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             row = cursor.fetchone()
         return self._session_row_dict(row) if row else None
 
+    def get_session_token_totals(self, session_id: str) -> Optional[Dict[str, int]]:
+        """Get token totals for a session from SessionDB.
+
+        Returns a dict with input_tokens, output_tokens, cache_read_tokens,
+        cache_write_tokens, reasoning_tokens, and total_tokens (sum of all).
+        Returns None if the session is not found.
+        """
+        self.flush_token_counts()
+        with self._read_ctx() as conn:
+            cursor = conn.execute(
+                """SELECT input_tokens, output_tokens, cache_read_tokens,
+                          cache_write_tokens, reasoning_tokens
+                   FROM sessions WHERE id = ?""",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+        if row:
+            totals = {
+                "input_tokens": row["input_tokens"] or 0,
+                "output_tokens": row["output_tokens"] or 0,
+                "cache_read_tokens": row["cache_read_tokens"] or 0,
+                "cache_write_tokens": row["cache_write_tokens"] or 0,
+                "reasoning_tokens": row["reasoning_tokens"] or 0,
+            }
+            totals["total_tokens"] = sum(totals.values())
+            return totals
+        return None
+
+    def get_session_last_active(self, session_id: str) -> Optional[float]:
+        """Return the latest activity timestamp for a session.
+
+        Uses the most recent message timestamp when available, otherwise falls
+        back to the session's ``started_at`` value. Returns ``None`` when the
+        session does not exist.
+        """
+        with self._read_ctx() as conn:
+            cursor = conn.execute(
+                """
+                SELECT COALESCE(
+                    (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id),
+                    s.started_at
+                ) AS last_active
+                FROM sessions s
+                WHERE s.id = ?
+                """,
+                (session_id,),
+            )
+            row = cursor.fetchone()
+        if not row or row["last_active"] is None:
+            return None
+        return float(row["last_active"])
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 

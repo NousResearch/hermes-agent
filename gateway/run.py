@@ -5530,6 +5530,11 @@ class TurnRunner:
             _input_toks = getattr(_agent, "session_prompt_tokens", 0)
             _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
+            _compression_count = getattr(_agent.context_compressor, "compression_count", 0) or 0
+            _last_compressed_at = getattr(_agent.context_compressor, "last_compressed_at", None)
+        else:
+            _compression_count = 0
+            _last_compressed_at = None
         _resolved_model = getattr(_agent, "model", None) if _agent else None
 
         # Sync session_id immediately after run_conversation(). Compression
@@ -5663,6 +5668,8 @@ class TurnRunner:
                 "compacted_in_place": _compacted_in_place,
                 "session_id": effective_session_id,
                 "last_prompt_tokens": _last_prompt_toks,
+                "compression_count": _compression_count,
+                "last_compressed_at": _last_compressed_at,
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
@@ -5801,6 +5808,8 @@ class TurnRunner:
             "history_offset": _effective_history_offset,
             "compacted_in_place": _compacted_in_place,
             "last_prompt_tokens": _last_prompt_toks,
+            "compression_count": _compression_count,
+            "last_compressed_at": _last_compressed_at,
             "input_tokens": _input_toks,
             "output_tokens": _output_toks,
             "model": _resolved_model,
@@ -18534,11 +18543,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
             
             # Token counts and model are now persisted by the agent directly.
-            # Keep only last_prompt_tokens here for context-window tracking and
-            # compression decisions.
+            # Keep last_prompt_tokens, compression_count, and last_compressed_at
+            # here for context-window tracking, compression decisions, and idle
+            # /status display (#7317 — show compaction history + when).
             await self.async_session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                compression_count=agent_result.get("compression_count", 0),
+                last_compressed_at=agent_result.get("last_compressed_at"),
             )
 
             # Re-baseline the cached agent's message_count snapshot now that

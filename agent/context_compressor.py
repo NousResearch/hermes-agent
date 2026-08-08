@@ -2515,6 +2515,10 @@ class ContextCompressor(ContextEngine):
         self._tail_token_budget: int | None = None
         self._max_summary_tokens: int | None = None
         self.compression_count = 0
+        # Wall-clock timestamp (epoch seconds) of the most recent successful
+        # compression. Surfaced via /status so users can see *when* the last
+        # compaction happened, not just how many (#7317).
+        self.last_compressed_at: Optional[float] = None
 
         # The "initialized" log reports resolved token budgets, which would
         # force the deferred get_model_context_length() probe to run inside
@@ -7000,6 +7004,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             compressed.append(msg)
 
         self.compression_count += 1
+        self.last_compressed_at = time.time()
 
         compressed = self._sanitize_tool_pairs(compressed)
 

@@ -341,6 +341,28 @@ gateway:
     state_no:              "No"
     queued:                "**Queued follow-ups:** {count}"
     platforms:             "**Connected Platforms:** {platforms}"
+    # Rich snapshot additions (PR #8355 retarget). Composed by the retargeted
+    # _handle_status_command in gateway/slash_commands.py; each line is a
+    # separately localized phrase so translators control markup.
+    usage:                 "**Usage:** {input} in · {output} out · {total} total"
+    usage_cost:            "**Usage:** {input} in · {output} out · {total} total · **Cost:** {cost}"
+    cache:                 "**Cache:** {read} read · {write} write"
+    cache_hit:             "**Cache:** {read} read · {write} write · {pct}% hit"
+    cache_reasoning:       "**Cache:** {read} read · {write} write · {pct}% hit · {reasoning} reasoning"
+    cache_reasoning_only:  "**Cache:** {read} read · {write} write · {reasoning} reasoning"
+    cost:                  "**Cost:** {cost}"
+    context_compactions:   "**Context:** {used} / {total} ({pct}%) · **Compactions:** {count}"
+    context_compactions_at: "**Context:** {used} / {total} ({pct}%) · **Compactions:** {count} (last {when})"
+    compactions:           "**Compactions:** {count}"
+    compactions_at:        "**Compactions:** {count} (last {when})"
+    runtime:               "**Runtime:** {parts}"
+    queue_state:           "**Queue:** depth {depth} · **State:** {state}"
+    state_running:         "running"
+    state_idle:            "idle"
+    chats:                 "**Chats:** {platforms}"
+    services:              "**Services:** {platforms}"
+    transport_webhook:     "Transport webhook"
+    transport_polling:     "Transport polling"
 
   stop:
     stopped_pending:       "⚡ Stopped. The agent hadn't started yet — you can continue this session."

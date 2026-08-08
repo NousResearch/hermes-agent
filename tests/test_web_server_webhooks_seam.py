@@ -45,3 +45,29 @@ def test_webhook_router_preserves_routes_and_web_server_compatibility(monkeypatc
     assert calls == [("write", ("webhook", True))]
     assert result["restart_started"] is True
     assert result["restart_pid"] == 7
+
+
+def test_webhook_list_route_uses_web_server_summary_seam(monkeypatch):
+    import asyncio
+
+    import hermes_cli.web_server as web_server
+    import hermes_cli.webhook as webhook
+
+    monkeypatch.setattr(webhook, "_get_webhook_base_url", lambda: "https://hooks.test")
+    monkeypatch.setattr(
+        webhook,
+        "_load_subscriptions",
+        lambda: {"build": {"description": "Build events"}},
+    )
+    monkeypatch.setattr(webhook, "_is_webhook_enabled", lambda: True)
+
+    patched_summary = {"name": "patched-by-web-server"}
+    monkeypatch.setattr(
+        web_server,
+        "_webhook_route_summary",
+        lambda *args: patched_summary,
+    )
+
+    result = asyncio.run(web_server.list_webhooks())
+
+    assert result["subscriptions"] == [patched_summary]

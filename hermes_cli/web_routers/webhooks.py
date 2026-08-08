@@ -24,6 +24,7 @@ router = APIRouter()
 # monkeypatch-transparent).
 _write_platform_enabled = late("_write_platform_enabled")
 _restart_gateway_after_webhook_enable = late("_restart_gateway_after_webhook_enable")
+_webhook_route_summary_for_handler = late("_webhook_route_summary")
 
 
 def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> Dict[str, Any]:
@@ -64,7 +65,7 @@ async def list_webhooks():
         "enabled": wh._is_webhook_enabled(),
         "base_url": base_url,
         "subscriptions": [
-            _webhook_route_summary(name, route, base_url)
+            _webhook_route_summary_for_handler(name, route, base_url)
             for name, route in subs.items()
         ],
     }
@@ -139,7 +140,7 @@ async def create_webhook(body: WebhookCreate):
     wh._save_subscriptions(subs)
 
     base_url = wh._get_webhook_base_url()
-    summary = _webhook_route_summary(name, route, base_url)
+    summary = _webhook_route_summary_for_handler(name, route, base_url)
     # Surface the secret exactly once, on create.
     summary["secret"] = secret
     return summary

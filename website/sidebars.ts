@@ -298,6 +298,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-social-media',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/social-media/social-media-apa7-references',
                     'user-guide/skills/bundled/social-media/social-media-xurl',
                   ],
                 },

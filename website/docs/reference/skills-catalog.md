@@ -130,6 +130,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`apa7-references`](/docs/user-guide/skills/bundled/social-media/social-media-apa7-references) | APA 7 refs: X posts, GitHub PRs, software, data sets. | `social-media/apa7-references` |
 | [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) | X/Twitter via xurl CLI: raw post search, posting, DM, media. | `social-media/xurl` |
 
 ## software-development

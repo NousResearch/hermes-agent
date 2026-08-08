@@ -1768,6 +1768,8 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+        "workspace_visibility": "inherit",  # inherit | full_rw | full_ro | temp_rw | mapped
+        "workspace_mappings": [],  # [{source, target, read_only}] for mapped mode
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

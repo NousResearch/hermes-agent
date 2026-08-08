@@ -7736,6 +7736,9 @@ class AIAgent:
             max_iterations=function_args.get("max_iterations"),
             role=function_args.get("role"),
             background=(not _is_subagent),
+            workspace_visibility=function_args.get("workspace_visibility"),
+            workspace_mappings=function_args.get("workspace_mappings"),
+            parent_task_id=getattr(self, "_current_effective_task_id", None),
             parent_agent=self,
         )
 
@@ -7859,6 +7862,7 @@ class AIAgent:
         )
         from agent.subagent_lifecycle import bind_subagent_parent
         effective_task_id = task_id or str(uuid.uuid4())
+        self._current_effective_task_id = effective_task_id
         session_id = str(getattr(self, "session_id", None) or "")
         task_context = {
             "session_id": session_id,

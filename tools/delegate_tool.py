@@ -853,6 +853,7 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+DEFAULT_WORKSPACE_VISIBILITY = "inherit"
 
 
 # ---------------------------------------------------------------------------
@@ -902,6 +903,7 @@ def _build_child_system_prompt(
     context: Optional[str] = None,
     *,
     workspace_path: Optional[str] = None,
+    workspace_note: Optional[str] = None,
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
@@ -927,6 +929,8 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
+    if workspace_note and workspace_note.strip():
+        parts.append(f"\n{workspace_note.strip()}")
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
@@ -1000,6 +1004,59 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
         if os.path.isabs(text) and os.path.isdir(text):
             return text
     return None
+
+
+def _configure_child_workspace(child, task_index: int, task_cfg: Dict[str, Any], delegation_cfg: Dict[str, Any]):
+    """Resolve workspace visibility for a delegated child and attach task overrides."""
+    from tools.subagent_workspace import (
+        build_workspace_overrides,
+        resolve_parent_workspace_root,
+        resolve_terminal_backend,
+    )
+
+    visibility = task_cfg.get("workspace_visibility")
+    mappings = task_cfg.get("workspace_mappings")
+    if mappings is None:
+        mappings = delegation_cfg.get("workspace_mappings")
+    if visibility is None:
+        visibility = delegation_cfg.get("workspace_visibility", DEFAULT_WORKSPACE_VISIBILITY)
+    if (visibility in (None, "", "inherit")) and mappings:
+        visibility = "mapped"
+
+    backend = resolve_terminal_backend()
+    workspace_root = None
+    if visibility not in (None, "", "inherit") or mappings:
+        workspace_root = resolve_parent_workspace_root(task_cfg.get("_parent_task_id"))
+
+    plan = build_workspace_overrides(
+        visibility=visibility,
+        mappings=mappings,
+        workspace_root=workspace_root,
+        child_token=f"subagent-{task_index}-{getattr(child, 'session_id', '') or task_index}",
+        backend=backend,
+    )
+
+    child._delegate_task_id = getattr(child, "session_id", None)
+    child._delegate_task_env_overrides = plan.get("task_env_overrides")
+    child._delegate_workspace_cleanup_paths = plan.get("cleanup_paths", [])
+    prompt_note = plan.get("prompt_note", "").strip()
+    if prompt_note:
+        child.ephemeral_system_prompt = _build_child_system_prompt(
+            task_cfg["goal"],
+            task_cfg.get("context"),
+            workspace_note=prompt_note,
+        )
+
+
+def _cleanup_child_workspace(child) -> None:
+    paths = getattr(child, "_delegate_workspace_cleanup_paths", None) or []
+    if not paths:
+        return
+    try:
+        from tools.subagent_workspace import cleanup_workspace_paths
+        cleanup_workspace_paths(paths)
+    except Exception:
+        logger.debug("Failed to cleanup delegated temp workspace paths", exc_info=True)
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
@@ -3128,6 +3185,9 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
+    workspace_visibility: Optional[str] = None,
+    workspace_mappings: Optional[List[Dict[str, Any]]] = None,
+    parent_task_id: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -3226,7 +3286,14 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        single_task: Dict[str, Any] = {"goal": goal, "context": context, "role": top_role}
+        single_task: Dict[str, Any] = {
+            "goal": goal,
+            "context": context,
+            "role": top_role,
+            "workspace_visibility": workspace_visibility,
+            "workspace_mappings": workspace_mappings,
+            "_parent_task_id": parent_task_id,
+        }
         if output_schema is not None:
             single_task["output_schema"] = output_schema
         task_list = [single_task]
@@ -3244,6 +3311,7 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        task.setdefault("_parent_task_id", parent_task_id)
 
     # Batch-only quality gate: catch malformed fan-outs (placeholder goals,
     # unexpanded multi-word template markers, 1-task batches) before any
@@ -4278,6 +4346,45 @@ DELEGATE_TASK_SCHEMA = {
                     "backward compatibility."
                 ),
             },
+            "workspace_visibility": {
+                "type": "string",
+                "enum": ["inherit", "full_rw", "full_ro", "temp_rw", "mapped"],
+                "description": (
+                    "Filesystem visibility for the child sandbox (Docker backend only). "
+                    "'inherit' (default) keeps the current backend behavior. "
+                    "'full_rw' mounts the full parent workspace at /workspace read-write. "
+                    "'full_ro' mounts it read-only. "
+                    "'temp_rw' creates a fresh writable subdirectory inside the parent "
+                    "workspace and mounts only that at /workspace. "
+                    "'mapped' exposes only the paths listed in workspace_mappings."
+                ),
+            },
+            "workspace_mappings": {
+                "type": "array",
+                "description": (
+                    "Used only with workspace_visibility='mapped'. "
+                    "Each mapping source must stay inside the parent workspace. "
+                    "target defaults under /workspace and read_only defaults to false."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {
+                            "type": "string",
+                            "description": "Workspace-relative or absolute path inside the parent workspace.",
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "Path inside the child sandbox under /workspace.",
+                        },
+                        "read_only": {
+                            "type": "boolean",
+                            "description": "Mount this mapping read-only.",
+                        },
+                    },
+                    "required": ["source"],
+                },
+            },
         },
         "required": [],
     },
@@ -4339,6 +4446,8 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         output_schema=args.get("output_schema"),
+        workspace_visibility=args.get("workspace_visibility"),
+        workspace_mappings=args.get("workspace_mappings"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

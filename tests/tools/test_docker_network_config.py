@@ -33,7 +33,17 @@ def test_sibling_container_config_sites_carry_docker_network():
     for module in (terminal_tool, file_tools, code_execution_tool):
         tree = ast.parse(inspect.getsource(module))
         sites = 0
+        delegates = False
         for node in ast.walk(tree):
+            # Detect delegation to _container_config_from_config — the
+            # centralized builder in terminal_tool is already checked below,
+            # so a module that delegates has no inline dict of its own.
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id == "_container_config_from_config":
+                    delegates = True
+                elif isinstance(func, ast.Attribute) and func.attr == "_container_config_from_config":
+                    delegates = True
             if not isinstance(node, ast.Dict):
                 continue
             keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
@@ -44,6 +54,8 @@ def test_sibling_container_config_sites_carry_docker_network():
                     f"docker_run_as_host_user but without docker_network "
                     f"(line {node.lineno})"
                 )
+        if sites == 0 and delegates:
+            continue
         assert sites >= 1, f"expected at least one container_config site in {module.__name__}"
 
 

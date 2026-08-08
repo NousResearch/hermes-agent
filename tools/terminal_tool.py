@@ -1240,6 +1240,12 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         - modal_image: str -- Path to Dockerfile or Docker Hub image name
         - docker_image: str -- Docker image name
         - cwd: str -- Working directory inside the sandbox
+        - host_cwd: str -- Host workspace root for Docker bind mounting
+        - docker_mount_cwd_to_workspace: bool -- Mount host_cwd at /workspace
+        - docker_volumes: list[str] -- Explicit Docker bind mounts for this task
+        - docker_forward_env: list[str] -- Additional env vars to forward
+        - docker_network: str -- Docker network override
+        - workspace_isolation: bool -- Trigger per-child container isolation
 
     Args:
         task_id: The rollout's unique task identifier
@@ -1305,7 +1311,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     _ISOLATION_KEYS = frozenset({
         "docker_image", "modal_image", "singularity_image",
-        "daytona_image", "env_type",
+        "daytona_image", "env_type", "workspace_isolation",
     })
     if task_id and task_id in _task_env_overrides:
         overrides = _task_env_overrides[task_id]
@@ -1608,12 +1614,21 @@ def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
     }
 
 
-def _container_config_from_config(config: Dict[str, Any]) -> dict:
+def _container_config_from_config(
+    config: Dict[str, Any], overrides: Optional[Dict[str, Any]] = None,
+) -> dict:
     """Build the ``container_config`` dict passed to :func:`_create_environment`.
 
     Shared by the terminal tool's own get-or-create path and the lazy
     :func:`ensure_task_env` bring-up (see :func:`_ssh_config_from_config`).
+
+    When *overrides* is provided (per-task env overrides registered via
+    :func:`register_task_env_overrides`), Docker-specific keys are read from
+    the overrides first, falling back to the global config. This lets
+    delegated subagents request custom workspace mounts without changing the
+    parent's container.
     """
+    ov = overrides or {}
     return {
         "container_cpu": config.get("container_cpu", 1),
         "container_memory": config.get("container_memory", 5120),
@@ -1621,14 +1636,20 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
         "container_persistent": config.get("container_persistent", True),
         "modal_mode": config.get("modal_mode", "auto"),
         "vercel_runtime": config.get("vercel_runtime", ""),
-        "docker_volumes": config.get("docker_volumes", []),
-        "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-        "docker_forward_env": config.get("docker_forward_env", []),
+        "docker_volumes": ov.get("docker_volumes", config.get("docker_volumes", [])),
+        "docker_mount_cwd_to_workspace": ov.get(
+            "docker_mount_cwd_to_workspace",
+            config.get("docker_mount_cwd_to_workspace", False),
+        ),
+        "docker_forward_env": ov.get(
+            "docker_forward_env",
+            config.get("docker_forward_env", []),
+        ),
         "docker_env": config.get("docker_env", {}),
         "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
         "docker_extra_args": config.get("docker_extra_args", []),
         "docker_shm_size": config.get("docker_shm_size", "1g"),
-        "docker_network": config.get("docker_network", True),
+        "docker_network": ov.get("docker_network", config.get("docker_network", True)),
         "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
         "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
     }
@@ -1968,12 +1989,12 @@ def ensure_task_env(task_id: Optional[str] = None):
                 timeout=config["timeout"],
                 ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
                 container_config=(
-                    _container_config_from_config(config)
+                    _container_config_from_config(config, overrides)
                     if env_type in _CONTAINER_BACKENDS else None
                 ),
                 local_config=None,
                 task_id=effective_task_id,
-                host_cwd=config.get("host_cwd"),
+                host_cwd=overrides.get("host_cwd", config.get("host_cwd")),
             )
         except Exception as exc:  # noqa: BLE001 — best-effort bring-up
             logger.warning(
@@ -2543,7 +2564,7 @@ def terminal_tool(
                     try:
                         ssh_config = _ssh_config_from_config(config) if env_type == "ssh" else None
                         container_config = (
-                            _container_config_from_config(config)
+                            _container_config_from_config(config, overrides)
                             if env_type in _CONTAINER_BACKENDS else None
                         )
 
@@ -2562,7 +2583,7 @@ def terminal_tool(
                             container_config=container_config,
                             local_config=local_config,
                             task_id=effective_task_id,
-                            host_cwd=config.get("host_cwd"),
+                            host_cwd=overrides.get("host_cwd", config.get("host_cwd")),
                         )
                     except ImportError as e:
                         return json.dumps({

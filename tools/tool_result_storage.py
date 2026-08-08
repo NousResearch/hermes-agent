@@ -112,8 +112,28 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     """
     storage_dir = os.path.dirname(remote_path)
     cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
-    result = env.execute(cmd, timeout=30, stdin_data=content)
-    return result.get("returncode", 1) == 0
+    try:
+        result = env.execute(cmd, timeout=30, stdin_data=content)
+    except Exception as exc:
+        logger.warning(
+            "Sandbox write failed for %s — env.execute() raised %s: %s",
+            remote_path, type(exc).__name__, exc,
+        )
+        return False
+
+    returncode = result.get("returncode", 1)
+    if returncode != 0:
+        error_output = result.get("output", "")
+        # Truncate error output for logging (avoid flooding logs with huge error messages)
+        if len(error_output) > 500:
+            error_output = error_output[:500] + "... [truncated]"
+        logger.warning(
+            "Sandbox write failed for %s — exit code %d, output: %s",
+            remote_path, returncode, error_output,
+        )
+        return False
+
+    return True
 
 
 def _build_persisted_message(
@@ -123,11 +143,12 @@ def _build_persisted_message(
     file_path: str,
 ) -> str:
     """Build the <persisted-output> replacement block."""
-    size_kb = original_size / 1024
-    if size_kb >= 1024:
-        size_str = f"{size_kb / 1024:.1f} MB"
+    if original_size >= 1024 * 1024:
+        size_str = f"{original_size / 1024 / 1024:.1f} MB"
+    elif original_size >= 1024:
+        size_str = f"{original_size / 1024:.1f} KB"
     else:
-        size_str = f"{size_kb:.1f} KB"
+        size_str = f"{original_size} bytes"
 
     msg = f"{PERSISTED_OUTPUT_TAG}\n"
     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"

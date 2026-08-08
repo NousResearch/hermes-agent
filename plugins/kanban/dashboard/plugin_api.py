@@ -44,7 +44,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -852,13 +852,40 @@ class UpdateTaskBody(BaseModel):
 
 
 @router.patch("/tasks/{task_id}")
-def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
+def update_task(
+    task_id: str,
+    payload: UpdateTaskBody,
+    request: Request,
+    board: Optional[str] = Query(None),
+):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        if (
+            payload.status == "ready"
+            and task.status in ("blocked", "scheduled")
+            and kanban_db.is_human_gate(conn, task_id)
+            and any(
+                (
+                    payload.assignee is not None,
+                    payload.title is not None,
+                    payload.body is not None,
+                    payload.model_override is not None,
+                    payload.provider_override is not None,
+                    payload.clear_model_override,
+                )
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "update the task definition first, then authorize the exact "
+                    "human-gate revision in a separate request"
+                ),
+            )
 
         # --- assignee ----------------------------------------------------
         if payload.assignee is not None:
@@ -890,7 +917,16 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 # Re-open a blocked/scheduled task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
                 if current and current.status in ("blocked", "scheduled"):
-                    ok = kanban_db.unblock_task(conn, task_id)
+                    if kanban_db.is_human_gate(conn, task_id):
+                        ok = kanban_db.authorize_human_gate(
+                            conn,
+                            task_id,
+                            reason=payload.block_reason or "",
+                            session=getattr(request.state, "session", None),
+                            board=board,
+                        )
+                    else:
+                        ok = kanban_db.unblock_task(conn, task_id)
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
                     ok = _set_status_direct(conn, task_id, "ready")

@@ -16,11 +16,20 @@ from hermes_cli import kanban_db as kb
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
+    for key in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_KANBAN_ATTACHMENTS_ROOT",
+    ):
+        monkeypatch.delenv(key, raising=False)
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
+    assert kb.kanban_db_path().is_relative_to(home)
     return home
 
 
@@ -152,6 +161,33 @@ def test_run_slash_reclaim_running_task(kanban_home):
     # Status back to ready.
     out2 = kc.run_slash(f"show {tid}")
     assert "ready" in out2.lower()
+
+
+def test_run_slash_unblock_cannot_self_authorize_human_gate(
+    kanban_home,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_PROFILE", "self-declared-chief")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "legacy-local-token")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approval required",
+            assignee="worker",
+            initial_status="blocked",
+        )
+
+    out = kc.run_slash(f"unblock {tid} --reason 'approved in CLI'")
+
+    assert "cannot unblock" in out
+    assert "authenticated dashboard session" in out
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "blocked"
+        assert not any(
+            event.kind == "human_gate_authorized"
+            for event in kb.list_events(conn, tid)
+        )
 
 
 

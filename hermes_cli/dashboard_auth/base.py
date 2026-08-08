@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import threading
 from typing import Optional
+import weakref
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,42 @@ class Session:
     expires_at: int  # unix seconds; the access_token's exp claim
     access_token: str
     refresh_token: str
+
+
+_VERIFIED_SESSIONS: dict[int, weakref.ReferenceType[Session]] = {}
+_VERIFIED_SESSIONS_LOCK = threading.RLock()
+
+
+def _attest_verified_session(session: Session) -> Session:
+    """Mark the exact Session instance returned by auth middleware as verified.
+
+    ``Session`` is a public provider DTO, so ``isinstance(session, Session)``
+    alone cannot prove that middleware actually verified the caller. Keep a
+    process-local, identity-based weak attestation instead: copied or freshly
+    constructed DTOs never inherit it, and dead request sessions do not leak.
+    """
+    if not isinstance(session, Session):
+        raise TypeError("verified dashboard session must be a Session")
+    key = id(session)
+
+    def _discard(ref: weakref.ReferenceType[Session]) -> None:
+        with _VERIFIED_SESSIONS_LOCK:
+            if _VERIFIED_SESSIONS.get(key) is ref:
+                _VERIFIED_SESSIONS.pop(key, None)
+
+    ref = weakref.ref(session, _discard)
+    with _VERIFIED_SESSIONS_LOCK:
+        _VERIFIED_SESSIONS[key] = ref
+    return session
+
+
+def is_verified_session(session: object) -> bool:
+    """Return whether ``session`` is the exact middleware-attested instance."""
+    if not isinstance(session, Session):
+        return False
+    with _VERIFIED_SESSIONS_LOCK:
+        ref = _VERIFIED_SESSIONS.get(id(session))
+        return ref is not None and ref() is session
 
 
 @dataclass(frozen=True)

@@ -126,5 +126,26 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     assert head == "wt/sibling"
 
 
+def test_dispatch_worktree_materialization_does_not_run_repository_hooks(
+    kanban_home,
+    tmp_path,
+):
+    """Pre-CAS worktree setup must not execute repository-controlled code."""
+    repo = _make_repo(tmp_path)
+    marker = tmp_path / "post-checkout-ran"
+    hook = repo / ".git" / "hooks" / "post-checkout"
+    hook.write_text(f"#!/bin/sh\nprintf ran > {marker}\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    target = repo / ".worktrees" / "gated-task"
+    kb._ensure_git_worktree(repo, target, "wt/gated-task")
+
+    assert target.is_dir()
+    assert not marker.exists(), (
+        "worktree materialization happens before final authorization CAS and "
+        "must suppress repository hooks"
+    )
+
+
 
 

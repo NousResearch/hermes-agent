@@ -1408,3 +1408,43 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         conn.close()
 
 
+def test_notify_sub_surfaces_current_unresolved_human_gate_once(kanban_home):
+    """A subscriber added after gated creation must observe the pending gate."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="approval required",
+            assignee="publisher",
+            initial_status="blocked",
+        )
+
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="123")
+        _, events = kb.unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["blocked", "completed", "gave_up", "crashed", "timed_out"],
+        )
+
+        assert [event.kind for event in events] == ["blocked"]
+        kb.advance_notify_cursor(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            new_cursor=events[-1].id,
+        )
+        _, repeated = kb.unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="123",
+            kinds=["blocked", "completed", "gave_up", "crashed", "timed_out"],
+        )
+        assert repeated == []
+    finally:
+        conn.close()
+
+

@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from hermes_cli.dashboard_auth import list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
+    _attest_verified_session,
     DashboardAuthProvider,
     ProviderError,
     RefreshExpiredError,
@@ -365,7 +366,7 @@ async def gated_auth_middleware(
                 status_code=503,
             )
         if bearer_session is not None:
-            request.state.session = bearer_session
+            request.state.session = _attest_verified_session(bearer_session)
             return await call_next(request)
         # A bearer was presented but didn't verify (expired/invalid/unknown).
         # Return the structured 401 so the desktop knows to refresh or
@@ -469,7 +470,7 @@ async def gated_auth_middleware(
             )
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
-            request.state.session = new_session
+            request.state.session = _attest_verified_session(new_session)
             response = await call_next(request)
             # Persist the ROTATED tokens. Portal rotates the refresh token on
             # every refresh and runs reuse-detection, so writing the new RT
@@ -516,7 +517,7 @@ async def gated_auth_middleware(
         clear_session_cookies(response, prefix=prefix_from_request(request))
         return response
 
-    request.state.session = session
+    request.state.session = _attest_verified_session(session)
     response = await call_next(request)
     if not provider_hint and session.provider:
         from hermes_cli.dashboard_auth.cookies import detect_https

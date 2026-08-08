@@ -19,6 +19,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.dashboard_auth import Session
+from hermes_cli.dashboard_auth.base import _attest_verified_session
 
 
 # ---------------------------------------------------------------------------
@@ -45,17 +47,48 @@ def _load_plugin_router():
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
+    for key in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_KANBAN_ATTACHMENTS_ROOT",
+    ):
+        monkeypatch.delenv(key, raising=False)
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
+    assert kb.kanban_db_path().is_relative_to(home)
     return home
 
 
 @pytest.fixture
 def client(kanban_home):
     app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    return TestClient(app)
+
+
+@pytest.fixture
+def authenticated_client(kanban_home):
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def verified_session(request, call_next):
+        request.state.session = _attest_verified_session(Session(
+            user_id="user-123",
+            email="operator@example.com",
+            display_name="Test Operator",
+            provider="test",
+            org_id="org-1",
+            access_token="verified-access-token",
+            expires_at=9_999_999_999,
+            refresh_token="refresh-token",
+        ))
+        return await call_next(request)
+
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     return TestClient(app)
 
@@ -222,6 +255,69 @@ def test_task_detail_includes_links_and_events(client):
 # ---------------------------------------------------------------------------
 # PATCH /tasks/:id — status transitions
 # ---------------------------------------------------------------------------
+
+
+def test_legacy_dashboard_token_cannot_authorize_human_gate(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "legacy-local-token")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approval required",
+            assignee="worker",
+            initial_status="blocked",
+        )
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "ready", "block_reason": "approved"},
+    )
+
+    assert response.status_code == 409
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "blocked"
+        assert not any(
+            event.kind == "human_gate_authorized"
+            for event in kb.list_events(conn, tid)
+        )
+
+
+def test_verified_dashboard_session_authorizes_human_gate(authenticated_client):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approval required",
+            assignee="worker",
+            initial_status="blocked",
+        )
+
+    response = authenticated_client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "ready", "block_reason": "approved by operator"},
+    )
+
+    assert response.status_code == 200, response.text
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "ready"
+        authorization = next(
+            event
+            for event in kb.list_events(conn, tid)
+            if event.kind == "human_gate_authorized"
+        )
+        assert authorization.payload is not None
+        assert authorization.payload == {
+            "actor": "test:user-123",
+            "provider": "test",
+            "reason": "approved by operator",
+            "session_expires_at": 9_999_999_999,
+            "source": "dashboard_session",
+            "task_fingerprint": authorization.payload["task_fingerprint"],
+            "user_id": "user-123",
+        }
 
 
 def test_reopening_parent_demotes_ready_child(client):

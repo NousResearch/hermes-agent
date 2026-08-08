@@ -12892,6 +12892,32 @@ async def remove_credential_pool_entry(provider: str, index: int):
     }
 
 
+@app.post("/api/credentials/pool/{provider}/{index}/activate")
+async def activate_credential_pool_entry(provider: str, index: int):
+    """Force the pool to use this entry next.  ``index`` is 1-based.
+
+    Manual "switch account" action — lets a user without CLI access pick
+    which stored credential is active from the Desktop/dashboard UI.
+    """
+    from agent.credential_pool import load_pool
+
+    provider = (provider or "").strip().lower()
+    try:
+        pool = load_pool(provider)
+        entries = pool.entries()
+        if not (1 <= index <= len(entries)):
+            raise HTTPException(status_code=404, detail="No pool entry at that index")
+        activated = pool.activate(entries[index - 1].id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("POST /api/credentials/pool/activate failed")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if activated is None:
+        raise HTTPException(status_code=404, detail="No pool entry at that index")
+    return {"ok": True, "provider": provider, "id": activated.id}
+
+
 # ---------------------------------------------------------------------------
 # Memory provider endpoints — status / list providers / select / disable / reset.
 #

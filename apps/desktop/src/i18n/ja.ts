@@ -685,7 +685,8 @@ export const ja = defineLocale({
       couldNotSave: '認証情報を保存できませんでした。',
       remove: '削除',
       getKey: 'キーを取得',
-      saving: '保存中'
+      saving: '保存中',
+      useThisAccount: 'このアカウントを使用'
     },
     envActions: {
       actions: 'アクション',

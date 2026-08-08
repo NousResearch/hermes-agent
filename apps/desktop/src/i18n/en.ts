@@ -591,7 +591,8 @@ export const en: Translations = {
       couldNotSave: 'Could not save credential.',
       remove: 'Remove',
       getKey: 'Get a key',
-      saving: 'Saving'
+      saving: 'Saving',
+      useThisAccount: 'Use this'
     },
     envActions: {
       actions: 'Actions',

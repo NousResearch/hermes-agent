@@ -6,13 +6,17 @@ import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
+const activateCredentialPoolEntry = vi.fn()
 const getEnvVars = vi.fn()
+const getCredentialPool = vi.fn()
 const startManualProviderOAuth = vi.fn()
 const startManualLocalEndpoint = vi.fn()
 const onboarding = atom({ manual: false })
 
 vi.mock('@/hermes', () => ({
+  activateCredentialPoolEntry: (provider: string, index: number) => activateCredentialPoolEntry(provider, index),
   disconnectOAuthProvider: (providerId: string) => disconnectOAuthProvider(providerId),
+  getCredentialPool: () => getCredentialPool(),
   getEnvVars: () => getEnvVars(),
   listOAuthProviders: () => listOAuthProviders()
 }))
@@ -60,7 +64,9 @@ function keyVar(patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
 beforeEach(() => {
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
+  getCredentialPool.mockResolvedValue({ providers: [] })
   disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'nous' })
+  activateCredentialPoolEntry.mockResolvedValue({ ok: true, provider: 'copilot' })
   listOAuthProviders.mockResolvedValue({
     providers: [provider('nous', true), provider('minimax-oauth', false)]
   })
@@ -202,5 +208,71 @@ describe('ProvidersSettings', () => {
     fireEvent.click(row)
 
     await waitFor(() => expect(startManualLocalEndpoint).toHaveBeenCalledWith(null))
+  })
+
+  it('shows a per-credential pool status only for a provider with >1 stored credential', async () => {
+    // Regression: multi-credential providers (e.g. a personal + a shared
+    // Copilot key) had no Desktop UI to see which stored credential is
+    // actually active. Copilot's key lives in the API-keys view, keyed by the
+    // backend's raw provider id ("copilot"), which is what /api/credentials/pool
+    // groups by too — see issue #80828.
+    getEnvVars.mockResolvedValue({
+      COPILOT_GITHUB_TOKEN: keyVar({ provider: 'copilot', provider_label: 'GitHub Copilot', is_set: true }),
+      ACME_API_KEY: keyVar({ provider: 'acme', provider_label: 'Acme', is_set: true })
+    })
+    getCredentialPool.mockResolvedValue({
+      providers: [
+        {
+          provider: 'copilot',
+          entries: [
+            { index: 1, label: 'wadefengx', priority: 0, request_count: 12, token_preview: 'sk-…abcd', has_refresh: false, last_status: 'ok' },
+            { index: 2, label: 'shared-fallback', priority: 1, request_count: 0, token_preview: 'sk-…wxyz', has_refresh: false, last_status: 'exhausted' }
+          ]
+        }
+      ]
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    expect(await screen.findByText('wadefengx')).toBeTruthy()
+    expect(screen.getByText('shared-fallback')).toBeTruthy()
+    expect(screen.getByText('exhausted')).toBeTruthy()
+    // Acme has no pool entries in this test → no status list rendered for it.
+    expect(screen.queryByText('sk-…wxyz')).toBeNull()
+  })
+
+  it('lets the user click "Use this" to switch which stored credential is active', async () => {
+    // The Desktop-only path for a user who won't touch the CLI (issue #80828
+    // follow-up): clicking the button on the non-current entry calls the new
+    // activate endpoint and re-fetches the pool so the status list updates.
+    getEnvVars.mockResolvedValue({
+      COPILOT_GITHUB_TOKEN: keyVar({ provider: 'copilot', provider_label: 'GitHub Copilot', is_set: true })
+    })
+    getCredentialPool.mockResolvedValue({
+      providers: [
+        {
+          provider: 'copilot',
+          entries: [
+            { index: 1, label: 'wadefengx', priority: 0, request_count: 12, token_preview: 'sk-…abcd', has_refresh: false, last_status: 'ok' },
+            { index: 2, label: 'shared-fallback', priority: 1, request_count: 0, token_preview: 'sk-…wxyz', has_refresh: false, last_status: 'ok' }
+          ]
+        }
+      ]
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    await screen.findByText('shared-fallback')
+    // Only the non-current entry (index 2) gets a switch button.
+    expect(screen.queryAllByRole('button', { name: 'Use this' })).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use this' }))
+
+    await waitFor(() => expect(activateCredentialPoolEntry).toHaveBeenCalledWith('copilot', 2))
+    expect(getCredentialPool).toHaveBeenCalledTimes(2)
   })
 })

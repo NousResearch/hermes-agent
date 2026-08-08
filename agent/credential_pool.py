@@ -757,6 +757,29 @@ class CredentialPool:
                     self._entries[idx] = new
                     return
 
+    def activate(self, entry_id: str) -> Optional[PooledCredential]:
+        """Force the given entry to be the next one `select()` returns.
+
+        Gives it a priority one below the current lowest (so it wins ties
+        against any prior manual pick, not just default-priority entries)
+        and clears the sticky cursor so selection re-runs. Manual "use this
+        account" action from the Desktop/dashboard UI — everything else
+        about the pool (rotation, exhaustion, refresh) is unchanged.
+        """
+        with self._lock:
+            target = next((e for e in self._entries if e.id == entry_id), None)
+            if target is None:
+                return None
+            new_priority = min((e.priority for e in self._entries), default=0) - 1
+            self._entries = [
+                replace(e, priority=new_priority) if e.id == entry_id else e
+                for e in self._entries
+            ]
+            self._entries.sort(key=lambda e: e.priority)
+            self._persist()
+            self._current_id = entry_id
+            return self._current_unlocked()
+
     def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
         # Self-locking (RLock): snapshotting self._entries must not race a
         # concurrent rotation when called from the deferred refresh path.

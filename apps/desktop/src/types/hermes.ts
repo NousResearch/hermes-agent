@@ -69,6 +69,31 @@ export interface OAuthProvidersResponse {
   providers: OAuthProvider[]
 }
 
+// Redacted view of one rotating credential-pool entry (agent/credential_pool.py
+// PooledCredential) — enough to show which account is active without ever
+// exposing the raw token.
+export interface CredentialPoolEntry {
+  auth_type?: null | string
+  has_refresh: boolean
+  id?: null | string
+  index: number
+  label?: null | string
+  last_status?: null | string
+  priority: number
+  request_count: number
+  source?: null | string
+  token_preview: string
+}
+
+export interface CredentialPoolProvider {
+  entries: CredentialPoolEntry[]
+  provider: string
+}
+
+export interface CredentialPoolResponse {
+  providers: CredentialPoolProvider[]
+}
+
 export type OAuthStartResponse =
   | {
       auth_url: string

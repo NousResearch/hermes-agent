@@ -15,16 +15,16 @@ import {
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
-import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
+import { activateCredentialPoolEntry, disconnectOAuthProvider, getCredentialPool, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
-import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
+import type { CredentialPoolEntry, EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
-import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
+import { CredentialPoolStatus, isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
@@ -106,6 +106,11 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
       docsUrl: meta?.docsUrl ?? primary[1].url ?? undefined,
       hasAnySet: entries.some(([, i]) => i.is_set),
       name,
+      // The credential-pool endpoint keys by the backend's raw provider id
+      // (`copilot`, `deepseek`, ...), which can differ from the display name
+      // used to bucket this group — carry it through so the row can look up
+      // its pool entries without re-deriving the id.
+      poolProvider: primary[1].provider?.trim(),
       primary,
       priority: providerPriority(name)
     })
@@ -128,12 +133,14 @@ function OAuthPicker({
   onDisconnect,
   onTerminalDisconnect,
   onWantApiKey,
+  poolByProvider,
   providers
 }: {
   disconnecting: null | string
   onDisconnect: (provider: OAuthProvider) => void
   onTerminalDisconnect: (provider: OAuthProvider) => void
   onWantApiKey: () => void
+  poolByProvider: Record<string, CredentialPoolEntry[]>
   providers: OAuthProvider[]
 }) {
   const { t } = useI18n()
@@ -187,6 +194,7 @@ function OAuthPicker({
               onDisconnect={onDisconnect}
               onSelect={select}
               onTerminalDisconnect={onTerminalDisconnect}
+              poolEntries={poolByProvider[p.id]}
               provider={p}
             />
           ))}
@@ -222,12 +230,14 @@ function ConnectedProviderRow({
   onDisconnect,
   onSelect,
   onTerminalDisconnect,
+  poolEntries,
   provider
 }: {
   disconnecting: boolean
   onDisconnect: (provider: OAuthProvider) => void
   onSelect: (provider: OAuthProvider) => void
   onTerminalDisconnect: (provider: OAuthProvider) => void
+  poolEntries?: CredentialPoolEntry[]
   provider: OAuthProvider
 }) {
   const { t } = useI18n()
@@ -243,50 +253,55 @@ function ConnectedProviderRow({
   const showHint = !canDisconnect && !terminalDisconnect
 
   return (
-    <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
-      <RowButton className="min-w-0 px-3 py-2.5 text-left" onClick={() => onSelect(provider)}>
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{title}</span>
-          <span className="inline-flex shrink-0 items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-            <Check className="size-3" />
-            {copy.connected}
-          </span>
+    <div className="grid gap-0.5">
+      <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
+        <RowButton className="min-w-0 px-3 py-2.5 text-left" onClick={() => onSelect(provider)}>
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{title}</span>
+            <span className="inline-flex shrink-0 items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+              <Check className="size-3" />
+              {copy.connected}
+            </span>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
+          {showHint && (
+            <p className="mt-0.5 truncate text-[0.68rem] leading-5 text-muted-foreground/70">
+              {provider.flow === 'external' ? copy.removeExternalGeneric(title) : copy.removeKeyManaged(title)}
+            </p>
+          )}
+        </RowButton>
+        <div className="flex items-center gap-1 pr-2">
+          <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+          {canDisconnect && (
+            <Button
+              aria-label={`${t.common.remove} ${title}`}
+              disabled={disconnecting}
+              onClick={() => onDisconnect(provider)}
+              size="icon-xs"
+              title={`${t.common.remove} ${title}`}
+              type="button"
+              variant="ghost"
+            >
+              {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
+            </Button>
+          )}
+          {terminalDisconnect && (
+            <Button
+              aria-label={`${copy.disconnect} ${title}`}
+              onClick={() => onTerminalDisconnect(provider)}
+              size="icon-xs"
+              title={copy.disconnectInTerminal}
+              type="button"
+              variant="ghost"
+            >
+              <Trash2 className="size-3" />
+            </Button>
+          )}
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
-        {showHint && (
-          <p className="mt-0.5 truncate text-[0.68rem] leading-5 text-muted-foreground/70">
-            {provider.flow === 'external' ? copy.removeExternalGeneric(title) : copy.removeKeyManaged(title)}
-          </p>
-        )}
-      </RowButton>
-      <div className="flex items-center gap-1 pr-2">
-        <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
-        {canDisconnect && (
-          <Button
-            aria-label={`${t.common.remove} ${title}`}
-            disabled={disconnecting}
-            onClick={() => onDisconnect(provider)}
-            size="icon-xs"
-            title={`${t.common.remove} ${title}`}
-            type="button"
-            variant="ghost"
-          >
-            {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
-          </Button>
-        )}
-        {terminalDisconnect && (
-          <Button
-            aria-label={`${copy.disconnect} ${title}`}
-            onClick={() => onTerminalDisconnect(provider)}
-            size="icon-xs"
-            title={copy.disconnectInTerminal}
-            type="button"
-            variant="ghost"
-          >
-            <Trash2 className="size-3" />
-          </Button>
-        )}
       </div>
+      {/* Only shown when the provider has >1 pooled credential — a single
+          account needs no "which one is active" affordance. */}
+      {poolEntries && poolEntries.length > 1 && <CredentialPoolStatus entries={poolEntries} />}
     </div>
   )
 }
@@ -341,6 +356,8 @@ export function ProvidersSettings({
   const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
+  const [poolByProvider, setPoolByProvider] = useState<Record<string, CredentialPoolEntry[]>>({})
+  const [activating, setActivating] = useState<null | { index: number; provider: string }>(null)
   const [openProvider, setOpenProvider] = useState<null | string>(null)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)
   // Free-text filter for the API-keys view (provider name / env-var key / desc).
@@ -377,6 +394,45 @@ export function ProvidersSettings({
 
     return () => void (cancelled = true)
   }, [onboardingActive])
+
+  // Rotation-pool status is a lightweight, best-effort readout (redacted, no
+  // secrets) — used only to annotate connected provider rows that have more
+  // than one stored credential. Loads once; skipped entirely if it fails.
+  const refreshPool = useCallback(async () => {
+    try {
+      const { providers } = await getCredentialPool()
+      setPoolByProvider(Object.fromEntries(providers.map(p => [p.provider, p.entries])))
+    } catch {
+      // Ignore — falls back to the plain connected row with no pool detail.
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshPool()
+  }, [refreshPool])
+
+  // Manual "use this account" — the user's alternative to switching Copilot
+  // (or any pooled provider) via the CLI. Re-fetches afterwards so the status
+  // list reflects the new active entry.
+  const handleActivate = useCallback(
+    async (provider: string, index: number) => {
+      setActivating({ index, provider })
+      try {
+        await activateCredentialPoolEntry(provider, index)
+        await refreshPool()
+      } catch (err) {
+        notify({
+          kind: 'error',
+          title: t.settings.providers.removedTitle,
+          message: err instanceof Error ? err.message : String(err)
+        })
+      } finally {
+        setActivating(null)
+      }
+    },
+    [refreshPool, t]
+  )
+
 
   // External (CLI-managed) providers can't be cleared via the API by design —
   // Hermes never deletes creds another tool owns behind a silent API call.
@@ -468,11 +524,16 @@ export function ProvidersSettings({
               <div className="grid gap-2">
                 {visibleGroups.map(group => (
                   <ProviderKeyRows
+                    activatingIndex={
+                      activating && activating.provider === group.poolProvider ? activating.index : undefined
+                    }
                     expanded={openProvider === group.name}
                     group={group}
                     key={group.name}
+                    onActivate={group.poolProvider ? index => void handleActivate(group.poolProvider!, index) : undefined}
                     onExpand={() => setOpenProvider(group.name)}
                     onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                    poolEntries={group.poolProvider ? poolByProvider[group.poolProvider] : undefined}
                     rowProps={rowProps}
                   />
                 ))}
@@ -501,6 +562,7 @@ export function ProvidersSettings({
         onDisconnect={provider => void handleDisconnect(provider)}
         onTerminalDisconnect={handleTerminalDisconnect}
         onWantApiKey={() => onViewChange('keys')}
+        poolByProvider={poolByProvider}
         providers={oauthProviders}
       />
     </SettingsContent>
@@ -513,6 +575,7 @@ interface ProviderKeyGroup {
   docsUrl?: string
   hasAnySet: boolean
   name: string
+  poolProvider?: string
   primary: [string, EnvVarInfo]
   priority: number
 }

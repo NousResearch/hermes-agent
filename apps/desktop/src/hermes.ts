@@ -12,6 +12,7 @@ import type {
   BackendUpdateCheckResponse,
   ComputerUseStatus,
   ConfigSchemaResponse,
+  CredentialPoolResponse,
   CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,
@@ -948,6 +949,26 @@ export function listOAuthProviders(): Promise<OAuthProvidersResponse> {
   return window.hermesDesktop.api<OAuthProvidersResponse>({
     ...profileScoped(),
     path: '/api/providers/oauth'
+  })
+}
+
+// Redacted rotation-pool status per provider — lets Settings show which
+// stored credential (label) is actually active when a provider has more than
+// one (e.g. a personal + a shared Copilot account).
+export function getCredentialPool(): Promise<CredentialPoolResponse> {
+  return window.hermesDesktop.api<CredentialPoolResponse>({
+    ...profileScoped(),
+    path: '/api/credentials/pool'
+  })
+}
+
+// Manual "use this account" — forces `index` (1-based, per getCredentialPool)
+// to be the next credential the pool selects for `provider`.
+export function activateCredentialPoolEntry(provider: string, index: number): Promise<{ ok: boolean; provider: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; provider: string }>({
+    ...profileScoped(),
+    path: `/api/credentials/pool/${encodeURIComponent(provider)}/${index}/activate`,
+    method: 'POST'
   })
 }
 

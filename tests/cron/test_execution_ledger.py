@@ -39,6 +39,28 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
     assert persisted == [completed]
 
 
+def test_execution_ledger_isolated_across_sequential_profile_contexts(tmp_path):
+    """One imported module must follow each active cron store in turn."""
+    import cron.executions as executions
+    from cron.jobs import use_cron_store
+
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+
+    with use_cron_store(profile_a):
+        executions.create_execution("job-a", source="builtin")
+    with use_cron_store(profile_b):
+        executions.create_execution("job-b", source="builtin")
+
+    with use_cron_store(profile_a):
+        assert [row["job_id"] for row in executions.list_executions()] == ["job-a"]
+    with use_cron_store(profile_b):
+        assert [row["job_id"] for row in executions.list_executions()] == ["job-b"]
+
+    assert (profile_a / "cron" / "executions.db").is_file()
+    assert (profile_b / "cron" / "executions.db").is_file()
+
+
 def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     record = executions.create_execution("immutable", source="builtin")

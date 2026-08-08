@@ -141,6 +141,39 @@ class TestStore:
         assert _add(store, key="b") is None
 
 
+def test_suggestions_isolated_across_sequential_profile_contexts(tmp_path):
+    """One imported module must follow each active cron store in turn."""
+    import cron.suggestions as suggestions
+    from cron.jobs import use_cron_store
+
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+
+    with use_cron_store(profile_a):
+        assert _add(suggestions, key="a", title="Profile A") is not None
+    with use_cron_store(profile_b):
+        assert _add(suggestions, key="b", title="Profile B") is not None
+
+    with use_cron_store(profile_a):
+        assert [item["dedup_key"] for item in suggestions.load_suggestions()] == ["a"]
+    with use_cron_store(profile_b):
+        assert [item["dedup_key"] for item in suggestions.load_suggestions()] == ["b"]
+
+    assert (profile_a / "cron" / "suggestions.json").is_file()
+    assert (profile_b / "cron" / "suggestions.json").is_file()
+
+
+def test_explicit_suggestions_file_monkeypatch_still_wins(tmp_path, monkeypatch):
+    import cron.suggestions as suggestions
+
+    patched_file = tmp_path / "patched" / "suggestions.json"
+    monkeypatch.setattr(suggestions, "SUGGESTIONS_FILE", patched_file)
+
+    assert _add(suggestions, key="patched") is not None
+    assert patched_file.is_file()
+    assert [item["dedup_key"] for item in suggestions.load_suggestions()] == ["patched"]
+
+
 class TestCatalog:
     def test_seed_registers_all_entries(self, store):
         from cron.suggestion_catalog import CATALOG, seed_catalog_suggestions

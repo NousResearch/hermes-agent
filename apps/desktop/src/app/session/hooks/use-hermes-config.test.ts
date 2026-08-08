@@ -10,12 +10,14 @@ import {
   $currentFastMode,
   $currentReasoningEffort,
   $defaultReasoningEffort,
+  $displayTimestampOptions,
   markComposerSelectionManual,
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModelSource,
   setCurrentReasoningEffort,
-  setDefaultReasoningEffort
+  setDefaultReasoningEffort,
+  setDisplayTimestampOptions
 } from '@/store/session'
 
 import { useHermesConfig } from './use-hermes-config'
@@ -48,6 +50,7 @@ describe('useHermesConfig refreshHermesConfig', () => {
     setCurrentModelSource('')
     setCurrentReasoningEffort('')
     setDefaultReasoningEffort('')
+    setDisplayTimestampOptions({ enabled: false, format: '%H:%M' })
     setTerminalFontFamilyFromConfig('')
     persistString(WORKSPACE_CWD_KEY, null)
   })
@@ -164,6 +167,17 @@ describe('useHermesConfig refreshHermesConfig', () => {
     })
 
     expect($terminalFontFamily.get()).toBe('MesloLGS NF')
+  })
+
+  it('publishes display timestamp settings for already-mounted transcript surfaces', async () => {
+    mockConfig({ display: { timestamp_format: '%Y-%m-%d %H:%M:%S', timestamps: true } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($displayTimestampOptions.get()).toEqual({ enabled: true, format: '%Y-%m-%d %H:%M:%S' })
   })
 
   it('does not let an older profile response restore its terminal font', async () => {

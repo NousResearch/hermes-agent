@@ -284,7 +284,9 @@ export const applyDisplay = (
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
-    streaming: d.streaming !== false
+    streaming: d.streaming !== false,
+    timestampFormat: typeof d.timestamp_format === 'string' && d.timestamp_format ? d.timestamp_format : '%H:%M',
+    timestamps: !!d.timestamps
   })
 }
 

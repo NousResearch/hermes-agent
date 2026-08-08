@@ -17,7 +17,7 @@ import logging
 import os
 from datetime import datetime
 from hermes_constants import get_config_path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -131,5 +131,41 @@ def now() -> datetime:
         return datetime.now(tz)
     # No timezone configured — use server-local (still tz-aware)
     return datetime.now().astimezone()
+
+
+def format_display_timestamp(
+    value: Any = None,
+    *,
+    enabled: bool,
+    format_string: str = "%H:%M",
+    tz=None,
+) -> str:
+    """Format a human-facing timestamp with Hermes' ``strftime`` contract.
+
+    This helper is display-only: it returns an unadorned label and never
+    mutates message content or protocol payloads. ``value`` may be a datetime
+    or Unix epoch seconds; omitting it uses the Hermes clock. Callers own the
+    surrounding UI decoration (brackets, dim styling, separators).
+    """
+    if not enabled:
+        return ""
+
+    if value is None:
+        dt = now()
+    elif isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, (int, float)):
+        dt = datetime.fromtimestamp(float(value), tz=tz)
+        if tz is None:
+            dt = dt.astimezone()
+    else:
+        return ""
+
+    if tz is not None:
+        if dt.tzinfo is None:
+            dt = dt.astimezone()
+        dt = dt.astimezone(tz)
+
+    return dt.strftime(str(format_string or "%H:%M"))
 
 

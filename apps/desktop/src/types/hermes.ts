@@ -331,6 +331,8 @@ export interface HermesConfig {
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
+    timestamp_format?: string
+    timestamps?: boolean
   }
   desktop?: {
     repo_scan_enabled?: boolean

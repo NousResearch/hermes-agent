@@ -30,7 +30,7 @@ import type {
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
-import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
+import { appendTranscriptMessage, capTranscriptHistory, stampHumanMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -437,7 +437,7 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const appendMessage = useCallback(
-    (msg: Msg) => setHistoryItems(prev => appendTranscriptMessage(prev, msg)),
+    (msg: Msg) => setHistoryItems(prev => appendTranscriptMessage(prev, stampHumanMessage(msg))),
     [setHistoryItems]
   )
 

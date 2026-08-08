@@ -1,11 +1,12 @@
 import { useStore } from '@nanostores/react'
-import { memo } from 'react'
+import { memo, useRef } from 'react'
 
 import type { AppLayoutProgressProps } from '../app/interfaces.js'
 import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { blockRenders } from '../domain/blockLayout.js'
 import { appendToolShelfMessage } from '../lib/liveProgress.js'
+import { streamingAssistantMessage } from '../lib/messages.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { MessageLine } from './messageLine.js'
@@ -37,6 +38,16 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   const activeTools = useTurnSelector(state => state.tools)
   const showStreamingArea = Boolean(streaming)
 
+  const streamingTimestamp = useRef<number | undefined>(undefined)
+
+  if (showStreamingArea && streamingTimestamp.current === undefined) {
+    streamingTimestamp.current = Date.now()
+  } else if (!showStreamingArea) {
+    streamingTimestamp.current = undefined
+  }
+
+  const streamingStartedAt = streamingTimestamp.current
+
   if (!progress.showProgressArea && !showStreamingArea && !activeTools.length) {
     return null
   }
@@ -52,11 +63,11 @@ export const StreamingAssistant = memo(function StreamingAssistant({
     blocks.push({ key: 'active-tools', msg: { kind: 'trail', role: 'system', text: '' }, tools: activeTools })
   }
 
-  if (showStreamingArea) {
+  if (streaming && streamingStartedAt !== undefined) {
     blocks.push({
       isStreaming: true,
       key: 'streaming',
-      msg: { role: 'assistant', text: streaming, ...(streamPendingTools.length && { tools: streamPendingTools }) }
+      msg: streamingAssistantMessage(streaming, streamingStartedAt, streamPendingTools)
     })
   } else if (streamPendingTools.length) {
     blocks.push({ key: 'pending-tools', msg: { kind: 'trail', role: 'system', text: '', tools: streamPendingTools } })
@@ -79,7 +90,9 @@ export const StreamingAssistant = memo(function StreamingAssistant({
             msg={block.msg}
             prev={prev}
             sections={sections}
+            showTimestamps={ui.timestamps}
             t={ui.theme}
+            timestampFormat={ui.timestampFormat}
             {...(block.tools ? { tools: block.tools } : {})}
           />
         )

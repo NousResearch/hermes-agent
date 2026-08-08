@@ -119,6 +119,8 @@ export interface Msg {
   panelData?: PanelData
   role: Role
   text: string
+  /** Display-only epoch milliseconds; never folded into message text. */
+  timestamp?: number
   thinking?: string
   // MoA reference-model output stored in `thinking` (see turnController's
   // recordMoaReference): unlike ordinary model reasoning, this is the

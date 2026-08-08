@@ -89,6 +89,8 @@ export interface ConfigDisplayConfig {
   show_cost?: boolean
   show_reasoning?: boolean
   streaming?: boolean
+  timestamp_format?: string
+  timestamps?: boolean
   thinking_mode?: string
   /**
    * Nudge the user toward the /agents spawn-tree dashboard the first time a

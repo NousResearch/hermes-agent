@@ -1,4 +1,5 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
+import { formatDisplayTimestamp } from '@hermes/shared/display-timestamp'
 import { memo, useState } from 'react'
 
 import { TERMUX_TUI_MODE } from '../config/env.js'
@@ -37,7 +38,9 @@ export const MessageLine = memo(function MessageLine({
   msg,
   prev,
   sections,
+  showTimestamps = false,
   t,
+  timestampFormat = '%H:%M',
   tools = []
 }: MessageLineProps) {
   // Per-section overrides win over the global mode, so resolve each section
@@ -142,6 +145,14 @@ export const MessageLine = memo(function MessageLine({
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
   const gutterWidth = transcriptGutterWidth(msg.role, t.brand.prompt)
+
+  const timestamp =
+    msg.role === 'user' || msg.role === 'assistant'
+      ? formatDisplayTimestamp(msg.timestamp === undefined ? undefined : new Date(msg.timestamp), {
+          enabled: showTimestamps,
+          format: timestampFormat
+        })
+      : ''
 
   const showDetails =
     (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) || (thinkingMode !== 'hidden' && Boolean(thinking))
@@ -273,7 +284,14 @@ export const MessageLine = memo(function MessageLine({
           </Text>
         </NoSelect>
 
-        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
+        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>
+          {timestamp && (
+            <Text color={t.color.muted} dimColor>
+              [{timestamp}]{' '}
+            </Text>
+          )}
+          {content}
+        </Box>
       </Box>
     </Box>
   )
@@ -306,6 +324,8 @@ interface MessageLineProps {
   // the transcript or when spacing is irrelevant.
   prev?: Msg
   sections?: SectionVisibility
+  showTimestamps?: boolean
   t: Theme
+  timestampFormat?: string
   tools?: ActiveTool[]
 }

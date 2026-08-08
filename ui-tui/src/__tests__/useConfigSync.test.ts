@@ -29,6 +29,8 @@ describe('applyDisplay', () => {
             inline_diffs: false,
             show_reasoning: true,
             streaming: false,
+            timestamp_format: '%Y-%m-%d %H:%M:%S',
+            timestamps: true,
             tui_compact: true,
             tui_statusbar: false
           }
@@ -45,6 +47,8 @@ describe('applyDisplay', () => {
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(false)
+    expect(s.timestamps).toBe(true)
+    expect(s.timestampFormat).toBe('%Y-%m-%d %H:%M:%S')
   })
 
   it('coerces legacy true + "on" alias to top', () => {
@@ -68,6 +72,8 @@ describe('applyDisplay', () => {
     expect(s.showReasoning).toBe(false)
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
+    expect(s.timestamps).toBe(false)
+    expect(s.timestampFormat).toBe('%H:%M')
     expect(s.sections).toEqual({})
   })
 

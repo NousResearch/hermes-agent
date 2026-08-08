@@ -1,5 +1,6 @@
 import importlib
 import sys
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 
@@ -51,6 +52,32 @@ def _make_cli(user_message_preview=None):
 
 
 class TestSubmittedUserMessagePreview:
+    def test_timestamp_uses_canonical_formatter_and_configured_format(self):
+        cli = _make_cli()
+        cli.show_timestamps = True
+        cli.timestamp_format = "%Y-%m-%d %H:%M:%S"
+        fixed = datetime(2026, 8, 8, 19, 4, 5, tzinfo=timezone.utc)
+
+        with patch.object(_cli_mod.hermes_time, "now", return_value=fixed):
+            rendered = cli._format_submitted_user_message_preview("hello")
+
+        assert "2026-08-08 19:04:05" in rendered
+
+    def test_single_line_print_path_keeps_the_visible_timestamp(self):
+        cli = _make_cli()
+        cli.show_timestamps = True
+        cli.timestamp_format = "%Y-%m-%d %H:%M:%S"
+        fixed = datetime(2026, 8, 8, 19, 4, 5, tzinfo=timezone.utc)
+        console = MagicMock()
+
+        with (
+            patch.object(_cli_mod, "ChatConsole", return_value=console),
+            patch.object(_cli_mod.hermes_time, "now", return_value=fixed),
+        ):
+            cli._print_user_message_preview("hello")
+
+        assert "2026-08-08 19:04:05" in console.print.call_args_list[-1].args[0]
+
     def test_default_preview_shows_first_two_lines_and_last_two_lines(self):
         cli = _make_cli()
 

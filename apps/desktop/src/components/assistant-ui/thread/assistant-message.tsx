@@ -6,6 +6,7 @@ import {
   useAuiState,
   useMessageRuntime
 } from '@assistant-ui/react'
+import { formatDisplayTimestamp } from '@hermes/shared/display-timestamp'
 import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useMemo, useState } from 'react'
 
@@ -33,6 +34,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
+import { $displayTimestampOptions } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
@@ -302,6 +304,7 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
 
 const MessageAge: FC = () => {
   const { t } = useI18n()
+  const timestampOptions = useStore($displayTimestampOptions)
   const createdAt = useAuiState(s => s.message.createdAt)
   const date = createdAt ? new Date(createdAt) : null
 
@@ -315,7 +318,7 @@ const MessageAge: FC = () => {
       className="px-0.5 text-[0.6875rem] tabular-nums text-muted-foreground"
       title={formatMessageTimestamp(date, t.assistant.thread) || undefined}
     >
-      {formatAgo(date.getTime(), t.agents)}
+      {timestampOptions.enabled ? formatDisplayTimestamp(date, timestampOptions) : formatAgo(date.getTime(), t.agents)}
     </span>
   )
 }

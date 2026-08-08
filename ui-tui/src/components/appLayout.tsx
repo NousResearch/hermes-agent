@@ -231,7 +231,9 @@ const TranscriptPane = memo(function TranscriptPane({
                     sections: ui.sections
                   })}
                   sections={ui.sections}
+                  showTimestamps={ui.timestamps}
                   t={ui.theme}
+                  timestampFormat={ui.timestampFormat}
                 />
               )}
 

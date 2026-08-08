@@ -1,4 +1,6 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { formatDisplayTimestamp } from '@hermes/shared/display-timestamp'
+import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
@@ -13,6 +15,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $displayTimestampOptions } from '@/store/session'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
 
@@ -116,6 +119,9 @@ export const UserMessage: FC<{
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
   const threadRunning = useAuiState(s => s.thread.isRunning)
+  const createdAt = useAuiState(s => s.message.createdAt)
+  const timestampOptions = useStore($displayTimestampOptions)
+  const timestamp = formatDisplayTimestamp(createdAt ? new Date(createdAt) : undefined, timestampOptions)
 
   const latestUserId = useAuiState(s => {
     for (let i = s.thread.messages.length - 1; i >= 0; i--) {
@@ -225,6 +231,9 @@ export const UserMessage: FC<{
         data-slot="aui_user-message-root"
       >
         <ProcessNotificationNote text={messageText.trim()} />
+        {timestamp && (
+          <span className="px-1.5 text-right text-[0.6875rem] tabular-nums text-muted-foreground">{timestamp}</span>
+        )}
       </MessagePrimitive.Root>
     )
   }
@@ -406,6 +415,9 @@ export const UserMessage: FC<{
               onRetract={() => react(null)}
               reactions={shownReactions}
             />
+            {timestamp && (
+              <span className="px-1.5 text-right text-[0.6875rem] tabular-nums text-muted-foreground">{timestamp}</span>
+            )}
             <BranchPickerPrimitive.Root
               className={cn(
                 'checkpoint-container flex items-center gap-1 pb-0 pt-1 pl-1.5 text-[0.75rem] leading-none text-(--ui-text-tertiary)',

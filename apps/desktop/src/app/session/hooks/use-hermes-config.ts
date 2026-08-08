@@ -13,6 +13,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setDefaultReasoningEffort,
+  setDisplayTimestampOptions,
   setIntroPersonality
 } from '@/store/session'
 import {
@@ -75,6 +76,13 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         )
 
         setIntroPersonality(personality)
+        setDisplayTimestampOptions({
+          enabled: config.display?.timestamps === true,
+          format:
+            typeof config.display?.timestamp_format === 'string' && config.display.timestamp_format
+              ? config.display.timestamp_format
+              : '%H:%M'
+        })
         // Active sessions keep their per-session value; standalone falls back to config.
         setCurrentPersonality(prev => (activeSessionIdRef.current ? prev || personality : personality))
         setAvailablePersonalities([

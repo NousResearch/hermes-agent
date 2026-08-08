@@ -343,6 +343,8 @@ export interface UiState {
   status: string
   statusBar: StatusBarMode
   streaming: boolean
+  timestampFormat: string
+  timestamps: boolean
   theme: Theme
   usage: Usage
 }

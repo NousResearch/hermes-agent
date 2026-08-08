@@ -34,6 +34,7 @@ export {
   type SettlementDeps,
   type SettlementOutcome
 } from './charge-settlement'
+export { type DisplayTimestampOptions, formatDisplayTimestamp } from './display-timestamp'
 export {
   type ConnectionState,
   type GatewayClientOptions,

@@ -6548,6 +6548,55 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("No explicit MCP servers provided")
         return []
 
+    # HERMES_SAFE_MODE loads no config servers (_load_mcp_config returns {}),
+    # so the config-priority lookup below would be empty there. Refuse dynamic
+    # registration outright in safe mode: the point of SAFE_MODE is minimal
+    # exposure, and a client-supplied MCP definition is a local process launch
+    # request (ACP session ``mcpServers``, #71948). Deliberately fail-closed:
+    # no try/except around this guard — a failure to evaluate safe mode must
+    # not silently admit a dynamic server.
+    from utils import env_var_enabled as _env_enabled
+    if _env_enabled("HERMES_SAFE_MODE"):
+        for name in sorted(servers):
+            logger.warning(
+                "MCP server '%s': refusing registration in "
+                "HERMES_SAFE_MODE (dynamic MCP servers are disabled); "
+                "skipping",
+                name,
+            )
+        return []
+
+    # Honor explicit user opt-outs from config.yaml. ``register_mcp_servers``
+    # is also called with client-supplied configs — ACP sessions pass their
+    # own ``mcpServers`` list (acp_adapter/server.py:_register_session_mcp_servers)
+    # that never carries an ``enabled`` key, so a co-installed app could
+    # force-start a server the user disabled (#71948). config.yaml is the
+    # single source of truth: ``mcp_servers.<name>.enabled: false`` overrides
+    # any registration attempt, matching the discovery path which pre-filters
+    # the same key before calling us (lines 6483-6489, 6559-6574).
+    user_servers = _load_mcp_config()
+    disabled_by_user = {
+        name
+        for name, cfg in user_servers.items()
+        if isinstance(cfg, dict)
+        and not _parse_boolish(cfg.get("enabled", True), default=True)
+    }
+    if disabled_by_user:
+        for name in sorted(disabled_by_user & set(servers)):
+            logger.info(
+                "MCP server '%s': registration requested (e.g. via an ACP "
+                "session) but disabled in config.yaml "
+                "(mcp_servers.%s.enabled: false); skipping",
+                name, name,
+            )
+        servers = {
+            name: cfg for name, cfg in servers.items()
+            if name not in disabled_by_user
+        }
+        if not servers:
+            logger.debug("All explicit MCP servers are disabled in config.yaml")
+            return []
+
     # Only attempt servers that aren't already connected (or currently
     # connecting) and are enabled.  Checking ``_server_connecting`` prevents
     # duplicate subprocess spawns when ``discover_mcp_tools()`` is called

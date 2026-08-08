@@ -1,0 +1,307 @@
+<!doctype html>
+<!--
+  Composer button visual evidence — PR #56076
+
+  Renders the actual composer control row (mic + speaker + send) in the
+  pre-PR and post-PR states, side by side, in light and dark themes.
+
+  Class strings mirror `apps/desktop/src/app/chat/composer/controls.tsx`
+  and `apps/desktop/src/styles.css` verbatim so the only thing that
+  differs between the two states is `--composer-control-primary-size`:
+
+    PRE-PR  : --composer-control-size: 1.5rem
+              --composer-control-primary-size: 1.625rem
+              PRIMARY_ICON_BTN = 'size-(--composer-control-primary-size,var(--composer-control-size)) ...'
+
+    POST-PR : --composer-control-size: 1.5rem
+              (no --composer-control-primary-size)
+              PRIMARY_ICON_BTN = 'size-(--composer-control-size) ...'
+
+  Open this in any browser. No build step. No npm install.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PR #56076 — composer button visual evidence</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --dt-background: #ffffff;
+      --dt-foreground: #1a1a1a;
+      --dt-card: #f6f6f7;
+      --dt-card-foreground: #1a1a1a;
+      --dt-muted: #f0f0f1;
+      --dt-muted-foreground: #6b6b70;
+      --dt-primary: #ff7a3d;
+      --dt-primary-foreground: #ffffff;
+      --dt-accent: #e9e9eb;
+      --dt-accent-foreground: #1a1a1a;
+      --dt-border: #e5e5e7;
+      --dt-input: #e5e5e7;
+      --dt-ring: #1a1a1a;
+      --dt-midground: #f6f6f7;
+      --dt-midground-foreground: #1a1a1a;
+
+      --ui-bg-quaternary: #f0f0f1;
+      --ui-text-primary: #1a1a1a;
+      --ui-text-secondary: #4a4a4f;
+      --ui-text-tertiary: #6b6b70;
+      --ui-stroke-secondary: rgba(0, 0, 0, 0.12);
+      --chrome-action-hover: rgba(0, 0, 0, 0.05);
+
+      /* Composer tokens — shared between states */
+      --composer-width: 48.75rem;
+      --composer-control-size: 1.5rem;
+      --composer-control-gap: 0.25rem;
+      --composer-surface-pad-x: 0.5rem;
+      --composer-surface-pad-y: 0.3125rem;
+
+      /* Composer pill surface — approximated from the renderer's CSS */
+      --composer-pill-bg: var(--dt-card);
+      --composer-pill-radius: 24px;
+    }
+    html.dark {
+      color-scheme: dark;
+      --dt-background: #15151a;
+      --dt-foreground: #f0f0f1;
+      --dt-card: #1f1f25;
+      --dt-card-foreground: #f0f0f1;
+      --dt-muted: #2a2a32;
+      --dt-muted-foreground: #9a9aa3;
+      --dt-primary: #ff7a3d;
+      --dt-primary-foreground: #ffffff;
+      --dt-accent: #2a2a32;
+      --dt-accent-foreground: #f0f0f1;
+      --dt-border: #2e2e36;
+      --dt-input: #2e2e36;
+      --dt-ring: #f0f0f1;
+
+      --ui-bg-quaternary: #2a2a32;
+      --ui-text-primary: #f0f0f1;
+      --ui-text-secondary: #c0c0c8;
+      --ui-text-tertiary: #9a9aa3;
+      --ui-stroke-secondary: rgba(255, 255, 255, 0.14);
+      --chrome-action-hover: rgba(255, 255, 255, 0.06);
+
+      --composer-pill-bg: var(--dt-card);
+    }
+
+    html, body { margin: 0; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+      color: var(--dt-foreground);
+      background: var(--dt-background);
+      padding: 32px;
+      display: grid;
+      gap: 32px;
+    }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.005em; }
+    h2 { font-size: 13px; font-weight: 600; margin: 0 0 12px; letter-spacing: 0.02em; text-transform: uppercase; color: var(--ui-text-tertiary); }
+    p { font-size: 12px; line-height: 1.55; color: var(--ui-text-secondary); margin: 0 0 16px; max-width: 60ch; }
+
+    /* Composer pill surface (mirrors the real composer's container) */
+    .composer-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: min(var(--composer-width), 100%);
+      padding: var(--composer-surface-pad-y) var(--composer-surface-pad-x);
+      border-radius: var(--composer-pill-radius);
+      background: var(--composer-pill-bg);
+      box-shadow: 0 0.0625rem 0.125rem rgba(0,0,0,0.05), inset 0 0 0 0.0625rem var(--ui-stroke-secondary);
+    }
+    .composer-pill .input {
+      flex: 1;
+      height: 1.625rem;
+      padding: 0 8px;
+      color: var(--ui-text-tertiary);
+      font-size: 13px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+    }
+    .composer-pill .controls {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: var(--composer-control-gap);
+      flex-shrink: 0;
+    }
+
+    /* Icon glyphs (inline SVG so the file renders without external assets) */
+    .glyph { width: 14px; height: 14px; display: block; }
+
+    /* GHOST_ICON_BTN — derived verbatim from controls.tsx (post-07e0bb8 commit) */
+    .ghost {
+      width: var(--composer-control-size);
+      height: var(--composer-control-size);
+      flex-shrink: 0;
+      border-radius: 6px; /* rounded-md per ICON_BTN */
+      padding: 0;
+      color: var(--ui-text-tertiary);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 100ms ease, color 100ms ease;
+    }
+    .ghost:hover { background: var(--chrome-action-hover); color: var(--ui-text-primary); }
+
+    /* PRIMARY_ICON_BTN — pre-PR state: 1.625rem + rounded-full circle */
+    .primary-pre {
+      width: var(--composer-control-primary-size, var(--composer-control-size));
+      height: var(--composer-control-primary-size, var(--composer-control-size));
+      flex-shrink: 0;
+      border-radius: 9999px;
+      padding: 0;
+      background: var(--dt-foreground);
+      color: var(--dt-background);
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 100ms ease;
+    }
+    .primary-pre:hover { background: color-mix(in srgb, var(--dt-foreground) 90%, transparent); }
+
+    /* PRIMARY_ICON_BTN — post-PR state: 1.5rem + rounded-full circle */
+    .primary-post {
+      width: var(--composer-control-size);
+      height: var(--composer-control-size);
+      flex-shrink: 0;
+      border-radius: 9999px;
+      padding: 0;
+      background: var(--dt-foreground);
+      color: var(--dt-background);
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 100ms ease;
+    }
+    .primary-post:hover { background: color-mix(in srgb, var(--dt-foreground) 90%, transparent); }
+
+    .pre  { --composer-control-primary-size: 1.625rem; }
+    .post { /* no --composer-control-primary-size */ }
+
+    .pair { display: grid; gap: 16px; }
+    .row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+
+    .label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--ui-text-tertiary);
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    .label .size { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--ui-text-tertiary); }
+
+    .theme-toggle {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      padding: 6px 12px;
+      font-size: 11px;
+      font-weight: 500;
+      background: var(--dt-card);
+      color: var(--ui-text-primary);
+      border: 1px solid var(--ui-stroke-secondary);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .legend {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      font-size: 11px;
+      color: var(--ui-text-tertiary);
+      margin-top: 4px;
+    }
+    .legend code {
+      font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+      background: var(--dt-muted);
+      padding: 1px 6px;
+      border-radius: 3px;
+      color: var(--ui-text-secondary);
+    }
+  </style>
+</head>
+<body>
+  <button class="theme-toggle" id="themeToggle" type="button">Toggle theme</button>
+
+  <header>
+    <h1>PR #56076 — composer control button visual evidence</h1>
+    <p>
+      Renders the actual three-button composer row (mic / speaker / send) with the exact class
+      strings from <code>apps/desktop/src/app/chat/composer/controls.tsx</code> in two states:
+    </p>
+    <div class="legend">
+      <span><code>PRE</code> — <code>--composer-control-primary-size: 1.625rem</code> (current main, commit 07e0bb8)</span>
+      <span><code>POST</code> — primary removed, all controls at <code>--composer-control-size: 1.5rem</code></span>
+    </div>
+  </header>
+
+  <section class="pair">
+    <h2>Pre-PR (current main) — 1.625rem primary, ghost controls 1.5rem</h2>
+    <div class="row pre">
+      <div class="label"><span>PRE</span><span class="size">primary 1.625rem · ghost 1.5rem · gap 0.25rem</span></div>
+      <div class="composer-pill">
+        <span class="input">Ask Hermes anything</span>
+        <div class="controls">
+          <button class="ghost" type="button" aria-label="Dictate">
+            <svg class="glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.5a2.5 2.5 0 0 0-2.5 2.5v4a2.5 2.5 0 0 0 5 0V4A2.5 2.5 0 0 0 8 1.5Zm-4 6a4 4 0 0 0 8 0h-1a3 3 0 1 1-6 0H4Zm4 5.5a.5.5 0 0 0 .5-.5V14h2v.5a.5.5 0 0 1-.5.5h-4a.5.5 0 0 1-.5-.5V14h2v-1.5a.5.5 0 0 0 .5-.5Z"/></svg>
+          </button>
+          <button class="ghost" type="button" aria-label="Toggle auto-speak">
+            <svg class="glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 3v10l5-5-5-5Z"/></svg>
+          </button>
+          <button class="primary-pre" type="submit" aria-label="Send">
+            <svg class="glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="pair">
+    <h2>Post-PR (this fix) — all controls 1.5rem, primary shape + fill preserved</h2>
+    <div class="row post">
+      <div class="label"><span>POST</span><span class="size">primary 1.5rem · ghost 1.5rem · gap 0.25rem</span></div>
+      <div class="composer-pill">
+        <span class="input">Ask Hermes anything</span>
+        <div class="controls">
+          <button class="ghost" type="button" aria-label="Dictate">
+            <svg class="glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.5a2.5 2.5 0 0 0-2.5 2.5v4a2.5 2.5 0 0 0 5 0V4A2.5 2.5 0 0 0 8 1.5Zm-4 6a4 4 0 0 0 8 0h-1a3 3 0 1 1-6 0H4Zm4 5.5a.5.5 0 0 0 .5-.5V14h2v.5a.5.5 0 0 1-.5.5h-4a.5.5 0 0 1-.5-.5V14h2v-1.5a.5.5 0 0 0 .5-.5Z"/></svg>
+          </button>
+          <button class="ghost" type="button" aria-label="Toggle auto-speak">
+            <svg class="glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 3v10l5-5-5-5Z"/></svg>
+          </button>
+          <button class="primary-post" type="submit" aria-label="Send">
+            <svg class="glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    const root = document.documentElement;
+    const btn = document.getElementById('themeToggle');
+    const params = new URLSearchParams(location.search);
+    if (params.get('theme') === 'dark') root.classList.add('dark');
+    else if (params.get('theme') === 'light') root.classList.remove('dark');
+    else if (localStorage.getItem('theme') === 'dark') root.classList.add('dark');
+    btn.addEventListener('click', () => {
+      root.classList.toggle('dark');
+      localStorage.setItem('theme', root.classList.contains('dark') ? 'dark' : 'light');
+    });
+  </script>
+</body>
+</html>

@@ -14,10 +14,9 @@ import { type RefObject, useEffect } from 'react'
  * page-level property, and the click never reaches the page.
  *
  * So the window itself is made mouse-transparent except where it is genuinely
- * interactive: the bar, always, and everything else only while the composer
- * holds focus — the same line the band and its exit chip draw with
- * `pointer-events`. `forward: true` keeps mousemove flowing while ignoring,
- * which is what lets it re-arm when the cursor comes back to the bar.
+ * interactive: wherever the cursor is over something, and whenever anything in
+ * the window holds focus. `forward: true` keeps mousemove flowing while
+ * ignoring, which is what lets it re-arm when the cursor comes back to the bar.
  */
 export function useHudClickThrough(rootRef: RefObject<HTMLElement | null>): void {
   useEffect(() => {
@@ -34,20 +33,34 @@ export function useHudClickThrough(rootRef: RefObject<HTMLElement | null>): void
     // must not make the bar untouchable until you jiggle the mouse).
     let point: { x: number; y: number } | null = null
 
-    const overBar = () => {
-      const bar = root.querySelector('[data-slot="composer-dock"]')
-
-      if (!bar || !point) {
+    // Hit-test rather than enumerate. Everything the HUD doesn't want to catch
+    // — the shell's dead space, the sheet, the faded band — is already
+    // `pointer-events: none`, so anything the document hands back at this point
+    // is something real: the bar, a control, the exit chip, a popover, a dialog.
+    // Listing those instead is how links and dialogs ended up unclickable, since
+    // portalled overlays live outside the shell and moving focus into one takes
+    // `:focus-within` with it.
+    const overSomething = () => {
+      if (!point) {
         return false
       }
 
-      const rect = bar.getBoundingClientRect()
+      const hit = document.elementFromPoint(point.x, point.y)
 
-      return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom
+      return Boolean(hit) && hit !== root && hit !== document.body && hit !== document.documentElement
     }
 
+    // Focus is asked of the document, not of the shell. A dialog or popover is
+    // portalled to `document.body`, so focus entering one leaves the shell's
+    // `:focus-within` — and a HUD that decides it is unused the moment it opens
+    // a dialog goes mouse-transparent underneath it. Nothing but the HUD lives
+    // in this window, so any focus at all is the HUD in use. `hasFocus` gates it
+    // so a stale `activeElement` — the composer keeps it after you click away to
+    // another app — can't pin the HUD solid forever.
+    const focused = () => document.hasFocus() && document.activeElement !== document.body
+
     const apply = () => {
-      const next = !root.matches(':focus-within') && !overBar()
+      const next = !focused() && !overSomething()
 
       if (ignoring !== next) {
         ignoring = next
@@ -62,14 +75,14 @@ export function useHudClickThrough(rootRef: RefObject<HTMLElement | null>): void
 
     apply()
     window.addEventListener('mousemove', onMove)
-    root.addEventListener('focusin', apply)
-    root.addEventListener('focusout', apply)
+    document.addEventListener('focusin', apply)
+    document.addEventListener('focusout', apply)
 
     return () => {
       setIgnoreMouse(false)
       window.removeEventListener('mousemove', onMove)
-      root.removeEventListener('focusin', apply)
-      root.removeEventListener('focusout', apply)
+      document.removeEventListener('focusin', apply)
+      document.removeEventListener('focusout', apply)
     }
   }, [rootRef])
 }

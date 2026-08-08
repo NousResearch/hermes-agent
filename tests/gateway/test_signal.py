@@ -733,13 +733,14 @@ class TestSignalStopTyping:
 # ---------------------------------------------------------------------------
 
 class TestSignalTypingBackoff:
-    """When base.py's _keep_typing refresh loop calls send_typing every ~2s
-    and the recipient is unreachable (NETWORK_FAILURE), the adapter must:
+    """When base.py's _keep_typing refresh loop calls send_typing on the
+    Signal cadence (TYPING_INTERVAL) and the recipient is unreachable
+    (NETWORK_FAILURE), the adapter must:
 
     - log WARNING only for the first failure (subsequent failures use DEBUG
       via log_failures=False on the _rpc call)
     - after 3 consecutive failures, skip the RPC entirely during an
-      exponential cooldown window instead of hammering signal-cli every 2s
+      exponential cooldown window instead of hammering signal-cli every tick
     - reset counters on a successful sendTyping
     - reset counters when _stop_typing_indicator() is called for the chat
     """
@@ -789,6 +790,115 @@ class TestSignalTypingBackoff:
         await adapter.send_typing("+155****4567")
         await adapter.send_typing("+155****4567")
         assert call_count["n"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Signal typing start path + dual-log false positive (#78972)
+# ---------------------------------------------------------------------------
+
+class TestSignalTypingStartAndSendLogging:
+    """Regression for #78972:
+
+    - Signal must drive ``_keep_typing`` at ``TYPING_INTERVAL`` (8s) so the
+      scaled per-tick timeout can finish a multi-second signal-cli
+      ``sendTyping`` RPC instead of cancelling it at 1.5s.
+    - Final delivery logs once at INFO from base; Signal's post-markdown
+      send log is DEBUG so gateway.log no longer looks like a double-send.
+    """
+
+    @pytest.mark.asyncio
+    async def test_keep_typing_defaults_to_signal_interval(self, monkeypatch):
+        import inspect
+        from gateway.platforms.signal import TYPING_INTERVAL
+
+        adapter = _make_signal_adapter(monkeypatch)
+        sig = inspect.signature(adapter._keep_typing)
+        assert sig.parameters["interval"].default == TYPING_INTERVAL
+
+    @pytest.mark.asyncio
+    async def test_slow_send_typing_completes_under_signal_interval(
+        self, monkeypatch
+    ):
+        """A 2s sendTyping must land when Signal uses its 8s refresh cadence."""
+        adapter = _make_signal_adapter(monkeypatch)
+        completed = []
+
+        async def slow_send_typing(chat_id, metadata=None):
+            await asyncio.sleep(2.0)
+            completed.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send_typing", slow_send_typing)
+        adapter.stop_typing = AsyncMock()
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="+155****4567",
+                stop_event=stop_event,
+            )
+        )
+        await asyncio.sleep(2.5)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=2.0)
+
+        assert completed == ["+155****4567"]
+
+    @pytest.mark.asyncio
+    async def test_final_delivery_single_send_rpc_not_dual_log(
+        self, monkeypatch, caplog
+    ):
+        """One ``send`` RPC for the final reply — dual INFO lines were a
+        logging artifact (base + Signal), not a double delivery."""
+        import logging
+
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.session import SessionSource, build_session_key
+
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.client = object()  # pretend connected
+        mock_rpc, captured = _stub_rpc({"timestamp": 42})
+
+        async def rpc(method, params, rpc_id=None, **kwargs):
+            return await mock_rpc(method, params, rpc_id=rpc_id)
+
+        adapter._rpc = rpc
+
+        async def handler(_event):
+            await asyncio.sleep(0.05)
+            return "Hello **world**"
+
+        adapter.set_message_handler(handler)
+
+        source = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="+155****9999",
+            chat_type="dm",
+            user_id="+155****9999",
+            user_name="tester",
+        )
+        event = MessageEvent(
+            text="hi",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m1",
+        )
+
+        with caplog.at_level(logging.INFO):
+            await adapter._process_message_background(
+                event, build_session_key(source)
+            )
+
+        send_calls = [c for c in captured if c["method"] == "send"]
+        assert len(send_calls) == 1
+        assert send_calls[0]["params"]["message"] == "Hello world"
+
+        sending_info = [
+            r for r in caplog.records
+            if r.levelno == logging.INFO and "Sending response" in r.getMessage()
+        ]
+        # Only base's pre-markdown INFO line — Signal's post-markdown line
+        # is DEBUG now.
+        assert len(sending_info) == 1
 
 
 # ---------------------------------------------------------------------------

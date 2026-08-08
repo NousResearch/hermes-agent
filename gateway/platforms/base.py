@@ -4806,19 +4806,26 @@ class BasePlatformAdapter(ABC):
         for Slack's Assistant API where ``assistant_threads_setStatus`` disables
         the compose box — pausing lets the user type ``/approve`` or ``/deny``.
 
-        Each ``send_typing`` call is bounded by a ~1.5s timeout so a slow
-        network round-trip can't stall the refresh cadence.  Telegram- and
-        Discord-side typing expire after ~5s; if any individual send_typing
-        takes longer than the refresh interval, the bubble would die and
-        stay dead until that call returns.  Abandoning the slow call lets
-        the next tick fire a fresh send_typing on schedule — as long as
-        one of them succeeds within the 5s platform-side window, the bubble
-        stays visible across provider stalls / upstream API timeouts.
+        Each ``send_typing`` call is bounded by a per-tick timeout
+        (``interval - 0.25s``, floored at 0.25s) so a slow network
+        round-trip can't stall the refresh cadence.  Telegram- and
+        Discord-side typing expire after ~5s with the default 2s
+        interval; if any individual send_typing takes longer than the
+        refresh interval, the bubble would die and stay dead until that
+        call returns.  Abandoning the slow call lets the next tick fire
+        a fresh send_typing on schedule — as long as one of them
+        succeeds within the platform-side window, the bubble stays
+        visible across provider stalls / upstream API timeouts.
+
+        The timeout scales with ``interval`` (not a hard 1.5s cap) so
+        platforms that refresh more slowly — e.g. Signal at 8s — can
+        finish a multi-second signal-cli ``sendTyping`` RPC instead of
+        having every attempt cancelled before it lands (#78972).
         """
         # Bound each send_typing round-trip so the refresh cadence isn't
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
-        _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        _send_typing_timeout = max(0.25, interval - 0.25)
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():

@@ -15,10 +15,12 @@ call returns — exactly when the user most needs the "yes, still working"
 signal.
 
 The fix: bound each ``send_typing`` with ``asyncio.wait_for``. If a
-send_typing takes longer than the per-tick budget (default 1.5s when
-interval=2.0), abandon it and let the next scheduled tick fire a fresh
-call. As long as any one of them succeeds within the ~5s platform window,
-the bubble stays visible across provider stalls.
+send_typing takes longer than the per-tick budget (``interval - 0.25s``,
+e.g. 1.75s when interval=2.0), abandon it and let the next scheduled
+tick fire a fresh call. As long as any one of them succeeds within the
+~5s platform window, the bubble stays visible across provider stalls.
+The budget scales with ``interval`` so slower platforms (Signal @ 8s)
+are not cancelled by a hard 1.5s cap (#78972).
 """
 
 import asyncio
@@ -234,3 +236,36 @@ class TestKeepTypingTimeoutPerTick:
             ("discord-chat", True),
         ]
         assert "discord-chat" not in adapter._typing_paused
+
+    @pytest.mark.asyncio
+    async def test_typing_timeout_scales_with_interval(self, monkeypatch):
+        """Per-tick budget must grow with interval so slow platforms
+        (Signal @ 8s) can finish a multi-second sendTyping RPC (#78972)."""
+        adapter = _StubAdapter()
+        completed = []
+
+        async def two_second_send_typing(chat_id, metadata=None):
+            await asyncio.sleep(2.0)
+            completed.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send_typing", two_second_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="signal-chat",
+                interval=8.0,
+                stop_event=stop_event,
+            )
+        )
+        # First tick starts immediately; 2s RPC must finish under the
+        # interval-scaled budget (~7.75s) before we stop the loop.
+        await asyncio.sleep(2.5)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=2.0)
+
+        assert completed == ["signal-chat"], (
+            f"2s send_typing with interval=8 should complete under the "
+            f"scaled timeout, got completed={completed}"
+        )

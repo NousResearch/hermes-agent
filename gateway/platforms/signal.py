@@ -1078,7 +1078,15 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        logger.info("[Signal] Sending response (%d chars) to %s", len(plain_text), chat_id)
+        # DEBUG only — base._process_message_background already logs the
+        # outbound at INFO with the pre-markdown length. Logging again at
+        # INFO with the post-markdown length made every reply look like a
+        # double-send in gateway.log (#78972).
+        logger.debug(
+            "[Signal] Sending response (%d chars plain) to %s",
+            len(plain_text),
+            chat_id,
+        )
         result = await self._rpc("send", params)
 
         if result is not None:
@@ -1123,11 +1131,12 @@ class SignalAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator.
 
-        base.py's ``_keep_typing`` refresh loop calls this every ~2s while
-        the agent is processing. If signal-cli returns NETWORK_FAILURE for
-        this recipient (offline, unroutable, group membership lost, etc.)
-        the unmitigated behaviour is: a WARNING log every 2 seconds for as
-        long as the agent keeps running. Instead we:
+        base.py's ``_keep_typing`` refresh loop (Signal default interval:
+        ``TYPING_INTERVAL`` / 8s) calls this while the agent is processing.
+        If signal-cli returns NETWORK_FAILURE for this recipient (offline,
+        unroutable, group membership lost, etc.) the unmitigated behaviour
+        is: a WARNING log on every refresh for as long as the agent keeps
+        running. Instead we:
 
         - silence the WARNING after the first consecutive failure (subsequent
           attempts log at DEBUG) so transport issues are still visible once
@@ -1510,6 +1519,28 @@ class SignalAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Typing Indicators
     # ------------------------------------------------------------------
+
+    async def _keep_typing(
+        self,
+        chat_id: str,
+        interval: float = TYPING_INTERVAL,
+        metadata=None,
+        stop_event: asyncio.Event | None = None,
+    ) -> None:
+        """Refresh Signal typing on the Signal-native cadence.
+
+        ``base._process_message_background`` calls ``_keep_typing`` without
+        an ``interval`` kwarg, so the default here (``TYPING_INTERVAL``,
+        8s) is what actually runs.  Pairing that longer refresh with
+        base's scaled per-tick timeout lets slow signal-cli ``sendTyping``
+        RPCs complete instead of being cancelled at 1.5s (#78972).
+        """
+        await super()._keep_typing(
+            chat_id,
+            interval=interval,
+            metadata=metadata,
+            stop_event=stop_event,
+        )
 
     async def _stop_typing_indicator(self, chat_id: str) -> None:
         """Stop a typing indicator loop for a chat."""

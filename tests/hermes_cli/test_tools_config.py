@@ -523,6 +523,100 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
 
 
+def test_vision_picker_filters_text_only_models():
+    """#78884: the vision picker must not offer models the models.dev
+    catalog marks as text-only. Known-capable (supports_vision=True) and
+    uncatalogued (None) models stay; the custom-id option stays last."""
+    import hermes_cli.tools_config as tc
+
+    rows = [
+        {
+            "slug": "nous",
+            "name": "Nous",
+            "models": [
+                "openai/gpt-5.6-sol-pro",      # supports_vision=True  → kept
+                "deepseek/deepseek-v4-flash",  # supports_vision=False → filtered
+                "vendor/uncatalogued",         # None (fail open)      → kept
+            ],
+        }
+    ]
+
+    def _caps(provider, model):
+        if model == "openai/gpt-5.6-sol-pro":
+            return SimpleNamespace(supports_vision=True)
+        if model == "deepseek/deepseek-v4-flash":
+            return SimpleNamespace(supports_vision=False)
+        return None
+
+    picked = []
+
+    def _pick(question, choices, default=0):
+        picked.append(choices)
+        return 0  # first provider, then first (vision-capable) model
+
+    config = {"auxiliary": {"vision": {}}}
+    with (
+        patch("hermes_cli.inventory.build_aux_picker_rows", return_value=rows),
+        patch("agent.models_dev.get_model_capabilities", side_effect=_caps),
+        patch.object(tc, "_prompt_choice", side_effect=_pick),
+        patch.object(tc, "save_config"),
+    ):
+        tc._configure_vision_provider_model(config, config["auxiliary"]["vision"])
+
+    assert len(picked) == 2  # provider prompt, then model prompt
+    assert picked[1] == [
+        "openai/gpt-5.6-sol-pro",
+        "vendor/uncatalogued",
+        "Type a custom model id…",
+    ]
+    assert config["auxiliary"]["vision"]["provider"] == "nous"
+    assert config["auxiliary"]["vision"]["model"] == "openai/gpt-5.6-sol-pro"
+
+
+def test_vision_picker_warns_when_all_curated_models_text_only():
+    """#78884: if every curated model for the chosen provider is known
+    text-only, warn loudly but keep the custom-id escape hatch."""
+    import hermes_cli.tools_config as tc
+
+    rows = [
+        {
+            "slug": "deepseek",
+            "name": "DeepSeek",
+            "models": ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v3"],
+        }
+    ]
+
+    def _caps(provider, model):
+        return SimpleNamespace(supports_vision=False)
+
+    picked = []
+
+    def _pick(question, choices, default=0):
+        picked.append(choices)
+        return 0  # first provider; custom-id row is the only model row left
+
+    warnings = []
+
+    def _warn(msg):
+        warnings.append(msg)
+
+    config = {"auxiliary": {"vision": {}}}
+    with (
+        patch("hermes_cli.inventory.build_aux_picker_rows", return_value=rows),
+        patch("agent.models_dev.get_model_capabilities", side_effect=_caps),
+        patch.object(tc, "_prompt_choice", side_effect=_pick),
+        patch.object(tc, "_prompt", return_value="my/custom-vision-model"),
+        patch.object(tc, "_print_warning", side_effect=_warn),
+        patch.object(tc, "save_config"),
+    ):
+        tc._configure_vision_provider_model(config, config["auxiliary"]["vision"])
+
+    assert picked[1] == ["Type a custom model id…"]
+    assert warnings, "expected a warning when every curated model is text-only"
+    assert config["auxiliary"]["vision"]["provider"] == "deepseek"
+    assert config["auxiliary"]["vision"]["model"] == "my/custom-vision-model"
+
+
 
 
 # ─── provider_readiness_status ────────────────────────────────────────────────

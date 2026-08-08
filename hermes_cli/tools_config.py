@@ -4407,6 +4407,31 @@ def _configure_vision_backend() -> None:
     _print_info("  Skipped vision configuration")
 
 
+def _filter_vision_capable_models(provider_slug: str, models: list) -> list:
+    """Drop models the models.dev catalog marks as text-only.
+
+    Vision configuration must not offer models that cannot accept image
+    input — selecting one configures fine and then 404s on every image
+    ("No endpoints found that support image input"). The lookup fails
+    open: models missing from the catalog, or whose lookup raises, are
+    kept, because unknown capability must not hide a working model.
+    """
+    try:
+        from agent.models_dev import get_model_capabilities
+    except Exception:
+        return list(models)
+
+    capable = []
+    for model in models:
+        try:
+            meta = get_model_capabilities(provider_slug, model)
+        except Exception:
+            meta = None
+        if meta is None or meta.supports_vision:
+            capable.append(model)
+    return capable
+
+
 def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
     """Provider + model picker for vision, mirroring the ``/model`` surface.
 
@@ -4465,7 +4490,14 @@ def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
 
     chosen = providers[pidx]
     slug = chosen.get("slug")
-    models = list(chosen.get("models", []))
+    models = _filter_vision_capable_models(slug, list(chosen.get("models", [])))
+
+    if not models and chosen.get("models"):
+        _print_warning(
+            f"  None of the curated {chosen.get('name') or slug} models are "
+            "known to support image input — every listed model is text-only. "
+            "You can still type a custom model id, or cancel."
+        )
 
     model_choices = list(models) + ["Type a custom model id…"]
     midx = _prompt_choice(

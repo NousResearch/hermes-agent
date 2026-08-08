@@ -532,6 +532,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
+    session_write_policy=None,
 ):
     """
     Initialize the AI Agent.
@@ -1586,6 +1587,11 @@ def init_agent(
     # _get_session_db_for_recall, where nothing else holds a reference.
     agent._owns_session_db = False
     agent._parent_session_id = parent_session_id
+    # Session write policy (parent -> child inheritance carrier).
+    # C19 contract: bound here so a delegated child receives the parent's
+    # policy by identity (or by derived instance when the parent's is
+    # invalid).  Default None preserves the prior uninitialized state.
+    agent.session_write_policy = session_write_policy
     # A close flush and the worker's turn-start flush can overlap. The durable
     # marker is attached to each in-memory message dict, so its test-and-append
     # sequence must be serialized per agent rather than relying on SQLite alone.

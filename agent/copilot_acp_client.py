@@ -507,6 +507,60 @@ class CopilotACPClient:
             # (#56747). Hide-only — stdio pipes stay intact for the ACP wire.
             from hermes_cli._subprocess_compat import windows_hide_flags
 
+            # ── C23 pre-spawn policy consultation ────────────────────────────
+            # Consult the active session write policy BEFORE
+            # _build_subprocess_env() and BEFORE subprocess.Popen so that:
+            #   * DENY decision     -> RuntimeError, no env build, no spawn.
+            #   * PolicyDenied exc  -> RuntimeError, no env build, no spawn.
+            #   * other exceptions  -> RuntimeError with class-name suffix
+            #                          (no original message echoed).
+            #   * ALLOW decision    -> proceed normally (env_build -> Popen).
+            # Ordering invariant: events = ["policy_consult", "env_build",
+            # "popen"] on ALLOW; ["policy_consult"] only on deny/error.
+            try:
+                from agent.session_write_policy import (
+                    CallerType as _CallerType,
+                    PolicyDenied as _PolicyDenied,
+                    SessionWritePolicyDecisionResult as _DecisionResult,
+                    pre_spawn_consult as _pre_spawn_consult,
+                )
+                _decision = _pre_spawn_consult(
+                    caller_type=_CallerType.DELEGATION,
+                    operation_kind="terminal_exec",
+                    argv=[self._acp_command] + list(self._acp_args),
+                    raw_command=None,
+                    cwd=self._acp_cwd,
+                    env_subset=None,
+                    target_path=None,
+                )
+                if _decision.result is _DecisionResult.DENY:
+                    raise RuntimeError(
+                        f"acp_subprocess_blocked_by_session_write_policy "
+                        f"disposition=DENY_POLICY reason={_decision.reason}"
+                    )
+            except _PolicyDenied as _pd:
+                raise RuntimeError(
+                    f"acp_subprocess_blocked_by_session_write_policy "
+                    f"disposition=DENY_POLICY reason={_pd.reason}"
+                ) from None
+            except RuntimeError as _re:
+                # Re-raise RuntimeErrors that already carry the canonical
+                # diagnostic prefix; translate every other RuntimeError to
+                # the fail-closed form WITHOUT echoing its message.
+                if "acp_subprocess_blocked_by_session_write_policy" in str(_re):
+                    raise
+                raise RuntimeError(
+                    f"acp_subprocess_blocked_by_session_write_policy "
+                    f"acp_pre_spawn_policy_evaluation_failed:{type(_re).__name__}"
+                ) from None
+            except BaseException as _be:
+                # Fail closed on any other exception.  Scrub the original
+                # message; only the class name is surfaced.
+                raise RuntimeError(
+                    f"acp_subprocess_blocked_by_session_write_policy "
+                    f"acp_pre_spawn_policy_evaluation_failed:{type(_be).__name__}"
+                ) from None
+
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
                 stdin=subprocess.PIPE,

@@ -18,6 +18,7 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import contextlib
 import contextvars
 import json
 import logging
@@ -1613,6 +1614,28 @@ def _build_child_agent(
 
     from agent.delegation_context import delegated_child_context
 
+    # ── Session write policy inheritance (C19 contract) ─────────────────
+    # Forward the parent's session write policy into the child AIAgent
+    # via the constructor kwarg.  When the parent has no real policy
+    # (or has an arbitrary non-SessionWritePolicy object), fall back to
+    # the active session's policy via get_current_session_write_policy
+    # before deriving.  This matches the C19 R03 contract: the child
+    # receives the parent's policy by identity when valid, and by a
+    # derived fallback otherwise.  Derive_child is called exactly once
+    # (C19 R01).
+    from agent.session_write_policy import (
+        SessionWritePolicy as _SessionWritePolicy,
+        get_current_session_write_policy as _get_current_session_write_policy,
+    )
+
+    parent_session_write_policy = getattr(parent_agent, "session_write_policy", None)
+    if not isinstance(parent_session_write_policy, _SessionWritePolicy):
+        parent_session_write_policy = _get_current_session_write_policy(
+            session_id=getattr(parent_agent, "session_id", "") or "",
+            protected=False,
+        )
+    child_session_write_policy = parent_session_write_policy.derive_child(None)
+
     with delegated_child_context():
         child = AIAgent(
             base_url=effective_base_url,
@@ -1653,6 +1676,7 @@ def _build_child_agent(
             openrouter_min_coding_score=child_openrouter_min_coding_score,
             tool_progress_callback=child_progress_cb,
             iteration_budget=None,  # fresh budget per subagent
+            session_write_policy=child_session_write_policy,
             **child_optional_kwargs,
         )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
@@ -2323,8 +2347,18 @@ def _run_single_child(
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
+            from agent.session_write_policy import (
+                SessionWritePolicy,
+                session_write_policy_scope,
+            )
 
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            child_policy = getattr(child, "session_write_policy", None)
+            policy_scope = (
+                session_write_policy_scope(child_policy)
+                if isinstance(child_policy, SessionWritePolicy)
+                else contextlib.nullcontext()
+            )
+            with delegated_child_context(str(getattr(child, "session_id", "") or "")), policy_scope:
                 return child.run_conversation(
                     user_message=goal,
                     task_id=child_task_id,

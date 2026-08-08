@@ -987,7 +987,9 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, X-Hermes-Workspace"
+    ),
 }
 
 
@@ -1255,9 +1257,16 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any],
+    keys: List[str],
+    *,
+    context: Optional[Dict[str, Any]] = None,
+) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
+    if context:
+        subset.update(context)
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
@@ -2103,6 +2112,7 @@ class APIServerAdapter(BasePlatformAdapter):
     # (e.g. ``agent:main:webui:dm:user-42``) while staying small enough
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
+    _MAX_WORKSPACE_HEADER_LEN = 4096
 
     def _parse_session_key_header(
         self, request: "web.Request"
@@ -2155,6 +2165,41 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         return raw, None
+
+    def _parse_workspace_header(
+        self, request: "web.Request"
+    ) -> tuple[Optional[str], Optional["web.Response"]]:
+        """Extract ``X-Hermes-Workspace`` as an existing absolute directory."""
+        raw = request.headers.get("X-Hermes-Workspace", "").strip()
+        if not raw:
+            return None, None
+        if re.search(r"[\r\n\x00]", raw) or len(raw) > self._MAX_WORKSPACE_HEADER_LEN:
+            return None, web.json_response(
+                _openai_error("Invalid workspace header", code="invalid_workspace"),
+                status=400,
+            )
+        try:
+            workspace = Path(raw).expanduser()
+            if not workspace.is_absolute():
+                raise ValueError
+            workspace = workspace.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            return None, web.json_response(
+                _openai_error(
+                    "X-Hermes-Workspace must be an existing absolute directory",
+                    code="invalid_workspace",
+                ),
+                status=400,
+            )
+        if not workspace.is_dir():
+            return None, web.json_response(
+                _openai_error(
+                    "X-Hermes-Workspace must be a directory",
+                    code="invalid_workspace",
+                ),
+                status=400,
+            )
+        return str(workspace), None
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -3136,6 +3181,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
+                "workspace_header": "X-Hermes-Workspace",
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
@@ -4025,6 +4071,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if limited is not None:
             return limited
 
+        workspace_cwd, workspace_err = self._parse_workspace_header(request)
+        if workspace_err is not None:
+            return workspace_err
+
         # Parse request body
         try:
             body = await request.json()
@@ -4249,6 +4299,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                workspace_cwd=workspace_cwd,
                 **agent_overrides,
                 route=route,
             ))
@@ -4270,6 +4321,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                workspace_cwd=workspace_cwd,
                 **agent_overrides,
                 route=route,
             )
@@ -4279,6 +4331,7 @@ class APIServerAdapter(BasePlatformAdapter):
             fp = _make_request_fingerprint(
                 body,
                 keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+                context={"workspace": workspace_cwd},
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
@@ -5187,6 +5240,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if limited is not None:
             return limited
 
+        workspace_cwd, workspace_err = self._parse_workspace_header(request)
+        if workspace_err is not None:
+            return workspace_err
+
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
@@ -5360,6 +5417,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                workspace_cwd=workspace_cwd,
                 **agent_overrides,
                 route=route,
             ))
@@ -5395,6 +5453,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                workspace_cwd=workspace_cwd,
                 **agent_overrides,
                 route=route,
             )
@@ -5413,6 +5472,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "model_options",
                     "tools",
                 ],
+                context={"workspace": workspace_cwd},
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -6072,6 +6132,7 @@ class APIServerAdapter(BasePlatformAdapter):
         chat_id: str = "",
         session_key: str = "",
         session_id: str = "",
+        cwd: str = "",
     ) -> list:
         """Bind session contextvars for an API-server agent run.
 
@@ -6090,11 +6151,25 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from gateway.session_context import set_session_vars
 
+        session_cwd = cwd
+        if not session_cwd and session_id:
+            from tools.terminal_tool import get_session_cwd
+
+            session_cwd = get_session_cwd(session_id) or ""
+        if session_cwd and session_id:
+            from tools.terminal_tool import record_session_cwd
+
+            # API sessions share the default terminal environment, so updating
+            # its cwd here would move another session's active workspace.
+            # Commands and file tools resolve the raw session record directly.
+            record_session_cwd(session_id, session_cwd)
+
         return set_session_vars(
             platform="api_server",
             chat_id=chat_id,
             session_key=session_key,
             session_id=session_id,
+            cwd=session_cwd,
             async_delivery=False,
             cron_session="",
         )
@@ -6111,6 +6186,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        workspace_cwd: Optional[str] = None,
         requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None,
@@ -6159,6 +6235,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     chat_id=session_id or "",
                     session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "",
+                    cwd=workspace_cwd or "",
                 )
                 agent = None
                 try:

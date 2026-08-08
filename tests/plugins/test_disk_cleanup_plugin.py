@@ -88,6 +88,40 @@ class TestIsSafePath:
 
 
 class TestGuessCategory:
+    @pytest.mark.parametrize("git_marker_is_dir", [True, False])
+    def test_git_worktree_test_file_not_categorised(
+        self, _isolate_env, git_marker_is_dir
+    ):
+        """Tracked source tests are durable, including linked worktrees."""
+        dg = _load_lib()
+        repo = _isolate_env / "checkout"
+        repo.mkdir()
+        git_marker = repo / ".git"
+        if git_marker_is_dir:
+            git_marker.mkdir()
+        else:
+            git_marker.write_text("gitdir: /tmp/example-worktree-gitdir\n")
+        tests = repo / "tests"
+        tests.mkdir()
+        p = tests / "test_regression.py"
+        p.write_text("def test_regression(): pass\n")
+
+        assert dg.guess_category(p) is None
+
+    @pytest.mark.parametrize(
+        "top", ["scripts", "kanban", "workspace", "worktrees"]
+    )
+    def test_skips_additional_durable_top_level_test_paths(
+        self, _isolate_env, top
+    ):
+        dg = _load_lib()
+        durable_dir = _isolate_env / top
+        durable_dir.mkdir()
+        p = durable_dir / "test_durable.py"
+        p.write_text("def test_durable(): pass\n")
+
+        assert dg.guess_category(p) is None
+
     def test_test_prefix(self, _isolate_env):
         dg = _load_lib()
         p = _isolate_env / "test_foo.py"
@@ -225,6 +259,33 @@ class TestStaleCronEntryMigration:
         assert not run_md.exists()
 
 
+class TestStaleGitWorktreeEntryMigration:
+    def test_quick_preserves_test_file_inside_git_worktree(self, _isolate_env):
+        """Pre-fix tracking state must not delete durable regression source."""
+        dg = _load_lib()
+        repo = _isolate_env / "checkout"
+        (repo / ".git").mkdir(parents=True)
+        tests = repo / "tests"
+        tests.mkdir()
+        regression = tests / "test_regression.py"
+        regression.write_text("def test_regression(): pass\n")
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(regression),
+            "category": "test",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": regression.stat().st_size,
+        }]))
+
+        summary = dg.quick()
+
+        assert summary["deleted"] == 0
+        assert regression.exists()
+        assert json.loads(tracked_file.read_text()) == []
+
+
 class TestTrackForgetQuick:
     def test_track_then_quick_deletes_test(self, _isolate_env):
         dg = _load_lib()
@@ -243,6 +304,20 @@ class TestTrackForgetQuick:
         dg.track(str(p), "temp", silent=True)
         assert dg.forget(str(p)) == 1
         assert p.exists()  # forget does NOT delete the file
+
+    @pytest.mark.parametrize(
+        "top", ["scripts", "kanban", "workspace", "worktrees"]
+    )
+    def test_quick_preserves_additional_durable_top_level_dirs(
+        self, _isolate_env, top
+    ):
+        dg = _load_lib()
+        durable_dir = _isolate_env / top
+        durable_dir.mkdir()
+
+        dg.quick()
+
+        assert durable_dir.exists()
 
 
 class TestStatus:

@@ -39,6 +39,27 @@ class TestChatCompletionsBasic:
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
 
 
+    @pytest.mark.parametrize(
+        ("effort", "expected"),
+        [
+            ("ultra", "high"),
+            ("max", "high"),
+        ],
+    )
+    def test_custom_provider_ultra_clamped_to_high(self, effort, expected):
+        """Custom OpenAI-compatible providers that only accept low/medium/high
+        reject ``ultra``/``max`` with HTTP 422 'unknown variant'; clamp them to
+        ``high`` while preserving the rest of the config (#80242)."""
+        from agent.transports.chat_completions import _reasoning_config_for_model
+
+        original = {"enabled": True, "effort": effort}
+        result = _reasoning_config_for_model("agnes-2.5-flash", original)
+        assert result == {"enabled": True, "effort": expected}
+        assert result is not original
+        # Input dict is never mutated.
+        assert original["effort"] == effort
+
+
     def test_convert_messages_no_codex_leaks(self, transport):
         msgs = [{"role": "user", "content": "hi"}]
         result = transport.convert_messages(msgs)

@@ -80,12 +80,18 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     """Return the model's wire-compatible reasoning config."""
     if not isinstance(reasoning_config, dict):
         return reasoning_config
-    if (
-        "gpt-5.6" in (model or "").lower()
-        and str(reasoning_config.get("effort") or "").strip().lower() == "ultra"
-    ):
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    if "gpt-5.6" in (model or "").lower():
+        # gpt-5.6 accepts ``max`` as its strongest effort level.
+        if effort == "ultra":
+            normalized = dict(reasoning_config)
+            normalized["effort"] = "max"
+            return normalized
+    elif effort in {"ultra", "max"}:
+        # Custom OpenAI-compatible providers only accept low/medium/high;
+        # clamp unsupported levels so the request is not rejected (HTTP 422).
         normalized = dict(reasoning_config)
-        normalized["effort"] = "max"
+        normalized["effort"] = "high"
         return normalized
     return reasoning_config
 

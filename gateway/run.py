@@ -455,6 +455,21 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def describe_inbound_event_author(event: Any, source: Any) -> str:
+    """Return the identity to log for an inbound event.
+
+    Synthetic/internal events (boot auto-resume re-prompts, queued
+    continuations, background-process completion notices) are produced by the
+    gateway, not typed by a human.  Logging them under the human's display name
+    sends incident forensics chasing a phantom "user sent an empty message", so
+    they are attributed to ``<system:internal>`` instead.  Genuine inbound
+    messages keep the existing display-name → user-id → ``"unknown"`` ladder.
+    """
+    if getattr(event, "internal", False):
+        return "<system:internal>"
+    return getattr(source, "user_name", None) or getattr(source, "user_id", None) or "unknown"
+
+
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None,
     *,
@@ -16085,7 +16100,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
-        if _is_shared_multi_user and source.user_name:
+        # A synthetic event is not authored by any human, so it must never be
+        # stamped with a participant's display name (see
+        # ``describe_inbound_event_author`` for the same invariant on the log
+        # line).  Two concrete harms: a shared group session shows a ghost
+        # message apparently sent by someone who never spoke, and prefixing an
+        # EMPTY internal event makes it non-empty — which silently skips the
+        # downstream blank-text recovery-note substitution that only fires on
+        # empty text.
+        if (
+            _is_shared_multi_user
+            and source.user_name
+            and not getattr(event, "internal", False)
+        ):
             # source.user_name is the platform display name — attacker-
             # influenceable on any platform that lets participants set their
             # own name. Neutralize embedded newlines/control chars before
@@ -16615,7 +16642,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
         logger.info(
             "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
-            _platform_name, source.user_name or source.user_id or "unknown",
+            _platform_name, describe_inbound_event_author(event, source),
             source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
         )
 
@@ -19307,6 +19334,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source=source,
                     message_id=None,
                     channel_prompt=None,
+                    # Synthetic continuation authored by the goal judge, not by
+                    # the human. Without this flag the shared-multi-user sender
+                    # prefix stamps "[<display name>] " onto it (impersonation)
+                    # and the inbound log attributes it to a user who never
+                    # sent it.
+                    internal=True,
                 )
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:

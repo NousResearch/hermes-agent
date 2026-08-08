@@ -365,6 +365,59 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
     assert any(t["function"]["name"] == "mcp_x_tool" for t in agent.tools)
 
 
+# ── pre_llm_call source metadata forwarding (#79214) ────────────────────────
+#
+# Unified sessions (cross-platform session sharing) receive messages from
+# different platforms/chat types in the same conversation. The pre_llm_call
+# plugin hook must carry per-message source metadata (chat_id, chat_name,
+# user_name, chat_type) so plugins can apply per-channel behavior. These
+# assert the prologue forwards the four agent attributes to invoke_hook.
+
+
+def _capture_pre_llm_call_kwargs(agent, **agent_overrides):
+    for name, value in agent_overrides.items():
+        setattr(agent, name, value)
+
+    captured: dict = {}
+
+    def _fake_invoke_hook(*_args, **_kwargs):
+        captured.update(_kwargs)
+        return []
+
+    with patch("hermes_cli.lifecycle.invoke_hook", side_effect=_fake_invoke_hook):
+        _build(agent)
+
+    return captured
+
+
+def test_pre_llm_call_forwards_chat_and_user_metadata():
+    agent = _FakeAgent()
+    captured = _capture_pre_llm_call_kwargs(
+        agent,
+        _chat_id="chat-42",
+        _chat_name="Project Ops",
+        _user_name="Alice",
+        _chat_type="group",
+    )
+
+    assert captured["chat_id"] == "chat-42"
+    assert captured["chat_name"] == "Project Ops"
+    assert captured["user_name"] == "Alice"
+    assert captured["chat_type"] == "group"
+
+
+def test_pre_llm_call_metadata_defaults_to_empty_string_when_absent():
+    """Agent attributes are absent on CLI agents — must not raise and must
+    default to '' so plugins can treat the fields as always-present."""
+    agent = _FakeAgent()
+    captured = _capture_pre_llm_call_kwargs(agent)
+
+    assert captured["chat_id"] == ""
+    assert captured["chat_name"] == ""
+    assert captured["user_name"] == ""
+    assert captured["chat_type"] == ""
+
+
 
 
 

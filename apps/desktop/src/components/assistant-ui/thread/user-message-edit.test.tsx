@@ -67,14 +67,14 @@ async function moveFocusOutside(editor: HTMLElement) {
   outside.remove()
 }
 
-function userMessage(): ThreadMessage {
+function userMessage(custom: Record<string, unknown> = {}): ThreadMessage {
   return {
     id: 'user-1',
     role: 'user',
     content: [{ type: 'text', text: 'edit me please' }],
     attachments: [],
     createdAt,
-    metadata: { custom: {} }
+    metadata: { custom }
   } as ThreadMessage
 }
 
@@ -96,8 +96,8 @@ function assistantMessage(): ThreadMessage {
 }
 
 // Mirrors chat/index.tsx: incremental runtime + messageRepository + onEdit.
-function IncrementalHarness({ onEdit }: { onEdit: () => Promise<void> }) {
-  const repository = ExportedMessageRepository.fromArray([userMessage(), assistantMessage()])
+function IncrementalHarness({ onEdit, user = userMessage() }: { onEdit: () => Promise<void>; user?: ThreadMessage }) {
+  const repository = ExportedMessageRepository.fromArray([user, assistantMessage()])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: repository,
@@ -133,6 +133,24 @@ function StockHarness({ onEdit }: { onEdit: () => Promise<void> }) {
 }
 
 describe('click-to-edit user message', () => {
+  it('keeps sent attachment references below the sticky user bubble', async () => {
+    const { container } = render(
+      <IncrementalHarness
+        onEdit={async () => {}}
+        user={userMessage({ attachmentRefs: ['@folder:C:\\Hermes-Agent\\Portable-Bundle'] })}
+      />
+    )
+
+    const chip = await screen.findByTitle('C:\\Hermes-Agent\\Portable-Bundle')
+    const row = chip.parentElement?.parentElement
+
+    expect(row?.className).toContain('mb-2')
+    expect(row?.className).not.toContain('-mt-3')
+    expect(container.querySelector('[data-slot="aui_user-message-root"]')?.compareDocumentPosition(row ?? chip)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    )
+  })
+
   it('opens the edit composer with the incremental runtime', async () => {
     const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
 

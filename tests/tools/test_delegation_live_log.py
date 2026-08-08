@@ -14,10 +14,12 @@ import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from tools import delegate_tool as dt
 from tools import delegation_live_log as dll
 from tools.delegation_live_log import (
     LiveTranscriptWriter,
@@ -167,6 +169,68 @@ def _fake_run(task_index, goal, child=None, parent_agent=None, **kw):
         "summary": f"done: {goal}", "api_calls": 1,
         "duration_seconds": 0.1, "model": "m", "exit_reason": "completed",
     }
+
+
+def test_delegate_task_docker_result_uses_mounted_live_path(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    parent = _make_parent()
+    parent._current_task_id = "parent-task"
+    child = MagicMock()
+    child.tool_progress_callback = None
+    monkeypatch.setattr(dt, "_build_child_preserving_parent_tools", lambda **kw: child)
+    monkeypatch.setattr(dt, "_run_single_child", _fake_run)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **kw: _CREDS)
+
+    result = json.loads(
+        dt.delegate_task(goal="inspect", background=False, parent_agent=parent)
+    )
+
+    agent_path = result["live_transcripts"][0]
+    assert agent_path.startswith("/root/.hermes/cache/delegation/live/")
+    assert result["results"][0]["live_transcript"] == agent_path
+    host_logs = list((hermes_home / "cache" / "delegation" / "live").glob("*/task-0.log"))
+    assert len(host_logs) == 1
+    assert "inspect" in host_logs[0].read_text(encoding="utf-8")
+
+
+def test_delegate_task_ssh_result_syncs_to_remote_live_path(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    sync_calls = []
+    synced_bodies = []
+
+    def _sync(*, force=False):
+        sync_calls.append(force)
+        logs = list((hermes_home / "cache" / "delegation" / "live").glob("*/task-0.log"))
+        synced_bodies.append(
+            logs[0].read_text(encoding="utf-8") if logs else ""
+        )
+
+    env = SimpleNamespace(
+        _remote_home="/home/remote",
+        _sync_manager=SimpleNamespace(sync=_sync),
+    )
+    monkeypatch.setattr("tools.terminal_tool.get_active_env", lambda task_id: env)
+    parent = _make_parent()
+    parent._current_task_id = "parent-task"
+    child = MagicMock()
+    child.tool_progress_callback = None
+    monkeypatch.setattr(dt, "_build_child_preserving_parent_tools", lambda **kw: child)
+    monkeypatch.setattr(dt, "_run_single_child", _fake_run)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **kw: _CREDS)
+
+    result = json.loads(
+        dt.delegate_task(goal="inspect", background=False, parent_agent=parent)
+    )
+
+    assert result["live_transcripts"][0].startswith(
+        "/home/remote/.hermes/cache/delegation/live/"
+    )
+    assert sync_calls == [True]
+    assert "end status=completed" in synced_bodies[-1]
 
 
 if __name__ == "__main__":

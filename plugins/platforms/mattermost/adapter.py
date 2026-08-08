@@ -60,6 +60,18 @@ logger = logging.getLogger(__name__)
 # practical limit for readable messages — matching OpenClaw's choice).
 MAX_POST_LENGTH = 4000
 
+
+def _new_file_upload_form():
+    """Create multipart data without percent-encoding Unicode filenames.
+
+    Mattermost stores the multipart ``filename`` parameter verbatim. The
+    aiohttp default (``quote_fields=True``) percent-encodes non-ASCII names,
+    leaving users with attachment names such as ``%E9%AB%98...docx``.
+    """
+    import aiohttp
+
+    return aiohttp.FormData(quote_fields=False)
+
 # Channel type codes returned by the Mattermost API.
 _CHANNEL_TYPE_MAP = {
     "D": "dm",
@@ -285,7 +297,7 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
 
         url = f"{self._base_url}/api/v4/files"
-        form = aiohttp.FormData()
+        form = _new_file_upload_form()
         form.add_field("channel_id", channel_id)
         form.add_field(
             "files",
@@ -1080,7 +1092,7 @@ async def _standalone_send(
                 file_path = media.get("path") if isinstance(media, dict) else media
                 if not file_path or not os.path.exists(file_path):
                     continue
-                form = aiohttp.FormData()
+                form = _new_file_upload_form()
                 # Mattermost requires channel_id on file uploads so the
                 # server can attribute them.
                 form.add_field("channel_id", chat_id)

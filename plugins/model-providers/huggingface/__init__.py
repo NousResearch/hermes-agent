@@ -11,10 +11,11 @@ huggingface = ProviderProfile(
     description="HuggingFace Inference API",
     signup_url="https://huggingface.co/settings/tokens",
     fallback_models=(
-        "Qwen/Qwen3.5-72B-Instruct",
-        "deepseek-ai/DeepSeek-V3.2",
+        "Qwen/Qwen3.5-122B-A10B",
+        "deepseek-ai/DeepSeek-V3.2-Exp",
     ),
     base_url="https://router.huggingface.co/v1",
+    supports_vision=True,
 )
 
 register_provider(huggingface)

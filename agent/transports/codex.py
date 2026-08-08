@@ -268,6 +268,12 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
+        # Detect direct api.openai.com (openai-api provider) by base_url.
+        # Used to gate the ``reasoning`` field — GPT-4o-mini and similar
+        # non-reasoning models return HTTP 400 when it is present. (#76255)
+        _base_url = str(params.get("base_url") or "").lower()
+        _is_openai_direct = "api.openai.com" in _base_url
+
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
@@ -422,6 +428,19 @@ class ResponsesApiTransport(ProviderTransport):
                 github_reasoning = params.get("github_reasoning_extra")
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
+            elif _is_openai_direct:
+                from agent.model_metadata import openai_model_supports_reasoning
+
+                # Direct api.openai.com (openai-api provider): only o-series
+                # and GPT-5 reasoning models accept the ``reasoning`` field.
+                # Standard GPT models (gpt-4o-mini, gpt-4.1-mini, gpt-4o, …)
+                # return HTTP 400 "Unsupported parameter: 'reasoning.effort'".
+                # See issue #76255.
+                if openai_model_supports_reasoning(model):
+                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                    kwargs["include"] = (
+                        ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
+                    )
             else:
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                 kwargs["include"] = (

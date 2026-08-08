@@ -606,6 +606,44 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
+_OPENAI_REASONING_CAPABLE_PREFIXES = (
+    "o1",
+    "o1-",
+    "o3",
+    "o3-",
+    "o4",
+    "o4-",
+    "gpt-5",
+    "gpt-5.",
+    "gpt-5-",
+)
+
+
+def openai_model_supports_reasoning(model: str) -> bool:
+    """Return True for OpenAI o-series and GPT-5 reasoning models.
+
+    Direct OpenAI API (api.openai.com) rejects the ``reasoning`` field
+    with HTTP 400 for non-reasoning models (gpt-4o-mini, gpt-4.1-mini,
+    gpt-4o, gpt-4.1, etc.). Only o-series (o1, o3, o4) and GPT-5 models
+    accept reasoning controls. Fine-tuned variants (``ft:o4-mini:...``)
+    are also included. See issue #76255.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    if any(name.startswith(prefix) for prefix in _OPENAI_REASONING_CAPABLE_PREFIXES):
+        return True
+    if name.startswith("ft:") and any(
+        f":{prefix}" in name
+        for prefix in _OPENAI_REASONING_CAPABLE_PREFIXES
+    ):
+        return True
+    return False
+
+
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",

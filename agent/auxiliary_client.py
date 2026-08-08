@@ -1234,6 +1234,9 @@ class _CodexCompletionsAdapter:
         # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
         # support max_output_tokens or temperature — omit to avoid 400 errors.
 
+        _host_for_input = str(getattr(self._client, "base_url", "") or "")
+        _is_openai_direct = "api.openai.com" in _host_for_input.lower()
+
         # Translate extra_body.reasoning (chat.completions shape) into the
         # Responses API's top-level reasoning + include fields.  Mirrors
         # agent/transports/codex.py::build_kwargs() so auxiliary callers
@@ -1250,21 +1253,19 @@ class _CodexCompletionsAdapter:
                     # API allows it.
                     pass
                 else:
-                    # Truthy-only check mirrors agent/transports/codex.py
-                    # build_kwargs(): falsy values (None, "", 0) fall back
-                    # to the default rather than being forwarded to the
-                    # Codex backend, which rejects e.g. {"effort": null}
-                    # with a 400.
-                    effort = reasoning_cfg.get("effort") or "medium"
-                    # Codex backend rejects "minimal"; clamp to "low" to
-                    # match the main-agent Codex transport behavior.
-                    if effort == "minimal":
-                        effort = "low"
-                    resp_kwargs["reasoning"] = {
-                        "effort": effort,
-                        "summary": "auto",
-                    }
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+                    from agent.model_metadata import openai_model_supports_reasoning
+
+                    # Direct api.openai.com: only o-series and GPT-5 reasoning
+                    # models accept the ``reasoning`` field. (#76255)
+                    if not _is_openai_direct or openai_model_supports_reasoning(model):
+                        effort = reasoning_cfg.get("effort") or "medium"
+                        if effort == "minimal":
+                            effort = "low"
+                        resp_kwargs["reasoning"] = {
+                            "effort": effort,
+                            "summary": "auto",
+                        }
+                        resp_kwargs["include"] = ["reasoning.encrypted_content"]
 
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")

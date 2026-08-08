@@ -99,6 +99,7 @@ import contextvars
 import concurrent.futures
 import errno
 import fnmatch
+import hashlib
 import inspect
 import json
 import logging
@@ -367,6 +368,7 @@ def _jittered(seconds: float) -> float:
 # stops a misconfigured tiny interval from busy-looping the keepalive.
 _DEFAULT_KEEPALIVE_INTERVAL = 180  # seconds between liveness pings
 _MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
+_MCP_KEEPALIVE_MAX_JITTER_SECONDS = 15.0
 
 # Final shutdown gives pending MCP-loop tasks one bounded cancellation cycle
 # before closing their owning loop. Cooperative parked/reconnect waiters finish
@@ -489,6 +491,22 @@ def _context_var_value(ref: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Security helpers
 # ---------------------------------------------------------------------------
+
+def _mcp_keepalive_jitter_seconds(server_name: str) -> float:
+    """Return a stable per-server delay before idle keepalive probes.
+
+    Laptop sleep/wake can resume every MCP server's expired keepalive timer in
+    the same event-loop tick. A small deterministic delay spreads the follow-up
+    ``list_tools`` probes and any reconnects without making behavior random.
+    """
+    if _MCP_KEEPALIVE_MAX_JITTER_SECONDS <= 0:
+        return 0.0
+    digest = hashlib.blake2s(
+        str(server_name).encode("utf-8", errors="replace"),
+        digest_size=4,
+    ).digest()
+    bucket = int.from_bytes(digest, "big") / 0xFFFFFFFF
+    return bucket * _MCP_KEEPALIVE_MAX_JITTER_SECONDS
 
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Build a filtered environment dict for stdio subprocesses.
@@ -2423,6 +2441,19 @@ class MCPServerTask:
                 # tool-capable server that doesn't implement it answers -32601;
                 # in that case fall back to the pre-ping ``list_tools`` probe
                 # for the rest of this connection rather than reconnect-looping.
+                # When a laptop resumes after sleep, all expired keepalive
+                # timers can wake in the same loop tick; spread probes by
+                # server name to avoid a reconnect storm.
+                jitter = _mcp_keepalive_jitter_seconds(self.name)
+                if jitter > 0:
+                    done, _pending = await asyncio.wait(
+                        {shutdown_task, reconnect_task},
+                        timeout=jitter,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if done:
+                        break
+
                 if self.session:
                     try:
                         await self._keepalive_probe()

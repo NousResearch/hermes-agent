@@ -99,6 +99,13 @@ def _github_signature(body: bytes, secret: str) -> str:
     ).hexdigest()
 
 
+def _todoist_signature(body: bytes, secret: str) -> str:
+    """Compute X-Todoist-Hmac-SHA256 (base64 HMAC-SHA256) for *body* using *secret*."""
+    return base64.b64encode(
+        hmac.new(secret.encode(), body, hashlib.sha256).digest()
+    ).decode()
+
+
 def _generic_signature(body: bytes, secret: str) -> str:
     """Compute X-Webhook-Signature (plain HMAC-SHA256 hex) for *body*."""
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
@@ -147,6 +154,7 @@ class TestValidateSignature:
         hostile = "ské-not-a-valid-signature"
         for header in (
             "X-Hub-Signature-256",
+            "X-Todoist-Hmac-SHA256",
             "X-Gitlab-Token",
             "X-Webhook-Signature",
         ):
@@ -154,6 +162,36 @@ class TestValidateSignature:
             # Must return False, never raise.
             assert adapter._validate_signature(req, body, secret) is False
 
+
+    def test_validate_todoist_valid_signature_accepts(self):
+        """A correctly computed X-Todoist-Hmac-SHA256 validates."""
+        adapter = _make_adapter()
+        body = b'{"event_name": "item:completed"}'
+        secret = "todoist-client-secret"
+        req = _mock_request(
+            headers={"X-Todoist-Hmac-SHA256": _todoist_signature(body, secret)}
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_todoist_wrong_secret_rejects(self):
+        """A signature computed with a different secret is rejected."""
+        adapter = _make_adapter()
+        body = b'{"event_name": "item:completed"}'
+        req = _mock_request(
+            headers={"X-Todoist-Hmac-SHA256": _todoist_signature(body, "other-secret")}
+        )
+        assert adapter._validate_signature(req, body, "todoist-client-secret") is False
+
+    def test_validate_todoist_tampered_body_rejects(self):
+        """A valid signature over a different body is rejected."""
+        adapter = _make_adapter()
+        secret = "todoist-client-secret"
+        signed_body = b'{"event_name": "item:completed"}'
+        req = _mock_request(
+            headers={"X-Todoist-Hmac-SHA256": _todoist_signature(signed_body, secret)}
+        )
+        tampered = b'{"event_name": "item:deleted"}'
+        assert adapter._validate_signature(req, tampered, secret) is False
 
     def test_non_ascii_svix_signature_rejected(self):
         """The Svix branch also runs its `v1,<sig>` comparison through the

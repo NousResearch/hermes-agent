@@ -1028,7 +1028,7 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, Todoist, GitLab, Svix, generic HMAC-SHA256)."""
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
@@ -1061,6 +1061,14 @@ class WebhookAdapter(BasePlatformAdapter):
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
             return _hmac_str_equal(gh_sig, expected)
+
+        # Todoist: X-Todoist-Hmac-SHA256 = base64(HMAC-SHA256(client_secret, body))
+        td_sig = request.headers.get("X-Todoist-Hmac-SHA256", "")
+        if td_sig:
+            expected = base64.b64encode(
+                hmac.new(secret.encode(), body, hashlib.sha256).digest()
+            ).decode()
+            return _hmac_str_equal(td_sig, expected)
 
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")

@@ -2,7 +2,7 @@
 
 Covers:
 
-- All three bundled plugins (browserbase, browser-use, firecrawl)
+- All bundled plugins (browserbase, browser-use, firecrawl, remote_browser)
   instantiate and self-report the expected ABC defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The browser_registry resolves an active provider in the documented
@@ -42,6 +42,24 @@ def _clear_browser_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_BROWSER_TTL",
+        "REMOTE_BROWSER_API_KEY",
+        "REMOTE_BROWSER_BASE_URL",
+        "REMOTE_BROWSER_CREATE_PATH",
+        "REMOTE_BROWSER_STATUS_PATH_TEMPLATE",
+        "REMOTE_BROWSER_TERMINATE_PATH_TEMPLATE",
+        "REMOTE_BROWSER_TIMEOUT_MINUTES",
+        "REMOTE_BROWSER_POLL_TIMEOUT_SECONDS",
+        "REMOTE_BROWSER_POLL_INTERVAL_SECONDS",
+        "REMOTE_BROWSER_READY_GRACE_SECONDS",
+        "REMOTE_BROWSER_RESOLUTION",
+        "REMOTE_BROWSER_REGION",
+        "REMOTE_BROWSER_PROFILE_ID",
+        "REMOTE_BROWSER_PROFILE_NAME",
+        "REMOTE_BROWSER_RECORDING",
+        "REMOTE_BROWSER_RECORDING_RETENTION_DAYS",
+        "REMOTE_BROWSER_PROXY_TYPE",
+        "REMOTE_BROWSER_PROXY_URL",
+        "REMOTE_BROWSER_LAUNCH_ARGUMENTS",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
     ):
@@ -72,14 +90,14 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All three bundled browser plugins discover and register correctly."""
+    """All bundled browser plugins discover and register correctly."""
 
-    def test_all_three_plugins_present_in_registry(self) -> None:
+    def test_all_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.browser_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
-        assert names == ["browser-use", "browserbase", "firecrawl"]
+        assert names == ["browser-use", "browserbase", "firecrawl", "remote_browser"]
 
     @pytest.mark.parametrize(
         "plugin_name,expected_display",
@@ -87,6 +105,7 @@ class TestBundledPluginsRegister:
             ("browserbase", "Browserbase"),
             ("browser-use", "Browser Use"),
             ("firecrawl", "Firecrawl"),
+            ("remote_browser", "Remote Browser"),
         ],
     )
     def test_each_plugin_has_name_and_display_name(
@@ -150,6 +169,67 @@ class TestIsAvailable:
         monkeypatch.setenv("FIRECRAWL_API_KEY", "key")
         assert p.is_available() is True
 
+    def test_remote_browser_requires_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.browser_registry import get_provider
+
+        p = get_provider("remote_browser")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("REMOTE_BROWSER_API_KEY", "key")
+        assert p.is_available() is True
+
+
+class TestRemoteBrowserProviderConfig:
+    """Remote Browser keeps secrets in env and behavioral settings in config."""
+
+    def test_reads_remote_browser_config_section(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from hermes_cli import config as hermes_config
+        from plugins.browser.remote_browser.provider import RemoteBrowserProvider
+
+        monkeypatch.setenv("REMOTE_BROWSER_API_KEY", "rb_secret")
+        monkeypatch.setattr(
+            hermes_config,
+            "read_raw_config",
+            lambda: {
+                "browser": {
+                    "remote_browser": {
+                        "base_url": "https://example.test/",
+                        "timeout_minutes": 9,
+                        "poll_interval_seconds": 3,
+                        "recording_enabled": False,
+                        "launch_arguments": ["--one", "--two"],
+                    }
+                }
+            },
+        )
+
+        config = RemoteBrowserProvider()._get_config()
+        assert config["api_key"] == "rb_secret"
+        assert config["base_url"] == "https://example.test"
+        assert config["timeout_minutes"] == 9
+        assert config["poll_interval_seconds"] == 3
+        assert config["recording_enabled"] is False
+        assert config["launch_arguments"] == ["--one", "--two"]
+
+    def test_cdp_url_uses_path_api_key_not_query_token(self) -> None:
+        from plugins.browser.remote_browser.provider import RemoteBrowserProvider
+
+        provider = RemoteBrowserProvider()
+        cdp_url = provider._apply_api_key_to_cdp_url(
+            "wss://brapi.example/cdp/rb_123?token=old&keep=yes",
+            "rb_secret/with space",
+        )
+
+        assert cdp_url == (
+            "wss://brapi.example/cdp/rb_123/api-key/"
+            "rb_secret%2Fwith%20space?keep=yes"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Registry resolution semantics
@@ -201,7 +281,7 @@ class TestLegacyAbcAliases:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
+        ["browserbase", "browser-use", "firecrawl", "remote_browser"],
     )
     def test_is_configured_delegates_to_is_available(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -217,6 +297,7 @@ class TestLegacyAbcAliases:
             ("browserbase", "Browserbase"),
             ("browser-use", "Browser Use"),
             ("firecrawl", "Firecrawl"),
+            ("remote_browser", "Remote Browser"),
         ],
     )
     def test_provider_name_returns_display_name(
@@ -236,7 +317,7 @@ class TestLegacyAbcAliases:
 
 
 class TestPickerIntegration:
-    """`_plugin_browser_providers()` exposes all three plugins as picker rows."""
+    """`_plugin_browser_providers()` exposes all plugins as picker rows."""
 
     def test_picker_rows_match_registered_plugins(self) -> None:
         _ensure_plugins_loaded()
@@ -244,6 +325,4 @@ class TestPickerIntegration:
 
         rows = _plugin_browser_providers()
         names = sorted(r.get("browser_provider") for r in rows)
-        assert names == ["browser-use", "browserbase", "firecrawl"]
-
-
+        assert names == ["browser-use", "browserbase", "firecrawl", "remote_browser"]

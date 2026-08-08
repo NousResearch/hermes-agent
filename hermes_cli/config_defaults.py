@@ -3771,6 +3771,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "REMOTE_BROWSER_API_KEY": {
+        "description": "Remote Browser API key for cloud browser (optional — local browser works without this)",
+        "prompt": "Remote Browser API key",
+        "url": "https://brapi.remote-browser.dev/",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": True,
+        "category": "tool",
+    },
     "FIRECRAWL_BROWSER_TTL": {
         "description": "Firecrawl browser session TTL in seconds (optional, default 300)",
         "prompt": "Browser session TTL (seconds)",

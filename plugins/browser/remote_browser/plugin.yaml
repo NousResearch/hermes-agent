@@ -1,0 +1,7 @@
+name: remote_browser
+version: 0.1.0
+description: "Remote Browser cloud browser provider for Hermes. Creates Remote Browser sessions, returns CDP endpoints, and terminates sessions when Hermes is done."
+author: Remote Browser
+kind: backend
+provides_browser_providers:
+  - remote_browser

@@ -101,6 +101,7 @@ from gateway.platforms.qqbot.constants import (
     CONNECT_TIMEOUT_SECONDS,
     RECONNECT_BACKOFF,
     MAX_RECONNECT_ATTEMPTS,
+    MAX_RESUME_ATTEMPTS,
     RATE_LIMIT_DELAY,
     QUICK_DISCONNECT_THRESHOLD,
     MAX_QUICK_DISCONNECT_COUNT,
@@ -254,6 +255,7 @@ class QQAdapter(BasePlatformAdapter):
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
+        self._resume_attempts: int = 0
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
         # Request/response correlation
@@ -662,6 +664,7 @@ class QQAdapter(BasePlatformAdapter):
                     )
                     self._session_id = None
                     self._last_seq = None
+                    self._resume_attempts = 0
 
                 if await self._reconnect(backoff_idx):
                     backoff_idx = 0
@@ -827,6 +830,7 @@ class QQAdapter(BasePlatformAdapter):
             # If resume fails, clear session and fall back to identify on next Hello
             self._session_id = None
             self._last_seq = None
+            self._resume_attempts = 0
 
     @staticmethod
     def _create_task(coro):
@@ -865,8 +869,21 @@ class QQAdapter(BasePlatformAdapter):
             # Authenticate: send Resume if we have a session, else Identify.
             # Use _create_task which is safe when no event loop is running (tests).
             if self._session_id and self._last_seq is not None:
-                self._create_task(self._send_resume())
+                if self._resume_attempts >= MAX_RESUME_ATTEMPTS:
+                    logger.warning(
+                        "[%s] Resume attempt cap reached (%d). Falling back to Identify.",
+                        self._log_tag,
+                        MAX_RESUME_ATTEMPTS,
+                    )
+                    self._session_id = None
+                    self._last_seq = None
+                    self._resume_attempts = 0
+                    self._create_task(self._send_identify())
+                else:
+                    self._resume_attempts += 1
+                    self._create_task(self._send_resume())
             else:
+                self._resume_attempts = 0
                 self._create_task(self._send_identify())
             return
 
@@ -875,6 +892,7 @@ class QQAdapter(BasePlatformAdapter):
             if t == "READY":
                 self._handle_ready(d)
             elif t == "RESUMED":
+                self._resume_attempts = 0
                 logger.info("[%s] Session resumed", self._log_tag)
             elif t in {
                     "C2C_MESSAGE_CREATE",
@@ -926,6 +944,7 @@ class QQAdapter(BasePlatformAdapter):
         """Handle the READY event — store session_id for resume."""
         if isinstance(d, dict):
             self._session_id = d.get("session_id")
+            self._resume_attempts = 0
             logger.info("[%s] Ready, session_id=%s", self._log_tag, self._session_id)
 
     # ------------------------------------------------------------------

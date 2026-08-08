@@ -178,9 +178,9 @@ hermes gateway install
 
 1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN HermesGateway` — 注册一个在你登录时以标准（非提升）权限运行的任务。无 UAC 提示。
 2. 如果 schtasks 被组策略阻止，则回退到在 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup` 中写入 `start /min cmd.exe /d /c <wrapper>` 快捷方式。效果相同，稍显粗糙。
-3. 通过 **`pythonw.exe`** 以分离方式生成 gateway——而非 `python.exe`。`pythonw.exe` 没有附加控制台，可免疫来自同一进程组中兄弟进程的 `CTRL_C_EVENT` 广播（这是一个真实问题，曾导致在同一进程组中 Ctrl+C 任何进程时 gateway 被杀死）。
+3. 通过控制台版 **`python.exe`** 以分离方式生成 gateway——而非 `pythonw.exe`。`CREATE_NO_WINDOW` 会为它分配一个专属的*隐藏*控制台，使其脱离启动它的 shell 的控制台生命周期，同时它派生的每个控制台子系统子进程（git、gh、cmd、node）都会继承该隐藏控制台，而不会各自闪现可见窗口。真正使其免疫兄弟进程 `CTRL_C_EVENT` 广播的是 `CREATE_NEW_PROCESS_GROUP`。
 
-生成时使用的标志：`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`。
+生成时使用的标志：`CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`。这里刻意不使用 `DETACHED_PROCESS`——MSDN 指出，两者组合时 `CREATE_NO_WINDOW` 会被忽略。
 
 ### 管理
 

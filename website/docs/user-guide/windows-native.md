@@ -178,9 +178,9 @@ What happens under the hood:
 
 1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN HermesGateway` — registers a task that runs at your login with standard (non-elevated) permissions. No UAC prompt.
 2. If schtasks is blocked by group policy, falls back to writing a `start /min cmd.exe /d /c <wrapper>` shortcut into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. Same effect, slightly cruder.
-3. Spawns the gateway **detached via `pythonw.exe`** — not `python.exe`. `pythonw.exe` has no console attached, which immunizes it against `CTRL_C_EVENT` broadcasts from sibling processes (a real issue that used to kill the gateway when you Ctrl+C'd anything in the same process group).
+3. Spawns the gateway **detached via console `python.exe`** — not `pythonw.exe`. `CREATE_NO_WINDOW` gives it its own *hidden* console, so it is detached from the launching shell's console lifetime and every console-subsystem descendant it spawns (git, gh, cmd, node) inherits that hidden console instead of flashing a visible one. `CREATE_NEW_PROCESS_GROUP` is what shields it from `CTRL_C_EVENT` broadcasts by sibling processes.
 
-Flags used when spawning: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`.
+Flags used when spawning: `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`. `DETACHED_PROCESS` is deliberately absent — MSDN specifies `CREATE_NO_WINDOW` is ignored when combined with it.
 
 ### Manage
 

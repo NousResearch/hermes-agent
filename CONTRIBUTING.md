@@ -796,14 +796,20 @@ that touches the OS, assume *any* platform can hit your code path.
    Windows — the concept doesn't translate. Use ACLs (`icacls`, `pywin32`)
    for Windows secret-file protection if needed.
 
-10. **Detached background daemons on Windows need `pythonw.exe`, NOT
-    `python.exe`.** `python.exe` always allocates or attaches to a console,
-    which makes it vulnerable to `CTRL_C_EVENT` broadcasts from any sibling
-    process. `pythonw.exe` is the no-console variant. Combine with
-    `CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
-    CREATE_BREAKAWAY_FROM_JOB` in `subprocess.Popen(creationflags=...)`.
-    See `hermes_cli/gateway_windows.py::_spawn_detached` for the reference
-    implementation.
+10. **Detached background daemons on Windows use console `python.exe`, NOT
+    `pythonw.exe`.** A GUI-subsystem `pythonw.exe` daemon has *no* console,
+    so every console-subsystem descendant it spawns (git, gh, cmd, node,
+    …) allocates its own visible one and flashes a window (#54220/#56747).
+    Spawn console `python.exe` under `CREATE_NO_WINDOW` instead: the daemon
+    owns a *hidden* console that its descendants inherit, and it is still
+    detached from the launching shell's console lifetime. Take the flags
+    from `windows_detach_flags()` in `hermes_cli/_subprocess_compat.py`
+    rather than assembling them by hand — it returns
+    `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`.
+    Do **not** add `DETACHED_PROCESS`: MSDN specifies `CREATE_NO_WINDOW` is
+    ignored when the two are combined, which silently turns the hide bit
+    into a no-op. See `hermes_cli/gateway_windows.py::_resolve_detached_python`
+    and `::_spawn_detached` for the reference implementation.
 
 11. **`subprocess.Popen` with `.cmd` or `.bat` shims needs `shutil.which`
     to resolve.** Passing `"agent-browser"` to `Popen` on Windows finds

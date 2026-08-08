@@ -480,7 +480,7 @@ que toca el SO, asume que *cualquier* plataforma puede alcanzar tu ruta de códi
 
 9. **Los modos de archivo POSIX (0o600, 0o644, etc.) NO se aplican en NTFS** por defecto.
 
-10. **Los daemons de fondo desacoplados en Windows necesitan `pythonw.exe`, NO `python.exe`.**
+10. **Los daemons de fondo desacoplados en Windows usan `python.exe` de consola, NO `pythonw.exe`.** Con `CREATE_NO_WINDOW` el daemon obtiene su propia consola *oculta*, que sus procesos descendientes heredan en lugar de abrir ventanas visibles (#54220/#56747). Usa `windows_detach_flags()` de `hermes_cli/_subprocess_compat.py`; no añadas `DETACHED_PROCESS`, ya que anula `CREATE_NO_WINDOW`.
 
 ---
 

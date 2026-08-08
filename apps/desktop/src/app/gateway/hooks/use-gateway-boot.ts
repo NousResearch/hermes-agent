@@ -500,6 +500,7 @@ export function useGatewayBoot({
           progress: 95
         })
         publish(conn)
+
         // Seed the workspace BEFORE the gateway opens: every session-restore
         // path is gated on gatewayState === 'open', so nothing can be active yet
         // and ensureDefaultWorkspaceCwd's live-session guard passes. The

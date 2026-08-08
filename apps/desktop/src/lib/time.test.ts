@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
-import { calendarBucket, DAY, fmtMonth, fmtMonthYear, formatAgo, HOUR, MINUTE, nominalDayStart, SECOND, sessionBucketLabel } from './time'
+import {
+  calendarBucket,
+  DAY,
+  fmtMonth,
+  fmtMonthYear,
+  formatAgo,
+  HOUR,
+  MINUTE,
+  nominalDayStart,
+  SECOND,
+  sessionBucketLabel
+} from './time'
 
 const labels = {
   ageNow: 'now',
@@ -123,12 +134,16 @@ describe('sessionBucketLabel', () => {
     // any host locale (the formatters intentionally use the runtime locale).
     const monthBucket = calendarBucket(secondsAt(2026, 2, 3), THU_NOON, 1)
 
-    if (monthBucket.kind !== 'month') {throw new Error(`expected month bucket, got ${monthBucket.kind}`)}
+    if (monthBucket.kind !== 'month') {
+      throw new Error(`expected month bucket, got ${monthBucket.kind}`)
+    }
     expect(sessionBucketLabel(monthBucket, labels)).toBe(fmtMonth.format(monthBucket.at))
 
     const monthYearBucket = calendarBucket(secondsAt(2025, 11, 3), THU_NOON, 1)
 
-    if (monthYearBucket.kind !== 'monthYear') {throw new Error(`expected monthYear bucket, got ${monthYearBucket.kind}`)}
+    if (monthYearBucket.kind !== 'monthYear') {
+      throw new Error(`expected monthYear bucket, got ${monthYearBucket.kind}`)
+    }
     expect(sessionBucketLabel(monthYearBucket, labels)).toBe(fmtMonthYear.format(monthYearBucket.at))
   })
 })

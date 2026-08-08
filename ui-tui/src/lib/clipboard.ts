@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const CLIPBOARD_MAX_BUFFER = 4 * 1024 * 1024
+
 // PowerShell read: base64-encode the clipboard content to avoid ANSI codepage
 // corruption (same problem as the write path — see comment at line 94).
 const POWERSHELL_READ_ARGS = [

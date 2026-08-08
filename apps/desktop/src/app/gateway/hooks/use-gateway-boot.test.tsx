@@ -367,6 +367,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // end-state assertion would pass anyway (the seed would run later in the
     // same flush). The construction-time snapshot is what proves ordering.
     let cwdAtConnect = ''
+
     class RecordingSocket extends FakeWebSocket {
       constructor(url: string) {
         super(url)

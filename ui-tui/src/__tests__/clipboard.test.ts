@@ -21,7 +21,12 @@ describe('readClipboardText', () => {
     await expect(readClipboardText('win32', run)).resolves.toBe('from windows\r\n')
     expect(run).toHaveBeenCalledWith(
       'powershell',
-      ['-NoProfile', '-NonInteractive', '-Command', '[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((Get-Clipboard -Raw)))'],
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((Get-Clipboard -Raw)))'
+      ],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
   })
@@ -35,7 +40,12 @@ describe('readClipboardText', () => {
     )
     expect(run).toHaveBeenCalledWith(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', '[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((Get-Clipboard -Raw)))'],
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((Get-Clipboard -Raw)))'
+      ],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
   })
@@ -89,9 +99,9 @@ describe('readClipboardText', () => {
     const b64 = Buffer.from(cjkText, 'utf8').toString('base64')
     const run = vi.fn().mockResolvedValue({ stdout: b64 })
 
-    await expect(
-      readClipboardText('linux', run, { WSL_INTEROP: '/tmp/socket' } as NodeJS.ProcessEnv)
-    ).resolves.toBe(cjkText)
+    await expect(readClipboardText('linux', run, { WSL_INTEROP: '/tmp/socket' } as NodeJS.ProcessEnv)).resolves.toBe(
+      cjkText
+    )
   })
 })
 

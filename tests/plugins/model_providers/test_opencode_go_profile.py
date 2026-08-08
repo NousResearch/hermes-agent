@@ -90,6 +90,33 @@ class TestOpenCodeGoDeepSeekThinking:
             assert extra_body == {}
             assert top_level == {"reasoning_effort": "max"}
 
+    def test_disabled_does_not_disable_thinking(self, opencode_go_profile):
+        # reasoning_effort: none must not map to thinking={"type": "disabled"}:
+        # with thinking off, DeepSeek skips reasoning_content and writes its
+        # planning drafts into content, leaking them into the visible reply.
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="deepseek/deepseek-v4-flash",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_no_config_preserves_server_default(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config=None,
+            model="deepseek-v4-flash",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_high_effort_emits_reasoning_effort(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="deepseek-v4-flash",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "high"}
+
 
 class TestOpenCodeGoGLM52Reasoning:
     """GLM-5.2 uses its native high/max reasoning_effort knob on OpenCode Go."""

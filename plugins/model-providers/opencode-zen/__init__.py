@@ -104,20 +104,21 @@ class OpenCodeGoProfile(ProviderProfile):
         if not _is_deepseek_thinking_model(model):
             return extra_body, top_level
 
-        enabled = True
-        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
-            enabled = False
-
-        if not enabled:
-            extra_body["thinking"] = {"type": "disabled"}
+        # DeepSeek thinking models on OpenCode Go: when reasoning is disabled
+        # or unset, leave the server default (thinking on) alone instead of
+        # sending thinking={"type": "disabled"}. With thinking disabled,
+        # DeepSeek skips reasoning_content and writes its planning drafts
+        # directly into content, leaking them into the visible reply.
+        if not isinstance(reasoning_config, dict):
+            return extra_body, top_level
+        if reasoning_config.get("enabled") is False:
             return extra_body, top_level
 
-        if isinstance(reasoning_config, dict):
-            effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max", "ultra"}:
-                top_level["reasoning_effort"] = "max"
-            elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
+        effort = (reasoning_config.get("effort") or "").strip().lower()
+        if effort in {"xhigh", "max", "ultra"}:
+            top_level["reasoning_effort"] = "max"
+        elif effort in {"low", "medium", "high"}:
+            top_level["reasoning_effort"] = effort
 
         # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
         # only send extra_body["thinking"] when no reasoning_effort is set.

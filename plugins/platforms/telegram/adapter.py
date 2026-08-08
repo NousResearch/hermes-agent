@@ -13,6 +13,7 @@ import faulthandler
 import inspect
 import json
 import logging
+import math
 import os
 import html as _html
 import re
@@ -735,6 +736,19 @@ class TelegramAdapter(BasePlatformAdapter):
         # as plain text, which is worse than degraded table/task-list rendering
         # for command snippets and mobile handoffs.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # Telegram advertises a 32,768-character rich-text cap, but some clients
+        # accept and then render long, block-heavy rich documents incompletely.
+        # Keep the server limit as the backwards-compatible default while
+        # allowing users to set a lower hybrid cutoff: rich rendering below the
+        # cutoff, proven MarkdownV2 chunking above it.
+        self._rich_message_max_chars: int = int(
+            self._coerce_float_extra(
+                "rich_message_max_chars",
+                self.RICH_MESSAGE_MAX_CHARS,
+                min_value=1,
+                max_value=self.RICH_MESSAGE_MAX_CHARS,
+            )
+        )
         # Rich draft previews use a separate opt-in. Telegram macOS / Desktop
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
@@ -1573,6 +1587,12 @@ class TelegramAdapter(BasePlatformAdapter):
             parsed = float(value)
         except (TypeError, ValueError):
             return default
+        if not math.isfinite(parsed):
+            # nan/inf survive float() without raising (YAML even has literal
+            # .nan/.inf), but nan then defeats the min()/max() clamps below
+            # (nan compares False against everything) and int(nan) raises,
+            # which would crash adapter construction instead of falling back.
+            return default
         if min_value is not None:
             parsed = max(parsed, min_value)
         if max_value is not None:
@@ -1598,15 +1618,18 @@ class TelegramAdapter(BasePlatformAdapter):
     # preview until rich_message edit support is wired directly.
     # ------------------------------------------------------------------
     def _content_fits_rich_limits(self, content: str) -> bool:
-        """Cheap pre-check for the one hard rich limit we can count locally.
+        """Check the configured rich cutoff and Telegram's hard text limit.
 
-        Only the 32,768 UTF-8 character text cap is enforced here. Other Bot API
-        rich limits (500 blocks, 16 nesting levels, 20 table columns, ...) are
-        not pre-counted; if exceeded Telegram returns a BadRequest, which
-        :meth:`_is_rich_fallback_error` classifies as permanent so the send
-        degrades to the legacy chunking path.
+        ``rich_message_max_chars`` may lower the 32,768-character API limit so
+        long, block-heavy documents use the proven MarkdownV2 chunking path.
+        Other Bot API rich limits (500 blocks, 16 nesting levels, 20 table
+        columns, ...) are not pre-counted; if exceeded Telegram returns a
+        BadRequest, which :meth:`_is_rich_fallback_error` classifies as
+        permanent so the send degrades to legacy chunking.
         """
-        return len(content) <= self.RICH_MESSAGE_MAX_CHARS
+        return len(content) <= getattr(
+            self, "_rich_message_max_chars", self.RICH_MESSAGE_MAX_CHARS
+        )
 
     def _bot_supports_rich(self) -> bool:
         """True when the bound bot can issue raw ``sendRichMessage`` calls.
@@ -1737,7 +1760,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     def streaming_overflow_limit(self) -> Optional[int]:
-        """Allow the stream consumer to accumulate up to the rich-message cap
+        """Allow the stream consumer to accumulate up to the configured rich cap
         before splitting, so a reply that fits one ``sendRichMessage`` /
         ``sendRichMessageDraft`` isn't fragmented at the 4,096 MarkdownV2 limit.
 
@@ -1752,7 +1775,9 @@ class TelegramAdapter(BasePlatformAdapter):
             and not getattr(self, "_rich_send_disabled", False)
             and self._bot_supports_rich()
         ):
-            return self.RICH_MESSAGE_MAX_CHARS
+            return getattr(
+                self, "_rich_message_max_chars", self.RICH_MESSAGE_MAX_CHARS
+            )
         return None
 
     def _rich_message_payload(

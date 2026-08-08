@@ -124,6 +124,161 @@ async def test_astral_cjk_rich_content_skips_rich_send_to_avoid_tdesktop_garble(
 
 
 @pytest.mark.asyncio
+async def test_rich_messages_opt_out_uses_legacy_send_path():
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rich_messages_opt_out_accepts_string_false():
+    adapter = _make_adapter(extra={"rich_messages": "false"})
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rich_messages_default_is_legacy_copyable_path():
+    """Rich messages stay opt-in because current Telegram clients can make
+    Bot API rich messages hard to copy as plain text. Rich-eligible content
+    defaults to the legacy MarkdownV2 path unless the user opts in."""
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = TelegramAdapter(config)
+    bot = MagicMock()
+    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.send_chat_action = AsyncMock()
+    adapter._bot = bot
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rich_messages_can_be_opted_in():
+    """Setting platforms.telegram.extra.rich_messages: true enables native
+    Bot API rich rendering for tables/task lists/details/math."""
+    config = PlatformConfig(
+        enabled=True, token="fake-token", extra={"rich_messages": True}
+    )
+    adapter = TelegramAdapter(config)
+    bot = MagicMock()
+    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.send_chat_action = AsyncMock()
+    adapter._bot = bot
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rich_messages_can_be_opted_out():
+    """Setting platforms.telegram.extra.rich_messages: false keeps every reply
+    on the legacy MarkdownV2 path even for rich-eligible content."""
+    config = PlatformConfig(
+        enabled=True, token="fake-token", extra={"rich_messages": False}
+    )
+    adapter = TelegramAdapter(config)
+    bot = MagicMock()
+    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.send_chat_action = AsyncMock()
+    adapter._bot = bot
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rich_message_max_chars_falls_back_to_legacy_chunking():
+    """Users can keep native rich rendering for short replies while routing
+    longer, client-risky documents through the proven MarkdownV2 path."""
+    adapter = _make_adapter(extra={"rich_message_max_chars": len(RICH_CONTENT) - 1})
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rich_message_max_chars_is_inclusive():
+    adapter = _make_adapter(extra={"rich_message_max_chars": len(RICH_CONTENT)})
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_long_rich_document_uses_multiple_legacy_chunks_below_hybrid_cutoff():
+    adapter = _make_adapter(extra={"rich_message_max_chars": 4096})
+    long_rich_content = RICH_CONTENT + "\n\n" + ("Long paragraph.\n\n" * 400)
+
+    result = await adapter.send("12345", long_rich_content)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    assert bot.send_message.await_count > 1
+
+
+def test_rich_message_max_chars_controls_streaming_overflow_limit():
+    adapter = _make_adapter(extra={"rich_message_max_chars": 4096})
+
+    assert adapter.streaming_overflow_limit() == 4096
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [float("nan"), "nan", float("inf"), "inf", float("-inf"), "-inf"],
+)
+def test_rich_message_max_chars_rejects_non_finite_and_falls_back_to_default(bad_value):
+    """YAML 1.1 parses bare `.nan`/`.inf` literals as float, so a config typo
+    can hand this straight to float(). nan/inf parse without raising, but nan
+    then defeats the min()/max() clamps (nan compares False against
+    everything) and int(nan) raises ValueError — which would crash adapter
+    construction and take Telegram down at startup instead of falling back."""
+    adapter = _make_adapter(extra={"rich_message_max_chars": bad_value})
+
+    assert adapter._rich_message_max_chars == adapter.RICH_MESSAGE_MAX_CHARS
+
+
+@pytest.mark.asyncio
 async def test_plain_markdown_stays_on_legacy_path():
     """Ordinary replies (no table/task-list/details/math) stay on the legacy
     MarkdownV2 path for consistent client rendering, even with rich enabled."""

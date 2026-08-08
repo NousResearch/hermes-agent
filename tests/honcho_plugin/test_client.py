@@ -67,6 +67,29 @@ class TestFromEnv:
         assert config.enabled is True
 
 
+    def test_honcho_url_env_var_is_honored(self):
+        """HONCHO_URL is the SDK's own env var; from_env() accepts it too."""
+        with patch.dict(os.environ, {"HONCHO_URL": "http://localhost:8000"}, clear=False):
+            os.environ.pop("HONCHO_API_KEY", None)
+            os.environ.pop("HONCHO_BASE_URL", None)
+            config = HonchoClientConfig.from_env()
+        assert config.base_url == "http://localhost:8000"
+        assert config.enabled is True
+
+
+    def test_honcho_base_url_wins_over_honcho_url(self):
+        with patch.dict(
+            os.environ,
+            {
+                "HONCHO_BASE_URL": "http://localhost:8000",
+                "HONCHO_URL": "http://localhost:9999",
+            },
+            clear=False,
+        ):
+            config = HonchoClientConfig.from_env()
+        assert config.base_url == "http://localhost:8000"
+
+
 class TestFromGlobalConfig:
     def test_missing_config_falls_back_to_env(self, tmp_path):
         with patch.dict(os.environ, {}, clear=True):
@@ -76,6 +99,60 @@ class TestFromGlobalConfig:
         # Should fall back to from_env
         assert config.enabled is False
         assert config.api_key is None
+
+
+    def test_missing_config_still_reads_honcho_url(self, tmp_path):
+        """The env fallback path must honor HONCHO_URL, not just HONCHO_BASE_URL.
+
+        from_global_config() returns from_env() when the config file is
+        absent, so a fallback that only from_global_config() understood
+        would silently do nothing for users with no ~/.honcho/config.json.
+        """
+        with patch.dict(os.environ, {"HONCHO_URL": "http://localhost:8000"}, clear=True):
+            config = HonchoClientConfig.from_global_config(
+                config_path=tmp_path / "nonexistent.json"
+            )
+        assert config.base_url == "http://localhost:8000"
+        assert config.enabled is True
+
+
+    def test_base_url_from_sdk_native_endpoint_block(self, tmp_path):
+        """endpoint.baseUrl is the SDK-native spelling Claude Desktop writes."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "endpoint": {"baseUrl": "http://localhost:8000"},
+        }))
+
+        with patch.dict(os.environ, {}, clear=True):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://localhost:8000"
+
+
+    def test_endpoint_base_url_wins_over_top_level_and_env(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "endpoint": {"baseUrl": "http://localhost:8000"},
+            "baseUrl": "http://localhost:9001",
+            "base_url": "http://localhost:9002",
+        }))
+
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://localhost:9003"}, clear=True):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://localhost:8000"
+
+
+    def test_endpoint_block_non_dict_is_ignored(self, tmp_path):
+        """A malformed endpoint value falls through instead of crashing."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "endpoint": "http://localhost:8000",
+            "baseUrl": "http://localhost:9001",
+        }))
+
+        with patch.dict(os.environ, {}, clear=True):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://localhost:9001"
 
 
     def test_host_block_overrides_root(self, tmp_path):

@@ -15,7 +15,7 @@ describe('voice.submit_mode live composer rendering', () => {
     const submit = vi.fn()
 
     function Harness() {
-      const [input, setInput] = useState('')
+      const [input, setInput] = useState('existing draft')
 
       const handler = useMemo(
         () =>
@@ -87,7 +87,7 @@ describe('voice.submit_mode live composer rendering', () => {
         await delay(10)
       }
 
-      expect(output).toContain('editable voice draft')
+      expect(output).toContain('existing draft editable voice draft')
       expect(submit).not.toHaveBeenCalled()
     } finally {
       instance.unmount()

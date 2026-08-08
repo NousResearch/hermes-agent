@@ -953,7 +953,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const submitMode = normalizeVoiceSubmitMode(cfg?.config?.voice?.submit_mode)
 
           if (submitMode === 'draft') {
-            setInput(text)
+            setInput(current => (current.trim() ? `${current.trimEnd()} ${text}` : text))
 
             return
           }

@@ -895,15 +895,19 @@ describe('createGatewayEventHandler', () => {
 
   it('leaves voice transcripts editable when voice.submit_mode is draft', async () => {
     const ctx = buildCtx([])
+    let composerInput = 'existing draft'
 
     ctx.gateway.rpc = vi.fn(async (method: string) =>
       method === 'config.get' ? { config: { voice: { submit_mode: 'draft' } } } : null
     )
+    ctx.composer.setInput = vi.fn((next: string | ((current: string) => string)) => {
+      composerInput = typeof next === 'function' ? next(composerInput) : next
+    })
     const onEvent = createGatewayEventHandler(ctx)
 
     onEvent({ payload: { text: '  edit this first  ' }, type: 'voice.transcript' } as any)
 
-    await vi.waitFor(() => expect(ctx.composer.setInput).toHaveBeenCalledWith('edit this first'))
+    await vi.waitFor(() => expect(composerInput).toBe('existing draft edit this first'))
     expect(ctx.submission.submitRef.current).not.toHaveBeenCalled()
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.get', { key: 'full' })
   })

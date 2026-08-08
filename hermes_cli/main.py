@@ -5511,14 +5511,19 @@ def _run_npm_install_deterministic(
         )
 
     def _attempt(npm_exe: str) -> subprocess.CompletedProcess:
+        from hermes_constants import node_cli_launch_for_shim
+
+        # Windows: run npm via node.exe + npm-cli.js, never the .cmd shim —
+        # cmd.exe truncates shim paths containing Unicode whitespace (U+00A0).
+        launch = node_cli_launch_for_shim(npm_exe)
         lockfile = cwd / "package-lock.json"
         if lockfile.exists():
-            ci_result = _run([npm_exe, "ci", "--include=dev", *extra_args])
+            ci_result = _run([*launch, "ci", "--include=dev", *extra_args])
             if ci_result.returncode == 0:
                 return ci_result
             # Fall through to `npm install` — lockfile may be out of sync on a
             # WIP fork/branch, or `npm ci` may not be available on very old npm.
-        return _run([npm_exe, "install", "--no-save", "--include=dev", *extra_args])
+        return _run([*launch, "install", "--no-save", "--include=dev", *extra_args])
 
     result = _attempt(npm)
     if result.returncode == 0:
@@ -7021,7 +7026,7 @@ def cmd_gui(args: argparse.Namespace):
     except Exception:
         pass
 
-    from hermes_constants import with_hermes_node_path
+    from hermes_constants import node_cli_launch_for_shim, with_hermes_node_path
 
     # with_hermes_node_path() copies os.environ when called with no arg.
     env = with_hermes_node_path()
@@ -7130,7 +7135,12 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
-            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            build_result = subprocess.run(
+                [*node_cli_launch_for_shim(npm), "run", build_script],
+                cwd=desktop_dir,
+                env=env,
+                check=False,
+            )
             if (
                 build_result.returncode != 0
                 and not source_mode
@@ -7157,7 +7167,12 @@ def cmd_gui(args: argparse.Namespace):
                     # The purge can't remove a win-unpacked tree whose Hermes.exe
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
-                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+                    build_result = subprocess.run(
+                        [*node_cli_launch_for_shim(npm), "run", build_script],
+                        cwd=desktop_dir,
+                        env=env,
+                        check=False,
+                    )
             if (
                 build_result.returncode != 0
                 and not source_mode
@@ -7173,7 +7188,12 @@ def cmd_gui(args: argparse.Namespace):
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
                 _stop_desktop_processes_locking_build(desktop_dir)
-                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
+                build_result = subprocess.run(
+                    [*node_cli_launch_for_shim(npm), "run", build_script],
+                    cwd=desktop_dir,
+                    env=mirror_env,
+                    check=False,
+                )
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
@@ -7236,7 +7256,12 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
+        launch_result = subprocess.run(
+            [*node_cli_launch_for_shim(npm), "exec", "--", "electron", "."],
+            cwd=desktop_dir,
+            env=env,
+            check=False,
+        )
         sys.exit(launch_result.returncode)
 
     if packaged_executable is None:

@@ -322,6 +322,43 @@ _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
 
+def node_cli_launch_for_shim(path: str, *, windows: bool | None = None) -> list[str]:
+    """Windows: run npm/npx through ``node.exe`` instead of the ``.cmd`` shim.
+
+    ``CreateProcess`` cannot execute a ``.cmd``/``.bat`` batch file directly,
+    so Python's subprocess routes the launch through ``cmd.exe``. cmd.exe's
+    tokenizer treats Unicode whitespace — notably U+00A0 (non-breaking space),
+    which can appear in a Windows profile path such as
+    ``C:\\Users\\First<U+00A0>Last\\`` — as a word delimiter and truncates the
+    shim's own path, so the launch fails with rc 1 and "not recognized as an
+    internal or external command" even though the same command works from
+    PowerShell and the tree's ``node.exe`` runs fine (native executables are
+    launched by CreateProcess directly and handle Unicode paths).
+
+    Resolve the shim's real target instead — ``node.exe`` + the npm/npx CLI
+    script under ``<shim dir>/node_modules/<cli>/bin/<cli>-cli.js`` — which is
+    exactly what the shim itself executes. The layout is identical for
+    Hermes-managed trees (``$HERMES_HOME/node``), the Node.js installer
+    (``Program Files``), and nvm-windows. Falls back to the shim path when
+    the target files are missing, so every non-Windows and odd-layout caller
+    is unchanged.
+    """
+    if windows is None:
+        windows = sys.platform == "win32"
+    if not windows:
+        return [path]
+    shim = Path(path)
+    name = shim.name.lower()
+    for stem, cli_name in (("npm", "npm-cli.js"), ("npx", "npx-cli.js")):
+        if name in (f"{stem}.cmd", f"{stem}.bat", stem):
+            node_exe = shim.parent / "node.exe"
+            cli_js = shim.parent / "node_modules" / stem / "bin" / cli_name
+            if node_exe.is_file() and cli_js.is_file():
+                return [str(node_exe), str(cli_js)]
+            break
+    return [path]
+
+
 def node_tool_runnable(path: str | None) -> bool:
     """Return True only when *path* is a Node/npm/npx binary that actually runs.
 
@@ -349,8 +386,12 @@ def node_tool_runnable(path: str | None) -> bool:
     try:
         from hermes_cli._subprocess_compat import windows_hide_flags
 
+        # Launch .cmd/.bat shims via their node.exe target so cmd.exe never
+        # gets a chance to mangle the shim's own path (Unicode whitespace
+        # like U+00A0 in a profile path truncates under cmd.exe — see
+        # node_cli_launch_for_shim).
         result = subprocess.run(
-            [path, "--version"],
+            [*node_cli_launch_for_shim(path), "--version"],
             capture_output=True,
             timeout=10,
             env=with_hermes_node_path(),
@@ -715,8 +756,12 @@ def agent_browser_runnable(path: str | None) -> bool:
     try:
         from hermes_cli._subprocess_compat import windows_hide_flags
 
+        # Launch .cmd/.bat shims via their node.exe target so cmd.exe never
+        # gets a chance to mangle the shim's own path (Unicode whitespace
+        # like U+00A0 in a profile path truncates under cmd.exe — see
+        # node_cli_launch_for_shim).
         result = subprocess.run(
-            [path, "--version"],
+            [*node_cli_launch_for_shim(path), "--version"],
             capture_output=True,
             timeout=10,
             env=with_hermes_node_path(),

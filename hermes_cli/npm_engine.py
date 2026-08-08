@@ -37,6 +37,7 @@ from pathlib import Path
 from hermes_constants import (
     bootstrap_hermes_managed_node,
     get_hermes_home,
+    node_cli_launch_for_shim,
     with_hermes_node_path,
 )
 
@@ -190,7 +191,7 @@ def upgrade_managed_npm(
         with tempfile.TemporaryDirectory(prefix="hermes-npm-upgrade-") as tmp:
             result = subprocess.run(
                 [
-                    npm,
+                    *node_cli_launch_for_shim(npm),
                     "install",
                     "--global",
                     "--prefix",
@@ -230,7 +231,7 @@ def upgrade_managed_npm(
 def _probe_version(npm: str) -> str | None:
     try:
         result = subprocess.run(
-            [npm, "--version"],
+            [*node_cli_launch_for_shim(npm), "--version"],
             capture_output=True,
             text=True,
             encoding="utf-8",

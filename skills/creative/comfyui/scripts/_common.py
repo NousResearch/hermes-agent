@@ -641,24 +641,49 @@ def http_post(url: str, **kwargs: Any) -> HTTPResponse:
 # =============================================================================
 
 def is_api_format(workflow: Any) -> bool:
-    """API format = top-level dict where each value has `class_type`."""
+    """API format = non-empty top-level node mapping for `/prompt`.
+
+    ComfyUI treats every top-level key as a node id, so comments or other
+    metadata keys are not valid API format even when the rest of the file has
+    nodes.
+    """
     if not isinstance(workflow, dict):
+        return False
+    if not workflow:
         return False
     if "nodes" in workflow and "links" in workflow:
         return False
-    for v in workflow.values():
-        if isinstance(v, dict) and "class_type" in v:
-            return True
-    return False
+    return all(isinstance(v, dict) and "class_type" in v for v in workflow.values())
+
+
+def strip_workflow_metadata(workflow: Any) -> Any:
+    """Remove top-level metadata keys that ComfyUI would misread as nodes."""
+    if not isinstance(workflow, dict):
+        return workflow
+
+    cleaned = {
+        k: v
+        for k, v in workflow.items()
+        if not (
+            isinstance(k, str)
+            and k.startswith("_")
+            and not (isinstance(v, dict) and "class_type" in v)
+        )
+    }
+    return workflow if len(cleaned) == len(workflow) else cleaned
 
 
 def unwrap_workflow(payload: Any) -> dict:
     """Unwrap common wrapper variants. Returns API-format workflow or raises ValueError."""
-    if isinstance(payload, dict) and is_api_format(payload):
-        return payload
+    if isinstance(payload, dict):
+        workflow = strip_workflow_metadata(payload)
+        if is_api_format(workflow):
+            return workflow
     # Some files wrap workflow under "prompt" key (e.g. saved /prompt payloads)
-    if isinstance(payload, dict) and "prompt" in payload and is_api_format(payload["prompt"]):
-        return payload["prompt"]
+    if isinstance(payload, dict) and "prompt" in payload:
+        workflow = strip_workflow_metadata(payload["prompt"])
+        if is_api_format(workflow):
+            return workflow
     # Editor format
     if isinstance(payload, dict) and "nodes" in payload and "links" in payload:
         raise ValueError(

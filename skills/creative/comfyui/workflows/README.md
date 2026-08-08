@@ -66,6 +66,10 @@ python3 ../scripts/check_deps.py wan_video_t2v.json
   visual editing, use `Workflow → Load (API Format)` or `Workflow → Open` and
   follow the prompt.
 
+- Do not add top-level `_comment`, `_meta`, or other descriptive keys to these
+  JSON files. ComfyUI's `/prompt` endpoint treats every top-level key as a node
+  definition; keep human-facing notes in this README instead.
+
 ## Cloud vs local model names
 
 Comfy Cloud's preinstalled checkpoints sometimes have a `-fp16` suffix

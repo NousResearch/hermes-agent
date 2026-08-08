@@ -731,6 +731,29 @@ Scheduled auto-resume for N restart-interrupted session(s)
 
 No configuration is required. If you don't want the heads-up, set `gateway_restart_notification: false` on the platform.
 
+### Moving a session between surfaces
+
+A session is not locked to the surface it started on. From a CLI session, `/handoff <platform>`
+transfers the live conversation to that platform's home channel — same session id, full
+transcript, tool calls included. The destination adapter opens a fresh thread where it can
+(Telegram forum topic, Discord thread, Slack thread anchor) and falls back to the home channel
+where it cannot.
+
+`/handoff` runs from the CLI only. It is not one of the chat commands above, so typing it in a
+messaging chat will not start a handoff.
+
+To come back, run `/resume <title>` from the CLI (or `hermes -r "<title>"`).
+
+The destination needs a home channel configured once, with `/sethome` from that chat.
+
+See [Cross-Platform Handoff](/docs/user-guide/sessions#cross-platform-handoff) for the full
+flow, per-platform thread behaviour, and failure modes.
+
+:::note
+This is distinct from [session resume across gateway restarts](#session-resume-across-gateway-restarts),
+which recovers an interrupted session on the same surface after the gateway restarts.
+:::
+
 ### Mobile-friendly progress defaults
 
 Telegram is usually a mobile inbox, so the defaults are tuned for that surface:

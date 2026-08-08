@@ -110,6 +110,50 @@ describe('PreviewPane console state', () => {
     forgetPreviewStripTools(tabId)
   })
 
+  it('does not workspace-reload an external browser page', async () => {
+    const target = {
+      kind: 'url' as const,
+      label: 'X',
+      source: 'https://x.com',
+      url: 'https://x.com'
+    }
+
+    const rendered = render(<PreviewPane reloadRequest={0} target={target} />)
+
+    const reloadIgnoringCache = vi.fn()
+
+    Object.defineProperty(rendered.container.querySelector('webview'), 'reloadIgnoringCache', {
+      configurable: true,
+      value: reloadIgnoringCache
+    })
+
+    await act(async () => rendered.rerender(<PreviewPane reloadRequest={1} target={target} />))
+
+    expect(reloadIgnoringCache).not.toHaveBeenCalled()
+  })
+
+  it('keeps workspace reload for a local development page', async () => {
+    const target = {
+      kind: 'url' as const,
+      label: 'Preview',
+      source: 'http://localhost:5174',
+      url: 'http://localhost:5174'
+    }
+
+    const rendered = render(<PreviewPane reloadRequest={0} target={target} />)
+
+    const reloadIgnoringCache = vi.fn()
+
+    Object.defineProperty(rendered.container.querySelector('webview'), 'reloadIgnoringCache', {
+      configurable: true,
+      value: reloadIgnoringCache
+    })
+
+    await act(async () => rendered.rerender(<PreviewPane reloadRequest={1} target={target} />))
+
+    expect(reloadIgnoringCache).toHaveBeenCalledOnce()
+  })
+
   it('renders authenticated remote HTML safely and honors source mode', async () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
 

@@ -9,6 +9,7 @@ const PDF_EXTENSIONS = new Set(['.pdf'])
 // Mirrors `_FS_DATA_URL_MAX_BYTES` in the backend filesystem endpoint.
 const REMOTE_HTML_PREVIEW_MAX_BYTES = 16 * 1024 * 1024
 const REMOTE_HTML_PREVIEW_MAX_BASE64_BYTES = Math.ceil(REMOTE_HTML_PREVIEW_MAX_BYTES / 3) * 4
+const WORKSPACE_RELOAD_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1'])
 
 const LANGUAGE_BY_EXT: Record<string, string> = {
   '.c': 'c',
@@ -78,6 +79,22 @@ function pathToFileUrl(path: string) {
   }
 
   return `file://${encoded.startsWith('/') ? encoded : `/${encoded}`}`
+}
+
+export function isWorkspaceLiveReloadUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return false
+    }
+
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+
+    return WORKSPACE_RELOAD_HOSTS.has(hostname) || hostname.endsWith('.local')
+  } catch {
+    return false
+  }
 }
 
 export function validatedRemoteHtmlDataUrl(value: string): string | null {

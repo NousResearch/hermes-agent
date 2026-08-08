@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { STREAM_BATCH_MS } from '@/lib/timing'
 
 import { useSessionStateCache } from '../use-session-state-cache'
 
@@ -331,7 +332,7 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
     vi.restoreAllMocks()
   })
 
-  it('measures the frame cost through the real view-sync rAF and adapts the next gap', async () => {
+  it('defers the view publish to the STREAM_BATCH_MS batch timer while streaming', async () => {
     let now = 1000
     vi.mocked(performance.now).mockImplementation(() => now)
     const rafCallbacks: FrameRequestCallback[] = []
@@ -344,14 +345,13 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
     render(<ComposedHarness />)
     expect(appendAssistantDelta).not.toBeNull()
 
-    // Mid-turn state: busy keeps the view sync on the deferred rAF path
-    // (terminal/needing-input states flush synchronously instead).
+    // Mid-turn state: busy keeps the view sync on the deferred batch-timer
+    // path (terminal/needing-input states flush synchronously instead).
     act(() => {
       cache!.updateSessionState(SID, state => ({ ...state, busy: true }))
     })
-    expect(rafCallbacks).toHaveLength(1)
-    // Drain the seed's own view-sync rAF so the flush below starts clean.
-    act(() => rafCallbacks.shift()!(now))
+    // The view-sync is a STREAM_BATCH_MS timer now — no rAF is scheduled.
+    expect(rafCallbacks).toHaveLength(0)
 
     act(() => appendAssistantDelta!(SID, 'first'))
     await act(async () => {
@@ -359,22 +359,23 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
     })
 
     // The store write landed synchronously, but the $messages publish is
-    // deferred: exactly two rAF callbacks are pending — first the cache's
-    // view-sync, then runFlush's measurement.
+    // deferred: the batch timer is pending and exactly one rAF — runFlush's
+    // measurement — is registered (the view-sync itself no longer uses rAF).
     expect(cachedText()).toBe('first')
     expect(publishedText()).toBe('')
-    expect(rafCallbacks).toHaveLength(2)
+    expect(rafCallbacks).toHaveLength(1)
 
-    // Draining the FIRST registered callback must be what publishes the
-    // deferred commit; that identity is the ordering contract. It runs until
-    // 60ms into the frame (React commit + Streamdown re-parse).
-    now = 1100
-    act(() => rafCallbacks[0](1040))
+    // Firing the batch timer publishes the deferred commit — that's the
+    // batching contract from #50107 (12 fps of text growth while streaming).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STREAM_BATCH_MS)
+    })
     expect(publishedText()).toBe('first')
 
-    // The measurement callback closes the same frame: 60ms of in-frame work,
-    // so the next adaptive floor is 3x = 180ms.
-    act(() => rafCallbacks[1](1040))
+    // The measurement callback still closes the flush's own frame: 60ms of
+    // in-frame work, so the next adaptive floor is 3x = 180ms.
+    now = 1100
+    act(() => rafCallbacks[0](1040))
 
     act(() => appendAssistantDelta!(SID, 'second'))
     await act(async () => {

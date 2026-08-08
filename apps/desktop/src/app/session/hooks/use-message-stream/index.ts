@@ -277,14 +277,17 @@ export function useMessageStream({
       // The store write above is only the cheap half of a flush. While a
       // session streams, syncSessionStateToView defers the $messages publish
       // (and with it the React commit + Streamdown re-parse the floor is meant
-      // to account for) to its own rAF inside updateSessionState, which runs
+      // to account for) to its own batched timer (STREAM_BATCH_MS, see
+      // use-session-state-cache.ts) inside updateSessionState, which fires
       // after this timer task. Stopping the clock here pins lastFlushCostRef
       // near zero and collapses the adaptive floor to 33ms no matter the load.
-      // Our rAF is registered after the view-sync one, so it runs in the same
-      // frame right after that commit; its timestamp marks frame start, so
-      // (now - frameStart) counts only work done inside the frame, not the
-      // vsync wait. A hidden renderer never fires rAF, so the write cost
-      // stays as the fallback.
+      // Our rAF runs at the next animation frame; the deferred commit may not
+      // land in that same frame anymore (it's on its own 80ms batch timer,
+      // #50107), so the measurement captures the flush's own frame work and
+      // the write cost — the honest floor for coalescing store writes. The
+      // commit cadence itself is independently bounded by STREAM_BATCH_MS, so
+      // its cost can't stack back-to-back regardless of this floor. A hidden
+      // renderer never fires rAF, so the write cost stays as the fallback.
       const writeCost = performance.now() - startedAt
       lastFlushCostRef.current = writeCost
 

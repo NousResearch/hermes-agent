@@ -6,6 +6,7 @@ import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { STREAM_BATCH_MS, STREAM_IDLE_BATCH_MS } from '@/lib/timing'
 import {
   $activeSessionId,
   $busy,
@@ -84,7 +85,7 @@ export function useSessionStateCache({
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
-  const viewSyncRafRef = useRef<number | null>(null)
+  const viewSyncTimerRef = useRef<number | null>(null)
   // Runtime id whose transcript currently occupies `$messages` — lets the
   // flush below tell a same-session refresh from a thread switch.
   const viewSessionIdRef = useRef<string | null>(null)
@@ -148,14 +149,14 @@ export function useSessionStateCache({
   }, [])
 
   const resetViewSync = useCallback(() => {
-    // Drop any RAF-pending transcript stage so a backgrounded turn cannot
-    // repaint over the chat the user just switched to (#47709 / #47743).
+    // Drop any pending (scheduled) transcript flush so a backgrounded turn
+    // cannot repaint over the chat the user just switched to (#47709 / #47743).
     pendingViewStateRef.current = null
     viewSessionIdRef.current = null
 
-    if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
-      window.cancelAnimationFrame(viewSyncRafRef.current)
-      viewSyncRafRef.current = null
+    if (viewSyncTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(viewSyncTimerRef.current)
+      viewSyncTimerRef.current = null
     }
   }, [])
 
@@ -226,21 +227,18 @@ export function useSessionStateCache({
       pendingViewStateRef.current = { sessionId, state }
 
       // Terminal / attention transitions (turn finished, error, or the agent is
-      // now waiting on the user) MUST reach the view immediately. Electron
-      // throttles `requestAnimationFrame` to ~0 while the window is
-      // backgrounded, occluded, or unfocused, so an RAF-deferred flush can be
-      // stranded in `pendingViewStateRef` indefinitely — that's the "new chat
-      // stuck on Thinking until I refocus / F5" bug. Flush these synchronously
-      // (cancelling any in-flight RAF, since we're about to publish the latest
-      // state anyway). The plain busy heartbeat stays RAF-batched: that
-      // coalescing exists only to keep periodic `session.info` updates from
-      // churning `$messages` and jerking the scroll position while reading.
+      // now waiting on the user) MUST reach the view immediately — never wait
+      // for the next batch tick. Flush these synchronously (cancelling any
+      // pending batch, since we're about to publish the latest state anyway).
+      // The plain busy/idle heartbeats stay batched: that coalescing exists
+      // only to keep periodic `session.info` updates from churning `$messages`
+      // and jerking the scroll position while reading (#50107).
       const isCriticalTransition = !state.busy || state.needsInput
 
       if (isCriticalTransition) {
-        if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
-          window.cancelAnimationFrame(viewSyncRafRef.current)
-          viewSyncRafRef.current = null
+        if (viewSyncTimerRef.current !== null && typeof window !== 'undefined') {
+          window.clearTimeout(viewSyncTimerRef.current)
+          viewSyncTimerRef.current = null
         }
 
         flushPendingViewState()
@@ -248,7 +246,7 @@ export function useSessionStateCache({
         return
       }
 
-      if (viewSyncRafRef.current !== null) {
+      if (viewSyncTimerRef.current !== null) {
         return
       }
 
@@ -258,19 +256,28 @@ export function useSessionStateCache({
         return
       }
 
-      viewSyncRafRef.current = window.requestAnimationFrame(() => {
-        viewSyncRafRef.current = null
+      // Streaming updates (busy heartbeats) and idle heartbeats both flush
+      // through the view. Batch them at a human-visible cadence instead of one
+      // flush per animation frame: a 60 fps flush repaints the whole transcript
+      // on every token chunk (see #50107). Critical transitions stay
+      // synchronous above; timers are unthrottled here because the app
+      // disables background timer throttling (`backgroundThrottling: false` +
+      // `disable-background-timer-throttling` in electron/main.ts).
+      const batchMs = state.busy ? STREAM_BATCH_MS : STREAM_IDLE_BATCH_MS
+
+      viewSyncTimerRef.current = window.setTimeout(() => {
+        viewSyncTimerRef.current = null
         flushPendingViewState()
-      })
+      }, batchMs)
     },
     [flushPendingViewState]
   )
 
   useEffect(
     () => () => {
-      if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
-        window.cancelAnimationFrame(viewSyncRafRef.current)
-        viewSyncRafRef.current = null
+      if (viewSyncTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(viewSyncTimerRef.current)
+        viewSyncTimerRef.current = null
       }
     },
     []

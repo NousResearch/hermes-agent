@@ -3,6 +3,7 @@ import { type MutableRefObject, useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { STREAM_BATCH_MS } from '@/lib/timing'
 import {
   $activeSessionStoredIdRotation,
   $currentFastMode,
@@ -99,19 +100,11 @@ function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessP
 
 describe('useSessionStateCache — per-session turn timer', () => {
   beforeEach(() => {
-    // The view-sync flush runs on a real rAF in the browser path; in jsdom we
-    // want it synchronous so the global mirror is observable immediately. The
-    // hook closes over `window.requestAnimationFrame`, so stub that exact ref.
-    // Return null (not a handle) so the hook's `viewSyncRafRef.current = rAF(...)`
-    // assignment doesn't overwrite the null the synchronous callback just set —
-    // otherwise the ref reads truthy and the NEXT sync is suppressed (a real
-    // browser returns a handle but runs the callback async, so this race is a
-    // test-only artifact of firing synchronously).
-    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => {
-      cb(0)
-
-      return null as unknown as number
-    })
+    // The view-sync flush runs on a batched `setTimeout` (STREAM_BATCH_MS)
+    // while streaming — the replacement for the old per-frame rAF flush
+    // (#50107). Fake timers let each test drive the batch to completion and
+    // observe the global mirror.
+    vi.useFakeTimers()
     setTurnStartedAt(null)
     setCurrentModel('')
     setCurrentProvider('')
@@ -122,6 +115,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.restoreAllMocks()
     setTurnStartedAt(null)
     setCurrentModel('')
@@ -156,11 +150,17 @@ describe('useSessionStateCache — per-session turn timer', () => {
     const startedAt = 1_700_000_111_000
 
     // A turn on the ACTIVE session stages into the view; the flush mirrors its
-    // turnStartedAt into the global atom the statusbar reads.
+    // turnStartedAt into the global atom the statusbar reads. While the turn is
+    // busy the flush is batched (STREAM_BATCH_MS), so drive the batch to
+    // completion before observing the mirror.
     act(() => {
       cache.updateSessionState('fg-runtime', state => ({ ...state, busy: true, turnStartedAt: startedAt }), 'fg-stored')
     })
+    expect($turnStartedAt.get()).toBeNull()
 
+    act(() => {
+      vi.advanceTimersByTime(STREAM_BATCH_MS)
+    })
     expect($turnStartedAt.get()).toBe(startedAt)
   })
 
@@ -175,8 +175,13 @@ describe('useSessionStateCache — per-session turn timer', () => {
         'fg-stored'
       )
     })
+    act(() => {
+      vi.advanceTimersByTime(STREAM_BATCH_MS)
+    })
     expect($turnStartedAt.get()).toBe(1_700_000_222_000)
 
+    // Turn end is a critical transition — it flushes synchronously, so the
+    // clock clears without waiting for the next batch tick.
     act(() => {
       cache.updateSessionState('fg-runtime', state => ({ ...state, busy: false, turnStartedAt: null }))
     })

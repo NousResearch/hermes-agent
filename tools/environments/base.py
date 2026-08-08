@@ -804,6 +804,16 @@ class BaseEnvironment(ABC):
         """
         return shlex.quote(path)
 
+    def _post_snapshot_restore_commands(self) -> tuple[str, ...]:
+        """Return backend-specific shell commands to run after snapshot restore.
+
+        A session snapshot intentionally restores user environment changes from
+        earlier terminal calls. Backends may nevertheless have runtime PATH or
+        environment invariants that must survive a stale/user-modified snapshot.
+        The default is a no-op; overrides must not include user command data.
+        """
+        return ()
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
@@ -857,6 +867,11 @@ class BaseEnvironment(ABC):
                 f'else unset {name}; fi'
             )
             parts.append(f"unset {present} {value}")
+
+        # Re-assert backend runtime invariants after the snapshot has restored
+        # persisted environment variables. Doing this before ``source`` would
+        # be ineffective because a stale snapshot can overwrite them again.
+        parts.extend(self._post_snapshot_restore_commands())
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.

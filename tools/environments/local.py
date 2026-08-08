@@ -1083,10 +1083,13 @@ def _resolve_hermes_bin_dir() -> str | None:
     regardless of how the gateway was started.
 
     Resolution order (cheap, no heavy imports):
-      1. ``shutil.which("hermes")`` — normal PATH-installed shim.
-      2. The directory of ``sys.argv[0]`` when it's an absolute path to a
+      1. A deployment launcher next to the active ``.venv``
+         (``<install-root>/bin/hermes``). Container/service installs may put a
+         policy shim there while their process PATH points at the venv first.
+      2. ``shutil.which("hermes")`` — normal PATH-installed shim.
+      3. The directory of ``sys.argv[0]`` when it's an absolute path to a
          real ``hermes`` executable (covers nix-store / venv wrappers).
-      3. The directory of ``sys.executable`` — the running interpreter's
+      4. The directory of ``sys.executable`` — the running interpreter's
          venv ``bin``/``Scripts`` is where its console-scripts live.
     """
     global _HERMES_BIN_DIR
@@ -1095,9 +1098,24 @@ def _resolve_hermes_bin_dir() -> str | None:
 
     candidate: str | None = None
 
-    which = shutil.which("hermes")
-    if which:
-        candidate = os.path.dirname(which)
+    # Service/container distributions can ship a policy launcher alongside
+    # the active .venv (for example privilege alignment in Docker). Activating
+    # the venv puts its raw console-script first on the parent PATH, so ``which``
+    # alone would silently bypass that supported launcher.
+    exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
+    venv_dir = os.path.dirname(exe_dir) if exe_dir else ""
+    if os.path.basename(venv_dir) == ".venv":
+        deployment_dir = os.path.join(os.path.dirname(venv_dir), "bin")
+        deployment_shim = os.path.join(
+            deployment_dir, "hermes.exe" if _IS_WINDOWS else "hermes"
+        )
+        if os.path.isfile(deployment_shim) and os.access(deployment_shim, os.X_OK):
+            candidate = deployment_dir
+
+    if candidate is None:
+        which = shutil.which("hermes")
+        if which:
+            candidate = os.path.dirname(which)
 
     if candidate is None:
         argv0 = sys.argv[0] if sys.argv else ""
@@ -1138,6 +1156,27 @@ def _prepend_hermes_bin_dir(existing_path: str) -> str:
     if bin_dir in entries:
         return existing_path
     return sep.join([bin_dir, *entries])
+
+
+def _hermes_path_repair_commands() -> tuple[str, ...]:
+    """Return shell commands that preserve the resolved Hermes launcher on PATH.
+
+    Login profiles and persisted environment snapshots may replace the process
+    PATH after ``_make_run_env`` repaired it. Keep this shell-side invariant in
+    one place so foreground, background, and PTY execution use identical
+    quoting and deduplication semantics.
+    """
+    bin_dir = _resolve_hermes_bin_dir()
+    if not bin_dir:
+        return ()
+
+    quoted_bin_dir = _quote_bash_path(bin_dir)
+    return (
+        f"__hermes_bin_dir={quoted_bin_dir}",
+        'case ":${PATH-}:" in *":$__hermes_bin_dir:"*) ;; '
+        '*) export PATH="$__hermes_bin_dir${PATH:+:$PATH}" ;; esac',
+        "unset __hermes_bin_dir",
+    )
 
 
 def _managed_runtime_path_entries() -> list[str]:
@@ -1482,6 +1521,17 @@ class LocalEnvironment(BaseEnvironment):
     def _quote_shell_path(self, path: str) -> str:
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
+
+    def _post_snapshot_restore_commands(self) -> tuple[str, ...]:
+        """Keep the Hermes console-script reachable after snapshot restore.
+
+        ``_make_run_env`` repairs PATH for the child process, but the persisted
+        session snapshot is sourced afterwards and may replace PATH with an old
+        or user-modified value. Re-assert the same invariant in the shell after
+        sourcing so bare ``hermes`` remains available without discarding any
+        user PATH entries.
+        """
+        return _hermes_path_repair_commands()
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

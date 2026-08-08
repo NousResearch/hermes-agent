@@ -643,6 +643,61 @@ class TestPruning:
 # =========================================================================
 
 class TestSpawnEnvSanitization:
+    @pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX bash")
+    def test_local_shell_command_repairs_path_after_profile_reset(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.environments import local as local_mod
+        from tools import process_registry as process_mod
+
+        runtime_bin = tmp_path / "hermes bin"
+        runtime_bin.mkdir()
+        hermes = runtime_bin / "hermes"
+        hermes.write_text("#!/bin/sh\nexit 0\n")
+        hermes.chmod(0o755)
+
+        monkeypatch.setattr(
+            local_mod, "_resolve_hermes_bin_dir", lambda: str(runtime_bin)
+        )
+        monkeypatch.setattr(
+            process_mod,
+            "_hermes_path_repair_commands",
+            local_mod._hermes_path_repair_commands,
+        )
+
+        shell_command = process_mod._build_local_shell_command("command -v hermes")
+        result = subprocess.run(
+            ["/bin/bash", "-c", f"export PATH=/usr/bin:/bin; {shell_command}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(hermes)
+
+    def test_spawn_local_injects_path_repair_into_pipe_shell(self, registry):
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.stdout = iter([])
+            proc.poll.return_value = None
+            return proc
+
+        with patch(
+            "tools.process_registry._hermes_path_repair_commands",
+            return_value=("repair-hermes-path",),
+        ), patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+            patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert captured["cmd"][2] == "set +m; repair-hermes-path; echo hello"
+
     def test_spawn_local_strips_blocked_vars_from_background_env(self, registry):
         captured = {}
 
@@ -863,6 +918,10 @@ class TestSpawnRewriteCompoundBackground:
         fake_thread.daemon = False
 
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch(
+                 "tools.process_registry._hermes_path_repair_commands",
+                 return_value=("repair-hermes-path",),
+             ), \
              patch("tools.process_registry._IS_WINDOWS", False), \
              patch.dict("sys.modules", {"ptyprocess": mock_pty_module}), \
              patch("threading.Thread", return_value=fake_thread), \
@@ -876,6 +935,7 @@ class TestSpawnRewriteCompoundBackground:
         assert mock_pty_module.PtyProcess.spawn.called, \
             "PTY spawn should have been attempted"
         pty_args = mock_pty_module.PtyProcess.spawn.call_args[0][0]
+        assert pty_args[2].startswith("set +m; repair-hermes-path; ")
         assert "&& { node server.js & }" in pty_args[2], \
             f"PTY path should use rewritten command, got: {pty_args[2]}"
         assert session.command == "cd /app && node server.js &"
@@ -1648,6 +1708,13 @@ class TestSystemdCgroupIsolation:
     cgroup, so an OOM in a memory-heavy worker lets systemd-oomd kill the
     ENTIRE gateway cgroup, taking down the messaging control plane.
     """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_cgroup_behavior_from_path_repair(self, monkeypatch):
+        """Keep this suite focused on argv/cgroup wrapping, not PATH policy."""
+        monkeypatch.setattr(
+            "tools.process_registry._hermes_path_repair_commands", lambda: ()
+        )
 
     def _fake_popen_capture(self):
         """Return (fake_popen, captured) where captured["argv"] gets the

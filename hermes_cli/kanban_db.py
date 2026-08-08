@@ -6148,7 +6148,8 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, "
+            "branch_name, project_id "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -6163,6 +6164,48 @@ def decompose_triage_task(
         # override with its own 'workspace_kind' / 'workspace_path'.
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
+        root_branch_name = root_row["branch_name"]
+        root_project_id = root_row["project_id"]
+
+        # Project-linked roots must keep their project identity and deterministic
+        # repo/branch convention through fan-out. Decomposition deliberately
+        # inlines task creation for transactionality, so mirror the project-aware
+        # parts of create_task() without opening projects.db inside this write txn.
+        project_repo: Optional[str] = None
+        project_obj = None
+        from hermes_cli import projects_db as _pdb
+
+        if root_project_id and root_ws_kind == "worktree":
+            root_path = Path(root_ws_path) if root_ws_path else None
+            if (
+                root_path is not None
+                and root_path.is_absolute()
+                and root_path.name == task_id
+                and root_path.parent.name == ".worktrees"
+            ):
+                project_repo = str(root_path.parent.parent)
+
+            project_slug = None
+            if root_branch_name:
+                prefix, separator, leaf = root_branch_name.partition("/")
+                if separator and (leaf == task_id or leaf.startswith(f"{task_id}-")):
+                    try:
+                        project_slug = _pdb.normalize_slug(prefix)
+                    except ValueError:
+                        project_slug = None
+            if project_slug is None:
+                try:
+                    project_slug = _pdb.normalize_slug(str(root_project_id))
+                except ValueError:
+                    project_slug = None
+            if project_slug:
+                project_obj = _pdb.Project(
+                    id=str(root_project_id),
+                    slug=project_slug,
+                    name=project_slug,
+                    created_at=0,
+                    primary_path=project_repo,
+                )
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -6194,11 +6237,23 @@ def decompose_triage_task(
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            child_branch_name = None
+            child_project_id = root_project_id
+            if child_project_id and child_ws_kind == "worktree":
+                if project_repo and child_ws_path is None:
+                    child_ws_path = os.path.join(
+                        project_repo, ".worktrees", new_id
+                    )
+                if project_obj is not None:
+                    child_branch_name = _pdb.branch_name_for(
+                        project_obj, new_id, title=title
+                    )
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, branch_name, project_id, tenant, created_at, "
+                " created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -6206,6 +6261,8 @@ def decompose_triage_task(
                     assignee,
                     child_ws_kind,
                     child_ws_path,
+                    child_branch_name,
+                    child_project_id,
                     tenant,
                     now,
                     (author or "decomposer"),
@@ -6213,7 +6270,14 @@ def decompose_triage_task(
             )
             _append_event(
                 conn, new_id, "created",
-                {"by": author or "decomposer", "from_decompose_of": task_id},
+                {
+                    "by": author or "decomposer",
+                    "from_decompose_of": task_id,
+                    "workspace_kind": child_ws_kind,
+                    "workspace_path": child_ws_path,
+                    "branch_name": child_branch_name,
+                    "project_id": child_project_id,
+                },
             )
             _inherit_notify_subs(conn, new_id, (task_id,), created_at=now)
             child_ids.append(new_id)

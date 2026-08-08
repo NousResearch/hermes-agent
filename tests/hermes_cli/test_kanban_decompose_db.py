@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import projects_db as pdb
 
 
 @pytest.fixture
@@ -86,6 +87,49 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
 
     assert any("Decomposed into" in (c.body or "") for c in comments)
     assert any(ev.kind == "decomposed" for ev in events)
+
+
+def test_decompose_preserves_project_scope_with_unique_worktrees(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as pconn:
+        project_id = pdb.create_project(
+            pconn, name="Widget Project", primary_path=str(repo)
+        )
+
+    kb.create_board("scoped", name="Scoped", project_id=project_id)
+    with kb.connect(board="scoped") as conn:
+        root_id = kb.create_task(
+            conn,
+            title="Refactor widget project",
+            triage=True,
+            board="scoped",
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root_id,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "audit widget", "parents": []},
+                {"title": "refactor widget", "parents": [0]},
+                {"title": "verify widget", "parents": [1]},
+            ],
+            author="decomposer",
+        )
+
+    assert child_ids is not None
+    with kb.connect(board="scoped") as conn:
+        children = [kb.get_task(conn, child_id) for child_id in child_ids]
+
+    assert {child.workspace_path for child in children if child is not None} == {
+        str(repo / ".worktrees" / child_id) for child_id in child_ids
+    }
+    for child in children:
+        assert child is not None
+        assert child.project_id == project_id
+        assert child.workspace_kind == "worktree"
+        assert child.branch_name is not None
+        assert child.branch_name.startswith(f"widget-project/{child.id}-")
 
 
 

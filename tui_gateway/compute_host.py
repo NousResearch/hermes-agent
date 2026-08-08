@@ -430,7 +430,15 @@ class ComputeHost:
         except Exception as exc:  # pragma: no cover - defensive host boundary
             with session.lock:
                 session.running = False
-            self.emit({"type": "turn.error", "sid": session.sid, "request_id": request_id, "message": str(exc)})
+            # Prefer classified summary when the agent is available (provider /
+            # model / HTTP status), not a bare str(exc).
+            try:
+                from tui_gateway.server import _classify_turn_error_message
+
+                _msg = _classify_turn_error_message(exc, getattr(session, "agent", None))
+            except Exception:
+                _msg = str(exc)
+            self.emit({"type": "turn.error", "sid": session.sid, "request_id": request_id, "message": _msg})
 
     # ── Real dashboard turn path ───────────────────────────────────────
 
@@ -520,7 +528,21 @@ class ComputeHost:
                         server._clear_inflight_turn(session)
             except Exception:
                 pass
-            self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "reason": "exception", "message": str(exc)})
+            try:
+                from tui_gateway.server import _classify_turn_error_message
+
+                _sess = None
+                try:
+                    from tui_gateway import server as _srv
+
+                    _sess = _srv._sessions.get(sid)
+                except Exception:
+                    _sess = None
+                _agent = (_sess or {}).get("agent") if isinstance(_sess, dict) else None
+                _msg = _classify_turn_error_message(exc, _agent)
+            except Exception:
+                _msg = str(exc)
+            self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "reason": "exception", "message": _msg})
 
     def _ensure_server_session(self, server: Any, frame: dict[str, Any]) -> dict:
         sid = str(frame.get("sid") or "")

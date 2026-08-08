@@ -1323,6 +1323,7 @@ def _normalize_custom_provider_entry(
         "provider",
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
+        "bearer_auth",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
@@ -1402,6 +1403,10 @@ def _normalize_custom_provider_entry(
     api_mode = entry.get("api_mode") or entry.get("transport")
     if isinstance(api_mode, str) and api_mode.strip():
         normalized["api_mode"] = api_mode.strip()
+
+    bearer_auth = entry.get("bearer_auth")
+    if isinstance(bearer_auth, bool):
+        normalized["bearer_auth"] = bearer_auth
 
     model_name = entry.get("model") or entry.get("default_model")
     if isinstance(model_name, str) and model_name.strip():
@@ -1494,6 +1499,7 @@ def _custom_provider_entry_to_provider_config(
         "api_key",
         "key_env",
         "models",
+        "bearer_auth",
         "context_length",
         "rate_limit_delay",
         "discover_models",
@@ -1692,6 +1698,38 @@ def get_custom_provider_extra_headers(
     return {}
 
 
+def get_custom_provider_bearer_auth(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return whether the matching custom provider opts into Bearer auth."""
+    if custom_providers is None:
+        try:
+            # Read-only fast path: this runs on the client-construction hot
+            # path (every custom-provider LLM call) and never mutates config,
+            # so skip the defensive deepcopy that load_config() applies.
+            if config is None:
+                config = load_config_readonly()
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            custom_providers = []
+    if not base_url or not isinstance(custom_providers, list):
+        return False
+
+    target_url = normalize_route_base_url(base_url)
+    if not target_url:
+        return False
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = normalize_route_base_url(entry.get("base_url"))
+        if entry_url == target_url:
+            return entry.get("bearer_auth") is True
+    return False
+
+
 def apply_custom_provider_extra_headers_to_client_kwargs(
     client_kwargs: Dict[str, Any],
     base_url: str,
@@ -1883,7 +1921,7 @@ _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
-    "context_length", "rate_limit_delay", "extra_body",
+    "bearer_auth", "context_length", "rate_limit_delay", "extra_body",
     "ssl_ca_cert", "ssl_verify",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.

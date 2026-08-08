@@ -616,6 +616,20 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     )
 
 
+def _custom_provider_requires_bearer_auth(base_url: str | None) -> bool:
+    """Return the explicit Bearer-auth setting for a configured endpoint."""
+    if not base_url:
+        return False
+    try:
+        from hermes_cli.config import get_custom_provider_bearer_auth
+
+        return get_custom_provider_bearer_auth(base_url)
+    except Exception:
+        # Config lookup must not prevent the adapter from using its normal
+        # hostname and token-shape detection paths.
+        return False
+
+
 def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     """Return True for endpoints that still gate 1M context behind a beta."""
     normalized = _normalize_base_url_text(base_url).lower()
@@ -780,6 +794,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    bearer_auth: bool = False,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -805,6 +820,12 @@ def build_anthropic_client(
     path in ``run_agent.py`` when a subscription rejects the beta; leave at
     its default on fresh clients so 1M-capable subscriptions keep the
     capability.
+
+    ``bearer_auth=True`` opts a custom Anthropic-compatible endpoint into
+    ``Authorization: Bearer`` authentication. A matching custom-provider
+    config entry is also consulted automatically; the built-in hostname
+    fallback remains active for existing MiniMax, Azure, Palantir, and Nous
+    endpoints.
 
     Returns an anthropic.Anthropic instance.
     """
@@ -855,8 +876,12 @@ def build_anthropic_client(
         normalized_base_url,
         drop_context_1m_beta=drop_context_1m_beta,
     )
+    custom_bearer_auth = (
+        bool(bearer_auth)
+        or _custom_provider_requires_bearer_auth(base_url)
+    )
 
-    if _is_kimi_coding_endpoint(base_url):
+    if _is_kimi_coding_endpoint(base_url) and not custom_bearer_auth:
         # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
         # to be recognized as a valid Coding Agent. Without it, returns 403.
         # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
@@ -865,7 +890,7 @@ def build_anthropic_client(
             "User-Agent": "claude-code/0.1.0",
             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
         }
-    elif _requires_bearer_auth(normalized_base_url):
+    elif custom_bearer_auth or _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer *** for regular API keys. Route those endpoints
         # through auth_token so the SDK sends Bearer auth instead of x-api-key.

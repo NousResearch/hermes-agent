@@ -772,6 +772,56 @@ class TestTelegramMenuCommands:
         assert "" not in menu_names
 
 
+class TestTelegramMenuPluginCommands:
+    """Test filtering of plugin commands in Telegram BotCommand menu."""
+
+    def test_plugin_command_argument_filtering(self):
+        """Plugin commands with mandatory args (<query>) are excluded from Telegram
+        bot commands and menu, while no-arg and optional-arg ([query]) plugins stay visible.
+        Discord collection behavior remains unchanged."""
+        from unittest.mock import patch
+        from hermes_cli.commands import (
+            telegram_bot_commands,
+            telegram_menu_commands,
+            discord_skill_commands,
+        )
+
+        fake_plugin_commands = {
+            "req_arg_cmd": {
+                "description": "Requires mandatory argument",
+                "args_hint": "<query>",
+            },
+            "opt_arg_cmd": {
+                "description": "Optional argument",
+                "args_hint": "[query]",
+            },
+            "no_arg_cmd": {
+                "description": "No arguments",
+                "args_hint": "",
+            },
+        }
+
+        with patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugin_commands):
+            bot_names = {name for name, _ in telegram_bot_commands()}
+            assert "req_arg_cmd" not in bot_names
+            assert "opt_arg_cmd" in bot_names
+            assert "no_arg_cmd" in bot_names
+
+            menu_cmds, _ = telegram_menu_commands(max_commands=100)
+            menu_names = {name for name, _ in menu_cmds}
+            assert "req_arg_cmd" not in menu_names, (
+                "Plugin command with mandatory args (<query>) should be excluded from Telegram menu"
+            )
+            assert "opt_arg_cmd" in menu_names
+            assert "no_arg_cmd" in menu_names
+
+            discord_cmds, _ = discord_skill_commands(max_slots=100, reserved_names=set())
+            discord_names = {name for name, _, _ in discord_cmds}
+            assert "req_arg_cmd" in discord_names, (
+                "Discord skill commands should keep mandatory-argument plugin commands"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Backward-compat aliases
 # ---------------------------------------------------------------------------

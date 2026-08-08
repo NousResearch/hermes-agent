@@ -904,7 +904,11 @@ def _collect_gateway_skill_entries(
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
             if not name:
                 continue
-            desc = plugin_cmds[cmd_name].get("description", "Plugin command")
+            meta = plugin_cmds[cmd_name]
+            args_hint = str(meta.get("args_hint") or "") if isinstance(meta, dict) else ""
+            if platform == "telegram" and _requires_argument(args_hint):
+                continue
+            desc = meta.get("description", "Plugin command") if isinstance(meta, dict) else "Plugin command"
             if len(desc) > desc_limit:
                 desc = desc[:desc_limit - 3] + "..."
             plugin_pairs.append((name, desc))

@@ -672,6 +672,11 @@ DEFAULT_CONFIG = {
                                       # re-summarizes the summary itself instead of
                                       # letting it grow without bound.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
+        # Absolute token count at which the gateway nudges a human chat user to
+        # rotate the session. 0 disables the hint. Pick a value above the
+        # normal compaction threshold so it signals that the session remains
+        # large after automated hygiene, rather than duplicating that warning.
+        "rotate_hint_tokens": 0,
         "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
                                       # WITHOUT forward progress. The summary call streams, so
                                       # this is an inactivity budget: a slow model still

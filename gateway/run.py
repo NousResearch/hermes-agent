@@ -14580,6 +14580,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_goal_command(event)
         return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
 
+    async def _send_session_rotate_hint(
+        self,
+        source: SessionSource,
+        event: MessageEvent,
+        *,
+        tokens: int,
+    ) -> bool:
+        """Deliver the rotate nudge only to durable human conversations."""
+        from gateway.session import (
+            build_session_rotate_hint,
+            supports_human_session_hints,
+        )
+
+        if not supports_human_session_hints(source.platform) or not source.chat_id:
+            return False
+
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return False
+
+        metadata = self._thread_metadata_for_source(
+            source,
+            self._reply_anchor_for_event(event),
+        )
+        await adapter.send(
+            source.chat_id,
+            build_session_rotate_hint(tokens=tokens),
+            metadata=metadata,
+        )
+        return True
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -17062,6 +17093,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _hyg_threshold_pct = 0.85
             _hyg_compression_enabled = True
             _hyg_hard_msg_limit = 5000
+            _hyg_rotate_hint_tokens = 0  # 0 = off; opt-in via compression.rotate_hint_tokens
+            _hyg_rotate_hint_cooldown_s = 3600.0
             _hyg_timeout_seconds = 30.0
             _hyg_total_ceiling_seconds = 600.0
             _hyg_failure_cooldown_seconds = 300.0
@@ -17108,6 +17141,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _parsed = int(_raw_hard_limit)
                                 if _parsed > 0:
                                     _hyg_hard_msg_limit = _parsed
+                            except (TypeError, ValueError):
+                                pass
+                        # Absolute-token rotate hint (0 = off).  Deliberately
+                        # not a ratio of the context window: 0.95 of a 1M
+                        # model is 950k, which no real chat reaches, so
+                        # large-window users get no size signal at all.
+                        _raw_rotate_hint = _comp_cfg.get("rotate_hint_tokens")
+                        if _raw_rotate_hint is not None:
+                            try:
+                                _hyg_rotate_hint_tokens = int(_raw_rotate_hint)
                             except (TypeError, ValueError):
                                 pass
                         _raw_timeout = _comp_cfg.get("hygiene_timeout_seconds")
@@ -17248,6 +17291,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _approx_tokens >= _compress_token_threshold
                     or _msg_count >= _HARD_MSG_LIMIT
                 )
+
+                # Session-size rotate hint.  Chat surfaces have no context
+                # meter, so a 400k thread looks exactly like a 40k one and the
+                # user only finds out via the bill.  Opt-in absolute threshold
+                # with a cooldown; never blocks or delays the turn.
+                if _hyg_rotate_hint_tokens > 0:
+                    try:
+                        from gateway.session import should_hint_session_rotate
+
+                        _rotate_seen = getattr(self, "_session_rotate_hint_at", None)
+                        if _rotate_seen is None:
+                            _rotate_seen = {}
+                            self._session_rotate_hint_at = _rotate_seen
+                        _rotate_key = session_entry.session_id
+                        _now = time.time()
+                        if should_hint_session_rotate(
+                            tokens=_approx_tokens,
+                            threshold=_hyg_rotate_hint_tokens,
+                            last_hint_at=_rotate_seen.get(_rotate_key),
+                            now=_now,
+                            cooldown_s=_hyg_rotate_hint_cooldown_s,
+                        ):
+                            delivered = await self._send_session_rotate_hint(
+                                source,
+                                event,
+                                tokens=_approx_tokens,
+                            )
+                            if delivered:
+                                _rotate_seen[_rotate_key] = _now
+                    except Exception:
+                        # Decorative: a failed hint must never break a turn.
+                        logger.debug("session rotate hint failed", exc_info=True)
 
                 if _needs_compress:
                     # Use the persistent DB-backed cooldown (same as the

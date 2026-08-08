@@ -97,8 +97,90 @@ class TestBuildChannelContinuityNote:
         assert entry.prev_session_id in note
         assert "channel" in note
 
+    def test_discord_thread_uses_thread_wording(self):
+        entry = _reset_entry(Platform.DISCORD)
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="c",
+            chat_type="thread",
+            thread_id="T1",
+        )
+        note = build_channel_continuity_note(entry, source)
+        assert note is not None
+        assert "thread" in note
 
     def test_no_activity_returns_none(self):
         entry = _reset_entry(Platform.SLACK, had_activity=False)
         assert build_channel_continuity_note(entry, _slack_source()) is None
 
+    def test_no_prev_session_id_returns_none(self):
+        entry = _reset_entry(Platform.SLACK, prev=None)
+        assert build_channel_continuity_note(entry, _slack_source()) is None
+
+
+class TestContinuityNoteOnDirectChatPlatforms:
+    """A Telegram/Signal/WhatsApp DM is exactly as long-lived as a Slack
+    channel: the same human, the same thread, indefinitely. Gating the hint to
+    Slack/Discord left every other human surface with a hard amnesia wall on
+    reset (the agent is told it has 'no prior context' and given no pointer).
+    """
+
+    def test_telegram_dm_emits_hint(self):
+        entry = _reset_entry(Platform.TELEGRAM)
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u")
+        note = build_channel_continuity_note(entry, source)
+        assert note is not None
+        assert "session_search" in note
+        assert entry.prev_session_id in note
+
+    @pytest.mark.parametrize(
+        "platform",
+        [
+            Platform.SIGNAL,
+            Platform.WHATSAPP,
+            Platform.MATRIX,
+            Platform.EMAIL,
+            Platform.LOCAL,
+        ],
+    )
+    def test_other_human_platforms_emit_hint(self, platform):
+        entry = _reset_entry(platform)
+        source = SessionSource(platform=platform, chat_id="c", user_id="u")
+        note = build_channel_continuity_note(entry, source)
+        assert note is not None
+        assert entry.prev_session_id in note
+
+    @pytest.mark.parametrize(
+        "platform",
+        [
+            Platform.API_SERVER,
+            Platform.HOMEASSISTANT,
+            Platform.WEBHOOK,
+            Platform.MSGRAPH_WEBHOOK,
+            Platform.WECOM_CALLBACK,
+        ],
+    )
+    def test_machine_surfaces_stay_silent(self, platform):
+        """Machine callers have no durable human thread — pointing them at a
+        prior session would send the agent reading irrelevant history and
+        burn tokens for nothing."""
+        entry = _reset_entry(platform)
+        source = SessionSource(platform=platform, chat_id="c", user_id="u")
+        assert build_channel_continuity_note(entry, source) is None
+
+    def test_dm_wording_is_conversation_not_channel(self):
+        """'channel' is Slack/Discord vocabulary; a DM is a conversation."""
+        entry = _reset_entry(Platform.TELEGRAM)
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u")
+        note = build_channel_continuity_note(entry, source)
+        assert "conversation" in note
+
+    def test_direct_chat_platform_still_requires_activity(self):
+        entry = _reset_entry(Platform.TELEGRAM, had_activity=False)
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u")
+        assert build_channel_continuity_note(entry, source) is None
+
+    def test_direct_chat_platform_still_requires_prev_session(self):
+        entry = _reset_entry(Platform.TELEGRAM, prev=None)
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u")
+        assert build_channel_continuity_note(entry, source) is None

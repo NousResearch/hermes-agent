@@ -1003,28 +1003,107 @@ class SessionEntry:
         )
 
 
+def should_hint_session_rotate(
+    *,
+    tokens: Optional[int],
+    threshold: int,
+    last_hint_at: Optional[float],
+    now: float,
+    cooldown_s: float,
+) -> bool:
+    """Whether to nudge the user that this session is large enough to rotate.
+
+    Chat surfaces (Telegram, Discord, Signal, ...) have no context meter: a
+    40k session and a 400k session look identical in the thread, so bloat is
+    invisible until it shows up on the bill.  The pre-existing hygiene
+    warning is a RATIO of the model's context window (0.95), which is useless
+    on a large-window model — 95% of 1M is 950k, a size no real conversation
+    reaches.  This check is deliberately an ABSOLUTE token count so it fires
+    at a size that matters to cost rather than to the model's limit.
+
+    Pure so the policy is unit-testable without a live gateway.  ``threshold``
+    <= 0 disables the hint entirely.
+    """
+    if threshold <= 0:
+        return False
+    if not tokens or tokens <= 0:
+        return False
+    if tokens < threshold:
+        return False
+    if last_hint_at is not None and cooldown_s > 0 and (now - last_hint_at) < cooldown_s:
+        # Once a session is over the line EVERY turn is over the line; without
+        # a cooldown the user is nagged on every message.
+        return False
+    return True
+
+
+def build_session_rotate_hint(*, tokens: int) -> str:
+    """One-line, plain-text rotate nudge for chat surfaces.
+
+    Single line and no markdown tables on purpose: Telegram and Discord
+    render tables badly, and a multi-paragraph nag in the middle of a working
+    thread is worse than no hint at all.
+    """
+    return (
+        f"⚠️ This session is ~{tokens:,} tokens and every turn re-sends it. "
+        "Run /reset to start a clean session (durable memory is kept, and the "
+        "agent can still search this session's history), or /compress to compact it now."
+    )
+
+
+#: Surfaces with no durable human thread — inbound machine callers and
+#: system-generated event streams. A
+#: continuity pointer here would aim the agent at unrelated history and cost
+#: tokens for nothing, so they stay silent.  Everything else (Telegram,
+#: Signal, WhatsApp, Matrix, email, CLI, plugin platforms, ...) is a real
+#: conversation that survives a session reset and benefits from the hint.
+_NON_HUMAN_SESSION_HINT_PLATFORMS = frozenset({
+    Platform.API_SERVER,
+    Platform.HOMEASSISTANT,
+    Platform.WEBHOOK,
+    Platform.MSGRAPH_WEBHOOK,
+    Platform.WECOM_CALLBACK,
+})
+
+
+def supports_human_session_hints(platform: Platform) -> bool:
+    """Whether a source represents a durable human conversation."""
+    return platform not in _NON_HUMAN_SESSION_HINT_PLATFORMS
+
+
 def build_channel_continuity_note(
     entry: "SessionEntry",
     source: SessionSource,
 ) -> Optional[str]:
-    """Build a lightweight session-continuity hint for Slack/Discord channels.
+    """Build a lightweight session-continuity hint for human chat surfaces.
 
-    Slack and Discord channels/threads are long-lived: when the daily/idle
-    reset policy starts a fresh session, the agent loses the thread's prior
-    context and can mistakenly bind a new request to an unrelated recent
-    session.  This deterministic one-line hint points the agent at the
-    specific prior session in *this* channel/thread so it recalls that
-    context via ``session_search`` before acting.
+    Human conversations are long-lived: a Telegram/Signal/WhatsApp DM is the
+    same person and the same thread indefinitely, exactly like a Slack
+    channel or Discord thread.  When the daily/idle reset policy starts a
+    fresh session, the agent is told it has "no prior context" and can
+    mistakenly bind a new request to an unrelated recent session.  This
+    deterministic one-line hint points the agent at the specific prior
+    session in *this* conversation so it recalls that context via
+    ``session_search`` before acting.
+
+    Scoped by DENYLIST rather than allowlist: the hint is cheap (~60 tokens),
+    fires only when real prior activity exists, and every human chat surface
+    benefits — including dynamic plugin platforms (``Platform._missing_``)
+    that an allowlist would silently exclude.  Only machine callers are
+    skipped: they have no durable human thread, so a pointer would send the
+    agent reading irrelevant history for nothing.
 
     Returns ``None`` (and the caller adds nothing) unless **all** hold:
-      - the source platform is Slack or Discord,
+      - the source platform is a human chat surface (not a machine caller),
       - this session was created by an auto-reset that had real activity,
       - the previous session_id was recorded on the entry.
 
     No LLM calls, no extra API/DB lookups — the previous session id is
-    already known from :meth:`SessionStore.get_or_create_session`.
+    already known from :meth:`SessionStore.get_or_create_session`.  The
+    agent pays retrieval cost only when the user actually refers back,
+    which is why a pointer beats carrying a summary into every session.
     """
-    if source.platform not in (Platform.SLACK, Platform.DISCORD):
+    if not supports_human_session_hints(source.platform):
         return None
     if not getattr(entry, "reset_had_activity", False):
         return None
@@ -1032,7 +1111,14 @@ def build_channel_continuity_note(
     if not prev:
         return None
 
-    where = "thread" if source.thread_id else "channel"
+    if source.thread_id:
+        where = "thread"
+    elif source.platform in (Platform.SLACK, Platform.DISCORD):
+        where = "channel"
+    else:
+        # DMs are conversations, not channels — "channel" is Slack/Discord
+        # vocabulary and reads wrong to a model reasoning about a 1:1 chat.
+        where = "conversation"
     return (
         f"[System note: This {where} had an earlier Hermes session "
         f"(session_id: {prev}) that was auto-reset. If the user refers to "

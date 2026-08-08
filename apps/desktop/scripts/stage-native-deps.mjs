@@ -349,8 +349,142 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
   return stageNodePtyInto(srcRoot, destRoot, { platform, arch })
 }
 
+// ─── get-windows (read_window_below tool) ────────────────────────────
+//
+// Staged like node-pty: external to the esbuild bundle, resolved at runtime
+// from dist/node_modules (which asarUnpack ships unpacked via `dist/**`).
+//
+// The published package's lib/windows.js statically imports
+// @mapbox/node-pre-gyp — and index.js statically imports lib/windows.js on
+// EVERY platform — so shipping it verbatim would drag node-pre-gyp's whole
+// dependency tree into the package. pre-gyp is only used to *locate* the
+// prebuilt .node we stage ourselves, so the staged copy replaces
+// lib/windows.js with a resolver that requires the staged binding directly
+// (and fails soft to no-op stubs, matching upstream's missing-binding
+// behavior).
+
+const STAGED_WINDOWS_JS = `// Rewritten by stage-native-deps.mjs: resolves the staged prebuilt binding
+// directly instead of through @mapbox/node-pre-gyp (see stageGetWindowsInto).
+import path from 'node:path';
+import fs from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {createRequire} from 'node:module';
+
+const getAddon = () => {
+\tconst require = createRequire(import.meta.url);
+\tconst bindingRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), 'binding');
+
+\ttry {
+\t\tfor (const dir of fs.readdirSync(bindingRoot)) {
+\t\t\tconst bindingPath = path.join(bindingRoot, dir, 'node-get-windows.node');
+\t\t\tif (fs.existsSync(bindingPath)) {
+\t\t\t\treturn require(bindingPath);
+\t\t\t}
+\t\t}
+\t} catch {}
+
+\treturn {
+\t\tgetActiveWindow() {},
+\t\tgetOpenWindows() {},
+\t};
+};
+
+export async function activeWindow() {
+\treturn getAddon().getActiveWindow();
+}
+
+export function activeWindowSync() {
+\treturn getAddon().getActiveWindow();
+}
+
+export function openWindows() {
+\treturn getAddon().getOpenWindows();
+}
+
+export function openWindowsSync() {
+\treturn getAddon().getOpenWindows();
+}
+`
+
+function resolveGetWindowsRoot() {
+  // get-windows' exports map doesn't expose ./package.json; resolve the entry
+  // (index.js sits at the package root) and take its directory.
+  const entryPath = require.resolve('get-windows', {
+    paths: [projectRoot]
+  })
+  return dirname(entryPath)
+}
+
+/**
+ * Stage get-windows into `destRoot` for `platform`.
+ *
+ * Per-platform native payload: macOS ships the `main` Swift helper binary
+ * (universal, present in every published tarball), Windows the node-pre-gyp
+ * prebuilt under lib/binding (downloaded by the package's install script on
+ * a Windows host — cross-platform packs already can't happen, see
+ * stageNodePtyInto), Linux nothing (it shells out to xprop at runtime).
+ */
+export function stageGetWindowsInto(srcRoot, destRoot, { platform = process.platform } = {}) {
+  rmSync(destRoot, { recursive: true, force: true })
+  mkdirSync(destRoot, { recursive: true })
+
+  cpSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
+  cpSync(join(srcRoot, 'index.js'), join(destRoot, 'index.js'))
+  copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
+
+  writeFileSync(join(destRoot, 'lib', 'windows.js'), STAGED_WINDOWS_JS)
+
+  if (platform === 'darwin') {
+    const helper = join(srcRoot, 'main')
+    if (!existsSync(helper)) {
+      throw new Error('[stage-native-deps] get-windows is missing its macOS helper binary (main)')
+    }
+    cpSync(helper, join(destRoot, 'main'))
+    makeExecutable(join(destRoot, 'main'))
+  }
+
+  if (platform === 'win32') {
+    const bindingRoot = join(srcRoot, 'lib', 'binding')
+    const bindingDirs = existsSync(bindingRoot)
+      ? readdirSync(bindingRoot).filter((dir) =>
+          existsSync(join(bindingRoot, dir, 'node-get-windows.node'))
+        )
+      : []
+    if (bindingDirs.length === 0) {
+      throw new Error(
+        '[stage-native-deps] get-windows has no win32 prebuilt binding under lib/binding; ' +
+          'reinstall dependencies on the Windows build host.'
+      )
+    }
+    for (const dir of bindingDirs) {
+      const dest = join(destRoot, 'lib', 'binding', dir)
+      mkdirSync(dest, { recursive: true })
+      const destFile = join(dest, 'node-get-windows.node')
+      cpSync(join(bindingRoot, dir, 'node-get-windows.node'), destFile)
+      const classified = classifyNativeBinary(destFile)
+      if (classified !== platform) {
+        throw new Error(
+          `[stage-native-deps] get-windows binding ${dir}/node-get-windows.node: ` +
+            `expected ${platform}, got ${classified ?? 'unknown'}. ` +
+            'Refusing to stage a binary compiled for the wrong platform.'
+        )
+      }
+    }
+  }
+
+  console.log(`[stage-native-deps] staged get-windows (${platform}) -> ${destRoot}`)
+  return destRoot
+}
+
+export function stageGetWindows({ platform = process.platform } = {}) {
+  const srcRoot = resolveGetWindowsRoot()
+  const destRoot = resolve(projectRoot, 'dist/node_modules/get-windows')
+  return stageGetWindowsInto(srcRoot, destRoot, { platform })
+}
+
 // Allow direct CLI invocation: node scripts/stage-native-deps.mjs [platform] [arch]
 if (isMain(import.meta.url)) {
   const [platform, arch] = process.argv.slice(2)
   stageNodePty({ platform, arch })
+  stageGetWindows({ platform })
 }

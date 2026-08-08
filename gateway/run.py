@@ -7645,15 +7645,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return parse_idle_timeout_seconds(raw)
 
     def _restart_loop_guard_config(self) -> tuple:
-        """Return ``(max_restarts, window_seconds)`` for the auto-resume
-        restart-loop breaker (#30719, defense-3), read from
+        """Return ``(max_restarts, window_seconds, max_gap_seconds)`` for the
+        auto-resume restart-loop breaker (#30719, defense-3), read from
         ``gateway.restart_loop_guard`` in config.yaml with the module defaults
         as fallback. ``max_restarts <= 0`` disables the breaker.
+
+        ``max_gap_seconds`` is the longest spacing between two consecutive
+        restart-interrupted boots that still counts them as the same loop, so
+        a crash cycle slower than ``window_seconds`` stays visible (#81642).
         """
         from gateway import restart_loop_guard as _rlg
 
         max_restarts = _rlg.DEFAULT_MAX_RESTARTS
         window_seconds = _rlg.DEFAULT_WINDOW_SECONDS
+        max_gap_seconds = _rlg.DEFAULT_MAX_GAP_SECONDS
         try:
             user_cfg = _load_gateway_config()
             gw = user_cfg.get("gateway") if isinstance(user_cfg, dict) else None
@@ -7663,9 +7668,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     max_restarts = rlg["max_restarts"]
                 if isinstance(rlg.get("window_seconds"), int) and rlg["window_seconds"] > 0:
                     window_seconds = rlg["window_seconds"]
+                if (
+                    isinstance(rlg.get("max_gap_seconds"), int)
+                    and rlg["max_gap_seconds"] > 0
+                ):
+                    max_gap_seconds = rlg["max_gap_seconds"]
         except Exception:  # noqa: BLE001
             pass
-        return max_restarts, window_seconds
+        return max_restarts, window_seconds, max_gap_seconds
 
     def _scale_to_zero_should_arm(self) -> bool:
         """Whether to start the idle watcher (D1/D11/§3.4(1))."""
@@ -10685,8 +10695,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 from gateway import restart_loop_guard as _rlg
 
-                _max_restarts, _window = self._restart_loop_guard_config()
-                if _rlg.check_and_record(_max_restarts, _window):
+                _max_restarts, _window, _max_gap = self._restart_loop_guard_config()
+                if _rlg.check_and_record(
+                    _max_restarts, _window, max_gap_seconds=_max_gap
+                ):
                     return 0
             except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN
                 logger.debug("Restart-loop guard check skipped: %s", exc)

@@ -967,6 +967,63 @@ class TestRestartLoopGuard:
         rlg.clear()
         assert rlg.check_and_record(3, 60, now=1002.0) is False
 
+    def test_trips_on_slow_crash_cycle_wider_than_window(self):
+        """#81642: a ~150s crash cycle is wider than the 60s window, so the
+        old absolute-window prune dropped the previous boot on every boot and
+        the counter never left 1.  Chaining on the inter-boot gap sees it."""
+        import gateway.restart_loop_guard as rlg
+        assert rlg.check_and_record(3, 60, now=1000.0) is False
+        assert rlg.check_and_record(3, 60, now=1150.0) is False
+        assert rlg.check_and_record(3, 60, now=1300.0) is True
+
+    def test_slow_cycle_chain_is_persisted_not_truncated(self):
+        """The state file must keep the whole chain — the reported symptom was
+        a restart_loop.json holding a single timestamp after 15 crashes."""
+        import gateway.restart_loop_guard as rlg
+        rlg.record_restart_interrupted_boot(60, now=1000.0)
+        rlg.record_restart_interrupted_boot(60, now=1150.0)
+        boots = rlg.record_restart_interrupted_boot(60, now=1300.0)
+        assert boots == [1000.0, 1150.0, 1300.0]
+
+    def test_quiet_period_breaks_the_chain(self):
+        """A boot after real quiet starts a fresh chain, so occasional
+        operator restarts never accumulate into a trip."""
+        import gateway.restart_loop_guard as rlg
+        rlg.check_and_record(3, 60, now=1000.0)
+        rlg.check_and_record(3, 60, now=1150.0)
+        # 1h later: unrelated restart, chain reset to a single boot.
+        assert rlg.check_and_record(3, 60, now=4800.0) is False
+        assert rlg.is_restart_loop_tripped(3, 60, now=4801.0) is False
+
+    def test_fast_respawn_loop_still_trips(self):
+        """#30719 regression: the original ~10s loop must keep tripping."""
+        import gateway.restart_loop_guard as rlg
+        assert rlg.check_and_record(3, 60, now=1000.0) is False
+        assert rlg.check_and_record(3, 60, now=1010.0) is False
+        assert rlg.check_and_record(3, 60, now=1020.0) is True
+
+    def test_max_gap_seconds_is_configurable(self):
+        """An operator can narrow the chain gap back down; a cycle slower than
+        the configured gap then stops chaining."""
+        import gateway.restart_loop_guard as rlg
+        assert rlg.check_and_record(3, 60, now=1000.0, max_gap_seconds=100) is False
+        assert rlg.check_and_record(3, 60, now=1150.0, max_gap_seconds=100) is False
+        assert rlg.check_and_record(3, 60, now=1300.0, max_gap_seconds=100) is False
+
+    def test_window_seconds_floors_the_gap(self):
+        """A window wider than the gap default still governs, so raising
+        window_seconds never makes the breaker less sensitive."""
+        import gateway.restart_loop_guard as rlg
+        assert rlg.check_and_record(3, 900, now=1000.0, max_gap_seconds=100) is False
+        assert rlg.check_and_record(3, 900, now=1400.0, max_gap_seconds=100) is False
+        assert rlg.check_and_record(3, 900, now=1800.0, max_gap_seconds=100) is True
+
+    def test_disabled_breaker_never_trips(self):
+        import gateway.restart_loop_guard as rlg
+        for ts in (1000.0, 1150.0, 1300.0, 1450.0):
+            assert rlg.check_and_record(0, 60, now=ts) is False
+        assert rlg.is_restart_loop_tripped(0, 60, now=1451.0) is False
+
 class TestTerminalToolGatewayLifecycleGuardRemote:
     """Remote-backend and two-session cwd regression coverage."""
 

@@ -44,6 +44,14 @@ DEFAULT_MAX_BODY_BYTES = 1_048_576
 NotificationScheduler = Callable[[Dict[str, Any], MessageEvent], Awaitable[None] | None]
 
 
+def _coerce_int(value: object, *, default: int) -> int:
+    """Parse config ints; malformed values must not crash adapter init."""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 def check_msgraph_webhook_requirements() -> bool:
     """Return whether required webhook dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -58,7 +66,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         # Falsy host (None/"") collapses to the dual-stack default.
         _raw_host = extra.get("host", DEFAULT_HOST) or DEFAULT_HOST
         self._host: Optional[str] = str(_raw_host) if _raw_host else None
-        self._port: int = int(extra.get("port", DEFAULT_PORT))
+        self._port: int = _coerce_int(extra.get("port", DEFAULT_PORT), default=DEFAULT_PORT)
         self._webhook_path: str = self._normalize_path(
             extra.get("webhook_path", DEFAULT_WEBHOOK_PATH)
         )
@@ -70,10 +78,18 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         ]
         self._client_state: Optional[str] = self._string_or_none(extra.get("client_state"))
         self._max_seen_receipts = max(
-            1, int(extra.get("max_seen_receipts", DEFAULT_MAX_SEEN_RECEIPTS))
+            1,
+            _coerce_int(
+                extra.get("max_seen_receipts", DEFAULT_MAX_SEEN_RECEIPTS),
+                default=DEFAULT_MAX_SEEN_RECEIPTS,
+            ),
         )
         self._max_body_bytes = max(
-            1, int(extra.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES))
+            1,
+            _coerce_int(
+                extra.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES),
+                default=DEFAULT_MAX_BODY_BYTES,
+            ),
         )
         self._allowed_source_networks: list[ipaddress._BaseNetwork] = (
             self._parse_allowed_source_cidrs(extra.get("allowed_source_cidrs"))

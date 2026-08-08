@@ -650,6 +650,39 @@ def _shutdown_parallel_pool() -> None:
 atexit.register(_shutdown_parallel_pool)
 # Per-fire usage audit log for cron token spend instrumentation.
 # Resolves through _get_hermes_home() so profile-scoped paths work correctly.
+def _no_model_configured_message(
+    *,
+    job_name: str,
+    job_id: str,
+    job_model: Any,
+    env_model: str,
+    config_load_error: Optional[str] = None,
+) -> str:
+    """Explain why a cron job resolved no model, naming the real cause.
+
+    When ``config.yaml`` could not be read, nothing is known about
+    ``model.default`` — asserting it is "missing or empty" sends operators to
+    inspect config fields when the file's ownership, permissions or YAML syntax
+    is what actually needs fixing (#81420). The remedy line follows the cause.
+    """
+    if config_load_error:
+        cause = f"config.yaml could not be read: {config_load_error}"
+        remedy = (
+            "Fix that file's ownership/permissions or its YAML syntax, or set a "
+            f"per-job model via `cronjob action=update job_id={job_id} model=<name>`."
+        )
+    else:
+        cause = "config.yaml model.default missing or empty"
+        remedy = (
+            f"Set a per-job model via `cronjob action=update job_id={job_id} "
+            "model=<name>` or set a default with `hermes model <name>`."
+        )
+    return (
+        f"Cron job '{job_name}' has no model configured "
+        f"(job.model={job_model!r}, HERMES_MODEL={env_model!r}, {cause}). {remedy}"
+    )
+
+
 def _usage_audit_path() -> Path:
     return _get_hermes_home() / "cron" / "usage_audit.jsonl"
 
@@ -3667,6 +3700,10 @@ def run_job(
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
         _model_cfg = {}
+        # Remembered so a later "no model configured" failure can name the real
+        # cause. An unreadable file tells us nothing about model.default, so
+        # reporting it as "missing or empty" points operators at the wrong thing.
+        _config_load_error: Optional[str] = None
         try:
             from hermes_cli.config import read_user_config_raw
             _cfg_path = str(_get_hermes_home() / "config.yaml")
@@ -3707,19 +3744,20 @@ def run_job(
                         if _default:
                             model = _default
         except Exception as e:
+            _config_load_error = f"{type(e).__name__}: {e}"
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
         # Fail fast if no model resolved from job / env / config.yaml: an empty
         # model otherwise reaches the provider as an opaque 400 (#23979).
         if not (isinstance(model, str) and model.strip()):
             raise RuntimeError(
-                f"Cron job '{job_name}' has no model configured "
-                f"(job.model={job.get('model')!r}, "
-                f"HERMES_MODEL={os.getenv('HERMES_MODEL', '')!r}, "
-                "config.yaml model.default missing or empty). "
-                f"Set a per-job model via "
-                f"`cronjob action=update job_id={job_id} model=<name>` or set a "
-                "default with `hermes model <name>`."
+                _no_model_configured_message(
+                    job_name=job_name,
+                    job_id=job_id,
+                    job_model=job.get("model"),
+                    env_model=os.getenv("HERMES_MODEL", ""),
+                    config_load_error=_config_load_error,
+                )
             )
 
         # Apply IPv4 preference if configured.

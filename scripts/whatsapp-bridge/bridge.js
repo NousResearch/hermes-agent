@@ -40,6 +40,7 @@ import {
   buildLocationPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
+  createQuotedMediaCache,
   extractBridgeEvent,
   inboundReadReceiptKeys,
   inferMediaType,
@@ -281,6 +282,10 @@ const MAX_QUEUE_SIZE = 100;
 const recentlySentIds = createOutboundIdTracker(512);
 const recentlyProcessedPollUpdates = createOutboundIdTracker(512);
 const messageStore = createBoundedMessageStore(512);
+// Bounded cache of already-downloaded inbound media, so a later reply to an
+// uncaptioned photo/video/document/voice note can still surface the original
+// file — see createQuotedMediaCache's doc comment in bridge_helpers.js.
+const quotedMediaCache = createQuotedMediaCache(512);
 
 function normalizePollUpdateOptions(aggregation, pollUpdateMessage, meId) {
   const selected = [];
@@ -732,6 +737,7 @@ async function startSocket() {
           document: DOCUMENT_CACHE_DIR,
           audio: AUDIO_CACHE_DIR,
         },
+        lookupQuotedMedia: (quotedChatId, quotedMessageId) => quotedMediaCache.get(quotedChatId, quotedMessageId),
       });
       event.fromOwner = fromOwner;
 
@@ -760,6 +766,15 @@ async function startSocket() {
       }
 
       messageStore.remember(msg);
+      // Remember this message's already-downloaded media/text so a later
+      // reply to it (even uncaptioned media) can resolve the original
+      // content instead of seeing only a stripped-down quoted-message stub.
+      quotedMediaCache.remember(chatId, msg.key.id, {
+        body: event.body,
+        hasMedia: event.hasMedia,
+        mediaType: event.mediaType,
+        mediaUrls: event.mediaUrls,
+      });
       messageQueue.push(event);
       emitDebugEvent({
         stage: 'queued',

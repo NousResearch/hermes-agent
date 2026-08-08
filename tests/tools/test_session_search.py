@@ -12,6 +12,7 @@ import time
 
 import pytest
 
+from agent.context_compressor import SUMMARY_PREFIX
 from hermes_state import SessionDB
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
@@ -150,6 +151,45 @@ class TestDiscoveryShape:
             assert "snippet" in hit
             assert "messages_before" in hit
             assert "messages_after" in hit
+
+
+    def test_title_match_filters_structured_summary_and_caps_content(self, db):
+        db.create_session("s_bounded_title", source="cli")
+        db.set_session_title("s_bounded_title", "bounded-title-only")
+        db.append_message(
+            "s_bounded_title",
+            role="user",
+            content=[{"type": "text", "text": "ordinary opening " + "o" * 5_000}],
+        )
+        db.append_message(
+            "s_bounded_title",
+            role="assistant",
+            content={"parts": [{"text": "provider wrapper " + "d" * 50_000}]},
+        )
+        db.append_message(
+            "s_bounded_title",
+            role="assistant",
+            content=[{"type": "text", "text": SUMMARY_PREFIX + " " + "s" * 50_000}],
+        )
+
+        result = json.loads(session_search(query="bounded-title-only", db=db))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        hit = result["results"][0]
+        assert hit["matched_role"] == "session_title"
+        bookends = hit["bookend_start"] + hit["bookend_end"]
+        assert all("[CONTEXT COMPACTION" not in msg.get("content", "") for msg in bookends)
+        assert all(len(msg.get("content", "")) <= 1_201 for msg in bookends)
+        assert any(
+            msg.get("content_truncated") and msg.get("original_content_chars", 0) > 1_200
+            for msg in bookends
+        )
+        assert all(len(msg.get("content", "")) <= 4_001 for msg in hit["messages"])
+        assert any(
+            msg.get("content_truncated") and msg.get("original_content_chars", 0) > 4_000
+            for msg in hit["messages"]
+        )
 
 
     def test_current_session_filtered_out(self, db):
@@ -468,8 +508,12 @@ class TestCompactionSummaryFiltering:
 
     def test_is_compaction_summary_detects_prefix(self):
         from tools.session_search_tool import _is_compaction_summary
-        assert _is_compaction_summary("[CONTEXT COMPACTION — REFERENCE ONLY] foo")
+        assert _is_compaction_summary(SUMMARY_PREFIX + " generated summary")
         assert _is_compaction_summary("[CONTEXT SUMMARY]: old summary")
+        assert _is_compaction_summary(
+            [{"type": "text", "text": SUMMARY_PREFIX + " structured summary"}]
+        )
+        assert not _is_compaction_summary("[CONTEXT COMPACTION lookalike from a user")
         assert not _is_compaction_summary("Hello, how can I help?")
         assert not _is_compaction_summary("")
         assert not _is_compaction_summary(None)
@@ -478,9 +522,11 @@ class TestCompactionSummaryFiltering:
         """Compaction handoff in bookend_start position must be filtered out."""
         db.create_session("s_compact", source="cli")
         # First message: a compaction handoff (should be filtered)
-        db.append_message("s_compact", role="user",
-                          content="[CONTEXT COMPACTION — REFERENCE ONLY] "
-                                  "Earlier turns were compacted into the summary below. " + "x" * 50000)
+        db.append_message(
+            "s_compact",
+            role="user",
+            content=SUMMARY_PREFIX + " " + "x" * 50000,
+        )
         # Second message: normal user message
         db.append_message("s_compact", role="user", content="Fix the zorgblat rendering bug")
         # Padding messages to push window away from session start (so bookend has room)
@@ -685,9 +731,7 @@ class TestCompactionDiscoveryBothLayers:
         # Compact in place: everything above becomes active=0/compacted=1 and
         # the handoff summary is inserted as the new live tail.
         db.archive_and_compact("s_both", [
-            {"role": "user",
-             "content": "[CONTEXT COMPACTION — REFERENCE ONLY] "
-                        "Earlier turns were compacted into this summary. " + "s" * 50000},
+            {"role": "user", "content": SUMMARY_PREFIX + " " + "s" * 50000},
             {"role": "assistant", "content": "Continuing after compaction."},
         ])
         db._conn.commit()

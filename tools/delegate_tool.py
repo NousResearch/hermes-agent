@@ -982,13 +982,18 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     teaching subagents a fake container path while still helping them avoid
     guessing `/workspace/...` for local repo tasks.
     """
+    # Parent-specific fields FIRST. TERMINAL_CWD is process-wide state: when
+    # the gateway is launched outside the target project, it holds the
+    # gateway's own directory, and preferring it here would pin the child to
+    # exactly the wrong place this hint exists to avoid. It stays only as the
+    # last-resort fallback when the parent carries no workspace of its own.
     candidates = [
-        os.getenv("TERMINAL_CWD"),
         getattr(
             getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None
         ),
         getattr(parent_agent, "terminal_cwd", None),
         getattr(parent_agent, "cwd", None),
+        os.getenv("TERMINAL_CWD"),
     ]
     for candidate in candidates:
         if not candidate:
@@ -1000,6 +1005,21 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
         if os.path.isabs(text) and os.path.isdir(text):
             return text
     return None
+
+
+def _run_child_in_workspace(child, workspace_path: Optional[str], *args, **kwargs):
+    """Run a child with its logical cwd pinned to the parent's workspace."""
+    if not workspace_path:
+        return child.run_conversation(*args, **kwargs)
+    from agent.runtime_cwd import set_session_cwd
+
+    # The Token carries its ContextVar as token.var — reset through it rather
+    # than importing the private _SESSION_CWD module global.
+    token = set_session_cwd(workspace_path)
+    try:
+        return child.run_conversation(*args, **kwargs)
+    finally:
+        token.var.reset(token)
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
@@ -1669,6 +1689,7 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._delegate_workspace_path = workspace_hint
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
@@ -2325,7 +2346,9 @@ def _run_single_child(
             from agent.delegation_context import delegated_child_context
 
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
+                return _run_child_in_workspace(
+                    child,
+                    getattr(child, "_delegate_workspace_path", None),
                     user_message=goal,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,

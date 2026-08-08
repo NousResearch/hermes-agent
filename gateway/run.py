@@ -18591,6 +18591,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _media_adapter:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
+                            task_id=agent_result.get("task_id"),
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -19800,6 +19801,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         event: MessageEvent,
         adapter,
+        task_id: Optional[str] = None,
     ) -> None:
         """Extract explicit MEDIA: tags from a response and deliver them.
 
@@ -19816,6 +19818,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         such paths into uploads after the fact sent files the model never
         asked to deliver (#20834). Only ``MEDIA:`` directives — the explicit
         attachment contract — trigger post-stream uploads.
+
+        ``task_id``, when the caller can recover it (``agent_result["task_id"]``),
+        lets Docker container-path translation resolve the turn's own
+        sandbox instead of falling back to the shared ``"default"`` one (#64889).
         """
         from pathlib import Path
         from urllib.parse import quote as _quote
@@ -19830,7 +19836,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
             media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files, task_id)
             # Do NOT deduplicate explicit MEDIA tags against prior turns here
             # (#73771). This rescan is already EXPLICIT-ONLY (see docstring):
             # a MEDIA: directive in the final streamed reply is the model

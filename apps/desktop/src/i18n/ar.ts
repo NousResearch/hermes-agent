@@ -173,6 +173,8 @@ export const ar = defineLocale({
     openSettings: 'فتح الإعدادات',
     openStarmap: 'فتح خريطة الذاكرة',
     openKeybinds: 'اختصارات لوحة المفاتيح',
+    enterHud: 'وضع HUD',
+    exitHud: 'إنهاء وضع HUD',
     layoutEditor: 'محرر التخطيط',
     layoutEditorTitle: 'محرر التخطيط — انقر مع ⌘ لإعادة ضبط التخطيط'
   },

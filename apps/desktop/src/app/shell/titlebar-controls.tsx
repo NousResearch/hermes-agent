@@ -11,6 +11,8 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
+import { toggleHud } from '@/store/hud'
+import { $selectedStoredSessionId } from '@/store/session'
 import {
   $fileBrowserOpen,
   $sidebarOpen,
@@ -186,6 +188,20 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       id: 'haptics',
       label: hapticsMuted ? t.titlebar.unmuteHaptics : t.titlebar.muteHaptics,
       onSelect: toggleHaptics
+    },
+    {
+      // No `title`: TitlebarToolButton passes `title` to TipKeybindLabel as a
+      // text OVERRIDE, so a long sentence there replaces the short label and
+      // crowds the ⌘⇧H hint off the tooltip. Label only — the hint is appended
+      // from the action registry, same as every other tool here.
+      actionId: 'view.toggleHud',
+      icon: <Codicon name="comment-discussion" />,
+      id: 'hud',
+      label: t.titlebar.enterHud,
+      onSelect: () => {
+        triggerHaptic('open')
+        toggleHud($selectedStoredSessionId.get())
+      }
     },
     {
       actionId: 'keybinds.openPanel',

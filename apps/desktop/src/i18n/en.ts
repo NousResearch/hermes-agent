@@ -203,6 +203,8 @@ export const en: Translations = {
     openSettings: 'Open settings',
     openStarmap: 'Open memory graph',
     openKeybinds: 'Keyboard shortcuts',
+    enterHud: 'HUD mode',
+    exitHud: 'Exit HUD mode',
     layoutEditor: 'Layout editor',
     layoutEditorTitle: 'Layout editor — ⌘-click resets the layout'
   },
@@ -261,6 +263,7 @@ export const en: Translations = {
       'view.toggleReview': 'Toggle review pane',
       'view.toggleStatusbar': 'Toggle status bar',
       'view.showFiles': 'Show file browser',
+      'view.toggleHud': 'Toggle HUD mode',
       'view.showTerminal': 'Toggle terminal',
       'view.newTerminal': 'New terminal',
       'view.nextTerminal': 'Next terminal',

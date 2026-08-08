@@ -10089,17 +10089,41 @@ def _run_prompt_submit(
                     from agent.title_generator import maybe_auto_title
 
                     _title_key = session.get("session_key") or sid
+                    # The titler runs on its own daemon thread AFTER this turn
+                    # returns, so it cannot borrow a `with _session_db(...)`
+                    # handle (the contextmanager would close it out from under
+                    # the thread). Hand it a factory instead: a session owned by
+                    # a non-launch profile opens THAT profile's state.db on the
+                    # titler thread and closes it there.
+                    #
+                    # Passing the launch-profile handle (_get_db()) here was the
+                    # phantom-session bug: for a desktop session running under a
+                    # non-default profile, the title write — and the
+                    # `title_generation` row that record_auxiliary_usage stamps
+                    # via ensure_session(..., source="unknown") — landed in
+                    # ~/.hermes/state.db, materialising a 0-message clone of the
+                    # session under "default" while the real row stayed untitled
+                    # in its own profile. Mirrors the pending_title block above,
+                    # which was already profile-aware.
+                    _title_profile_home = session.get("profile_home")
+
+                    def _title_db_factory(_home=str(_title_profile_home or "")):
+                        from hermes_state import SessionDB
+
+                        return SessionDB(db_path=Path(_home) / "state.db")
+
                     # Snapshot the runtime identity; the validator lets the
                     # background titler skip its LLM call if the session's
                     # model changed before it fires (#19027).
                     _title_model = getattr(agent, "model", None)
                     _title_provider = getattr(agent, "provider", None)
                     maybe_auto_title(
-                        _get_db(),
+                        None if _title_profile_home else _get_db(),
                         _title_key,
                         text,
                         raw,
                         session.get("history", []),
+                        db_factory=_title_db_factory if _title_profile_home else None,
                         # Keep auxiliary auto-detection aligned with the active
                         # Desktop/Webapp session. Without this, providers that
                         # rely on runtime auth (for example OpenAI Codex OAuth)

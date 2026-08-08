@@ -6,7 +6,7 @@ adds latency to the user-facing reply.
 
 import logging
 import threading
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from agent.auxiliary_client import call_llm
 
@@ -242,15 +242,24 @@ def auto_title_session(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    db_factory: Optional[Callable[[], Any]] = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
     Called in a background thread after the first exchange completes.
     Silently skips if:
-    - session_db is None
+    - session_db is None (and no ``db_factory`` is supplied)
     - session already has a title (user-set or previously auto-generated)
     - title generation fails
     - runtime_validator returns False (model was switched)
+
+    ``db_factory`` lets a caller defer opening the store until this thread
+    runs, so a session owned by a NON-launch profile is titled in its own
+    ``state.db``. The handle is opened here and closed in ``finally`` — a
+    caller cannot hold one open across the fire-and-forget thread boundary
+    without leaking it, and passing the launch-profile handle instead writes
+    the title (and its ``title_generation`` usage row) into the wrong
+    profile's store, materialising a phantom 0-message session there.
 
     Never lets an exception escape: this is a daemon-thread target, and an
     escaping exception would spray a raw traceback into the user's terminal
@@ -261,7 +270,10 @@ def auto_title_session(
     ImportError repeats on every auto-title attempt until the long-running
     process restarts.
     """
+    owned_db = None
     try:
+        if session_db is None and db_factory is not None:
+            session_db = owned_db = db_factory()
         _auto_title_session(
             session_db,
             session_id,
@@ -286,6 +298,14 @@ def auto_title_session(
                 failure_callback("title generation", e)
             except Exception:
                 logger.debug("Auto-title failure_callback raised", exc_info=True)
+    finally:
+        # Only close a handle WE opened; a caller-supplied session_db is
+        # borrowed (the shared launch-profile handle) and must stay open.
+        if owned_db is not None:
+            try:
+                owned_db.close()
+            except Exception:
+                logger.debug("Auto-title db close failed", exc_info=True)
 
 
 def _auto_title_session(
@@ -363,14 +383,19 @@ def maybe_auto_title(
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    db_factory: Optional[Callable[[], Any]] = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
     Only generates a title when:
     - This appears to be the first user→assistant exchange
     - No title is already set
+
+    Pass ``db_factory`` INSTEAD of ``session_db`` when the session is owned by
+    a non-launch profile: the store is then opened (and closed) on the titler
+    thread against that profile's ``state.db``. See ``auto_title_session``.
     """
-    if not session_db or not session_id or not user_message or not assistant_response:
+    if not (session_db or db_factory) or not session_id or not user_message or not assistant_response:
         return
 
     # Count user messages in history to detect first exchange.
@@ -395,6 +420,7 @@ def maybe_auto_title(
             "main_runtime": main_runtime,
             "title_callback": title_callback,
             "runtime_validator": runtime_validator,
+            "db_factory": db_factory,
         },
         daemon=True,
         name="auto-title",

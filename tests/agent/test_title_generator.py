@@ -225,16 +225,21 @@ class TestMaybeAutoTitle:
             # Event-based wait: sleep-sync flaked when the daemon thread
             # wasn't scheduled within the fixed nap on a loaded runner.
             assert called.wait(timeout=10), "auto_title thread never ran"
-            mock_auto.assert_called_once_with(
-                db,
-                "sess-1",
-                "hello",
-                "hi there",
-                failure_callback=None,
-                main_runtime=None,
-                title_callback=None,
-                runtime_validator=None,
-            )
+            # Assert the contract (store, identity, exchange are forwarded),
+            # not a frozen snapshot of every kwarg — pinning the exact kwarg
+            # set breaks on any additive, default-None parameter even when
+            # behavior is unchanged (e.g. db_factory for profile-owned
+            # sessions).
+            mock_auto.assert_called_once()
+            args, kwargs = mock_auto.call_args
+            assert args == (db, "sess-1", "hello", "hi there")
+            assert kwargs["failure_callback"] is None
+            assert kwargs["main_runtime"] is None
+            assert kwargs["title_callback"] is None
+            assert kwargs["runtime_validator"] is None
+            # A launch-profile session titles through the borrowed handle, so
+            # no deferred factory is supplied.
+            assert kwargs.get("db_factory") is None
 
 
 

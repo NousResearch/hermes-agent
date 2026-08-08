@@ -117,6 +117,35 @@ def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, mon
 
 
 
+def test_hosted_callback_reports_superseded_state(monkeypatch):
+    """If the user completes consent on a URL whose state was rotated, the
+    error page must say so instead of the generic 'flow expired' message."""
+    import asyncio
+
+    from starlette.testclient import TestClient
+
+    from hermes_cli import web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-superseded",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/reports",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=new"))
+    web_server._mcp_oauth_flows[flow.flow_id] = flow
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+
+    response = TestClient(web_server.app).get(
+        "/api/mcp/oauth/callback/reports?code=abc&state=old"
+    )
+
+    assert response.status_code == 404
+    assert "superseded" in response.text.lower() or "newer" in response.text.lower()
+
+
 def test_flow_status_does_not_expose_authorization_code():
     from hermes_cli import web_server
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow

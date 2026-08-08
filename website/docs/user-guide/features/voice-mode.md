@@ -311,7 +311,7 @@ In the [Developer Portal](https://discord.com/developers/applications) → your 
 | **Server Members Intent** | Resolve usernames in `DISCORD_ALLOWED_USERS` to numeric IDs (conditional) |
 | **Message Content Intent** | Read text message content in channels |
 
-**Message Content Intent** is required. **Server Members Intent** is only needed if your `DISCORD_ALLOWED_USERS` list uses usernames — if you use numeric user IDs, you can leave it OFF. Voice-channel SSRC → user_id mapping comes from Discord's SPEAKING opcode on the voice websocket and does **not** require the Server Members Intent.
+**Message Content Intent** is required. **Server Members Intent** is only needed if your `DISCORD_ALLOWED_USERS` list uses usernames or you use `DISCORD_ALLOWED_ROLES` — with numeric user IDs and no roles, you can leave it OFF. Voice-channel SSRC → user_id mapping comes from Discord's SPEAKING opcode on the voice websocket and does **not** require the Server Members Intent.
 
 #### 3. Opus Codec
 
@@ -362,6 +362,9 @@ Use these in the Discord text channel where the bot is present:
 /voice join      Bot joins your current voice channel
 /voice channel   Alias for /voice join
 /voice leave     Bot disconnects from voice channel
+/voice on        Voice reply to voice messages
+/voice tts       Voice reply to all messages
+/voice off       Text only
 /voice status    Show voice mode and connected channel
 ```
 
@@ -389,7 +392,9 @@ When the bot is in a voice channel:
 
 ### Echo Prevention
 
-The bot automatically pauses its audio listener while playing TTS replies, preventing it from hearing and re-processing its own output.
+The bot never hears its own replies. The voice receiver skips any packet from the bot's own SSRC, and in the default one-shot playback path it is additionally paused for the duration of each TTS reply — its socket listener stays attached but discards all inbound audio while paused, so user speech during playback is not captured or transcribed. The receiver resumes when the reply finishes.
+
+With the opt-in mixer mode (`discord.voice_fx.enabled: true` in config.yaml), the receiver stays live during speech playback: the reply is layered over the ambient audio bed, and speech spoken over it is captured, transcribed, and submitted as a new input — aborting any in-flight streaming TTS.
 
 ### Access Control
 

@@ -118,6 +118,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `HERMES_KANBAN_DB` | Pin the kanban database file path directly (highest precedence; beats `HERMES_KANBAN_BOARD` and `HERMES_KANBAN_HOME`). The dispatcher injects this into worker subprocess env so profile workers converge on the dispatcher's board |
 | `HERMES_KANBAN_WORKSPACES_ROOT` | Pin the kanban workspaces root directly (highest precedence for workspaces; beats `HERMES_KANBAN_HOME`). The dispatcher injects this into worker subprocess env |
 | `HERMES_KANBAN_DISPATCH_IN_GATEWAY` | Runtime override for `kanban.dispatch_in_gateway`. Set to `0`, `false`, `no`, or `off` to keep the gateway from starting the embedded Kanban dispatcher; any other non-empty value enables it. Useful when a separate dispatcher process owns the board. |
+| `HERMES_KANBAN_ATTACHMENTS_ROOT` | Pin the directory where kanban card attachments are stored (highest precedence; beats `HERMES_KANBAN_HOME`-derived defaults). Read at `gateway/platforms/base.py:1263` and `hermes_cli/kanban_db.py:619`. Empty/`0` falls back to the default kanban attachments location. |
 
 ## Provider Auth (OAuth)
 
@@ -328,6 +329,13 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `DISCORD_HOME_CHANNEL_NAME` | Display name for the Discord home channel |
 | `DISCORD_COMMAND_SYNC_POLICY` | Discord slash-command startup sync policy: `safe` (diff and reconcile), `bulk` (legacy `tree.sync()`), or `off` |
 | `DISCORD_REQUIRE_MENTION` | Require an @mention before responding in server channels |
+| `DISCORD_THREAD_REQUIRE_MENTION` | When `true`, the in-thread mention shortcut is disabled — threads are gated the same as channels, requiring `@mention` even after the bot has already participated. Use this when multiple bots share a thread and you want each to fire only on explicit `@mention`. Default `false`. |
+| `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | When `true`, another bot must type a literal inline `@mention` of this bot to trigger it — a Discord reply/quote that silently adds the bot to `message.mentions` is not enough. Prevents bot-to-bot reply ping-pong. Only applies to bot authors, never humans. Default `false`. |
+| `DISCORD_HIDE_SLASH_COMMANDS` | When `true`, hide every slash command from non-admin guild members in Discord's slash picker. UX-only defense in depth — server-side authorization remains the real gate. Default `false`. |
+| `DISCORD_MISSED_MESSAGE_BACKFILL` | When `true`, after a reconnect the gateway scans channels for messages missed while it was down and dispatches them. Scans the union of allowed and free-response channels by default. Tunables: `DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS`, `DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS` (default `21600`), `DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT` (default `100`), `DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES` (default `10`). Default `false`. |
+| `DISCORD_HISTORY_BACKFILL` | When `true`, prepend recent channel scrollback (since the bot's last response) to the user message when the bot is mentioned. Recovers context the bot would otherwise miss with `require_mention`. Skipped in DMs and free-response channels. Default `true`. |
+| `DISCORD_HISTORY_BACKFILL_LIMIT` | Maximum number of messages to scan backwards when assembling the backfill block. In practice the scan usually stops earlier — at the bot's own last message in the channel. Default `50`. |
+| `DISCORD_APPROVAL_MENTIONS` | When `true`, mention allowed users (`<@id>` for numeric allowlist entries) in command-approval prompts. Default `false` to avoid surprise pings. Equivalent to `discord.approval_mentions`. |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where mention is not required |
 | `DISCORD_AUTO_THREAD` | Auto-thread long replies when supported |
 | `DISCORD_ALLOW_ANY_ATTACHMENT` | When `true`, accept attachments of any file type (not just the built-in PDF/text/zip/office allowlist). Unknown types are cached and surfaced to the agent as a local path so it can inspect them via `terminal` / `read_file` / `ffprobe`. Default `false`. |
@@ -348,6 +356,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `SLACK_THREAD_REQUIRE_MENTION` | Require an explicit @mention for Slack thread replies while preserving top-level free-response channels |
 | `SLACK_HOME_CHANNEL` | Default Slack channel for cron delivery |
 | `SLACK_HOME_CHANNEL_NAME` | Display name for the Slack home channel |
+| `SLACK_IGNORED_CHANNELS` | Comma-separated Slack channel IDs where the bot never responds. Read at `gateway/run.py:1159` (YAML→env bridge `SLACK_IGNORED_CHANNELS`). |
 | `GOOGLE_CHAT_PROJECT_ID` | GCP project hosting the Pub/Sub topic (falls back to `GOOGLE_CLOUD_PROJECT`) |
 | `GOOGLE_CHAT_SUBSCRIPTION_NAME` | Full Pub/Sub subscription path, `projects/{proj}/subscriptions/{sub}` (legacy alias: `GOOGLE_CHAT_SUBSCRIPTION`) |
 | `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON` | Path to Service Account JSON, or the JSON inline (falls back to `GOOGLE_APPLICATION_CREDENTIALS`) |
@@ -750,6 +759,8 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Delay between split chunks when a Discord message exceeds the length limit (default: `2.0`). |
 | `HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS` | Compatibility/manual override for `discord.websocket_liveness_interval_seconds`. Interval for sampling the active Discord Gateway WebSocket (default: `15`; set to `0` to disable). Prefer the `config.yaml` key. |
 | `HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD` | Compatibility/manual override for `discord.websocket_liveness_failure_threshold`. Consecutive unhealthy WebSocket samples before forcing a reconnect (default: `2`). Prefer the `config.yaml` key. |
+| `FFMPEG_PATH` | Explicit path to the `ffmpeg` executable used by the Discord voice path (PCM→WAV conversion for transcription, voice playback, and voice mixing). `~` and `$VAR` references are expanded (`expandvars`/`expanduser`). When unset, Hermes falls back to `ffmpeg` on PATH plus common Homebrew/local prefixes, then a winget-installed Gyan.FFmpeg package under `%LOCALAPPDATA%` (Windows), then bare `ffmpeg`. |
+| `HERMES_VOICE_DEBUG` | Set to `1` to stream per-block VAD diagnostics (calibrated floor, RMS, trip decisions) to stderr during voice listening (`hermes_cli/voice.py:241`, `tools/voice_mode.py`). Also emits debug breadcrumbs for the voice pipeline. Off by default. |
 | `HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS` / `_SPLIT_DELAY_SECONDS` | Matrix equivalents of the Telegram batch knobs. |
 | `HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS` / `_SPLIT_DELAY_SECONDS` / `_MAX_CHARS` / `_MAX_MESSAGES` | Feishu batcher tuning — delay, split delay, max chars per message, max messages per batch. |
 | `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | Feishu media flush delay. |
@@ -758,9 +769,14 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_VISION_DOWNLOAD_TIMEOUT` | Timeout in seconds for downloading an image before handing it to vision models (default: `30`). |
 | `HERMES_VISION_MAX_CONCURRENCY` | Max concurrent image **encode/resize** bursts across the whole process (override for `auxiliary.vision.max_concurrency`; default: host CPU core count, no ceiling). Bounds only the CPU-bound encode step so a video-frame fan-out can't saturate every core and starve the event loop — the LLM calls stay fully concurrent. Values `< 1` are ignored. |
 | `HERMES_RESTART_DRAIN_TIMEOUT` | Gateway: seconds to wait for active runs to drain on `/restart` before forcing the restart (default: `900`). |
+| `HERMES_RESTART_AFTER_TURN_TIMEOUT` | Gateway: after a turn finishes, seconds to wait for a clean auto-restart window before forcing one (read at `gateway/run.py:8217` and `hermes_cli/gateway.py:3286`). `0`/negative disables the forced restart. |
+| `HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT` | Gateway: seconds to wait for the startup session-restore drain before proceeding (bridged from config; read at `gateway/run.py:872`). `0`/negative waits indefinitely. |
 | `HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT` | Per-platform connect timeout during gateway startup and reconnect (seconds; `0`/negative waits indefinitely). Applies to the connect attempt *and* the Discord adapter's ready-wait, so accounts with many slash commands to sync don't get killed mid-startup. Bridged from `gateway.platform_connect_timeout` in `config.yaml` (default `30`); this env var is the manual override and wins if set explicitly. |
+| `HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT` | Per-adapter disconnect/cleanup timeout during gateway shutdown (seconds; default `5`). Bounds `adapter.disconnect()`, background-task cancellation, and secondary-profile reconnect-task drain, so a wedged adapter can't hang shutdown. `0`/negative waits indefinitely; invalid values are ignored with a warning. The Discord adapter mirrors this var to budget its own voice flush during disconnect, keeping ~20% headroom under the gateway's outer `wait_for`. |
 | `HERMES_GATEWAY_BUSY_INPUT_MODE` | Default gateway busy-input behavior: `queue`, `steer`, or `interrupt`. Can be overridden per chat with `/busy`. |
 | `HERMES_GATEWAY_BUSY_ACK_ENABLED` | Whether the gateway sends an acknowledgment message (⚡/⏳/⏩) when a user sends input while the agent is busy (default: `true`). Set to `false` to suppress these messages entirely — the input is still queued/steered/interrupts as normal, only the chat reply is silenced. Bridged from `display.busy_ack_enabled` in `config.yaml`. |
+| `HERMES_GATEWAY_BUSY_TEXT_MODE` | Default busy-input text behavior: `interrupt` (default) or `queue`. Read at `gateway/platforms/base.py:2791`; bridged from `display.busy_text_mode` in `config.yaml` (`gateway/run.py:2090`). |
+| `HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED` | Whether the gateway acknowledges a steered busy input (default: `true`). Bridged from config at `gateway/run.py:2098-2100`; read where steering acks are emitted. |
 | `HERMES_GATEWAY_NO_SUPERVISE` | Inside the s6-overlay Docker image, opt out of auto-supervision when running `hermes gateway run` and use pre-s6 foreground semantics (no auto-restart, gateway is the container's main process). Truthy values: `1`, `true`, `yes`. Equivalent to the `--no-supervise` CLI flag. No-op outside the s6 image. |
 | `HERMES_GATEWAY_BOOTSTRAP_STATE` | Inside the s6-overlay Docker image, declare the gateway's **initial** supervised state on a fresh volume. On a blank volume there is no persisted `gateway_state.json`, so the boot reconciler registers the `gateway-default` slot but leaves it **down** (it only auto-starts when the last recorded state was `running`). Set this to `running` and the first-boot setup hook seeds `gateway_state.json` *before* the reconciler runs, so the gateway comes up on the very first boot. Only the literal value `running` is honoured. First-boot-only: an existing `gateway_state.json` is never overwritten, so a deliberately-stopped gateway stays stopped across restarts. No-op outside the s6 image. |
 | `GATEWAY_RELAY_URL` | Experimental relay connector WebSocket base URL. When set, the gateway registers the generic `relay` adapter and dials the connector outbound. Mirrors `gateway.relay_url` in `config.yaml`. |
@@ -782,6 +798,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | Variable | Description |
 |----------|-------------|
 | `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 500) |
+| `HERMES_MAX_TOKENS` | Override max output tokens per model call (read at `cli.py:4378`; wins over the model's configured max when set). |
 | `HERMES_INFERENCE_MODEL` | Override model name at process level (takes priority over `config.yaml` for the session). Also settable via `-m`/`--model` flag. |
 | `HERMES_YOLO_MODE` | Set to `1` to bypass dangerous-command approval prompts. Equivalent to `--yolo`. |
 | `HERMES_ACCEPT_HOOKS` | Auto-approve any unseen shell hooks declared in `config.yaml` without a TTY prompt. Equivalent to `--accept-hooks` or `hooks_auto_accept: true`. |

@@ -134,13 +134,13 @@ On the **Bot** page, scroll down to **Privileged Gateway Intents**. You'll see t
 | Intent | Purpose | Required? |
 |--------|---------|-----------| 
 | **Presence Intent** | See user online/offline status | Optional |
-| **Server Members Intent** | Access the member list, resolve usernames | **Required** |
+| **Server Members Intent** | Resolve usernames in `DISCORD_ALLOWED_USERS` to numeric IDs; deliver role memberships for `DISCORD_ALLOWED_ROLES` | Conditional — only if the allowlist uses usernames or roles |
 | **Message Content Intent** | Read the text content of messages | **Required** |
 
-**Enable both Server Members Intent and Message Content Intent** by toggling them **ON**.
+**Enable Message Content Intent** by toggling it **ON**. **Server Members Intent** is only needed when the allowed-users list contains usernames (not numeric IDs) or when you use `DISCORD_ALLOWED_ROLES` — Hermes only requests it in those cases.
 
 - Without **Message Content Intent**, your bot receives message events but the message text is empty — the bot literally cannot see what you typed.
-- Without **Server Members Intent**, the bot cannot resolve usernames for the allowed users list and may fail to identify who is messaging it.
+- **Server Members Intent** is only needed if your `DISCORD_ALLOWED_USERS` list contains **usernames** instead of numeric IDs (to resolve them to IDs), or if you use `DISCORD_ALLOWED_ROLES` (to resolve role memberships). If you use numeric user IDs (recommended) and no roles, leave it **OFF** — requesting a privileged intent that isn't enabled in the Developer Portal can prevent the bot from coming online at all.
 
 :::warning[This is the #1 reason Discord bots don't work]
 If your bot is online but never responds to messages, the **Message Content Intent** is almost certainly disabled. Go back to the [Developer Portal](https://discord.com/developers/applications), select your application → Bot → Privileged Gateway Intents, and make sure **Message Content Intent** is toggled ON. Click **Save Changes**.
@@ -295,19 +295,28 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `GATEWAY_ALLOW_ALL_USERS` | No | `false` | Global allow-all opt-in for every gateway platform. Prefer the platform-specific `DISCORD_ALLOW_ALL_USERS` unless you intentionally want all connected platforms open. |
 | `DISCORD_HOME_CHANNEL` | No | — | Channel ID where the bot sends proactive messages (cron output, reminders, notifications). |
 | `DISCORD_HOME_CHANNEL_NAME` | No | `"Home"` | Display name for the home channel in logs and status output. |
+| `DISCORD_HOME_CHANNEL_THREAD_ID` | No | — | Optional thread ID inside the home channel where the bot sends proactive messages (cron output, reminders, notifications). |
 | `DISCORD_COMMAND_SYNC_POLICY` | No | `"safe"` | Controls native slash-command startup sync. `"safe"` diffs existing global commands and only updates what changed, recreating commands when Discord metadata changes cannot be applied via patch. `"bulk"` preserves the old `tree.sync()` behavior. `"off"` skips startup sync entirely. |
+| `DISCORD_HIDE_SLASH_COMMANDS` | No | `false` | When `true`, hides every slash command from non-admin guild members in Discord's slash picker. Defense-in-depth UX only — server-side authorization is the actual gate. |
 | `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
 | `DISCORD_THREAD_REQUIRE_MENTION` | No | `false` | When `true`, the in-thread mention shortcut is disabled — threads are gated the same as channels, requiring `@mention` even after the bot has already participated. Use this when multiple bots share a thread and you want each to fire only on explicit `@mention`. |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
+| `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `false` | When `true`, another bot must type `@mention` of Hermes in its message to trigger a reply — a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
+| `DISCORD_APPROVAL_MENTIONS` | No | `false` | When `true`, approval prompts explicitly mention the allowed users (numeric IDs only) so they are notified. Default `false` avoids surprise pings. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
 | `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
 | `DISCORD_HISTORY_BACKFILL` | No | `true` | When `true`, prepend recent channel scrollback (since the bot's last response) to the user message when the bot is mentioned. Recovers context the bot would otherwise miss with `require_mention`. Skipped in DMs and free-response channels. Set to `false` to disable. |
 | `DISCORD_HISTORY_BACKFILL_LIMIT` | No | `50` | Maximum number of messages to scan backwards when assembling the backfill block. In practice the scan usually stops earlier — at the bot's own last message in the channel. |
+| `DISCORD_MISSED_MESSAGE_BACKFILL` | No | `false` | When `true`, scan configured channel and thread histories after a Discord reconnect for messages missed while disconnected, and dispatch still-unhandled ones through the normal pipeline. |
+| `DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS` | No | — | Channels to scan for missed messages after a reconnect. Empty defaults to the union of allowed and free-response channels; `"*"` scans every reachable server text channel. |
+| `DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS` | No | `21600` | Look-back window for missed-message scans (seconds, min 60). Default is 6 hours. |
+| `DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT` | No | `100` | Global scan cap per reconnect (1–500). |
+| `DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES` | No | `10` | Recovery dispatch cap per reconnect (1–100). |
 | `DISCORD_REPLY_TO_MODE` | No | `"first"` | Controls reply-reference behavior: `"off"` — never reply to the original message, `"first"` — reply-reference on the first message chunk only (default), `"all"` — reply-reference on every chunk. |
 | `DISCORD_ALLOW_MENTION_EVERYONE` | No | `false` | When `false` (default), the bot cannot ping `@everyone` or `@here` even if its response contains those tokens. Set to `true` to opt back in. See [Mention Control](#mention-control) below. |
 | `DISCORD_ALLOW_MENTION_ROLES` | No | `false` | When `false` (default), the bot cannot ping `@role` mentions. Set to `true` to allow. |
@@ -318,6 +327,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_MAX_ATTACHMENT_BYTES` | No | `33554432` | Maximum bytes per attachment the gateway will download and cache. Default 32 MiB. Set to `0` for no cap (attachments are held in memory while being written, so unlimited carries a real memory cost). |
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Delay between split chunks when a single message exceeds Discord's length limit. |
+| `HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS` | No | `15` | Compatibility/manual override for `discord.websocket_liveness_interval_seconds`. Interval for sampling the active Discord Gateway WebSocket (set to `0` to disable). Prefer the `config.yaml` key. |
+| `HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD` | No | `2` | Compatibility/manual override for `discord.websocket_liveness_failure_threshold`. Consecutive unhealthy WebSocket samples before forcing a reconnect. Prefer the `config.yaml` key. |
 
 :::warning Bot-to-bot conversation is not supported
 `DISCORD_ALLOW_BOTS` exists to accept input from a specific trusted bot (e.g. a relay or webhook bot), not to let two Hermes profiles talk to each other. The default, `"none"`, ignores all other bots and is the safe setting.
@@ -534,7 +545,7 @@ discord:
     max_dispatches: 10
 ```
 
-If `channels` is empty, Hermes uses `discord.free_response_channels`. Set it to `"*"` only when the bot should inspect every reachable server text channel. The recovery ledger is stored per profile under `gateway/discord_message_recovery.db`, preventing a successfully answered message from being replayed again after a later restart.
+If `channels` is empty, Hermes uses the union of `discord.allowed_channels` and `discord.free_response_channels`. Set it to `"*"` only when the bot should inspect every reachable server text channel. The recovery ledger is stored per profile under `gateway/discord_message_recovery.db`, preventing a successfully answered message from being replayed again after a later restart.
 
 #### `group_sessions_per_user`
 
@@ -830,7 +841,7 @@ Hermes 0.18 intentionally fails closed on externally reachable adapters. A Disco
 
 **Cause**: Your code requests intents that aren't enabled in the Developer Portal.
 
-**Fix**: Enable all three Privileged Gateway Intents (Presence, Server Members, Message Content) in the Bot settings, then restart.
+**Fix**: In the Bot settings, enable **Message Content Intent** (always required), plus **Server Members Intent** if your `DISCORD_ALLOWED_USERS` list uses usernames or you use `DISCORD_ALLOWED_ROLES`. **Presence Intent** is optional and not requested by Hermes. Then restart.
 
 ### Bot can't see messages in a specific channel
 

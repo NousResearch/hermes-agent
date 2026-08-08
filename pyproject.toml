@@ -369,7 +369,7 @@ override-dependencies = [
   "pynacl>=1.6,<1.7",
 ]
 exclude-newer = "14 days"
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false }
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, setuptools = false, pillow = false, mcp = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's

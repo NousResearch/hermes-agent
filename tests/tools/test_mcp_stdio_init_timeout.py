@@ -22,6 +22,7 @@ manually against the reporter's live repro).
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from unittest.mock import patch
 
@@ -91,4 +92,74 @@ class TestStdioInitializeTimeout:
             f"_run_stdio blocked {elapsed:.1f}s on a hanging initialize() — the "
             f"connect_timeout ({config['connect_timeout']}s) bound was not applied; "
             f"the #59349 subprocess/FD leak has regressed."
+        )
+
+
+class TestStdioStdoutNoise:
+    def test_prefixed_jsonrpc_stdout_noise_does_not_eat_initialize_response(self, caplog):
+        """A noisy server can prefix the initialize response on stdout (#60775).
+
+        The stock MCP SDK parser treats the whole line as invalid JSON and loses
+        the response, so ``initialize`` times out. Hermes' stdio wrapper should
+        recover the embedded JSON-RPC object and continue.
+        """
+        from tools import mcp_tool
+
+        server_code = r"""
+import json
+import sys
+
+line = sys.stdin.readline()
+req = json.loads(line)
+sys.stdout.write("level=info msg=mem.init budget_mb=1 total_ram_mb=2 ")
+sys.stdout.write(json.dumps({
+    "jsonrpc": "2.0",
+    "id": req["id"],
+    "result": {
+        "protocolVersion": "2025-03-26",
+        "capabilities": {"tools": {}},
+        "serverInfo": {"name": "fake", "version": "1"},
+    },
+}) + "\n")
+sys.stdout.flush()
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "notifications/initialized":
+        continue
+    if msg.get("method") == "tools/list":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": msg["id"],
+            "result": {"tools": []},
+        }), flush=True)
+"""
+
+        server = mcp_tool.MCPServerTask("noisy-stdio")
+        config = {
+            "command": sys.executable,
+            "args": ["-c", server_code],
+            "connect_timeout": 1.0,
+        }
+
+        async def drive():
+            async def stop_after_ready():
+                await server._ready.wait()
+                server._shutdown_event.set()
+
+            with patch.object(mcp_tool, "_write_stderr_log_header", lambda *_a, **_k: None), \
+                 patch.object(mcp_tool, "_get_mcp_stderr_log", lambda: None), \
+                 patch("tools.osv_check.check_package_for_malware", lambda *_a, **_k: None):
+                asyncio.create_task(stop_after_ready())
+                return await asyncio.wait_for(server._run_stdio(config), timeout=5.0)
+
+        with caplog.at_level("WARNING", logger="tools.mcp_tool"):
+            result = asyncio.run(drive())
+
+        assert result == "shutdown"
+        assert server._ready.is_set()
+        assert server._tools == []
+        assert any(
+            "discarding the prefix and continuing" in record.getMessage()
+            for record in caplog.records
         )

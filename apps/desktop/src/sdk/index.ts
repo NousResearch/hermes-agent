@@ -18,7 +18,7 @@
  *  - `ui.*` — the design language, so plugin UI looks native by default.
  */
 
-import { atom, type ReadableAtom } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
@@ -27,7 +27,13 @@ import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
+import {
+  $focusedRuntimeId,
+  $focusedSessionState,
+  $focusedStoredSessionId
+} from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
+import type { UsageStats } from '@/types/hermes'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -55,10 +61,27 @@ if (typeof window !== 'undefined') {
   $narrowViewport.listen(refresh)
 }
 
+/** Live usage of the FOCUSED session, projected out of the streamed session
+ *  state — the same readout the core statusbar's context chip paints. */
+const $focusedUsage = computed($focusedSessionState, state => state?.usage ?? null)
+
 export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),
+    /** Runtime id of the FOCUSED chat session — the interacted tile, else the
+     *  primary. Prefer this over `activeSessionId` for any readout that
+     *  should follow the user between tiles (context, tokens, cost). */
+    focusedSessionId: readonlyAtom<null | string>($focusedRuntimeId),
+    /** Stored (durable) id of the focused session — for navigation and
+     *  session-list matching, where runtime ids don't survive reloads. */
+    focusedStoredSessionId: readonlyAtom<null | string>($focusedStoredSessionId),
+    /** Live usage snapshot of the focused session (`context_used` /
+     *  `context_max` / `context_percent`, token counts, `cost_usd`) —
+     *  streamed by the backend, no RPC needed. Null while unresolved.
+     *  The UsageStats-optional fields (context_*, cost_usd) arrive as the
+     *  backend reports them, so read them with a fallback. */
+    focusedUsage: readonlyAtom<null | UsageStats>($focusedUsage),
     /** Active workspace cwd ('' when detached). */
     cwd: readonlyAtom<string>($currentCwd),
     /** Gateway socket state: 'idle' | 'connecting' | 'open' | …. */

@@ -364,6 +364,9 @@ components.
 
 ```ts
 host.state.activeSessionId  // ReadableAtom<string | null>
+host.state.focusedSessionId // ReadableAtom<string | null>  (runtime id of the FOCUSED session — tile-aware; prefer for session.* RPC)
+host.state.focusedStoredSessionId // ReadableAtom<string | null>  (durable id — navigation / session-list matching)
+host.state.focusedUsage     // ReadableAtom<UsageStats | null>  (live streamed usage of the focused session, no RPC needed)
 host.state.cwd              // ReadableAtom<string>
 host.state.gateway          // ReadableAtom<string>  ('idle' | 'connecting' | 'open' | …)
 host.state.model            // ReadableAtom<string>

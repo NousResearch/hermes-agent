@@ -42,7 +42,12 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
 `jsx()` calls, not JSX syntax; the file is not compiled).
 
 - `host.state.*` — readonly reactive atoms: `activeSessionId`, `cwd`,
-  `gateway`, `model`, `profile`, `viewport`. Read with `.get()` in handlers,
+  `gateway`, `model`, `profile`, `viewport`, plus the tile-aware focused
+  session atoms: `focusedSessionId` (runtime id — key for `session.*` RPC),
+  `focusedStoredSessionId` (durable id — navigation / list matching), and
+  `focusedUsage` (live streamed `UsageStats` of the focused session, no RPC
+  needed). Prefer the focused atoms for any readout that should follow the
+  user between tiles. Read with `.get()` in handlers,
   `useValue(atom)` in components.
 - `host.request(method, params)` — gateway JSON-RPC (sessions, config,
   skills, cron — everything the app uses).

@@ -34,6 +34,7 @@ def _configured_hybrid_config() -> _FakeHonchoConfig:
         reasoning_level_cap="high",
         context_tokens=None,
         message_max_chars=25000,
+        save_messages=True,
         session_strategy="per-directory",
     )
 

@@ -77,14 +77,20 @@ def make_manager(monkeypatch):
 class TestWriteFrequencyParsing:
     def test_string_async(self, tmp_path):
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": "async"}))
+        cfg_file.write_text(
+            json.dumps({"apiKey": "k", "writeFrequency": "async"}),
+            encoding="utf-8",
+        )
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == "async"
 
 
     def test_integer_frequency(self, tmp_path):
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": 5}))
+        cfg_file.write_text(
+            json.dumps({"apiKey": "k", "writeFrequency": 5}),
+            encoding="utf-8",
+        )
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == 5
 
@@ -101,7 +107,7 @@ class TestWriteFrequencyParsing:
 
     def test_defaults_to_async(self, tmp_path):
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k"}))
+        cfg_file.write_text(json.dumps({"apiKey": "k"}), encoding="utf-8")
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == "async"
 
@@ -231,18 +237,17 @@ class TestFlushAll:
             mgr.flush_all()
             assert mock_flush.call_count == 2
 
-    def test_flush_all_drains_async_queue(self, make_manager):
+    def test_flush_all_flushes_session_with_pending_async_write(self, make_manager):
         mgr = make_manager(write_frequency="async")
         sess = _make_session()
         sess.add_message("user", "pending")
+        mgr._cache[sess.key] = sess
 
         with patch.object(mgr, "_flush_session") as mock_flush:
-            # Put the item AFTER the mock is installed so the background
-            # writer thread (if it dequeues before flush_all) still hits
-            # the mock rather than the real _flush_session.
-            mgr._async_queue.put(sess)
+            mgr.save(sess)
             mgr.flush_all()
-            # Called at least once for the queued item
+            mgr.shutdown()
+
             assert mock_flush.call_count >= 1
 
     def test_flush_all_tolerates_errors(self, make_manager):
@@ -316,6 +321,81 @@ class TestAsyncWriterThread:
         mgr.shutdown()
         assert mgr._async_thread is None
 
+    @pytest.mark.parametrize("write_frequency", ["async", "turn", "session", 2])
+    def test_shutdown_is_idempotent_for_every_write_mode(self, make_manager, write_frequency):
+        mgr = make_manager(write_frequency=write_frequency)
+        mgr.shutdown()
+        mgr.shutdown()
+
+        assert mgr._shutdown_requested.is_set()
+        assert mgr._shutdown_complete.is_set()
+        if mgr._async_thread is not None:
+            assert not mgr._async_thread.is_alive()
+
+    @pytest.mark.parametrize("write_frequency", ["async", "turn", "session", 2])
+    def test_save_after_shutdown_is_rejected(self, make_manager, write_frequency, caplog):
+        mgr = make_manager(write_frequency=write_frequency)
+        session = _make_session(key=f"late-{write_frequency}")
+        session.add_message("user", "too late")
+        mgr.shutdown()
+
+        with patch.object(mgr, "_flush_session") as mock_flush:
+            mgr.save(session)
+
+        mock_flush.assert_not_called()
+        assert "after shutdown began" in caplog.text
+
+    def test_shutdown_timeout_is_bounded_and_visible(self, make_manager, caplog):
+        mgr = make_manager(write_frequency="turn")
+        mgr._async_queue = MagicMock()
+        mgr._async_thread = MagicMock()
+        mgr._async_thread.is_alive.return_value = True
+
+        mgr.shutdown()
+
+        mgr._async_thread.join.assert_called_once_with(timeout=10)
+        assert "Timed out waiting for Honcho async writer to stop" in caplog.text
+        assert not mgr._shutdown_complete.is_set()
+
+    def test_active_save_timeout_remains_retryable(self, make_manager, caplog):
+        mgr = make_manager(write_frequency="turn")
+        mgr._active_saves_complete.clear()
+
+        with patch(
+            "plugins.memory.honcho.session._SHUTDOWN_TIMEOUT_SECONDS",
+            0.01,
+        ):
+            mgr.shutdown()
+
+        assert "Timed out waiting for active Honcho saves to finish" in caplog.text
+        assert not mgr._shutdown_complete.is_set()
+
+        mgr._active_saves_complete.set()
+        mgr.shutdown()
+        assert mgr._shutdown_complete.is_set()
+
+    def test_final_flush_timeout_is_bounded(self, make_manager, caplog):
+        mgr = make_manager(write_frequency="turn")
+        flush_started = threading.Event()
+        release_flush = threading.Event()
+
+        def blocking_flush():
+            flush_started.set()
+            release_flush.wait(timeout=1)
+
+        mgr.flush_all = blocking_flush
+        with patch(
+            "plugins.memory.honcho.session._SHUTDOWN_TIMEOUT_SECONDS",
+            0.01,
+        ):
+            mgr.shutdown()
+
+        assert flush_started.is_set()
+        assert "Timed out waiting for Honcho final shutdown flush" in caplog.text
+        assert not mgr._shutdown_complete.is_set()
+
+        release_flush.set()
+        assert mgr._shutdown_complete.wait(timeout=1)
 
 # ---------------------------------------------------------------------------
 # async retry on failure
@@ -455,4 +535,3 @@ class TestPrefetchCacheAccessors:
 
         assert mgr.pop_context_result("cli:test") == payload
         assert mgr.pop_context_result("cli:test") == {}
-

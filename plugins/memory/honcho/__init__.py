@@ -1322,6 +1322,8 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
+        if self._config is not None and not self._config.save_messages:
+            return
         if self._recall_mode == "tools" and not self._session_ready():
             return
         if not self._session_ready():
@@ -1339,7 +1341,7 @@ class HonchoMemoryProvider(MemoryProvider):
                     session.add_message("user", chunk)
                 for chunk in self._chunk_message(clean_assistant_content, msg_limit):
                     session.add_message("assistant", chunk)
-                self._manager._flush_session(session)
+                self._manager.save(session)
             except Exception as e:
                 logger.debug("Honcho sync_turn failed: %s", e)
 
@@ -1529,12 +1531,12 @@ class HonchoMemoryProvider(MemoryProvider):
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        # Flush any remaining messages
+        # Flush remaining messages and stop the writer cleanly.
         if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
             try:
-                self._manager.flush_all()
-            except Exception:
-                pass
+                self._manager.shutdown()
+            except Exception as exc:
+                logger.warning("Honcho shutdown failed: %s", exc, exc_info=True)
 
 
 # ---------------------------------------------------------------------------

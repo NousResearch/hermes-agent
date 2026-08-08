@@ -574,6 +574,37 @@ class TestVoiceChannelCommands:
 
 
     @pytest.mark.asyncio
+    async def test_join_preserves_saved_voice_only_mode(self, runner):
+        """A previously saved voice_only mode must survive /voice join (#81041).
+
+        Regression: /voice join unconditionally overwrote the channel's voice
+        mode with "all", silently degrading a saved voice_only session to
+        speaking every typed reply in the VC.
+        """
+        mock_channel = MagicMock()
+        mock_channel.name = "General"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
+        mock_adapter._voice_text_channels = {}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_input_callback = None
+        event = self._make_discord_event()
+        event.source.chat_type = "group"
+        event.source.chat_name = "Hermes Server / #general"
+        runner.adapters[event.source.platform] = mock_adapter
+
+        # Operator previously opted into voice_only (voice in -> voice out;
+        # text in -> text out). The join must not clobber it.
+        runner._voice_mode["discord:123"] = "voice_only"
+
+        result = await runner._handle_voice_channel_join(event)
+
+        assert "joined" in result.lower()
+        assert runner._voice_mode["discord:123"] == "voice_only"
+
+
+    @pytest.mark.asyncio
     async def test_join_missing_voice_dependencies(self, runner):
         """Missing PyNaCl/davey should return a user-actionable install hint."""
         mock_channel = MagicMock()

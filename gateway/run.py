@@ -19475,12 +19475,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
-            self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
+            # Preserve a previously saved mode (e.g. voice_only): only seed the
+            # documented "all" default when the chat has no saved mode at all
+            # (#81041).
+            voice_key = self._voice_key(event.source.platform, event.source.chat_id)
+            mode = self._voice_mode.setdefault(voice_key, "all")
             self._save_voice_modes()
-            self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+            if mode in {"all", "voice_only"}:
+                self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+            if mode == "voice_only":
+                voice_reply = (
+                    "I'll listen, and speak only voice replies (voice_only). "
+                    "Use /voice leave to disconnect."
+                )
+            elif mode == "off":
+                voice_reply = (
+                    "I'll listen but stay silent (voice mode off). "
+                    "Use /voice on or /voice all to change that."
+                )
+            else:
+                voice_reply = (
+                    "I'll speak my replies and listen to you. "
+                    "Use /voice leave to disconnect."
+                )
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
-                f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
+                f"{voice_reply}"
             )
         # Join failed — clear callback
         adapter._voice_input_callback = None

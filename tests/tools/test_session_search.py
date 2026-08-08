@@ -507,6 +507,70 @@ class TestCompactionSummaryFiltering:
         bookend_contents = [m.get("content", "") for m in entry.get("bookend_start", [])]
         assert any("zorgblat" in c for c in bookend_contents)
 
+    def test_discovery_anchor_prefers_real_message_over_compaction_summary(self, db):
+        """When both the compaction handoff and real messages match, the
+        drill-down anchor must land on a real message — not on the summary,
+        which matches nearly every keyword and would re-centre every query
+        on the same recap."""
+        db.create_session("s_anchor", source="cli")
+        # Compaction handoff, stuffed with the keyword so bare BM25 ranks it
+        # above the real hit.
+        db.append_message("s_anchor", role="user",
+                          content="[CONTEXT COMPACTION — REFERENCE ONLY] recap: "
+                                  "frobnitz frobnitz frobnitz frobnitz frobnitz")
+        # Padding so the summary and the real hit are distinct window anchors
+        for i in range(6):
+            db.append_message("s_anchor", role="user", content=f"padding step {i}")
+            db.append_message("s_anchor", role="assistant", content=f"padding done {i}")
+        # Real work message matching the same keyword, only once
+        db.append_message("s_anchor", role="user", content="now fix the frobnitz crash")
+        db._conn.commit()
+
+        result = json.loads(session_search(query="frobnitz", db=db, limit=1))
+        assert result["success"] is True
+        assert len(result["results"]) == 1
+        entry = result["results"][0]
+        anchor_id = entry["match_message_id"]
+        anchor_msg = next(m for m in entry["messages"] if m["id"] == anchor_id)
+        assert "[CONTEXT COMPACTION" not in (anchor_msg.get("content") or "")
+        assert "frobnitz crash" in anchor_msg["content"]
+
+    def test_compaction_summary_still_anchor_when_only_hit(self, db):
+        """Demotion must not exclude summaries — when the handoff is the
+        lineage's only match, it still anchors the result."""
+        db.create_session("s_only_summary", source="cli")
+        db.append_message("s_only_summary", role="user",
+                          content="[CONTEXT COMPACTION — REFERENCE ONLY] recap "
+                                  "of the quixotic migration")
+        db._conn.commit()
+
+        result = json.loads(session_search(query="quixotic", db=db))
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "s_only_summary"
+
+    def test_summaries_last_is_stable_within_class(self, db):
+        from tools.session_search_tool import _is_compaction_summary_message, _summaries_last
+        db.create_session("s_stable", source="cli")
+        db.append_message("s_stable", role="user",
+                          content="[CONTEXT COMPACTION — REFERENCE ONLY] zetatron recap")
+        db.append_message("s_stable", role="user", content="real zetatron message one")
+        db.append_message("s_stable", role="assistant",
+                          content="[CONTEXT SUMMARY]: older zetatron recap")
+        db.append_message("s_stable", role="assistant", content="real zetatron message two")
+        db._conn.commit()
+        raw = db.search_messages(query="zetatron", role_filter=["user", "assistant"],
+                                 exclude_sources=["subagent", "tool"], limit=300, offset=0)
+        assert len(raw) == 4
+        ordered = _summaries_last(db, raw)
+        # Real rows first, in original relative order; summaries last, in
+        # original relative order.
+        flags = [_is_compaction_summary_message(db, r["id"]) for r in ordered]
+        assert flags == [False, False, True, True]
+        expected = [r["id"] for r in raw if not _is_compaction_summary_message(db, r["id"])]
+        expected += [r["id"] for r in raw if _is_compaction_summary_message(db, r["id"])]
+        assert [r["id"] for r in ordered] == expected
+
 
 # =========================================================================
 # Compression-aware discovery (#6256)

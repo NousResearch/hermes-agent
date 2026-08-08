@@ -247,6 +247,46 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     )
 
 
+def _is_compaction_summary_message(db, message_id) -> bool:
+    """Return True if *message_id* is a generated compaction handoff summary.
+
+    Point lookup used by ``_discover``: search_messages strips full content
+    from its rows (snippet-only, to save tokens), so summary detection has to
+    refetch the row. Returns False on any error so the caller keeps the hit.
+    """
+    if not message_id:
+        return False
+    try:
+        with db._lock:
+            cursor = db._conn.execute(
+                "SELECT content FROM messages WHERE id = ?", (message_id,)
+            )
+            row = cursor.fetchone()
+    except Exception:
+        logging.debug("is_compaction_summary_message lookup failed for %s", message_id, exc_info=True)
+        return False
+    return row is not None and _is_compaction_summary(row["content"] or "")
+
+
+def _summaries_last(db, raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Stable-sort FTS rows so compaction-summary hits anchor last.
+
+    A compaction handoff summary is a single machine-generated row recapping
+    the whole session, so it contains nearly every keyword an investigation
+    might search for. When it is a lineage's best hit, discovery anchors the
+    ±5 drill-down window on the summary itself — every query re-centres on
+    the same giant recap instead of the real work messages, and the agent
+    loops without ever reaching the content it was after. Demoting — not
+    excluding — keeps the summary reachable as the anchor when it is a
+    lineage's ONLY hit, while any real content hit wins the anchor. Stable,
+    so BM25/recency and the cron-demotion order survive within each class.
+    """
+    return sorted(
+        raw_results,
+        key=lambda r: 1 if _is_compaction_summary_message(db, r.get("id")) else 0,
+    )
+
+
 def _shape_message(
     m: Dict[str, Any],
     anchor_id: Optional[int] = None,
@@ -722,6 +762,14 @@ def _discover(
     # top `limit` results (#19434). Stable — preserves BM25/recency order
     # within each class.
     raw_results = _order_for_recall(raw_results)
+
+    # Demote compaction-summary rows below real content before dedup. The
+    # summary recaps the whole session, so it matches nearly every keyword;
+    # unguarded, it becomes the lineage's anchor for every query and the
+    # drill-down window centres on the recap instead of the work messages.
+    # Summaries stay available as the anchor when they're the only hit, and
+    # via explicit scroll/read.
+    raw_results = _summaries_last(db, raw_results)
 
     if not raw_results and not title_result:
         _empty_payload = {

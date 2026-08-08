@@ -1,5 +1,6 @@
 """Tests for hermes_constants module."""
 
+import ctypes
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -665,3 +666,84 @@ class TestWslPathTranslation:
         assert hermes_constants.translate_cwd_for_wsl_backend(r"\\wsl.localhost\Ubuntu\home\alex") == "/home/alex"
         # Already-POSIX paths pass through untouched.
         assert hermes_constants.translate_cwd_for_wsl_backend("/home/alex") == "/home/alex"
+
+
+class TestWindowsKnownFolderFallback:
+    """``_get_platform_default_hermes_home`` when ``LOCALAPPDATA`` is absent.
+
+    Services, scheduled tasks, test harnesses that scrub the environment,
+    and tightly sandboxed launchers can start Python without the usual
+    profile environment variables. The resolver must then ask Windows for
+    the Local AppData known folder before guessing ``Path.home() /
+    "AppData" / "Local"``. These tests run on any platform:
+    ``hermes_constants.sys.platform`` is patched and ``ctypes.windll`` is
+    substituted (created on POSIX, replaced on Windows).
+    """
+
+    def test_known_folder_queried_when_localappdata_missing(self, monkeypatch):
+        freed = []
+
+        class _FakeShell32:
+            @staticmethod
+            def SHGetKnownFolderPath(rfid, flags, token, out_ptr):
+                # FOLDERID_LocalAppData {F1B32785-6FBA-4FCF-...}
+                assert rfid._obj.Data1 == 0xF1B32785
+                assert flags == 0
+                out_ptr._obj.value = "C:\\KnownFolder\\Local"
+                return 0
+
+        class _FakeOle32:
+            @staticmethod
+            def CoTaskMemFree(ptr):
+                freed.append(ptr.value)
+
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(
+            ctypes,
+            "windll",
+            SimpleNamespace(shell32=_FakeShell32(), ole32=_FakeOle32()),
+            raising=False,
+        )
+
+        home = hermes_constants._get_platform_default_hermes_home()
+        assert home == Path("C:\\KnownFolder\\Local") / "hermes"
+        # The shell allocates the string; not freeing it leaks on every call.
+        assert freed == ["C:\\KnownFolder\\Local"]
+
+    def test_failed_hresult_falls_back_and_still_frees(self, monkeypatch):
+        freed = []
+
+        class _FakeShell32:
+            @staticmethod
+            def SHGetKnownFolderPath(rfid, flags, token, out_ptr):
+                return -2147024894  # HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
+
+        class _FakeOle32:
+            @staticmethod
+            def CoTaskMemFree(ptr):
+                freed.append(ptr.value)
+
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(
+            ctypes,
+            "windll",
+            SimpleNamespace(shell32=_FakeShell32(), ole32=_FakeOle32()),
+            raising=False,
+        )
+        monkeypatch.setattr(Path, "home", lambda: Path("C:\\Users\\stub"))
+
+        home = hermes_constants._get_platform_default_hermes_home()
+        assert home == Path("C:\\Users\\stub") / "AppData" / "Local" / "hermes"
+        assert freed == [None]
+
+    def test_home_fallback_when_shell_api_unavailable(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        # No windll at all (POSIX reality; simulated on Windows by deletion).
+        monkeypatch.delattr(ctypes, "windll", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: Path("C:\\Users\\stub"))
+
+        home = hermes_constants._get_platform_default_hermes_home()
+        assert home == Path("C:\\Users\\stub") / "AppData" / "Local" / "hermes"

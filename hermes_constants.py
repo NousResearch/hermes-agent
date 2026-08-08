@@ -50,11 +50,57 @@ def get_hermes_home_override() -> str | None:
     return str(override)
 
 
+def _windows_local_appdata() -> Path | None:
+    """Ask Windows for the Local AppData known folder, or None if unavailable.
+
+    Used only when ``LOCALAPPDATA`` is missing from the environment, which
+    happens under services, scheduled tasks, and sandboxed launchers.
+    """
+    try:
+        import ctypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", ctypes.c_uint32),
+                ("Data2", ctypes.c_uint16),
+                ("Data3", ctypes.c_uint16),
+                ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+        # FOLDERID_LocalAppData {F1B32785-6FBA-4FCF-9D55-7B8E7F157091}
+        folder_id = _GUID(
+            0xF1B32785,
+            0x6FBA,
+            0x4FCF,
+            (ctypes.c_ubyte * 8)(0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91),
+        )
+        path_ptr = ctypes.c_wchar_p()
+        # The shell allocates the string; the caller must CoTaskMemFree it.
+        hresult = ctypes.windll.shell32.SHGetKnownFolderPath(  # type: ignore[attr-defined]
+            ctypes.byref(folder_id), 0, None, ctypes.byref(path_ptr)
+        )
+        try:
+            if hresult == 0 and path_ptr.value:
+                return Path(path_ptr.value)
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(path_ptr)  # type: ignore[attr-defined]
+    except (AttributeError, ImportError, OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
 def _get_platform_default_hermes_home() -> Path:
     """Return the platform-native default Hermes home path."""
     if sys.platform == "win32":
         local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        if local_appdata:
+            base = Path(local_appdata)
+        else:
+            # Services, tests, and tightly-sandboxed launchers may omit the
+            # usual profile environment variables. Ask Windows for its Local
+            # AppData known folder before falling back to Path.home(), which
+            # is wrong on a redirected profile.
+            base = _windows_local_appdata() or Path.home() / "AppData" / "Local"
         return base / "hermes"
     return Path.home() / ".hermes"
 

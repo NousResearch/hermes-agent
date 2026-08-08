@@ -461,7 +461,7 @@ def _consume_interrupted_flag(job_id: str) -> bool:
         return False
 
 
-# Sequential (env-mutating) cron jobs — workdir jobs that touch
+# Sequential (env-mutating) cron jobs — agent-backed workdir jobs that touch
 # process-global runtime state — must run one at a time, but must NOT block the
 # ticker thread.  A persistent single-thread executor preserves ordering across
 # ticks while keeping dispatch fire-and-forget, the same as the parallel pool.
@@ -472,13 +472,13 @@ class _ReadWriteLock:
     """Writer-preferring readers-writer lock.
 
     Guards the process-global ``os.environ["TERMINAL_CWD"]`` override that a
-    workdir cron job applies for the whole of its agent run.  Workdir jobs are
-    writers: they mutate the shared env and need exclusive access.  Workdir-less
-    jobs are readers: they only observe ``TERMINAL_CWD`` (indirectly, via the
-    terminal / file / code-exec tools), so any number of them may run
-    concurrently with each other, but none may run alongside a writer — that is
-    exactly what stops a workdir-less job from picking up another job's workdir
-    override and running its commands in the wrong directory.
+    workdir cron job applies for the whole of its agent run. Agent-backed
+    workdir jobs are writers: they mutate the shared env and need exclusive
+    access. Workdir-less jobs and no-agent scripts are readers: they only
+    observe ``TERMINAL_CWD`` while running tools or constructing a subprocess
+    environment. Any number of readers may run concurrently, but none may run
+    alongside a writer — that stops a child or tool from inheriting another
+    job's temporary workdir override.
 
     Writer preference bounds the wait for a workdir job (dispatched on the
     single-thread sequential pool) so a stream of workdir-less readers cannot
@@ -3209,6 +3209,11 @@ def run_job(
             )
             _job_workdir = None
 
+        # The subprocess receives workdir through cwd=, but its environment is
+        # still built from process-global os.environ. Hold the cwd lock as a
+        # reader so a workdir writer cannot expose its temporary TERMINAL_CWD
+        # while the child environment is constructed or the script is running.
+        _terminal_cwd_lock.acquire_read()
         try:
             ok, output = _run_job_script_with_claim_heartbeat(
                 job, script_path, workdir=_job_workdir,
@@ -3218,6 +3223,8 @@ def run_job(
                 "Job '%s': script execution raised unexpectedly", job_id,
             )
             ok, output = False, f"Script execution failed: {exc}"
+        finally:
+            _terminal_cwd_lock.release_read()
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -4927,14 +4934,19 @@ def tick(
             body."""
             return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
-        # they queue on the single-thread sequential pool to run one at a time.
-        # That alone only keeps workdir jobs from overlapping EACH OTHER;
-        # run_job's _terminal_cwd_lock is what additionally stops a concurrently
-        # firing workdir-less parallel-pool job from observing the override.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # Only agent-backed workdir jobs mutate the process-global
+        # TERMINAL_CWD. no_agent scripts pass workdir as subprocess cwd and
+        # are safe to dispatch through the parallel pool.
+        sequential_jobs = [
+            j
+            for j in due_jobs
+            if (j.get("workdir") or "").strip() and not j.get("no_agent")
+        ]
+        parallel_jobs = [
+            j
+            for j in due_jobs
+            if j.get("no_agent") or not (j.get("workdir") or "").strip()
+        ]
 
         _results: list = []
         _all_futures: list = []

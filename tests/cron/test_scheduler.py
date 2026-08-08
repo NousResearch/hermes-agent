@@ -1297,6 +1297,50 @@ class TestParallelTick:
         assert len(ends) == 2
         assert max(starts) < min(ends), f"Jobs not concurrent: {call_order}"
 
+    def test_no_agent_workdir_job_runs_concurrently_with_agent_workdir_job(self):
+        """A script-only workdir job must not occupy the env-mutating pool."""
+        import threading
+
+        barrier = threading.Barrier(2, timeout=5)
+        call_order = []
+
+        def mock_run_job(job, *, defer_agent_teardown=None, **kw):
+            call_order.append(("start", job["id"]))
+            barrier.wait()
+            call_order.append(("end", job["id"]))
+            return (True, "output", "response", None)
+
+        jobs = [
+            {
+                "id": "agent-workdir",
+                "name": "agent-workdir",
+                "deliver": "local",
+                "workdir": "/tmp/project",
+            },
+            {
+                "id": "script-workdir",
+                "name": "script-workdir",
+                "deliver": "local",
+                "workdir": "/tmp/project",
+                "no_agent": True,
+                "script": "/tmp/watchdog.sh",
+            },
+        ]
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_runs"), \
+             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            result = tick(verbose=False)
+
+        assert result == 2
+        starts = [i for i, (action, _) in enumerate(call_order) if action == "start"]
+        ends = [i for i, (action, _) in enumerate(call_order) if action == "end"]
+        assert max(starts) < min(ends), f"Jobs did not overlap: {call_order}"
+
     def test_parallel_jobs_isolated_contextvars(self):
         """Each job's ContextVars must be isolated — no cross-contamination."""
         from gateway.session_context import get_session_env

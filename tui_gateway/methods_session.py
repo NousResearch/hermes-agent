@@ -107,6 +107,7 @@ def _(rid, params: dict) -> dict:
             "tool_progress_mode": _load_tool_progress_mode(),
             "tool_started_at": {},
             "transport": current_transport() or _stdio_transport,
+            "transports": set(),
         }
         _register_session_cwd(_sessions[sid])
 

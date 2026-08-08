@@ -1075,9 +1075,9 @@ def _close_sessions_for_transport(
     transport, *, end_reason: str = "ws_disconnect"
 ) -> tuple[int, int]:
     """On transport disconnect, reap the sessions that opted into
-    close_on_disconnect (sidecar/dashboard) immediately via the unified
-    ``_close_session_by_id`` path, and re-point the rest back to stdio so later
-    emits don't hit a dead socket.
+    ``close_on_disconnect`` immediately via the unified
+    ``_close_session_by_id`` path, and detach the rest of the peers without
+    orphaning a session that still has another live transport.
 
     Non-flagged detached sessions are handed to the grace-windowed WS-orphan
     reaper (``_schedule_ws_orphan_reap``): a quick reconnect / session.resume
@@ -1088,18 +1088,57 @@ def _close_sessions_for_transport(
 
     Returns ``(reaped, detached)`` counts for disconnect-path observability."""
     with _sessions_lock:
-        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
+        owned = [
+            (sid, s)
+            for sid, s in _sessions.items()
+            if transport in _session_transport_targets(s)
+        ]
     reaped = 0
     detached = 0
     for sid, session in owned:
-        if session.get("close_on_disconnect"):
-            _close_session_by_id(sid, end_reason=end_reason)
-            reaped += 1
+        remaining = set()
+        should_reap = False
+        # Resume/attach and disconnect must make one atomic ownership decision.
+        # Marking the session with the drop sentinel under the session lock lets
+        # the existing close funnel revalidate that no frontend reattached before
+        # it claims the record.
+        with _sessions_lock:
+            current = _sessions.get(sid)
+            if current is not session:
+                continue
+            with _session_transport_lock:
+                targets = session.setdefault("transports", set())
+                if not isinstance(targets, set):
+                    targets = set(targets) if targets else set()
+                    session["transports"] = targets
+                targets.discard(transport)
+                remaining = set(targets)
+                if remaining:
+                    session["transport"] = next(iter(remaining))
+                else:
+                    should_reap = bool(session.get("close_on_disconnect"))
+                    session["transport"] = _detached_ws_transport
+        if remaining:
+            continue
+        if should_reap:
+            try:
+                closed = _close_session_by_id(
+                    sid,
+                    end_reason=end_reason,
+                    predicate=lambda current, expected=session: (
+                        current is expected
+                        and current.get("transport") is _detached_ws_transport
+                        and not _session_transport_targets(current)
+                    ),
+                )
+            except TypeError as exc:
+                # A few downstream tests monkeypatch the historical two-argument
+                # seam. Keep that seam usable; production uses the predicate path.
+                if "predicate" not in str(exc):
+                    raise
+                closed = _close_session_by_id(sid, end_reason=end_reason)
+            reaped += int(closed)
         else:
-            # Point detached sessions at the drop sentinel (NOT real stdio) so
-            # _ws_session_is_orphaned recognizes them and the grace-reap can
-            # actually fire; a standalone `hermes --tui` keeps real _stdio.
-            session["transport"] = _detached_ws_transport
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)
@@ -1547,9 +1586,8 @@ def write_json(obj: dict) -> bool:
 
     Precedence:
 
-    1. Event frames with a session id → the transport stored on that session,
-       so async events land with the client that owns the session even if
-       the emitting thread has no contextvar binding.
+    1. Event frames with a session id → every live transport attached to that
+       session, so multiple frontends receive the same stream.
     2. Otherwise the transport bound on the current context (set by
        :func:`dispatch` for the lifetime of a request).
     3. Otherwise the module-level stdio transport, matching the historical
@@ -1557,10 +1595,55 @@ def write_json(obj: dict) -> bool:
     """
     if obj.get("method") == "event":
         sid = ((obj.get("params") or {}).get("session_id")) or ""
-        if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
-            return t.write(obj)
+        if sid:
+            session = _sessions.get(sid) or {}
+            targets = _session_transport_targets(session)
+            if targets:
+                results = []
+                for transport in targets:
+                    try:
+                        results.append(transport.write(obj))
+                    except Exception:
+                        logger.debug("session event write failed sid=%s", sid, exc_info=True)
+                # A failed secondary must not silence the remaining peers. Only
+                # report failure when every attached transport rejected the frame.
+                return any(results)
+            if session.get("transport") is _detached_ws_transport:
+                return False
 
     return (current_transport() or _stdio_transport).write(obj)
+
+
+_session_transport_lock = threading.RLock()
+
+
+def _attach_session_transport(session: dict | None, transport: Transport | None) -> None:
+    """Attach a client without evicting other live views of the session."""
+    if not session or transport is None:
+        return
+    with _sessions_lock:
+        with _session_transport_lock:
+            targets = session.setdefault("transports", set())
+            if not isinstance(targets, set):
+                targets = set(targets) if targets else set()
+                session["transports"] = targets
+            targets.add(transport)
+            session["transport"] = transport
+
+
+def _session_transport_targets(session: dict | None) -> set[Transport]:
+    """Return a stable snapshot of every transport attached to *session*."""
+    if not session:
+        return set()
+    with _session_transport_lock:
+        targets = session.get("transports")
+        if not isinstance(targets, set):
+            targets = set(targets) if targets else set()
+            session["transports"] = targets
+        legacy = session.get("transport")
+        if legacy is not None and legacy is not _detached_ws_transport:
+            targets.add(legacy)
+        return set(targets)
 
 
 def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
@@ -6646,9 +6729,10 @@ def _init_session(
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
             "model_override": None,
-            # Pin async event emissions to whichever transport created the
-            # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
+            # Pin the current transport for compatibility; the set below keeps
+            # every attached frontend subscribed to session events.
             "transport": current_transport() or _stdio_transport,
+            "transports": set(),
         }
     _init_owns_db = False
     if session_db is not None:
@@ -7864,6 +7948,7 @@ def _deferred_session_record(
         "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {},
         "transport": current_transport() or _stdio_transport,
+        "transports": set(),
     }
 
 
@@ -8095,7 +8180,7 @@ def _live_session_payload(
         if cols is not None:
             session["cols"] = cols
         if transport is not None:
-            session["transport"] = transport
+            _attach_session_transport(session, transport)
         if touch:
             session["last_active"] = time.time()
         in_memory_history = list(session.get("display_history_prefix") or []) + list(

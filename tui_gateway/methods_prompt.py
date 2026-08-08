@@ -127,7 +127,7 @@ def _(rid, params: dict) -> dict:
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
-        session["transport"] = t
+        _attach_session_transport(session, t)
     while True:
         busy_transport = None
         with session["history_lock"]:

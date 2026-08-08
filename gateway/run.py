@@ -1942,23 +1942,22 @@ class SecondaryPortBindingConfigError(MultiplexConfigError):
 
 @_contextmanager
 def _profile_runtime_scope(profile_home: "Path"):
-    """Scope config/skills/memory AND credentials to a profile for one turn.
+    """Scope config/skills/memory, credentials, AND terminal backend.
 
-    Combines the two seams the multiplexer needs:
+    Combines three seams the multiplexer needs:
       1. ``set_hermes_home_override`` — redirects ``get_hermes_home()`` (config,
-         skills, memory, SOUL, sessions) to the profile's home. Contextvar, so
-         it propagates into the agent worker thread via ``copy_context()``.
-      2. ``set_secret_scope`` — installs the profile's ``.env`` secrets as the
-         authoritative credential source, so ``get_secret`` reads this profile's
-         keys and never the process-global ``os.environ`` (which in a
-         multiplexer may hold another profile's values).
+         skills, memory, SOUL, sessions) to the profile's home.
+      2. ``set_secret_scope`` — installs the profile's ``.env`` secrets.
+      3. Terminal config bridge — reads the routed profile's ``terminal:``
+         section from its config.yaml and applies it to ``os.environ``
+         TERMINAL_* vars for the duration of this scope, then restores the
+         originals.  Without this a multiplexed profile with
+         ``terminal.backend: docker`` silently runs commands on the gateway
+         profile's local backend.
 
-    Only used on the multiplexed inbound path. Single-profile gateways never
-    enter this scope, so their behavior is unchanged. Loading the profile's
-    ``.env`` here does NOT mutate ``os.environ`` — ``build_profile_secret_scope``
-    returns an isolated dict — which is what keeps subprocesses (MCP, kanban)
-    from inheriting cross-profile secrets.
+    Only used on the multiplexed inbound path.
     """
+    import json as _json
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.secret_scope import (
         build_profile_secret_scope,
@@ -1970,9 +1969,68 @@ def _profile_runtime_scope(profile_home: "Path"):
     home_token = set_hermes_home_override(str(profile_home))
     hydrate_profile_secret_sources(Path(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+
+    # --- Terminal backend bridge ---
+    _terminal_env_map = {
+        "backend": "TERMINAL_ENV", "cwd": "TERMINAL_CWD",
+        "timeout": "TERMINAL_TIMEOUT", "home_mode": "TERMINAL_HOME_MODE",
+        "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+        "docker_image": "TERMINAL_DOCKER_IMAGE",
+        "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+        "modal_image": "TERMINAL_MODAL_IMAGE",
+        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
+        "ssh_host": "TERMINAL_SSH_HOST", "ssh_user": "TERMINAL_SSH_USER",
+        "ssh_port": "TERMINAL_SSH_PORT", "ssh_key": "TERMINAL_SSH_KEY",
+        "container_cpu": "TERMINAL_CONTAINER_CPU",
+        "container_memory": "TERMINAL_CONTAINER_MEMORY",
+        "container_disk": "TERMINAL_CONTAINER_DISK",
+        "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+        "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+        "docker_env": "TERMINAL_DOCKER_ENV",
+        "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
+        "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
+        "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        "docker_network": "TERMINAL_DOCKER_NETWORK",
+        "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+        "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+        "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+        "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+        "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+    }
+    _terminal_keys = list(_terminal_env_map.values())
+    _saved = {}
+    for _k in _terminal_keys:
+        if _k in os.environ:
+            _saved[_k] = os.environ[_k]
+    try:
+        _cfg_path = Path(profile_home) / "config.yaml"
+        if _cfg_path.exists():
+            import yaml
+            with open(_cfg_path, "r") as _f:
+                _cfg = yaml.safe_load(_f) or {}
+            _tc = _cfg.get("terminal")
+            if isinstance(_tc, dict):
+                for _cfg_key, _env_var in _terminal_env_map.items():
+                    if _cfg_key in _tc:
+                        _val = _tc[_cfg_key]
+                        if isinstance(_val, (list, dict)):
+                            os.environ[_env_var] = _json.dumps(_val)
+                        else:
+                            os.environ[_env_var] = str(_val)
+    except Exception:
+        pass  # Bridge failure must not block the turn
+    # --- End terminal bridge ---
+
     try:
         yield
     finally:
+        for _k in _terminal_keys:
+            if _k in _saved:
+                os.environ[_k] = _saved[_k]
+            else:
+                os.environ.pop(_k, None)
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 

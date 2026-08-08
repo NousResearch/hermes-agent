@@ -126,6 +126,37 @@ def _is_pausable_gateway(cmdline: str) -> bool:
     return looks_like_gateway_command_line(cmdline)
 
 
+def _has_pausable_gateway_ancestor(pid: int) -> bool:
+    """Return True when *pid* is inside a live pausable gateway tree.
+
+    Gateways spawn venv-backed grandchildren such as MCP servers whose own
+    argv does not mention ``gateway run``. The downstream updater force-kills
+    the gateway tree, so those descendants share its pause ownership and must
+    not dead-end Desktop preflight before that pause can run.
+
+    Fail closed: an unavailable process, unreadable ancestry/cmdline, or parser
+    failure leaves the process classified as a blocker.
+    """
+    try:
+        import psutil  # noqa: PLC0415
+
+        parents = psutil.Process(int(pid)).parents()
+    except Exception:
+        return False
+
+    for parent in parents:
+        try:
+            parts = parent.cmdline()
+        except Exception:
+            return False
+        if not parts:
+            return False
+        cmdline = " ".join(str(part) for part in parts)
+        if _is_pausable_gateway(cmdline):
+            return True
+    return False
+
+
 def main() -> None:
     """Entry point.  Prints one JSON doc to stdout.  Exits 0 for valid scan."""
     try:
@@ -140,22 +171,25 @@ def main() -> None:
     except Exception as exc:
         _emit_probe_fail(f"scan aborted: {exc}")
 
-    processes = [
-        {
-            "pid": pid,
-            "name": name,
-            "cmdline": _redact_sensitive_cmdline(cmdline),
-        }
-        for pid, name, cmdline in matches
-        if not _is_pausable_gateway(cmdline)
-    ]
-    exempted = sum(1 for _pid, _name, cmdline in matches if _is_pausable_gateway(cmdline))
+    processes = []
+    exempted = 0
+    for pid, name, cmdline in matches:
+        if _is_pausable_gateway(cmdline) or _has_pausable_gateway_ancestor(pid):
+            exempted += 1
+            continue
+        processes.append(
+            {
+                "pid": pid,
+                "name": name,
+                "cmdline": _redact_sensitive_cmdline(cmdline),
+            }
+        )
     data = {
         "ok": True,
         "blocked": bool(processes),
         "processes": processes,
-        # Diagnostic only: gateway processes present but not counted as
-        # blockers because the downstream updater pauses them itself.
+        # Diagnostic only: gateway processes and their descendants are not
+        # blockers because the downstream updater pauses their whole trees.
         "pausable_gateways": exempted,
     }
     print(json.dumps(data))

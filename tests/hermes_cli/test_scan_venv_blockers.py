@@ -33,6 +33,27 @@ def _psutil_fake() -> dict:
     return {"psutil": types.SimpleNamespace(Process=lambda *a: MagicMock())}
 
 
+def _psutil_with_parent_argv(parent_argv_by_pid: dict[int, list[str]]):
+    """Return a psutil stand-in exposing one live parent per candidate PID."""
+
+    class FakeParent:
+        def __init__(self, argv: list[str]):
+            self._argv = argv
+
+        def cmdline(self):
+            return self._argv
+
+    class FakeProcess:
+        def __init__(self, pid: int):
+            self._pid = pid
+
+        def parents(self):
+            argv = parent_argv_by_pid.get(self._pid)
+            return [FakeParent(argv)] if argv else []
+
+    return types.SimpleNamespace(Process=FakeProcess)
+
+
 
 
 
@@ -151,10 +172,13 @@ def test_is_pausable_gateway_rejects_everything_else(cmdline: str) -> None:
     assert _is_pausable_gateway(cmdline) is False
 
 
-def _run_main_with_detector(monkeypatch, capsys, matches):
+def _run_main_with_detector(monkeypatch, capsys, matches, *, psutil_module=None):
     """Run main() with the process detector patched to return *matches*."""
-    for name, mod in _psutil_fake().items():
-        monkeypatch.setitem(sys.modules, name, mod)
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        psutil_module if psutil_module is not None else _psutil_fake()["psutil"],
+    )
     import hermes_cli.main as cli_main
 
     monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: matches)
@@ -211,4 +235,83 @@ def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
     assert code == 0
     assert data["blocked"] is True
     assert [p["pid"] for p in data["processes"]] == [78]
+    assert data["pausable_gateways"] == 0
+
+
+def test_main_exempts_gateway_descendant_but_not_desktop_descendant(
+    monkeypatch, capsys
+):
+    """MCP children inherit update ownership from a recognized live ancestor.
+
+    The downstream updater tree-kills gateway roots, so their descendants must
+    not dead-end Desktop preflight. A Desktop ``serve`` descendant has no such
+    downstream owner and must continue blocking.
+    """
+    gateway_child = (
+        90,
+        "python.exe",
+        r"C:\x\venv\Scripts\python.exe -m agent_reach.integrations.mcp_server",
+    )
+    desktop_child = (
+        91,
+        "python.exe",
+        r"C:\x\venv\Scripts\python.exe -m agent_reach.integrations.mcp_server",
+    )
+    psutil_module = _psutil_with_parent_argv(
+        {
+            90: ["python.exe", "-m", "hermes_cli.main", "gateway", "run"],
+            91: ["python.exe", "-m", "hermes_cli.main", "serve"],
+        }
+    )
+
+    code, data = _run_main_with_detector(
+        monkeypatch,
+        capsys,
+        [gateway_child, desktop_child],
+        psutil_module=psutil_module,
+    )
+
+    assert code == 0
+    assert data["blocked"] is True
+    assert [p["pid"] for p in data["processes"]] == [91]
+    assert data["pausable_gateways"] == 1
+
+
+def test_main_keeps_descendant_blocking_when_nearer_ancestor_is_unreadable(
+    monkeypatch, capsys
+):
+    """Never skip an ancestry read failure to trust an older gateway ancestor."""
+
+    class UnreadableParent:
+        def cmdline(self):
+            raise PermissionError("access denied")
+
+    class GatewayParent:
+        def cmdline(self):
+            return ["python.exe", "-m", "hermes_cli.main", "gateway", "run"]
+
+    class Process:
+        def __init__(self, pid):
+            assert pid == 92
+
+        def parents(self):
+            return [UnreadableParent(), GatewayParent()]
+
+    psutil_module = types.SimpleNamespace(Process=Process)
+    child = (
+        92,
+        "python.exe",
+        r"C:\x\venv\Scripts\python.exe -m agent_reach.integrations.mcp_server",
+    )
+
+    code, data = _run_main_with_detector(
+        monkeypatch,
+        capsys,
+        [child],
+        psutil_module=psutil_module,
+    )
+
+    assert code == 0
+    assert data["blocked"] is True
+    assert [p["pid"] for p in data["processes"]] == [92]
     assert data["pausable_gateways"] == 0

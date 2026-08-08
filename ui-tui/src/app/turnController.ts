@@ -635,6 +635,20 @@ class TurnController {
       finalMessages.push({ role: 'assistant', text: finalText })
     }
 
+    // Fix #61520: When the gateway sends a separate `payload.text` at
+    // message.complete (the final answer only, not including streamed
+    // intermediate text), any unflushed streaming tail in `bufRef` would
+    // be silently dropped by the subsequent `idle()` call. Preserve it
+    // by appending to the transcript if the final answer is from
+    // `payload.text` rather than `bufRef` itself.
+    if (
+      (payload.text ?? payload.rendered) &&
+      this.bufRef.trimStart() &&
+      rawText === (payload.text ?? payload.rendered)
+    ) {
+      finalMessages.push({ role: 'assistant', text: this.bufRef.trimStart() })
+    }
+
     const wasInterrupted = this.interrupted
 
     // Archive the turn's spawn tree to history BEFORE idle() drops subagents

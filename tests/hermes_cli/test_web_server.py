@@ -5129,11 +5129,17 @@ class TestMiniAppAdminOnlyMutatingEndpoints:
         web_server._ACTION_PROCS.pop("hermes-update", None)
         web_server._ACTION_RESULTS.pop("hermes-update", None)
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "git")
+        monkeypatch.setattr(web_server.secrets, "token_hex", lambda _size: "c" * 32)
         monkeypatch.setattr(web_server, "_spawn_hermes_action", lambda *_a, **_kw: _Proc())
 
         resp = self.client.post("/api/hermes/update", headers=self.admin)
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "pid": 4343, "name": "hermes-update"}
+        assert resp.json() == {
+            "ok": True,
+            "pid": 4343,
+            "name": "hermes-update",
+            "action_id": "c" * 32,
+        }
 
     # ---- /api/miniapp/me ----
 

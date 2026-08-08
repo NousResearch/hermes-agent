@@ -54,6 +54,11 @@ class TurnRetryState:
     # so both can fire within one attempt if needed.
     copilot_stale_cred_retry_attempted: bool = False
     vertex_auth_retry_attempted: bool = False
+    # Generic api-key provider 401 — no refresh helper available, but
+    # still retry once before falling back.  Covers ``custom`` and any
+    # other chat_completions provider without its own credential-refresh
+    # path.  See issue #73237.
+    generic_auth_retry_attempted: bool = False
 
     # ── Format / payload recovery guards ─────────────────────────────────
     thinking_sig_retry_attempted: bool = False

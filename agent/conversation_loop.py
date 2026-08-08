@@ -4219,6 +4219,34 @@ def run_conversation(
                     print(f"{agent.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
                     print(f"{agent.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
 
+                # ── Generic api-key 401 retry ──────────────────────────────
+                # A 401 on a chat_completions custom/api-key provider that
+                # wasn't covered by any of the provider-specific refresh
+                # handlers above.  Retry once (without credential refresh —
+                # there is no refresh helper for a static key) before
+                # falling through to the auth-failure failover path.
+                # Even a 401 on a genuinely invalid key gets a single
+                # retry, which is what every provider with a refresh helper
+                # already gets: the refresh itself is not the retry.  See
+                # issue #73237 (chat_completions 401 on api-key provider
+                # falls back with no retry).
+                if (
+                    agent.api_mode == "chat_completions"
+                    and status_code == 401
+                    and not _retry.generic_auth_retry_attempted
+                ):
+                    _retry.generic_auth_retry_attempted = True
+                    # No refresh helper — just retry once with the same
+                    # credential.  A transient 401 (load balancer, auth
+                    # endpoint blip) gets a second chance; a permanent 401
+                    # falls through to the auth_failover path on the
+                    # second try.
+                    agent._buffer_vprint(
+                        "🔐 API key provider returned 401 — retrying once "
+                        "before fallback..."
+                    )
+                    continue
+
                 # Thinking block signature recovery.
                 #
                 # Anthropic signs thinking blocks against the full turn

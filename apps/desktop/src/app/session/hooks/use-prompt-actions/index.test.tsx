@@ -8,6 +8,7 @@ import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
   $busy,
@@ -322,6 +323,48 @@ function renderedSeedTexts(seeds: Record<string, unknown>[]): string[] {
     return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
   })
 }
+
+// The HUD floats over the app the user is really working in, so the gateway
+// turns this flag into a per-turn hint: read the window underneath and work in
+// it, rather than reaching for Hermes's own browser and panes.
+describe('usePromptActions HUD surface', () => {
+  afterEach(() => {
+    cleanup()
+    $hudMode.set(false)
+    vi.restoreAllMocks()
+  })
+
+  async function submitFrom(window: 'app' | 'hud') {
+    $hudMode.set(window === 'hud')
+
+    const submitted: (Record<string, unknown> | undefined)[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submitted.push(params)
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText("what's under you rn?")
+
+    return submitted[0]
+  }
+
+  it('tags a message typed into the HUD', async () => {
+    expect(await submitFrom('hud')).toMatchObject({ surface: 'hud' })
+  })
+
+  it('says nothing about the surface from the app window', async () => {
+    expect(await submitFrom('app')).not.toHaveProperty('surface')
+  })
+})
 
 describe('usePromptActions slash session targeting', () => {
   const STORED_SESSION_ID = 'stored-db-xyz789'

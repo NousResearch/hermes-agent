@@ -696,6 +696,56 @@ STEER_CHANNEL_NOTE += (
     "because it remains in the conversation history."
 )
 
+
+def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
+    """Per-turn note for a message typed into the desktop's floating HUD.
+
+    HUD mode is a strip of Hermes floating over another application, so the
+    user is rarely asking about Hermes — they are asking about the thing behind
+    it, and the work they want done usually belongs in that app rather than in
+    a surface of our own. Left to itself the model answers from its own
+    browser and panes, which is the wrong half of the screen.
+
+    It is a per-turn fact, not a platform — one desktop session can be driven
+    from the app window on one turn and the HUD on the next — so it rides the
+    model-bound message beside the reaction / speech-interrupted notes rather
+    than the system prompt, which has to stay byte-stable for a conversation's
+    whole life.
+
+    Each sentence is gated on the tool it names — naming a tool outside this
+    agent's schema invites a hallucinated call — and the note as a whole is
+    withheld without the one it rests on.
+    """
+    names = valid_tool_names or set()
+    if "read_window_below" not in names:
+        return ""
+
+    sentences = [
+        "[Note: this message came from HUD mode — a small floating Hermes "
+        "window sitting over whatever the user is actually working in, so an "
+        'unqualified "this" or "here" usually means the app behind the HUD '
+        "rather than anything inside Hermes. read_window_below identifies "
+        "that app."
+    ]
+    if "computer_use" in names:
+        sentences.append(
+            "Prefer carrying the work out in that same app — computer_use "
+            "takes its name in `app` — over pulling the task into a surface "
+            "of your own."
+        )
+        if "browser_navigate" in names:
+            sentences.append(
+                "When the app underneath is a browser, that means driving the "
+                "user's browser rather than opening yours with "
+                "browser_navigate."
+            )
+    sentences.append(
+        "This is a prior, not a rule: when the request names its own target, "
+        "follow the request.]"
+    )
+    return " ".join(sentences)
+
+
 # Model name substrings that should use the 'developer' role instead of
 # 'system' for the system prompt.  OpenAI's newer models (GPT-5, Codex)
 # give stronger instruction-following weight to the 'developer' role.

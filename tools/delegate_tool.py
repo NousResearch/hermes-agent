@@ -3747,16 +3747,24 @@ def delegate_task(
         if dispatch.get("status") == "dispatched":
             n = len(_goals)
             note = (
-                "Subagent is running in the background. You and the user can "
-                "keep working; its full result re-enters the conversation as a "
-                "new message when it finishes. Do not wait or poll — just "
-                "continue."
+                "The subagent is now running in the BACKGROUND. Its result is "
+                "NOT available to you yet — it re-enters the conversation as a "
+                "separate follow-up message when it finishes. You therefore have "
+                "NO result, output, or status for this task right now: do NOT "
+                "report, summarize, quote, or invent any outcome for it, and do "
+                "not claim it is done. Do not wait or poll. If you have other "
+                "independent work this turn, do it; otherwise tell the user "
+                "briefly that you've delegated it and END your turn. You will "
+                "report the real result only after its follow-up message arrives."
                 if n == 1 else
-                f"{n} subagents are running in parallel in the background. You "
-                f"and the user can keep working; they wait on each other and "
-                f"their consolidated results re-enter the conversation as a "
-                f"single message once ALL of them finish. Do not wait or poll "
-                f"— just continue."
+                f"{n} subagents are now running in parallel in the BACKGROUND. "
+                f"Their consolidated results are NOT available to you yet — they "
+                f"re-enter the conversation as a single follow-up message once "
+                f"ALL finish. You have NO results for these tasks right now: do "
+                f"NOT report, summarize, or invent any outcome, and do not claim "
+                f"they are done. Do not wait or poll. Do any other independent "
+                f"work this turn, or tell the user you've delegated it and END "
+                f"your turn. Report real results only after the follow-up arrives."
             )
             payload = {
                 "status": "dispatched",
@@ -4268,7 +4276,7 @@ DELEGATE_TASK_SCHEMA = {
                     "delegations run in the background automatically — you do "
                     "not need to (and cannot) opt in or out. A single result or "
                     "consolidated batch result re-enters the conversation when "
-                    "the work finishes; just continue working in the meantime. "
+                    "the work finishes; do not report or invent it before then. "
                     "Setting this has no effect; the parameter remains only for "
                     "backward compatibility."
                 ),

@@ -11371,6 +11371,25 @@ def main():
     _secrets_cli.register_cli(secrets_bw)
     _op_secrets_cli.register_cli(secrets_op)
 
+    secrets_prompt = secrets_subparsers.add_parser(
+        "prompt",
+        help="Securely prompt for and store an arbitrary secret",
+        description=(
+            "Prompt for a secret without echoing it, then store it in the "
+            "active Hermes profile. The value is never printed."
+        ),
+    )
+    secrets_prompt.add_argument(
+        "env_var",
+        help="Environment-variable name to store (for example PENPOT_MCP_TOKEN)",
+    )
+    secrets_prompt.add_argument(
+        "--prompt",
+        default="",
+        help="Masked prompt text shown to the user",
+    )
+    secrets_prompt.set_defaults(func=_secrets_cli.cmd_prompt)
+
     def _dispatch_secrets(args):  # noqa: ANN001
         sub = getattr(args, "secrets_command", None)
         bw_sub = getattr(args, "secrets_bw_command", None)
@@ -11378,6 +11397,8 @@ def main():
         if sub in ("bitwarden", "bw") and bw_sub is not None:
             return args.func(args)
         if sub in ("onepassword", "op", "1password") and op_sub is not None:
+            return args.func(args)
+        if sub == "prompt":
             return args.func(args)
         secrets_parser.print_help()
         return 0

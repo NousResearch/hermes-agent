@@ -437,6 +437,36 @@ def _(rid, params: dict) -> dict:
         name = resolved
     session = _sessions.get(params.get("session_id", ""))
 
+    if name == "secrets":
+        parts = arg.split(maxsplit=2)
+        if len(parts) < 2 or parts[0].lower() != "prompt":
+            return _err(rid, 4004, "usage: /secrets prompt <ENV_VAR> [prompt text]")
+        env_var = parts[1].strip()
+        prompt = parts[2].strip() if len(parts) == 3 else f"Enter the secret for {env_var}"
+        try:
+            from tools.skills_tool import capture_secret
+
+            result = capture_secret(
+                env_var,
+                prompt,
+                {"source": "desktop_secrets_command"},
+            )
+        except Exception as exc:
+            return _err(rid, 5018, f"secret prompt failed: {exc}")
+        if result.get("success") and not result.get("skipped"):
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": f"Stored {env_var} securely; value withheld.",
+                },
+            )
+        return _err(
+            rid,
+            4009,
+            str(result.get("message") or "Secret prompt was cancelled."),
+        )
+
     qcmds = _load_cfg().get("quick_commands", {})
     if name in qcmds:
         qc = qcmds[name]

@@ -247,6 +247,48 @@ def set_secret_capture_callback(callback) -> None:
     _secret_capture_callback = callback
 
 
+def capture_secret(
+    env_var: str,
+    prompt: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Capture one secret through the active interactive-surface callback."""
+    callback = _secret_capture_callback
+    if callback is None:
+        return {
+            "success": False,
+            "stored_as": env_var,
+            "validated": False,
+            "skipped": True,
+            "message": "No interactive secret-capture surface is available.",
+        }
+    result = callback(env_var, prompt, metadata or {})
+    if isinstance(result, dict):
+        return result
+    return {
+        "success": False,
+        "stored_as": env_var,
+        "validated": False,
+        "skipped": True,
+        "message": "Secret-capture callback returned an invalid result.",
+    }
+
+
+def request_secret(
+    env_var: str,
+    prompt: str,
+    task_id: str | None = None,
+) -> str:
+    """Request one credential through the active Desktop/TUI secret popup."""
+    metadata = {"source": "assistant_secret_request"}
+    if task_id:
+        metadata["task_id"] = task_id
+    return json.dumps(
+        capture_secret(env_var.strip(), prompt.strip(), metadata),
+        ensure_ascii=False,
+    )
+
+
 def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     """Check if a skill is compatible with the current OS platform.
 
@@ -1878,6 +1920,29 @@ SKILL_VIEW_SCHEMA = {
     },
 }
 
+REQUEST_SECRET_SCHEMA = {
+    "name": "request_secret",
+    "description": (
+        "Open the existing Hermes masked Desktop/TUI popup to collect one "
+        "credential and store it securely. Never ask the user to paste the "
+        "credential into chat. The returned result contains status only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "env_var": {
+                "type": "string",
+                "description": "Environment variable name to store the credential under.",
+            },
+            "prompt": {
+                "type": "string",
+                "description": "Masked prompt text shown to the user.",
+            },
+        },
+        "required": ["env_var", "prompt"],
+    },
+}
+
 registry.register(
     name="skills_list",
     toolset="skills",
@@ -1887,6 +1952,19 @@ registry.register(
     ),
     check_fn=check_skills_requirements,
     emoji="📚",
+)
+
+registry.register(
+    name="request_secret",
+    toolset="skills",
+    schema=REQUEST_SECRET_SCHEMA,
+    handler=lambda args, **kw: request_secret(
+        env_var=args.get("env_var", ""),
+        prompt=args.get("prompt", ""),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_skills_requirements,
+    emoji="🔐",
 )
 # ── skill_view repeat-view dedup ────────────────────────────────────────
 # Per-task cache of (skill name, file_path) -> (skill file mtime+size).

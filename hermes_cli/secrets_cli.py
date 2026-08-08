@@ -14,6 +14,7 @@ import argparse
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ from hermes_cli.config import (
     load_config,
     save_config,
     save_env_value,
+    save_env_value_secure,
 )
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -111,6 +113,40 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
         help="Re-download even if a managed copy already exists",
     )
     install.set_defaults(func=cmd_install)
+
+
+def cmd_prompt(args: argparse.Namespace) -> int:
+    """Collect and securely persist one arbitrary environment-variable secret."""
+    env_var = str(getattr(args, "env_var", "") or "").strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_var):
+        print("Invalid secret name: use a shell environment-variable name.", file=sys.stderr)
+        return 2
+
+    prompt = str(getattr(args, "prompt", "") or "").strip()
+    if not prompt:
+        prompt = f"Enter secret for {env_var}: "
+    elif not prompt.endswith((" ", ":")):
+        prompt += ": "
+
+    value = masked_secret_prompt(prompt)
+    if not value:
+        print("No value entered; nothing was stored.", file=sys.stderr)
+        return 1
+
+    try:
+        result = save_env_value_secure(env_var, value)
+    finally:
+        # Drop the local reference as soon as persistence has completed. Python
+        # cannot guarantee memory zeroisation, but keeping the lifetime narrow
+        # prevents accidental reuse and logging.
+        value = ""
+
+    if not isinstance(result, dict) or not result.get("success"):
+        print("Secret could not be stored.", file=sys.stderr)
+        return 1
+
+    print(f"Stored {env_var} securely in {get_env_path()}; value withheld.")
+    return 0
 
 
 # ---------------------------------------------------------------------------

@@ -130,3 +130,32 @@ def test_quick_command_exec_uses_utf8_replace():
         assert kwargs.get("errors") == "replace", (
             f"quick-command exec subprocess.run must set errors='replace' (got {kwargs.get('errors')!r})"
         )
+
+
+def test_secrets_prompt_dispatches_to_interactive_capture_callback():
+    """Desktop /secrets prompt uses the existing secret.request callback."""
+    handler = server._methods["command.dispatch"]
+    result = {
+        "success": True,
+        "stored_as": "PENPOT_MCP_TOKEN",
+        "validated": True,
+        "skipped": False,
+    }
+    with patch("tui_gateway.server._load_cfg", return_value={"quick_commands": {}}), \
+         patch("tools.skills_tool.capture_secret", return_value=result) as capture:
+        response = handler(
+            1,
+            {
+                "name": "secrets",
+                "arg": "prompt PENPOT_MCP_TOKEN Enter the fresh Penpot token",
+                "session_id": "",
+            },
+        )
+
+    assert response["result"]["type"] == "exec"
+    assert "PENPOT_MCP_TOKEN" in response["result"]["output"]
+    capture.assert_called_once_with(
+        "PENPOT_MCP_TOKEN",
+        "Enter the fresh Penpot token",
+        {"source": "desktop_secrets_command"},
+    )

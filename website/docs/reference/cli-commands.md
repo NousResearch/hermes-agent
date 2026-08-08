@@ -441,11 +441,41 @@ hermes send --list telegram         # filter by platform
 ## `hermes secrets`
 
 ```bash
+hermes secrets prompt <ENV_VAR>       # masked prompt; securely store one secret
 hermes secrets bitwarden <subcommand>
 hermes secrets bw <subcommand>          # short alias
 ```
 
-Pull API keys from an external secret manager at process startup instead of storing them in `~/.hermes/.env`. Currently supports **Bitwarden Secrets Manager**. See the full guide: [Bitwarden integration](../user-guide/secrets/bitwarden.md).
+`hermes secrets prompt <ENV_VAR>` securely prompts for one arbitrary credential
+without echoing or printing its value, then stores it in the active Hermes
+profile. Example:
+
+```bash
+hermes secrets prompt PENPOT_MCP_TOKEN \
+  --prompt "Enter the Penpot MCP token"
+```
+
+The value is never included in the command output. In the interactive
+Desktop/TUI, use the slash command below to route through the existing
+`secret.request` overlay instead of the terminal prompt:
+
+```text
+/secrets prompt PENPOT_MCP_TOKEN Enter the Penpot MCP token
+```
+
+The Desktop/TUI command stores through the same secure environment writer and
+falls back to no action when no interactive secret-capture surface is present.
+
+When Hermes itself needs a credential during an interactive Desktop/TUI
+session, it can call the `request_secret` Skills tool directly. This uses the
+same masked `secret.request` popup without requiring the user to type a slash
+command. The tool returns status metadata only; the credential value is never
+returned to the model.
+
+The remaining subcommands pull API keys from external secret managers at
+process startup instead of storing them in `~/.hermes/.env`. Currently they
+support **Bitwarden Secrets Manager** and **1Password**. See the full guide:
+[Secrets](../user-guide/secrets/index.md).
 
 `bitwarden` (alias `bw`) subcommands:
 

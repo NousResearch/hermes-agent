@@ -129,7 +129,15 @@ class SentenceChunker:
 # ---------------------------------------------------------------------------
 
 class StreamingTTSProvider(ABC):
-    """Yields raw int16, little-endian, mono PCM chunks at ``sample_rate``."""
+    """Yields raw int16, little-endian, mono PCM chunks at ``sample_rate``.
+
+    ``sample_rate`` is the provider's assumed default (24 kHz). A provider
+    ``stream()`` may *update* it — as an instance attribute — once the
+    endpoint's actual format is known (e.g. an OpenAI-compatible server
+    advertising ``X-Audio-Sample-Rate``). Consumers must therefore read
+    ``streamer.sample_rate`` **after** pulling the first chunk, never before
+    opening the stream.
+    """
 
     sample_rate: int = 24000
     channels: int = 1
@@ -261,9 +269,57 @@ def _openai_config_api_key() -> str:
     return openai_cfg.get("api_key") or ""
 
 
+def _sample_rate_from_headers(headers) -> Optional[int]:
+    """Extract the sample rate an OpenAI-compatible TTS endpoint advertises.
+
+    OpenAI's own API returns raw PCM at a fixed 24 kHz, but compatible
+    servers may return another rate — e.g. local FastAPI endpoints serving
+    Echo-TTS at 44.1 kHz — and advertise it via the ``X-Audio-Sample-Rate``
+    response header (the convention other consumers of such servers read).
+    A few endpoints instead encode it in ``Content-Type``
+    (``audio/pcm; rate=44100``). Returns the validated rate in Hz, or
+    ``None`` when the endpoint says nothing.
+
+    Header lookup is case-insensitive: response header objects from httpx /
+    the OpenAI SDK are case-insensitive mappings, but plain dicts (and some
+    proxies) are not.
+    """
+    if not headers:
+        return None
+    raw = None
+    try:
+        if hasattr(headers, "get"):
+            raw = headers.get("X-Audio-Sample-Rate") or headers.get("x-audio-sample-rate")
+    except Exception:  # pragma: no cover - defensive
+        raw = None
+    if raw is None:
+        # Fallback: ``audio/pcm; rate=44100`` / ``audio/L16;rate=44100`` …
+        try:
+            ctype = str(headers.get("Content-Type") or headers.get("content-type") or "")
+        except Exception:
+            ctype = ""
+        m = re.search(r"(?:^|[;\s])rate\s*=\s*(\d+)", ctype, flags=re.IGNORECASE)
+        if m:
+            raw = m.group(1)
+    if raw is None:
+        return None
+    try:
+        rate = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return rate if rate > 0 else None
+
+
 @register("openai")
 class OpenAIStreamer(StreamingTTSProvider):
-    """OpenAI speech with ``response_format=pcm`` (24 kHz mono int16)."""
+    """OpenAI speech with ``response_format=pcm``.
+
+    OpenAI's API returns 24 kHz mono int16. Compatible servers may return
+    another rate (advertised via the ``X-Audio-Sample-Rate`` response
+    header); that rate is honored by updating ``self.sample_rate`` before
+    the first chunk is yielded, so consumers that read the attribute after
+    pulling the first chunk open their output device at the right rate.
+    """
 
     sample_rate = 24000
 
@@ -290,6 +346,21 @@ class OpenAIStreamer(StreamingTTSProvider):
             input=text,
             response_format="pcm",
         ) as response:
+            # OpenAI-compatible endpoints may return PCM at a rate other than
+            # OpenAI's 24 kHz (e.g. local Echo-TTS servers at 44.1 kHz),
+            # advertised via the X-Audio-Sample-Rate response header. Honor it:
+            # this generator body runs on the first next(), i.e. before any
+            # audio is yielded, so updating the instance attribute here is
+            # enough for consumers that read it after the first chunk.
+            rate = _sample_rate_from_headers(getattr(response, "headers", None))
+            if rate is not None and rate != self.sample_rate:
+                logger.info(
+                    "OpenAI-compatible TTS endpoint reported sample rate %d Hz "
+                    "(assumed %d Hz); honoring the endpoint rate",
+                    rate,
+                    self.sample_rate,
+                )
+                self.sample_rate = rate
             yield from _capped(response.iter_bytes(), "OpenAI streaming TTS")
 
 

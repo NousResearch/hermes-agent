@@ -16,7 +16,7 @@ import time
 import pytest
 
 from gateway.platforms.base import AudioFormat, StreamingTTSHandle
-from gateway.streaming_tts_consumer import StreamingTTSConsumer
+from gateway.streaming_tts_consumer import StreamingTTSConsumer, _PcmResampler
 from tools.tts_streaming import SentenceChunker
 
 
@@ -673,3 +673,110 @@ class TestGatewayOuterFinalisationNoNameError:
         # This is trivially true with a holder, but was NOT true when
         # the consumer was a run_sync local.
         _ = holder[0]
+
+
+# ---------------------------------------------------------------------------
+# Endpoint-returned sample rate (#76466)
+# ---------------------------------------------------------------------------
+
+
+class _PcmRateShiftingStreamer(FakeStreamer):
+    """Fake OpenAI-compatible streamer that reports a new rate on first chunk.
+
+    Mirrors ``tools.tts_streaming.OpenAIStreamer``: the class-level assumption
+    is 24 kHz, and the instance attribute is updated when the first chunk is
+    pulled (the endpoint's ``X-Audio-Sample-Rate`` header arrives with the
+    response, i.e. on the first ``next()``).
+    """
+
+    def __init__(self, chunks=3, samples_per_chunk=4410, endpoint_rate=44100):
+        super().__init__(chunks_per_clause=chunks)
+        self.samples_per_chunk = samples_per_chunk
+        self.endpoint_rate = endpoint_rate
+
+    def stream(self, text: str):
+        self.sample_rate = self.endpoint_rate  # discovered on first next()
+        import numpy as np
+
+        for _ in range(self.chunks_per_clause):
+            yield np.zeros(self.samples_per_chunk, dtype=np.int16).tobytes()
+
+
+class TestPcmResampler:
+    """Linear-interpolation resampler keeps duration across chunk boundaries."""
+
+    def test_preserves_duration_44100_to_24000(self):
+        import numpy as np
+
+        resampler = _PcmResampler(44100, 24000)
+        src = (np.sin(np.arange(44100) * 2 * np.pi * 440 / 44100) * 1000).astype(np.int16)
+        raw = src.tobytes()
+        # Odd chunk size exercises the boundary state.
+        out = b""
+        for i in range(0, len(raw), 999):
+            out += resampler.process(raw[i:i + 999])
+        out += resampler.flush()
+
+        resampled = np.frombuffer(out, dtype=np.int16)
+        # 1.0 s of 44.1 kHz audio → ~1.0 s of 24 kHz audio (24000 samples).
+        assert abs(len(resampled) - 24000) <= 2
+
+    def test_chunked_and_whole_resample_agree(self):
+        import numpy as np
+
+        src = (np.arange(8000) * 13 % 60000 - 30000).astype(np.int16)
+        raw = src.tobytes()
+
+        def resample(chunk_size):
+            r = _PcmResampler(44100, 24000)
+            out = b""
+            for i in range(0, len(raw), chunk_size):
+                out += r.process(raw[i:i + chunk_size])
+            out += r.flush()
+            return np.frombuffer(out, dtype=np.int16)
+
+        whole = resample(len(raw))
+        tiniest = resample(2)  # one sample per call
+        assert len(whole) == len(tiniest)
+        assert np.allclose(whole, tiniest, atol=2)
+
+
+class TestConsumerResamplesToDeclaredFormat:
+    """When the endpoint rate differs from the adapter format, resample."""
+
+    def test_written_chunks_conform_to_declared_format(self):
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            streamer = _PcmRateShiftingStreamer(chunks=3, samples_per_chunk=4410)
+            consumer = _make_consumer(adapter, "chat1", loop, streamer)
+            # Declared format derives from the streamer's *assumed* rate at
+            # resolve time (24000), before the endpoint is contacted.
+            assert consumer._audio_format.sample_rate == 24000
+
+            consumer.start()
+            consumer.on_delta("A sentence with real PCM. ")
+            consumer.finish()
+            completed = await consumer.wait_complete(timeout=5.0)
+            assert completed is True
+
+            # 3 chunks × 4410 samples @ 44.1 kHz = 0.3 s of audio; delivered
+            # at the declared 24 kHz it must be ~7200 int16 samples.
+            total_bytes = sum(len(c) for c in adapter.written_chunks)
+            assert abs(total_bytes // 2 - 7200) <= 2
+
+        _run_test(run)
+
+    def test_same_rate_stream_passes_through_unchanged(self):
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            streamer = FakeStreamer(chunks_per_clause=2)
+            consumer = _make_consumer(adapter, "chat1", loop, streamer)
+
+            consumer.start()
+            consumer.on_delta("This is the first sentence. ")
+            consumer.finish()
+            completed = await consumer.wait_complete(timeout=5.0)
+            assert completed is True
+            assert adapter.written_chunks == [b"chunk-1-0", b"chunk-1-1"]
+
+        _run_test(run)

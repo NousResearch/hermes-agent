@@ -154,6 +154,106 @@ def test_openai_streamer_prefers_configured_api_key(monkeypatch):
     assert captured["client"]["api_key"] == "cfg-key"
 
 
+# ── Endpoint-returned sample rate (#76466) ───────────────────────────────
+
+
+def test_sample_rate_from_headers_parses_x_audio_sample_rate():
+    assert ts._sample_rate_from_headers({"X-Audio-Sample-Rate": "44100"}) == 44100
+    assert ts._sample_rate_from_headers({"x-audio-sample-rate": "22050"}) == 22050
+    assert ts._sample_rate_from_headers({}) is None
+    assert ts._sample_rate_from_headers(None) is None
+    assert ts._sample_rate_from_headers({"X-Audio-Sample-Rate": "not-a-number"}) is None
+    assert ts._sample_rate_from_headers({"X-Audio-Sample-Rate": "0"}) is None
+    assert ts._sample_rate_from_headers({"X-Audio-Sample-Rate": "-44100"}) is None
+    assert ts._sample_rate_from_headers({"X-Audio-Sample-Rate": " 44100 "}) == 44100
+
+
+def test_sample_rate_from_headers_falls_back_to_content_type():
+    assert ts._sample_rate_from_headers({"Content-Type": "audio/pcm; rate=44100"}) == 44100
+    assert ts._sample_rate_from_headers({"content-type": "audio/L16;rate=48000"}) == 48000
+    assert ts._sample_rate_from_headers({"Content-Type": "audio/mpeg"}) is None
+    # Explicit header wins over the Content-Type fallback.
+    assert ts._sample_rate_from_headers(
+        {"X-Audio-Sample-Rate": "44100", "Content-Type": "audio/pcm; rate=22050"}
+    ) == 44100
+
+
+def test_openai_streamer_honors_endpoint_sample_rate_header(monkeypatch):
+    captured = {}
+
+    class _Response:
+        headers = {"X-Audio-Sample-Rate": "44100"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self):
+            yield b"\x01\x00"
+
+    class _StreamingCreate:
+        @staticmethod
+        def create(**kwargs):
+            captured["kwargs"] = kwargs
+            return _Response()
+
+    class _OpenAI:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.audio = MagicMock()
+            self.audio.speech.with_streaming_response = _StreamingCreate()
+
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "env-key")
+    monkeypatch.setattr(ts, "get_env_value", lambda key, *args: None)
+    monkeypatch.setattr("openai.OpenAI", _OpenAI)
+
+    config = {"provider": "openai", "openai": {"api_key": "cfg-key"}}
+    streamer = ts.resolve_streaming_provider(config)
+    assert streamer is not None
+    assert streamer.sample_rate == 24000  # assumed default until the endpoint speaks
+
+    assert list(streamer.stream("Streaming test.")) == [b"\x01\x00"]
+
+    # The rate advertised by the endpoint is honored once the response
+    # headers are known — i.e. after the first chunk is pulled.
+    assert streamer.sample_rate == 44100
+
+
+def test_openai_streamer_keeps_default_when_endpoint_says_nothing(monkeypatch):
+    class _Response:
+        headers = {}  # no X-Audio-Sample-Rate, no Content-Type rate
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self):
+            yield b"\x01\x00"
+
+    class _StreamingCreate:
+        @staticmethod
+        def create(**kwargs):
+            return _Response()
+
+    class _OpenAI:
+        def __init__(self, **kwargs):
+            self.audio = MagicMock()
+            self.audio.speech.with_streaming_response = _StreamingCreate()
+
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "env-key")
+    monkeypatch.setattr(ts, "get_env_value", lambda key, *args: None)
+    monkeypatch.setattr("openai.OpenAI", _OpenAI)
+
+    config = {"provider": "openai", "openai": {"api_key": "cfg-key"}}
+    streamer = ts.resolve_streaming_provider(config)
+    assert list(streamer.stream("Streaming test.")) == [b"\x01\x00"]
+    assert streamer.sample_rate == 24000
+
+
 # ── Dispatch: chunked streamer path ──────────────────────────────────────
 
 

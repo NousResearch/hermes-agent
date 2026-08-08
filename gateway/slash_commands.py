@@ -1901,7 +1901,9 @@ class GatewaySlashCommandsMixin:
                                     event.source
                                 )
                                 await _sess_db.update_session_model(
-                                    _sess_entry.session_id, result.new_model
+                                    _sess_entry.session_id,
+                                    result.new_model,
+                                    provider=result.target_provider,
                                 )
                             except Exception as exc:
                                 logger.debug(
@@ -2211,7 +2213,9 @@ class GatewaySlashCommandsMixin:
                     if getattr(_sess_entry, "was_auto_reset", False):
                         _sess_entry.was_auto_reset = False
                     await _sess_db.update_session_model(
-                        _sess_entry.session_id, result.new_model
+                        _sess_entry.session_id,
+                        result.new_model,
+                        provider=result.target_provider,
                     )
                 except Exception as exc:
                     logger.debug(

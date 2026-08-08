@@ -3029,6 +3029,45 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     assert ov["model_override"]["provider"] == "custom:myendpoint"
 
 
+def test_stored_session_runtime_overrides_restores_persisted_provider():
+    """Resume must restore the provider persisted by a /model switch
+    (model_config.provider), and fall back to the last turn's
+    gateway_runtime.provider for legacy rows that only carry that (#79536).
+    """
+    # Top-level provider written by update_session_model is restored.
+    ov = server._stored_session_runtime_overrides(
+        {
+            "model": "deepseek/deepseek-r1",
+            "model_config": {"provider": "deepseek"},
+        }
+    )
+    assert ov["provider_override"] == "deepseek"
+    assert ov["model_override"]["provider"] == "deepseek"
+
+    # Legacy row: only gateway_runtime.provider is present — still restored.
+    ov = server._stored_session_runtime_overrides(
+        {
+            "model": "deepseek/deepseek-r1",
+            "model_config": {
+                "gateway_runtime": {
+                    "provider": "deepseek",
+                    "base_url": "https://api.deepseek.com/v1",
+                }
+            },
+        }
+    )
+    assert ov["provider_override"] == "deepseek"
+    assert ov["model_override"]["provider"] == "deepseek"
+
+    # Neither present: provider stays unset so resume falls back to the
+    # configured default rather than guessing.
+    ov = server._stored_session_runtime_overrides(
+        {"model": "deepseek/deepseek-r1", "model_config": {}}
+    )
+    assert "provider_override" not in ov
+    assert ov["model_override"]["provider"] is None
+
+
 def test_stored_session_runtime_overrides_restores_explicit_normal_tier():
     overrides = server._stored_session_runtime_overrides(
         {

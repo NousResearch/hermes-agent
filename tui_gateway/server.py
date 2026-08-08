@@ -3702,6 +3702,16 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     # Only restore an explicit provider; otherwise leave it unset so resume falls back to
     # the configured default, matching the working CLI path.
     explicit_provider = str(model_config.get("provider") or "").strip()
+    if not explicit_provider:
+        # Legacy rows predating provider persistence in update_session_model:
+        # the last turn's resolved route is captured under ``gateway_runtime``
+        # (see gateway/run.py _sync_session_model_from_agent) but older builds
+        # never wrote a top-level ``provider``. Restore it so resume does not
+        # recombine the persisted model with the config.yaml primary provider
+        # that does not serve it (#79536).
+        gateway_runtime = model_config.get("gateway_runtime")
+        if isinstance(gateway_runtime, dict):
+            explicit_provider = str(gateway_runtime.get("provider") or "").strip()
     billing_provider = str(
         model_config.get("billing_provider") or row.get("billing_provider") or ""
     ).strip()

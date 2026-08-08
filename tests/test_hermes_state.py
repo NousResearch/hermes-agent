@@ -334,6 +334,54 @@ class TestSessionLifecycle:
         assert "browser_model_lock" not in model_config
         assert model_config["_branched_from"] == "parent-session"
 
+    def test_update_session_model_persists_provider_in_model_config(self, db):
+        """A /model switch must persist the resolved provider alongside the model
+        so resume recombines the model with the provider that serves it, not the
+        config.yaml primary (#79536)."""
+        db.create_session(
+            session_id="s1",
+            source="hermes_browser",
+            model="x-ai/grok-4.5",
+            model_config={
+                "_branched_from": "parent-session",
+                "browser_model_lock": {
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "confirmed": True,
+                },
+            },
+        )
+
+        db.update_session_model(
+            "s1", "deepseek/deepseek-r1", provider="deepseek"
+        )
+
+        session = db.get_session("s1")
+        model_config = json.loads(session["model_config"])
+        assert session["model"] == "deepseek/deepseek-r1"
+        assert model_config["model"] == "deepseek/deepseek-r1"
+        assert model_config["provider"] == "deepseek"
+        assert "browser_model_lock" not in model_config
+        assert model_config["_branched_from"] == "parent-session"
+
+    def test_update_session_model_without_provider_leaves_provider_unset(self, db):
+        """Callers that do not know the provider (legacy fallback paths) must not
+        introduce a bare/empty provider into model_config."""
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            model="m1",
+            model_config={"_branched_from": "parent-session"},
+        )
+
+        db.update_session_model("s1", "m2")
+
+        session = db.get_session("s1")
+        model_config = json.loads(session["model_config"])
+        assert session["model"] == "m2"
+        assert "provider" not in model_config
+        assert model_config["_branched_from"] == "parent-session"
+
 
 
 

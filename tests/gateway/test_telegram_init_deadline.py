@@ -27,6 +27,7 @@ _ensure_telegram_mock()
 
 from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram import init_guards as tg_init_guards  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -105,11 +106,11 @@ async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
 
     dumps = []
     monkeypatch.setattr(
-        tg_adapter,
+        tg_init_guards,
         "_dump_loop_blocked_diagnostics",
         lambda timeout, grace: dumps.append((timeout, grace)),
     )
-    monkeypatch.setattr(tg_adapter, "_LOOP_BLOCKED_DUMP_GRACE", 0.15)
+    monkeypatch.setattr(tg_init_guards, "_LOOP_BLOCKED_DUMP_GRACE", 0.15)
 
     hung = _asyncio.get_running_loop().create_future()  # never completes
     task = _asyncio.ensure_future(

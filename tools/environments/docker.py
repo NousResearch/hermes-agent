@@ -18,8 +18,8 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from tools.environments.base import (
-    BaseEnvironment,
+from tools.environments.base import BaseEnvironment
+from tools.environments.execution_helpers import (
     EnvironmentConnectionError,
     _popen_bash,
 )

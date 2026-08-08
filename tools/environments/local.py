@@ -14,7 +14,8 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
-from tools.environments.base import BaseEnvironment, _pipe_stdin
+from tools.environments.base import BaseEnvironment
+from tools.environments.execution_helpers import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"

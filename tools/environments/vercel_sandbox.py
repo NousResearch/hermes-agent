@@ -23,8 +23,8 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import (
-    BaseEnvironment,
+from tools.environments.base import BaseEnvironment
+from tools.environments.execution_helpers import (
     _ThreadedProcessHandle,
     _load_json_store,
     _save_json_store,

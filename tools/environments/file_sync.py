@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Callable
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import _file_mtime_key
+from tools.environments.execution_helpers import _file_mtime_key
 
 logger = logging.getLogger(__name__)
 

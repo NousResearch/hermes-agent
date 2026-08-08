@@ -9,8 +9,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from tools.environments.base import (
-    BaseEnvironment,
+from tools.environments.base import BaseEnvironment
+from tools.environments.execution_helpers import (
     EnvironmentConnectionError,
     _popen_bash,
 )

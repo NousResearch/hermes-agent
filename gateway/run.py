@@ -13323,7 +13323,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if active_agents:
                 self._increment_restart_failure_counts(set(active_agents.keys()))
 
-            if self._restart_requested and self._restart_command_source is None:
+            # Signal-initiated shutdowns (container orchestrators, service
+            # managers, bare SIGTERM) also deserve a home-channel notice on
+            # the next boot: the shutdown itself is announced, but without
+            # the marker the comeback is silent. The marker only speaks if
+            # a next boot happens, so writing it on a final shutdown is
+            # harmless.
+            planned_restart = self._restart_requested and self._restart_command_source is None
+            external_stop = not self._restart_requested and getattr(
+                self, "_signal_initiated_shutdown", False
+            )
+            if planned_restart or external_stop:
                 try:
                     atomic_json_write(
                         _planned_restart_notification_path(),
@@ -13331,6 +13341,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "requested_at": time.time(),
                             "via_service": bool(self._restart_via_service),
                             "detached": bool(self._restart_detached),
+                            "reason": "restart" if planned_restart else "shutdown",
                         },
                         indent=None,
                     )

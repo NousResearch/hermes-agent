@@ -510,8 +510,14 @@ class BuzzAdapter(BasePlatformAdapter):
         except ImportError:
             self._lock_key = None  # status module not available (e.g. tests)
 
+        # Start the membership cursor before taking the joined-channel
+        # snapshot. A join racing with startup is then present either in the
+        # snapshot or in the membership subscription's inclusive overlap.
+        if self.transport in ("auto", "websocket"):
+            self._membership_since = int(time.time())
+
         # Map channel ids to names and pick the watch set.
-        code, out, err = await self._run_cli(["channels", "list"])
+        code, out, err = await self._run_cli(["channels", "list", "--member"])
         if code != 0:
             message = _cli_error_message(err, code)
             logger.error("Buzz: failed to list channels — %s", message)
@@ -743,7 +749,8 @@ class BuzzAdapter(BasePlatformAdapter):
             logger.info("Buzz: WebSocket transport unavailable (%s); falling back to polling", e)
             return False
         self._ws_ready = asyncio.Event()
-        self._membership_since = int(time.time())
+        if not self._membership_since:
+            self._membership_since = int(time.time())
         self._ws_task = asyncio.create_task(self._websocket_loop())
         try:
             await asyncio.wait_for(self._ws_ready.wait(), timeout=_WS_AUTH_TIMEOUT + 5)
@@ -823,10 +830,12 @@ class BuzzAdapter(BasePlatformAdapter):
         return subscriptions
 
     async def _handle_membership_event(self, websocket, subscriptions: Dict[str, Optional[str]], event: dict) -> None:
-        """A membership event p-tagged to us: rediscover conversations and
-        subscribe to any new ones (fresh DMs dispatch from their beginning)."""
-        self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
+        """Rediscover and subscribe after a membership event p-tagged to us."""
+        event_since = max(int(event.get("created_at") or 0), 0)
         before = set(self._channel_state)
+        if not await self._discover_joined_channels(since=event_since):
+            raise ConnectionError("Buzz joined-channel discovery failed")
+        self._membership_since = max(self._membership_since, event_since)
         await self._discover_dms(seed=False)
         for channel_id in self._channel_state:
             if channel_id in before:
@@ -944,6 +953,32 @@ class BuzzAdapter(BasePlatformAdapter):
             # so it bypasses the mention gate from the very first poll.
             self._maybe_latch_dm(channel_id, state, event)
         self._trim_seen(state)
+
+    async def _discover_joined_channels(self, *, since: int) -> bool:
+        """Watch newly joined channels when no explicit allowlist is set."""
+        if self.channels:
+            return True
+        code, out, err = await self._run_cli(["channels", "list", "--member"])
+        if code != 0:
+            logger.warning(
+                "Buzz: failed to rediscover joined channels — %s",
+                _cli_error_message(err, code),
+            )
+            return False
+        for channel in _parse_json_list(out):
+            channel_id = str(channel.get("channel_id") or "")
+            if not channel_id:
+                continue
+            self._channel_meta[channel_id] = channel
+            self._channel_names[channel_id] = str(channel.get("name") or channel_id)
+            if channel_id in self._channel_state:
+                continue
+            self._channel_state[channel_id] = {
+                "chat_type": "group",
+                "last_ts": max(int(since), 0),
+                "seen": OrderedDict(),
+            }
+        return True
 
     async def _discover_dms(self, *, seed: bool) -> None:
         """Watch DM conversations.  New ones found mid-run dispatch from their

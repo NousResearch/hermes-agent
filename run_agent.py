@@ -1856,8 +1856,9 @@ class AIAgent:
         that synthetic text leak into persisted transcripts or resumed session
         history. When an override is configured for the active turn, mutate the
         in-memory messages list in place so both persistence and returned
-        history stay clean.  A paired timestamp override preserves the platform
-        event time as message metadata, rather than embedding it in content.
+        history stay clean. Paired source metadata preserves platform event
+        identity/time on the canonical message rather than embedding either in
+        content; the common API-copy boundary strips it before provider calls.
         """
         idx = getattr(self, "_persist_user_message_idx", None)
         override = getattr(self, "_persist_user_message_override", None)
@@ -2044,8 +2045,9 @@ class AIAgent:
         # silently dropped it. Instead, resolve the override here and apply it
         # ONLY to the value written to the DB (see the write loop below); the
         # live dict is never mutated, so every caller (early persist, mid-loop
-        # flush, /resume, /branch) is protected uniformly. Timestamp override is
-        # metadata and is likewise applied only to the written row.
+        # flush, /resume, /branch) is protected uniformly. The timestamp may
+        # already exist on the canonical message; this override also guarantees
+        # the written row retains it when a call path supplies it separately.
         _ov_idx = getattr(self, "_persist_user_message_idx", None)
         _ov_content = getattr(self, "_persist_user_message_override", None)
         _ov_timestamp = getattr(self, "_persist_user_message_timestamp", None)
@@ -2056,9 +2058,10 @@ class AIAgent:
             # Positional flushing used to slice at
             # max(len(conversation_history), _last_flushed_db_idx). That
             # assumes the live `messages` list is the original history plus a
-            # new tail. repair_message_sequence can shrink/merge the history
-            # copy before the final flush, making len(conversation_history)
-            # larger than len(messages); the slice is then empty and delivered
+            # new tail. repair_message_sequence can shrink the history copy by
+            # merging assistant turns or dropping orphaned tools before the
+            # final flush, making len(conversation_history) larger than
+            # len(messages); the slice is then empty and delivered
             # assistant responses never reach state.db (#46053).
             #
             # Track persistence with an intrinsic per-message marker rather than
@@ -2245,6 +2248,11 @@ class AIAgent:
                     "reasoning_details": msg.get("reasoning_details"),
                     "codex_reasoning_items": msg.get("codex_reasoning_items"),
                     "codex_message_items": msg.get("codex_message_items"),
+                    "platform_message_id": (
+                        msg.get("platform_message_id")
+                        or msg.get("message_id")
+                        or msg.get("_source_message_id")
+                    ),
                     "timestamp": _row_timestamp,
                     "api_content": _row_api_content,
                     # Standalone reference handoffs are always hidden, even
@@ -7841,6 +7849,7 @@ class AIAgent:
         persist_user_display_kind: Optional[str] = None,
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        persist_user_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.aux_accounting import (
@@ -7934,6 +7943,7 @@ class AIAgent:
                     persist_user_timestamp=persist_user_timestamp,
                     persist_user_display_kind=persist_user_display_kind,
                     persist_user_display_metadata=persist_user_display_metadata,
+                    persist_user_message_id=persist_user_message_id,
                     moa_config=moa_config,
                 )
             terminal = result if isinstance(result, dict) else {}

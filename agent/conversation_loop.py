@@ -4682,6 +4682,7 @@ def run_conversation(
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                     FailoverReason.upstream_rate_limit,
+                    FailoverReason.upstream_provider_error,
                 }
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
@@ -4712,7 +4713,10 @@ def run_conversation(
                     # pool can't help when the *upstream* model (DeepSeek,
                     # etc.) is throttling OpenRouter, so always fall back to a
                     # different model regardless of pool state.
-                    _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
+                    _is_upstream = classified.reason in {
+                        FailoverReason.upstream_rate_limit,
+                        FailoverReason.upstream_provider_error,
+                    }
                     pool_may_recover = (
                         False if _is_upstream
                         else _ra()._pool_may_recover_from_rate_limit(

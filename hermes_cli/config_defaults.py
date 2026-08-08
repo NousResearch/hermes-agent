@@ -2332,6 +2332,11 @@ DEFAULT_CONFIG = {
         # raise these to keep more early failure evidence.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
+        # Optional worker-only service tier. Empty preserves existing behavior:
+        # each worker inherits its assignee profile's agent.service_tier. Set to
+        # "fast" or "normal" to override every dispatched worker without
+        # changing ordinary chat sessions.
+        "service_tier": "",
         # Profile assigned to the root/orchestration task after Triage
         # decomposition. When unset, falls back to the default profile (the
         # one `hermes` launches with no -p flag). This does not control the

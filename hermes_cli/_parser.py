@@ -161,6 +161,16 @@ def build_top_level_parser():
             "(or per-model under agent.reasoning_overrides)."
         ),
     )
+    _inherited_flag(
+        parser,
+        "--service-tier",
+        choices=("fast", "normal"),
+        default=None,
+        help=(
+            "Service tier for this invocation only: fast or normal. "
+            "Overrides agent.service_tier without changing config.yaml."
+        ),
+    )
     parser.add_argument(
         "-t",
         "--toolsets",
@@ -337,6 +347,16 @@ def build_top_level_parser():
             "Reasoning effort for this session: none, minimal, low, medium, "
             "high, xhigh, max, or ultra. Overrides agent.reasoning_effort for "
             "this run only (same levels as the /reasoning slash command)."
+        ),
+    )
+    _inherited_flag(
+        chat_parser,
+        "--service-tier",
+        choices=("fast", "normal"),
+        default=argparse.SUPPRESS,
+        help=(
+            "Service tier for this session: fast or normal. Overrides "
+            "agent.service_tier for this run only."
         ),
     )
     _inherited_flag(

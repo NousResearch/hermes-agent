@@ -231,7 +231,11 @@ def _maybe_migrate_legacy_gateway_run_state(
     if state_file.exists():
         return None
 
-    if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
+    # Match the rest of container_boot's truthy contract (GATEWAY_MULTIPLEX_PROFILES
+    # already uses is_truthy_value) so HERMES_GATEWAY_NO_SUPERVISE=on opts out.
+    from utils import is_truthy_value
+
+    if is_truthy_value(os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "")):
         return None
 
     argv = tuple(container_argv) if container_argv is not None else _read_container_argv()

@@ -38,6 +38,122 @@ def _neuter_agent_prewarm_timer(request, monkeypatch):
     yield
 
 
+def test_session_usage_includes_account_limits_before_agent(monkeypatch):
+    session = {"agent": None}
+    monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_session_usage_snapshot", lambda _session: {})
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"model": {"provider": "openai-codex", "base_url": ""}},
+    )
+
+    with patch("agent.account_usage.fetch_account_usage", return_value=object()) as fetch, \
+         patch(
+             "agent.account_usage.render_account_usage_lines",
+             return_value=["📈 Account limits", "Provider: openai-codex (Plus)"],
+         ):
+        response = server._methods["session.usage"]("rid", {})
+
+    assert response["result"]["account_lines"] == [
+        "📈 Account limits",
+        "Provider: openai-codex (Plus)",
+    ]
+    fetch.assert_called_once_with("openai-codex", base_url="", api_key=None)
+
+
+def test_session_usage_resolves_auto_provider_in_session_scope(monkeypatch, tmp_path):
+    sid = "usage-profile"
+    session = {
+        "agent": None,
+        "profile_home": str(tmp_path),
+        "model_override": None,
+        "_metadata_mirror": {"provider": "auto", "model": "gpt-5.6-luna"},
+    }
+    server._sessions[sid] = session
+    monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_session_usage_snapshot", lambda _session: {})
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"model": {"provider": "auto", "default": "gpt-5.6-luna"}},
+    )
+    home_token = object()
+    secret_token = object()
+    try:
+        with patch.object(server, "set_hermes_home_override", return_value=home_token) as set_home, \
+            patch.object(server, "reset_hermes_home_override") as reset_home, \
+            patch.object(server, "build_profile_secret_scope", return_value={}) as build_scope, \
+            patch.object(server, "set_secret_scope", return_value=secret_token) as set_scope, \
+            patch.object(server, "reset_secret_scope") as reset_scope, \
+            patch(
+                "agent.account_usage.resolve_account_usage_target",
+                return_value=("openai-codex", "https://chatgpt.com/backend-api/codex", None),
+            ) as resolve, \
+            patch("agent.account_usage.fetch_account_usage", return_value=object()) as fetch, \
+            patch(
+                "agent.account_usage.render_account_usage_lines",
+                return_value=["📈 Account limits"],
+            ):
+            response = server._methods["session.usage"]("rid", {"session_id": sid})
+
+        assert response["result"]["account_lines"] == ["📈 Account limits"]
+        set_home.assert_called_once_with(tmp_path)
+        build_scope.assert_called_once_with(tmp_path)
+        set_scope.assert_called_once_with({})
+        reset_scope.assert_called_once_with(secret_token)
+        reset_home.assert_called_once_with(home_token)
+        resolve.assert_called_once_with(
+            "auto",
+            model="gpt-5.6-luna",
+            base_url=None,
+            api_key=None,
+        )
+        fetch.assert_called_once_with(
+            "openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key=None,
+        )
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_session_usage_rejects_missing_profile_home(monkeypatch, tmp_path):
+    sid = "usage-missing-profile"
+    session = {"agent": None, "profile_home": str(tmp_path / "deleted-profile")}
+    server._sessions[sid] = session
+    try:
+        response = server._methods["session.usage"]("rid", {"session_id": sid})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert response["error"]["code"] == 5031
+    assert response["error"]["message"] == "profile context unavailable"
+
+
+def test_session_usage_rejects_secret_scope_failure(monkeypatch, tmp_path):
+    sid = "usage-secret-scope-failure"
+    session = {"agent": None, "profile_home": str(tmp_path)}
+    server._sessions[sid] = session
+    home_token = object()
+    try:
+        with patch.object(server, "set_hermes_home_override", return_value=home_token) as set_home, \
+            patch.object(server, "reset_hermes_home_override") as reset_home, \
+            patch.object(
+                server,
+                "build_profile_secret_scope",
+                side_effect=RuntimeError("scope unavailable"),
+            ):
+            response = server._methods["session.usage"]("rid", {"session_id": sid})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert response["error"]["code"] == 5031
+    assert response["error"]["message"] == "profile context unavailable"
+    set_home.assert_called_once_with(tmp_path)
+    reset_home.assert_called_once_with(home_token)
+
+
 def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -7894,6 +8010,57 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
             assert "(._.)" not in resp["result"]["output"]
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_slash_exec_usage_includes_account_and_credit_lines(monkeypatch):
+    server._sessions["sid"] = _session(
+        agent=None,
+        _metadata_mirror={
+            "model": "gpt-5.6-luna",
+            "usage": {
+                "input": 10,
+                "output": 5,
+                "prompt": 10,
+                "completion": 5,
+                "total": 15,
+                "calls": 1,
+                "compressions": 0,
+            },
+        },
+        _metadata_message_count=1,
+    )
+    monkeypatch.setitem(
+        server._methods,
+        "session.usage",
+        lambda rid, params: {
+            "id": rid,
+            "result": {
+                "credits_lines": ["Nous credits: $10 remaining"],
+                "account_lines": [
+                    "📈 Codex account limits",
+                    "5h window: 90% remaining",
+                ],
+            },
+        },
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"command": "usage", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert isinstance(resp, dict) and "result" in resp
+    output = resp["result"]["output"]
+    assert "Session Token Usage" in output
+    assert "Nous credits: $10 remaining" in output
+    assert "Account limits" in output
+    assert "5h window: 90% remaining" in output
 
 
 def test_prompt_submit_sets_approval_session_key(monkeypatch):

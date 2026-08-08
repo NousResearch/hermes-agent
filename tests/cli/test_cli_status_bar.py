@@ -196,6 +196,125 @@ class TestCLIStatusBar:
 
 
 class TestCLIUsageReport:
+    def test_show_usage_fetches_account_limits_before_first_api_call(self, capsys):
+        cli_obj = _make_cli(model="gpt-5.6-luna")
+        cli_obj.provider = "openai-codex"
+        cli_obj.base_url = "https://chatgpt.com/backend-api/codex"
+        generic_key = "unrelated-openrouter-key"
+        cli_obj.api_key = generic_key
+
+        with patch("agent.account_usage.fetch_account_usage", return_value=object()) as fetch, \
+             patch(
+                 "agent.account_usage.render_account_usage_lines",
+                 return_value=[
+                     "📈 Account limits",
+                     "Provider: openai-codex (Plus)",
+                 ],
+             ), \
+             patch.object(cli_obj, "_print_nous_credits_block", return_value=False):
+            cli_obj._show_usage()
+
+        output = capsys.readouterr().out
+        fetch.assert_called_once_with(
+            "openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key=None,
+        )
+        assert "📈 Account limits" in output
+        assert "Provider: openai-codex (Plus)" in output
+        assert "No active agent" in output
+
+    def test_show_usage_fetches_account_limits_with_zero_api_calls(self, capsys):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.6-luna"),
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            api_calls=0,
+            context_tokens=0,
+            context_length=200_000,
+        )
+        cli_obj.agent.provider = "openai-codex"
+        cli_obj.agent.base_url = "https://chatgpt.com/backend-api/codex"
+        codex_credential = "codex-test-credential"
+        cli_obj.agent.api_key = codex_credential
+
+        with patch("agent.account_usage.fetch_account_usage", return_value=object()) as fetch, \
+             patch(
+                 "agent.account_usage.render_account_usage_lines",
+                 return_value=["📈 Account limits"],
+             ), \
+             patch.object(cli_obj, "_print_nous_credits_block", return_value=False):
+            cli_obj._show_usage()
+
+        output = capsys.readouterr().out
+        fetch.assert_called_once_with(
+            "openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key=codex_credential,
+        )
+        assert "📈 Account limits" in output
+        assert "No API calls made yet" in output
+
+    def test_show_usage_resolves_deferred_auto_provider(self):
+        cli_obj = _make_cli(model="gpt-5.6-luna")
+        cli_obj.provider = "auto"
+        cli_obj.base_url = ""
+        generic_key = "generic-openrouter-key"
+        cli_obj.api_key = generic_key
+
+        with patch(
+            "agent.account_usage.resolve_account_usage_target",
+            return_value=("openai-codex", "https://chatgpt.com/backend-api/codex", None),
+        ) as resolve, \
+            patch("agent.account_usage.fetch_account_usage", return_value=None) as fetch, \
+            patch("agent.account_usage.render_account_usage_lines", return_value=[]), \
+            patch.object(cli_obj, "_print_nous_credits_block", return_value=False):
+            cli_obj._show_usage()
+
+        resolve.assert_called_once_with(
+            "auto",
+            model="gpt-5.6-luna",
+            base_url="",
+            api_key=None,
+        )
+        fetch.assert_called_once_with(
+            "openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key=None,
+        )
+
+    def test_show_usage_timeout_does_not_wait_for_worker(self, monkeypatch, capsys):
+        class _TimedOutFuture:
+            def result(self, timeout):
+                raise cli_mod.concurrent.futures.TimeoutError()
+
+        class _Executor:
+            def __init__(self):
+                self.shutdown_args = None
+
+            def submit(self, *args, **kwargs):
+                return _TimedOutFuture()
+
+            def shutdown(self, *, wait, cancel_futures):
+                self.shutdown_args = (wait, cancel_futures)
+
+        executor = _Executor()
+        monkeypatch.setattr(
+            "tools.daemon_pool.DaemonThreadPoolExecutor",
+            lambda max_workers: executor,
+        )
+        cli_obj = _make_cli(model="gpt-5.6-luna")
+        cli_obj.provider = "openai-codex"
+        cli_obj.base_url = "https://chatgpt.com/backend-api/codex"
+
+        with patch("agent.account_usage.render_account_usage_lines", return_value=[]), \
+            patch.object(cli_obj, "_print_nous_credits_block", return_value=False):
+            cli_obj._show_usage()
+
+        assert executor.shutdown_args == (False, True)
+        assert "No active agent" in capsys.readouterr().out
+
     def test_show_usage_omits_cost_reporting(self, capsys):
         cli_obj = _attach_agent(
             _make_cli(),

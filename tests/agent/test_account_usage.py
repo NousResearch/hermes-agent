@@ -50,6 +50,41 @@ def codex_usage_payload():
     }
 
 
+def test_account_usage_target_resolves_auto_for_target_model(monkeypatch):
+    captured = {}
+    generic_key = "generic-openrouter-key"
+    runtime_key = "test"
+
+    def fake_resolve_runtime_provider(**kwargs):
+        captured.update(kwargs)
+        return {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": runtime_key,
+        }
+
+    import hermes_cli.runtime_provider as runtime_provider
+
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", fake_resolve_runtime_provider)
+
+    target = account_usage.resolve_account_usage_target(
+        "auto",
+        model="gpt-5.6-luna",
+        api_key=generic_key,
+    )
+
+    assert target == (
+        "openai-codex",
+        "https://chatgpt.com/backend-api/codex",
+        runtime_key,
+    )
+    assert captured == {
+        "requested": "auto",
+        "explicit_base_url": None,
+        "explicit_api_key": None,
+        "target_model": "gpt-5.6-luna",
+    }
+
 def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_usage_payload):
     calls = []
     monkeypatch.setattr(

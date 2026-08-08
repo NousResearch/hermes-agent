@@ -881,6 +881,43 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def resolve_account_usage_target(
+    provider: Optional[str],
+    *,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Resolve an account-usage target when runtime provider selection is deferred.
+
+    ``auto`` is a routing request, not an account-usage provider. Resolve it through
+    the same runtime provider resolver used by the agent, including the target model
+    and profile-scoped config. Never force a caller-supplied generic key through an
+    auto request: the resolver must choose the matching native credential itself.
+    """
+    normalized = str(provider or "").strip().lower()
+    if normalized not in {"", "auto", "custom"}:
+        return normalized, base_url, api_key
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(
+            requested=normalized or None,
+            explicit_base_url=base_url or None,
+            explicit_api_key=api_key if normalized == "custom" else None,
+            target_model=model or None,
+        )
+    except Exception:
+        return normalized or None, base_url, api_key
+
+    resolved_provider = str(runtime.get("provider") or "").strip().lower()
+    if resolved_provider in {"", "auto", "custom"}:
+        return normalized or None, base_url, api_key
+    resolved_base_url = str(runtime.get("base_url") or base_url or "").strip() or None
+    resolved_api_key = runtime.get("api_key") or (api_key if normalized == "custom" else None)
+    return resolved_provider, resolved_base_url, resolved_api_key
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,

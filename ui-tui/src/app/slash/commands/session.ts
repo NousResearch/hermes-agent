@@ -643,97 +643,106 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'session usage + Nous credits',
+    help: 'session usage + Nous credits + account limits',
     name: 'usage',
     run: (_arg, ctx) => {
-      ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
-        if (ctx.stale()) {
-          return
-        }
+      ctx.gateway
+        .rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid })
+        .then(r => {
+          if (ctx.stale()) {
+            return
+          }
 
-        const sys = ctx.transcript.sys
+          const sys = ctx.transcript.sys
 
-        if (r) {
-          patchUiState({
-            usage: { calls: r.calls ?? 0, input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0 }
-          })
-        }
-
-        // Nous balance block is agent-independent (a portal fetch), so it shows
-        // even with zero API calls or on a resumed session. Prefer the shared
-        // dollar usage model (two-bar view, dollars-only); fall back to the
-        // legacy text lines only when the model is unavailable.
-        const usageModel = r?.usage
-        const barLines = usageBarsText(usageModel)
-        let showedBalance = false
-
-        if (usageModel?.available && (barLines.length || usageModel.status === 'free')) {
-          const sections: PanelSection[] = []
-          const plan = usageModel.plan_name ?? (usageModel.status === 'free' ? 'Free' : null)
-
-          if (plan) {
-            sections.push({
-              text: `Plan: ${plan}${usageModel.renews_display ? ` · renews ${usageModel.renews_display}` : ''}`
+          if (r) {
+            patchUiState({
+              usage: { calls: r.calls ?? 0, input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0 }
             })
           }
 
-          if (barLines.length) {
-            sections.push({ text: barLines.join('\n') })
+          // Nous balance block is agent-independent (a portal fetch), so it shows
+          // even with zero API calls or on a resumed session. Prefer the shared
+          // dollar usage model (two-bar view, dollars-only); fall back to the
+          // legacy text lines only when the model is unavailable.
+          const usageModel = r?.usage
+          const barLines = usageBarsText(usageModel)
+          let showedBalance = false
+
+          if (usageModel?.available && (barLines.length || usageModel.status === 'free')) {
+            const sections: PanelSection[] = []
+            const plan = usageModel.plan_name ?? (usageModel.status === 'free' ? 'Free' : null)
+
+            if (plan) {
+              sections.push({
+                text: `Plan: ${plan}${usageModel.renews_display ? ` · renews ${usageModel.renews_display}` : ''}`
+              })
+            }
+
+            if (barLines.length) {
+              sections.push({ text: barLines.join('\n') })
+            }
+
+            if (usageModel.status === 'free') {
+              sections.push({ text: '> Free · free models only. Run /subscription to reach paid models.' })
+            } else if (usageModel.status === 'low') {
+              sections.push({
+                text: `! Low balance · ${usageModel.total_spendable_display ?? 'under $5'} left. Run /topup or /subscription.`
+              })
+            }
+
+            ctx.transcript.panel('Balance', sections)
+            showedBalance = true
+          } else {
+            const creditsLines = r?.credits_lines ?? []
+
+            if (creditsLines.length) {
+              ctx.transcript.panel('Nous balance', [{ text: creditsLines.join('\n') }])
+              showedBalance = true
+            }
           }
 
-          if (usageModel.status === 'free') {
-            sections.push({ text: '> Free · free models only. Run /subscription to reach paid models.' })
-          } else if (usageModel.status === 'low') {
-            sections.push({
-              text: `! Low balance · ${usageModel.total_spendable_display ?? 'under $5'} left. Run /topup or /subscription.`
-            })
-          }
-
-          ctx.transcript.panel('Balance', sections)
-          showedBalance = true
-        } else {
-          const creditsLines = r?.credits_lines ?? []
-
-          if (creditsLines.length) {
-            ctx.transcript.panel('Nous balance', [{ text: creditsLines.join('\n') }])
+          const accountLines = r?.account_lines ?? []
+          if (accountLines.length) {
+            ctx.transcript.panel('Account limits', [{ text: accountLines.join('\n') }])
             showedBalance = true
           }
-        }
 
-        if (!r?.calls) {
-          if (!showedBalance) {
-            sys('no API calls yet')
+          if (!r?.calls) {
+            if (!showedBalance) {
+              sys('no API calls yet')
+            }
+
+            sys(USAGE_CTA)
+
+            return
           }
 
+          const f = (v: number | undefined) => (v ?? 0).toLocaleString()
+
+          const rows: [string, string][] = [
+            ['Model', r.model ?? ''],
+            ['Input tokens', f(r.input)],
+            ['Output tokens', f(r.output)],
+            ['Total tokens', f(r.total)],
+            ['API calls', f(r.calls)]
+          ]
+
+          const sections: PanelSection[] = [{ rows }]
+
+          if (r.context_max) {
+            sections.push({ text: `Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)` })
+          }
+
+          if (r.compressions) {
+            sections.push({ text: `Compressions: ${r.compressions}` })
+          }
+
+          ctx.transcript.panel('Usage', sections)
+
           sys(USAGE_CTA)
-
-          return
-        }
-
-        const f = (v: number | undefined) => (v ?? 0).toLocaleString()
-
-        const rows: [string, string][] = [
-          ['Model', r.model ?? ''],
-          ['Input tokens', f(r.input)],
-          ['Output tokens', f(r.output)],
-          ['Total tokens', f(r.total)],
-          ['API calls', f(r.calls)]
-        ]
-
-        const sections: PanelSection[] = [{ rows }]
-
-        if (r.context_max) {
-          sections.push({ text: `Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)` })
-        }
-
-        if (r.compressions) {
-          sections.push({ text: `Compressions: ${r.compressions}` })
-        }
-
-        ctx.transcript.panel('Usage', sections)
-
-        sys(USAGE_CTA)
-      })
+        })
+        .catch(ctx.guardedErr)
     }
   }
 ]

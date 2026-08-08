@@ -11376,24 +11376,79 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print()
 
     def _show_usage(self):
-        """Rate limits + session token usage (when a live agent exists) + Nous credits.
+        """Account limits + rate limits + session token usage + Nous credits.
 
-        The Nous credits block is agent-independent (a portal fetch), so it runs even
-        with no live agent — important for the TUI, where /usage runs in a slash-worker
-        subprocess that resumes the session WITHOUT building an agent (self.agent is None),
-        which would otherwise early-return before any credits showed.
+        The account and Nous blocks are agent-independent, so they run even with no
+        live agent — important for a fresh `/usage` invocation before the first API
+        call. Codex credentials are resolved natively when the agent is not built.
         """
-        if not self.agent:
+        agent = self.agent
+        provider = getattr(agent, "provider", None) if agent else None
+        provider = provider or getattr(self, "provider", None)
+        base_url = getattr(agent, "base_url", None) if agent else None
+        base_url = base_url or getattr(self, "base_url", None)
+        api_key = getattr(agent, "api_key", None) if agent else None
+        # A pre-agent CLI may still carry a generic OPENROUTER_API_KEY in
+        # self.api_key. Never send that as a Codex bearer token, or force it
+        # through deferred `auto` routing; native runtime resolution owns both.
+        if (
+            not api_key
+            and str(provider or "").strip().lower() not in {"openai-codex", "auto", ""}
+        ):
+            api_key = getattr(self, "api_key", None)
+
+        from agent.account_usage import (
+            fetch_account_usage,
+            render_account_usage_lines,
+            resolve_account_usage_target,
+        )
+        provider, base_url, api_key = resolve_account_usage_target(
+            provider,
+            model=(getattr(agent, "model", None) if agent else None) or self.model,
+            base_url=base_url,
+            api_key=api_key,
+        )
+        # Account limits are independent of session token counters. Fetch them
+        # before the no-agent/no-call early returns so `/usage` works immediately
+        # after startup, matching the gateway and TUI surfaces.
+        account_snapshot = None
+        if provider:
+            from tools.daemon_pool import DaemonThreadPoolExecutor
+
+            _pool = DaemonThreadPoolExecutor(max_workers=1)
+            try:
+                account_snapshot = _pool.submit(
+                    fetch_account_usage, provider,
+                    base_url=base_url, api_key=api_key,
+                ).result(timeout=10.0)
+            except Exception:
+                account_snapshot = None
+            finally:
+                # Do not wait for a stuck auth refresh/HTTP request after the
+                # user-visible timeout. The worker is allowed to finish in the
+                # background, while `/usage` returns the rest of its report.
+                _pool.shutdown(wait=False, cancel_futures=True)
+        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
+
+        def _print_account_block() -> None:
+            if not account_lines:
+                return
+            print()
+            for line in account_lines:
+                print(line)
+
+        if not agent:
+            _print_account_block()
             if self._print_nous_credits_block():
                 self._print_usage_cta()
             else:
                 print("(._.) No active agent -- send a message first.")
             return
 
-        agent = self.agent
         calls = agent.session_api_calls
 
         if calls == 0:
+            _print_account_block()
             if self._print_nous_credits_block():
                 self._print_usage_cta()
             else:
@@ -11442,28 +11497,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
 
-        # Account limits -- fetched off-thread with a hard timeout so slow
-        # provider APIs don't hang the prompt.
-        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
-        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
-        api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
-        # Lazy import — pulls the OpenAI SDK chain, only needed here.
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
-        if provider:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-                try:
-                    account_snapshot = _pool.submit(
-                        fetch_account_usage, provider,
-                        base_url=base_url, api_key=api_key,
-                    ).result(timeout=10.0)
-                except (concurrent.futures.TimeoutError, Exception):
-                    account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
-        if account_lines:
-            print()
-            for line in account_lines:
-                print(line)
+        # Account limits were fetched before the no-agent/no-call early returns
+        # above, so the same block is also available after a live session turn.
+        _print_account_block()
 
         # Nous credits magnitudes + monthly-grant gauge (agent-independent — also
         # runs at the no-agent / no-calls early-returns above). See the helper.

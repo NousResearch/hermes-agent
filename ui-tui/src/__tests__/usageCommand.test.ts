@@ -33,7 +33,8 @@ const buildCtx = (results: Record<string, unknown>) => {
 
   const run = async (arg: string) => {
     usageCommand.run(arg, ctx as any, 'usage')
-    await rpc.mock.results[0]?.value
+    const pending = rpc.mock.results[0]?.value as Promise<unknown> | undefined
+    await pending?.catch(() => undefined)
     await Promise.resolve()
     await Promise.resolve()
   }
@@ -110,6 +111,25 @@ describe('/usage slash command', () => {
     expect(body.toLowerCase()).not.toContain('credits')
   })
 
+  it('shows Codex account limits even before the first API call', async () => {
+    const { panel, run, sys } = buildCtx({
+      'session.usage': baseUsage({ account_lines: ['📈 Account limits', 'Provider: openai-codex (Plus)'] })
+    })
+
+    await run('')
+
+    const sections = panel.mock.calls.find(c => c[0] === 'Account limits')?.[1] as { text?: string }[] | undefined
+    expect((sections ?? []).map(s => s.text ?? '').join('\n')).toContain('Provider: openai-codex (Plus)')
+    expect(printed(sys)).not.toContain('no API calls yet')
+  })
+  it('guards session usage RPC errors', async () => {
+    const failure = new Error('profile context unavailable')
+    const { ctx, run } = buildCtx({ 'session.usage': Promise.reject(failure) })
+
+    await run('')
+
+    expect(ctx.guardedErr).toHaveBeenCalledWith(failure)
+  })
   it('shows the free-models upsell for a free account', async () => {
     const { panel, run } = buildCtx({
       'session.usage': baseUsage({ usage: { available: true, status: 'free', plan_name: null } })

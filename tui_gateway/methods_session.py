@@ -1324,6 +1324,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("session.usage")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
@@ -1344,6 +1345,71 @@ def _(rid, params: dict) -> dict:
             usage["credits_lines"] = credits
     except Exception:
         pass
+
+    # Codex/account limits are also agent-independent. Resolve the configured
+    # provider when the session has not built an agent yet, so `/usage` works
+    # immediately after startup instead of returning only the Nous block.
+    try:
+        from agent.account_usage import (
+            fetch_account_usage,
+            render_account_usage_lines,
+            resolve_account_usage_target,
+        )
+
+        provider = getattr(agent, "provider", None) if agent else None
+        base_url = getattr(agent, "base_url", None) if agent else None
+        api_key = getattr(agent, "api_key", None) if agent else None
+        model = getattr(agent, "model", None) if agent else None
+        metadata = _metadata_mirror(session)
+        model = model or metadata.get("model")
+        provider = provider or metadata.get("provider")
+        base_url = base_url or metadata.get("base_url")
+        model_override = session.get("model_override")
+        resume_overrides = session.get("resume_runtime_overrides")
+        if not isinstance(model_override, dict) and isinstance(resume_overrides, dict):
+            model_override = resume_overrides.get("model_override")
+        if isinstance(model_override, dict):
+            model = model or model_override.get("model")
+            provider = provider or model_override.get("provider")
+            base_url = base_url or model_override.get("base_url")
+        if not provider and isinstance(resume_overrides, dict):
+            provider = resume_overrides.get("provider_override")
+
+        cfg = _load_cfg()
+        model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+        if isinstance(model_cfg, dict):
+            model = model or model_cfg.get("default") or model_cfg.get("model")
+            provider = provider or model_cfg.get("provider")
+            base_url = base_url or model_cfg.get("base_url")
+        provider = provider or (cfg.get("provider") if isinstance(cfg, dict) else None)
+        if not model:
+            try:
+                model = _resolve_model()
+            except Exception:
+                model = None
+
+        # Do not pass a generic pre-agent key as a Codex bearer token. The
+        # account-usage resolver will select the native OAuth/pool credential.
+        if not agent and str(provider or "").strip().lower() in {"openai-codex", "auto", ""}:
+            api_key = None
+        provider, base_url, api_key = resolve_account_usage_target(
+            provider,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+        )
+        if provider:
+            account_snapshot = fetch_account_usage(
+                provider,
+                base_url=base_url,
+                api_key=api_key,
+            )
+            account_lines = render_account_usage_lines(account_snapshot)
+            if account_lines:
+                usage["account_lines"] = account_lines
+    except Exception:
+        pass
+
     return _ok(rid, usage)
 
 

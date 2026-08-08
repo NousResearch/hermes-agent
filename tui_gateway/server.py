@@ -1438,24 +1438,47 @@ def _profile_home(profile: str | None) -> Path | None:
 
 
 def _profile_scoped(handler):
-    """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
+    """Bind a profile's home and secret scope around a profile-sensitive RPC.
 
-    Pets are per-profile: ``display.pet.*`` lives in the profile's config.yaml and
-    sprites install under its ``pets/`` dir (both resolve via ``get_hermes_home``).
-    The desktop sends ``profile`` on pet calls so config + pets dir resolve to the
-    focused profile even in app-global remote mode, where one backend serves every
-    profile. No-op for the launch profile (own-profile backends already resolve it).
+    App-global clients usually send ``params['profile']``. Session-bound calls
+    such as ``session.usage`` may only send ``session_id``, so fall back to the
+    stored session profile instead of resolving credentials from the launch
+    profile. This keeps account/usage data isolated across profiles.
     """
 
     def wrapper(rid, params):
-        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+        params = params if isinstance(params, dict) else {}
+        requested_profile = str(params.get("profile") or "").strip()
+        session = _sessions.get(params.get("session_id") or "")
+        stored_home = (session or {}).get("profile_home")
+        if stored_home:
+            candidate = Path(stored_home)
+            if not candidate.exists():
+                return _err(rid, 5031, "profile context unavailable")
+            home = candidate
+        else:
+            home = _profile_home(requested_profile or None)
+            if home is None and requested_profile and requested_profile != _current_profile_name():
+                return _err(rid, 5031, "profile context unavailable")
         if home is None:
             return handler(rid, params)
-        token = set_hermes_home_override(home)
+
+        try:
+            home_token = set_hermes_home_override(home)
+        except Exception:
+            logger.debug("profile home override unavailable", exc_info=True)
+            return _err(rid, 5031, "profile context unavailable")
+        try:
+            secret_token = set_secret_scope(build_profile_secret_scope(home))
+        except Exception:
+            logger.debug("profile secret scope unavailable", exc_info=True)
+            reset_hermes_home_override(home_token)
+            return _err(rid, 5031, "profile context unavailable")
         try:
             return handler(rid, params)
         finally:
-            reset_hermes_home_override(token)
+            reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
 
     return wrapper
 
@@ -12393,11 +12416,22 @@ _LIVE_SESSION_DIRECT_COMMANDS = frozenset(
 _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
 
 
-def _format_live_usage_output(session: dict) -> str:
+def _format_live_usage_output(session: dict, session_id: str | None = None) -> str:
     agent = session.get("agent")
     usage = _session_usage_snapshot(session)
     if agent is None and not usage:
         return "(._.) No active agent -- send a message first."
+    extras: dict = {}
+    if session_id:
+        try:
+            response = _methods["session.usage"](
+                f"usage:{session_id}", {"session_id": session_id}
+            )
+            result = response.get("result") if isinstance(response, dict) else None
+            if isinstance(result, dict):
+                extras = result
+        except Exception:
+            logger.debug("legacy /usage account lookup failed", exc_info=True)
     if session.get("_metadata_message_count") is not None:
         message_count = int(session.get("_metadata_message_count") or 0)
     else:
@@ -12434,6 +12468,12 @@ def _format_live_usage_output(session: dict) -> str:
             f"Compressions:                 {int(usage.get('compressions') or 0):,}",
         ]
     )
+    credits_lines = extras.get("credits_lines") or []
+    if credits_lines:
+        lines.extend(["", "Nous credits", *[str(line) for line in credits_lines]])
+    account_lines = extras.get("account_lines") or []
+    if account_lines:
+        lines.extend(["", "Account limits", *[str(line) for line in account_lines]])
     return "\n".join(lines)
 
 
@@ -12592,7 +12632,7 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     if name == "usage":
         if session is None:
             return "(._.) No active agent -- send a message first."
-        return _format_live_usage_output(session)
+        return _format_live_usage_output(session, sid)
     if name == "history":
         if session is None:
             return "No conversation history yet."

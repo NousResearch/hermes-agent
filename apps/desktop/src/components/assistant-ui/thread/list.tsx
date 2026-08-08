@@ -15,6 +15,7 @@ import {
 } from 'react'
 import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
@@ -237,6 +238,23 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   loadingIndicator,
   sessionKey
 }) => {
+  // Keep-alive (tree-group.tsx) keeps every ever-active tab MOUNTED and hides
+  // inactive ones with `visibility: hidden` — the pane layer keeps its layout
+  // box so scroll positions survive a tab round-trip at the PANE level. The
+  // TRANSCRIPT must not ride along: a hidden pane's frozen message rows are a
+  // second, stale copy of the conversation that can paint through the visible
+  // thread when any descendant overrides the inherited `visibility` (the
+  // "stale snapshot + live copy" duplication of #81772).
+  //
+  // Note: unloading the rows means the transcript-level scrollTop is clamped
+  // to ~0 while the pane is hidden (the viewport shell has no content), so
+  // switching back to a tab whose old position was near the bottom can land
+  // at the bottom rather than the exact prior offset — the pane's layout box
+  // preserves coarse placement, not the precise transcript scroll. That is a
+  // deliberate trade: exact per-transcript scroll restoration would require
+  // keeping the (duplicated) rows mounted.
+  const visible = usePaneVisible()
+
   // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
   // changes only when messages are added/removed/swapped — it keys the error
   // boundaries and the row identity. The WEIGHT one (parts + character cost)
@@ -639,7 +657,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             className="mx-auto grid h-full w-full max-w-(--composer-width) grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) px-6 py-8"
             data-slot="aui_thread-content"
           >
-            {emptyPlaceholder}
+            {visible && emptyPlaceholder}
           </div>
         ) : (
           <div
@@ -647,7 +665,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             data-slot="aui_thread-content"
             ref={contentRef as React.RefCallback<HTMLDivElement>}
           >
-            {(hiddenCount > 0 || olderAvailable) && (
+            {visible && (hiddenCount > 0 || olderAvailable) && (
               <button
                 className="mx-auto mb-(--conversation-turn-gap) rounded-full border border-border/65 bg-(--composer-fill) px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
                 onClick={showEarlier}
@@ -656,8 +674,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
                 {t.assistant.thread.showEarlier}
               </button>
             )}
-            {rows}
-            {loadingIndicator}
+            {visible && rows}
+            {visible && loadingIndicator}
             {clampToComposer && (
               <div
                 aria-hidden="true"

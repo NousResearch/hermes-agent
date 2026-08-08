@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from typing import Dict
 from unittest.mock import AsyncMock, Mock, patch
 
-from gateway.platforms.base import ProcessingOutcome
+from gateway.platforms.base import ProcessingOutcome, _thread_metadata_for_source
 
 try:
     import lark_oapi
@@ -1190,6 +1190,133 @@ class TestAdapterBehavior(unittest.TestCase):
                 second = FeishuAdapter(PlatformConfig())
                 self.assertTrue(second._is_duplicate("om_same"))
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_thread_metadata_marks_live_feishu_event_for_thread_reply(self):
+        source = SimpleNamespace(platform="feishu", thread_id=None, chat_type="dm")
+
+        metadata = _thread_metadata_for_source(source, reply_to_message_id="om_trigger")
+
+        self.assertEqual(
+            metadata,
+            {
+                "reply_in_thread": True,
+                "reply_to_message_id": "om_trigger",
+            },
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_thread_metadata_keeps_scheduled_feishu_delivery_top_level(self):
+        source = SimpleNamespace(platform="feishu", thread_id=None, chat_type="dm")
+
+        self.assertIsNone(_thread_metadata_for_source(source))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_starts_thread_for_explicit_reply_metadata(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _ReplyAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_ReplyAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="hello",
+                    reply_to="om_trigger",
+                    metadata={"reply_in_thread": True},
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].message_id, "om_trigger")
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_recovers_thread_anchor_from_explicit_reply_metadata(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _ReplyAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_ReplyAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="approval card",
+                    metadata={
+                        "reply_in_thread": True,
+                        "reply_to_message_id": "om_trigger",
+                    },
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].message_id, "om_trigger")
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_keeps_top_level_reply_without_thread_metadata(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _ReplyAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_ReplyAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(chat_id="oc_chat", content="hello", reply_to="om_trigger")
+            )
+
+        self.assertTrue(result.success)
+        self.assertFalse(captured["request"].request_body.reply_in_thread)
+
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_document_reply_uses_thread_flag(self):
@@ -1245,6 +1372,95 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_document_recovers_live_thread_anchor_from_metadata(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _FileAPI:
+            def create(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_123"),
+                )
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_file_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(file=_FileAPI(), message=_MessageAPI())
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
+            tmp.write(b"%PDF-1.4 test")
+            file_path = tmp.name
+
+        try:
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(
+                    adapter.send_document(
+                        chat_id="oc_chat",
+                        file_path=file_path,
+                        metadata={
+                            "reply_in_thread": True,
+                            "reply_to_message_id": "om_trigger",
+                        },
+                    )
+                )
+        finally:
+            os.unlink(file_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].message_id, "om_trigger")
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_threaded_reply_failure_does_not_fall_back_to_top_level(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        calls = []
+
+        async def _send_raw_message(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                success=lambda: False,
+                code=230011,
+                msg="message withdrawn",
+            )
+
+        adapter._send_raw_message = _send_raw_message
+        response = asyncio.run(
+            adapter._feishu_send_with_retry(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload='{"text":"hello"}',
+                reply_to="om_trigger",
+                metadata={
+                    "reply_in_thread": True,
+                    "reply_to_message_id": "om_trigger",
+                },
+            )
+        )
+
+        self.assertEqual(response.code, 230011)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["reply_to"], "om_trigger")
 
 
     @patch.dict(os.environ, {}, clear=True)
@@ -2465,5 +2681,4 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
 

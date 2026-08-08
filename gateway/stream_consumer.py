@@ -1812,7 +1812,8 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=self.metadata,
+                reply_to=self._initial_reply_to_id,
+                metadata=self._metadata_for_send(),
             )
             # Note: do NOT set _already_sent = True here.
             # Commentary messages are interim status updates (e.g. "Using browser

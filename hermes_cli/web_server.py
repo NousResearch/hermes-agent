@@ -7258,7 +7258,7 @@ def _api_key_display(entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     plaintext = str(entry.get("api_key") or "").strip()
     if plaintext:
         return True, redact_key(plaintext)
-    key_env = str(entry.get("key_env") or "").strip()
+    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
     if key_env:
         return True, f"${{{key_env}}}"
     return False, None
@@ -7277,6 +7277,18 @@ def _config_api_key_is_env_ref(endpoint_id: str) -> bool:
     entry = providers.get(endpoint_id) if isinstance(providers, dict) else None
     raw_key = entry.get("api_key") if isinstance(entry, dict) else None
     return bool(isinstance(raw_key, str) and re.search(r"\$\{[^}]+\}", raw_key))
+
+
+def _custom_endpoint_api_mode(entry: Dict[str, Any]) -> str:
+    """Return the Desktop API mode, preferring the v12 ``transport`` field."""
+    api_mode = str(entry.get("transport") or entry.get("api_mode") or "").strip()
+    if api_mode in {
+        "chat_completions",
+        "codex_responses",
+        "anthropic_messages",
+    }:
+        return api_mode
+    return ""
 
 
 def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -7304,6 +7316,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 "base_url": base_url,
                 "model": endpoint_model,
                 "models": models,
+                "api_mode": _custom_endpoint_api_mode(raw_entry),
                 "context_length": raw_entry.get("context_length"),
                 "discover_models": bool(raw_entry.get("discover_models", True)),
                 "has_api_key": has_api_key,
@@ -7320,6 +7333,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "base_url": current_base_url,
             "model": current_model,
             "models": [current_model] if current_model else [],
+            "api_mode": _custom_endpoint_api_mode(model_cfg),
             "context_length": model_cfg.get("context_length"),
             "discover_models": True,
             "has_api_key": has_api_key,
@@ -7386,7 +7400,7 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
 
     # Merge onto the existing entry rather than replacing it. A providers.<name>
     # block is not owned by this panel: it can carry hand-written keys the
-    # dashboard has no field for — ``api_mode``, ``key_env``/``api_key_env``,
+    # dashboard has no field for — ``key_env``/``api_key_env``,
     # ``extra_headers`` (which may themselves carry credentials),
     # ``request_overrides`` — and rebuilding from scratch silently dropped every
     # one of them on an unrelated edit, leaving a provider that no longer
@@ -7439,6 +7453,16 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         save_env_value(env_var, entry["api_key"].strip())
         entry["key_env"] = env_var
         entry.pop("api_key", None)
+
+    if body.api_mode is not None:
+        # ``transport`` is canonical in the v12 providers schema. Clearing the
+        # mode restores runtime auto-detection; an explicit mode must also
+        # remove the legacy spelling so the two fields cannot disagree.
+        entry.pop("api_mode", None)
+        if body.api_mode:
+            entry["transport"] = body.api_mode
+        else:
+            entry.pop("transport", None)
 
     providers[endpoint_id] = entry
     cfg["providers"] = providers

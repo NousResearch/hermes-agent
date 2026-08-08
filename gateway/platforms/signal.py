@@ -136,6 +136,50 @@ def _ext_to_mime(ext: str) -> str:
     return mime_for_ext(ext, fallback="application/octet-stream")
 
 
+def _path_to_data_uri(path: str) -> str:
+    """Read a local attachment path and return a Signal-compatible data URI."""
+    data = Path(path).read_bytes()
+    mime = _ext_to_mime(Path(path).suffix)
+    encoded = base64.b64encode(data).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+async def _inline_send_attachments(params: dict) -> dict:
+    """Inline local send attachments for signal-cli daemons without shared filesystems.
+
+    ``signal-cli`` accepts attachments either as filesystem paths or as ``data:``
+    URIs. Hermes-generated files live in the Hermes container, so a separate
+    signal-cli container cannot dereference raw paths. Convert existing local
+    files to data URIs at the RPC boundary while preserving already-inlined,
+    remote, or missing attachments unchanged.
+
+    The blocking file read + base64 encode runs off the gateway event loop via
+    :func:`asyncio.to_thread`. An unreadable local path raises ``OSError`` so
+    the caller can surface a controlled failed send instead of the error
+    escaping from the RPC boundary.
+    """
+    attachments = params.get("attachments")
+    if not attachments:
+        return params
+
+    converted = []
+    changed = False
+    for attachment in attachments:
+        if (
+            isinstance(attachment, str)
+            and not attachment.startswith("data:")
+            and Path(attachment).is_file()
+        ):
+            converted.append(await asyncio.to_thread(_path_to_data_uri, attachment))
+            changed = True
+        else:
+            converted.append(attachment)
+
+    if not changed:
+        return params
+    return dict(params, attachments=converted)
+
+
 def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
     """Losslessly remux raw ADTS AAC bytes into an MP4 (.m4a) container.
 
@@ -952,6 +996,19 @@ class SignalAdapter(BasePlatformAdapter):
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
             return None
+
+        if method == "send" and isinstance(params, dict):
+            try:
+                params = await _inline_send_attachments(params)
+            except OSError as _read_err:
+                # A local attachment became unreadable or was deleted between
+                # the is_file() check and the read. Fail the send in a controlled
+                # way rather than letting the error escape the RPC boundary.
+                logger.warning(
+                    "Signal send dropped: could not read attachment for inline send: %s",
+                    _read_err,
+                )
+                return None
 
         if rpc_id is None:
             rpc_id = f"{method}_{int(time.time() * 1000)}"

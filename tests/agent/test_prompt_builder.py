@@ -683,21 +683,26 @@ class TestPromptBuilderConstants:
 
 
     def test_api_server_hint_scopes_media_tag_guidance(self):
-        """api_server MEDIA: interception is partial (#68402, corrected):
-        _resolve_media_to_data_urls (gateway/platforms/api_server.py) inlines
+        """api_server MEDIA: interception is partial (#68402, corrected by
+        #70170, extended by #73537): _resolve_media_to_data_urls and
+        StreamingMediaTagResolver (gateway/platforms/api_server.py) inline
         small image MEDIA: tags as base64 data URLs on the chat, completions,
-        and responses endpoints — but non-image files are never resolved
-        (_MEDIA_IMG_EXT is image-only) and the /v1/runs handler never calls
-        the resolver at all. The hint must teach BOTH halves: images work via
-        MEDIA:, everything else needs a plain path in the response text."""
+        responses, AND runs endpoints as of #73537, which added the missing
+        /v1/runs resolver (StreamingMediaTagResolver + a final
+        _resolve_media_to_data_urls call in _handle_runs) — before that, runs
+        was the one endpoint with no resolver at all, per #70170's hint. Only
+        non-image files remain unresolved everywhere (_MEDIA_IMG_EXT is
+        image-only). The hint must teach BOTH halves: images work via MEDIA:
+        on all four endpoints, non-image files need a plain path in the
+        response text."""
         hint = PLATFORM_HINTS["api_server"]
-        # Images ARE intercepted: inlined as data URLs.
+        # Images ARE intercepted on all four endpoints, runs included.
         assert "MEDIA:" in hint
         assert "inlined" in hint.lower()
         assert "data" in hint.lower()  # data URLs
-        # The gaps: non-image files and the runs endpoint.
-        assert "non-image" in hint.lower()
         assert "runs" in hint.lower()
+        # The one remaining gap: non-image files, on any endpoint.
+        assert "non-image" in hint.lower()
         # Fallback guidance: plain file path in the response text.
         assert "plain" in hint.lower()
 

@@ -21,9 +21,8 @@ Several common subprocess patterns break silently-or-loudly on Windows:
 This module centralizes the platform-branching logic so the rest of the
 codebase doesn't sprinkle ``if sys.platform == "win32":`` everywhere.
 
-**All helpers are no-ops on non-Windows** — calling them in Linux/macOS
-code paths is safe by design.  That's the "do no damage on POSIX"
-guarantee.
+Platform-flag helpers are no-ops on non-Windows. Windows command builders
+are only used after callers have identified a batch launcher.
 """
 
 from __future__ import annotations
@@ -32,12 +31,13 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import Mapping, Sequence
+from typing import Mapping, MutableMapping, Sequence
 
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
     "suppress_platform_ver_console",
+    "windows_batch_command",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
@@ -64,8 +64,9 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     because CreateProcessW doesn't execute batch files directly.
 
     ``shutil.which(name)`` *does* resolve ``.cmd`` via PATHEXT and returns
-    the fully-qualified path — which CreateProcessW accepts because the
-    extension tells Windows to route through ``cmd.exe /c``.
+    the fully-qualified path. Callers that spawn a resolved batch shim must
+    still use :func:`windows_batch_command` with ``shell=True`` so ``cmd.exe``
+    cannot reinterpret metacharacters in valid paths and arguments.
 
     On POSIX ``shutil.which`` also returns a fully-qualified path when
     found.  That's a small change from bare-name resolution (the OS does
@@ -91,6 +92,48 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     if resolved:
         return [resolved, *argv]
     return [name, *argv]
+
+
+def windows_batch_command(
+    command: Sequence[str],
+    env: MutableMapping[str, str],
+    *,
+    prefix: str = "HERMES_BATCH_COMMAND",
+) -> str:
+    """Return a safely quoted command line for a Windows batch launcher.
+
+    ``shell=True`` adds an outer ``cmd.exe``. Keep argument values out of that
+    shell entirely: it only removes the carets from ``^%NAME^%`` and starts a
+    second, explicit command processor. The inner shell disables AutoRun and
+    delayed expansion before expanding the child-only placeholders, preserving
+    valid values containing ``&``, ``%``, ``!``, ``^``, pipes, redirection
+    characters, spaces, or parentheses. Quotes and control characters are
+    rejected because ``cmd.exe`` cannot transport them without reparsing.
+    """
+    placeholders = []
+    for index, arg in enumerate(command):
+        value = str(arg)
+        if any(char in value for char in ('"', "\r", "\n", "\0")):
+            raise ValueError(
+                "Windows batch arguments cannot contain quotes or control characters"
+            )
+        if not value:
+            # ``cmd.exe`` leaves an undefined/empty ``%VAR%`` token literal in
+            # this parsing context. An explicit empty quoted token survives
+            # both shells and reaches the batch launcher as an empty argument.
+            placeholders.append('""')
+            continue
+        key = f"{prefix}_{index}"
+        env[key] = value
+        # The outer shell removes the carets without expanding the variable.
+        # The inner /V:OFF shell then expands it while delayed expansion is off.
+        placeholders.append(f'"^%{key}^%"')
+
+    comspec = os.environ.get("COMSPEC") or os.path.join(
+        os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe"
+    )
+    inner = " ".join(placeholders)
+    return f'"{comspec}" /e:on /v:off /d /s /c "{inner}"'
 
 
 # -----------------------------------------------------------------------------

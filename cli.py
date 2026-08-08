@@ -1189,6 +1189,15 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     # can't skip the reset (#36823). No-op unless the TUI actually ran.
     _reset_terminal_input_modes_on_exit()
 
+    # Checkpoint active subagents before restart/relaunch so their
+    # metadata survives across os.execvp() / process replacement and
+    # can be surfaced by adopt_orphaned_subagents() on next startup.
+    try:
+        from tools.delegate_tool import checkpoint_active_subagents
+        checkpoint_active_subagents()
+    except Exception:
+        pass
+
     try:
         from tools.wake_word import stop_listening as _stop_wake_word
         if _cli_wake_owner is not None:
@@ -13803,6 +13812,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if agent is None:
             return None
 
+        # Auto-recreate any orphaned subagents from a prior process
+        # checkpoint.  The orphans were detected by adopt_orphaned_subagents()
+        # at startup; now that the agent is ready, we re-delegate them.
+        try:
+            from tools.delegate_tool import recreate_pending_subagents
+            recreated = recreate_pending_subagents(agent)
+            if recreated > 0:
+                _cprint(
+                    f"  [yellow]🔄 Auto-recreated {recreated} orphaned "
+                    f"subagent(s) from previous session[/yellow]"
+                )
+        except Exception:
+            pass
+
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
         #            translate for Anthropic/Gemini/Bedrock).
@@ -15086,6 +15109,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+
+        # Adopt any orphaned subagents from a prior process that was
+        # restarted (e.g. after /update).  The checkpoint file left by
+        # the old process is consumed and removed here; any previously
+        # running subagents are logged so the user knows to re-delegate.
+        try:
+            from tools.delegate_tool import adopt_orphaned_subagents
+            adopt_orphaned_subagents()
+        except Exception:
+            pass
 
         # Warm the /model picker's provider-models cache off-thread during this
         # idle window (banner shown, user about to type). The no-args picker

@@ -25,6 +25,7 @@ import re
 
 logger = logging.getLogger(__name__)
 import os
+import sys
 import threading
 import time
 from concurrent.futures import (
@@ -321,6 +322,44 @@ def list_active_subagents() -> List[Dict[str, Any]]:
             }
             for r in _active_subagents.values()
         ]
+
+
+def _safe_serialize_messages(messages) -> list:
+    """Safely serialize conversation messages for checkpoint storage.
+
+    Strips non-serializable fields (callable callbacks, live objects) and
+    truncates oversized tool results to keep the checkpoint file bounded.
+    """
+    if not isinstance(messages, (list, tuple)):
+        return []
+    safe = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        entry = {}
+        for k, v in m.items():
+            # Skip non-serializable / internal fields
+            if k in ("callback", "stream", "_callbacks", "raw_partial"):
+                continue
+            # Truncate long string content
+            if isinstance(v, str) and len(v) > 10000:
+                entry[k] = v[:10000] + "... [truncated]"
+            # Skip unserializable objects
+            elif isinstance(v, (dict, list, tuple, str, int, float, bool, type(None))):
+                entry[k] = v
+            elif isinstance(v, bytes):
+                try:
+                    entry[k] = v.decode("utf-8", errors="replace")
+                except Exception:
+                    entry[k] = "<binary data>"
+            else:
+                try:
+                    entry[k] = str(v)
+                except Exception:
+                    pass
+        if entry:
+            safe.append(entry)
+    return safe
 
 
 def _extract_output_tail(
@@ -4282,6 +4321,361 @@ DELEGATE_TASK_SCHEMA = {
         "required": [],
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Live upgrade: checkpoint active subagents before restart / adopt orphans
+# ---------------------------------------------------------------------------
+
+_CHECKPOINT_DIR_NAME = "state"
+_CHECKPOINT_FILE_NAME = "subagent_checkpoints.json"
+
+
+def _checkpoint_dir() -> str:
+    """Return the path to the state directory under HERMES_HOME."""
+    try:
+        from hermes_constants import get_hermes_home
+        d = str(get_hermes_home() / _CHECKPOINT_DIR_NAME)
+    except Exception:
+        d = ""
+    if d and not os.path.isdir(d):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            pass
+    return d
+
+
+def _checkpoint_path() -> str:
+    return os.path.join(_checkpoint_dir(), _CHECKPOINT_FILE_NAME)
+
+
+def checkpoint_active_subagents() -> str | None:
+    """Serialize FULL state of currently running subagents before a restart.
+
+    Writes a JSON file ``$HERMES_HOME/state/subagent_checkpoints.json``
+    with one record per active subagent, including:
+    - goal (full text, not truncated), context, model
+    - conversation messages (tool calls + results) from each child agent
+    - timing and metadata (subagent_id, parent_id, depth, tool_count, status)
+
+    The ``agent`` field (the live AIAgent object) is excluded — it is not
+    serializable.  Instead, the conversation history is extracted from
+    ``agent._session_messages`` and serialized as ``saved_messages``.
+
+    Returns the path to the checkpoint file, or ``None`` if nothing was
+    written (no active subagents or path resolution failed).
+    """
+    # Snapshot with full state — capture messages from each agent object
+    with _active_subagents_lock:
+        if not _active_subagents:
+            return None
+        snap = []
+        for sid, rec in _active_subagents.items():
+            record = {
+                k: v for k, v in rec.items()
+                if k not in ("agent",)
+            }
+            # Extract conversation messages from the live agent object
+            agent = rec.get("agent")
+            if agent is not None:
+                try:
+                    messages = getattr(agent, "_session_messages", None)
+                    if messages:
+                        safe = _safe_serialize_messages(messages)
+                        if safe:
+                            record["saved_messages"] = safe
+                            record["saved_message_count"] = len(safe)
+                    # Capture the subagent's context
+                    raw_context = getattr(agent, "_subagent_goal", None)
+                    if raw_context:
+                        record["resolved_context"] = str(raw_context)
+                except Exception:
+                    pass
+            snap.append(record)
+
+    path = _checkpoint_path()
+    if not path:
+        return None
+    payload = {
+        "pid": os.getpid(),
+        "parent_pid": os.getppid(),
+        "created_at": time.time(),
+        "version": 2,  # version 2 = full state with messages
+        "subagents": snap,
+    }
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
+        os.replace(tmp, path)
+        logger.info(
+            "Checkpointed %d running subagent(s) to %s (pid=%d)",
+            len(snap),
+            path,
+            os.getpid(),
+        )
+        return path
+    except (OSError, TypeError) as exc:
+        logger.warning("Failed to write subagent checkpoint: %s", exc)
+        return None
+
+
+# Module-level storage for orphan state from a prior process.
+# Populated by adopt_orphaned_subagents() and consumed by
+# recreate_pending_subagents().  Repopulates on every adoption call.
+_pending_orphans: List[Dict[str, Any]] = []
+
+
+def adopt_orphaned_subagents() -> int:
+    """Adopt orphaned subagents from a checkpoint left by a prior process.
+
+    Reads ``$HERMES_HOME/state/subagent_checkpoints.json`` left by a prior
+    process that restarted (e.g. after ``/update``).  Because subagents run
+    as in-process threads, the old process's children were terminated by the
+    exec/sys.exit.
+
+    This function:
+    1. Reads the checkpoint and logs orphan metadata
+    2. Stores the full orphan records in ``_pending_orphans`` for later
+       recreation by ``recreate_pending_subagents(parent_agent)``
+    3. Removes the checkpoint file
+
+    Returns the number of previously running subagents that were recorded
+    (0 means no checkpoint was found, or it was empty).
+    """
+    global _pending_orphans
+    _pending_orphans = []
+
+    path = _checkpoint_path()
+    if not path or not os.path.isfile(path):
+        return 0
+
+    try:
+        with open(path) as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Corrupt subagent checkpoint at %s: %s", path, exc)
+        _remove_checkpoint_safe(path)
+        return 0
+
+    subagents = payload.get("subagents", [])
+    checkpoint_pid = payload.get("pid", "<unknown>")
+    checkpoint_created = payload.get("created_at", 0)
+    checkpoint_version = payload.get("version", 1)
+
+    if not subagents:
+        _remove_checkpoint_safe(path)
+        return 0
+
+    old_pid = checkpoint_pid
+    created = checkpoint_created
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created)) if created else "<unknown>"
+
+    count = len(subagents)
+
+    # Log the orphan information
+    if checkpoint_version >= 2:
+        has_messages = sum(1 for sa in subagents if sa.get("saved_messages"))
+        logger.warning(
+            "Live upgrade detected: %d subagent(s) were running when the "
+            "previous process (pid=%s) restarted at %s.  "
+            "%d have saved conversation state (version %d).  "
+            "Call recreate_pending_subagents() with the parent agent to "
+            "auto-re-delegate them and preserve progress.",
+            count,
+            old_pid,
+            ts,
+            has_messages,
+            checkpoint_version,
+        )
+    else:
+        logger.warning(
+            "Live upgrade detected: %d subagent(s) were running when the "
+            "previous process (pid=%s) restarted at %s.  "
+            "Checkpoint is version 1 (metadata only).  "
+            "Their work was terminated by the restart and should be re-delegated.",
+            count,
+            old_pid,
+            ts,
+        )
+
+    for i, sa in enumerate(subagents):
+        goal = (sa.get("goal") or "<no goal>")[:120]
+        sid = sa.get("subagent_id") or "<unknown>"
+        started = sa.get("started_at", 0)
+        started_str = (
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started))
+            if started
+            else "<unknown>"
+        )
+        model = sa.get("model") or "<default>"
+        msgs = sa.get("saved_message_count", 0)
+        logger.warning(
+            "  Orphan subagent [%d/%d] id=%s goal=%s started=%s model=%s saved_msgs=%d",
+            i + 1,
+            count,
+            sid,
+            goal,
+            started_str,
+            model,
+            msgs,
+        )
+        print(
+            f"  ⚠ Orphan subagent [{i+1}/{count}]: \"{goal}\" "
+            f"(started {started_str}, model={model}, saved_msgs={msgs})",
+            file=sys.stderr,
+        )
+
+    # Store the full orphan data for later recreation
+    _pending_orphans = list(subagents)
+
+    # Remove the checkpoint file — data is now in memory
+    _remove_checkpoint_safe(path)
+    return count
+
+
+def get_pending_orphans() -> List[Dict[str, Any]]:
+    """Return the list of orphan subagent records from the last adoption.
+
+    Returns an empty list if no orphans were found or if
+    adopt_orphaned_subagents() has not been called yet.
+    Each record contains: goal, context (if available), model, parent_id,
+    depth, tool_count, started_at, and optionally saved_messages (the
+    conversation history from the previous process).
+    """
+    global _pending_orphans
+    return list(_pending_orphans)
+
+
+def recreate_pending_subagents(parent_agent) -> int:
+    """Recreate orphaned subagents from a prior process checkpoint.
+
+    Reads the orphan data stored by ``adopt_orphaned_subagents()`` and
+    auto-re-delegates each orphan by calling ``delegate_task`` with the
+    saved goal and context.  When saved conversation messages are available
+    from the previous process (version 2+ checkpoints), they are appended
+    as context so the new subagent knows what was already done and can
+    pick up where the previous process left off.
+
+    This should be called once the parent agent is fully initialized,
+    typically on the first user turn after adoption.
+
+    Returns the number of subagents that were re-delegated (0 means no
+    pending orphans existed).
+    """
+    global _pending_orphans
+    orphans = list(_pending_orphans)
+    if not orphans:
+        return 0
+    _pending_orphans = []
+
+    count = len(orphans)
+    logger.info(
+        "Recreating %d orphaned subagent(s) from checkpoint...",
+        count,
+    )
+
+    recreated = 0
+    for i, sa in enumerate(orphans):
+        try:
+            goal = sa.get("goal") or ""
+            if not goal:
+                logger.warning(
+                    "  Skipping orphan [%d/%d]: no goal found",
+                    i + 1, count,
+                )
+                continue
+
+            # Build enriched context from saved messages
+            saved_msgs = sa.get("saved_messages", [])
+            msg_count = len(saved_msgs)
+            # Build context that includes previous progress
+            enriched_context = sa.get("resolved_context") or sa.get("context") or ""
+
+            if saved_msgs:
+                # Format previous conversation as context
+                prev_work_lines = [
+                    "The following work was already completed in a previous agent session "
+                    "before the process was restarted.",
+                    "",
+                ]
+                for msg in saved_msgs:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content") or msg.get("text") or ""
+                    if isinstance(content, str) and content:
+                        # Truncate very long messages for context
+                        if len(content) > 2000:
+                            content = content[:2000] + "... [truncated]"
+                        prev_work_lines.append(f"[{role}]: {content}")
+                    # Also pick up tool_calls
+                    tc = msg.get("tool_calls")
+                    if tc:
+                        for t in (tc if isinstance(tc, list) else [tc]):
+                            fn = t.get("function", {})
+                            tname = fn.get("name", "") if isinstance(fn, dict) else ""
+                            if tname:
+                                prev_work_lines.append(f"[tool_call]: {tname}")
+
+                if enriched_context:
+                    enriched_context += "\n\n" + "\n".join(prev_work_lines)
+                else:
+                    enriched_context = "\n".join(prev_work_lines)
+
+                context_suffix = (
+                    "\n\nNOTE: This is a CONTINUATION of previous work. "
+                    "Review the context above to understand what has already been "
+                    "done, then continue from where you left off. "
+                    "Do NOT re-do work that has already been completed."
+                )
+                enriched_context += context_suffix
+
+            # Extract subagent configuration
+            sa_model = sa.get("model") or None
+            sa_depth = sa.get("depth", 0)
+
+            # Call delegate_task to recreate the subagent
+            from tools.delegate_tool import delegate_task as _dt
+
+            _dt(
+                goal=goal,
+                context=enriched_context if enriched_context.strip() else None,
+                parent_agent=parent_agent,
+            )
+            recreated += 1
+            logger.info(
+                "  Recreated orphan [%d/%d] id=%s goal=\"%s\" model=%s msgs=%d",
+                i + 1,
+                count,
+                sa.get("subagent_id", "<unknown>"),
+                goal[:80],
+                sa_model or "<inherited>",
+                msg_count,
+            )
+        except Exception as exc:
+            logger.warning(
+                "  Failed to recreate orphan [%d/%d] id=%s: %s",
+                i + 1,
+                count,
+                sa.get("subagent_id", "<unknown>"),
+                exc,
+            )
+
+    if recreated > 0:
+        print(
+            f"  🔄 Recreated {recreated}/{count} orphaned subagent(s) from "
+            f"previous session (checkpoint preserved progress)",
+            file=sys.stderr,
+        )
+    return recreated
+
+
+def _remove_checkpoint_safe(path: str) -> None:
+    """Remove the checkpoint file, ignoring errors."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 # --- Registry ---

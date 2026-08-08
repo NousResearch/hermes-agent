@@ -55,6 +55,11 @@ def test_methods_registered():
         "projects.archive",
         "projects.set_active",
         "projects.for_cwd",
+        "projects.groups.create",
+        "projects.groups.update",
+        "projects.groups.delete",
+        "projects.groups.reorder",
+        "projects.sessions.assign",
     ):
         assert m in server._methods
 
@@ -224,6 +229,35 @@ def test_delete_removes_project(tmp_path):
 
     assert all(p["id"] != pid for p in payload["projects"])
     assert "projects.delete" in server._methods
+
+
+def test_conversation_group_rpc_crud_and_assignment():
+    project = _call("projects.create", {"name": "SK 업무", "folders": []})["project"]
+    first = _call(
+        "projects.groups.create", {"project_id": project["id"], "name": "ITO LLM Wiki"}
+    )["group"]
+    second = _call(
+        "projects.groups.create", {"project_id": project["id"], "name": "Tib/RV"}
+    )["group"]
+
+    renamed = _call(
+        "projects.groups.update", {"id": second["id"], "name": "Tib / RV"}
+    )["group"]
+    assert renamed["name"] == "Tib / RV"
+
+    reordered = _call(
+        "projects.groups.reorder",
+        {"project_id": project["id"], "ids": [second["id"], first["id"]]},
+    )
+    assert [group["id"] for group in reordered["groups"]] == [second["id"], first["id"]]
+
+    assigned = _call(
+        "projects.sessions.assign",
+        {"session_id": "session-1", "project_id": project["id"], "group_id": second["id"]},
+    )
+    assert assigned["assignment"]["group_id"] == second["id"]
+
+    _call("projects.groups.delete", {"id": second["id"]})
 
 
 def test_discover_repos_is_registered_long_handler():

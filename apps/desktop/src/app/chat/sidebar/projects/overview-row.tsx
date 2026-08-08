@@ -92,6 +92,7 @@ export function ProjectOverviewRow({
   const { t } = useI18n()
   const s = t.sidebar
   const isActive = project.id === activeProjectId
+  const isSessionDropTarget = !project.isNoProject && !project.isAuto
   const [open, toggleOpen] = useWorkspaceNodeOpen(project.id)
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
@@ -124,7 +125,15 @@ export function ProjectOverviewRow({
           {!project.isNoProject && <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />}
         </>
       }
-      className={cn('group/workspace', dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
+      className={cn(
+        'group/workspace transition-colors',
+        isSessionDropTarget &&
+          'data-[session-drag-over=true]:bg-(--ui-control-active-background) data-[session-drag-over=true]:ring-1 data-[session-drag-over=true]:ring-(--ui-stroke-secondary)',
+        dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)'
+      )}
+      data-conversation-group-drop={isSessionDropTarget ? '' : undefined}
+      data-group-id={isSessionDropTarget ? '' : undefined}
+      data-project-id={isSessionDropTarget ? project.id : undefined}
       ref={rowRef}
     >
       <SidebarRowCluster className="min-w-0 flex-1">

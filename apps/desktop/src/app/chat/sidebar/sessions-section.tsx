@@ -207,12 +207,15 @@ export function SidebarSessionsSection({
   // render as a drill-in row so the user can see it exists).
   const hasProjectOverview = Boolean(projectOverview?.length)
 
-  // Lanes count as content even with no rows left in them: the backend only
-  // emits a lane that has sessions, so a lane surviving with zero rows means
-  // they were filtered out (pinned) — the branch is real and must still render.
-  // A genuinely empty project has no lanes at all and keeps its empty state.
+  // Explicit projects always render their entered content, even while empty:
+  // organizational projects with no folder need the conversation-group create
+  // affordance before they can hold a session. Auto/Home buckets still require
+  // a real lane or row so their empty state remains clean.
   const hasProjectContent = Boolean(
-    projectContent && (projectContent.sessionCount > 0 || projectContent.repos.some(repo => repo.groups.length > 0))
+    projectContent &&
+      ((!projectContent.isAuto && !projectContent.isNoProject) ||
+        projectContent.sessionCount > 0 ||
+        projectContent.repos.some(repo => repo.groups.length > 0))
   )
 
   const showEmptyState =

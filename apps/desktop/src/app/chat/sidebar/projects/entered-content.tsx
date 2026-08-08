@@ -22,6 +22,7 @@ import { removeWorktreePath } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
 
+import { ConversationGroups } from './conversation-groups'
 import { useWorkspaceNodeOpen } from './model'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
@@ -52,33 +53,74 @@ export function EnteredProjectContent({
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
 }) {
-  if (!project.repos.length) {
-    return null
-  }
-
   // Home's rows aren't anchored to a folder, so there's no repo or worktree
   // structure to show — just the chats.
   if (project.isNoProject) {
     return <>{renderRows(project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions)))}</>
   }
 
+  const conversationGroups = project.conversationGroups ?? []
+  const groupManager = !project.isAuto ? <ConversationGroups project={project} renderRows={renderRows} /> : null
+
+  if (!project.repos.length) {
+    return groupManager
+  }
+
   const single = project.repos.length === 1
+
+  const repoRows = project.repos.map(repo => (
+    <RepoFlatSection
+      discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
+      key={repo.id}
+      liveSessions={liveSessions}
+      onNewSession={onNewSession}
+      removedSessionIds={removedSessionIds}
+      renderRows={renderRows}
+      repo={repo}
+      showHeader={!single}
+    />
+  ))
 
   return (
     <>
-      {project.repos.map(repo => (
-        <RepoFlatSection
-          discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
-          key={repo.id}
-          liveSessions={liveSessions}
-          onNewSession={onNewSession}
-          removedSessionIds={removedSessionIds}
-          renderRows={renderRows}
-          repo={repo}
-          showHeader={!single}
-        />
-      ))}
+      {groupManager}
+      {conversationGroups.length ? (
+        <UngroupedConversationSection projectId={project.id} sessionCount={project.repos.reduce((sum, repo) => sum + repo.sessionCount, 0)}>
+          {repoRows}
+        </UngroupedConversationSection>
+      ) : (
+        repoRows
+      )}
     </>
+  )
+}
+
+function UngroupedConversationSection({
+  children,
+  projectId,
+  sessionCount
+}: {
+  children: React.ReactNode
+  projectId: string
+  sessionCount: number
+}) {
+  const [open, setOpen] = useState(true)
+
+  return (
+    <SidebarRowStack
+      className="rounded-md transition-colors data-[session-drag-over=true]:bg-(--ui-control-active-background) data-[session-drag-over=true]:ring-1 data-[session-drag-over=true]:ring-(--ui-stroke-secondary)"
+      data-conversation-group-drop
+      data-group-id=""
+      data-project-id={projectId}
+    >
+      <WorkspaceHeader
+        icon={<Codicon className="text-(--ui-text-tertiary)" name="inbox" size="0.75rem" />}
+        label={`미분류 (${sessionCount})`}
+        onToggle={() => setOpen(value => !value)}
+        open={open}
+      />
+      {open && <SidebarRowStack className="pl-2.5">{children}</SidebarRowStack>}
+    </SidebarRowStack>
   )
 }
 

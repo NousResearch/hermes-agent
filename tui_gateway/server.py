@@ -11462,6 +11462,73 @@ def _(rid, params, pdb, conn) -> dict:
     return _ok(rid, _projects_payload(conn))
 
 
+@_projects_method("projects.groups.create")
+def _(rid, params, pdb, conn) -> dict:
+    project_id = str(params.get("project_id") or "")
+    if pdb.get_project(conn, project_id) is None:
+        raise _NoProject
+    group_id = pdb.create_conversation_group(
+        conn, project_id, str(params.get("name") or "")
+    )
+    group = pdb.get_conversation_group(conn, group_id)
+    return _ok(rid, {"group": group.to_dict() if group else None})
+
+
+@_projects_method("projects.groups.update")
+def _(rid, params, pdb, conn) -> dict:
+    group_id = str(params.get("id") or "")
+    if pdb.get_conversation_group(conn, group_id) is None:
+        raise ValueError("no such conversation group")
+    pdb.update_conversation_group(conn, group_id, name=str(params.get("name") or ""))
+    group = pdb.get_conversation_group(conn, group_id)
+    return _ok(rid, {"group": group.to_dict() if group else None})
+
+
+@_projects_method("projects.groups.delete")
+def _(rid, params, pdb, conn) -> dict:
+    group_id = str(params.get("id") or "")
+    group = pdb.get_conversation_group(conn, group_id)
+    if group is None:
+        raise ValueError("no such conversation group")
+    pdb.delete_conversation_group(conn, group_id)
+    return _ok(
+        rid,
+        {
+            "groups": [
+                item.to_dict()
+                for item in pdb.list_conversation_groups(conn, group.project_id)
+            ]
+        },
+    )
+
+
+@_projects_method("projects.groups.reorder")
+def _(rid, params, pdb, conn) -> dict:
+    project_id = str(params.get("project_id") or "")
+    if pdb.get_project(conn, project_id) is None:
+        raise _NoProject
+    pdb.reorder_conversation_groups(conn, project_id, params.get("ids") or [])
+    return _ok(
+        rid,
+        {
+            "groups": [
+                item.to_dict()
+                for item in pdb.list_conversation_groups(conn, project_id)
+            ]
+        },
+    )
+
+
+@_projects_method("projects.sessions.assign")
+def _(rid, params, pdb, conn) -> dict:
+    session_id = str(params.get("session_id") or "")
+    project_id = str(params.get("project_id") or "")
+    group_id = str(params.get("group_id") or "") or None
+    pdb.assign_session(conn, session_id, project_id, group_id)
+    assignment = pdb.get_session_assignments(conn, [session_id]).get(session_id)
+    return _ok(rid, {"assignment": assignment.to_dict() if assignment else None})
+
+
 @_projects_method("projects.set_active")
 def _(rid, params, pdb, conn) -> dict:
     pdb.set_active(conn, _require_project(pdb, conn, params).id if params.get("id") else None)
@@ -11700,7 +11767,7 @@ def _project_tree_row(r: dict) -> dict:
 
 def _project_tree_inputs(
     db, session_limit: int, *, include_discovered: bool
-) -> tuple[list[dict], list[dict], list[dict], str | None]:
+) -> tuple[list[dict], list[dict], list[dict], str | None, list[dict], dict[str, dict]]:
     """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
 
     ``include_discovered`` is the zero-session-repo overview tier; the entered
@@ -11736,6 +11803,17 @@ def _project_tree_inputs(
             )
         projects = [p.to_dict() for p in pdb.list_projects(conn)]
         active_id = pdb.get_active_id(conn)
+        conversation_groups = [
+            group.to_dict()
+            for project in projects
+            for group in pdb.list_conversation_groups(conn, project["id"])
+        ]
+        session_assignments = {
+            session_id: assignment.to_dict()
+            for session_id, assignment in pdb.get_session_assignments(
+                conn, [session["id"] for session in sessions if session.get("id")]
+            ).items()
+        }
         # backfill stays off the hot tree path — grouping uses the live resolver.
         discovered = (
             _discover_repos_payload(
@@ -11748,7 +11826,7 @@ def _project_tree_inputs(
             else []
         )
 
-    return sessions, projects, discovered, active_id
+    return sessions, projects, discovered, active_id, conversation_groups, session_assignments
 
 
 # Per-build memo for `_dir_exists_cached`. Cleared at the top of every
@@ -11779,7 +11857,7 @@ def _build_project_tree(
     from tui_gateway import project_tree
 
     _DIR_EXISTS_CACHE.clear()
-    sessions, projects, discovered, active_id = _project_tree_inputs(
+    sessions, projects, discovered, active_id, conversation_groups, session_assignments = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered
     )
     tree = project_tree.build_tree(
@@ -11792,6 +11870,8 @@ def _build_project_tree(
         is_junk_root=_is_repo_junk,
         is_junk_cwd=_is_session_cwd_junk,
         exists=_dir_exists_cached,
+        conversation_groups=conversation_groups,
+        session_assignments=session_assignments,
     )
     return tree, active_id
 

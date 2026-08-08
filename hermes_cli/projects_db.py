@@ -85,6 +85,27 @@ CREATE TABLE IF NOT EXISTS project_meta (
     value  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS conversation_groups (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    position    INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_groups_project_position
+    ON conversation_groups(project_id, position);
+
+CREATE TABLE IF NOT EXISTS project_session_assignments (
+    session_id   TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    group_id     TEXT REFERENCES conversation_groups(id) ON DELETE SET NULL,
+    assigned_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_session_assignments_project
+    ON project_session_assignments(project_id);
+
 -- Git repos found by scanning the filesystem (desktop "repo-first" discovery).
 -- Cached here so the overview is instant after the first scan instead of
 -- re-walking the disk every time the Projects view opens.
@@ -259,6 +280,40 @@ class Project:
             "archived": bool(self.archived),
             "created_at": self.created_at,
             "folders": [f.to_dict() for f in self.folders],
+        }
+
+
+@dataclass
+class ConversationGroup:
+    id: str
+    project_id: str
+    name: str
+    position: int
+    created_at: int
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "name": self.name,
+            "position": self.position,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass
+class SessionAssignment:
+    session_id: str
+    project_id: str
+    group_id: Optional[str]
+    assigned_at: int
+
+    def to_dict(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "project_id": self.project_id,
+            "group_id": self.group_id,
+            "assigned_at": self.assigned_at,
         }
 
 
@@ -588,6 +643,139 @@ def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
     return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Conversation groups + manual session organization
+# ---------------------------------------------------------------------------
+
+
+def _new_conversation_group_id() -> str:
+    return "cg_" + secrets.token_hex(4)
+
+
+def _require_project_id(conn: sqlite3.Connection, project_id: str) -> None:
+    if conn.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
+        raise ValueError(f"no such project: {project_id}")
+
+
+def create_conversation_group(conn: sqlite3.Connection, project_id: str, name: str) -> str:
+    """Create an ordered, user-managed conversation group within a project."""
+    _require_project_id(conn, project_id)
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise ValueError("conversation group name must not be empty")
+    group_id = _new_conversation_group_id()
+    now = _now()
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 AS next_position "
+            "FROM conversation_groups WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO conversation_groups (id, project_id, name, position, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (group_id, project_id, clean_name, int(row["next_position"]), now),
+        )
+    return group_id
+
+
+def list_conversation_groups(conn: sqlite3.Connection, project_id: str) -> List[ConversationGroup]:
+    rows = conn.execute(
+        "SELECT id, project_id, name, position, created_at FROM conversation_groups "
+        "WHERE project_id = ? ORDER BY position ASC, created_at ASC",
+        (project_id,),
+    ).fetchall()
+    return [ConversationGroup(**dict(row)) for row in rows]
+
+
+def get_conversation_group(
+    conn: sqlite3.Connection, group_id: str
+) -> Optional[ConversationGroup]:
+    row = conn.execute(
+        "SELECT id, project_id, name, position, created_at "
+        "FROM conversation_groups WHERE id = ?",
+        (group_id,),
+    ).fetchone()
+    return ConversationGroup(**dict(row)) if row is not None else None
+
+
+def update_conversation_group(
+    conn: sqlite3.Connection, group_id: str, *, name: str
+) -> bool:
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise ValueError("conversation group name must not be empty")
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE conversation_groups SET name = ? WHERE id = ?",
+            (clean_name, group_id),
+        )
+    return cur.rowcount > 0
+
+
+def delete_conversation_group(conn: sqlite3.Connection, group_id: str) -> bool:
+    """Delete only the group; SQLite keeps its sessions assigned to the project."""
+    with write_txn(conn):
+        cur = conn.execute("DELETE FROM conversation_groups WHERE id = ?", (group_id,))
+    return cur.rowcount > 0
+
+
+def reorder_conversation_groups(
+    conn: sqlite3.Connection, project_id: str, ordered_ids: Iterable[str]
+) -> None:
+    existing = [group.id for group in list_conversation_groups(conn, project_id)]
+    ordered = list(ordered_ids)
+    if len(ordered) != len(set(ordered)) or set(ordered) != set(existing):
+        raise ValueError("ordered conversation group ids must match the project's groups")
+    with write_txn(conn):
+        conn.executemany(
+            "UPDATE conversation_groups SET position = ? WHERE id = ? AND project_id = ?",
+            [(position, group_id, project_id) for position, group_id in enumerate(ordered)],
+        )
+
+
+def assign_session(
+    conn: sqlite3.Connection,
+    session_id: str,
+    project_id: str,
+    group_id: Optional[str],
+) -> None:
+    """Manually place a durable session without changing its cwd or transcript."""
+    clean_session_id = str(session_id or "").strip()
+    if not clean_session_id:
+        raise ValueError("session_id required")
+    _require_project_id(conn, project_id)
+    if group_id is not None:
+        row = conn.execute(
+            "SELECT project_id FROM conversation_groups WHERE id = ?", (group_id,)
+        ).fetchone()
+        if row is None or row["project_id"] != project_id:
+            raise ValueError("conversation group does not belong to the project")
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO project_session_assignments "
+            "(session_id, project_id, group_id, assigned_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "project_id = excluded.project_id, group_id = excluded.group_id, "
+            "assigned_at = excluded.assigned_at",
+            (clean_session_id, project_id, group_id, _now()),
+        )
+
+
+def get_session_assignments(
+    conn: sqlite3.Connection, session_ids: Optional[Iterable[str]] = None
+) -> dict[str, SessionAssignment]:
+    params: list[str] = []
+    sql = "SELECT session_id, project_id, group_id, assigned_at FROM project_session_assignments"
+    if session_ids is not None:
+        params = [str(value) for value in session_ids if str(value)]
+        if not params:
+            return {}
+        sql += f" WHERE session_id IN ({','.join('?' for _ in params)})"
+    rows = conn.execute(sql, params).fetchall()
+    return {row["session_id"]: SessionAssignment(**dict(row)) for row in rows}
 
 
 # ---------------------------------------------------------------------------

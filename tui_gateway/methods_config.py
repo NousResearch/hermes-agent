@@ -115,7 +115,15 @@ def _(rid, params: dict) -> dict:
     try:
         db = _get_db()
         if db is None:
-            return _ok(rid, {"projects": [], "active_id": None, "scoped_session_ids": []})
+            return _ok(
+                rid,
+                {
+                    "projects": [],
+                    "active_id": None,
+                    "scoped_session_ids": [],
+                    "manual_session_project_ids": {},
+                },
+            )
 
         tree, active_id = _build_project_tree(
             db,
@@ -126,7 +134,12 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(
             rid,
-            {"projects": tree["projects"], "active_id": active_id, "scoped_session_ids": tree["scoped_session_ids"]},
+            {
+                "projects": tree["projects"],
+                "active_id": active_id,
+                "scoped_session_ids": tree["scoped_session_ids"],
+                "manual_session_project_ids": tree["manual_session_project_ids"],
+            },
         )
     except Exception as e:
         return _err(rid, 5061, str(e))

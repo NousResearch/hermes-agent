@@ -70,6 +70,7 @@ import {
   $projectScope,
   $projectTree,
   $projectTreeLoading,
+  $manualSessionProjectIds,
   $removedSessionIds,
   $reposScanning,
   ALL_PROJECTS,
@@ -321,6 +322,7 @@ export function ChatSidebar({
   const projects = useStore($projects)
   const projectTree = useStore($projectTree)
   const projectTreeLoading = useStore($projectTreeLoading)
+  const manualSessionProjectIds = useStore($manualSessionProjectIds)
   const removedSessionIds = useStore($removedSessionIds)
   const reposScanning = useStore($reposScanning)
   const activeProjectId = useStore($activeProjectId)
@@ -738,8 +740,11 @@ export function ChatSidebar({
   // backend now seeds each project folder as an (empty) repo, so the overlay
   // always has a lane to place a new in-project session into.
   const enteredProjectContent = useMemo(
-    () => (enteredProject ? overlayLiveLanes(enteredProject, agentSessions, removedSessionIds) : undefined),
-    [enteredProject, agentSessions, removedSessionIds]
+    () =>
+      enteredProject
+        ? overlayLiveLanes(enteredProject, agentSessions, removedSessionIds, manualSessionProjectIds)
+        : undefined,
+    [enteredProject, agentSessions, removedSessionIds, manualSessionProjectIds]
   )
 
   const scopedRepoPaths = useMemo(
@@ -831,8 +836,16 @@ export function ChatSidebar({
   // session shows under its project instantly (and with its working arc),
   // matching the flat Recents list. Keyed by project id for the rows.
   const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
-    () => overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, removedSessionIds),
-    [projectOverview, agentSessions, projects, removedSessionIds]
+    () =>
+      overlayLivePreviews(
+        projectOverview ?? [],
+        agentSessions,
+        projects,
+        PROJECT_PREVIEW_COUNT,
+        removedSessionIds,
+        manualSessionProjectIds
+      ),
+    [projectOverview, agentSessions, projects, removedSessionIds, manualSessionProjectIds]
   )
 
   const onEnterProject = useCallback(

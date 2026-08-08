@@ -78,4 +78,26 @@ describe('ProjectOverviewRow', () => {
 
     expect(screen.queryByRole('button', { name: 'New session in Home' })).toBeNull()
   })
+
+  it('makes an explicit project header a session drop target without targeting Home or auto projects', () => {
+    const { rerender } = render(<ProjectOverviewRow project={project} />)
+    const explicitHeader = screen.getByRole('button', { name: 'Enter Test D' }).closest('[data-conversation-group-drop]')
+
+    expect(explicitHeader?.getAttribute('data-project-id')).toBe('p1')
+    expect(explicitHeader?.getAttribute('data-group-id')).toBe('')
+
+    rerender(
+      <ProjectOverviewRow
+        project={{ id: '__no_project__', isNoProject: true, label: 'Home' } as unknown as SidebarProjectTree}
+      />
+    )
+    expect(screen.getByRole('button', { name: 'Enter Home' }).closest('[data-conversation-group-drop]')).toBeNull()
+
+    rerender(
+      <ProjectOverviewRow
+        project={{ id: 'auto', isAuto: true, label: 'Auto repo' } as unknown as SidebarProjectTree}
+      />
+    )
+    expect(screen.getByRole('button', { name: 'Enter Auto repo' }).closest('[data-conversation-group-drop]')).toBeNull()
+  })
 })

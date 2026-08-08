@@ -121,9 +121,9 @@ export function ProjectDialog() {
       return
     }
 
-    // A project owns sessions by folder (cwd-prefix), so creation requires at
-    // least one — a folder-less project couldn't hold a session anyway.
-    if (mode === 'create' && trimmed && folders.length) {
+    // Folders remain optional: organizational projects can own sessions through
+    // manual conversation-group assignment without changing those sessions' cwd.
+    if (mode === 'create' && trimmed) {
       await runSubmit(() => createProject({ folders, idea: idea.trim() || undefined, name: trimmed, use: true }))
     }
   }
@@ -291,7 +291,7 @@ export function ProjectDialog() {
               {t.common.cancel}
             </Button>
             <Button
-              disabled={submitting || !name.trim() || (mode === 'create' && folders.length === 0)}
+              disabled={submitting || !name.trim()}
               onClick={() => void submit()}
               type="button"
             >

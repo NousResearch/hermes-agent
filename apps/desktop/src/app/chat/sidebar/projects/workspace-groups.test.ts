@@ -623,6 +623,20 @@ describe('sessionProjectColor', () => {
 })
 
 describe('overlayLiveLanes', () => {
+  it('does not reinsert a live session into its cwd project after a manual move', () => {
+    const project = projectNode({
+      id: '/www/app',
+      isAuto: true,
+      repos: [{ id: '/www/app', label: 'app', path: '/www/app', sessionCount: 0, groups: [] }]
+    })
+    const moved = makeSession('/www/app', { id: 'moved', git_branch: 'main' })
+
+    const overlaid = overlayLiveLanes(project, [moved], new Set(), { moved: 'p_wedding' })
+
+    expect(overlaid.repos.flatMap(repo => repo.groups).flatMap(group => group.sessions)).toEqual([])
+    expect(overlaid.sessionCount).toBe(0)
+  })
+
   it('injects a live session into the matching main lane instantly', () => {
     const project = projectNode({
       id: '/www/app',
@@ -833,6 +847,24 @@ describe('overlayLiveLanes', () => {
 })
 
 describe('overlayLivePreviews', () => {
+  it('uses manual project ownership instead of cwd when previewing a moved live session', () => {
+    const oldProject = projectNode({ id: '/www/app', isAuto: true })
+    const weddingProject = projectNode({ id: 'p_wedding' })
+    const moved = makeSession('/www/app', { id: 'moved', started_at: 99, last_active: 99 })
+
+    const previews = overlayLivePreviews(
+      [oldProject, weddingProject],
+      [moved],
+      [],
+      3,
+      new Set(),
+      { moved: 'p_wedding' }
+    )
+
+    expect(previews['/www/app']).toBeUndefined()
+    expect(previews.p_wedding.map(session => session.id)).toEqual(['moved'])
+  })
+
   it('merges live sessions into a project preview, live first, capped to the limit', () => {
     const project = projectNode({
       id: '/www/app',

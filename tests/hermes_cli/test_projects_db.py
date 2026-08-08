@@ -101,3 +101,44 @@ def test_per_profile_isolation(tmp_path):
         b.close()
 
 
+def test_conversation_group_crud_and_session_assignment(conn):
+    project_id = pdb.create_project(conn, name="SK 업무")
+
+    first = pdb.create_conversation_group(conn, project_id, "ITO LLM Wiki")
+    second = pdb.create_conversation_group(conn, project_id, "Tib/RV")
+
+    assert [group.name for group in pdb.list_conversation_groups(conn, project_id)] == [
+        "ITO LLM Wiki",
+        "Tib/RV",
+    ]
+
+    assert pdb.update_conversation_group(conn, second, name="Tib / RV") is True
+    pdb.reorder_conversation_groups(conn, project_id, [second, first])
+    assert [group.name for group in pdb.list_conversation_groups(conn, project_id)] == [
+        "Tib / RV",
+        "ITO LLM Wiki",
+    ]
+
+    pdb.assign_session(conn, "session-1", project_id, second)
+    assignment = pdb.get_session_assignments(conn)["session-1"]
+    assert assignment.project_id == project_id
+    assert assignment.group_id == second
+
+    assert pdb.delete_conversation_group(conn, second) is True
+    assignment = pdb.get_session_assignments(conn)["session-1"]
+    assert assignment.project_id == project_id
+    assert assignment.group_id is None
+
+
+def test_session_assignment_can_move_to_ungrouped_without_changing_project(conn):
+    project_id = pdb.create_project(conn, name="주식")
+    group_id = pdb.create_conversation_group(conn, project_id, "SK하이닉스")
+    pdb.assign_session(conn, "session-1", project_id, group_id)
+
+    pdb.assign_session(conn, "session-1", project_id, None)
+
+    assignment = pdb.get_session_assignments(conn)["session-1"]
+    assert assignment.project_id == project_id
+    assert assignment.group_id is None
+
+

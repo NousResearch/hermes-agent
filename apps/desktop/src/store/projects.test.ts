@@ -8,6 +8,7 @@ import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaul
 
 import {
   $activeProjectId,
+  $manualSessionProjectIds,
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
@@ -461,6 +462,24 @@ describe('repository discovery policy', () => {
 })
 
 describe('project tree profile isolation', () => {
+  it('publishes the backend manual session ownership map with the project tree', async () => {
+    const gateway = {
+      connectionState: 'open',
+      request: vi.fn().mockResolvedValue({
+        active_id: null,
+        manual_session_project_ids: { moved: 'p_wedding' },
+        projects: [],
+        scoped_session_ids: ['moved']
+      })
+    }
+    activeGateway.mockImplementation(() => gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    await refreshProjectTree()
+
+    expect($manualSessionProjectIds.get()).toEqual({ moved: 'p_wedding' })
+  })
+
   it('does not publish a late response from the previous profile', async () => {
     let resolveA: ((value: unknown) => void) | undefined
 

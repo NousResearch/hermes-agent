@@ -340,6 +340,50 @@ def test_explicit_project_claims_sessions_and_beats_auto():
     assert any(p["id"] == "/www/other" and p["isAuto"] for p in tree["projects"])
 
 
+def test_manual_assignment_overrides_cwd_and_places_session_in_conversation_group():
+    project = _project("p_sk", "SK 업무", [])
+    session = _session("/unrelated/repo", branch="main")
+    groups = [
+        {
+            "id": "cg_ito",
+            "project_id": "p_sk",
+            "name": "ITO LLM Wiki",
+            "position": 0,
+        }
+    ]
+    assignments = {
+        session["id"]: {
+            "session_id": session["id"],
+            "project_id": "p_sk",
+            "group_id": "cg_ito",
+        }
+    }
+
+    tree = pt.build_tree(
+        [project],
+        [session],
+        [],
+        resolve=lambda _cwd: None,
+        hydrate=True,
+        conversation_groups=groups,
+        session_assignments=assignments,
+    )
+
+    assert [node["id"] for node in tree["projects"]] == ["p_sk"]
+    node = tree["projects"][0]
+    assert node["sessionCount"] == 1
+    assert node["repos"] == []
+    assert node["conversationGroups"] == [
+        {
+            "id": "cg_ito",
+            "label": "ITO LLM Wiki",
+            "position": 0,
+            "sessions": [session],
+        }
+    ]
+    assert tree["manual_session_project_ids"] == {session["id"]: "p_sk"}
+
+
 def test_scoped_session_ids_is_union_of_placed_sessions():
     project = _project("p_app", "App", ["/www/app"])
     resolve = _resolver(

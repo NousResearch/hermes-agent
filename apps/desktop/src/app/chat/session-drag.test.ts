@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { assignSessionConversationGroup } from '@/store/projects'
 import { openSessionTile } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
@@ -16,6 +17,7 @@ import { startSessionDrag } from './session-drag'
  */
 
 vi.mock('@/store/session-states', () => ({ openSessionTile: vi.fn() }))
+vi.mock('@/store/projects', () => ({ assignSessionConversationGroup: vi.fn() }))
 vi.mock('./composer/focus', () => ({ requestComposerInsertRefs: vi.fn() }))
 
 const ZONE = { left: 0, top: 0, right: 1000, bottom: 800 }
@@ -109,5 +111,41 @@ describe('session drop targeting across stacked tabs', () => {
 
     expect(requestComposerInsertRefs).not.toHaveBeenCalled()
     expect(openSessionTile).not.toHaveBeenCalled()
+  })
+})
+
+describe('session drop targeting for project conversation groups', () => {
+  it('moves a session into the conversation group under the pointer', () => {
+    document.body.innerHTML = `
+      <div id="row"></div>
+      <div data-conversation-group-drop data-project-id="p_sk" data-group-id="cg_ito"></div>
+    `
+    stubRect(document.querySelector('[data-conversation-group-drop]')!, {
+      left: 100,
+      top: 100,
+      right: 400,
+      bottom: 220
+    })
+
+    dragTo(document.getElementById('row')!, 200, 160)
+
+    expect(assignSessionConversationGroup).toHaveBeenCalledWith('dragged', 'p_sk', 'cg_ito')
+  })
+
+  it('moves a session into a project when its overview header is the drop target', () => {
+    document.body.innerHTML = `
+      <div id="row"></div>
+      <div data-conversation-group-drop data-project-id="p_wedding" data-group-id=""></div>
+    `
+    stubRect(document.querySelector('[data-conversation-group-drop]')!, {
+      left: 100,
+      top: 100,
+      right: 400,
+      bottom: 160
+    })
+
+    dragTo(document.getElementById('row')!, 200, 130)
+
+    expect(assignSessionConversationGroup).toHaveBeenCalledWith('dragged', 'p_wedding', null)
   })
 })

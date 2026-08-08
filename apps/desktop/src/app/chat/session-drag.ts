@@ -49,6 +49,7 @@ import {
   SESSION_TILE_DRAG
 } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
+import { assignSessionConversationGroup } from '@/store/projects'
 import { openSessionTile, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
@@ -60,6 +61,13 @@ import { type SessionDragPayload, sessionInlineRef, sessionLabel } from './compo
 interface SurfaceSnapshot {
   anchor: string
   composerTarget: string
+  rect: ZoneRect
+}
+
+interface ConversationGroupSnapshot {
+  element: HTMLElement
+  groupId: null | string
+  projectId: string
   rect: ZoneRect
 }
 
@@ -109,12 +117,15 @@ export function startSessionDrag(
   let strips: StripSnapshot[] = []
   let surfaces: SurfaceSnapshot[] = []
   let composers: ZoneRect[] = []
+  let conversationGroups: ConversationGroupSnapshot[] = []
   let zoneHost = new Map<string, ReturnType<typeof tileZoneHost>>()
 
   // Commit intent, updated per resolved move (the machinery flushes the final
   // move before commit, so these always match the released-at position).
   let split: { anchor: string; before?: null | string; pos: TileDock } | null = null
   let link: null | string = null
+  let organize: ConversationGroupSnapshot | null = null
+  let highlightedGroup: HTMLElement | null = null
 
   // The drag SOURCE (sidebar row or tile tab). Captured synchronously — React
   // clears `currentTarget` after the pointerdown handler returns, but this runs
@@ -133,6 +144,14 @@ export function startSessionDrag(
       strips = snapshotStrips()
       surfaces = snapshotSurfaces()
       composers = queryAllVisible('[data-slot="composer-root"]').map(snapRect)
+      conversationGroups = queryAllVisible('[data-conversation-group-drop]')
+        .map(element => ({
+          element,
+          groupId: element.dataset.groupId || null,
+          projectId: element.dataset.projectId || '',
+          rect: snapRect(element)
+        }))
+        .filter(target => Boolean(target.projectId))
       zoneHost = new Map(zones.map(zone => [zone.id, tileZoneHost(zone.id)]))
       source?.style.setProperty('opacity', '0.45')
       // The same sentinel the zone overlay + chat surfaces key off — the
@@ -141,12 +160,34 @@ export function startSessionDrag(
     },
 
     onEnd() {
+      highlightedGroup?.removeAttribute('data-session-drag-over')
+      highlightedGroup = null
+
       if (source) {
         source.style.opacity = restoreOpacity
       }
     },
 
     resolveMove(x, y): DropHint | null {
+      const conversationGroup = conversationGroups.find(target => rectContains(target.rect, x, y)) ?? null
+
+      if (conversationGroup) {
+        if (highlightedGroup !== conversationGroup.element) {
+          highlightedGroup?.removeAttribute('data-session-drag-over')
+          conversationGroup.element.setAttribute('data-session-drag-over', 'true')
+          highlightedGroup = conversationGroup.element
+        }
+
+        organize = conversationGroup
+        split = null
+        link = null
+
+        return null
+      }
+
+      highlightedGroup?.removeAttribute('data-session-drag-over')
+      highlightedGroup = null
+      organize = null
       const zone = zones.find(z => rectContains(z.rect, x, y))
       const host = zone ? zoneHost.get(zone.id) : null
 
@@ -192,7 +233,9 @@ export function startSessionDrag(
     },
 
     onCommit() {
-      if (split) {
+      if (organize) {
+        void assignSessionConversationGroup(payload.id, organize.projectId, organize.groupId)
+      } else if (split) {
         openSessionTile(payload.id, split.pos, split.anchor, split.before)
         // A tile for this session may already exist (openSessionTile is
         // idempotent — e.g. persisted from an earlier run): a drop must never

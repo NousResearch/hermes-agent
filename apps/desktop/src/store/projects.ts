@@ -42,6 +42,7 @@ export const $activeProjectId = atom<null | string>(null)
 // source of project membership — the desktop no longer derives it.
 export const $projectTree = atom<SidebarProjectTree[]>([])
 export const $projectTreeLoading = atom(false)
+export const $manualSessionProjectIds = atom<Record<string, string>>({})
 
 // False when the connected backend predates the projects.* JSON-RPC surface
 // (same semver label, older install). Null until the first probe.
@@ -445,6 +446,7 @@ interface ProjectTreePayload {
   projects: SidebarProjectTree[]
   active_id: null | string
   scoped_session_ids: string[]
+  manual_session_project_ids?: Record<string, string>
 }
 
 let projectTreeRefreshGeneration = 0
@@ -467,6 +469,7 @@ async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
 
     const scoped = new Set(res.scoped_session_ids ?? [])
     $projectTree.set(res.projects ?? [])
+    $manualSessionProjectIds.set(res.manual_session_project_ids ?? {})
     $activeProjectId.set(res.active_id ?? null)
     const tombstones = $removedSessionIds.get()
 
@@ -558,6 +561,50 @@ export async function moveSessionToProject(
     )
   )
   void refreshProjectTree()
+}
+
+export async function assignSessionConversationGroup(
+  sessionId: string,
+  projectId: string,
+  groupId: null | string
+): Promise<void> {
+  await gatewayRequest('projects.sessions.assign', {
+    session_id: sessionId,
+    project_id: projectId,
+    group_id: groupId
+  })
+  await refreshProjectTree()
+}
+
+export interface ConversationGroupInfo {
+  id: string
+  project_id: string
+  name: string
+  position: number
+  created_at: number
+}
+
+export async function createConversationGroup(projectId: string, name: string): Promise<void> {
+  await gatewayRequest<{ group: ConversationGroupInfo }>('projects.groups.create', {
+    project_id: projectId,
+    name
+  })
+  await refreshProjectTree()
+}
+
+export async function renameConversationGroup(groupId: string, name: string): Promise<void> {
+  await gatewayRequest<{ group: ConversationGroupInfo }>('projects.groups.update', { id: groupId, name })
+  await refreshProjectTree()
+}
+
+export async function deleteConversationGroup(groupId: string): Promise<void> {
+  await gatewayRequest('projects.groups.delete', { id: groupId })
+  await refreshProjectTree()
+}
+
+export async function reorderConversationGroups(projectId: string, ids: string[]): Promise<void> {
+  await gatewayRequest('projects.groups.reorder', { project_id: projectId, ids })
+  await refreshProjectTree()
 }
 
 export interface RepoDiscoveryPolicy {
@@ -786,6 +833,7 @@ function projectInfoToTreeNode(project: ProjectInfo): SidebarProjectTree {
     color: project.color ?? null,
     icon: project.icon ?? null,
     isAuto: false,
+    conversationGroups: [],
     repos: [],
     sessionCount: 0,
     previewSessions: []

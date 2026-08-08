@@ -1236,7 +1236,9 @@ def _(rid, params: dict) -> dict:
             "session busy — wait for the current turn to finish, then retry the handoff",
         )
 
-    platform_name = (params.get("platform", "") or "").strip().lower()
+    # Inline RPC: non-string platform (JSON null already falsy; list/int is
+    # truthy) must not AttributeError on .strip() and tear down the reader.
+    platform_name = str(params.get("platform") or "").strip().lower()
     if not platform_name:
         return _err(rid, 4023, "platform required")
 

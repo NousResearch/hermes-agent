@@ -1,8 +1,12 @@
 # Slash Commands (In-Session)
 
-Registry of record: `hermes_cli/commands.py` (`COMMAND_REGISTRY`) — every
-consumer (autocomplete, `/help`, Telegram menu, Slack mapping) derives from
-it. New commands land often; `/help` in-session is always authoritative.
+Registry of record: `hermes_cli/commands.py` (`COMMAND_REGISTRY`) — built-in
+commands. Every consumer (autocomplete, `/help`, Telegram menu, Slack mapping)
+derives from it. Installed skills are also available as slash commands via
+`/<skill-name>` — these are dynamically discovered (lazily, on first access)
+by `agent/skill_commands.py` from the active profile's skills directory and
+any configured external directories, not enumerated in `COMMAND_REGISTRY`.
+New commands land often; `/help` in-session always reflects both sets.
 (CLI) = interactive CLI/TUI only. (GW) = gateway platforms only.
 
 ### Session
@@ -54,6 +58,10 @@ it. New commands land often; `/help` in-session is always authoritative.
 
 ### Tools & Skills
 ```
+/<skill-name> [args]     Load a specific skill into the session (e.g.
+                         /github-auth, /gif-search). Every installed skill
+                         is automatically available as a slash command.
+                         Stack up to 5: /skill-a /skill-b do XYZ
 /tools [list|enable|disable] Manage tools (CLI)
 /toolsets                List toolsets (CLI)
 /skills                  Search/install/manage skills (CLI)

@@ -200,7 +200,7 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
             content=message.get("content"),
         )
     except Exception as e:
-        logger.debug("Mirror SQLite write failed: %s", e)
+        logger.warning("Mirror SQLite write failed: %s", e)
     finally:
         if db is not None:
             db.close()

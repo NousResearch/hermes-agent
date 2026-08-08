@@ -2203,7 +2203,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
             return self._open_and_cache_session_db(get_hermes_home())
         except Exception as e:
-            logger.debug("SessionDB unavailable for API server: %s", e)
+            logger.warning("SessionDB unavailable for API server: %s", e)
             return None
 
     async def _ensure_session_db_async(self):
@@ -2233,7 +2233,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     return cache[key]
                 return await asyncio.to_thread(self._open_and_cache_session_db, home)
         except Exception as e:
-            logger.debug("SessionDB unavailable for API server: %s", e)
+            logger.warning("SessionDB unavailable for API server: %s", e)
             return None
 
     # ------------------------------------------------------------------

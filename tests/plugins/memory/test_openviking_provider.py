@@ -392,6 +392,35 @@ def test_start_local_openviking_server_uses_endpoint_host_and_port(monkeypatch):
     assert kwargs["start_new_session"] is True
 
 
+def test_start_local_openviking_server_strips_pythonpath_from_child_env(monkeypatch):
+    """The spawned server must not inherit Hermes's PYTHONPATH (#78153).
+
+    Inheriting it makes openviking-server import packages from the Hermes
+    venv instead of its own, and on Windows locks Hermes venv DLLs so the
+    venv cannot be rebuilt during `hermes update`.
+    """
+    popen_calls = []
+
+    def fake_popen(args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return object()
+
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", lambda host, port: False)
+    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
+    monkeypatch.setattr(openviking_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("PYTHONPATH", "/opt/hermes/.venv/Lib/site-packages")
+    monkeypatch.setenv("HERMES_PROFILE", "test-profile")
+
+    state, _message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+
+    assert state == openviking_module._LOCAL_SERVER_STARTED
+    _, kwargs = popen_calls[0]
+    child_env = kwargs["env"]
+    assert child_env is not None
+    assert "PYTHONPATH" not in child_env
+    assert child_env.get("HERMES_PROFILE") == "test-profile"
+
+
 def test_start_local_openviking_server_does_not_spawn_when_port_already_open(monkeypatch):
     """A live listener means a second server would just die on DataDirectoryLocked."""
     probed = []

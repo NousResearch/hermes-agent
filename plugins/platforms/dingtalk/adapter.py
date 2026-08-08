@@ -33,6 +33,7 @@ import os
 import re
 import traceback
 import uuid
+import types  # at top of connect() or module level
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
@@ -344,8 +345,53 @@ class DingTalkAdapter(BasePlatformAdapter):
 
             credential = dingtalk_stream.Credential(
                 self._client_id, self._client_secret
-            )
+            )       
+            
+            
             self._stream_client = dingtalk_stream.DingTalkStreamClient(credential)
+            # In DingTalkAdapter.connect(), after creating self._stream_client:
+            
+            # Harden keepalive: ws.ping() can hang indefinitely on half-dead connections,
+            # stalling the keepalive loop and causing silent disconnects (~3 min after
+            # the last inbound message). Wrap it in a timeout so a stuck ping closes the
+            # WebSocket, which lets the SDK's start() reconnect loop kick in.
+            #
+            # IMPORTANT: bind to the instance only (types.MethodType), NOT the class
+            # (type(self._stream_client).keepalive = ...). A class-level override
+            # pollutes every DingTalkStreamClient in the process and leaks the adapter
+            # closure after disconnect. Instance binding is scoped to this connection
+            # and garbage-collected when the client is dropped.
+            async def _hardened_keepalive(_self, ws, ping_interval=60):
+                while True:
+                    await asyncio.sleep(ping_interval)
+                    try:
+                        await asyncio.wait_for(ws.ping(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "[%s] keepalive: pong timeout (15s) — closing to trigger reconnect",
+                            getattr(_self, "name", "Dingtalk"),
+                        )
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        break
+                    except Exception as e:
+                        logger.warning(
+                            "[%s] keepalive: ping failed: %s — closing",
+                            getattr(_self, "name", "Dingtalk"), e,
+                        )
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        break
+
+            self._stream_client.keepalive = types.MethodType(
+                _hardened_keepalive, self._stream_client
+            )
+
+            
 
             # Initialize card SDK if available and configured
             if CARD_SDK_AVAILABLE and self._card_template_id:

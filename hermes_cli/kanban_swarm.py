@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import sqlite3
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Tuple
 
 from hermes_cli import kanban_db as kb
 
@@ -74,6 +74,20 @@ def _swarm_context(root_id: str, goal: str) -> str:
     )
 
 
+_DEFAULT_VERIFIER_BODY = (
+    "Review every worker handoff and blackboard update. Gate the swarm: "
+    "complete only with metadata {\"gate\": \"pass\"} when evidence is "
+    "sufficient; otherwise block with exact missing work."
+)
+_DEFAULT_VERIFIER_SKILLS: Tuple[str, ...] = ("requesting-code-review",)
+
+_DEFAULT_SYNTHESIZER_BODY = (
+    "Synthesize the verified worker outputs into the final deliverable. "
+    "Do not start until the verifier has passed the gate."
+)
+_DEFAULT_SYNTHESIZER_SKILLS: Tuple[str, ...] = ("humanizer",)
+
+
 def create_swarm(
     conn: sqlite3.Connection,
     *,
@@ -90,12 +104,30 @@ def create_swarm(
     workspace_path: Optional[str] = None,
     priority: int = 0,
     idempotency_key: Optional[str] = None,
+    # #34273: per-swarm overrides for the verifier + synthesizer task body
+    # and skills. None preserves the current defaults (code-review verifier,
+    # humanizer synthesizer) so existing callers see no behavior
+    # change. The swarm context_suffix is appended to the custom body so
+    # workers still see the swarm protocol metadata.
+    verifier_body: Optional[str] = None,
+    verifier_skills: Optional[Iterable[str]] = None,
+    synthesizer_body: Optional[str] = None,
+    synthesizer_skills: Optional[Iterable[str]] = None,
 ) -> SwarmCreated:
     """Create a durable Kanban swarm graph.
 
     The returned graph is immediately dispatchable: the planning root is marked
     ``done`` with topology metadata, parallel workers are ``ready``, the verifier
     waits for every worker, and the synthesizer waits for the verifier.
+
+    The verifier and synthesizer task bodies default to a code-review-style
+    flow that suits 'parallel workers → review → final write-up' pipelines.
+    Callers with different semantics (e.g. parallel scrapers → merge step →
+    process step) can override ``verifier_body``, ``verifier_skills``,
+    ``synthesizer_body``, ``synthesizer_skills``. When omitted, the defaults
+    are preserved. The swarm context suffix is appended to any custom body
+    so the verifier/synthesizer worker still sees the swarm protocol notes.
+    See #34273.
     """
 
     goal = _require_text(goal, "goal")
@@ -172,16 +204,23 @@ def create_swarm(
         )
         worker_ids.append(worker_id)
 
-    verifier_body = (
-        "Review every worker handoff and blackboard update. Gate the swarm: "
-        "complete only with metadata {\"gate\": \"pass\"} when evidence is "
-        "sufficient; otherwise block with exact missing work."
-        + context_suffix
+    # #34273: build verifier / synthesizer bodies + skills with per-swarm
+    # overrides falling back to the historical defaults. The context
+    # suffix is appended to any custom body so the worker still gets the
+    # swarm protocol notes (goal, root_id, blackboard usage).
+    _verifier_body_base = (
+        verifier_body if verifier_body is not None else _DEFAULT_VERIFIER_BODY
+    )
+    final_verifier_body = _verifier_body_base + context_suffix
+    final_verifier_skills = (
+        list(verifier_skills)
+        if verifier_skills is not None
+        else list(_DEFAULT_VERIFIER_SKILLS)
     )
     verifier = kb.create_task(
         conn,
         title=verifier_title,
-        body=verifier_body,
+        body=final_verifier_body,
         assignee=verifier_assignee,
         created_by=created_by,
         parents=worker_ids,
@@ -189,18 +228,22 @@ def create_swarm(
         priority=priority,
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
-        skills=["requesting-code-review"],
+        skills=final_verifier_skills or None,
     )
 
-    synthesizer_body = (
-        "Synthesize the verified worker outputs into the final deliverable. "
-        "Do not start until the verifier has passed the gate."
-        + context_suffix
+    _synthesizer_body_base = (
+        synthesizer_body if synthesizer_body is not None else _DEFAULT_SYNTHESIZER_BODY
+    )
+    final_synthesizer_body = _synthesizer_body_base + context_suffix
+    final_synthesizer_skills = (
+        list(synthesizer_skills)
+        if synthesizer_skills is not None
+        else list(_DEFAULT_SYNTHESIZER_SKILLS)
     )
     synthesizer = kb.create_task(
         conn,
         title=synthesizer_title,
-        body=synthesizer_body,
+        body=final_synthesizer_body,
         assignee=synthesizer_assignee,
         created_by=created_by,
         parents=[verifier],
@@ -208,7 +251,7 @@ def create_swarm(
         priority=priority,
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
-        skills=["humanizer"],
+        skills=final_synthesizer_skills or None,
     )
 
     created = SwarmCreated(root, worker_ids, verifier, synthesizer)

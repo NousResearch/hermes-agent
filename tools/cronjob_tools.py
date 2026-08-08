@@ -1414,8 +1414,13 @@ def cronjob(
                         )
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                # Normalize: coerce string values like "forever" to None
+                # (infinite), and treat 0 or negative as None (GH-71993).
+                try:
+                    repeat = int(repeat)
+                except (TypeError, ValueError):
+                    repeat = None
+                normalized_repeat = None if repeat is None or repeat <= 0 else repeat
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state

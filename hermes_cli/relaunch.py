@@ -94,23 +94,39 @@ def resolve_hermes_bin() -> Optional[str]:
     fast-path when it points at a .py file and fall through to either
     ``hermes.exe`` on PATH or the ``sys.executable -m hermes_cli.main``
     fallback.
+
+    POSIX note: a raw ``.py`` script is directly executable via its shebang,
+    but the shebang (``#!/usr/bin/env python3``) resolves to the *system*
+    interpreter, which may lack the project's dependencies (e.g. ``dotenv``).
+    The installed ``hermes`` on PATH is a wrapper that launches the correct
+    venv interpreter.  We therefore skip the argv[0] fast-path for Python
+    scripts (detected by extension *or* shebang) on POSIX too, so the
+    relaunch prefers the PATH wrapper (venv) over the raw repo script.
     """
     argv0 = sys.argv[0]
-    _is_windows = sys.platform == "win32"
 
     def _is_python_script(p: str) -> bool:
-        return p.lower().endswith((".py", ".pyc"))
+        if p.lower().endswith((".py", ".pyc")):
+            return True
+        # A script with no extension (e.g. the repo's ``hermes`` launcher)
+        # is still a Python script if its shebang names a python interpreter.
+        try:
+            with open(p, "rb") as fh:
+                first = fh.readline(128)
+        except OSError:
+            return False
+        return first.startswith(b"#!") and b"python" in first.lower()
 
     # Absolute path to an executable (covers nix store, venv wrappers, etc.)
     if os.path.isabs(argv0) and os.path.isfile(argv0) and os.access(argv0, os.X_OK):
-        if not (_is_windows and _is_python_script(argv0)):
+        if not _is_python_script(argv0):
             return argv0
 
     # Relative path — resolve against CWD
     if not argv0.startswith("-") and os.path.isfile(argv0):
         abs_path = os.path.abspath(argv0)
         if os.access(abs_path, os.X_OK):
-            if not (_is_windows and _is_python_script(abs_path)):
+            if not _is_python_script(abs_path):
                 return abs_path
 
     # PATH lookup

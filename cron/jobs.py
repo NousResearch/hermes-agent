@@ -817,6 +817,33 @@ def _compute_grace_seconds(schedule: dict) -> int:
     return MIN_GRACE
 
 
+def _cron_has_elapsed_occurrence_today(schedule: dict, now: datetime) -> bool:
+    """Return whether a cron expression has reached a fire time today.
+
+    Restart catch-up should not replay a stale prior-day occurrence before the
+    job's first scheduled time on the current local day (#77406).  A job that
+    does have an elapsed occurrence today remains eligible, including an
+    expression with multiple daily fires.  Bias toward the existing catch-up
+    behavior if the expression cannot be inspected.
+    """
+    if schedule.get("kind") != "cron" or not _ensure_croniter():
+        return True
+    croniter_fn = croniter
+    if croniter_fn is None:
+        return True
+    expr = schedule.get("expr")
+    if not expr:
+        return True
+    try:
+        # croniter.get_prev() is strict about its base.  Nudge forward by one
+        # microsecond so a tick exactly on a fire boundary counts that boundary
+        # as elapsed rather than looking back to the previous day.
+        previous = croniter_fn(expr, now + timedelta(microseconds=1)).get_prev(datetime)
+        return _ensure_aware(previous).date() == now.date()
+    except Exception:
+        return True
+
+
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
     Compute the next run time for a schedule.
@@ -2547,9 +2574,12 @@ def get_due_jobs() -> List[Dict[str, Any]]:
     than one period in the past, e.g. because the gateway was down OR because a
     long-running previous execution overran the interval), the accumulated
     missed runs are collapsed — ``next_run_at`` is fast-forwarded to the next
-    future occurrence so a backlog does NOT burst-fire on restart — but the job
-    still fires ONCE now. This prevents the perpetual-defer loop (#33315) where
-    a job whose runtime exceeds ``interval + grace`` would be skipped forever.
+    future occurrence so a backlog does NOT burst-fire on restart. Interval
+    jobs still fire ONCE now, preventing the perpetual-defer loop (#33315)
+    where a job whose runtime exceeds ``interval + grace`` would be skipped
+    forever. Calendar cron jobs fire once only when a scheduled occurrence has
+    already elapsed on the current local day; otherwise catch-up defers to the
+    first future occurrence today (#77406).
 
     Note: firing once on catch-up flows through ``mark_job_run``, so a job with
     a ``repeat.times`` limit consumes one of its runs on that catch-up fire.
@@ -2820,19 +2850,24 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 # the next future occurrence instead of firing a stale run.
                 grace = _compute_grace_seconds(schedule)
                 if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
-                    # Job is past its catch-up grace window — skip accumulated
-                    # missed runs but still execute once now to avoid deferring
-                    # indefinitely (e.g. a long-running job just finished).
+                    # Job is past its catch-up grace window. Skip accumulated
+                    # missed runs. Interval jobs still execute once now to
+                    # avoid deferring indefinitely (e.g. a long-running job
+                    # just finished). Calendar cron jobs execute only after a
+                    # scheduled occurrence has elapsed today; a restart before
+                    # today's first fire must not consume that future run.
                     new_next = compute_next_run(schedule, now.isoformat())
                     if new_next:
+                        catch_up_now = _cron_has_elapsed_occurrence_today(schedule, now)
                         logger.info(
                             "Job '%s' missed its scheduled time (%s, grace=%ds). "
-                            "Running now; next run provisionally set to: %s "
-                            "(re-anchored on completion)",
+                            "%s; next run provisionally set to: %s%s",
                             job.get("name", job.get("id", "?")),
                             next_run,
                             grace,
+                            "Running now" if catch_up_now else "Deferring catch-up",
                             new_next,
+                            " (re-anchored on completion)" if catch_up_now else "",
                         )
                         # Persist the fast-forward to storage now (skip accumulated
                         # slots). In the built-in ticker path this is shortly
@@ -2847,6 +2882,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 rj["next_run_at"] = new_next
                                 needs_save = True
                                 break
+                        if not catch_up_now:
+                            continue
                         record_catch_up_occurrence()
                         # Fall through to due.append(job) — execute once now
 

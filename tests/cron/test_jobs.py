@@ -585,6 +585,61 @@ class TestGetDueJobs:
         assert next_dt > _hermes_now()
 
 
+    def test_restart_catch_up_does_not_run_cron_jobs_before_todays_fire_time(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """#77406: stale prior-day slots must not consume today's future run.
+
+        At a 10:57 gateway restart, daily/weekday jobs scheduled for 08:00 and
+        09:00 should catch up once, while 17:00 and 19:30 jobs should remain
+        scheduled for later the same day.  The matrix also pins an exact-time
+        boundary and a twice-daily schedule with an elapsed 08:00 occurrence.
+        All records deliberately carry an older persisted ``next_run_at`` to
+        reproduce a day-long gateway outage; the due scan must distinguish
+        today's missed occurrences from jobs whose first occurrence today is
+        still in the future.
+        """
+        now = datetime(2026, 8, 3, 10, 57, tzinfo=timezone.utc)  # Monday
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        jobs = []
+        for job_id, expr, stale_time in (
+            ("daily-0800", "0 8 * * *", "2026-08-02T08:00:00+00:00"),
+            ("daily-0900", "0 9 * * *", "2026-08-02T09:00:00+00:00"),
+            ("at-boundary", "57 10 * * *", "2026-08-02T10:57:00+00:00"),
+            ("twice-daily", "0 8,17 * * *", "2026-08-02T17:00:00+00:00"),
+            ("daily-1700", "0 17 * * *", "2026-08-02T17:00:00+00:00"),
+            ("weekday-1930", "30 19 * * 1-5", "2026-07-31T19:30:00+00:00"),
+        ):
+            jobs.append(
+                {
+                    "id": job_id,
+                    "name": job_id,
+                    "prompt": "run",
+                    "schedule": {"kind": "cron", "expr": expr},
+                    "next_run_at": stale_time,
+                    "enabled": True,
+                    "state": "scheduled",
+                }
+            )
+        save_jobs(jobs)
+
+        due_ids = {job["id"] for job in get_due_jobs()}
+
+        assert due_ids == {
+            "daily-0800",
+            "daily-0900",
+            "at-boundary",
+            "twice-daily",
+        }
+        daily_1700 = get_job("daily-1700")
+        weekday_1930 = get_job("weekday-1930")
+        assert daily_1700 is not None
+        assert weekday_1930 is not None
+        assert daily_1700["next_run_at"] == "2026-08-03T17:00:00+00:00"
+        assert weekday_1930["next_run_at"] == "2026-08-03T19:30:00+00:00"
+
+
     def test_idless_job_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
         """A job missing its 'id' key must not crash the tick or freeze siblings.
 

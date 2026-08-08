@@ -5804,12 +5804,19 @@ function installMediaPermissions() {
   // Windows in addition to (or instead of) the request handler. Without it,
   // the check defaults to false and capture is denied before the request
   // handler ever runs.
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    return (
-      permission === 'media' ||
-      permission === ('audioCapture' as any) /* todo: is this needed? */ ||
-      permission === ('videoCapture' as any)
-    )
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission, _origin, details) => {
+    if (permission === 'media' || isMediaCapturePermission(permission, details)) {
+      // details.mediaType is a single string here (not the mediaTypes array).
+      const mediaType = details?.mediaType
+
+      if (mediaType === 'video') {
+        return false
+      }
+
+      return true
+    }
+
+    return false
   })
 }
 

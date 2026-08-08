@@ -1598,32 +1598,54 @@ class ShellFileOperations(FileOperations):
         content_bytes = content.encode('utf-8', 'surrogatepass')
         bytes_written = len(content_bytes)
 
-        # Post-write content verification (cheap, one shell call): compare
-        # the on-disk sha256 to the intended content's hash. Production
+        # Post-write content verification — fail CLOSED.
+        #
+        # Compare the on-disk sha256 to the intended content's hash. Production
         # mining shows models re-reading files right after writing them to
         # confirm persistence (154 verify-reads in a 400k-msg window) —
         # an explicit verified flag makes that turn unnecessary, and a
         # mismatch is surfaced as a hard error instead of silent corruption
         # (mirrors patch_replace's post-write verification).
+        #
+        # Fail-closed vs prior soft path: on some backends (e.g. a
+        # PyInstaller-bundled Windows EXE whose shell is not a real POSIX sh)
+        # the atomic-write script can report exit_code 0 while no file lands
+        # on disk (#52267). Swallowing a missing sha256sum / unreadable path
+        # as ``verified=None`` then still reports bytes_written success — a
+        # phantom write. Require a successful hash read that matches; if the
+        # file cannot be hashed at all, error out so the agent learns the
+        # write did NOT land.
         content_verified: Optional[bool] = None
+        expected_sha = hashlib.sha256(content_bytes).hexdigest()
         try:
             hash_cmd = f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null"
             hash_result = self._exec(hash_cmd)
-            if hash_result.exit_code == 0 and hash_result.stdout.strip():
-                disk_sha = hash_result.stdout.strip().split()[0]
-                expected_sha = hashlib.sha256(content_bytes).hexdigest()
-                content_verified = disk_sha == expected_sha
-                if not content_verified:
-                    return WriteResult(
-                        error=(
-                            f"Post-write verification failed for {path}: on-disk "
-                            "content hash differs from the intended write. The "
-                            "write did not persist correctly — re-read the file "
-                            "and retry."
-                        )
-                    )
-        except Exception:
-            content_verified = None
+        except Exception as exc:
+            return WriteResult(
+                error=(
+                    f"Write verification failed: '{path}' could not be hashed "
+                    f"after writing ({exc}). No file was confirmed on disk."
+                )
+            )
+        if hash_result.exit_code != 0 or not (hash_result.stdout or "").strip():
+            return WriteResult(
+                error=(
+                    f"Write verification failed: '{path}' could not be read "
+                    f"back after writing (the write may have silently failed "
+                    f"on this backend). No file was confirmed on disk."
+                )
+            )
+        disk_sha = hash_result.stdout.strip().split()[0]
+        content_verified = disk_sha == expected_sha
+        if not content_verified:
+            return WriteResult(
+                error=(
+                    f"Post-write verification failed for {path}: on-disk "
+                    "content hash differs from the intended write. The "
+                    "write did not persist correctly — re-read the file "
+                    "and retry."
+                )
+            )
 
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)

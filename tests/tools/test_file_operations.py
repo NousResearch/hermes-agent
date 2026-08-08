@@ -482,6 +482,75 @@ class TestShellFileOpsWriteDenied:
         assert "Failed to move" in result.error
 
 
+
+class TestWriteFilePostWriteVerification:
+    """Fail-closed post-write hash verification for write_file (#52267)."""
+
+    def test_write_file_fails_when_hash_unavailable(self, mock_env):
+        """atomic-write exit 0 but sha256sum cannot read the path → error."""
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if stdin_data is not None or "mktemp" in command or command.strip().startswith("mv "):
+                return {"output": "", "returncode": 0}
+            if "sha256sum" in command:
+                return {"output": "", "returncode": 1}
+            if command.startswith("mkdir ") or "chmod" in command:
+                return {"output": "", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/out.txt", "hello\n")
+        assert result.error is not None, f"expected fail-closed, got {result}"
+        assert "verification failed" in result.error.lower()
+        assert "could not be read" in result.error.lower() or "no file was confirmed" in result.error.lower()
+
+    def test_write_file_fails_when_hash_mismatches(self, mock_env):
+        """sha256sum returns a different digest than intended content → error."""
+        import hashlib
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if stdin_data is not None or "mktemp" in command or command.strip().startswith("mv "):
+                return {"output": "", "returncode": 0}
+            if "sha256sum" in command:
+                bad = hashlib.sha256(b"other\n").hexdigest()
+                return {"output": f"{bad}  /tmp/test/out.txt\n", "returncode": 0}
+            if command.startswith("mkdir ") or "chmod" in command:
+                return {"output": "", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/out.txt", "hello\n")
+        assert result.error is not None
+        assert "verification failed" in result.error.lower()
+        assert "hash differs" in result.error.lower() or "did not persist" in result.error.lower()
+
+    def test_write_file_ok_when_hash_matches(self, mock_env):
+        import hashlib
+        content = "hello\n"
+        good = hashlib.sha256(content.encode()).hexdigest()
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if stdin_data is not None or "mktemp" in command or command.strip().startswith("mv "):
+                return {"output": "", "returncode": 0}
+            if "sha256sum" in command:
+                return {"output": f"{good}  /tmp/test/out.txt\n", "returncode": 0}
+            if command.startswith("mkdir ") or "chmod" in command:
+                return {"output": "", "returncode": 0}
+            # pre-read cat may run for lint — missing file
+            if command.startswith("cat "):
+                return {"output": "", "returncode": 1}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/out.txt", content)
+        assert result.error is None, result.error
+        assert result.verified is True
+        assert result.bytes_written == len(content.encode())
+
+
 class TestPatchReplacePostWriteVerification:
     """Tests for the post-write verification added in patch_replace.
 

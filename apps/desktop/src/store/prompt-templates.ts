@@ -18,6 +18,7 @@
 
 import { translateNow } from '@/i18n/runtime'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { readKey } from '@/lib/storage'
 
 const STORAGE_KEY = 'hermes.desktop.prompt-templates'
 
@@ -61,28 +62,48 @@ function isTemplate(value: unknown): value is PromptTemplate {
   )
 }
 
+function isTemplateList(value: unknown): value is PromptTemplate[] {
+  return Array.isArray(value) && value.every(isTemplate)
+}
+
 /** Sanitize untrusted persisted JSON: accept only a flat array of valid
  *  template objects; anything else (corrupt, missing) returns an empty array.
  *  The built-in seed is injected lazily by `ensureSeeded()` once the i18n
  *  runtime is ready, so we never seed English text on a non-English UI. */
 function sanitizeTemplates(raw: unknown): PromptTemplate[] {
-  if (Array.isArray(raw) && raw.every(isTemplate)) {
+  if (isTemplateList(raw)) {
     return raw
   }
 
   return []
 }
 
+// The empty array is a valid, user-owned state.  Track whether seeding is
+// needed from the persisted payload rather than from the current list length.
+// This read happens before persistentAtom's fallback subscription writes []
+// for a missing key.
+const persistedRaw = readKey(STORAGE_KEY)
+let shouldSeed = persistedRaw === null
+
+if (persistedRaw !== null) {
+  try {
+    shouldSeed = !isTemplateList(JSON.parse(persistedRaw) as unknown)
+  } catch {
+    shouldSeed = true
+  }
+}
+
 export const $promptTemplates = persistentAtom<PromptTemplate[]>(STORAGE_KEY, [], Codecs.json(sanitizeTemplates))
 
 /** Seed the store with locale-appropriate built-in templates the first time
- *  the dialog is opened (or after a corrupted-payload reset).  If the user
- *  has already added/edited templates, this is a no-op. */
+ * the dialog is opened (or after a corrupted-payload reset).  A valid
+ * persisted empty list is intentional and must remain empty. */
 export function ensureSeeded(): void {
-  if ($promptTemplates.get().length > 0) {
+  if (!shouldSeed) {
     return
   }
 
+  shouldSeed = false
   $promptTemplates.set(getBuiltInTemplates())
 }
 

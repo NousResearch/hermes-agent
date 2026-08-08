@@ -607,6 +607,87 @@ def _mask_token(token: str) -> str:
     return mask_secret(token, head=6, tail=4, floor=18)
 
 
+# ---------------------------------------------------------------------------
+# Approval-prompt display integrity
+# ---------------------------------------------------------------------------
+# A command shown in a dangerous-command approval prompt must render exactly
+# what will execute. Three classes of content can make the displayed copy lie
+# to the human approver (inspired by Claude Code v2.1.223's fix for
+# "commands padded with tabs or invisible Unicode hiding part of the command
+# from the approval dialog"):
+#
+#   1. Invisible/format Unicode — zero-width chars, bidi embeddings/overrides/
+#      isolates (Trojan Source), variation selectors, Hangul fillers, Mongolian
+#      separators, and the U+E0000 tag block (invisible ASCII mirror used for
+#      hidden-instruction smuggling).
+#   2. Raw control bytes — ANSI/OSC escape sequences can recolor, erase, or
+#      rewrite the terminal line the prompt just printed; a bare `\r` can
+#      overwrite the visible command with an innocuous prefix.
+#   3. Whitespace padding — a run of hundreds of spaces/tabs (or blank lines)
+#      pushes the dangerous tail out of view or past a platform preview
+#      truncation (gateway previews cut at ~200 chars).
+#
+# The sanitizer makes all three VISIBLE instead of silently deleting them —
+# the approver should see `\u202e` / `\x1b` markers (literal IOCs preserved),
+# not a cleaned-up command that no longer matches what raised the flag.
+# Display-only: callers apply this to the rendered copy; the executed command
+# is never modified.
+
+# Invisible / format characters that render as nothing (or reorder text) in
+# terminals and chat platforms. Deliberately does NOT include \t or \n —
+# those are legitimate command formatting and are handled by run-collapsing.
+_INVISIBLE_DISPLAY_CHAR_RE = re.compile(
+    r"[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180e"
+    r"\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u206a-\u206f"
+    r"\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffc]"
+    r"|[\U000e0000-\U000e007f]"
+)
+
+# Control bytes dangerous for terminal display: C0 minus \t/\n (kept for
+# legitimate multi-line command formatting), plus \r, DEL, and the C1 range.
+_DISPLAY_UNSAFE_CTRL_RE = re.compile(
+    r"[\x00-\x08\x0b-\x0d\x0e-\x1f\x7f\x80-\x9f]"
+)
+
+# Horizontal whitespace runs long enough to be padding rather than formatting.
+_PAD_RUN_RE = re.compile(r"[ \t]{21,}")
+# Vertical padding: 4+ consecutive newlines.
+_BLANK_RUN_RE = re.compile(r"\n{4,}")
+
+
+def _escape_char_visible(ch: str) -> str:
+    """Render a hidden character as its Python-style escape (`\\u202e`)."""
+    return ch.encode("unicode_escape").decode("ascii")
+
+
+def sanitize_command_for_display(text: "str | None") -> str:
+    """Make a command string safe and honest for approval-prompt display.
+
+    Invisible Unicode and control bytes are replaced with visible escape
+    markers (``\\u202e``, ``\\x1b`` …) and long whitespace-padding runs are
+    collapsed to an explicit ``⟨…⟩`` marker, so nothing in the command can
+    hide from the human approver. Returns the text unchanged when it contains
+    none of these (the overwhelmingly common case).
+
+    Display-only: never feed the result back into detection or execution.
+    """
+    if not text:
+        return "" if text is None else text
+    out = _INVISIBLE_DISPLAY_CHAR_RE.sub(
+        lambda m: _escape_char_visible(m.group(0)), text
+    )
+    out = _DISPLAY_UNSAFE_CTRL_RE.sub(
+        lambda m: _escape_char_visible(m.group(0)), out
+    )
+    out = _PAD_RUN_RE.sub(
+        lambda m: f" ⟨+{len(m.group(0))} whitespace chars⟩ ", out
+    )
+    out = _BLANK_RUN_RE.sub(
+        lambda m: f"\n⟨+{len(m.group(0)) - 1} blank lines⟩\n", out
+    )
+    return out
+
+
 def _redact_query_string(query: str) -> str:
     """Redact sensitive parameter values in a URL query string.
 

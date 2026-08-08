@@ -2757,9 +2757,14 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
     # `command` is still what executes after approval; only the displayed
     # copy is scrubbed. Reuses the same redaction module used for memory
     # and log sanitization so tokens mask consistently across surfaces.
-    from agent.redact import redact_sensitive_text
-    display_command = redact_sensitive_text(command)
-    display_description = redact_sensitive_text(description)
+    # sanitize_command_for_display then makes invisible Unicode, control
+    # bytes, and whitespace padding visible so the prompt cannot lie about
+    # what will run (Claude Code v2.1.223-inspired).
+    from agent.redact import redact_sensitive_text, sanitize_command_for_display
+    display_command = sanitize_command_for_display(redact_sensitive_text(command))
+    display_description = sanitize_command_for_display(
+        redact_sensitive_text(description)
+    )
 
     if approval_callback is not None:
         try:
@@ -3265,12 +3270,19 @@ def _run_approval_gate(
             notify_cb = _gateway_notify_cbs.get(session_key)
 
         if notify_cb is not None:
-            from agent.redact import redact_sensitive_text
+            from agent.redact import (
+                redact_sensitive_text,
+                sanitize_command_for_display,
+            )
             approval_data = {
-                "command": redact_sensitive_text(display_target),
+                "command": sanitize_command_for_display(
+                    redact_sensitive_text(display_target)
+                ),
                 "pattern_key": pattern_key,
                 "pattern_keys": [pattern_key],
-                "description": redact_sensitive_text(description),
+                "description": sanitize_command_for_display(
+                    redact_sensitive_text(description)
+                ),
                 "allow_permanent": True,
                 "allow_session": True,
             }
@@ -4016,12 +4028,19 @@ def check_all_command_guards(command: str, env_type: str,
             # via the closure below, so redaction is display-only. Approval
             # persistence keys off pattern_key (not the command text), so the
             # allowlist is unaffected.
-            from agent.redact import redact_sensitive_text
+            from agent.redact import (
+                redact_sensitive_text,
+                sanitize_command_for_display,
+            )
             approval_data = {
-                "command": redact_sensitive_text(command),
+                "command": sanitize_command_for_display(
+                    redact_sensitive_text(command)
+                ),
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
-                "description": redact_sensitive_text(combined_desc),
+                "description": sanitize_command_for_display(
+                    redact_sensitive_text(combined_desc)
+                ),
                 # Smart DENY overrides are one-operation decisions, so the UI
                 # must not offer a permanent scope.  Otherwise offer Always
                 # whenever any dangerous-pattern warning can actually be
@@ -4110,9 +4129,11 @@ def check_all_command_guards(command: str, env_type: str,
         # Return approval_required for backward compat. Redact secrets in the
         # user-facing copy — the raw `command` is preserved for execution and
         # the allowlist keys off pattern_key, so redaction is display-only.
-        from agent.redact import redact_sensitive_text
-        _disp_command = redact_sensitive_text(command)
-        _disp_combined_desc = redact_sensitive_text(combined_desc)
+        from agent.redact import redact_sensitive_text, sanitize_command_for_display
+        _disp_command = sanitize_command_for_display(redact_sensitive_text(command))
+        _disp_combined_desc = sanitize_command_for_display(
+            redact_sensitive_text(combined_desc)
+        )
         pending_data = {
             "command": _disp_command,
             "pattern_key": primary_key,
@@ -4353,10 +4374,12 @@ def check_execute_code_guard(code: str, env_type: str,
     # screenshottable. The raw `command`/`code` are still what get assessed by
     # smart approval and executed; redaction is display-only. Approval
     # persistence keys off pattern_key, so the allowlist is unaffected.
-    from agent.redact import redact_sensitive_text
-    display_command = redact_sensitive_text(command)
-    display_code = redact_sensitive_text(code)
-    display_description = redact_sensitive_text(description)
+    from agent.redact import redact_sensitive_text, sanitize_command_for_display
+    display_command = sanitize_command_for_display(redact_sensitive_text(command))
+    display_code = sanitize_command_for_display(redact_sensitive_text(code))
+    display_description = sanitize_command_for_display(
+        redact_sensitive_text(description)
+    )
 
     notify_cb = None
     with _lock:

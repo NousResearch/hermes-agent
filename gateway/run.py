@@ -610,9 +610,11 @@ def _redact_approval_command(cmd: "str | None") -> str:
     off. Module-level so the wiring is unit-testable (the call site is a deeply
     nested gateway closure that cannot be driven directly).
     """
-    from agent.redact import redact_sensitive_text
+    from agent.redact import redact_sensitive_text, sanitize_command_for_display
 
-    return redact_sensitive_text(str(cmd or ""), force=True)
+    return sanitize_command_for_display(
+        redact_sensitive_text(str(cmd or ""), force=True)
+    )
 
 
 def _format_exec_approval_fallback(

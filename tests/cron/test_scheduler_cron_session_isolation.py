@@ -36,7 +36,7 @@ class _FakeCronAgent:
     def __init__(self, *args, **kwargs):
         self.kwargs = kwargs
 
-    def run_conversation(self, prompt):
+    def run_conversation(self, prompt, **kwargs):
         result = approval_module.check_execute_code_guard(
             "import os; print(1)", "local"
         )

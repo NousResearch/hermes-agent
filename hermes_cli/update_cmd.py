@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
-from hermes_constants import venv_python_path
+from hermes_constants import get_default_hermes_root, venv_python_path
 
 logger = logging.getLogger(__name__)
 
@@ -1393,31 +1393,38 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     pip_cmd = [_m().sys.executable, "-m", "pip"]
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
-    if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
-        if _m()._is_termux_env(uv_env):
-            uv_env.pop("PYTHONPATH", None)
-            uv_env.pop("PYTHONHOME", None)
-        _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+
+    shared_hermes_root = get_default_hermes_root()
+    install_group = "all"
+    if _python_dependencies_changed(shared_hermes_root, install_group):
+        if uv_bin:
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
+            if _m()._is_termux_env(uv_env):
+                uv_env.pop("PYTHONPATH", None)
+                uv_env.pop("PYTHONHOME", None)
+            _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env, group=install_group)
+        else:
+            # Use sys.executable to explicitly call the venv's pip module,
+            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
+            # Some environments lose pip inside the venv; bootstrap it back with
+            # ensurepip before trying the editable install.
+            try:
+                subprocess.run(
+                    pip_cmd + ["--version"],
+                    cwd=_m().PROJECT_ROOT,
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError:
+                subprocess.run(
+                    [_m().sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                    cwd=_m().PROJECT_ROOT,
+                    check=True,
+                )
+            _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+        _record_python_dependencies_hash(shared_hermes_root, install_group)
     else:
-        # Use sys.executable to explicitly call the venv's pip module,
-        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-        # Some environments lose pip inside the venv; bootstrap it back with
-        # ensurepip before trying the editable install.
-        try:
-            subprocess.run(
-                pip_cmd + ["--version"],
-                cwd=_m().PROJECT_ROOT,
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError:
-            subprocess.run(
-                [_m().sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                cwd=_m().PROJECT_ROOT,
-                check=True,
-            )
-        _m()._install_python_dependencies_with_optional_fallback(pip_cmd)
+        print("  ✓ Python dependency inputs unchanged, skipping reinstall.")
 
     install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
     install_env = uv_env if uv_bin else None
@@ -2704,6 +2711,91 @@ def _repair_node_deps_on_current_checkout(print_completion) -> None:
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
     print_completion("✓ Already up to date!")
 
+
+def _python_dependency_inputs(install_group: str) -> list[tuple[str, bytes | None]]:
+    """Return the labelled file contents that determine whether a Python
+    dependency reinstall is necessary.
+
+    ``None`` means the file is missing; callers treat a missing
+    ``pyproject.toml`` as an unknown state that must trigger a reinstall.
+    """
+    paths = [
+        ("pyproject.toml", _m().PROJECT_ROOT / "pyproject.toml"),
+        ("uv.lock", _m().PROJECT_ROOT / "uv.lock"),
+        ("constraints-termux.txt", _m().PROJECT_ROOT / "constraints-termux.txt"),
+    ]
+    inputs: list[tuple[str, bytes | None]] = [("group", install_group.encode())]
+    for label, path in paths:
+        if not path.exists():
+            inputs.append((label, None))
+            continue
+        try:
+            inputs.append((label, path.read_bytes()))
+        except OSError:
+            inputs.append((label, None))
+    return inputs
+
+
+def _python_dependencies_digest(install_group: str) -> str | None:
+    """SHA-256 digest over the Python dependency input files."""
+    inputs = _python_dependency_inputs(install_group)
+    if not inputs:
+        return None
+    # pyproject.toml must exist for a sane install; if it's missing we can't
+    # safely declare the inputs unchanged.
+    for label, data in inputs:
+        if label == "pyproject.toml" and data is None:
+            return None
+    h = hashlib.sha256()
+    for label, data in inputs:
+        h.update(label.encode())
+        h.update(data if data is not None else b"<missing>")
+    return h.hexdigest()
+
+
+def _python_dependencies_changed(hermes_root: Path, install_group: str) -> bool:
+    """Return ``True`` when Python dependencies should be reinstalled.
+
+    Skips only when:
+      - the venv Python exists,
+      - the venv can import the core package set,
+      - the input files (pyproject.toml, uv.lock, constraints) are unchanged,
+      - a previous successful install recorded a matching digest.
+    """
+    digest = _python_dependencies_digest(install_group)
+    if digest is None:
+        return True
+
+    venv_dir = _m().PROJECT_ROOT / "venv"
+    venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
+    if not venv_python.exists():
+        return True
+
+    healthy, _ = _venv_core_imports_healthy()
+    if not healthy:
+        return True
+
+    try:
+        cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = hermes_root / f".python_dep_hash_{install_group}_{cache_key}"
+        if not cache_file.exists():
+            return True
+        return cache_file.read_text(encoding="utf-8").strip() != digest
+    except OSError:
+        return True
+
+
+def _record_python_dependencies_hash(hermes_root: Path, install_group: str) -> None:
+    """Record the current Python dependency input digest after a successful install."""
+    digest = _python_dependencies_digest(install_group)
+    if digest is None:
+        return
+    try:
+        cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = hermes_root / f".python_dep_hash_{install_group}_{cache_key}"
+        cache_file.write_text(digest, encoding="utf-8")
+    except OSError:
+        logger.debug("Could not write python dependency hash cache")
 
 def _update_node_dependencies() -> list[str]:
     """Refresh Node deps for the ui-tui and web workspaces.
@@ -5914,10 +6006,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         deps_current = _editable_install_is_current(
             git_cmd, _m().PROJECT_ROOT, pre_pull_sha
         )
-        if deps_current:
-            print("→ Python dependencies unchanged — skipping reinstall")
-        else:
-            print("→ Updating Python dependencies...")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
         # Keep managed uv current — runs `uv self update` if we already have one.
@@ -5937,13 +6025,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 uv_env.pop("PYTHONHOME", None)
                 install_group = "termux-all"
                 print("  → Termux detected: using uv + curated termux-all optional profile...")
-            if not deps_current:
-                if _m()._is_termux_env(uv_env) and _is_android_python():
-                    print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                    _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-                _m()._install_python_dependencies_with_optional_fallback(
-                    [uv_bin, "pip"], env=uv_env, group=install_group
-                )
         else:
             # Use sys.executable to explicitly call the venv's pip module,
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -5966,16 +6047,36 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _m()._is_termux_env():
                 install_group = "termux-all"
                 print("  → Termux detected: using curated termux-all optional profile...")
-            if not deps_current:
+
+        shared_hermes_root = get_default_hermes_root()
+        skip_python_install = deps_current or not _python_dependencies_changed(
+            shared_hermes_root, install_group
+        )
+        if skip_python_install:
+            if deps_current:
+                print("→ Python dependencies unchanged — skipping reinstall")
+            else:
+                print("  ✓ Python dependency inputs unchanged, skipping reinstall.")
+        else:
+            print("→ Updating Python dependencies...")
+            if uv_bin:
+                if _m()._is_termux_env(uv_env) and _is_android_python():
+                    print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+                    _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
+                _m()._install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"], env=uv_env, group=install_group
+                )
+            else:
                 if _m()._is_termux_env() and _is_android_python():
                     print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                     _install_psutil_android_compat(pip_cmd)
                 _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+            _record_python_dependencies_hash(shared_hermes_root, install_group)
 
         install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
         lazy_env = uv_env if uv_bin else None
 
-        if deps_current:
+        if skip_python_install:
             # The verification normally runs inside the install we just
             # skipped. Run it here so a wrong skip self-heals into a real
             # install (both verifiers reinstall what they find missing)

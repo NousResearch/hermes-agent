@@ -561,8 +561,13 @@ def get_last_init_error() -> Optional[str]:
     call this to surface the underlying cause in their error messages when
     ``_session_db is None``.  Returns ``None`` if SessionDB initialized
     successfully (or hasn't been attempted).
+
+    Thread-safe: acquires ``_last_init_error_lock`` symmetrically with the
+    setter so readers never observe a partially-written value on non-GIL
+    runtimes (issue #24613).
     """
-    return _last_init_error
+    with _last_init_error_lock:
+        return _last_init_error
 
 
 # Distinctive opening shared by both background-review harness prompts

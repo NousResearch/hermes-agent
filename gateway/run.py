@@ -13904,6 +13904,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # of a bot token. Including its secret keeps multiplexed profiles
             # from spawning competing sidecars for the same account and port.
             "_project_secret",
+            # Feishu/Lark authenticates with app_id/app_secret. Only one
+            # active WebSocket connection per app is allowed; without this,
+            # cloned profiles each start their own WS client and evict each
+            # other in a 1000-bye loop until all disconnect. (#76793)
+            "_app_id",
         ):
             val = getattr(adapter, attr, None)
             if isinstance(val, str) and val.strip():

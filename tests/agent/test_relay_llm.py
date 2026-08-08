@@ -42,6 +42,7 @@ def relay_turn(tmp_path, monkeypatch):
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     relay, turn = relay_turn
     captured_requests = []
+    validated_requests = []
 
     def rewrite_request(name, request, annotated):
         del name
@@ -128,6 +129,7 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
                 "api_request_id": "request-1",
                 "call_role": "primary",
             },
+            request_validator=validated_requests.append,
         )
         chunks = list(stream)
     finally:
@@ -135,6 +137,7 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
         relay.intercepts.deregister_llm_request("hermes-test-request")
 
     assert captured_requests[0]["temperature"] == 0.25
+    assert validated_requests == captured_requests
     assert captured_requests[0]["extra_headers"] == {
         "authorization": "Bearer provider-token"
     }
@@ -398,6 +401,41 @@ def test_non_stream_defers_logical_success_and_reuses_scope_for_retry(relay_turn
     relay_llm.complete_logical_call("request-retry", outcome="success")
 
     assert turn.logical_llm_calls == {}
+
+
+def test_non_stream_validates_final_relay_request(relay_turn):
+    relay, _turn = relay_turn
+    validated_requests = []
+    provider_requests = []
+
+    def rewrite_request(name, request, annotated):
+        del name
+        content = {**request.content, "temperature": 0.25}
+        return relay.LLMRequestInterceptOutcome(
+            relay.LLMRequest(request.headers, content),
+            annotated,
+        )
+
+    relay.intercepts.register_llm_request(
+        "hermes-test-validator",
+        1,
+        False,
+        rewrite_request,
+    )
+    try:
+        relay_llm.execute(
+            {"model": "test-model", "messages": []},
+            lambda request: provider_requests.append(request) or {"content": "ok"},
+            session_id="session-1",
+            name="test-provider",
+            model_name="test-model",
+            request_validator=validated_requests.append,
+        )
+    finally:
+        relay.intercepts.deregister_llm_request("hermes-test-validator")
+
+    assert validated_requests == provider_requests
+    assert validated_requests[0]["temperature"] == 0.25
 
 
 def test_non_stream_result_survives_logical_scope_close_failure(

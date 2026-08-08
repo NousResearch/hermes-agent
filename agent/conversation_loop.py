@@ -16,6 +16,7 @@ resolved through :func:`_ra` so those patches keep working.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import logging
 import os
@@ -2320,6 +2321,8 @@ def run_conversation(
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
         api_kwargs = None  # Guard against UnboundLocalError in except handler
+        _xai_client_web_search_alias = None
+        _xai_client_web_search_tool = None
         api_request_id = f"{turn_id}:api:{api_call_count}"
         agent._current_api_request_id = api_request_id
 
@@ -2404,6 +2407,9 @@ def run_conversation(
                         api_messages,
                         tools_for_api=tools_for_api,
                     )
+                _xai_client_web_search_alias = getattr(
+                    api_kwargs, "xai_client_web_search_alias", None
+                )
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
@@ -2413,6 +2419,15 @@ def run_conversation(
                         is_github_responses=agent._is_copilot_url(),
                         sanitize_harmony_tokens=agent._is_codex_backend(),
                     )
+                _xai_client_web_search_tool = next(
+                    (
+                        deepcopy(tool)
+                        for tool in api_kwargs.get("tools", [])
+                        if isinstance(tool, dict)
+                        and tool.get("name") == _xai_client_web_search_alias
+                    ),
+                    None,
+                )
                 # Copilot x-initiator: the first API call of a user turn is
                 # marked "user" so Copilot bills a premium request; tool-loop
                 # follow-ups keep the default "agent" header (#3040).
@@ -2566,6 +2581,7 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    nonlocal _xai_client_web_search_alias
                     if agent.api_mode == "codex_responses":
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,
@@ -2573,7 +2589,24 @@ def run_conversation(
                             is_github_responses=agent._is_copilot_url(),
                             sanitize_harmony_tokens=agent._is_codex_backend(),
                         )
+                    def _validate_xai_alias(final_request):
+                        nonlocal _xai_client_web_search_alias
+                        from agent.transports.codex import (
+                            _request_keeps_xai_web_search_alias,
+                        )
+
+                        if not _request_keeps_xai_web_search_alias(
+                            final_request,
+                            _xai_client_web_search_alias,
+                            _xai_client_web_search_tool,
+                        ):
+                            _xai_client_web_search_alias = None
                     if _use_streaming:
+                        if _xai_client_web_search_alias:
+                            from agent.transports.codex import _ResponsesRequestKwargs
+
+                            next_api_kwargs = _ResponsesRequestKwargs(next_api_kwargs)
+                            next_api_kwargs.request_validator = _validate_xai_alias
                         return agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner
                         )
@@ -2598,6 +2631,11 @@ def run_conversation(
                             "retry_count": retry_count,
                         },
                         defer_logical_completion=True,
+                        request_validator=(
+                            _validate_xai_alias
+                            if _xai_client_web_search_alias
+                            else None
+                        ),
                     )
 
                 from hermes_cli.middleware import run_llm_execution_middleware
@@ -5964,6 +6002,10 @@ def run_conversation(
             _normalize_kwargs = {}
             if agent.api_mode == "anthropic_messages":
                 _normalize_kwargs["strip_tool_prefix"] = agent._is_anthropic_oauth
+            elif _xai_client_web_search_alias:
+                _normalize_kwargs["xai_client_web_search_alias"] = (
+                    _xai_client_web_search_alias
+                )
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
             assistant_message = normalized
             finish_reason = normalized.finish_reason

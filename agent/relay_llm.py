@@ -33,10 +33,13 @@ def execute(
     model_name: str,
     metadata: dict[str, Any] | None = None,
     defer_logical_completion: bool = False,
+    request_validator: Callable[[dict[str, Any]], None] | None = None,
 ) -> Any:
     """Run one non-streaming physical provider attempt through Relay."""
     runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
     if runtime is None or session is None or not runtime.managed_execution_enabled():
+        if request_validator is not None:
+            request_validator(request)
         return callback(request)
     logical = _logical_parent(runtime, session, parent, metadata)
     parent = logical[1] if logical is not None else parent
@@ -63,6 +66,8 @@ def execute(
                 codec_baseline_body=codec_baseline_body,
                 metadata=metadata,
             )
+            if request_validator is not None:
+                request_validator(final_request)
             raw = callback_context.copy().run(callback, final_request)
         except BaseException as exc:
             callback_error = exc
@@ -328,6 +333,7 @@ def stream(
     completed_response_predicate: Callable[[Any], bool] | None = None,
     metadata: dict[str, Any] | None = None,
     defer_logical_completion: bool = False,
+    request_validator: Callable[[dict[str, Any]], None] | None = None,
 ) -> "ManagedLlmStream":
     """Return a synchronous view of one Relay-managed provider stream."""
     return ManagedLlmStream(
@@ -344,6 +350,7 @@ def stream(
         completed_response_predicate=completed_response_predicate,
         metadata=metadata,
         defer_logical_completion=defer_logical_completion,
+        request_validator=request_validator,
     )
 
 
@@ -366,6 +373,7 @@ class ManagedLlmStream(Iterator[Any]):
         completed_response_predicate: Callable[[Any], bool] | None,
         metadata: dict[str, Any] | None,
         defer_logical_completion: bool,
+        request_validator: Callable[[dict[str, Any]], None] | None,
     ) -> None:
         self.final_response: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -404,6 +412,8 @@ class ManagedLlmStream(Iterator[Any]):
             or session is None
             or not runtime.managed_execution_enabled()
         ):
+            if request_validator is not None:
+                request_validator(request)
             raw_stream = stream_factory(request)
             if completed_response_predicate is not None and completed_response_predicate(
                 raw_stream
@@ -432,15 +442,18 @@ class ManagedLlmStream(Iterator[Any]):
         async def provider_stream(next_request: Any):
             raw_stream = None
             try:
+                final_request = _provider_request(
+                    request,
+                    next_request,
+                    relay_request_body=relay_request_body,
+                    codec_baseline_body=codec_baseline_body,
+                    metadata=metadata,
+                )
+                if request_validator is not None:
+                    run_callback(request_validator, final_request)
                 raw_stream = run_callback(
                     stream_factory,
-                    _provider_request(
-                        request,
-                        next_request,
-                        relay_request_body=relay_request_body,
-                        codec_baseline_body=codec_baseline_body,
-                        metadata=metadata,
-                    )
+                    final_request,
                 )
                 if (
                     completed_response_predicate is not None

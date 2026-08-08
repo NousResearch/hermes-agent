@@ -49,8 +49,16 @@ def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
 # A function literally named ``web_search`` collides with Grok's native
 # server-side tool (incomplete hang or HTTP 400 duplicate names); this alias
 # avoids that while still dispatching through Hermes's configured provider
-# (Firecrawl / Tavily / …). Mapped back to ``web_search`` in normalize_response.
+# (Firecrawl / Tavily / …). A numeric suffix is added when needed, and the
+# request-specific alias is mapped back to ``web_search`` in normalize_response.
 _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
+
+
+class _ResponsesRequestKwargs(dict):
+    """SDK kwargs with request-local metadata kept outside the wire payload."""
+
+    xai_client_web_search_alias: Optional[str] = None
+    request_validator: Any = None
 
 
 def _xai_prefers_native_web_search() -> bool:
@@ -64,7 +72,14 @@ def _xai_prefers_native_web_search() -> bool:
     fix rather than risk reintroducing it).
     """
     try:
-        from agent.web_search_registry import get_active_search_provider
+        from agent.web_search_registry import (
+            get_active_search_provider,
+            get_configured_search_backend,
+        )
+
+        configured = get_configured_search_backend()
+        if configured is not None:
+            return configured.strip().lower() == "xai"
 
         provider = get_active_search_provider()
         if provider is not None:
@@ -78,17 +93,49 @@ def _xai_prefers_native_web_search() -> bool:
         return True
 
 
-def _rename_client_web_search_for_xai(response_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Rename client ``web_search`` → alias so xAI won't hijack it server-side."""
+def _rename_client_web_search_for_xai(
+    response_tools: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], str]:
+    """Rename client ``web_search`` to a collision-free xAI wire alias."""
+    existing_names = {
+        tool.get("name").strip()
+        for tool in response_tools
+        if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+    }
+    alias = _XAI_CLIENT_WEB_SEARCH_ALIAS
+    suffix = 2
+    while alias in existing_names:
+        alias = f"{_XAI_CLIENT_WEB_SEARCH_ALIAS}_{suffix}"
+        suffix += 1
+
     rewritten: List[Dict[str, Any]] = []
     for tool in response_tools:
         if isinstance(tool, dict) and tool.get("name") == "web_search":
             aliased = dict(tool)
-            aliased["name"] = _XAI_CLIENT_WEB_SEARCH_ALIAS
+            aliased["name"] = alias
             rewritten.append(aliased)
         else:
             rewritten.append(tool)
-    return rewritten
+    return rewritten, alias
+
+
+def _request_keeps_xai_web_search_alias(
+    request: Dict[str, Any],
+    alias: Optional[str],
+    expected_tool: Optional[Dict[str, Any]],
+) -> bool:
+    """Return whether the final SDK payload still contains the aliased tool."""
+    if not alias or expected_tool is None:
+        return False
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return False
+    matches = [
+        tool
+        for tool in tools
+        if isinstance(tool, dict) and tool.get("name") == alias
+    ]
+    return matches == [expected_tool]
 
 
 _EXTENDED_PROMPT_CACHE_MODELS = (
@@ -311,6 +358,7 @@ class ResponsesApiTransport(ProviderTransport):
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)
+        xai_client_web_search_alias = None
 
         # xAI server-side web search vs Hermes web providers.
         #
@@ -330,8 +378,9 @@ class ResponsesApiTransport(ProviderTransport):
         # 2. **Client** (Firecrawl / Tavily / Exa / … configured or resolved):
         #    keep Hermes dispatch so ``web.backend`` / ``web.search_backend``
         #    is honored, but rename the wire tool to
-        #    ``hermes_web_search`` so Grok cannot hijack the name. The alias
-        #    is mapped back to ``web_search`` in ``normalize_response``.
+        #    a collision-free ``hermes_web_search`` alias so Grok cannot
+        #    hijack the name. The request-specific alias is mapped back to
+        #    ``web_search`` in ``normalize_response``.
         if is_xai_responses and response_tools:
             has_client_web_search = any(
                 isinstance(t, dict) and t.get("name") == "web_search"
@@ -346,7 +395,9 @@ class ResponsesApiTransport(ProviderTransport):
                     filtered.append({"type": "web_search"})
                     response_tools = filtered
                 else:
-                    response_tools = _rename_client_web_search_for_xai(response_tools)
+                    response_tools, xai_client_web_search_alias = (
+                        _rename_client_web_search_for_xai(response_tools)
+                    )
 
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
@@ -356,18 +407,21 @@ class ResponsesApiTransport(ProviderTransport):
         # request is issued (openai==2.24.0).  Reported for the
         # ``openai-codex`` / ``gpt-5.5`` combo on chatgpt.com/backend-api/codex
         # (#32892) when the agent runs without external tools registered.
-        kwargs = {
-            "model": model,
-            "instructions": instructions,
-            "input": _chat_messages_to_responses_input(
-                payload_messages,
-                is_xai_responses=is_xai_responses,
-                is_github_responses=is_github_responses,
-                replay_encrypted_reasoning=replay_encrypted_reasoning,
-                current_issuer_kind=issuer_kind,
-            ),
-            "store": False,
-        }
+        kwargs = _ResponsesRequestKwargs(
+            {
+                "model": model,
+                "instructions": instructions,
+                "input": _chat_messages_to_responses_input(
+                    payload_messages,
+                    is_xai_responses=is_xai_responses,
+                    is_github_responses=is_github_responses,
+                    replay_encrypted_reasoning=replay_encrypted_reasoning,
+                    current_issuer_kind=issuer_kind,
+                ),
+                "store": False,
+            }
+        )
+        kwargs.xai_client_web_search_alias = xai_client_web_search_alias
         if response_tools:
             kwargs["tools"] = response_tools
             kwargs["tool_choice"] = "auto"
@@ -433,6 +487,10 @@ class ResponsesApiTransport(ProviderTransport):
         request_overrides = params.get("request_overrides")
         if request_overrides:
             kwargs.update(request_overrides)
+            if "tools" in request_overrides:
+                # The override replaces the generated tool set, so the alias
+                # can no longer be assumed to identify Hermes web_search.
+                kwargs.xai_client_web_search_alias = None
 
         if "prompt_cache_key" in kwargs:
             bounded_cache_key = _bounded_prompt_cache_key(kwargs["prompt_cache_key"])
@@ -566,7 +624,7 @@ class ResponsesApiTransport(ProviderTransport):
                 name = tc.function.name if hasattr(tc, "function") else getattr(tc, "name", "")
                 # Undo the xAI client-path wire alias so Hermes dispatches
                 # the real ``web_search`` tool (Firecrawl / etc.).
-                if name == _XAI_CLIENT_WEB_SEARCH_ALIAS:
+                if name == kwargs.get("xai_client_web_search_alias"):
                     name = "web_search"
                 tool_calls.append(ToolCall(
                     id=tc.id if hasattr(tc, "id") else (name or None),

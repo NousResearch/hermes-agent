@@ -284,8 +284,13 @@ def get_active_search_provider() -> Optional[WebSearchProvider]:
     Reads ``web.search_backend`` (preferred) or ``web.backend`` (shared
     fallback) from config.yaml; falls back per the module docstring.
     """
-    explicit = _read_config_key("web", "search_backend") or _read_config_key("web", "backend")
+    explicit = get_configured_search_backend()
     return _resolve(explicit, capability="search")
+
+
+def get_configured_search_backend() -> Optional[str]:
+    """Return the explicitly configured search backend without resolving fallbacks."""
+    return _read_config_key("web", "search_backend") or _read_config_key("web", "backend")
 
 
 def get_active_extract_provider() -> Optional[WebSearchProvider]:

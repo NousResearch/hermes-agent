@@ -224,6 +224,23 @@ class TestHealthyJobUnaffected:
 
 
 class TestOptOut:
+    def test_quoted_false_string_disables_preflight(self):
+        """cron.preflight: "false" (quoted) must disable validation.
+
+        The old check (`value is not False`) kept preflight ON for a quoted
+        string — ``"false" is not False`` is True — blocking every tick with
+        [blocked_config] against explicit operator intent.
+        """
+        from cron.scheduler import _cron_preflight_enabled
+
+        assert _cron_preflight_enabled({"cron": {"preflight": "false"}}) is False
+        assert _cron_preflight_enabled({"cron": {"preflight": "no"}}) is False
+        assert _cron_preflight_enabled({"cron": {"preflight": False}}) is False
+        assert _cron_preflight_enabled({"cron": {"preflight": "true"}}) is True
+        assert _cron_preflight_enabled({"cron": {"preflight": True}}) is True
+        assert _cron_preflight_enabled({}) is True
+        assert _cron_preflight_enabled({"cron": {}}) is True
+
     def test_preflight_false_restores_old_behavior(self, tmp_path):
         """cron.preflight: false → job proceeds to resolution and fails the
         old way (error status, re-alerts every tick, no blocked_config)."""

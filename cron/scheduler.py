@@ -781,7 +781,14 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
     try:
         if cfg is None:
             cfg = load_config() or {}
-        return bool((cfg.get("cron", {}) or {}).get("mirror_delivery", False))
+        from utils import is_truthy_value
+
+        # Quoted YAML `"false"` must disable, not enable: bool("false") is
+        # True and would mirror cron output into a live chat against the
+        # operator's intent (a privacy leak, not just a misfeature).
+        return is_truthy_value(
+            (cfg.get("cron", {}) or {}).get("mirror_delivery"), default=False
+        )
     except Exception:
         return False
 
@@ -2946,13 +2953,18 @@ BLOCKED_CONFIG_SILENT_MARKER = "[blocked_config:silent]"
 def _cron_preflight_enabled(cfg: dict) -> bool:
     """Whether cron pre-dispatch configuration validation is enabled.
 
-    Default ON; only the literal boolean ``false`` under ``cron.preflight``
-    opts out (mirrors ``cron_model_drift_guard_enabled`` semantics).
+    Default ON; ``false`` under ``cron.preflight`` opts out. Parsed through
+    the shared truthy-string set so a quoted YAML ``"false"`` also disables
+    it — ``"false" is not False`` is True, so the old check kept preflight
+    on against explicit operator intent, blocking every tick with
+    ``[blocked_config]``.
     """
     cron_cfg = (cfg or {}).get("cron")
     if not isinstance(cron_cfg, dict):
         return True
-    return cron_cfg.get("preflight", True) is not False
+    from utils import is_truthy_value
+
+    return is_truthy_value(cron_cfg.get("preflight", True), default=True)
 
 
 def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:

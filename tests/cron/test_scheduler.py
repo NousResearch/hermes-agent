@@ -1621,6 +1621,20 @@ class TestCronDeliveryMirror:
     so cron uses exactly the same path interactive send_message mirroring uses.
     """
 
+    def test_quoted_false_string_does_not_enable_mirror(self):
+        """bool('false') is True — a quoted YAML value must not flip
+        cron.mirror_delivery ON (cron output appended into a live chat
+        against operator intent is a privacy leak)."""
+        from cron.scheduler import _cron_mirror_delivery_enabled
+
+        assert _cron_mirror_delivery_enabled({}, {"cron": {"mirror_delivery": "false"}}) is False
+        assert _cron_mirror_delivery_enabled({}, {"cron": {"mirror_delivery": "no"}}) is False
+        assert _cron_mirror_delivery_enabled({}, {"cron": {"mirror_delivery": False}}) is False
+        assert _cron_mirror_delivery_enabled({}, {}) is False
+        assert _cron_mirror_delivery_enabled({}, {"cron": {"mirror_delivery": True}}) is True
+        assert _cron_mirror_delivery_enabled({}, {"cron": {"mirror_delivery": "true"}}) is True
+        assert _cron_mirror_delivery_enabled({}, {"cron": {"mirror_delivery": "1"}}) is True
+
 
     def test_mirror_writes_user_role_with_label_not_assistant(self):
         """Regression for #2221 / #2313: the cron brief must mirror as a USER

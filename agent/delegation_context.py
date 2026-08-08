@@ -34,6 +34,14 @@ _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar(
 
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
 
+# Caller contract for the two Kanban env helpers:
+#   * scrub_kanban_env  — delegate_task children: strip + set the lineage
+#     marker so the child process (and ITS subprocesses) are recognized as
+#     delegated and keep the kanban tool fencing.
+#   * strip_kanban_env  — plain nested spawns (terminal tool, execute_code)
+#     that must NOT inherit the parent worker's dispatcher identity, but are
+#     NOT delegated children: strip without the marker (#81508).
+
 KANBAN_ENV_KEYS: tuple[str, ...] = (
     "HERMES_KANBAN_TASK",
     "HERMES_KANBAN_RUN_ID",
@@ -130,11 +138,23 @@ def is_delegated_child_process_context() -> bool:
     )
 
 
-def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:
-    """Return *env* with dispatcher-only Kanban variables removed."""
+def strip_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:
+    """Return *env* with dispatcher-only Kanban variables removed (no marker).
+
+    Unlike :func:`scrub_kanban_env`, this does NOT set
+    ``HERMES_DELEGATED_CHILD_CONTEXT``: it is for nested spawns (terminal
+    tool, execute_code) that must simply not inherit the parent worker's
+    Kanban identity — they are not delegate_task children.
+    """
     cleaned = dict(env)
     for key in KANBAN_ENV_KEYS:
         cleaned.pop(key, None)
+    return cleaned
+
+
+def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:
+    """Return *env* with dispatcher-only Kanban variables removed."""
+    cleaned = strip_kanban_env(env)
     cleaned[DELEGATED_CHILD_ENV_MARKER] = "1"
     return cleaned
 

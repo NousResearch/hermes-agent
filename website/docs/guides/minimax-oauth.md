@@ -135,6 +135,16 @@ model:
 | `minimax-oauth` (global) | `https://api.minimax.io` | `https://api.minimax.io/anthropic` |
 | `minimax-cn` (China) | `https://api.minimaxi.com` | `https://api.minimaxi.com/anthropic` |
 
+:::warning Don't use `api.minimax.io/v1/chat/completions`
+
+`api.minimax.io` only serves the **Anthropic-compatible** API (under `/anthropic`). Pointing `model.base_url` at `https://api.minimax.io/v1` or `https://api.minimax.io/v1/chat/completions` will return **HTTP 401** with no useful body — the OpenAI-compatible chat-completions API only lives on the China hosts:
+
+- `https://api.minimaxi.com/v1` — current China endpoint, OpenAI-compatible
+- `https://api.minimax.chat/v1` — legacy China endpoint, OpenAI-compatible (still online)
+
+Hermes will log a one-time warning if it detects this misconfiguration. See issue [#31977](https://github.com/NousResearch/hermes-agent/issues/31977).
+:::
+
 ### Provider aliases
 
 All of the following resolve to `minimax-oauth`:

@@ -214,7 +214,7 @@ SEND_MESSAGE_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": ["send", "list", "react", "unreact"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction."
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it: Discord, photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction. For 'react'/'unreact', a bare 'platform' target means the chat you are currently in, not the home channel."
             },
             "target": {
                 "type": "string",
@@ -263,6 +263,22 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+def _current_turn_chat_id(platform_name):
+    """Return the chat this turn is running in, if it's on ``platform_name``.
+
+    A react with no chat means "this conversation" — the home-channel
+    fallback used for sends would land the reaction on an unrelated
+    message in a different channel.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return None
+    if get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower() != platform_name:
+        return None
+    return get_session_env("HERMES_SESSION_CHAT_ID", "").strip() or None
+
+
 def _handle_react(args, remove=False):
     """Attach (or with ``remove=True`` retract) an emoji reaction on a message
     via a live gateway adapter.
@@ -306,6 +322,8 @@ def _handle_react(args, remove=False):
     except (ValueError, KeyError):
         return tool_error(f"Unknown platform: {platform_name}")
 
+    if not chat_id:
+        chat_id = _current_turn_chat_id(platform_name)
     if not chat_id:
         try:
             config = load_gateway_config()

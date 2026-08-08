@@ -22,7 +22,7 @@ def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, 
     the shared Bearer helper once inside the intended profile scope. Shared by
     the MCP page and the Profile Builder so both enforce one transport/auth contract.
     """
-    from hermes_cli.mcp_config import _bearer_auth_headers, _strip_bearer_prefix
+    from hermes_cli.mcp_config import _bearer_auth_headers, _bearer_auth_token_ref, _strip_bearer_prefix
     from hermes_cli.mcp_security import validate_mcp_server_entry
 
     name = (body.name or "").strip()
@@ -36,7 +36,7 @@ def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, 
 
     if bool(url) == bool(command):
         raise ValueError("Provide exactly one of URL (HTTP/SSE) or command (stdio)")
-    if auth not in {"none", "header", "oauth"}:
+    if auth not in {"none", "header", "query", "oauth"}:
         raise ValueError(f"Unsupported auth mode: {auth}")
 
     server_config: Dict[str, Any] = {}
@@ -45,13 +45,17 @@ def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, 
             raise ValueError("Arguments are only supported for stdio MCP servers")
         if body.env:
             raise ValueError("Environment variables are only supported for stdio MCP servers")
-        if auth == "header":
+        if auth in {"header", "query"}:
             normalized = _strip_bearer_prefix(bearer_token) if bearer_token else ""
             if not normalized or normalized.lower() == "bearer":
                 raise ValueError("Bearer token is required")
-            server_config["headers"] = _bearer_auth_headers(name)
+            if auth == "header":
+                server_config["headers"] = _bearer_auth_headers(name)
+            else:
+                server_config["auth"] = "query"
+                server_config["token"] = _bearer_auth_token_ref(name)
         elif body.bearer_token is not None:
-            raise ValueError("Bearer token requires header authentication")
+            raise ValueError("Bearer token requires header or query authentication")
 
         server_config["url"] = url
         if auth == "oauth":

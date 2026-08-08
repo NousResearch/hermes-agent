@@ -208,7 +208,8 @@ export default function ProfileBuilderPage() {
     setMcpDraft((draft) => ({
       ...draft,
       httpAuth,
-      bearerToken: httpAuth === "header" ? draft.bearerToken : "",
+      bearerToken:
+        httpAuth === "header" || httpAuth === "query" ? draft.bearerToken : "",
     }));
   };
 
@@ -602,7 +603,7 @@ export default function ProfileBuilderPage() {
                     <div className="grid gap-1.5">
                       <Label>Authentication</Label>
                       <div
-                        className="grid grid-cols-3 border border-border bg-background/30 p-0.5 md:max-w-md"
+                        className="grid grid-cols-4 border border-border bg-background/30 p-0.5 md:max-w-md"
                         role="group"
                         aria-label="HTTP authentication"
                       >
@@ -610,6 +611,7 @@ export default function ProfileBuilderPage() {
                           [
                             ["none", "None"],
                             ["header", "Bearer token"],
+                            ["query", "URL token"],
                             ["oauth", "OAuth"],
                           ] as const
                         ).map(([value, label]) => (
@@ -630,16 +632,23 @@ export default function ProfileBuilderPage() {
                         ))}
                       </div>
                     </div>
-                    {mcpDraft.httpAuth === "header" && (
+                    {(mcpDraft.httpAuth === "header" ||
+                      mcpDraft.httpAuth === "query") && (
                       <div className="grid gap-1.5">
                         <Label htmlFor="pb-mcp-bearer-token">
-                          Bearer token
+                          {mcpDraft.httpAuth === "query"
+                            ? "URL query token"
+                            : "Bearer token"}
                         </Label>
                         <Input
                           id="pb-mcp-bearer-token"
                           type="password"
                           autoComplete="new-password"
-                          placeholder="Token or Bearer token"
+                          placeholder={
+                            mcpDraft.httpAuth === "query"
+                              ? "Token appended as ?token=..."
+                              : "Token or Bearer token"
+                          }
                           value={mcpDraft.bearerToken}
                           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                             setMcpDraft({
@@ -649,8 +658,9 @@ export default function ProfileBuilderPage() {
                           }
                         />
                         <p className="text-xs text-muted-foreground">
-                          Stored in the new profile&apos;s .env; config.yaml
-                          keeps only an environment-variable reference.
+                          {mcpDraft.httpAuth === "query"
+                            ? "Stored in the new profile's .env and sent as a redacted ?token= query parameter."
+                            : "Stored in the new profile's .env; config.yaml keeps only an environment-variable reference."}
                         </p>
                       </div>
                     )}
@@ -727,7 +737,13 @@ export default function ProfileBuilderPage() {
                           </Badge>
                           {s.auth && (
                             <Badge tone="outline">
-                              auth: {s.auth === "header" ? "bearer" : s.auth}
+                              auth: {
+                                s.auth === "header"
+                                  ? "bearer"
+                                  : s.auth === "query"
+                                    ? "query token"
+                                    : s.auth
+                              }
                             </Badge>
                           )}
                         </span>

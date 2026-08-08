@@ -23,8 +23,12 @@ import { useHudThreadFocus } from './thread-focus'
 /** How long the transcript lingers at its glanceable opacity — after a turn
  *  lands, or after you let go of the composer — before it goes. This is the ONLY
  *  hold: the CSS carries no transition-delay, because two stacked holds read as
- *  a third fade state that nobody asked for. Focus keeps it open past this. */
-const HUD_RECENT_HOLD_MS = 700
+ *  a third fade state that nobody asked for. Focus keeps it open past this.
+ *
+ *  Long enough to actually be the middle stage. Under a second it read as part
+ *  of the fade rather than a state you could still glance at and finish
+ *  reading. */
+const HUD_RECENT_HOLD_MS = 2500
 
 /** Band visibility timings, published to CSS as custom properties so this
  *  module and the stylesheet cannot drift apart. Reveal is quick — it is an
@@ -88,9 +92,13 @@ function useRecentActivity(): [boolean, () => void] {
   useEffect(() => {
     let signature = ''
 
-    const bump = () => {
+    // `letGo` is the deliberate gesture — clicking away from the composer —
+    // and always buys the full window. Ambient activity does not, unless the
+    // composer has focus: whatever is left of the current hold is what a HUD
+    // nobody is looking at gets.
+    const bump = (letGo = false) => {
       if (timerRef.current) {
-        if (!composerHasFocus()) {
+        if (!letGo && !composerHasFocus()) {
           return
         }
 
@@ -119,7 +127,7 @@ function useRecentActivity(): [boolean, () => void] {
       bump()
     }
 
-    bumpRef.current = bump
+    bumpRef.current = () => bump(true)
 
     // subscribe() fires immediately, so a HUD opened onto an existing
     // conversation starts with the thread showing, then fades.

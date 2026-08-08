@@ -728,6 +728,8 @@ def _update_via_zip(args):
     Used on Windows when git file I/O is broken (antivirus, NTFS filter
     drivers causing 'Invalid argument' errors on file creation).
     """
+    active_tool_dependencies = _m()._capture_active_tool_dependencies()
+
     import tempfile
     import zipfile
     from urllib.request import urlretrieve
@@ -930,6 +932,14 @@ def _update_via_zip(args):
                 check=True,
             )
         _m()._install_python_dependencies_with_optional_fallback(pip_cmd)
+
+    install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
+    install_env = uv_env if uv_bin else None
+    _m()._restore_active_tool_dependencies(
+        active_tool_dependencies,
+        install_prefix,
+        env=install_env,
+    )
 
     # ZIP path parity: heal the active memory provider's bridge packages
     # after the dependency reinstall, same as the git-pull path (#53272,
@@ -1726,10 +1736,113 @@ def _upgrade_pip_before_lazy_refresh(
     except subprocess.CalledProcessError as exc:
         logger.debug("pip upgrade before lazy refresh failed: %s", exc)
 
+
+def _capture_active_lazy_features() -> list[str]:
+    """Snapshot active lazy backends before a managed runtime is replaced."""
+    try:
+        from tools import lazy_deps
+
+        return lazy_deps.active_features()
+    except Exception as exc:
+        logger.debug("Could not snapshot active lazy features: %s", exc)
+        return []
+
+
+def _capture_active_tool_dependencies() -> list[str]:
+    """Snapshot Python dependencies installed explicitly through ``hermes tools``."""
+    try:
+        from hermes_cli import tools_config
+
+        return tools_config.active_restorable_python_tool_dependencies()
+    except Exception as exc:
+        logger.debug("Could not snapshot active Hermes Tools dependencies: %s", exc)
+        return []
+
+
+def _restore_active_tool_dependencies(
+    dependencies: list[str],
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Restore allowlisted ``hermes tools`` dependencies into a rebuilt venv.
+
+    The dependency names came from a pre-rebuild import probe and are resolved
+    through a static package allowlist. Never raises: a failed optional tool
+    must not block the core update, but the user must be told what stayed
+    unavailable.
+    """
+    if not dependencies:
+        return
+
+    try:
+        from hermes_cli import tools_config
+    except Exception as exc:
+        logger.debug("Hermes Tools dependency restore skipped (import failed): %s", exc)
+        return
+
+    target_python = _m()._resolve_install_target_python(install_cmd_prefix, env)
+    missing: list[tuple[str, tuple[str, ...]]] = []
+    for name in dependencies:
+        spec = tools_config.restorable_python_tool_dependency(name)
+        if spec is None:
+            continue
+        module_name, install_args = spec
+        if target_python is not None:
+            try:
+                probe = subprocess.run(
+                    [
+                        str(target_python),
+                        "-c",
+                        "import importlib.util,sys; "
+                        "raise SystemExit(0 if importlib.util.find_spec(sys.argv[1]) else 1)",
+                        module_name,
+                    ],
+                    capture_output=True,
+                    env=env,
+                    check=False,
+                )
+                if probe.returncode == 0:
+                    continue
+            except (subprocess.SubprocessError, OSError):
+                # An indeterminate probe is safer to repair than to treat as
+                # proof that a pre-rebuild dependency survived.
+                pass
+        missing.append((name, install_args))
+
+    if not missing:
+        return
+
+    print()
+    print(f"→ Restoring {len(missing)} Hermes Tools dependency set(s)...")
+    restored: list[str] = []
+    failed: list[tuple[str, str]] = []
+    for name, install_args in missing:
+        try:
+            _m()._run_package_only_install(
+                install_cmd_prefix + ["install", *install_args, "--quiet"],
+                env=env,
+            )
+            restored.append(name)
+        except Exception as exc:
+            # This is best-effort recovery for optional tooling. Unexpected
+            # installer failures must be surfaced without aborting the core
+            # runtime update.
+            failed.append((name, str(exc)))
+
+    if restored:
+        print(f"  ✓ {len(restored)} restored: {', '.join(restored)}")
+    for name, reason in failed:
+        if len(reason) > 200:
+            reason = reason[:200] + "..."
+        print(f"  ⚠ {name} failed to restore: {reason}")
+
+
 def _refresh_active_lazy_features(
     install_cmd_prefix: list[str] | None = None,
     *,
     env: dict[str, str] | None = None,
+    features: list[str] | None = None,
 ) -> bool:
     """Refresh lazy-installed backends after a code update.
 
@@ -1757,11 +1870,14 @@ def _refresh_active_lazy_features(
         logger.debug("Lazy refresh skipped (import failed): %s", exc)
         return True
 
-    try:
-        active = lazy_deps.active_features()
-    except Exception as exc:
-        logger.debug("Lazy refresh skipped (active_features failed): %s", exc)
-        return True
+    if features is None:
+        try:
+            active = lazy_deps.active_features()
+        except Exception as exc:
+            logger.debug("Lazy refresh skipped (active_features failed): %s", exc)
+            return True
+    else:
+        active = features
 
     if not active:
         return True
@@ -1771,7 +1887,10 @@ def _refresh_active_lazy_features(
 
     unexpected_failure = False
     try:
-        results = lazy_deps.refresh_active_features(prompt=False)
+        if features is None:
+            results = lazy_deps.refresh_active_features(prompt=False)
+        else:
+            results = lazy_deps.restore_features(active)
     except Exception as exc:
         # refresh_active_features is documented as never-raise, but defend
         # the update flow against future regressions.
@@ -1779,7 +1898,7 @@ def _refresh_active_lazy_features(
         results = {}
         unexpected_failure = True
 
-    refreshed = [f for f, s in results.items() if s == "refreshed"]
+    refreshed = [f for f, s in results.items() if s in {"refreshed", "restored"}]
     current = [f for f, s in results.items() if s == "current"]
     failed = [(f, s) for f, s in results.items() if s.startswith("failed:")]
     skipped = [(f, s) for f, s in results.items() if s.startswith("skipped:")]
@@ -3561,6 +3680,12 @@ def _normalize_managed_eol(git_cmd, repo_root):
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
+    # A managed-runtime refresh can replace site-packages before the normal
+    # ``.[all]`` install runs. Snapshot while the old environment can still
+    # prove which optional backends the user had activated.
+    active_lazy_features = _m()._capture_active_lazy_features()
+    active_tool_dependencies = _m()._capture_active_tool_dependencies()
+
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default))
@@ -3915,9 +4040,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     _m()._install_python_dependencies_with_optional_fallback(
                         [repair_uv, "pip"], env=repair_env, group="all"
                     )
+                    _m()._refresh_active_lazy_features(
+                        [repair_uv, "pip"],
+                        env=repair_env,
+                        features=active_lazy_features,
+                    )
+                    _m()._restore_active_tool_dependencies(
+                        active_tool_dependencies,
+                        [repair_uv, "pip"],
+                        env=repair_env,
+                    )
                 else:
                     _m()._install_python_dependencies_with_optional_fallback(
                         [sys.executable, "-m", "pip"], group="all"
+                    )
+                    _m()._refresh_active_lazy_features(
+                        [sys.executable, "-m", "pip"],
+                        features=active_lazy_features,
+                    )
+                    _m()._restore_active_tool_dependencies(
+                        active_tool_dependencies,
+                        [sys.executable, "-m", "pip"],
                     )
                 _m()._clear_update_incomplete_marker()
                 healthy_after, detail_after = _venv_core_imports_healthy()
@@ -4165,7 +4308,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Lazy refresh can corrupt the venv when a backend install fails.
         # Clear the lazy marker only when refresh/repair is confirmed healthy.
-        lazy_ok = _m()._refresh_active_lazy_features(install_prefix, env=lazy_env)
+        lazy_ok = _m()._refresh_active_lazy_features(
+            install_prefix,
+            env=lazy_env,
+            features=active_lazy_features,
+        )
         if lazy_ok:
             _m()._clear_lazy_refresh_incomplete_marker()
         else:
@@ -4173,6 +4320,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 "  ⚠ Lazy-refresh recovery incomplete — run `hermes` again "
                 "to finish import-based venv repair."
             )
+
+        _m()._restore_active_tool_dependencies(
+            active_tool_dependencies,
+            install_prefix,
+            env=lazy_env,
+        )
 
         # Heal the active memory provider's bridge packages last — the core
         # reinstall + lazy refresh above may have stripped or downgraded

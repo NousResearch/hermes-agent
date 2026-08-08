@@ -1133,8 +1133,27 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
     Intended for ``hermes update``. Never raises; lazy-install failures
     here must not block the rest of the update flow.
     """
+    return _refresh_features(active_features(), prompt=prompt, restoring=False)
+
+
+def restore_features(features: list[str]) -> dict[str, str]:
+    """Restore features captured before an explicit managed-runtime rebuild.
+
+    Feature names are checked against :data:`LAZY_DEPS`, and installs remain
+    subject to ``security.allow_lazy_installs``. An explicit opt-out therefore
+    leaves the captured feature absent and reports it as skipped.
+    """
+    return _refresh_features(features, prompt=False, restoring=True)
+
+
+def _refresh_features(
+    features: list[str], *, prompt: bool, restoring: bool
+) -> dict[str, str]:
+    """Refresh or restore a known set of allowlisted lazy features."""
     results: dict[str, str] = {}
-    for feature in active_features():
+    for feature in features:
+        if feature not in LAZY_DEPS:
+            continue
         missing = feature_missing(feature)
         if not missing:
             results[feature] = "current"
@@ -1146,8 +1165,12 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
             continue
 
         try:
-            ensure(feature, prompt=prompt)
-            results[feature] = "refreshed"
+            if restoring:
+                ensure(feature, prompt=False)
+                results[feature] = "restored"
+            else:
+                ensure(feature, prompt=prompt)
+                results[feature] = "refreshed"
         except FeatureUnavailable as e:
             # Distinguish "user opted out" or platform-incompatible features
             # from install failures so the update command can render the

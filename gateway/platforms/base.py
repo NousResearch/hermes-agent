@@ -1514,8 +1514,15 @@ def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     return mounts
 
 
-def _default_docker_workspace_host_root() -> Optional[Path]:
-    """Host path for Docker's default persistent ``/workspace`` mount."""
+def _default_docker_workspace_host_root(task_id: Optional[str] = None) -> Optional[Path]:
+    """Host path for the persistent Docker ``/workspace`` mount.
+
+    ``task_id`` selects which task's own sandbox to resolve (isolated task
+    ids get ``<sandbox>/docker/<task_id>/...``, per
+    ``tools/environments/docker.py``); falls back to ``"default"`` — the
+    shared/collapsed environment most tasks run in — when the caller can't
+    identify the producing task (#64889).
+    """
     if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return None
     if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
@@ -1541,20 +1548,21 @@ def _default_docker_workspace_host_root() -> Optional[Path]:
     try:
         from tools.environments.base import get_sandbox_dir
 
-        root = (get_sandbox_dir() / "docker" / "default" / "workspace").resolve(strict=False)
+        root = (get_sandbox_dir() / "docker" / (task_id or "default") / "workspace").resolve(strict=False)
     except Exception:
         return None
     return root if root.is_dir() else None
 
 
-def _docker_persistent_home_host_root() -> Optional[Path]:
-    """Host path for Docker's default persistent ``/root`` home mount.
+def _docker_persistent_home_host_root(task_id: Optional[str] = None) -> Optional[Path]:
+    """Host path for the persistent Docker ``/root`` home mount.
 
     Persistent containers bind ``<sandbox>/docker/<task>/home`` to ``/root``
     (tools/environments/docker.py), so an agent that writes ``/root/out.png``
-    produced a real host file the gateway couldn't find. Same collapse rule as
-    the workspace mount: the gateway's container sharing resolves to the
-    ``default`` task sandbox.
+    produced a real host file the gateway couldn't find. ``task_id`` selects
+    which task's own sandbox to resolve, falling back to the shared/collapsed
+    ``"default"`` sandbox when the caller can't identify the producing task
+    (#64889).
     """
     if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
         return None
@@ -1568,7 +1576,7 @@ def _docker_persistent_home_host_root() -> Optional[Path]:
     try:
         from tools.environments.base import get_sandbox_dir
 
-        root = (get_sandbox_dir() / "docker" / "default" / "home").resolve(strict=False)
+        root = (get_sandbox_dir() / "docker" / (task_id or "default") / "home").resolve(strict=False)
     except Exception:
         return None
     return root if root.is_dir() else None
@@ -1596,13 +1604,18 @@ def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
         return []
 
 
-def _translate_docker_container_media_path(candidate: Path) -> Optional[Path]:
+def _translate_docker_container_media_path(candidate: Path, task_id: Optional[str] = None) -> Optional[Path]:
     """Translate a container-absolute path to its host path when possible.
 
     Uses longest-prefix match across configured ``docker_volumes``, the
-    auto-mounted Hermes cache dirs (``/root/.hermes/...``), the default
-    persistent Docker ``/workspace`` host root, and the persistent ``/root``
-    home mount.
+    auto-mounted Hermes cache dirs (``/root/.hermes/...``), and the
+    persistent Docker ``/workspace``/``/root`` mounts for ``task_id``'s own
+    sandbox (falling back to the shared ``"default"`` sandbox when the
+    caller can't identify the producing task — see #64889: without a real
+    task_id this resolves the WRONG task's sandbox whenever an isolated
+    Docker environment is concurrently active, either missing the file
+    entirely or, worse, silently matching an unrelated file of the same
+    name under ``default``).
     """
     if not candidate.is_absolute():
         return None
@@ -1620,14 +1633,14 @@ def _translate_docker_container_media_path(candidate: Path) -> Optional[Path]:
 
     mounts = list(_parse_docker_volume_mounts())
     mounts.extend(_cache_dir_container_mounts())
-    # Synthetic /workspace mount for default persistent sandbox / cwd bind.
-    default_ws = _default_docker_workspace_host_root()
+    # Synthetic /workspace mount for task_id's own persistent sandbox / cwd bind.
+    default_ws = _default_docker_workspace_host_root(task_id)
     if default_ws is not None and not any(c.as_posix() == "/workspace" for _, c in mounts):
         mounts.append((default_ws, Path("/workspace")))
     # Synthetic /root mount for the persistent home bind. Cache mounts above
     # are longer prefixes, so /root/.hermes/... still translates to the host
     # cache — this only catches stray home writes like /root/out.png.
-    default_home = _docker_persistent_home_host_root()
+    default_home = _docker_persistent_home_host_root(task_id)
     if default_home is not None and not any(c.as_posix() == "/root" for _, c in mounts):
         # /root/.hermes/* that did NOT match a cache mount is the container's
         # credential/secret surface (.env, auth.json, ... are individually
@@ -1664,8 +1677,13 @@ def _translate_docker_container_media_path(candidate: Path) -> Optional[Path]:
     return translated
 
 
-def validate_media_delivery_path(path: str) -> Optional[str]:
+def validate_media_delivery_path(path: str, task_id: Optional[str] = None) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
+
+    ``task_id``, when the caller can identify the turn/job that produced
+    ``path``, is forwarded to Docker container-path translation so the
+    correct task's own sandbox is resolved (#64889) instead of falling back
+    to the shared ``"default"`` one.
 
     Default mode (single-user / private gateway): accept any existing regular
     file that isn't under the credential / system-path denylist
@@ -1705,7 +1723,7 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     # Docker agents emit MEDIA:/workspace/... (or other configured container
     # mount paths). Resolve those to host paths before the normal host-side
     # existence / denylist checks.
-    translated = _translate_docker_container_media_path(expanded)
+    translated = _translate_docker_container_media_path(expanded, task_id)
     if translated is not None:
         resolved = translated
     else:
@@ -4656,17 +4674,17 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     @staticmethod
-    def validate_media_delivery_path(path: str) -> Optional[str]:
+    def validate_media_delivery_path(path: str, task_id: Optional[str] = None) -> Optional[str]:
         """Return a resolved path if it is safe for native attachment upload."""
-        return validate_media_delivery_path(path)
+        return validate_media_delivery_path(path, task_id)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
+    def filter_media_delivery_paths(media_files, task_id: Optional[str] = None) -> List[Tuple[str, bool]]:
         """Drop unsafe MEDIA paths and normalize accepted paths."""
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
-            safe_path = validate_media_delivery_path(raw)
+            safe_path = validate_media_delivery_path(raw, task_id)
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:

@@ -1488,7 +1488,13 @@ def _send_media_via_adapter(
 
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # job["id"] is the same task_id run_job() now passes into
+    # agent.run_conversation(), so this resolves the run's own Docker
+    # environment directly instead of falling back to the shared "default"
+    # sandbox (#64889).
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(
+        media_files, str(job.get("id") or "") or None
+    )
 
     for media_path, _is_voice in media_files:
         try:
@@ -1665,7 +1671,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # Pass the job's own id as task_id at this FIRST translation (before the
+    # filter drops anything unresolved) so the job's own Docker environment
+    # is resolved directly instead of the shared "default" sandbox (#64889) —
+    # the downstream call inside _send_media_via_adapter is an idempotent
+    # no-op on an already-translated (host) path, so this doesn't skip it,
+    # it just makes sure a container-only path survives the filter below.
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(
+        media_files, str(job.get("id") or "") or None
+    )
 
     # Resolve the delivery-mirror gate ONCE (default off). When on, each
     # successful delivery is also appended to the target chat's gateway session
@@ -4128,7 +4142,13 @@ def run_job(
         # Tag this fire and time the run_conversation call for the usage_audit.jsonl entry.
         _audit_fire_id = uuid.uuid4().hex
         _audit_t_start = time.monotonic()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        # A deterministic task_id (the job's own id, not a random one) lets
+        # this run's own Docker terminal environment be looked up directly by
+        # _send_media_via_adapter/_deliver_result below instead of degrading
+        # to the shared "default" sandbox (#64889).
+        _cron_future = _cron_pool.submit(
+            _cron_context.run, agent.run_conversation, prompt, task_id=str(job_id)
+        )
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:

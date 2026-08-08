@@ -905,7 +905,7 @@ class TestRunJobSkillBacked:
             register_env_passthrough(["NOTION_API_KEY"])
             return json.dumps({"success": True, "content": "# notion\nUse Notion."})
 
-        def _run_conversation(prompt):
+        def _run_conversation(prompt, **kwargs):
             from tools.env_passthrough import get_all_passthrough
 
             assert "NOTION_API_KEY" in get_all_passthrough()
@@ -1247,6 +1247,33 @@ class TestSendMediaViaAdapter:
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j3"})
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()
+
+    def test_job_id_resolves_own_docker_sandbox_not_default(self, tmp_path, monkeypatch):
+        """#64889: job["id"] is threaded through as task_id, so a container-
+        only /workspace path resolves the job's OWN isolated Docker sandbox
+        instead of degrading to the shared "default" one (which, with a
+        same-named file present, would silently deliver the wrong file)."""
+        sandbox = tmp_path / "sandboxes"
+        default_ws = sandbox / "docker" / "default" / "workspace"
+        job_ws = sandbox / "docker" / "job-42" / "workspace"
+        default_ws.mkdir(parents=True)
+        job_ws.mkdir(parents=True)
+        (default_ws / "out.png").write_bytes(b"WRONG FILE")
+        (job_ws / "out.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+
+        adapter = MagicMock()
+        adapter.send_image_file = AsyncMock()
+        media_files = [("/workspace/out.png", False)]
+        self._run_with_loop(adapter, "123", media_files, None, {"id": "job-42"})
+
+        adapter.send_image_file.assert_called_once()
+        delivered_path = adapter.send_image_file.call_args.kwargs["image_path"]
+        assert delivered_path == str((job_ws / "out.png").resolve())
 
 
 class TestParallelTick:

@@ -299,6 +299,33 @@ def _get_wrapper_dir() -> Path:
     return Path.home() / ".local" / "bin"
 
 
+def _get_platform_standard_hermes_home() -> Path:
+    """Return the platform-native Hermes root used when HERMES_HOME is unset."""
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = (
+            Path(local_appdata)
+            if local_appdata
+            else Path.home() / "AppData" / "Local"
+        )
+        return base / "hermes"
+    return Path.home() / ".hermes"
+
+
+def _wrapper_hermes_home() -> Optional[Path]:
+    """Return HERMES_HOME to preserve in generated wrappers, if non-standard."""
+    default_root = _get_default_hermes_home()
+    standard_root = _get_platform_standard_hermes_home()
+    if default_root.resolve(strict=False) == standard_root.resolve(strict=False):
+        return None
+    return default_root
+
+
+def _quote_bat_env_value(value: str) -> str:
+    """Escape a value written inside a batch ``set "NAME=value"`` command."""
+    return value.replace("%", "%%")
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -461,7 +488,12 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     if is_windows:
         wrapper_path = wrapper_dir / f"{canon}.bat"
         try:
-            wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n", encoding="utf-8")
+            lines = ["@echo off"]
+            hermes_home = _wrapper_hermes_home()
+            if hermes_home is not None:
+                lines.append(f'set "HERMES_HOME={_quote_bat_env_value(str(hermes_home))}"')
+            lines.append(f"hermes -p {profile} %*")
+            wrapper_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
             return wrapper_path
         except OSError as e:
             print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
@@ -470,7 +502,12 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
         wrapper_path = wrapper_dir / canon
         try:
             hermes_exe = shutil.which("hermes") or "hermes"
-            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n', encoding="utf-8")
+            lines = ["#!/bin/sh"]
+            hermes_home = _wrapper_hermes_home()
+            if hermes_home is not None:
+                lines.append(f"export HERMES_HOME={shlex.quote(str(hermes_home))}")
+            lines.append(f'exec {shlex.quote(hermes_exe)} -p {profile} "$@"')
+            wrapper_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
             return wrapper_path
         except OSError as e:
@@ -569,6 +606,38 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
 _WRAPPER_READ_LIMIT = 8192
 
 
+def _extract_wrapper_profile(content: str, is_windows: bool) -> Optional[str]:
+    """Extract the profile id from a Hermes alias wrapper body."""
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if (
+            not line
+            or line.startswith("#")
+            or line.startswith("export ")
+            or line.lower().startswith("set ")
+        ):
+            continue
+        if is_windows:
+            parts = line.split()
+            if len(parts) >= 3 and parts[0].lower() == "hermes" and parts[1] == "-p":
+                return parts[2]
+            continue
+        try:
+            parts = shlex.split(line)
+        except ValueError:
+            continue
+        if parts and parts[0] == "exec":
+            parts = parts[1:]
+        if len(parts) >= 3 and PurePosixPath(parts[0]).name == "hermes":
+            try:
+                profile_index = parts.index("-p") + 1
+            except ValueError:
+                continue
+            if profile_index < len(parts):
+                return parts[profile_index]
+    return None
+
+
 def build_alias_map() -> dict[str, str]:
     """Single-pass reverse map ``{canonical_profile -> alias_name}``.
 
@@ -583,7 +652,6 @@ def build_alias_map() -> dict[str, str]:
     if not wrapper_dir.is_dir():
         return result
     is_windows = sys.platform == "win32"
-    prefix = "hermes -p "
 
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
@@ -599,12 +667,7 @@ def build_alias_map() -> dict[str, str]:
         except (OSError, UnicodeDecodeError):
             # UnicodeDecodeError = a binary on PATH (ffmpeg etc.) — not a wrapper.
             continue
-        idx = content.find(prefix)
-        if idx == -1:
-            continue
-        rest = content[idx + len(prefix):]
-        # Profile id is the first whitespace-delimited token after the flag.
-        canon = rest.split(None, 1)[0].strip() if rest.strip() else ""
+        canon = _extract_wrapper_profile(content, is_windows) or ""
         if not canon:
             continue
         canon = normalize_profile_name(canon)

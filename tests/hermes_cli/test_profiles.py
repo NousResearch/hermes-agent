@@ -8,6 +8,7 @@ and shell completion generation.
 import json
 import io
 import os
+import shlex
 import shutil
 import sys
 import tarfile
@@ -442,6 +443,70 @@ class TestWrapperScript:
         content = wrapper.read_text()
         assert content.startswith("#!/bin/sh")
         assert "exec /opt/hermes/bin/hermes -p mybot" in content
+
+    def test_posix_standard_root_does_not_export_hermes_home(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
+        from hermes_cli.profiles import create_wrapper_script
+
+        wrapper = create_wrapper_script("mybot")
+
+        assert wrapper is not None
+        assert wrapper.read_text(encoding="utf-8") == (
+            '#!/bin/sh\nexec /opt/hermes/bin/hermes -p mybot "$@"\n'
+        )
+
+    def test_posix_custom_root_exports_hermes_home_and_keeps_target(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/Hermes Bin/hermes")
+        custom_root = profile_env / "custom hermes root"
+        custom_root.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(custom_root))
+        from hermes_cli.profiles import create_wrapper_script
+
+        wrapper = create_wrapper_script("rq", target="redqueen")
+
+        assert wrapper is not None
+        assert wrapper.name == "rq"
+        assert wrapper.read_text(encoding="utf-8") == (
+            "#!/bin/sh\n"
+            f"export HERMES_HOME={shlex.quote(str(custom_root))}\n"
+            f"exec {shlex.quote('/opt/Hermes Bin/hermes')} -p redqueen \"$@\"\n"
+        )
+
+    def test_windows_standard_root_does_not_set_hermes_home(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "win32")
+        local_appdata = profile_env / "AppData" / "Local"
+        standard_root = local_appdata / "hermes"
+        standard_root.mkdir(parents=True)
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+        monkeypatch.setenv("HERMES_HOME", str(standard_root))
+        from hermes_cli.profiles import create_wrapper_script
+
+        wrapper = create_wrapper_script("mybot")
+
+        assert wrapper is not None
+        assert wrapper.name == "mybot.bat"
+        assert wrapper.read_text(encoding="utf-8") == "@echo off\nhermes -p mybot %*\n"
+
+    def test_windows_custom_root_sets_hermes_home_and_keeps_target(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "win32")
+        local_appdata = profile_env / "AppData" / "Local"
+        custom_root = profile_env / "custom%root"
+        custom_root.mkdir()
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+        monkeypatch.setenv("HERMES_HOME", str(custom_root))
+        from hermes_cli.profiles import create_wrapper_script
+
+        wrapper = create_wrapper_script("rq", target="redqueen")
+
+        assert wrapper is not None
+        assert wrapper.name == "rq.bat"
+        assert wrapper.read_text(encoding="utf-8") == (
+            "@echo off\n"
+            f"set \"HERMES_HOME={str(custom_root).replace('%', '%%')}\"\n"
+            "hermes -p redqueen %*\n"
+        )
 
 
     def test_remove_finds_bat_on_windows(self, profile_env, monkeypatch):
@@ -918,6 +983,3 @@ class TestProfilesToServe:
         assert set(serve) == {"default", "coder", "writer"}
         assert serve["default"] == _get_default_hermes_home()
         assert serve["coder"] == get_profile_dir("coder")
-
-
-

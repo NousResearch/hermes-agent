@@ -397,6 +397,28 @@ class TestLoadGatewayConfig:
 
         assert config.multiplex_profiles is True
 
+    @pytest.mark.parametrize(
+        ("config_yaml", "expected"),
+        [
+            ("gateway:\n  loop_watchdog: false\n", False),
+            ("gateway:\n  loop_watchdog: true\n", True),
+            ("gateway: {}\n", True),
+        ],
+        ids=("explicit_false", "explicit_true", "default"),
+    )
+    def test_loop_watchdog_from_gateway_section(
+        self, tmp_path, monkeypatch, config_yaml, expected
+    ):
+        """The real YAML loader must preserve gateway.loop_watchdog."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.loop_watchdog is expected
+
     def test_discord_websocket_health_settings_seed_platform_extra(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

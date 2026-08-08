@@ -439,15 +439,23 @@ class InteractionEvent:
         )
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    """Best-effort int coercion for webhook payload fields."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def parse_interaction_event(raw: Dict[str, Any]) -> InteractionEvent:
     """Parse a raw ``INTERACTION_CREATE`` dispatch payload (``d``)."""
     data_raw = raw.get("data") or {}
     resolved = data_raw.get("resolved") or {}
-    scene_code = int(raw.get("chat_type", 0) or 0)
+    scene_code = _coerce_int(raw.get("chat_type", 0) or 0, 0)
     scene = {0: "guild", 1: "group", 2: "c2c"}.get(scene_code, "")
     return InteractionEvent(
         id=str(raw.get("id", "")),
-        type=int(data_raw.get("type", 0) or 0),
+        type=_coerce_int(data_raw.get("type", 0) or 0, 0),
         chat_type=scene_code,
         scene=scene,
         group_openid=str(raw.get("group_openid", "")),

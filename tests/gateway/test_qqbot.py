@@ -700,6 +700,23 @@ class TestInteractionEventParsing:
         assert ev.button_id == "allow"
         assert ev.operator_openid == "user-1"
 
+    def test_malformed_numeric_fields_fall_back_to_defaults(self):
+        from gateway.platforms.qqbot.keyboards import parse_interaction_event
+        raw = {
+            "id": "interaction-bad",
+            "chat_type": {"bad": "type"},
+            "user_openid": "user-2",
+            "data": {
+                "type": ["not-int"],
+                "resolved": {"button_data": "approve:sess:allow-once"},
+            },
+        }
+        ev = parse_interaction_event(raw)
+        assert ev.id == "interaction-bad"
+        assert ev.chat_type == 0
+        assert ev.type == 0
+        assert ev.scene == "guild"
+
 
 class TestAdapterInteractionDispatch:
     """End-to-end verification of _on_interaction including ACK + callback."""

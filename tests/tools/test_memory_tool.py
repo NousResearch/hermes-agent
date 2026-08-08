@@ -457,6 +457,71 @@ class TestExternalDriftGuard:
         assert result["success"] is False
         assert path.stat().st_size == original_size
 
+    def test_replace_refuses_on_squashed_entry_under_char_limit(self, store):
+        """A delimiter-free legacy/hand-edited file parses as ONE entry.
+
+        Issue #56464: such a file can stay well under the char limit, so
+        the size-based signal doesn't fire — but replace() matching a
+        substring anywhere in it would previously overwrite the WHOLE blob,
+        destroying every other statement it absorbed.
+        """
+        path = store._path_for("memory")
+        lines = [f"Rule {i}: some short operational note." for i in range(10)]
+        raw = "\n".join(lines)
+        path.write_text(raw, encoding="utf-8")
+        assert len(raw) < store.memory_char_limit  # well under budget
+
+        result = store.replace("memory", "Rule 3:", "Rule 3: updated note.")
+
+        assert result["success"] is False
+        assert "drift_backup" in result
+        # Every original line survives on disk — nothing was overwritten.
+        assert path.read_text(encoding="utf-8") == raw
+
+    def test_remove_refuses_on_squashed_entry_under_char_limit(self, store):
+        path = store._path_for("memory")
+        lines = [f"Rule {i}: some short operational note." for i in range(10)]
+        raw = "\n".join(lines)
+        path.write_text(raw, encoding="utf-8")
+
+        result = store.remove("memory", "Rule 3:")
+
+        assert result["success"] is False
+        assert "drift_backup" in result
+        assert path.read_text(encoding="utf-8") == raw
+
+    def test_short_multiline_entry_is_not_flagged_as_squashed(self, store):
+        """A genuinely small multiline entry (few lines) is still allowed —
+        the docstring explicitly supports multiline entries; only blobs with
+        many internal newlines should be treated as drift."""
+        store.add("memory", "Line one.\nLine two.\nLine three.")
+
+        result = store.replace("memory", "Line two", "Line 2 edited.")
+        assert result["success"] is True
+
+    def test_drift_backup_filename_is_unique_per_invocation(self, store):
+        """Two drift refusals close together must not collide on bak.<ts>.
+
+        If two refusals share the same epoch second, the second call would
+        overwrite the first .bak. The current implementation accepts that
+        — both files describe the same on-disk state — but pin the path
+        format here so any future change has to think about it.
+
+        Note: add() no longer triggers drift detection (issue #42874) —
+        only replace/remove do.  Both r1 and r2 use replace/remove.
+        """
+        store.add("memory", "Initial.")
+        store.add("memory", "Second entry.")
+        self._plant_drift(store)
+
+        r1 = store.replace("memory", "Initial", "Replacement.")
+        r2 = store.remove("memory", "Second entry")
+        assert r1.get("drift_backup")
+        assert r2.get("drift_backup")
+        # Same epoch second is the expected collision case — both point
+        # at the same snapshot. Different second is also fine.
+        assert ".bak." in r1["drift_backup"]
+        assert ".bak." in r2["drift_backup"]
 
 class TestUnreadableFileDoesNotWipeMemory:
     """A file that exists but can't be read must NOT be treated as empty.

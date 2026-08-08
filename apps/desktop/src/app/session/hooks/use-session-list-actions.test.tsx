@@ -248,4 +248,27 @@ describe('refreshSessions batches slices into one request', () => {
 
     expect(getCronJobs).toHaveBeenLastCalledWith('all')
   })
+
+  it('keeps messaging sources in the per-profile recents exclusion list', async () => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    const { recentsExclude } = listSidebarSessions.mock.calls[0][0] as {
+      recentsExclude: string[]
+    }
+
+    // Cron/kanban/subagent/tool rows still get their own handling elsewhere.
+    expect(recentsExclude).toEqual(expect.arrayContaining(['cron', 'kanban', 'subagent', 'tool']))
+
+    // Messaging-platform sessions belong in the profile's Sessions list too —
+    // they are fetched separately for the global per-platform sections, but the
+    // profile recents must not filter them out.
+    for (const source of ['telegram', 'discord', 'slack']) {
+      expect(recentsExclude).not.toContain(source)
+    }
+  })
 })

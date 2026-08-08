@@ -5,7 +5,6 @@ import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
-  MESSAGING_SESSION_SOURCE_IDS,
   normalizeSessionSource
 } from '@/lib/session-source'
 import { setCronJobs } from '@/store/cron'
@@ -29,13 +28,14 @@ import {
 } from '@/store/session'
 import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
-// The recents list is local-only: cron rows have their own section, kanban
-// dispatcher workers are read on the board, and each messaging platform
-// (telegram, discord, …) is fetched separately into its own self-managed
-// sidebar section (refreshMessagingSessions). Excluding them here keeps
-// "Load more" paging through interactive local chats instead of
-// interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+// Per-profile recents keep cron/kanban/subagent/tool rows out — those have
+// their own sections or live on the board — but include messaging-platform
+// sessions (telegram, discord, …): a profile's Sessions list is complete
+// regardless of where the conversation originated. The per-platform sidebar
+// sections are fed by the separate messaging slice (refreshMessagingSessions)
+// and stay unchanged, so messaging rows appear both in their platform section
+// and in the active profile's recents.
+const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'subagent', 'tool']
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]

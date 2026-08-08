@@ -318,12 +318,12 @@ class QQAdapter(BasePlatformAdapter):
         """
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
-            self._set_fatal_error("qq_missing_dependency", message, retryable=True)
+            self._set_fatal_error("qq_missing_dependency", message, retryable=False)
             logger.warning("[%s] %s. Run: pip install aiohttp", self._log_tag, message)
             return False
         if not HTTPX_AVAILABLE:
             message = "QQ startup failed: httpx not installed"
-            self._set_fatal_error("qq_missing_dependency", message, retryable=True)
+            self._set_fatal_error("qq_missing_dependency", message, retryable=False)
             logger.warning("[%s] %s. Run: pip install httpx", self._log_tag, message)
             return False
         if not self._app_id or not self._client_secret:
@@ -366,7 +366,13 @@ class QQAdapter(BasePlatformAdapter):
             return True
         except Exception as exc:
             message = f"QQ startup failed: {exc}"
-            self._set_fatal_error("qq_connect_error", message, retryable=True)
+            if self._is_auth_failure(exc):
+                # A 401/403 from the token or gateway-URL fetch means the
+                # app_id/client_secret are wrong; retrying hammers the token
+                # endpoint forever instead of surfacing a fatal config error.
+                self._set_fatal_error("qq_auth_failed", message, retryable=False)
+            else:
+                self._set_fatal_error("qq_connect_error", message, retryable=True)
             logger.error("[%s] %s", self._log_tag, message, exc_info=True)
             await self._cleanup()
             self._release_platform_lock()
@@ -1285,6 +1291,10 @@ class QQAdapter(BasePlatformAdapter):
         image_media_types = att_result["image_media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
+        # Document/file attachments ride the same media_urls list so the event
+        # is classified DOCUMENT and gateway/run.py path-translates them.
+        image_urls = image_urls + att_result["media_urls"]
+        image_media_types = image_media_types + att_result["media_types"]
 
         # Append voice transcripts to the text body
         if voice_transcripts:
@@ -1358,6 +1368,10 @@ class QQAdapter(BasePlatformAdapter):
         image_media_types = att_result["image_media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
+        # Document/file attachments ride the same media_urls list so the event
+        # is classified DOCUMENT and gateway/run.py path-translates them.
+        image_urls = image_urls + att_result["media_urls"]
+        image_media_types = image_media_types + att_result["media_types"]
 
         # Append voice transcripts
         if voice_transcripts:
@@ -1433,6 +1447,10 @@ class QQAdapter(BasePlatformAdapter):
         image_media_types = att_result["image_media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
+        # Document/file attachments ride the same media_urls list so the event
+        # is classified DOCUMENT and gateway/run.py path-translates them.
+        image_urls = image_urls + att_result["media_urls"]
+        image_media_types = image_media_types + att_result["media_types"]
 
         if voice_transcripts:
             voice_block = "\n".join(voice_transcripts)
@@ -1504,6 +1522,10 @@ class QQAdapter(BasePlatformAdapter):
         image_media_types = att_result["image_media_types"]
         voice_transcripts = att_result["voice_transcripts"]
         attachment_info = att_result["attachment_info"]
+        # Document/file attachments ride the same media_urls list so the event
+        # is classified DOCUMENT and gateway/run.py path-translates them.
+        image_urls = image_urls + att_result["media_urls"]
+        image_media_types = image_media_types + att_result["media_types"]
 
         if voice_transcripts:
             voice_block = "\n".join(voice_transcripts)
@@ -1669,6 +1691,13 @@ class QQAdapter(BasePlatformAdapter):
             return MessageType.VIDEO
         if "image" in first_type or "photo" in first_type:
             return MessageType.PHOTO
+        # Generic files (PDFs, spreadsheets, archives, plain text, …) classify
+        # as DOCUMENT so the inbound-document routing in gateway/run.py fires:
+        # it translates the host cache path to the agent-visible path and emits
+        # the "[The user sent a document …]" note. Without this they were only
+        # surfaced as an inline text marker holding the un-translated host path.
+        if first_type.startswith(("application/", "text/")):
+            return MessageType.DOCUMENT
         logger.debug(
             "Unknown media content_type '%s', defaulting to TEXT",
             first_type,
@@ -1696,12 +1725,16 @@ class QQAdapter(BasePlatformAdapter):
                 "image_media_types": [],
                 "voice_transcripts": [],
                 "attachment_info": "",
+                "media_urls": [],
+                "media_types": [],
             }
 
         image_urls: List[str] = []
         image_media_types: List[str] = []
         voice_transcripts: List[str] = []
         other_attachments: List[str] = []
+        media_urls: List[str] = []
+        media_types: List[str] = []
 
         for att in attachments:
             if not isinstance(att, dict):
@@ -1777,6 +1810,14 @@ class QQAdapter(BasePlatformAdapter):
                             other_attachments.append(f"[video: {name} ({cached_path})]")
                         else:
                             other_attachments.append(f"[file: {name} ({cached_path})]")
+                            # Surface generic files (PDFs, docs, archives, …) as
+                            # real media so the event is classified as DOCUMENT
+                            # and gateway/run.py translates the host cache path
+                            # to the agent-visible path. Videos stay text-only:
+                            # the run.py document path only handles
+                            # application/* and text/* MIME types.
+                            media_urls.append(cached_path)
+                            media_types.append(ct or "application/octet-stream")
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache attachment: %s", self._log_tag, exc)
 
@@ -1786,6 +1827,8 @@ class QQAdapter(BasePlatformAdapter):
             "image_media_types": image_media_types,
             "voice_transcripts": voice_transcripts,
             "attachment_info": attachment_info,
+            "media_urls": media_urls,
+            "media_types": media_types,
         }
 
     async def _download_and_cache(
@@ -2386,13 +2429,21 @@ class QQAdapter(BasePlatformAdapter):
                 json=body,
                 timeout=timeout,
             )
-            data = resp.json()
             if resp.status_code >= 400:
+                # Error bodies are not always JSON (CDN/proxy HTML pages,
+                # empty 429s). Read the message defensively so we always
+                # raise the structured RuntimeError downstream callers parse
+                # (e.g. the '40093002' daily-limit biz code in chunked_upload)
+                # instead of leaking a raw JSONDecodeError.
+                try:
+                    err = resp.json()
+                    detail = err.get("message", err) if isinstance(err, dict) else err
+                except Exception:
+                    detail = resp.text[:200]
                 raise RuntimeError(
-                    f"QQ Bot API error [{resp.status_code}] {path}: "
-                    f"{data.get('message', data)}"
+                    f"QQ Bot API error [{resp.status_code}] {path}: {detail}"
                 )
-            return data
+            return resp.json()
         except httpx.TimeoutException as exc:
             raise RuntimeError(f"QQ Bot API timeout [{path}]: {exc}") from exc
 
@@ -2520,18 +2571,19 @@ class QQAdapter(BasePlatformAdapter):
                     return await self._send_group_text(chat_id, content, reply_to)
                 elif chat_type == "guild":
                     return await self._send_guild_text(chat_id, content, reply_to)
+                elif chat_type == "dm":
+                    return await self._send_dm_text(chat_id, content, reply_to)
                 else:
                     return SendResult(
                         success=False, error=f"Unknown chat type for {chat_id}"
                     )
             except Exception as exc:
                 last_exc = exc
-                err = str(exc).lower()
-                # Permanent errors — don't retry
-                if any(
-                        k in err
-                        for k in ("invalid", "forbidden", "not found", "bad request")
-                ):
+                # Permanent errors — don't retry. Classify on the HTTP status
+                # embedded by _api_request ("[<status>]"); QQ returns its
+                # error 'message' in Chinese, so English keyword matching can
+                # never recognize a genuine 4xx.
+                if self._is_permanent_send_error(exc):
                     break
                 # Transient — back off and retry
                 if attempt < 2:
@@ -2547,9 +2599,9 @@ class QQAdapter(BasePlatformAdapter):
 
         error_msg = str(last_exc) if last_exc else "Unknown error"
         logger.error("[%s] Send failed: %s", self._log_tag, error_msg)
-        retryable = not any(
-            k in error_msg.lower() for k in ("invalid", "forbidden", "not found")
-        )
+        # Use the same status-based classifier as the break decision so the
+        # surfaced retryable flag can never disagree with the retry loop.
+        retryable = last_exc is None or not self._is_permanent_send_error(last_exc)
         return SendResult(success=False, error=error_msg, retryable=retryable)
 
     async def _send_c2c_text(
@@ -2607,6 +2659,23 @@ class QQAdapter(BasePlatformAdapter):
             body["msg_id"] = reply_to
 
         data = await self._api_request("POST", f"/channels/{channel_id}/messages", body)
+        msg_id = str(data.get("id", uuid.uuid4().hex[:12]))
+        return SendResult(success=True, message_id=msg_id, raw_response=data)
+
+    async def _send_dm_text(
+            self, guild_id: str, content: str, reply_to: Optional[str] = None
+    ) -> SendResult:
+        """Send text to a guild direct message via REST API.
+
+        Guild DMs target a per-DM guild scope, so the endpoint is
+        ``POST /dms/{guild_id}/messages`` — distinct from the channel send
+        used by :meth:`_send_guild_text` (``/channels/{channel_id}/messages``).
+        """
+        body: Dict[str, Any] = {"content": content[: self.MAX_MESSAGE_LENGTH]}
+        if reply_to:
+            body["msg_id"] = reply_to
+
+        data = await self._api_request("POST", f"/dms/{guild_id}/messages", body)
         msg_id = str(data.get("id", uuid.uuid4().hex[:12]))
         return SendResult(success=True, message_id=msg_id, raw_response=data)
 
@@ -2915,8 +2984,10 @@ class QQAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error="Not connected", retryable=True)
 
         chat_type = self._guess_chat_type(chat_id)
-        if chat_type == "guild":
-            # Guild channels don't support native media upload in the same way.
+        if chat_type in {"guild", "dm"}:
+            # Guild channels and guild DMs don't support the v2 file-upload
+            # path used for C2C/group; routing them through it would POST the
+            # guild_id to the group endpoint and 404.
             return SendResult(
                 success=False,
                 error="Guild media send not supported via this path",
@@ -3178,6 +3249,48 @@ class QQAdapter(BasePlatformAdapter):
     @staticmethod
     def _is_url(source: str) -> bool:
         return urlparse(str(source)).scheme in {"http", "https"}
+
+    @staticmethod
+    def _is_auth_failure(exc: BaseException) -> bool:
+        """Return True if *exc* (or any cause in its chain) is a 401/403.
+
+        Token/gateway fetches wrap ``httpx.HTTPStatusError`` in a generic
+        ``RuntimeError`` via ``from exc``, so the original status survives on
+        ``__cause__``. A 401/403 means bad credentials, which never self-heal.
+        """
+        seen = set()
+        cur: Optional[BaseException] = exc
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            if HTTPX_AVAILABLE and isinstance(cur, httpx.HTTPStatusError):
+                if cur.response is not None and cur.response.status_code in (401, 403):
+                    return True
+            cur = cur.__cause__ or cur.__context__
+        return False
+
+    @staticmethod
+    def _is_permanent_send_error(exc: BaseException) -> bool:
+        """Return True if a send failure is permanent (don't retry).
+
+        ``_api_request`` embeds the HTTP status as ``[<status>]`` in the error
+        message, so classify on the code rather than English keywords (QQ
+        returns its error 'message' field in Chinese). 4xx other than 429 are
+        permanent; 429/5xx/timeouts/transport errors are transient. When no
+        status marker is present (a local error), fall back to keyword match.
+        """
+        import re
+
+        text = str(exc)
+        match = re.search(r"\[(\d{3})\]", text)
+        if match:
+            status = int(match.group(1))
+            if status == 429:
+                return False
+            return 400 <= status < 500
+        return any(
+            k in text.lower()
+            for k in ("invalid", "forbidden", "not found", "bad request")
+        )
 
     def _guess_chat_type(self, chat_id: str) -> str:
         """Determine chat type from stored inbound metadata, fallback to 'c2c'."""

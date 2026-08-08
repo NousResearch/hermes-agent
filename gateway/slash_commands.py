@@ -2736,8 +2736,12 @@ class GatewaySlashCommandsMixin:
                 import asyncio
                 from hermes_cli.goals import draft_contract
 
-                draft_contract_obj = await asyncio.get_running_loop().run_in_executor(
-                    None, draft_contract, objective
+                # _run_in_executor_with_context, not a bare hop: drafting a
+                # contract calls the auxiliary LLM, whose provider/credential
+                # resolution reads the profile secret scope — a contextvar that
+                # a default-executor hop drops, leaving it unscoped.
+                draft_contract_obj = await self._run_in_executor_with_context(
+                    draft_contract, objective
                 )
             except Exception as exc:
                 logger.debug("goal draft failed: %s", exc)
@@ -5173,8 +5177,6 @@ class GatewaySlashCommandsMixin:
             from hermes_state import SessionDB
             from agent.insights import InsightsEngine
 
-            loop = asyncio.get_running_loop()
-
             def _run_insights():
                 db = SessionDB()
                 engine = InsightsEngine(db)
@@ -5183,7 +5185,13 @@ class GatewaySlashCommandsMixin:
                 db.close()
                 return result
 
-            return await loop.run_in_executor(None, _run_insights)
+            # _run_in_executor_with_context, not a bare hop: ``SessionDB()``
+            # with no explicit path resolves ``get_hermes_home()`` at call
+            # time, and that override is a contextvar installed by
+            # ``_profile_runtime_scope``. A default-executor hop starts the
+            # worker with an EMPTY context, so /insights read the DEFAULT
+            # profile's state.db and reported another profile's conversations.
+            return await self._run_in_executor_with_context(_run_insights)
         except Exception as e:
             logger.error("Insights command error: %s", e, exc_info=True)
             return t("gateway.insights.error", error=e)
@@ -5521,8 +5529,6 @@ class GatewaySlashCommandsMixin:
             _GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
         )
 
-        loop = asyncio.get_running_loop()
-
         # Run blocking I/O (dump capture, log reads, uploads) in a thread.
         def _collect_and_upload():
             _best_effort_sweep_expired_pastes()
@@ -5549,7 +5555,11 @@ class GatewaySlashCommandsMixin:
             lines.append(t("gateway.debug.share_hint"))
             return "\n".join(lines)
 
-        return await loop.run_in_executor(None, _collect_and_upload)
+        # _run_in_executor_with_context, not a bare hop: this collects the
+        # profile's logs/config off ``get_hermes_home()`` and uploads them to a
+        # public paste. Losing the contextvar override would publish the DEFAULT
+        # profile's diagnostics from another profile's chat.
+        return await self._run_in_executor_with_context(_collect_and_upload)
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.

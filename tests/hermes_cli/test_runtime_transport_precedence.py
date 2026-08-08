@@ -8,9 +8,15 @@ the provider overlay itself declares.
 
 Contract pinned here: when URL detection has no opinion, the runtime falls
 back to ``providers.determine_api_mode(provider, base_url, model)`` (the
-provider's declared transport), and only lands on ``chat_completions`` for
-genuinely unknown providers/endpoints. Covers the explicit-runtime path and
-the API-key-provider path; the pool-entry path shares the same helper.
+provider's declared transport) **only while the endpoint sits on the
+provider's own default host**, and lands on ``chat_completions`` for
+genuinely unknown providers/endpoints. A ``model.base_url`` override that
+points at a different endpoint (OpenAI-compatible relay in front of MiniMax,
+corporate egress gateway, LiteLLM, ...) is protocol-unknown: the declared
+transport must not be assumed, or a proxied ``minimax`` setup gets
+Anthropic-shaped requests / ``x-api-key`` against a chat/completions
+endpoint and 401s (#76836). Covers the explicit-runtime path and the
+API-key-provider path; the pool-entry path shares the same helper.
 """
 
 from __future__ import annotations
@@ -34,13 +40,46 @@ class TestFallbackApiMode:
     def test_openai_api_official_hosts_resolve_codex_responses(self, base_url):
         assert _fallback_api_mode("openai-api", base_url) == "codex_responses"
 
-    def test_openai_api_unknown_custom_proxy_still_uses_declared_transport(self):
-        # Explicitly selected openai-api against a custom proxy keeps the
-        # provider's declared transport (mirrors determine_api_mode semantics;
-        # host identity is a separate question from provider selection).
+    def test_openai_api_custom_proxy_override_uses_generic_chat(self):
+        # Explicitly selected openai-api against a custom proxy does NOT keep
+        # the provider's declared transport: the override points at a
+        # different endpoint whose wire protocol is unknown, so the safe
+        # generic chat_completions default applies (pre-33a2f29a6 behavior).
+        # Regression class of #76836 — the declared transport is a statement
+        # about the provider's own endpoint, not about foreign relays.
         assert (
             _fallback_api_mode("openai-api", "https://proxy.corp.test/v1")
-            == "codex_responses"
+            == "chat_completions"
+        )
+
+    def test_minimax_proxy_override_falls_back_to_chat_completions(self):
+        # #76836: minimax with model.base_url overridden to an
+        # OpenAI-compatible relay (token-optimization proxy, LiteLLM,
+        # corporate egress) must resolve chat_completions — not the
+        # provider's declared anthropic_messages transport — or every request
+        # 401s (x-api-key sent to an Authorization: Bearer endpoint).
+        assert (
+            _fallback_api_mode("minimax", "http://127.0.0.1:8787/v1", "MiniMax-M3")
+            == "chat_completions"
+        )
+
+    def test_minimax_cn_proxy_override_falls_back_to_chat_completions(self):
+        assert (
+            _fallback_api_mode("minimax-cn", "http://127.0.0.1:8788/v1")
+            == "chat_completions"
+        )
+
+    def test_declared_transport_applies_on_provider_own_host(self):
+        # The declared non-chat transport still holds on the provider's own
+        # default host — the #53054 fix is preserved for non-URL-detected
+        # endpoints (bare host, no /anthropic hint).
+        assert (
+            _fallback_api_mode("minimax", "https://api.minimax.io")
+            == "anthropic_messages"
+        )
+        assert (
+            _fallback_api_mode("minimax-cn", "https://api.minimaxi.com")
+            == "anthropic_messages"
         )
 
     def test_lookalike_host_is_not_treated_as_official(self):

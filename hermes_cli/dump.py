@@ -17,6 +17,7 @@ from hermes_cli.config import get_hermes_home, get_env_path, get_project_root, l
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 from agent.skill_utils import is_excluded_skill_path
+from utils import is_truthy_value
 
 
 def _dotenv_key_names() -> set[str]:
@@ -156,9 +157,18 @@ def _count_skills(hermes_home: Path) -> int:
 
 def _count_mcp_servers(config: dict) -> int:
     """Count configured MCP servers."""
-    mcp = config.get("mcp", {})
-    servers = mcp.get("servers", {})
-    return len(servers)
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        mcp = config.get("mcp", {})
+        servers = mcp.get("servers", {}) if isinstance(mcp, dict) else {}
+    if not isinstance(servers, dict):
+        return 0
+    return sum(
+        1
+        for server_cfg in servers.values()
+        if not isinstance(server_cfg, dict)
+        or is_truthy_value(server_cfg.get("enabled"), default=True)
+    )
 
 
 def _cron_summary(hermes_home: Path) -> str:

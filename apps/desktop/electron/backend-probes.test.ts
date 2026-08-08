@@ -15,8 +15,11 @@ import { test } from 'vitest'
 import {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
+  execProbeStatus,
   hermesRuntimeImportProbe,
   PROBE_TIMEOUT_MS,
+  probeHermesCliImportStatus,
+  probeHermesCliStatus,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,
   verifyHermesCli
@@ -49,6 +52,12 @@ test('canImportHermesCli returns false when binary does not exist', () => {
   assert.equal(canImportHermesCli(ghost), false)
 })
 
+test('probeHermesCliImportStatus reports failure when path is falsy', () => {
+  assert.equal(probeHermesCliImportStatus(''), 'failure')
+  assert.equal(probeHermesCliImportStatus(null), 'failure')
+  assert.equal(probeHermesCliImportStatus(undefined), 'failure')
+})
+
 test('hermes runtime import probe checks config dependencies', () => {
   const probe = hermesRuntimeImportProbe()
   assert.match(probe, /\bimport yaml\b/)
@@ -77,6 +86,12 @@ test('verifyHermesCli returns false when command is falsy', () => {
 test('verifyHermesCli returns false when binary does not exist', () => {
   const ghost = path.join(os.tmpdir(), 'hermes-probes-ghost-' + Date.now() + '.exe')
   assert.equal(verifyHermesCli(ghost), false)
+})
+
+test('probeHermesCliStatus reports failure when command is falsy', () => {
+  assert.equal(probeHermesCliStatus(''), 'failure')
+  assert.equal(probeHermesCliStatus(null), 'failure')
+  assert.equal(probeHermesCliStatus(undefined), 'failure')
 })
 
 test('verifyHermesCli returns true when --version exits 0', () => {
@@ -108,6 +123,20 @@ test('verifyHermesCli swallows timeouts (does not throw)', () => {
   // (because the binary is missing) returns false rather than
   // propagating. Same code path the timeout case takes.
   assert.equal(verifyHermesCli('/definitely/not/a/real/binary/anywhere'), false)
+})
+
+test('execProbeStatus reports timeout after both attempts exhaust the budget', () => {
+  const status = execProbeStatus(
+    NODE_BIN,
+    ['-e', 'setTimeout(() => process.exit(0), 200)'],
+    {
+      stdio: 'ignore',
+      timeout: 10,
+      windowsHide: true
+    }
+  )
+
+  assert.equal(status, 'timeout')
 })
 
 test('default probe timeout is 15s (not the old 5s death-loop value)', () => {

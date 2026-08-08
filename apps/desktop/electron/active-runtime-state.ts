@@ -1,3 +1,5 @@
+export type ActiveRuntimeUsability = 'usable' | 'probe-timeout' | 'unusable'
+
 export interface BootstrapMarkerLike {
   pinnedCommit?: unknown
   schemaVersion?: unknown
@@ -6,7 +8,7 @@ export interface BootstrapMarkerLike {
 export interface ActiveRuntimeState {
   hasValidMarker: boolean
   shouldUseActiveRuntime: boolean
-  usabilityReason: 'usable' | 'unusable'
+  usabilityReason: ActiveRuntimeUsability
 }
 
 export function hasValidBootstrapMarker(
@@ -38,11 +40,11 @@ export function hasValidBootstrapMarker(
 export function classifyActiveRuntime(
   marker: BootstrapMarkerLike | null | undefined,
   schemaVersion: number,
-  runtimeUsable: boolean
+  runtimeUsability: ActiveRuntimeUsability
 ): ActiveRuntimeState {
   const hasValidMarker = hasValidBootstrapMarker(marker, schemaVersion)
 
-  if (!runtimeUsable) {
+  if (runtimeUsability === 'unusable') {
     return {
       hasValidMarker,
       shouldUseActiveRuntime: false,
@@ -53,6 +55,6 @@ export function classifyActiveRuntime(
   return {
     hasValidMarker,
     shouldUseActiveRuntime: true,
-    usabilityReason: 'usable'
+    usabilityReason: runtimeUsability
   }
 }

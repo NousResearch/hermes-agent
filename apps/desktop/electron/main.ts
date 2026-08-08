@@ -31,7 +31,7 @@ import {
 } from 'electron'
 import nodePty from 'node-pty'
 
-import { classifyActiveRuntime } from './active-runtime-state'
+import { type ActiveRuntimeUsability, classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
@@ -41,6 +41,7 @@ import {
   canImportHermesCli,
   execProbeSync,
   PROBE_TIMEOUT_MS,
+  probeHermesCliImportStatus,
   shouldTrustHermesOverride,
   verifyHermesCli
 } from './backend-probes'
@@ -3618,18 +3619,24 @@ function readBootstrapMarker() {
 // or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
 // ever having written the bootstrap marker -- so we must be able to recognise
 // "already installed" off the filesystem alone, not just the marker.
-function isActiveRuntimeUsable() {
+function activeRuntimeUsability(): ActiveRuntimeUsability {
   const venvPython = getVenvPython(VENV_ROOT)
 
-  return (
-    isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
-    fileExists(venvPython) &&
-    canImportHermesCli(venvPython, {
-      env: {
-        PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
-      }
-    })
-  )
+  if (!(isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(venvPython))) {
+    return 'unusable'
+  }
+
+  const probeStatus = probeHermesCliImportStatus(venvPython, {
+    env: {
+      PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+    }
+  })
+
+  if (probeStatus === 'timeout') {
+    return 'probe-timeout'
+  }
+
+  return probeStatus === 'success' ? 'usable' : 'unusable'
 }
 
 function activeRuntimeState() {
@@ -3638,7 +3645,16 @@ function activeRuntimeState() {
   // update`, which moves HEAD legitimately. The marker only attests "a
   // desktop-managed bootstrap ran here at least once"; runtime usability is
   // what decides whether we can actually launch.
-  return classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, isActiveRuntimeUsable())
+  const runtimeUsability = activeRuntimeUsability()
+
+  if (runtimeUsability === 'probe-timeout') {
+    rememberLog(
+      `[bootstrap] Active Hermes runtime probe timed out after ${PROBE_TIMEOUT_MS}ms; ` +
+        'trusting the existing install instead of routing to first-run bootstrap.'
+    )
+  }
+
+  return classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, runtimeUsability)
 }
 
 function writeBootstrapMarker(payload) {

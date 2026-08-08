@@ -117,10 +117,15 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     still atomic.  Copying straight onto the target instead — the previous
     behavior — opens it ``"wb"`` and truncates it before the first
     replacement byte lands, so an interrupted copy left the user's config
-    or credentials partial or empty.  Only a target that cannot be renamed
-    onto at all (a busy or bind-mounted inode), or a directory that will
-    not accept a staging temp, degrades to that in-place copy; that
-    residual case remains non-atomic.
+    or credentials partial or empty.  The staged content is written through
+    the ``mkstemp`` descriptor itself, so the staging file is never reopened
+    by path between creation and rename.  The in-place copy is reached only
+    when the staged rename cannot be attempted or does not succeed: the
+    target's directory refuses a staging temp, or ``os.replace(staged,
+    target)`` fails with any ``OSError`` — a busy or bind-mounted inode is
+    the motivating case, but a permission/ACL, read-only-filesystem or
+    symlink-loop failure lands there too.  That residual case remains
+    non-atomic.
 
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
@@ -145,22 +150,28 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
                 prefix=".tmp_xdev_",
                 suffix=".tmp",
             )
-            os.close(staged_fd)
         except OSError:
             # The target's directory will not take a staging temp; the
             # in-place copy below is the only remaining option.
-            staged = None
+            staged_fd, staged = -1, None
 
         replaced = False
         if staged is not None:
             try:
-                shutil.copyfile(tmp_str, staged)
-                try:
-                    shutil.copystat(tmp_str, staged)
-                except OSError:
-                    pass
-                with open(staged, "rb") as handle:
-                    os.fsync(handle.fileno())
+                # Write through the descriptor ``mkstemp`` handed back rather
+                # than reopening the staging file by path: the staging temp
+                # holds the full plaintext of a credential file, and never
+                # reopening it means there is no window in which the name
+                # could resolve to a different inode.
+                with os.fdopen(staged_fd, "wb") as staged_handle:
+                    with open(tmp_str, "rb") as source:
+                        shutil.copyfileobj(source, staged_handle)
+                    staged_handle.flush()
+                    try:
+                        shutil.copystat(tmp_str, staged)
+                    except OSError:
+                        pass
+                    os.fsync(staged_handle.fileno())
             except OSError:
                 # The copy failed (ENOSPC, I/O error, ...).  Only the staging
                 # temp is damaged, so surface the failure with the target's
@@ -171,7 +182,8 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
                 os.replace(staged, real_path)
                 replaced = True
             except OSError:
-                # A busy or bind-mounted inode cannot be renamed onto.
+                # The staged file cannot be renamed onto the target — a busy
+                # or bind-mounted inode, or a permission/ACL restriction.
                 _unlink_quietly(staged)
 
         if not replaced:

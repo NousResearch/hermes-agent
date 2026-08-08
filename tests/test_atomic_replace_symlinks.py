@@ -279,14 +279,15 @@ def test_atomic_replace_cross_device_never_truncates_target(
             raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
         genuine_replace(src, dst)
 
-    def copyfile_runs_out_of_space(src: str, dst: str) -> None:
+    def copyfileobj_runs_out_of_space(
+        src_handle: object, dst_handle: object, *_args: object, **_kwargs: object
+    ) -> None:
         # Land a few bytes, then fail the way a filling disk does.
-        with open(src, "rb") as src_handle, open(dst, "wb") as dst_handle:
-            dst_handle.write(src_handle.read(8))
-        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), dst)
+        dst_handle.write(src_handle.read(8))  # type: ignore[attr-defined]
+        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
 
     monkeypatch.setattr("utils.os.replace", exdev_once)
-    monkeypatch.setattr("utils.shutil.copyfile", copyfile_runs_out_of_space)
+    monkeypatch.setattr("utils.shutil.copyfileobj", copyfileobj_runs_out_of_space)
 
     with pytest.raises(OSError) as excinfo:
         atomic_replace(tmp, link)

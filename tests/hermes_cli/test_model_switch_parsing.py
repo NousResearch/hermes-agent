@@ -14,8 +14,10 @@ import pytest
 from hermes_cli.model_switch import (
     MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET,
     MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL,
+    MODEL_SWITCH_ERR_RESET_WITH_FLAGS,
     MODEL_SWITCH_ERROR_TEXT,
     ModelSwitchRequest,
+    is_model_reset_request,
     parse_model_flags_detailed,
     parse_model_switch_args,
     resolve_effective_model,
@@ -49,6 +51,40 @@ def test_once_with_global_conflict():
         == "/model --once cannot be combined with --global"
     )
     assert "/model --once cannot be combined with --global" in req.error_messages()
+
+
+# ---------------------------------------------------------------------------
+# /model reset — clear-session-override special target (NS-563)
+# ---------------------------------------------------------------------------
+
+def test_reset_is_detected_case_insensitively():
+    for raw in ("reset", "RESET", "  Reset  "):
+        req = parse_model_switch_args(raw)
+        assert req.errors == ()
+        assert is_model_reset_request(req) is True, raw
+
+
+def test_reset_with_any_flag_errors():
+    for raw in (
+        "reset --global",
+        "reset --session",
+        "reset --once",
+        "reset --provider anthropic",
+    ):
+        req = parse_model_switch_args(raw)
+        assert MODEL_SWITCH_ERR_RESET_WITH_FLAGS in req.errors, raw
+        assert not is_model_reset_request(req), raw
+    assert "takes no flags" in MODEL_SWITCH_ERROR_TEXT[MODEL_SWITCH_ERR_RESET_WITH_FLAGS]
+
+
+def test_reset_does_not_match_other_targets():
+    # "default" is NOT a reset alias — it's MoA's default preset name
+    # (moa_config.DEFAULT_MOA_PRESET_NAME) and must keep resolving as a
+    # model/preset target.
+    for raw in ("default", "sonnet", "reset-preview", "my-reset"):
+        req = parse_model_switch_args(raw)
+        assert is_model_reset_request(req) is False, raw
+        assert MODEL_SWITCH_ERR_RESET_WITH_FLAGS not in req.errors, raw
 
 
 

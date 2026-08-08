@@ -9355,6 +9355,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             switch_model,
             parse_model_switch_args,
             resolve_persist_behavior,
+            is_model_reset_request,
         )
         from hermes_cli.providers import get_label
 
@@ -9374,6 +9375,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if request.errors:
             # CLI decoration: "  ✗ " prefix over the canonical error copy.
             _cprint(f"  ✗ {request.error_messages()[0]}")
+            return
+        # /model reset — drop this session's switch and return to the
+        # config.yaml default. In the CLI a session-scoped switch lives in
+        # self.model/self.provider (no durable pin), so reset re-derives the
+        # configured default and re-runs the switch machinery session-scoped
+        # (never persisting). Gateway/TUI parity: NS-563.
+        if is_model_reset_request(request):
+            self._handle_model_reset_command()
             return
         # Resolve the effective persistence once: --global forces persist,
         # --session/--once force session-scope, otherwise defer to
@@ -9611,6 +9620,75 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint("    (next turn only — restores after one response)")
         else:
             _cprint("    (session only — add --global to persist)")
+
+    def _handle_model_reset_command(self) -> None:
+        """Handle ``/model reset`` — return this session to the configured default.
+
+        In the CLI a session-scoped ``/model`` switch lives directly in
+        ``self.model``/``self.provider`` (no durable pin), so "reset" means:
+        re-derive the config.yaml default and switch back to it session-scoped,
+        without persisting anything.  Conversation history is kept.  Parity
+        with the gateway's ``/model reset`` (NS-563).
+        """
+        from hermes_cli.model_switch import switch_model
+
+        # Drop a queued one-turn restore — it would re-plant the model we're
+        # resetting away from once the next turn finishes.
+        self._pending_one_turn_model_restore = None
+
+        # Fresh config read (not the startup CLI_CONFIG snapshot): the entire
+        # point of a reset is to adopt whatever the default is NOW — the
+        # dashboard or another surface may have changed config.yaml since
+        # this CLI process launched.
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            _cfg = load_config_readonly()
+            _model_config = _cfg.get("model", {}) if isinstance(_cfg, dict) else {}
+        except Exception:
+            _model_config = CLI_CONFIG.get("model", {})
+        if isinstance(_model_config, dict):
+            default_model = str(
+                _model_config.get("default") or _model_config.get("model") or ""
+            ).strip()
+            default_provider = str(_model_config.get("provider") or "").strip()
+            if default_provider.lower() == "auto":
+                default_provider = ""
+        else:
+            default_model = str(_model_config or "").strip()
+            default_provider = ""
+
+        if not default_model:
+            _cprint("  ✗ No model.default configured in config.yaml — nothing to reset to.")
+            return
+
+        if default_model == (self.model or "") and (
+            not default_provider or default_provider == (self.provider or "")
+        ):
+            _cprint(
+                f"  No session model override is active — already using "
+                f"{default_model} (the configured default)."
+            )
+            return
+
+        result = switch_model(
+            raw_input=default_model,
+            current_provider=self.provider or "",
+            current_model=self.model or "",
+            current_base_url=self.base_url or "",
+            current_api_key=self.api_key or "",
+            is_global=False,
+            explicit_provider=default_provider,
+        )
+        if not result.success:
+            _cprint(f"  ✗ {result.error_message}")
+            return
+
+        self._apply_model_switch_result(result, persist_global=False)
+        _cprint(
+            "  Session model override cleared — back on the configured default. "
+            "Conversation history kept."
+        )
 
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.

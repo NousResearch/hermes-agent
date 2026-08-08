@@ -49,6 +49,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — athraigh an tsamhail"
     usage_switch_provider:  "`/model <name> --provider <slug>` — athraigh an soláthraí"
     usage_persist:          "`/model <name> --global` — coinnigh"
+    usage_reset:            "`/model reset` — glan sárú an tseisiúin seo"
+    reset_done:             "Glanadh sárú mhúnla an tseisiúin — `{model}` (réamhshocrú an chainéil/domhanda) in úsáid anois. Coinníodh stair an chomhrá."
+    reset_none:             "Níl aon sárú múnla gníomhach sa seisiún seo — tá `{model}` (réamhshocrú an chainéil/domhanda) in úsáid cheana."
 
   agents:
     header:                "🤖 **Gníomhairí & Tascanna Gníomhacha**"

@@ -1679,10 +1679,12 @@ class GatewaySlashCommandsMixin:
           /model <name> --global              — switch and persist to config.yaml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
+          /model reset                        — clear this session's override (keep history)
         """
         from gateway.run import _hermes_home, _load_gateway_config
         from hermes_cli.model_switch import (
             switch_model as _switch_model, parse_model_switch_args,
+            is_model_reset_request,
             resolve_persist_behavior,
             list_authenticated_providers,
             list_picker_providers,
@@ -1769,6 +1771,15 @@ class GatewaySlashCommandsMixin:
             current_provider = override.get("provider", current_provider)
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
+
+        # /model reset — clear the session override, keep the conversation.
+        # Fixes the "stuck on an old model" trap: a persisted session override
+        # (written by any prior /model) silently shadows every later change to
+        # the channel/global default — surviving gateway restarts via
+        # _rehydrate_session_model_override — and until now the only way out
+        # was /new, which also wipes the conversation history (NS-563).
+        if is_model_reset_request(request):
+            return await self._handle_model_reset(source, session_key, current_model)
 
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
@@ -2118,6 +2129,7 @@ class GatewaySlashCommandsMixin:
             lines.append(t("gateway.model.usage_switch_model"))
             lines.append(t("gateway.model.usage_switch_provider"))
             lines.append(t("gateway.model.usage_persist"))
+            lines.append(t("gateway.model.usage_reset"))
             return "\n".join(lines)
 
         # Perform the switch
@@ -2443,6 +2455,100 @@ class GatewaySlashCommandsMixin:
             )
 
         return await _finish_switch()
+
+    async def _handle_model_reset(
+        self, source, session_key: str, current_model: str
+    ) -> str:
+        """Handle ``/model reset`` — clear the session model override only.
+
+        A session override (set by any prior ``/model``) persists across
+        gateway restarts via the session store and silently shadows every
+        later change to the channel/global default.  Before this command the
+        only way to escape it was ``/new``, which also destroys the
+        conversation history (NS-563).  This clears the override (in-memory
+        and persisted) while leaving the transcript untouched, so the very
+        next turn resolves through the normal channel-override > global
+        precedence.
+        """
+        # Rehydrate first so a persisted-but-not-yet-loaded override (fresh
+        # restart) is visible; otherwise we'd report "no override" while
+        # sessions.json still resurrects it on the next message.
+        try:
+            self._rehydrate_session_model_override(session_key)
+        except Exception:
+            logger.debug("Override rehydration before reset failed", exc_info=True)
+
+        had_override = session_key in self._session_model_overrides
+
+        # Clear in-memory override + any pending one-turn restore snapshot
+        # (a queued --once restore would re-plant the override we just
+        # cleared once the turn finishes).
+        self._session_model_overrides.pop(session_key, None)
+        if hasattr(self, "_pending_one_turn_model_restores"):
+            self._pending_one_turn_model_restores.pop(session_key, None)
+
+        # Clear the persisted write-through so a restart can't rehydrate it.
+        try:
+            await self.async_session_store.set_model_override(session_key, None)
+        except Exception:
+            logger.debug(
+                "Failed to clear persisted session model override", exc_info=True
+            )
+
+        # Resolve what the session falls back to (channel override > global).
+        default_model = ""
+        try:
+            default_model = self._resolve_model_for_channel(
+                source.platform,
+                str(source.chat_id) if source.chat_id else "",
+                thread_id=(
+                    str(source.thread_id)
+                    if getattr(source, "thread_id", None)
+                    else None
+                ),
+                parent_id=(
+                    str(source.parent_chat_id)
+                    if getattr(source, "parent_chat_id", None)
+                    else None
+                ),
+            )
+        except Exception:
+            logger.debug("Default-model resolution after reset failed", exc_info=True)
+        default_model = default_model or "unknown"
+
+        if not had_override:
+            return t("gateway.model.reset_none", model=default_model)
+
+        # Keep the dashboard's session-model column in sync (#34850).
+        _sess_db = getattr(self, "_session_db", None)
+        if _sess_db is not None:
+            try:
+                _sess_entry = await self.async_session_store.get_or_create_session(
+                    source
+                )
+                await _sess_db.update_session_model(
+                    _sess_entry.session_id, default_model
+                )
+            except Exception as exc:
+                logger.debug("Failed to persist model reset to DB: %s", exc)
+
+        # Tell the model about the change on the next turn (same pattern as
+        # a forward switch — avoids system messages mid-history).
+        from hermes_cli.model_switch import format_model_for_display
+
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+        self._pending_model_notes[session_key] = (
+            f"[Note: the session model override was just cleared; model changed "
+            f"from {format_model_for_display(current_model)} back to the default "
+            f"{format_model_for_display(default_model)}. "
+            f"Adjust your self-identification accordingly.]"
+        )
+
+        # Evict the cached agent so the next turn rebuilds from the default.
+        self._evict_cached_agent(session_key)
+
+        return t("gateway.model.reset_done", model=default_model)
 
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime command in the gateway.

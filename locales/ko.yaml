@@ -45,6 +45,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — 모델 전환"
     usage_switch_provider:  "`/model <name> --provider <slug>` — 제공자 전환"
     usage_persist:          "`/model <name> --global` — 영구 저장"
+    usage_reset:            "`/model reset` — 이 세션의 오버라이드 해제"
+    reset_done:             "세션 모델 오버라이드가 해제되었습니다 — 이제 `{model}`(채널/전역 기본값)을 사용합니다. 대화 기록은 유지됩니다."
+    reset_none:             "이 세션에 활성화된 모델 오버라이드가 없습니다 — 이미 `{model}`(채널/전역 기본값)을 사용 중입니다."
 
   agents:
     header:                "🤖 **활성 에이전트 및 작업**"

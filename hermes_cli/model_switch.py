@@ -639,6 +639,7 @@ def resolve_persist_behavior(
 # Error codes emitted by parse_model_switch_args().
 MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL = "once_with_global"
 MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET = "once_requires_target"
+MODEL_SWITCH_ERR_RESET_WITH_FLAGS = "reset_with_flags"
 
 # Canonical (surface-neutral) error copy.  Surfaces prepend their own
 # decoration ("  ✗ " in the CLI, "❌ " in the gateway) but MUST NOT change
@@ -646,7 +647,37 @@ MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET = "once_requires_target"
 MODEL_SWITCH_ERROR_TEXT = {
     MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL: "/model --once cannot be combined with --global",
     MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET: "/model --once requires a model or provider.",
+    MODEL_SWITCH_ERR_RESET_WITH_FLAGS: (
+        "/model reset takes no flags — it clears this session's model "
+        "override so the channel/global default applies again."
+    ),
 }
+
+# ``/model reset`` clears the per-session /model override instead of
+# switching to a model literally named "reset".  Kept here so every surface
+# (CLI, gateway, TUI) shares one definition — the whole point of this module
+# (see the divergence-history note above).  NOTE: deliberately NOT aliased to
+# "default" — MoA's default preset is literally named "default", so
+# ``/model default`` must keep resolving through exact_moa_preset_name().
+MODEL_SWITCH_RESET_TOKENS = frozenset({"reset"})
+
+
+def is_model_reset_request(request: "ModelSwitchRequest") -> bool:
+    """True when *request* asks to clear the session model override.
+
+    ``/model reset`` with no other flags.  A target that merely *contains*
+    a reset token (e.g. a model name with "reset" in it) does not match —
+    the comparison is against the whole normalized target.  Flag
+    combinations (``/model reset --global``) are rejected at parse time via
+    ``MODEL_SWITCH_ERR_RESET_WITH_FLAGS``.
+    """
+    return (
+        request.target.strip().lower() in MODEL_SWITCH_RESET_TOKENS
+        and not request.explicit_provider
+        and not request.is_global
+        and not request.is_session
+        and not request.is_once
+    )
 
 
 @dataclass(frozen=True)
@@ -706,11 +737,15 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     * ``--once`` + ``--global``  → ``MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL``
     * ``--once`` with no model and no ``--provider``
       → ``MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET``
+    * ``reset`` combined with any flag
+      → ``MODEL_SWITCH_ERR_RESET_WITH_FLAGS``
 
     Model targets pass through untouched: bare names (``sonnet``),
     aggregator slugs (``vendor/model``), and colon forms (``vendor:model``)
     are all resolved later by :func:`switch_model` (aggregator-aware — bare
-    names resolve WITHIN the current aggregator first).
+    names resolve WITHIN the current aggregator first).  The special target
+    ``reset`` is not a switch at all: surfaces detect it via
+    :func:`is_model_reset_request` and clear the session override instead.
     """
     raw = str(raw or "")
     parsed = parse_model_flags_detailed(raw)
@@ -720,6 +755,13 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
         errors.append(MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL)
     if parsed.is_once and not parsed.model_input and not parsed.explicit_provider:
         errors.append(MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET)
+    if parsed.model_input.strip().lower() in MODEL_SWITCH_RESET_TOKENS and (
+        parsed.explicit_provider
+        or parsed.is_global
+        or parsed.is_session
+        or parsed.is_once
+    ):
+        errors.append(MODEL_SWITCH_ERR_RESET_WITH_FLAGS)
 
     if parsed.is_once:
         scope = "once"

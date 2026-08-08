@@ -45,6 +45,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — モデルを切り替え"
     usage_switch_provider:  "`/model <name> --provider <slug>` — プロバイダーを切り替え"
     usage_persist:          "`/model <name> --global` — 永続化"
+    usage_reset:            "`/model reset` — このセッションのオーバーライドを解除"
+    reset_done:             "セッションのモデルオーバーライドを解除しました — 現在 `{model}`（チャンネル/グローバルのデフォルト）を使用中。会話履歴は保持されます。"
+    reset_none:             "このセッションにアクティブなモデルオーバーライドはありません — すでに `{model}`（チャンネル/グローバルのデフォルト）を使用しています。"
 
   agents:
     header:                "🤖 **アクティブなエージェントとタスク**"

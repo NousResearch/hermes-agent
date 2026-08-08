@@ -45,6 +45,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — modeli değiştir"
     usage_switch_provider:  "`/model <name> --provider <slug>` — sağlayıcıyı değiştir"
     usage_persist:          "`/model <name> --global` — kalıcı kaydet"
+    usage_reset:            "`/model reset` — bu oturumun geçersiz kılmasını temizle"
+    reset_done:             "Oturum model geçersiz kılması temizlendi — artık `{model}` kullanılıyor (kanal/genel varsayılan). Konuşma geçmişi korundu."
+    reset_none:             "Bu oturumda etkin bir model geçersiz kılması yok — zaten `{model}` kullanılıyor (kanal/genel varsayılan)."
 
   agents:
     header:                "🤖 **Aktif Ajanlar ve Görevler**"

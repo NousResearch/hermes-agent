@@ -45,6 +45,9 @@ gateway:
     usage_switch_model:     "`/model <name>` — modell váltása"
     usage_switch_provider:  "`/model <name> --provider <slug>` — szolgáltató váltása"
     usage_persist:          "`/model <name> --global` — megőrzés"
+    usage_reset:            "`/model reset` — a munkamenet felülbírálásának törlése"
+    reset_done:             "A munkamenet modell-felülbírálása törölve — mostantól a `{model}` (csatorna/globális alapértelmezés) van használatban. A beszélgetés előzményei megmaradnak."
+    reset_none:             "Nincs aktív modell-felülbírálás ebben a munkamenetben — már a `{model}` (csatorna/globális alapértelmezés) van használatban."
 
   agents:
     header:                "🤖 **Aktív ügynökök és feladatok**"

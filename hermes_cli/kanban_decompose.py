@@ -456,6 +456,19 @@ def decompose_task(
     )
 
 
+def list_auto_decompose_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
+    """Return fresh triage ids eligible for automatic decomposition."""
+    with kb.connect_closing() as conn:
+        rows = kb.list_tasks(
+            conn,
+            status="triage",
+            tenant=tenant,
+            limit=1000,
+            exclude_block_provenance=True,
+        )
+    return [row.id for row in rows]
+
+
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
     """Return task ids currently in the triage column."""
     with kb.connect_closing() as conn:

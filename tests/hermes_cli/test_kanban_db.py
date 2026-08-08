@@ -192,6 +192,310 @@ def test_schedule_task_parks_time_delay_without_dispatching(kanban_home):
         assert any(e.kind == "scheduled" and e.payload == {"reason": "run next week"} for e in events)
 
 
+def test_unblock_scheduled_rechecks_parent_gate(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.schedule_task(conn, child, reason="wait until tomorrow") is True
+
+        assert kb.unblock_task(conn, child) is True
+        assert kb.get_task(conn, child).status == "todo"
+
+        kb.complete_task(conn, parent)
+        assert kb.schedule_task(conn, child, reason="second timer") is True
+        assert kb.unblock_task(conn, child) is True
+        assert kb.get_task(conn, child).status == "ready"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+@pytest.mark.live_system_guard_bypass
+def test_crashed_worker_kills_surviving_process_group(kanban_home, monkeypatch):
+    import signal
+
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            """
+import os, signal, subprocess, sys, time
+
+child = subprocess.Popen(
+    [sys.executable, "-u", "-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(60)"],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    text=True,
+)
+assert child.stdout is not None
+assert child.stdout.readline() == "ready\\n"
+print(child.pid, flush=True)
+os._exit(1)
+""",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert worker.stdout is not None
+    child_pid = int(worker.stdout.readline())
+    worker.wait(timeout=2)
+    monkeypatch.setattr(kb, "_resolve_crash_grace_seconds", lambda: 0)
+
+    try:
+        with kb.connect() as conn:
+            task_id = kb.create_task(conn, title="crashed worker", assignee="test")
+            assert kb.claim_task(conn, task_id) is not None
+            kb._set_worker_pid(conn, task_id, worker.pid)
+
+            assert task_id in kb.detect_crashed_workers(conn)
+            assert kb.get_task(conn, task_id).status == "ready"
+            events = kb.list_events(conn, task_id)
+            assert events[-1].payload["process_group"] is True
+            assert events[-1].payload["sigkill"] is True
+
+        assert not kb._pid_alive(child_pid)
+    finally:
+        try:
+            os.killpg(worker.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only test cleanup
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            os.kill(child_pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only test cleanup
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+def test_worker_termination_refuses_dispatcher_process_group():
+    claim_lock = f"{kb._claimer_id().split(':', 1)[0]}:self-group-test"
+
+    termination = kb._terminate_reclaimed_worker(os.getpgrp(), claim_lock)
+
+    assert termination["termination_attempted"] is False
+    assert termination["termination_blocked"] == "dispatcher_process_group"
+
+
+def test_stale_claim_reclaimed(kanban_home, monkeypatch):
+    import signal
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        killed: list[int] = []
+
+        def _signal(_pid, sig):
+            killed.append(sig)
+
+        kb._set_worker_pid(conn, t, 12345)
+        # Rewind claim_expires so it looks stale.
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 3600, t),
+        )
+        # Worker PID has died — exactly the case ``release_stale_claims``
+        # should still reclaim (post-#23025: live PIDs are now extended).
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        reclaimed = kb.release_stale_claims(conn, signal_fn=_signal)
+        assert reclaimed == 1
+        assert kb.get_task(conn, t).status == "ready"
+        assert killed == [signal.SIGTERM]
+
+
+def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
+    kanban_home, monkeypatch,
+):
+    """A stale-by-TTL claim whose worker PID is still alive should be
+    extended, not reclaimed (#23025). Slow models can spend longer than
+    ``DEFAULT_CLAIM_TTL_SECONDS`` inside a single tool-free LLM call;
+    killing those healthy workers produces a respawn loop with zero
+    progress."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+
+        old_expires = int(time.time()) - 60
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (old_expires, t),
+        )
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        killed: list[int] = []
+        reclaimed = kb.release_stale_claims(
+            conn, signal_fn=lambda _p, sig: killed.append(sig),
+        )
+        assert reclaimed == 0
+        task = kb.get_task(conn, t)
+        assert task.status == "running"
+        assert task.claim_expires is not None
+        assert task.claim_expires > old_expires
+        assert killed == []  # live worker not killed
+
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "claim_extended" in kinds
+        assert "reclaimed" not in kinds
+
+
+def test_stale_claim_with_live_pid_uses_env_ttl_override(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_TTL_SECONDS", "3600")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 60, t),
+        )
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 0
+
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.claim_expires is not None
+        assert task.claim_expires > int(time.time()) + 3000
+
+
+def test_stale_claim_deferred_when_live_worker_survives_termination(
+    kanban_home, monkeypatch,
+):
+    """A TTL-expired claim whose worker survives the kill must NOT be released.
+
+    Releasing would let the dispatcher spawn a duplicate beside the still-alive
+    worker — the runaway seen when a cgroup memory.high throttle parks a worker
+    in uninterruptible (D) state, where a pending SIGKILL cannot land. The claim
+    is held (extended) and retried next tick instead.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+
+        old_expires = int(time.time()) - 60
+        # Heartbeat stale by > 1h so the live-pid EXTEND branch is skipped and
+        # the terminate path (the wedged-worker case) runs.
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (old_expires, int(time.time()) - 7200, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": True,
+                "host_local": True,
+                "terminated": False,
+            },
+        )
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 0
+
+        assert kb.get_task(conn, t).status == "running"
+        worker_pid = conn.execute(
+            "SELECT worker_pid FROM tasks WHERE id = ?", (t,),
+        ).fetchone()[0]
+        assert worker_pid == 12345  # worker not orphaned
+        claim_expires = conn.execute(
+            "SELECT claim_expires FROM tasks WHERE id = ?", (t,),
+        ).fetchone()[0]
+        assert claim_expires > old_expires  # claim held, not released
+
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "reclaim_deferred" in kinds
+        assert "reclaimed" not in kinds
+
+
+def test_stale_claim_reclaimed_when_termination_succeeds(
+    kanban_home, monkeypatch,
+):
+    """When the worker is actually killed, the claim is released as before."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (int(time.time()) - 60, int(time.time()) - 7200, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": True,
+                "host_local": True,
+                "terminated": True,
+            },
+        )
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 1
+        assert kb.get_task(conn, t).status == "ready"
+
+
+def test_stale_claim_released_when_worker_not_host_local(
+    kanban_home, monkeypatch,
+):
+    """The defer guard only holds OUR own surviving workers.
+
+    A claim we cannot manage (different host, or no kill attempted) must still
+    be released, otherwise a foreign-host claim could strand a task forever.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (int(time.time()) - 60, int(time.time()) - 7200, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": False,
+                "host_local": False,
+                "terminated": False,
+            },
+        )
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 1
+        assert kb.get_task(conn, t).status == "ready"
 
 
 

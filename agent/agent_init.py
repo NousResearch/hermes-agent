@@ -1709,7 +1709,7 @@ def init_agent(
                 )
                 agent._memory_store.load_from_disk()
         except Exception:
-            pass  # Memory is optional -- don't break agent init
+            logger.warning("Memory store init failed — agent running without memory", exc_info=True)
     
 
 

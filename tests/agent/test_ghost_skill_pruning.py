@@ -296,3 +296,17 @@ class TestSkillsGuidanceSafetyRule:
         assert SKILLS_GUIDANCE.count("\n") >= 6
         for rule in ("UNAVAILABLE", "RELOAD", "WAIT", "DEDUP"):
             assert rule in SKILLS_GUIDANCE
+
+    def test_classifier_trigger_phrasing_removed_but_tool_still_named(self):
+        """#65365: the original "save the approach as a skill with
+        skill_manage" / "patch it immediately with skill_manage(action=
+        'patch')" phrasing is one of three sentences that, together,
+        deterministically tripped Anthropic's OAuth billing classifier
+        (live-verified via anthropic-ratelimit-unified-* headers). The
+        reword must drop that exact phrasing while still naming
+        skill_manage so the model knows which tool to call."""
+        from agent.prompt_builder import SKILLS_GUIDANCE
+
+        assert "save the approach as a" not in SKILLS_GUIDANCE
+        assert "patch it immediately with" not in SKILLS_GUIDANCE
+        assert "skill_manage" in SKILLS_GUIDANCE

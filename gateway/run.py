@@ -16060,7 +16060,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
-        if _is_shared_multi_user and source.user_name:
+        # Sender-name prefix is intentionally decoupled from
+        # ``_is_shared_multi_user``.  ``_is_shared_multi_user`` describes
+        # session-key isolation (whether multiple participants share the
+        # same history); the prefix describes whether the LLM can tell
+        # who sent the current message.  Those are two different questions
+        # and conflating them meant that, under the default
+        # ``group_sessions_per_user=True`` config, the LLM never saw a
+        # sender name on group/thread messages — the model then cannot
+        # tell the bot's own orchestrator notices apart from real user
+        # input.  Prefix every non-DM inbound message so the LLM has the
+        # affordance to attribute correctly.  DM messages still skip the
+        # prefix to preserve the cross-platform 1:1 contract.
+        #
+        # ``_is_shared_multi_user`` is computed above for backward
+        # compatibility with downstream readers expecting the variable
+        # in this scope (e.g. ``build_session_key`` consumers).
+        _should_prefix_sender = source.chat_type != "dm" and bool(source.user_name)
+        if _should_prefix_sender:
             # source.user_name is the platform display name — attacker-
             # influenceable on any platform that lets participants set their
             # own name. Neutralize embedded newlines/control chars before

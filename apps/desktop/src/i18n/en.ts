@@ -2217,9 +2217,9 @@ export const en: Translations = {
       'The Hermes updater takes over in its own window and reopens Hermes automatically when it’s done. Please don’t reopen Hermes yourself while it’s updating.',
     applyingBodyBackend:
       'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
-    applyingClose: 'This window will close while the update runs, then Hermes reopens on its own.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
+    openLogs: 'Open logs',
     notNow: 'Not now',
     applyStatus: {
       preparing: 'Updating backend…',

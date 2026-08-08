@@ -13,7 +13,6 @@ import {
 } from '@/components/ui/dialog'
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
-import { Progress } from '@/components/ui/progress'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
@@ -372,50 +371,23 @@ function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void
   )
 }
 
+// Deliberately minimal: an infinite loader, the stage title, and one line of
+// what's happening right now. No progress bar (the percent was hardcoded
+// milestones, not measurement), no log box, no chrome — updating is a wait,
+// not a dashboard.
 function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend: boolean }) {
   const { t } = useI18n()
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
   const body = isBackend ? u.applyingBodyBackend : u.applyingBody
   const currentMessage = apply.message.trim()
-  const recentLog = apply.log.slice(-4)
-
-  const percent =
-    typeof apply.percent === 'number' && Number.isFinite(apply.percent)
-      ? Math.max(2, Math.min(100, Math.round(apply.percent)))
-      : null
 
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7">
-      <div className="flex flex-col items-center gap-3 text-center">
-        <Loader className="size-16" label={label} type="lemniscate-bloom" />
+    <div className="flex flex-col items-center gap-3 px-6 pb-8 pt-8 text-center">
+      <Loader className="size-16" label={label} type="lemniscate-bloom" />
 
-        <DialogTitle className="text-center text-xl">{label}</DialogTitle>
-        <DialogDescription className="text-center text-sm">{body}</DialogDescription>
-
-        {currentMessage ? (
-          <p className="max-w-lg break-words text-center text-xs leading-5 text-muted-foreground">{currentMessage}</p>
-        ) : null}
-      </div>
-
-      <Progress
-        aria-label={label}
-        indeterminate={percent === null}
-        size="lg"
-        value={percent === null ? 0 : percent / 100}
-      />
-
-      {recentLog.length > 1 ? (
-        <div className="max-h-24 overflow-hidden rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground">
-          {recentLog.map((entry, index) => (
-            <div className="truncate" key={`${entry.at}-${index}`}>
-              {entry.message}
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
+      <DialogTitle className="text-center text-xl">{label}</DialogTitle>
+      <DialogDescription className="w-full truncate text-center text-sm">{currentMessage || body}</DialogDescription>
     </div>
   )
 }
@@ -437,9 +409,14 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
       <Button className="font-semibold" onClick={onRetry} size="lg">
         {u.tryAgain}
       </Button>
-      <Button onClick={onDismiss} variant="text">
-        {u.notNow}
-      </Button>
+      <div className="flex items-center justify-center gap-1">
+        <Button onClick={() => void window.hermesDesktop?.revealLogs()} variant="text">
+          {u.openLogs}
+        </Button>
+        <Button onClick={onDismiss} variant="text">
+          {u.notNow}
+        </Button>
+      </div>
     </ErrorState>
   )
 }

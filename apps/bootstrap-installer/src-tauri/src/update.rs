@@ -59,6 +59,30 @@ static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 /// fire-and-forget shape; progress arrives on the `bootstrap` event channel.
 #[tauri::command]
 pub async fn start_update(app: AppHandle) -> Result<(), String> {
+    // Dev-only dry run: `--simulate` (debug builds only) plays the whole
+    // update flow — real window, real mode, real event channel — with
+    // synthetic stage/log events and NO process spawned, NO tree mutated.
+    // A real `--update` launch auto-starts `hermes update` the moment the
+    // window opens, so without this there is no safe way to LOOK at the
+    // update UI. Release builds ignore the flag entirely.
+    if cfg!(debug_assertions)
+        && std::env::args()
+            .skip(1)
+            .any(|a| a == "--simulate" || a.starts_with("--simulate=") || a == "--simulate-fail")
+    {
+        if UPDATE_RUNNING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Ok(());
+        }
+        tokio::spawn(async move {
+            run_simulated_update(app).await;
+            UPDATE_RUNNING.store(false, Ordering::SeqCst);
+        });
+        return Ok(());
+    }
+
     // Re-entrancy guard (see UPDATE_RUNNING). compare_exchange lets exactly one
     // caller flip false→true; any concurrent caller no-ops instead of spawning
     // a second racing update.
@@ -1212,6 +1236,127 @@ fn emit_log(app: &AppHandle, stage: Option<&str>, stream: LogStream, line: &str)
             line: line.to_string(),
             stream,
         },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Simulated update (debug builds, `--update --simulate`)
+// ---------------------------------------------------------------------------
+
+/// Play the update flow's event stream without touching anything: same
+/// manifest, same stage transitions, same log rhythm as `run_update`, driven
+/// by timers. `--simulate=fail` lands on the failure route instead of
+/// completing. The window stays open at the end (there is no desktop to
+/// relaunch), which is exactly what UI review needs.
+async fn run_simulated_update(app: AppHandle) {
+    let fail = std::env::args()
+        .skip(1)
+        .any(|a| a == "--simulate=fail" || a == "--simulate-fail");
+
+    emit_log(
+        &app,
+        None,
+        LogStream::Stdout,
+        "[simulate] DRY RUN — no processes spawned, nothing modified",
+    );
+
+    let include_install = cfg!(target_os = "macos");
+    emit(
+        &app,
+        BootstrapEvent::Manifest {
+            stages: update_stages(include_install),
+            protocol_version: None,
+        },
+    );
+
+    // (stage, line, hold-ms) — timings compressed from a real run's rhythm.
+    let script: &[(&str, &str, u64)] = &[
+        ("handoff", "[handoff] waiting for Hermes to close…", 1200),
+        ("update", "[update] updating against branch main", 700),
+        ("update", "From github.com:NousResearch/hermes-agent", 900),
+        ("update", "Updating a1b2c3d..e4f5a6b — fast-forward", 800),
+        ("update", "→ Updating Python dependencies...", 1500),
+        ("update", "Installed 4 packages in 812ms", 700),
+        ("rebuild", "vite v6.3.5 building for production...", 1600),
+        ("rebuild", "✓ 2841 modules transformed.", 1100),
+        ("rebuild", "• electron-builder packaging platform=darwin arch=arm64", 1800),
+    ];
+
+    let mut current: Option<&str> = None;
+    let mut started = Instant::now();
+
+    for (stage, line, hold_ms) in script {
+        if current != Some(stage) {
+            if let Some(prev) = current {
+                emit_stage(
+                    &app,
+                    prev,
+                    StageState::Succeeded,
+                    Some(started.elapsed().as_millis() as u64),
+                    None,
+                );
+            }
+            emit_stage(&app, stage, StageState::Running, None, None);
+            started = Instant::now();
+            current = Some(stage);
+        }
+        emit_log(&app, Some(stage), LogStream::Stdout, line);
+        tokio::time::sleep(Duration::from_millis(*hold_ms)).await;
+    }
+
+    let last = current.unwrap_or("rebuild");
+    if fail {
+        let msg = "Simulated failure (--simulate=fail).".to_string();
+        emit_stage(
+            &app,
+            last,
+            StageState::Failed,
+            Some(started.elapsed().as_millis() as u64),
+            Some(msg.clone()),
+        );
+        emit(
+            &app,
+            BootstrapEvent::Failed {
+                stage: Some(last.to_string()),
+                error: msg,
+            },
+        );
+        return;
+    }
+
+    emit_stage(
+        &app,
+        last,
+        StageState::Succeeded,
+        Some(started.elapsed().as_millis() as u64),
+        None,
+    );
+    if include_install {
+        emit_stage(&app, "install", StageState::Running, None, None);
+        emit_log(
+            &app,
+            Some("install"),
+            LogStream::Stdout,
+            "[install] swapping the app bundle…",
+        );
+        tokio::time::sleep(Duration::from_millis(1400)).await;
+        emit_stage(&app, "install", StageState::Succeeded, Some(1400), None);
+    }
+    emit(
+        &app,
+        BootstrapEvent::Complete {
+            install_root: crate::paths::hermes_home()
+                .join("hermes-agent")
+                .display()
+                .to_string(),
+            marker: None,
+        },
+    );
+    emit_log(
+        &app,
+        None,
+        LogStream::Stdout,
+        "[simulate] done — window stays open (no desktop relaunch in a dry run)",
     );
 }
 

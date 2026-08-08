@@ -155,6 +155,31 @@ pub fn run() {
             // First run / repair install, or Update mode: reveal the UI.
             match app.get_webview_window("main") {
                 Some(win) => {
+                    // Dev-only appearance override: `--dark` / `--light` pin
+                    // the window theme so both palettes are reviewable without
+                    // flipping the OS appearance. theme.ts follows the window
+                    // theme, so this flows through the normal paint path.
+                    if cfg!(debug_assertions) {
+                        let forced = std::env::args().skip(1).find_map(|a| match a.as_str() {
+                            "--dark" => Some(tauri::Theme::Dark),
+                            "--light" => Some(tauri::Theme::Light),
+                            _ => None,
+                        });
+                        if let Some(theme) = forced {
+                            let _ = win.set_theme(Some(theme));
+                        }
+                    }
+                    // Update mode renders a single spinner + one line of text
+                    // (see routes/progress.tsx UpdateScreen) — the 880×620
+                    // installer canvas around that reads as a broken empty
+                    // window. Shrink to a small fixed panel before first show
+                    // so the update never flashes the big frame.
+                    if mode == AppMode::Update {
+                        let _ = win.set_min_size(Some(tauri::LogicalSize::new(280.0, 320.0)));
+                        let _ = win.set_size(tauri::LogicalSize::new(280.0, 320.0));
+                        let _ = win.set_resizable(false);
+                        let _ = win.center();
+                    }
                     if let Err(err) = win.show() {
                         tracing::error!(?err, "failed to show main installer window");
                     }

@@ -1988,9 +1988,9 @@ export const zhHant = defineLocale({
     applyingBody:
       'Hermes 更新程式會在自己的視窗中接管，並在完成後自動重新開啟 Hermes。更新期間請勿自行重新開啟 Hermes。',
     applyingBodyBackend: '遠端後端正在套用更新並將重新啟動。恢復後 Hermes 會自動重新連線。',
-    applyingClose: '此視窗會在更新期間關閉，隨後 Hermes 會自動重新開啟。',
     errorTitle: '更新未完成',
     errorBody: '沒有資料遺失。您可以現在重試。',
+    openLogs: '開啟日誌',
     notNow: '暫不',
     applyStatus: {
       preparing: '正在更新後端…',

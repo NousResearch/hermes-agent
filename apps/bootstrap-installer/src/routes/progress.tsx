@@ -50,11 +50,20 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
   }, [bootstrap.status])
 
   const isUpdate = mode === 'update'
-  const title = bootstrap.status === 'completed' ? 'Done' : isUpdate ? 'Updating Hermes' : 'Setting up Hermes Agent'
 
-  const description = isUpdate
-    ? 'Hermes is updating to the latest version — this only takes a moment.'
-    : 'This is a one-time setup. The Hermes installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.'
+  // Update mode is a hand-off, not a decision surface: the desktop already
+  // quit, so there is nothing to cancel INTO (killing the child mid
+  // git-stash/rebuild corrupts the checkout and strands the user with no
+  // running app). Render the same minimal shape as the in-app applying view —
+  // infinite loader, one title, one line of what's happening — and nothing else.
+  if (isUpdate) {
+    return <UpdateScreen bootstrap={bootstrap} />
+  }
+
+  const title = bootstrap.status === 'completed' ? 'Done' : 'Setting up Hermes Agent'
+
+  const description =
+    'This is a one-time setup. The Hermes installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.'
 
   const pct = Math.round(progress.fraction * 100)
 
@@ -166,6 +175,33 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
           </Button>
         )}
       </div>
+    </div>
+  )
+}
+
+/*
+ * Update hand-off screen — the whole surface is "Hermes is updating".
+ *
+ * The desktop app already exited; this window exists so the user knows the
+ * update is alive, nothing more. One infinite loader, one title, one muted
+ * line showing the latest thing the updater did. No progress bar (stage
+ * fractions moved in meaningless 25% jumps), no stage checklist, no log pane,
+ * and deliberately NO cancel — cancelling mid git-stash/pip/rebuild corrupts
+ * the checkout with no running app to fall back to. Failure routes to the
+ * failure screen, which is the only state with affordances.
+ */
+function UpdateScreen({ bootstrap }: { bootstrap: BootstrapStateModel }) {
+  const lastLog = bootstrap.logs.at(-1)?.line.trim()
+  const running = bootstrap.currentStage ? bootstrap.stages[bootstrap.currentStage]?.info.title : null
+  const detail = bootstrap.status === 'completed' ? 'Restarting Hermes…' : lastLog || running || 'Getting ready…'
+
+  return (
+    <div className="hermes-fade-in flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
+      <Loader className="size-20" />
+      <h2 className="text-lg font-semibold tracking-tight">Updating Hermes</h2>
+      <p className="w-full truncate text-xs text-muted-foreground" title={detail}>
+        {detail}
+      </p>
     </div>
   )
 }

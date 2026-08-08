@@ -53,36 +53,35 @@
 }
 
 /*
- * Dark appearance — Nous dark seeds.
+ * Dark appearance — charcoal seeds (light stays the imported Nous light :root).
  *
  * The imported desktop :root.dark only flips the per-mode mix knobs + neutral
  * chrome; the seed COLORS are normally painted at runtime by the desktop's
- * applyTheme(). The installer has no theme runtime, so we mirror them here from
- * apps/desktop/src/themes/presets.ts (nousTheme.darkColors). The whole
- * --ui-* / --dt-* chain in the imported stylesheet derives from these seeds, so
- * flipping them is enough — we only additionally override the few tokens
- * applyTheme() sets inline that DON'T derive from a seed (primary-foreground on
- * the cream accent, destructive). Unlayered on purpose so it wins over the
- * imported @layer base :root light seeds. Keep in sync with nousTheme.darkColors
- * if that palette is retuned.
+ * applyTheme(). The installer has no theme runtime, so we seed here: neutral
+ * charcoal (#232323 base) rather than a brand palette — the updater should
+ * read as a quiet system window. The whole --ui-* / --dt-* chain in the
+ * imported stylesheet derives from these seeds, so flipping them is enough —
+ * we only additionally override the few tokens applyTheme() sets inline that
+ * DON'T derive from a seed. Unlayered on purpose so it wins over the imported
+ * @layer base :root light seeds.
  */
 :root.dark {
   color-scheme: dark;
 
-  --theme-foreground: #ffe6cb;
-  --theme-primary: #ffe6cb;
-  --theme-secondary: #1b45a4;
-  --theme-accent-soft: #1540b1;
-  --theme-midground: #0053fd;
-  --theme-warm: #ffe6cb;
-  --theme-background-seed: #0d2f86;
-  --theme-sidebar-seed: #09286f;
-  --theme-card-seed: #12378f;
-  --theme-elevated-seed: #123a96;
-  --theme-bubble-seed: #143b91;
+  --theme-foreground: #d6d6d6;
+  --theme-primary: #d6d6d6;
+  --theme-secondary: #3a3a3a;
+  --theme-accent-soft: #2f2f2f;
+  --theme-midground: #8a8a8a;
+  --theme-warm: #8a8a8a;
+  --theme-background-seed: #232323;
+  --theme-sidebar-seed: #1c1c1c;
+  --theme-card-seed: #2a2a2a;
+  --theme-elevated-seed: #2e2e2e;
+  --theme-bubble-seed: #2c2c2c;
 
-  /* Non-derived shadcn tokens applyTheme() paints inline (Nous dark values). */
-  --dt-primary-foreground: #0d2f86;
-  --dt-destructive: #c0473a;
+  /* Non-derived shadcn tokens applyTheme() paints inline. */
+  --dt-primary-foreground: #232323;
+  --dt-destructive: #cf4848;
   --dt-destructive-foreground: #fef2f2;
 }

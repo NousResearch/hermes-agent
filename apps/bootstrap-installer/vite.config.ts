@@ -1,6 +1,7 @@
-import { defineConfig } from 'vite'
+import { defineConfig, searchForWorkspaceRoot } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import fs from 'node:fs'
 import path from 'node:path'
 
 // Hermes Setup — Tauri-targeted Vite config.
@@ -36,6 +37,16 @@ export default defineConfig({
     watch: {
       // Don't watch the Rust side — tauri-cli handles it.
       ignored: ['**/src-tauri/**']
+    },
+    fs: {
+      // In a git worktree, node_modules is a symlink into the primary
+      // checkout; Vite resolves the realpath and refuses to serve assets
+      // (e.g. @nous-research/ui fonts) from outside the workspace root.
+      // Allow the resolved node_modules alongside the normal root.
+      allow: [
+        searchForWorkspaceRoot(process.cwd()),
+        fs.realpathSync(path.resolve(__dirname, '../../node_modules'))
+      ]
     }
   },
   build: {

@@ -2408,9 +2408,9 @@ export const zh: Translations = {
     applyingBody:
       'Hermes 更新器会在自己的窗口中接管，并在完成后自动重新打开 Hermes。更新期间请不要自行重新打开 Hermes。',
     applyingBodyBackend: '远程后端正在应用更新并将重启。恢复后 Hermes 会自动重新连接。',
-    applyingClose: '此窗口会在更新期间关闭，随后 Hermes 会自动重新打开。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
+    openLogs: '打开日志',
     notNow: '暂不',
     applyStatus: {
       preparing: '正在更新后端…',

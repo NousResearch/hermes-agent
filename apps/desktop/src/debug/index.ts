@@ -31,6 +31,10 @@ import './render-counter'
 import './perf-live'
 import './right-pane-probe'
 
+// Update-flow simulator — window.__SIMULATE_UPDATE__() drives the updates
+// overlay through realistic applying/terminal states without quitting the app.
+import { installUpdateSimulator } from './simulate-update'
 import { watchSessionAtoms } from './watched-atoms'
 
 watchSessionAtoms()
+installUpdateSimulator()

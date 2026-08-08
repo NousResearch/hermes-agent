@@ -28,6 +28,26 @@ export default function Failure({ bootstrap }: FailureProps) {
   const mode = useStore($mode)
   const isUpdate = mode === 'update'
 
+  // Update failure mirrors the update screen's minimal shape: one title, two
+  // actions. No error prose, no log path line — Open logs IS the detail path.
+  if (isUpdate) {
+    return (
+      <div className="hermes-fade-in flex h-full flex-col items-center justify-center gap-5 px-6 text-center">
+        <h2 className="text-lg font-semibold tracking-tight">Failed to update</h2>
+        <div className="flex flex-col items-center gap-2">
+          <Button className="gap-1.5" onClick={() => void startUpdate()}>
+            <RefreshCw />
+            Retry
+          </Button>
+          <Button className="gap-1.5" onClick={() => void openLogDir()} variant="text">
+            <FileText />
+            Logs
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="hermes-fade-in flex h-full flex-col items-center justify-center gap-6 px-12 py-10">
       <div className="w-full max-w-2xl min-w-0 text-center">

@@ -163,6 +163,10 @@ If you skip that install or it fails, the wizard falls back to Edge TTS.
 
 ## Step 5: recommended config
 
+Keep provider keys in `~/.hermes/.env`. Put non-secret voice behavior in
+`~/.hermes/config.yaml`: record key, silence tuning, auto-TTS, and provider
+selection.
+
 ```yaml
 voice:
   record_key: "ctrl+b"

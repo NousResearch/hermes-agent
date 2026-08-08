@@ -7739,6 +7739,17 @@ class AIAgent:
             parent_agent=self,
         )
 
+    def _dispatch_model_override(self, function_args: dict) -> str:
+        """Single call site for model_override dispatch (mirrors delegate_task)."""
+        from tools.model_override_tool import model_override as _model_override
+
+        return _model_override(
+            action=function_args.get("action", "status"),
+            model=function_args.get("model", ""),
+            provider=function_args.get("provider", ""),
+            parent_agent=self,
+        )
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False,

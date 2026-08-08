@@ -49,6 +49,7 @@ from utils import base_url_hostname, is_truthy_value
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
         "delegate_task",  # no recursive delegation
+        "model_override",  # no session-model flips from children (parent drives)
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
@@ -1035,6 +1036,9 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     """
     blocked_names = set(DELEGATE_BLOCKED_TOOLS)
     if role == "orchestrator":
+        # Orchestrators regain ONLY delegate_task — they may not flip session
+        # models either (model_override targets the parent's gateway session
+        # key, which children don't own).
         blocked_names.discard("delegate_task")
     return sorted(
         name

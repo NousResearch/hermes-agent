@@ -521,7 +521,9 @@ class PluginContext:
 
     # -- message injection --------------------------------------------------
 
-    def inject_message(self, content: str, role: str = "user") -> bool:
+    def inject_message(
+        self, content: str, role: str = "user", session_id: str | None = None
+    ) -> bool:
         """Inject a message into the active conversation.
 
         If the agent is idle (waiting for user input), this starts a new turn.
@@ -530,14 +532,43 @@ class PluginContext:
         This enables plugins (e.g. remote control viewers, messaging bridges)
         to send messages into the conversation from external sources.
 
+        ``session_id`` is the dashboard session that originated the work
+        (capture it inside the tool call via
+        ``gateway.session_context.get_session_env("HERMES_UI_SESSION_ID")``
+        — watcher threads spawned later don't inherit the ContextVar). When
+        set, headless routing delivers to that session only and drops the
+        message if it has been closed; the interactive CLI ignores it, having
+        a single conversation.
+
         Returns True if the message was queued successfully.
         """
         cli = self._manager._cli_ref
-        if cli is None:
-            logger.warning("inject_message: no CLI reference (not available in gateway mode)")
-            return False
-
         msg = content if role == "user" else f"[{role}] {content}"
+
+        if cli is None:
+            # No interactive CLI in this process. The dashboard/desktop chat
+            # hosts its sessions in the in-process tui_gateway server instead
+            # — route the message to the originating session when known,
+            # else to the most recently active one. Gate on
+            # sys.modules: a process that never imported the dashboard stack
+            # (e.g. a pure messaging gateway) has no sessions to route to, and
+            # must not pay the import for a guaranteed miss.
+            tui_server = sys.modules.get("tui_gateway.server")
+            if tui_server is not None:
+                try:
+                    if tui_server.inject_external_message(
+                        msg, target_sid=session_id
+                    ):
+                        return True
+                except Exception:
+                    logger.warning(
+                        "inject_message: tui_gateway routing failed", exc_info=True
+                    )
+            logger.warning(
+                "inject_message: no CLI reference and no active dashboard "
+                "session (not available in gateway mode)"
+            )
+            return False
 
         if getattr(cli, "_agent_running", False):
             # Agent is mid-turn — interrupt with the message

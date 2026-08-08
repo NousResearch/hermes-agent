@@ -12,7 +12,7 @@ Gateway-specific env vars:
   - SMS_WEBHOOK_PORT     (default 8080)
   - SMS_WEBHOOK_HOST     (default 127.0.0.1)
   - SMS_WEBHOOK_URL      (public URL for Twilio signature validation — required)
-  - SMS_INSECURE_NO_SIGNATURE  (true to disable signature validation — dev only)
+  - SMS_INSECURE_NO_SIGNATURE  (truthy aliases: 1/true/yes/on — disable signature validation, dev only)
   - SMS_ALLOWED_USERS    (comma-separated E.164 phone numbers)
   - SMS_ALLOW_ALL_USERS  (true/false)
   - SMS_HOME_CHANNEL     (phone number for cron delivery)
@@ -38,6 +38,12 @@ from gateway.platforms.helpers import redact_phone, strip_markdown
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
+from utils import env_var_enabled
+
+
+def _sms_insecure_no_signature() -> bool:
+    """Dev-only opt-out of Twilio signature / webhook URL requirements."""
+    return env_var_enabled("SMS_INSECURE_NO_SIGNATURE")
 
 
 def _get_scoped_secret(name, default=None):
@@ -121,7 +127,7 @@ class SmsAdapter(BasePlatformAdapter):
             self._set_fatal_error("sms_missing_phone_number", msg, retryable=False)
             return False
 
-        insecure_no_sig = os.getenv("SMS_INSECURE_NO_SIGNATURE", "").lower() == "true"
+        insecure_no_sig = _sms_insecure_no_signature()
 
         if not self._webhook_url and not insecure_no_sig:
             msg = (

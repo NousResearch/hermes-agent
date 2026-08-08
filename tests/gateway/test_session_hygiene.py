@@ -569,7 +569,12 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._session_db = SimpleNamespace(_db=fake_db)
+    # AsyncSessionDB facade: hygiene restores the prior system prompt via
+    # awaitable get_session(), then binds the compressor to ._db.
+    runner._session_db = SimpleNamespace(
+        _db=fake_db,
+        get_session=AsyncMock(return_value={"system_prompt": "You are Hermes."}),
+    )
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._run_agent = AsyncMock(
@@ -588,6 +593,10 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         "agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,
     )
+    # Warm modules imported on the hygiene-timeout unwind path so the wall-clock
+    # budget below is not polluted by first-import SQLite/WAL probes on cold CI.
+    importlib.import_module("agent.session_activity")
+    importlib.import_module("hermes_state")
 
     event = MessageEvent(
         text="hello",
@@ -605,11 +614,12 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     elapsed = time.monotonic() - started
 
     assert result == "ok"
-    # Loose wall-clock bound per flake policy: this asserts the handler did
-    # NOT block on the hygiene-compression timeout path (which would take
-    # multiple seconds), not a precise latency. 0.15s missed by ~1-8ms on
-    # busy CI shards twice on 2026-07-23.
-    assert elapsed < 2.0
+    # Loose wall-clock bound: this asserts the handler did NOT block on the
+    # hygiene-compression worker (which would take multiple seconds waiting for
+    # release_worker), not a precise latency. Previously loosened from 0.15s →
+    # 2.0s after busy-CI misses; still hit ~4–5s on cold shards (2026-08-04)
+    # when timeout-path imports probed SQLite, so keep a generous ceiling.
+    assert elapsed < 8.0
     assert worker_started.is_set()
     assert runner._run_agent.await_count == 1
     # Cooldown must be persisted to the state DB (survives restart, #74136),

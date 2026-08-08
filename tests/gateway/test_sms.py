@@ -197,6 +197,30 @@ class TestStartupGuard:
             await adapter.disconnect()
 
 
+class TestSmsInsecureNoSignatureTruthy:
+    """SMS_INSECURE_NO_SIGNATURE must honor shared truthy aliases."""
+
+    @pytest.mark.parametrize("raw", ["true", "1", "yes", "on", "TRUE", " On "])
+    def test_truthy_aliases(self, monkeypatch, raw):
+        from plugins.platforms.sms.adapter import _sms_insecure_no_signature
+
+        monkeypatch.setenv("SMS_INSECURE_NO_SIGNATURE", raw)
+        assert _sms_insecure_no_signature() is True
+
+    @pytest.mark.parametrize("raw", ["false", "0", "off", "no", ""])
+    def test_falsy_aliases(self, monkeypatch, raw):
+        from plugins.platforms.sms.adapter import _sms_insecure_no_signature
+
+        monkeypatch.setenv("SMS_INSECURE_NO_SIGNATURE", raw)
+        assert _sms_insecure_no_signature() is False
+
+    def test_unset_is_false(self, monkeypatch):
+        from plugins.platforms.sms.adapter import _sms_insecure_no_signature
+
+        monkeypatch.delenv("SMS_INSECURE_NO_SIGNATURE", raising=False)
+        assert _sms_insecure_no_signature() is False
+
+
 # ── Twilio signature validation ────────────────────────────────────
 
 def _compute_twilio_signature(auth_token, url, params):

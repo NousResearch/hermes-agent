@@ -1,6 +1,7 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -436,5 +437,59 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert ok is True
         assert len(deleted_ids) == 2
+
+
+class TestBlueBubblesTempGuid:
+    """tempGuid must embed a UTC epoch (issue #79511).
+
+    ``datetime.utcnow()`` returns a NAIVE datetime, and ``.timestamp()`` on a
+    naive datetime interprets it as LOCAL time — so the old code produced an
+    epoch shifted by the machine's UTC offset (hours, not seconds). Both
+    outbound payload builders must use ``datetime.now(timezone.utc)`` instead.
+    """
+
+    @staticmethod
+    def _epoch_from_temp_guid(temp_guid):
+        # Format: "temp-<epoch>"
+        return float(temp_guid.split("-", 1)[1])
+
+    @staticmethod
+    def _assert_utc_epoch(temp_guid):
+        assert temp_guid.startswith("temp-")
+        # Tight tolerance (seconds) — a local-offset bug would drift by the
+        # TZ offset (hours), far beyond this window.
+        assert abs(TestBlueBubblesTempGuid._epoch_from_temp_guid(temp_guid) - time.time()) < 5
+
+    @pytest.mark.asyncio
+    async def test_create_chat_temp_guid_is_utc_epoch(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_api_post(path, payload):
+            captured["payload"] = payload
+            return {"data": {"guid": "msg-1"}}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        result = await adapter._create_chat_for_handle("+155****0100", "hello")
+        assert result.success is True
+        self._assert_utc_epoch(captured["payload"]["tempGuid"])
+
+    @pytest.mark.asyncio
+    async def test_send_temp_guid_is_utc_epoch(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-guid"
+
+        async def fake_api_post(path, payload):
+            captured["payload"] = payload
+            return {"data": {"guid": "msg-1"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        result = await adapter.send("+155****0100", "hello")
+        assert result.success is True
+        self._assert_utc_epoch(captured["payload"]["tempGuid"])
 
 

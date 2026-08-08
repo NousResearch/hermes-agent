@@ -200,6 +200,7 @@ def _(rid, params: dict) -> dict:
                             "title": s.get("title") or "",
                             "preview": s.get("preview") or "",
                             "started_at": s.get("started_at") or 0,
+                            "last_active": s.get("last_active") or s.get("started_at") or 0,
                             "message_count": s.get("message_count") or 0,
                             "source": s.get("source") or "",
                         }

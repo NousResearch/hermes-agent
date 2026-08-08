@@ -616,6 +616,43 @@ mcp-<server>
 
 That makes MCP servers easier to reason about at the toolset level.
 
+## Trace propagation (OpenTelemetry)
+
+Off by default. If your agent is instrumented with OpenTelemetry (via a
+tracing plugin or your own SDK setup) and your HTTP MCP servers are too,
+enabling trace propagation joins the two sides of every tool call into one
+distributed trace — the server's spans become children of the agent's span,
+so a trace viewer can answer "which MCP call made this turn slow":
+
+```yaml
+mcp:
+  trace_propagation: true
+```
+
+With the gate on, Hermes captures the caller's active span as a W3C
+[`traceparent`](https://www.w3.org/TR/trace-context/) header once per tool
+invocation and injects it on the HTTP transport for exactly that one RPC.
+There is nothing to configure per server, and stdio servers are unaffected
+(there is no header to carry it in).
+
+Notes:
+
+- The trace context is read with the standard OpenTelemetry propagation
+  API. Tracing integrations that track spans themselves instead of setting
+  ambient context can register a callback:
+
+  ```python
+  from tools.mcp_trace_propagation import register_traceparent_provider
+  register_traceparent_provider(get_current_traceparent)
+  ```
+
+- No OpenTelemetry installation is required when the gate is off (and a
+  missing SDK with the gate on simply means no header is sent).
+- Only [HTTP servers](#http-servers) on the current MCP SDK transport
+  (`mcp >= 1.24.0`) receive the header.
+- This propagates *your* trace ids to *your* servers on requests the agent
+  already makes; nothing is reported anywhere else.
+
 ## Security model
 
 ### Stdio env filtering

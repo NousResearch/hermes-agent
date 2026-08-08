@@ -116,6 +116,7 @@ from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
+from tools.mcp_trace_propagation import current_traceparent, injected_headers
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -1962,11 +1963,16 @@ class MCPServerTask:
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
         "_reconnect_retries", "_session_proven", "_was_parked",
+        "_http_client",
     )
 
     def __init__(self, name: str):
         self.name = name
         self.session: Optional[Any] = None
+        # The transport's shared httpx client, exposed so tool calls can
+        # inject per-RPC trace-context headers (None for stdio, and while
+        # no HTTP transport is live). See tools/mcp_trace_propagation.py.
+        self._http_client: Optional[Any] = None
         self.tool_timeout: float = _DEFAULT_TOOL_TIMEOUT
         self._task: Optional[asyncio.Task] = None
         self._ready = asyncio.Event()
@@ -3055,6 +3061,7 @@ class MCPServerTask:
             # http_client is provided, so we wrap in async-with.
             try:
                 async with httpx.AsyncClient(**client_kwargs) as http_client:
+                    self._http_client = http_client
                     async with streamable_http_client(url, http_client=http_client) as (
                         read_stream, write_stream, _get_session_id,
                     ):
@@ -3082,6 +3089,11 @@ class MCPServerTask:
                 # Streamable-HTTP transport TaskGroup dropped: reconnect
                 # immediately instead of backoff/park (#66092).
                 reason = self._reconnect_or_reraise_group(_eg)
+            finally:
+                # The async-with above owns the client; past this point it is
+                # closed, so drop the injection reference rather than letting
+                # header writes mutate a dead client across a reconnect gap.
+                self._http_client = None
             return reason
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
@@ -5258,6 +5270,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
                 return tool_error(f"MCP server '{server_name}' is not connected")
 
+        # Capture the caller's trace context HERE, on the agent thread. The
+        # coroutine below runs on the MCP daemon loop, where the agent's span
+        # is invisible (contextvars don't cross run_coroutine_threadsafe), so
+        # capturing any later is capturing nothing. One capture per tool
+        # invocation, injected around the RPC below (#52211). No-op (None)
+        # unless mcp.trace_propagation is enabled in config.yaml.
+        _traceparent = current_traceparent()
+
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
@@ -5267,7 +5287,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    # Per-call injection on the shared client's headers — the
+                    # POST is written by the transport's own task, which never
+                    # sees this task's contextvars, but does read the client's
+                    # default headers. The rpc lock serializes set/restore with
+                    # the request that uses it. Deliberately NOT set at
+                    # connection time: one connection serves many calls, each
+                    # needing its own parent span (see PR #60466 review).
+                    with injected_headers(server._http_client, _traceparent):
+                        result = await server.session.call_tool(tool_name, arguments=args)
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably

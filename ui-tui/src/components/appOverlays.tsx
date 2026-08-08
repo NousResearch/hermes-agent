@@ -320,8 +320,18 @@ export function FloatingOverlays({
     })
   }
 
+  // Completions are separate from blocking panels: they float above a LIVE
+  // prompt (parent has height). Blocking panels (sessions / model / hubs /
+  // pager / pet) open with `$isBlocked`, which hides the prompt and collapses
+  // this relative parent to height 0 — absolute `bottom: 100%` then has no
+  // anchor and loses the vertical room already consumed by AmbientDock +
+  // StatusRulePane above (see #69592). Keep completions absolute; put
+  // blocking panels in-flow so they reserve real rows between the dock and
+  // the composer chrome.
+  const completionWidgets: WidgetGridWidget[] = []
+
   if (completions.length) {
-    widgets.push({
+    completionWidgets.push({
       id: 'completions',
       render: () => (
         <FloatBox color={theme.color.primary}>
@@ -377,8 +387,17 @@ export function FloatingOverlays({
   }
 
   return (
-    <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={widgets} />
-    </Box>
+    <>
+      {widgets.length > 0 ? (
+        <Box flexDirection="column" flexShrink={0} width="100%">
+          <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={widgets} />
+        </Box>
+      ) : null}
+      {completionWidgets.length > 0 ? (
+        <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
+          <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={completionWidgets} />
+        </Box>
+      ) : null}
+    </>
   )
 }

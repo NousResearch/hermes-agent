@@ -679,6 +679,32 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('surfaces /reload progress even when the RPC resolves null', async () => {
+    const rpc = vi.fn(() => Promise.resolve(null))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/reload')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('reload.env', {})
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('reloading .env…')
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('reloaded .env (no response)')
+  })
+
+  it('reports /reload updated count from a normal response', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ updated: 3 }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/reload')).toBe(true)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('reloading .env…')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('reloaded .env (3 vars updated)')
+  })
+
   it('renders browser connect progress messages from the gateway', async () => {
     const rpc = vi.fn(() =>
       Promise.resolve({

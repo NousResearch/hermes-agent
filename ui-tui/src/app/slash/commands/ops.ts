@@ -130,16 +130,28 @@ export const opsCommands: SlashCommand[] = [
     help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
     name: 'reload',
     run: (_arg, ctx) => {
+      // Immediate feedback: createSlashHandler's guarded() bails on null/undefined
+      // (`if (!stale() && r)`), so a quiet RPC path would otherwise look like a
+      // no-op (#69592).
+      ctx.transcript.sys('reloading .env…')
       ctx.gateway
         .rpc<ReloadEnvResponse>('reload.env', {})
-        .then(
-          ctx.guarded<ReloadEnvResponse>(r => {
-            const n = Number(r.updated ?? 0)
-            const noun = n === 1 ? 'var' : 'vars'
+        .then(r => {
+          if (ctx.stale()) {
+            return
+          }
 
-            ctx.transcript.sys(`reloaded .env (${n} ${noun} updated)`)
-          })
-        )
+          if (!r) {
+            ctx.transcript.sys('reloaded .env (no response)')
+
+            return
+          }
+
+          const n = Number(r.updated ?? 0)
+          const noun = n === 1 ? 'var' : 'vars'
+
+          ctx.transcript.sys(`reloaded .env (${n} ${noun} updated)`)
+        })
         .catch(ctx.guardedErr)
     }
   },

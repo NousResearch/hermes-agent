@@ -605,6 +605,57 @@ describe('createGatewayEventHandler', () => {
     expect(assistant?.text).toBe('First. second.')
   })
 
+  // Narration → tool → tool-complete → more narration → message.complete with
+  // its own `payload.text`. Nothing flushes the second narration block, so
+  // before the fix message.complete cleared the buffer and the transcript lost
+  // a block the user had already watched render.
+  const streamTailTurn = (onEvent: ReturnType<typeof createGatewayEventHandler>) => {
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { text: 'Checking the config first.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { context: 'config.yaml', name: 'read_file', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'read_file', summary: 'read', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+    onEvent({ payload: { text: 'The provider block looks wrong.' }, type: 'message.delta' } as any)
+  }
+
+  it('keeps streaming text buffered after a tool call, in order, at message.complete (#61520)', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    streamTailTurn(onEvent)
+    onEvent({ payload: { text: 'Final answer.' }, type: 'message.complete' } as any)
+
+    expect(appended.filter(msg => msg.role === 'assistant').map(msg => msg.text)).toEqual([
+      'Checking the config first.',
+      'The provider block looks wrong.',
+      'Final answer.'
+    ])
+
+    // The tail is flushed through the normal segment path, so the pending tool
+    // shelf lands on it exactly once instead of being duplicated or dropped.
+    const toolRows = appended.flatMap(msg => msg.tools ?? [])
+    expect(toolRows).toHaveLength(1)
+    expect(toolRows[0]).toContain('Read File')
+  })
+
+  it('does not duplicate the buffered tail when message.complete text already contains it (#61520)', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    streamTailTurn(onEvent)
+    // Gateway replays the streamed tail as part of its authoritative final text.
+    onEvent({
+      payload: { text: 'The provider block looks wrong.\n\nFinal answer.' },
+      type: 'message.complete'
+    } as any)
+
+    expect(appended.filter(msg => msg.role === 'assistant').map(msg => msg.text)).toEqual([
+      'Checking the config first.',
+      'The provider block looks wrong.',
+      'Final answer.'
+    ])
+    expect(appended.filter(msg => msg.text.includes('The provider block looks wrong.'))).toHaveLength(1)
+  })
+
   it('anchors inline_diff as its own segment where the edit happened', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

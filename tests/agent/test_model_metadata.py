@@ -562,6 +562,24 @@ class TestFetchEndpointModelMetadata:
         success.close.assert_called_once()
 
 
+class TestExtractPricing:
+    def test_per_1m_tokens_unit_is_scaled(self):
+        """Relays quoting per-1M-token prices must be scaled to per-token."""
+        import agent.model_metadata as mm
+
+        payload = {
+            "id": "vendor/model",
+            "pricing": {
+                "unit": "per_1m_tokens",
+                "prompt": "3.0",
+                "completion": "15.0",
+            },
+        }
+        result = mm._extract_pricing(payload)
+        assert float(result["prompt"]) == pytest.approx(3.0 / 1_000_000)
+        assert float(result["completion"]) == pytest.approx(15.0 / 1_000_000)
+
+
 # =========================================================================
 # Nous Portal context-window resolution (provider="nous")
 # =========================================================================

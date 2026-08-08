@@ -1120,6 +1120,23 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
             result["cache_read"] = str(float(deepinfra_pricing["cache_read_tokens"]) / 1_000_000)
         return result
 
+    # Some relays quote token prices per 1M tokens via a ``unit`` field
+    # (e.g. ``unit: "per_1m_tokens"``) instead of per token. Detect it and
+    # scale the generic token prices by 1e6 so the cost machinery
+    # (usage_pricing.py) sees the same per-token convention Novita/DeepInfra
+    # already map into above.
+    def _unit_is_per_1m(raw: Any) -> bool:
+        if not isinstance(raw, str):
+            return False
+        unit = raw.strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+        return "per1m" in unit or "permillion" in unit or unit in ("1m", "1mtokens")
+
+    per_1m_tokens = any(
+        str(key).lower() == "unit" and _unit_is_per_1m(value)
+        for mapping in _iter_nested_dicts(payload)
+        for key, value in mapping.items()
+    )
+
     alias_map = {
         "prompt": ("prompt", "input", "input_cost_per_token", "prompt_token_cost"),
         "completion": ("completion", "output", "output_cost_per_token", "completion_token_cost"),
@@ -1135,7 +1152,10 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         for target, aliases in alias_map.items():
             for alias in aliases:
                 if alias in normalized and normalized[alias] not in {None, ""}:
-                    pricing[target] = normalized[alias]
+                    price = normalized[alias]
+                    if per_1m_tokens and target in ("prompt", "completion", "cache_read", "cache_write"):
+                        price = str(float(price) / 1_000_000)
+                    pricing[target] = price
                     break
         if pricing:
             return pricing

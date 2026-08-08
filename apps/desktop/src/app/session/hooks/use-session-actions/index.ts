@@ -68,7 +68,7 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -893,12 +893,33 @@ export function useSessionActions({
         // max(prefetch, resume) instead of their sum. The prefetch paints the
         // transcript as soon as it lands; the RPC binds the runtime id.
         // Watch windows skip the prefetch — lazy resume attaches the live mirror.
-        const prefetchPromise = watchWindow ? null : getLatestSessionMessages(storedSessionId, sessionProfile)
+        const prefetchPromise = watchWindow
+          ? null
+          : getLatestSessionMessages(storedSessionId, sessionProfile).then(storedMessages => {
+              if (!isCurrentResume()) {
+                return storedMessages
+              }
+
+              const previousMessages = resumedSameSelectedSession
+                ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
+                : $messages.get()
+
+              localSnapshot = reconcileAuthoritativeMessages(storedMessages.messages, previousMessages)
+              prefetchApplied = true
+              prefetchedStoredSessionId = storedMessages.session_id || storedSessionId
+
+              if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
+                setMessages(localSnapshot)
+              }
+
+              return storedMessages
+            })
 
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
           source: 'desktop',
+          defer_history: !watchWindow,
           // REST is the transcript authority for Desktop. Avoid duplicating a
           // potentially huge compression lineage in the WebSocket response.
           // Watch windows attach lazily (live mirror). Every other cold resume
@@ -914,14 +935,9 @@ export function useSessionActions({
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
 
-        // Keep both requests concurrent, but do not paint the REST result until
-        // the runtime resume has also settled. An eager prefetch paint followed
-        // by the runtime projection rebuilds large transcripts during resume.
-        let prefetchedResult: { messages: SessionMessage[]; session_id?: string } | null = null
-
         try {
           if (prefetchPromise) {
-            prefetchedResult = await prefetchPromise
+            await prefetchPromise
           }
         } catch {
           // Non-fatal: gateway resume below can still hydrate the session.
@@ -931,16 +947,6 @@ export function useSessionActions({
 
         if (!isCurrentResume()) {
           return
-        }
-
-        if (prefetchedResult) {
-          const previousMessages = resumedSameSelectedSession
-            ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-            : $messages.get()
-
-          localSnapshot = reconcileAuthoritativeMessages(prefetchedResult.messages, previousMessages)
-          prefetchApplied = true
-          prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
         }
 
         const currentMessages = $messages.get()

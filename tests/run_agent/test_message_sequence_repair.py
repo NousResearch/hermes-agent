@@ -356,6 +356,76 @@ def test_sanitize_drops_empty_tool_calls_array():
     assert assistant["content"] == "answer"
 
 
+def test_sanitize_preserves_identical_call_ids_across_turns():
+    """Cross-turn dedup scope: legal identical call_ids in DIFFERENT assistant
+    turns must NOT be collapsed (guards against over-dedup re-introducing
+    ``tool_calls: []``).
+
+    call_ids are deterministic (_deterministic_call_id hashes fn-name + args +
+    index for prompt-cache prefix stability), so a multi-turn session where the
+    model legitimately re-issues the same tool with the same arguments
+    produces IDENTICAL call_ids in different assistant messages. The dedup
+    pass used a session-global seen-set, misclassified those legal cross-turn
+    calls as duplicates, deleted them, and wrote ``tool_calls: []`` back —
+    HTTP 400 "Invalid 'messages[N].tool_calls': empty array" on strict
+    providers (DeepSeek v4). Dedup must be scoped to the CURRENT assistant
+    turn (message + its tool results), not the whole session.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    # Turn 1: assistant issues call_00/call_01, both results follow.
+    # Turn 2: the model repeats the SAME tools with SAME args → same ids.
+    messages = [
+        {"role": "user", "content": "task 1"},
+        {"role": "assistant", "content": "t1", "tool_calls": [
+            {"id": "call_00_abc", "type": "function",
+             "function": {"name": "skill_view", "arguments": '{"name": "data-insight"}'}},
+            {"id": "call_01_abc", "type": "function",
+             "function": {"name": "tool_describe", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_00_abc", "content": "r1a"},
+        {"role": "tool", "tool_call_id": "call_01_abc", "content": "r1b"},
+        {"role": "user", "content": "task 2"},
+        {"role": "assistant", "content": "t2", "tool_calls": [
+            {"id": "call_00_abc", "type": "function",
+             "function": {"name": "skill_view", "arguments": '{"name": "data-insight"}'}},
+            {"id": "call_01_abc", "type": "function",
+             "function": {"name": "tool_describe", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_00_abc", "content": "r2a"},
+        {"role": "tool", "tool_call_id": "call_01_abc", "content": "r2b"},
+    ]
+    out = sanitize_api_messages(list(messages))
+
+    assistants = [m for m in out if m.get("role") == "assistant"]
+    assert len(assistants) == 2
+    # BOTH turns must keep their (identical) tool_calls — never emptied.
+    for am in assistants:
+        assert [tc["id"] for tc in am["tool_calls"]] == ["call_00_abc", "call_01_abc"]
+    # All four tool results survive; duplicate ids across turns are legal.
+    tool_ids = [m["tool_call_id"] for m in out if m.get("role") == "tool"]
+    assert tool_ids == ["call_00_abc", "call_01_abc", "call_00_abc", "call_01_abc"]
+
+
+def test_sanitize_still_dedups_identical_call_ids_within_one_turn():
+    """Within-turn dedup must still collapse true duplicates (regression guard:
+    the per-turn seen-set reset must not disable within-message dedup)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "assistant", "content": "t", "tool_calls": [
+            {"id": "call_Z", "type": "function",
+             "function": {"name": "a", "arguments": "{}"}},
+            {"id": "call_Z", "type": "function",
+             "function": {"name": "b", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "call_Z", "content": "r"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_Z"]
+
+
 
 
 

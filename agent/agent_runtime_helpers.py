@@ -3432,6 +3432,20 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # here even though repair_message_sequence also consumes matched ids.
     #   (a) collapse duplicate tool_calls WITHIN an assistant message
     #   (b) drop later tool result messages reusing an already-seen id
+    #
+    # NOTE (cross-turn id collision, #73412): the seen-sets are reset on
+    # EVERY assistant message. call_ids are deterministic
+    # (_deterministic_call_id hashes fn-name + args + index for prompt-cache
+    # prefix stability), so in a multi-turn Responses-API session the model
+    # legitimately re-issues the SAME tool with the SAME arguments across
+    # turns (e.g. every data-insight task replays skill_view + tool_describe
+    # probes), producing identical call_ids in different assistant messages.
+    # A single session-global seen-set misclassified those legal cross-turn
+    # calls as duplicates, deleted them, and left `tool_calls: []` on the
+    # message — HTTP 400 "Invalid 'messages[N].tool_calls': empty array" on
+    # strict providers. Scoping dedup to the current assistant message (and
+    # its tool results) preserves within-turn dedup while never collapsing
+    # distinct turns.
     seen_assistant_call_ids: set = set()
     seen_result_call_ids: set = set()
     deduped: List[Dict[str, Any]] = []
@@ -3439,6 +3453,10 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     for msg in messages:
         role = msg.get("role")
         if role == "assistant" and msg.get("tool_calls"):
+            # Reset both seen-sets at each assistant turn boundary so the
+            # dedup scope is the CURRENT turn, not the whole session.
+            seen_assistant_call_ids = set()
+            seen_result_call_ids = set()
             kept_tcs = []
             for tc in msg.get("tool_calls") or []:
                 cid = _ra().AIAgent._get_tool_call_id_static(tc)

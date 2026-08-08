@@ -1240,6 +1240,58 @@ def _stash_apply_failed_only_on_existing_untracked(stderr: str) -> bool:
             return False
     return saw_untracked_error
 
+
+def _reconcile_removed_lazy_refresh_marker_conflict(
+    git_cmd: list[str],
+    cwd: Path,
+    stash_ref: str,
+    conflicted_files: list[str],
+) -> bool:
+    """Preserve a historical tracked marker without tracking it again.
+
+    A short-lived release accidentally tracked ``.lazy-refresh-incomplete``.
+    Later releases removed and ignored that runtime file. Restoring an
+    autostash from the affected release therefore creates a modify/delete
+    conflict when the marker contains live PID/timestamp data.
+
+    Reconcile only that exact conflict. The stashed bytes become ignored,
+    untracked runtime state while the index retains current main's deletion.
+    Any additional conflict falls through to the normal safe reset path.
+    """
+    marker_name = ".lazy-refresh-incomplete"
+    if conflicted_files != [marker_name]:
+        return False
+
+    saved = subprocess.run(
+        git_cmd + ["show", f"{stash_ref}:{marker_name}"],
+        cwd=cwd,
+        capture_output=True,
+    )
+    if saved.returncode != 0:
+        return False
+
+    resolved = subprocess.run(
+        git_cmd + ["rm", "--cached", "--force", "--", marker_name],
+        cwd=cwd,
+        capture_output=True,
+    )
+    if resolved.returncode != 0:
+        return False
+
+    try:
+        (cwd / marker_name).write_bytes(saved.stdout)
+    except OSError:
+        return False
+
+    remaining = subprocess.run(
+        git_cmd + ["diff", "--name-only", "--diff-filter=U"],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    return remaining.returncode == 0 and not remaining.stdout.strip()
+
+
 def _restore_stashed_changes(
     git_cmd: list[str],
     cwd: Path,
@@ -1280,9 +1332,30 @@ def _restore_stashed_changes(
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
     )
-    has_conflicts = bool(unmerged.stdout.strip())
+    conflicted_files = [
+        line.strip() for line in unmerged.stdout.splitlines() if line.strip()
+    ]
+    has_conflicts = bool(conflicted_files)
 
-    if restore.returncode != 0 and not has_conflicts and (
+    marker_reconciled = False
+    if has_conflicts:
+        marker_reconciled = _reconcile_removed_lazy_refresh_marker_conflict(
+            git_cmd,
+            cwd,
+            stash_ref,
+            conflicted_files,
+        )
+        if marker_reconciled:
+            has_conflicts = False
+            print(
+                "  ✓ Preserved the lazy-refresh recovery marker as ignored runtime state."
+            )
+
+    if restore.returncode != 0 and not has_conflicts and marker_reconciled:
+        # Git reported the original modify/delete conflict, but the only
+        # conflict was the historical runtime marker and it is now reconciled.
+        pass
+    elif restore.returncode != 0 and not has_conflicts and (
         _stash_apply_failed_only_on_existing_untracked(restore.stderr)
     ):
         # Permission-denied autostash tail end: the tracked changes applied
@@ -1302,11 +1375,10 @@ def _restore_stashed_changes(
             print(restore.stderr.strip())
 
         # Show which files conflicted
-        conflicted_files = unmerged.stdout.strip()
         if conflicted_files:
             print("\nConflicted files:")
-            for f in conflicted_files.splitlines():
-                print(f"  • {f}")
+            for path in conflicted_files:
+                print(f"  • {path}")
 
         print("\nYour stashed changes are preserved — nothing is lost.")
         print(f"  Stash ref: {stash_ref}")

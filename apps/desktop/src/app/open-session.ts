@@ -29,6 +29,15 @@ export type OpenSessionIntent = 'in-place' | 'stack' | 'tab' | 'window'
 
 export type OpenSessionNavigate = (to: string, options?: { replace?: boolean }) => void
 
+export interface OpenSessionOptions {
+  /**
+   * The main workspace is currently covered by a route-level overlay. Focusing
+   * a session already loaded in main is not enough in that case: navigation is
+   * still required to dismiss the overlay and reveal the chat.
+   */
+  mainIsCovered?: boolean
+}
+
 /**
  * Is the main tab holding a conversation worth preserving?
  *
@@ -72,7 +81,8 @@ export function openSessionIntentFromModifiers(
 export function openSession(
   storedSessionId: string,
   navigate: OpenSessionNavigate,
-  intent: OpenSessionIntent = 'in-place'
+  intent: OpenSessionIntent = 'in-place',
+  options: OpenSessionOptions = {}
 ): void {
   if (!storedSessionId) {
     return
@@ -126,7 +136,12 @@ export function openSession(
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId), $workspaceIsPage.get())) {
+  if (
+    focusedSessionNeedsRoute(
+      focusOpenSession(storedSessionId),
+      $workspaceIsPage.get() || Boolean(options.mainIsCovered)
+    )
+  ) {
     navigate(sessionRoute(storedSessionId))
   }
 }

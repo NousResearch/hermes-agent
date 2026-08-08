@@ -50,8 +50,8 @@ describe('resolveStoredSession profile ownership', () => {
     const resolved = await resolveStoredSession('s1')
 
     expect(resolved?.profile).toBe('default')
-    // rung 2 (bare) then rung 3 (stamped cross-profile probe)
-    expect(mockGetSession).toHaveBeenNthCalledWith(1, 's1')
+    // rung 2 (active profile) then rung 3 (stamped cross-profile probe)
+    expect(mockGetSession).toHaveBeenNthCalledWith(1, 's1', 'meta')
     expect(mockGetSession).toHaveBeenNthCalledWith(2, 's1', 'default')
   })
 
@@ -71,6 +71,7 @@ describe('resolveStoredSession profile ownership', () => {
     const resolved = await resolveStoredSession('s1')
 
     expect(resolved?.profile).toBe('meta')
+    expect(mockGetSession).toHaveBeenCalledWith('s1', 'meta')
     // the upserted cache row is owned too, so the next hit short-circuits
     expect($sessions.get().find(s => s.id === 's1')?.profile).toBe('meta')
   })

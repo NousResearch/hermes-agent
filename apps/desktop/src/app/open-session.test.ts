@@ -114,6 +114,18 @@ describe('openSession', () => {
     expect(navigate).toHaveBeenCalledWith('/c/s1')
   })
 
+  it('in-place routes when the main session is covered by an overlay', () => {
+    focusOpenSession.mockReturnValue('main')
+    openSession('s1', navigate, 'in-place', { mainIsCovered: true })
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
+  })
+
+  it('in-place keeps an existing tile focused while an overlay covers main', () => {
+    focusOpenSession.mockReturnValue('tile')
+    openSession('s1', navigate, 'in-place', { mainIsCovered: true })
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
   it('in-place routes when the session is not on screen', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate)

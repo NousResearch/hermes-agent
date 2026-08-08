@@ -1072,7 +1072,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
             onNavigateRoute={path => navigateToWorkspacePage(navigate, path)}
-            onOpenSession={sessionId => openSession(sessionId, navigate)}
+            onOpenSession={sessionId => openSession(sessionId, navigate, 'in-place', { mainIsCovered: true })}
           />
         </Suspense>
       )}
@@ -1087,7 +1087,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         <Suspense fallback={null}>
           <CronView
             onClose={closeOverlayToPreviousRoute}
-            onOpenSession={sessionId => openSession(sessionId, navigate)}
+            onOpenSession={sessionId => openSession(sessionId, navigate, 'in-place', { mainIsCovered: true })}
           />
         </Suspense>
       )}

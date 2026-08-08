@@ -929,6 +929,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
           if (isActiveEvent) {
             setPetActivity({ toolRunning: false })
+
+            // A tool can fail without ending the turn when the agent recovers
+            // and continues. Surface that failure as a short pet beat too;
+            // otherwise only turn-level errors ever reach the failed state.
+            if (payload?.error) {
+              flashPetActivity({ error: true })
+            }
           }
 
           // A pending clarify blocks the turn, so the first tool.complete after

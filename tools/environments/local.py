@@ -121,6 +121,12 @@ def _bash_safe_path(path: str) -> str:
     Python compatibility; those still need the ``/c/...`` rewrite —
     MSYS argument conversion treats ``C:/...`` as a Windows path and
     can corrupt the login-shell ``drivers\\etc`` lookup.
+
+    For Win32-native tools invoked from Git Bash under
+    ``MSYS_NO_PATHCONV`` (e.g. Win32 ``rg.exe``), use
+    :func:`_win32_tool_path` instead — those binaries speak CreateFile,
+    not MSYS mounts, and quoted ``/c/...`` argv is passed through
+    unchanged.
     """
     if not _IS_WINDOWS or not path:
         return path
@@ -128,6 +134,33 @@ def _bash_safe_path(path: str) -> str:
     if "\\" in path:
         path = path.replace("\\", "/")
     return path
+
+
+def _win32_tool_path(path: str) -> str:
+    """Return *path* in a form Win32 CreateFile APIs accept from Git Bash.
+
+    Hermes sets ``MSYS_NO_PATHCONV=1`` / ``MSYS2_ARG_CONV_EXCL=*`` so bash
+    does not rewrite argv for native Windows children. Combined with
+    single-quoted ``/c/...`` paths (see :func:`_bash_safe_path`), Win32
+    ``rg.exe`` then fails with ``IO error ... (os error 3)`` because
+    CreateFile does not understand MSYS drive mounts.
+
+    Normalize drive paths to forward-slash ``C:/Users/x`` (also accepts
+    ``/c/...``, ``/cygdrive/c/...``, ``/mnt/c/...``). Relative and plain
+    POSIX paths are left alone aside from backslash → slash so bash
+    single-quoting cannot eat escapes. No-op off Windows.
+    """
+    if not _IS_WINDOWS or not path:
+        return path
+    native = _msys_to_windows_path(path)
+    m = re.match(r'^([a-zA-Z]):[\\/]*(.*)$', native)
+    if m:
+        drive = m.group(1).upper()
+        tail = (m.group(2) or "").replace("\\", "/")
+        return f"{drive}:/{tail}" if tail else f"{drive}:/"
+    if "\\" in native:
+        return native.replace("\\", "/")
+    return native
 
 
 def _quote_bash_path(path: str) -> str:

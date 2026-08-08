@@ -294,6 +294,78 @@ class TestShellFileOpsHelpers:
             "C:/Users/alice/notes.txt"
         ) == "'/c/Users/alice/notes.txt'"
 
+    def test_escape_native_tool_arg_keeps_win32_drive_paths(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert file_ops._escape_native_tool_arg(
+            "/c/Users/alice/notes.txt"
+        ) == "'C:/Users/alice/notes.txt'"
+        assert file_ops._escape_native_tool_arg(
+            r"C:\Users\alice\notes.txt"
+        ) == "'C:/Users/alice/notes.txt'"
+
+    def test_search_with_rg_passes_win32_safe_path(self, mock_env, monkeypatch):
+        import tools.environments.local as local_mod
+        from tools.file_operations import ShellFileOperations
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            return {"output": "", "returncode": 1}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        ops._command_cache["rg"] = True
+        ops._search_with_rg("ShellFileOperations", r"C:\workspace\tools", None, 10, 0, "content", 0)
+
+        assert commands, "expected rg invocation"
+        assert "'C:/workspace/tools'" in commands[0]
+        assert "'/c/workspace/tools'" not in commands[0]
+
+    def test_search_files_rg_passes_win32_safe_path(self, mock_env, monkeypatch):
+        import tools.environments.local as local_mod
+        from tools.file_operations import ShellFileOperations
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        ops._command_cache["rg"] = True
+        ops._search_files_rg("*.py", r"C:\workspace\tools", 10, 0)
+
+        assert commands, "expected rg --files invocation"
+        assert "'C:/workspace/tools'" in commands[0]
+        assert "'/c/workspace/tools'" not in commands[0]
+
+    def test_zero_match_probe_passes_win32_safe_path(self, mock_env, monkeypatch):
+        import tools.environments.local as local_mod
+        from tools.file_operations import ShellFileOperations
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            return {"output": "", "returncode": 1}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        ops._command_cache["rg"] = True
+        ops._zero_match_probe("NoSuchTokenXYZ", r"C:\workspace\tools", None)
+
+        assert commands, "expected zero-match probe rg invocation"
+        for cmd in commands:
+            assert "'C:/workspace/tools'" in cmd
+            assert "'/c/workspace/tools'" not in cmd
+
     def test_read_file_uses_bash_safe_windows_paths(self, mock_env, monkeypatch):
         import tools.environments.local as local_mod
 

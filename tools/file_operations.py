@@ -1068,11 +1068,27 @@ class ShellFileOperations(FileOperations):
         ``Directory \\drivers\\etc does not exist`` failure class. Reuses
         the env-layer translator so shell file ops and the terminal ``cd``
         agree on the path form. No-op off Windows and for plain POSIX paths.
+
+        Do not use this for paths passed to Win32-native tools (``rg.exe``);
+        use :meth:`_escape_native_tool_arg` instead.
         """
         from tools.environments.local import _bash_safe_path
 
         arg = _bash_safe_path(arg)
         # Use single quotes and escape any single quotes in the string
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+    def _escape_native_tool_arg(self, arg: str) -> str:
+        """Escape a path for Win32-native tools spawned via Git Bash.
+
+        Under ``MSYS_NO_PATHCONV``, quoted ``/c/...`` argv reaches
+        CreateFile unchanged and Win32 ``rg`` fails. Keep drive paths as
+        ``C:/...`` so search_files works with native Win32 ripgrep while
+        bash builtins continue to use :meth:`_escape_shell_arg`.
+        """
+        from tools.environments.local import _win32_tool_path
+
+        arg = _win32_tool_path(arg)
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
@@ -2461,9 +2477,11 @@ class ShellFileOperations(FileOperations):
         if not self._has_command('rg'):
             return None
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        # Path uses Win32-safe form: rg.exe under MSYS_NO_PATHCONV rejects /c/...
+        q_path = self._escape_native_tool_arg(path)
         probe = self._exec(
             f"rg -i --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"{self._escape_shell_arg(pattern)} {q_path} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -2485,7 +2503,7 @@ class ShellFileOperations(FileOperations):
         # missing from results).
         hidden = self._exec(
             f"rg --hidden --no-ignore --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"{self._escape_shell_arg(pattern)} {q_path} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -2505,7 +2523,7 @@ class ShellFileOperations(FileOperations):
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
                 f"rg -F --count-matches{glob_expr} "
-                f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+                f"{self._escape_shell_arg(pattern)} {q_path} "
                 f"2>/dev/null | head -50",
                 timeout=30,
             )
@@ -2624,10 +2642,11 @@ class ShellFileOperations(FileOperations):
             glob_pattern = pattern
 
         fetch_limit = limit + offset
+        q_path = self._escape_native_tool_arg(path)
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
+            f"{q_path} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
@@ -2638,7 +2657,7 @@ class ShellFileOperations(FileOperations):
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"{q_path} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
@@ -2720,9 +2739,10 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")  # Count per file
         
-        # Add pattern and path
+        # Add pattern and path. Path must be Win32-safe (C:/...), not /c/... —
+        # native Win32 rg.exe uses CreateFile under MSYS_NO_PATHCONV.
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        cmd_parts.append(self._escape_native_tool_arg(path))
         
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,

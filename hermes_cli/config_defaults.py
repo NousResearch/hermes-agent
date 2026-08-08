@@ -266,6 +266,13 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        # Maximum size in bytes of the complete base64 data URL embedded for a
+        # local image in a native user message (header plus encoded bytes).
+        # Oversized images are re-encoded in memory; cached sources are not
+        # modified. Leave headroom for strict transport request-body limits.
+        "native_image_max_payload_bytes": 900_000,
+        # Maximum pixel dimension (longest side) for the same native payload.
+        "native_image_max_dimension": 2560,
         "disabled_toolsets": [],
 
         # Per-model reasoning effort overrides (spelling-tolerant).

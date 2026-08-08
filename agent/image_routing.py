@@ -506,21 +506,6 @@ def decide_image_input_mode(
     return "text"
 
 
-# Image size handling is REACTIVE rather than proactive: we attempt native
-# attachment at full size regardless of provider, and rely on
-# ``run_agent._try_shrink_image_parts_in_messages`` to shrink + retry if
-# the provider rejects the request (e.g. Anthropic's hard 5 MB per-image
-# ceiling returned as HTTP 400 "image exceeds 5 MB maximum").
-#
-# Why reactive: our knowledge of provider ceilings is partial and evolving
-# (OpenAI accepts 49 MB+, Anthropic 5 MB, Gemini 100 MB, others unknown).
-# A proactive per-provider table would be stale the moment a provider raises
-# or lowers its limit, and silently degrading quality for users on providers
-# that would have accepted the full image is the worse failure mode.
-# The shrink-on-reject path loses 1 API call + maybe 1s of Pillow work when
-# it fires, which is cheaper than permanent quality loss.
-
-
 def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
     """Detect image MIME from magic bytes. Returns None if unrecognised.
 
@@ -667,13 +652,12 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
 
 
 def _file_to_data_url(path: Path) -> Optional[str]:
-    """Encode a local image as a base64 data URL at its native size.
+    """Encode a local image as a bounded base64 data URL.
 
-    Size limits are NOT enforced here — the agent retry loop
-    (``run_agent._try_shrink_image_parts_in_messages``) shrinks on the
-    provider's first rejection. Keeping this simple means providers that
-    accept large images (OpenAI 49 MB+, Gemini 100 MB) don't pay a silent
-    quality tax just because one other provider is stricter.
+    Images below the configured payload and dimension limits retain their
+    original bytes and MIME exactly. Oversized images are EXIF-oriented and
+    re-encoded in memory before base64 encoding; the cached source is never
+    modified. The reactive provider-error resize remains a backup.
 
     Format compatibility IS handled here: if the sniffed MIME isn't one
     of ``_UNIVERSALLY_SUPPORTED_MIMES`` (i.e. it's something like AVIF,
@@ -721,6 +705,40 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         )
         raw = transcoded
         mime = "image/png"
+
+    # Bound the complete encoded data URL before it enters the first native
+    # user message. Some transports reject the request before provider-level
+    # image-size handling can run, so retrying the identical payload cannot
+    # recover. Keep this immediately before base64 encoding so compatibility
+    # transcoding above and MIME sniffing remain authoritative.
+    from agent.image_payloads import constrain_image_payload, get_native_image_limits
+
+    max_payload_bytes, max_dimension = get_native_image_limits()
+    constrained = constrain_image_payload(
+        raw,
+        mime,
+        max_payload_bytes=max_payload_bytes,
+        max_dimension=max_dimension,
+    )
+    if constrained is None:
+        logger.warning(
+            "image_routing: %s could not be constrained to the native image "
+            "payload limits; skipping this attachment.",
+            path,
+        )
+        return None
+    constrained_raw, constrained_mime = constrained
+    if constrained_raw is not raw or constrained_mime != mime:
+        logger.info(
+            "image_routing: constrained %s for native payload (%d -> %d raw "
+            "bytes, %s -> %s)",
+            path.name,
+            len(raw),
+            len(constrained_raw),
+            mime,
+            constrained_mime,
+        )
+    raw, mime = constrained_raw, constrained_mime
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 
@@ -754,10 +772,11 @@ def build_native_content_parts(
     ``Runner._enrich_message_with_vision`` (``vision_analyze using image_url:
     <path>``) so behaviour is consistent across both image input modes.
 
-    Images are attached at their native size. If a provider rejects the
-    request because an image is too large (e.g. Anthropic's 5 MB per-image
-    ceiling), the agent's retry loop transparently shrinks and retries
-    once — see ``run_agent._try_shrink_image_parts_in_messages``.
+    Local images within the configured byte and dimension thresholds are
+    attached unchanged. Oversized local images are constrained before they
+    enter the native message. If a provider still rejects an image as too
+    large, the agent's reactive shrink-and-retry path remains a backup — see
+    ``run_agent._try_shrink_image_parts_in_messages``.
 
     Returns (content_parts, skipped). Skipped entries are local paths
     that couldn't be read from disk; URLs are never skipped (they're

@@ -318,8 +318,9 @@ class TestTurnTraceIsolation:
 
         # Turn 2 finalized and was popped by _finish_trace; only turn 1's
         # (non-finalizing) state lingers.  Assert the surviving key is turn 1's
-        # and that turn 2 never merged into it — `all(...)` over an empty set
+        # turn 2 never merged into it — `all(...)` over an empty set
         # would pass vacuously, so pin the exact surviving key instead.
+        assert len(set(started)) == 2
         keys = list(mod._TRACE_STATE.keys())
         assert len(keys) == 1
         assert "turn1" in keys[0]
@@ -360,6 +361,129 @@ class TestTurnTraceIsolation:
         # The survivors are the most-recently-updated turns (LRU eviction).
         surviving = sorted(int(k.rsplit("turn", 1)[1]) for k in mod._TRACE_STATE)
         assert surviving == list(range(42, 50))
+
+
+class TestTraceFinalization:
+    """Finalization must close the root lifecycle and never break Hermes."""
+
+    LOGGER_NAME = "plugins.observability.langfuse"
+
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    @staticmethod
+    def _state(mod, *, fail_end=False):
+        events = []
+
+        class _RootSpan:
+            def set_trace_io(self, **kwargs):
+                events.append("set_trace_io")
+
+            def update(self, **kwargs):
+                events.append("update")
+
+            def end(self):
+                events.append("root_end")
+                if fail_end:
+                    raise RuntimeError("sk-lf-secret prompt payload")
+
+        class _RootContext:
+            def __exit__(self, exc_type, exc, tb):
+                events.append("root_context_exit")
+                return False
+
+        return mod.TraceState(
+            trace_id="test-trace-id",
+            root_ctx=_RootContext(),
+            root_span=_RootSpan(),
+        ), events
+
+    def test_finish_trace_ends_root_exits_context_and_flushes(self, monkeypatch):
+        mod = self._fresh_plugin()
+        state, events = self._state(mod)
+        task_key = "task-finalize"
+        flushes = []
+
+        class _Client:
+            def flush(self):
+                flushes.append(True)
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        mod._finish_trace(task_key, output={"content": "synthetic"})
+
+        assert "root_end" in events
+        assert "root_context_exit" in events
+        assert events.index("root_end") < events.index("root_context_exit")
+        assert flushes == [True]
+        assert task_key not in mod._TRACE_STATE
+
+    def test_finish_trace_flush_failure_is_debug_sanitized_and_fail_open(self, monkeypatch, caplog):
+        mod = self._fresh_plugin()
+        state, events = self._state(mod, fail_end=True)
+        task_key = "task-finalize"
+
+        class _Client:
+            def flush(self):
+                raise RuntimeError("sk-lf-secret prompt payload")
+
+        monkeypatch.setenv("HERMES_LANGFUSE_DEBUG", "true")
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        with caplog.at_level(logging.INFO, logger=self.LOGGER_NAME):
+            mod._finish_trace(task_key, output={"content": "synthetic"})
+
+        assert task_key not in mod._TRACE_STATE
+        assert "root_end" in events
+        assert "root_context_exit" in events
+        assert "sk-lf-secret" not in caplog.text
+        assert "prompt payload" not in caplog.text
+        assert "RuntimeError: <redacted>" in caplog.text
+        assert "flush invoked" in caplog.text
+
+    def test_finish_trace_child_finalization_error_is_debug_sanitized(self, monkeypatch, caplog):
+        mod = self._fresh_plugin()
+        state, _ = self._state(mod)
+
+        class _FailingChild:
+            def end(self):
+                raise RuntimeError("sk-lf-secret prompt payload")
+
+        class _Client:
+            def flush(self):
+                pass
+
+        state.generations["1"] = _FailingChild()
+        monkeypatch.setenv("HERMES_LANGFUSE_DEBUG", "true")
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        monkeypatch.setitem(mod._TRACE_STATE, "task-finalize", state)
+
+        with caplog.at_level(logging.INFO, logger=self.LOGGER_NAME):
+            mod._finish_trace("task-finalize")
+
+        assert "sk-lf-secret" not in caplog.text
+        assert "prompt payload" not in caplog.text
+        assert "end observation failed: RuntimeError: <redacted>" in caplog.text
+
+    def test_finish_trace_diagnostics_are_disabled_by_default(self, monkeypatch, caplog):
+        mod = self._fresh_plugin()
+        state, _ = self._state(mod)
+
+        class _Client:
+            def flush(self):
+                raise RuntimeError("sk-lf-secret prompt payload")
+
+        monkeypatch.delenv("HERMES_LANGFUSE_DEBUG", raising=False)
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        monkeypatch.setitem(mod._TRACE_STATE, "task-finalize", state)
+
+        with caplog.at_level(logging.INFO, logger=self.LOGGER_NAME):
+            mod._finish_trace("task-finalize")
+
+        assert caplog.records == []
 
 
 # ---------------------------------------------------------------------------

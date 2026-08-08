@@ -101,6 +101,16 @@ def _debug(message: str) -> None:
         logger.info("Langfuse tracing: %s", message)
 
 
+def _debug_exception(action: str, exc: Exception) -> None:
+    """Record a diagnostic without leaking exception-controlled payloads.
+
+    SDK and transport exceptions may embed request bodies, credentials, trace
+    IDs, or provider responses.  Finalization diagnostics therefore expose the
+    actionable exception class while deliberately redacting the message.
+    """
+    _debug(f"{action} failed: {type(exc).__name__}: <redacted>")
+
+
 # Sentinel: "_get_langfuse() has tried and failed". Lets us short-circuit
 # every subsequent hook call without re-checking env vars or re-attempting
 # SDK init. Tests clear this by reloading the module via
@@ -221,7 +231,10 @@ def _get_langfuse() -> Optional[Langfuse]:
     try:
         _LANGFUSE_CLIENT = Langfuse(**kwargs)
     except Exception as exc:  # pragma: no cover - fail-open
-        logger.warning("Could not initialize Langfuse client: %s", exc)
+        logger.warning(
+            "Could not initialize Langfuse client: %s: <redacted>",
+            type(exc).__name__,
+        )
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 
@@ -595,7 +608,7 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
             except Exception:
                 cost_details["total"] = float(cost.amount_usd)
     except Exception as exc:  # pragma: no cover - fail-open
-        _debug(f"usage normalization failed: {exc}")
+        _debug_exception("usage normalization", exc)
 
     return usage_details, cost_details
 
@@ -603,7 +616,15 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse,
                       turn_id: str = "", api_request_id: str = "") -> TraceState:
-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
+    # ``create_trace_id(seed=...)`` is deterministic.  A seed scoped only to
+    # session/task made every turn in a long-lived gateway conversation reuse
+    # one Langfuse trace ID, so later turns updated the original trace instead
+    # of creating the expected per-turn trace.  Prefer the unique turn ID;
+    # request ID is the compatibility fallback for request-scoped callers.
+    trace_scope = turn_id or api_request_id or task_key
+    trace_id = client.create_trace_id(
+        seed=f"{session_id or 'sessionless'}::{task_id or task_key}::{trace_scope}"
+    )
     trace_input = _extract_last_user_message(messages)
     metadata = {
         "source": "hermes",
@@ -663,7 +684,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     except Exception:
         pass
 
-    _debug(f"started trace {trace_id} for {task_key}")
+    _debug("started root trace")
     return TraceState(trace_id=trace_id, root_ctx=root_ctx, root_span=root_span)
 
 
@@ -698,7 +719,7 @@ def _end_observation(observation: Any, *, output: Any = None, metadata: Optional
             observation.update(**update_kwargs)
         observation.end()
     except Exception as exc:  # pragma: no cover - fail-open
-        _debug(f"end observation failed: {exc}")
+        _debug_exception("end observation", exc)
 
 
 def _merge_trace_output(output: Any, state: TraceState) -> Any:
@@ -731,19 +752,23 @@ def _evict_stale_locked() -> None:
         try:
             state.root_span.end()
         except Exception as exc:  # pragma: no cover - fail-open
-            _debug(f"evict stale trace failed: {exc}")
+            _debug_exception("evict stale trace", exc)
 
 
 def _finish_trace(task_key: str, *, output: Any = None) -> None:
+    _debug("finish trace entered")
     client = _get_langfuse()
     if client is None:
+        _debug("finish trace skipped: client unavailable")
         return
 
     with _STATE_LOCK:
         state = _TRACE_STATE.pop(task_key, None)
     if state is None:
+        _debug("finish trace state not found")
         return
 
+    _debug("finish trace state found")
     try:
         for observation in state.generations.values():
             _end_observation(observation)
@@ -754,16 +779,31 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
                 _end_observation(observation)
         final_output = _merge_trace_output(output, state)
         if final_output is not None:
-            state.root_span.set_trace_io(output=final_output)
-            state.root_span.update(output=final_output)
-        state.root_span.end()
+            try:
+                state.root_span.set_trace_io(output=final_output)
+                state.root_span.update(output=final_output)
+            except Exception as exc:  # pragma: no cover - fail-open
+                _debug_exception("finish trace root output update", exc)
+        try:
+            state.root_span.end()
+            _debug("finish trace root span ended")
+        except Exception as exc:  # pragma: no cover - fail-open
+            _debug_exception("finish trace root span end", exc)
     except Exception as exc:  # pragma: no cover - fail-open
-        _debug(f"finish trace failed: {exc}")
+        _debug_exception("finish trace finalization", exc)
     finally:
         try:
+            if state.root_ctx is not None:
+                state.root_ctx.__exit__(None, None, None)
+                _debug("finish trace root context exited")
+        except Exception as exc:  # pragma: no cover - fail-open
+            _debug_exception("finish trace root context exit", exc)
+        try:
+            _debug("finish trace flush invoked")
             client.flush()
-        except Exception:
-            pass
+            _debug("finish trace flush completed")
+        except Exception as exc:  # pragma: no cover - fail-open
+            _debug_exception("finish trace flush", exc)
 
 
 def _assistant_has_tool_calls(message: Any) -> bool:

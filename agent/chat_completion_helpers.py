@@ -228,6 +228,41 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _resolve_openai_codex_ttfb_timeout(
+    *,
+    base_timeout: float,
+    estimated_tokens: int,
+    idle_timeout: float,
+) -> float:
+    """Resolve the finite no-byte cutoff for one OpenAI Codex request.
+
+    Large requests use the existing context-scaled idle tier instead of
+    disabling first-byte recovery. The default maximum matches the ladder's
+    180-second top tier; an operator override can still impose a lower cap.
+    """
+    timeout = base_timeout
+    large_request_threshold = _env_float(
+        "HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0
+    )
+    strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if (
+        not strict
+        and large_request_threshold > 0
+        and estimated_tokens >= large_request_threshold
+    ):
+        timeout = max(timeout, idle_timeout)
+
+    max_timeout = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 180.0)
+    if max_timeout > 0:
+        timeout = min(timeout, max_timeout)
+    return timeout
+
+
 def _estimate_chunk_bytes(chunk: Any) -> int:
     """Cheap per-chunk size estimate for the stream diagnostic counters.
 
@@ -1012,12 +1047,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # main retry loop can reconnect promptly. Large subscription-backed Codex
     # requests can legitimately spend tens of seconds in backend admission /
     # prompt prefill before the first SSE event, so the no-byte TTFB watchdog
-    # is disabled for large chatgpt.com/backend-api/codex requests. A second
-    # failure mode emits an opening SSE frame and then stalls forever in SSL
-    # read; for that we watch the gap since the last Codex stream event. This
-    # matches Codex CLI's stream_idle_timeout model: any valid SSE event is
-    # activity. Operators can tune via HERMES_CODEX_TTFB_TIMEOUT_SECONDS and
-    # HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables each).
+    # scales with request size instead of being disabled for large requests. A
+    # second failure mode emits an opening SSE frame and then stalls forever in
+    # SSL read; for that we watch the gap since the last Codex stream event.
+    # This matches Codex CLI's stream_idle_timeout model: any valid SSE event is
+    # activity. Operators can tune via HERMES_CODEX_TTFB_TIMEOUT_SECONDS,
+    # HERMES_CODEX_TTFB_MAX_SECONDS, and
+    # HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables each watchdog/cap).
     _codex_watchdog_enabled = agent.api_mode == "codex_responses"
     _openai_codex_backend = _is_openai_codex_backend(agent)
     _est_tokens_for_codex_watchdog = estimate_request_context_tokens(api_kwargs)
@@ -1070,37 +1106,21 @@ def interruptible_api_call(agent, api_kwargs: dict):
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
     elif _openai_codex_backend:
-        _ttfb_disable_above = _env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
-        _ttfb_strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {
-            "1", "true", "yes", "on"
-        }
-        if (
-            not _ttfb_strict
-            and _ttfb_disable_above > 0
-            and _est_tokens_for_codex_watchdog >= _ttfb_disable_above
-        ):
-            _large_request_ttfb_timeout = _codex_idle_timeout_default
-            if _ttfb_timeout < _large_request_ttfb_timeout:
-                logger.info(
-                    "Scaling openai-codex no-byte TTFB watchdog from %.0fs to %.0fs "
-                    "for large request (context=~%s tokens >= %.0f). "
-                    "Set HERMES_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.",
-                    _ttfb_timeout,
-                    _large_request_ttfb_timeout,
-                    f"{_est_tokens_for_codex_watchdog:,}",
-                    _ttfb_disable_above,
-                )
-                _ttfb_timeout = _large_request_ttfb_timeout
-        _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
-        if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
-            logger.info(
-                "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
-                "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.",
+        _base_ttfb_timeout = _ttfb_timeout
+        _ttfb_timeout = _resolve_openai_codex_ttfb_timeout(
+            base_timeout=_base_ttfb_timeout,
+            estimated_tokens=_est_tokens_for_codex_watchdog,
+            idle_timeout=_codex_idle_timeout_default,
+        )
+        if _ttfb_timeout != _base_ttfb_timeout:
+            logger.debug(
+                "Adjusted openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
+                "for request context=~%s tokens. Set HERMES_CODEX_TTFB_STRICT=1 "
+                "to keep the base cutoff or HERMES_CODEX_TTFB_MAX_SECONDS to cap it.",
+                _base_ttfb_timeout,
                 _ttfb_timeout,
-                _ttfb_cap,
                 f"{_est_tokens_for_codex_watchdog:,}",
             )
-            _ttfb_timeout = _ttfb_cap
 
     _codex_idle_enabled = _codex_watchdog_enabled
     _codex_idle_timeout = _env_float(

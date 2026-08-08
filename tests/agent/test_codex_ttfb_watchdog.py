@@ -16,6 +16,7 @@ stall.
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
 import types
@@ -57,8 +58,76 @@ def _make_codex_agent(tmp_path, monkeypatch):
     return agent
 
 
+def test_large_codex_request_default_preserves_scaled_ttfb_timeout(monkeypatch):
+    """The default max must not undo the 180s >100k-token timeout tier."""
+    from agent import chat_completion_helpers as h
+
+    for name in (
+        "HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS",
+        "HERMES_CODEX_TTFB_STRICT",
+        "HERMES_CODEX_TTFB_MAX_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    assert h._resolve_openai_codex_ttfb_timeout(
+        base_timeout=120.0,
+        estimated_tokens=125_000,
+        idle_timeout=180.0,
+    ) == 180.0
 
 
+@pytest.mark.parametrize(
+    ("env_name", "env_value", "expected"),
+    [
+        ("HERMES_CODEX_TTFB_MAX_SECONDS", "150", 150.0),
+        ("HERMES_CODEX_TTFB_STRICT", "1", 120.0),
+    ],
+)
+def test_large_codex_request_preserves_operator_ttfb_overrides(
+    monkeypatch, env_name, env_value, expected
+):
+    """Explicit caps and strict mode continue to override size scaling."""
+    for name in (
+        "HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS",
+        "HERMES_CODEX_TTFB_STRICT",
+        "HERMES_CODEX_TTFB_MAX_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(env_name, env_value)
+
+    from agent import chat_completion_helpers as h
+
+    assert h._resolve_openai_codex_ttfb_timeout(
+        base_timeout=120.0,
+        estimated_tokens=125_000,
+        idle_timeout=180.0,
+    ) == expected
+
+
+def test_routine_large_request_ttfb_adjustment_is_not_info_spam(
+    tmp_path, monkeypatch, caplog
+):
+    """Per-request timeout policy is diagnostic detail, not an INFO event."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setattr(h, "estimate_request_context_tokens", lambda _kwargs: 125_000)
+    response = SimpleNamespace(ok=True)
+    monkeypatch.setattr(
+        h,
+        "_dispatch_nonstreaming_api_request",
+        lambda *_args, **_kwargs: response,
+    )
+
+    with caplog.at_level(logging.INFO, logger=h.logger.name):
+        result = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+
+    assert result is response
+    assert not any(
+        "openai-codex no-byte TTFB timeout" in record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.INFO
+    )
 
 
 def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
@@ -294,19 +363,18 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
 
 
 def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkeypatch):
-    """#64507 regression: a large Codex request (TTFB watchdog disabled by the
-    size gate, stale floor *raised*) that never emits a single byte must still
-    be reclaimed at a finite hard ceiling — not hang for 13+ minutes while the
-    worker stays idle and the session shows as active.
+    """#64507 regression: a large Codex request with a raised stale floor that
+    never emits a single byte must still be reclaimed at a finite hard ceiling
+    — not hang for 13+ minutes while the worker stays idle and the session
+    shows as active.
 
     Uses the real default TTFB threshold (120s) and asserts the request dies at
-    the hard ceiling regardless of the size-based TTFB disable.
+    the lower hard ceiling before either watchdog tier.
     """
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
-    # Real default TTFB threshold (no HERMES_CODEX_TTFB_* override) → for a
-    # >10k-token request the no-byte TTFB watchdog is auto-disabled.
+    # Real default TTFB threshold (no HERMES_CODEX_TTFB_* override).
     monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "3")
 
     closes: list = []
@@ -332,7 +400,7 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
 
     monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
 
-    large_input = "x" * 44_000  # ~11k estimated tokens → TTFB disabled, stale raised
+    large_input = "x" * 44_000  # ~11k estimated tokens → stale floor raised
     t0 = time.time()
     try:
         with pytest.raises(TimeoutError) as excinfo:

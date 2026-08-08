@@ -755,6 +755,76 @@ async def test_second_approval_in_a_session_is_typed_only():
     assert adapter._approval_prompts_by_item == {}
 
 
+async def _two_simultaneous_prompts_one_session(adapter):
+    """Interleave two calls at the awaited prompt send, then let both finish.
+
+    Both calls pass the single-live-prompt check before either registers —
+    the sequential guard cannot see an in-flight peer. Returns the two
+    SendResults.
+    """
+    real = adapter._send_anchored_text
+    gate = asyncio.Event()
+
+    async def gated(chat_ref, text):
+        await gate.wait()
+        return await real(chat_ref, text)
+
+    adapter._send_anchored_text = gated
+
+    first = asyncio.ensure_future(
+        adapter.send_exec_approval(
+            chat_id="42", command="touch /tmp/race-A", session_key="s",
+            description="create A",
+        )
+    )
+    await asyncio.sleep(0)  # first is parked inside the gated send
+    second = asyncio.ensure_future(
+        adapter.send_exec_approval(
+            chat_id="42", command="touch /tmp/race-B", session_key="s",
+            description="create B",
+        )
+    )
+    await asyncio.sleep(0)  # second enters, sees the in-flight peer
+    gate.set()
+    results = await asyncio.gather(first, second)
+    await _drain(adapter)
+    return results
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_approvals_in_one_session_hold_the_typed_lane():
+    """Two calls interleaved at the prompt send must end with zero tap lanes.
+
+    The later entrant takes the typed lane; the earlier one withdraws its
+    own prompt when it resumes and finds the queue grew under it. A tap on
+    either message must have nothing left to answer.
+    """
+    adapter, sent = _approval_adapter()
+    results = await _two_simultaneous_prompts_one_session(adapter)
+
+    assert all(r.success for r in results)
+    # No live tap prompt survived, and the session is latched typed.
+    assert adapter._approval_prompts_by_item == {}
+    assert adapter._typed_only_sessions.get("s", 0.0) > time.monotonic()
+    # The overlapped prompt went out typed — instructions intact, no legend.
+    second_texts = [t for t in _ws_texts(adapter) if "race-B" in t]
+    assert len(second_texts) == 1
+    assert "tap a reaction" not in second_texts[0]
+    assert "/approve" in second_texts[0]
+    # The first prompt was withdrawn, and said so.
+    assert "superseded" in "\n".join(_ws_texts(adapter))
+
+
+@pytest.mark.asyncio
+async def test_overlap_bookkeeping_drains_when_both_calls_return():
+    """The in-flight maps must not leak entries once every call is done."""
+    adapter, _sent = _approval_adapter()
+    await _two_simultaneous_prompts_one_session(adapter)
+
+    assert adapter._approval_inflight == {}
+    assert adapter._approval_entry_gen == {}
+
+
 @pytest.mark.asyncio
 async def test_a_session_that_piled_up_stays_typed_until_the_window_lapses():
     """The third prompt must not get a tap lane back.

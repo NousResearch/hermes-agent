@@ -357,6 +357,16 @@ class SimplexAdapter(BasePlatformAdapter):
         # than one entry the only safe assumption is that it still does,
         # until the whole approval window lapses.
         self._typed_only_sessions: Dict[str, float] = {}
+        # Sessions with a ``send_exec_approval`` currently awaiting its
+        # prompt send, plus a per-session entry counter. Two calls for one
+        # session can interleave at that await: both would pass the
+        # single-live-prompt check before either registers. The in-flight
+        # count lets the later entrant see the earlier one; the entry
+        # counter lets the earlier entrant see the later one when it
+        # resumes. asyncio interleaves only at awaits, so plain dict
+        # mutation here is race-free.
+        self._approval_inflight: Dict[str, int] = {}
+        self._approval_entry_gen: Dict[str, int] = {}
         # Tri-state feature detection for daemon reaction support: None until
         # the first /_reaction is answered, then True/False. Never assumed —
         # older daemons and future emoji-policy changes both show up as an
@@ -456,6 +466,8 @@ class SimplexAdapter(BasePlatformAdapter):
         self._approval_prompts_by_item.clear()
         self._approval_prompt_by_session.clear()
         self._typed_only_sessions.clear()
+        self._approval_inflight.clear()
+        self._approval_entry_gen.clear()
 
         if hasattr(self, "_mark_disconnected"):
             self._mark_disconnected()
@@ -1375,6 +1387,19 @@ class SimplexAdapter(BasePlatformAdapter):
             queued = True
         else:
             queued = False
+        if self._approval_inflight.get(session_key, 0) > 0:
+            # A prompt send for this session is already in flight — the
+            # single-live-prompt check above cannot see it, because that
+            # call has not registered yet. Two live tap prompts must never
+            # exist, so the later entrant takes the typed lane and holds
+            # the session there.
+            self._mark_session_typed_only(session_key)
+            queued = True
+        self._approval_inflight[session_key] = (
+            self._approval_inflight.get(session_key, 0) + 1
+        )
+        entry_gen = self._approval_entry_gen.get(session_key, 0) + 1
+        self._approval_entry_gen[session_key] = entry_gen
 
         # Anything short of a registered prompt below leaves an approval
         # pending in core with no tappable message of its own, so the
@@ -1431,6 +1456,17 @@ class SimplexAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session[session_key] = item_id
             registered = True
 
+            if self._approval_entry_gen.get(session_key, 0) != entry_gen:
+                # Another approval for this session entered while the prompt
+                # send above was in flight. That entrant saw this call and
+                # went typed-only — but this prompt was composed against a
+                # queue that has since grown, so a tap on it could resolve a
+                # different command than the one it shows. Withdraw it and
+                # hold the session to the typed lane.
+                self._retire_live_prompt_for_session(session_key)
+                self._mark_session_typed_only(session_key)
+                return SendResult(success=True, message_id=item_id)
+
             if seed:
                 # Seed detached: every /_reaction waits on a correlated daemon
                 # reply, and gateway/run.py only allows send_exec_approval 15
@@ -1445,6 +1481,15 @@ class SimplexAdapter(BasePlatformAdapter):
         finally:
             if not registered:
                 self._mark_session_typed_only(session_key)
+            remaining = self._approval_inflight.get(session_key, 0) - 1
+            if remaining > 0:
+                self._approval_inflight[session_key] = remaining
+            else:
+                # Last one out drops both entries: every overlap check
+                # snapshots at entry and compares while in flight, so the
+                # counter has no meaning once nobody is.
+                self._approval_inflight.pop(session_key, None)
+                self._approval_entry_gen.pop(session_key, None)
 
     async def _send_approval_message(
         self,

@@ -928,16 +928,20 @@ def _collect_gateway_skill_entries(
         from tools.skills_tool import SKILLS_DIR
         from agent.skill_utils import get_external_skills_dirs
         _skills_dir = str(SKILLS_DIR.resolve())
-        _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
+        _hub_dir = os.path.join(str((SKILLS_DIR / ".hub").resolve()), "")
         # Build set of allowed directory prefixes: local skills dir + any
         # user-configured ``skills.external_dirs``. Ensure each prefix ends
-        # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
+        # with the platform separator so ``/my-skills`` does not also match
+        # ``/my-skills-extra``. The separator must come from ``os.path`` and
+        # not be a hardcoded ``/``: ``skill_md_path`` is a plain ``str(Path)``
+        # (:func:`agent.skill_commands.get_skill_commands`), so on Windows it
+        # is backslash-separated and no skill would match at all.
         # Without this widening, external skills are visible in
         # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
         # silently excluded from gateway slash menus (#8110).
-        _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
+        _allowed_prefixes = [os.path.join(_skills_dir, "")]
         _allowed_prefixes.extend(
-            str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
+            os.path.join(str(d), "") for d in get_external_skills_dirs()
         )
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
@@ -945,6 +949,11 @@ def _collect_gateway_skill_entries(
             skill_path = info.get("skill_md_path", "")
             if not skill_path:
                 continue
+            # Compare both sides in the same convention: the prefixes above
+            # use the platform separator, while ``skill_md_path`` can reach
+            # this filter mixed (``C:\...\skills/foo/SKILL.md``) from callers
+            # that assemble it as a string rather than through ``Path``.
+            skill_path = os.path.normpath(skill_path)
             if not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes):
                 continue
             if skill_path.startswith(_hub_dir):

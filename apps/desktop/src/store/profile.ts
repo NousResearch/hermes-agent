@@ -345,7 +345,10 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  // The profile rail is a live workspace switch, so it must not call
+  // profile.set() and reload the window. Remember the successful selection for
+  // the next launch through the persistence-only IPC instead.
+  void ensureGatewayProfile(target).then(() => window.hermesDesktop.profile.remember(target))
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse

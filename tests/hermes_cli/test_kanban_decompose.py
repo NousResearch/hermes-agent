@@ -113,6 +113,18 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_assigned_triage_task_remains_auto_decompose_eligible(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="assigned rough idea",
+            assignee="engineer",
+            triage=True,
+        )
+
+    assert tid in decomp.list_triage_ids()
+
+
 def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="route me safely", triage=True)
@@ -159,5 +171,4 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
             p.stop()
     assert outcome.ok is False
     assert "not in triage" in outcome.reason
-
 

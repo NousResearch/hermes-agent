@@ -612,21 +612,44 @@ install_uv() {
 check_python() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Checking Termux Python..."
+        # Hermes requires Python 3.11–3.13 (pyproject.toml: requires-python = ">=3.11,<3.14").
+        # Termux's `pkg install python` ships whatever the Termux distro is on — as of
+        # 2026-Q3 that's 3.14.x, which pip rejects against the project's version cap
+        # and produces an opaque "different Python: 3.14.6 not in '<3.14,>=3.11'" failure
+        # later in the run (#76901). Detect that here and bail with a fixable message
+        # instead of letting the whole installer fail downstream.
+        _termux_py_ok() {
+            "$1" -c 'import sys; v = sys.version_info; raise SystemExit(0 if (3, 11) <= v < (3, 14) else 1)' 2>/dev/null
+        }
         if command -v python >/dev/null 2>&1; then
             PYTHON_PATH="$(command -v python)"
-            if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+            if _termux_py_ok "$PYTHON_PATH"; then
                 PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
                 log_success "Python found: $PYTHON_FOUND_VERSION"
                 return 0
             fi
+            PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+            log_warn "Termux has $PYTHON_FOUND_VERSION but Hermes requires 3.11–3.13 (<3.14)."
+            log_info "Reinstalling via pkg in case a newer slot is available..."
         fi
 
         log_info "Installing Python via pkg..."
         pkg install -y python >/dev/null
         PYTHON_PATH="$(command -v python)"
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
-        log_success "Python installed: $PYTHON_FOUND_VERSION"
-        return 0
+        if _termux_py_ok "$PYTHON_PATH"; then
+            log_success "Python installed: $PYTHON_FOUND_VERSION"
+            return 0
+        fi
+        # pkg gave us 3.14+ — Hermes' requires-python cap is the real blocker.
+        log_error "Termux pkg installed $PYTHON_FOUND_VERSION but Hermes requires Python 3.11–3.13."
+        log_info "The current Termux repository only ships Python 3.14; older 3.12/3.13"
+        log_info "binaries are available bundled with the aws-cli package. To use one:"
+        log_info "  pkg install aws-cli"
+        log_info "  ln -sf \$PREFIX/lib/aws-cli/python3 \$PREFIX/bin/python3"
+        log_info "  ln -sf \$PREFIX/bin/python3 \$PREFIX/bin/python"
+        log_info "Then re-run this script. See issue #76901 for context."
+        exit 1
     fi
 
     log_info "Checking Python $PYTHON_VERSION..."

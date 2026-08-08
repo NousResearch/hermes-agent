@@ -37,7 +37,12 @@ interface UseComposerSubmitArgs {
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
   setComposerText: (value: string) => void
-  stashAt: (scope: string | null, text?: string, attachments?: ComposerAttachment[]) => void
+  stashAt: (
+    scope: string | null,
+    text?: string,
+    attachments?: ComposerAttachment[],
+    opts?: { pending?: boolean }
+  ) => void
 }
 
 /**
@@ -76,18 +81,29 @@ export function useComposerSubmit({
 }: UseComposerSubmitArgs) {
   const scope = useComposerScope()
 
-  // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
-  // === false) or throws, re-load + re-stash the draft so the words survive.
+  // Shared send primitive: fire onSubmit, and if the gateway definitively
+  // rejects (accepted === false) or throws, re-load + re-stash the draft so
+  // the words survive. An 'uncertain' outcome (the prompt was dispatched but
+  // the response never came back — transport drop, gateway timeout) is NOT a
+  // rejection: the message may already be running, so the text is stashed for
+  // recovery but never resurrected into the live composer — resurrecting it
+  // there is the "sent AND still in the composer" bug and invites a duplicate
+  // send.
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
     const submittedScope = activeQueueSessionKeyRef.current
     const submittedAttachments = attachments ?? []
 
     const restore = () => {
-      loadIntoComposer(text, submittedAttachments)
-      // Use the scope captured at dispatch, not whatever session is focused
-      // now — the gateway can reject well after the user has switched away,
-      // and re-stashing into the currently-focused session would overwrite
-      // its draft with the rejected text from a different session (#54527).
+      // Paint only into the composer that still shows the submitted session.
+      // A session switch mid-flight means the editor now shows another
+      // session's draft — resurrecting the rejected text into it would clobber
+      // the current session's words. The stash under the submitted scope is
+      // unconditional: the rejected text must survive under its own key
+      // (#54527).
+      if (activeQueueSessionKeyRef.current === submittedScope) {
+        loadIntoComposer(text, submittedAttachments)
+      }
+
       stashAt(submittedScope, text, submittedAttachments)
     }
 
@@ -96,7 +112,30 @@ export function useComposerSubmit({
         ? onSubmit(text, { attachments, composerScope: submittedScope })
         : onSubmit(text, { composerScope: submittedScope })
     )
-      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
+      .then(accepted => {
+        if (accepted === false) {
+          restore()
+
+          return
+        }
+
+        if (accepted === 'uncertain') {
+          // Keep the words recoverable under the submitted scope (a genuinely
+          // lost send survives a reload / switch-back); the submit pipeline
+          // has already surfaced the "check the thread before resending"
+          // notice. The optimistic clear stands — the composer stays empty.
+          // The stash is marked pending so a later stale EMPTY write (the
+          // session-switch stash-on-leave, the post-clear debounce) cannot
+          // delete it before the user recovers the words — only a take
+          // (switch-back), a non-empty write (new text), or the
+          // success-path clearSessionDraft may intentionally supersede it.
+          stashAt(submittedScope, text, submittedAttachments, { pending: true })
+
+          return
+        }
+
+        clearSessionDraft(submittedScope)
+      })
       .catch(restore)
   }
 

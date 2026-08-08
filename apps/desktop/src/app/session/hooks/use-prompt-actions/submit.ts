@@ -40,10 +40,13 @@ import {
   _submitInFlight,
   type GatewayRequest,
   inlineErrorMessage,
+  isGatewayTimeoutError,
   isProviderSetupError,
   isSessionBusyError,
   isTargetSessionBusy,
+  isUncertainSendOutcomeError,
   SessionRecoveryAborted,
+  type SubmitOutcome,
   type SubmitTextOptions,
   withSessionBusyRetry,
   withSessionNotFoundResume
@@ -111,7 +114,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
   } = deps
 
   return useCallback(
-    async (rawText: string, options?: SubmitTextOptions) => {
+    async (rawText: string, options?: SubmitTextOptions): Promise<SubmitOutcome> => {
       const visibleText = sanitizeComposerInput(rawText).trim()
       const usingComposerAttachments = !options?.attachments
 
@@ -584,6 +587,21 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         seedOptimistic(sessionId)
       }
 
+      // Once a prompt.submit has failed with a timeout/transport-class error,
+      // its outcome is unknowable — the gateway may have accepted it even
+      // though the client never saw the response. Latched so a
+      // definitive-looking error LATER in the pipeline can't downgrade the
+      // outcome back to "not sent": the composer must not restore the draft as
+      // a failed send when the words may already be running (unknown outcome).
+      //
+      // The prompt is NEVER re-submitted after an unknown outcome (a retry can
+      // double-run the turn). The one safe re-submit is the session-not-found
+      // recovery — that error is a definitive server rejection, so the prompt
+      // did not run — and it lives inside withSessionNotFoundResume; a
+      // transport failure of THAT retry propagates back into the same catch
+      // below and is latched here like any other uncertain outcome.
+      let dispatchOutcomeUnknown = false
+
       try {
         // Attach runs BEFORE prompt.submit, so a stale runtime id fails there
         // first and submit's own recovery never runs — that asymmetry is why
@@ -633,10 +651,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // other session-scoped RPC (attach, /compress, rewind, interrupt) goes
         // through the same helper so one policy covers the whole bug class.
         let submitErr: unknown = null
+        const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
         try {
-          const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
-
+          // session-not-found is a definitive server rejection — the prompt
+          // did NOT run, so resume + retry once is the one safe re-submit.
+          // NOTE: deliberately NO { alsoTimeout: true } — a timeout/transport
+          // failure after dispatch means the prompt may have been ACCEPTED
+          // (only the response was lost); that class goes to the uncertain
+          // path below, never through the resume+retry (double-run hazard,
+          // so it stays outside that recovery path).
           await withSessionNotFoundResume(
             sessionId,
             recoverStoredSessionId,
@@ -653,17 +677,48 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                   setActiveSessionId(recoveredId)
                 }
               }
-            },
-            // A starved backend loop (#55578 symptom d) rejects the submit even
-            // though the stored session is fine — recover it like a dead id
-            // instead of erroring out and losing the session binding.
-            { alsoTimeout: true }
+            }
           )
         } catch (firstErr) {
           if (firstErr instanceof SessionRecoveryAborted) {
             console.warn('[submit-drift-abort]', firstErr.reason, { phase: 'post-resume-retry' })
 
             return abortForSessionSwitch(sessionId)
+          }
+
+          if (isGatewayTimeoutError(firstErr) || isUncertainSendOutcomeError(firstErr)) {
+            dispatchOutcomeUnknown = true
+
+            // The first prompt.submit may have been ACCEPTED by the gateway —
+            // only the response was lost (timeout / transport drop). The prompt
+            // must NEVER be re-submitted: a retry would run the turn a second
+            // time. Re-register the stored session anyway (session.resume is
+            // idempotent and cannot re-run the prompt) so the next deliberate
+            // send binds to a fresh runtime id; a failed resume changes
+            // nothing about the unknown outcome.
+            if (recoverStoredSessionId) {
+              try {
+                const resumeProfile = await resolveSessionProfile(recoverStoredSessionId)
+
+                const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+                  session_id: recoverStoredSessionId,
+                  source: 'desktop',
+                  omit_messages: true,
+                  ...(resumeProfile ? { profile: resumeProfile } : {})
+                })
+
+                if (resumed?.session_id && targetIsCurrentView()) {
+                  activeSessionIdRef.current = resumed.session_id
+                  setActiveSessionId(resumed.session_id)
+                }
+              } catch {
+                // No-op — the original outcome is unknown either way.
+              }
+            }
+
+            // Falls through to the outer catch, which reports the uncertainty
+            // (release submit lock, keep optimistic bubble + busy, warn).
+            throw firstErr
           }
 
           submitErr = firstErr
@@ -683,6 +738,34 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         return true
       } catch (err) {
+        // A prompt.submit that failed with a timeout/transport-class error
+        // may still be running on the gateway — the client simply never saw
+        // the response. This is NOT a failed send: restoring the draft into
+        // the composer would resurrect text under a message that may have
+        // landed (the "sent AND still in the composer" bug), and an error
+        // bubble would lie about the outcome. Keep the optimistic message +
+        // busy (the turn may stream in), release only the submit lock, keep
+        // the words recoverable in the draft stash, and tell the user to
+        // verify the thread before resending (unknown outcome).
+        //
+        // Only the submit-dispatch latches qualify: an error from an EARLIER
+        // pipeline stage (attachment upload, session create/resume) means the
+        // words never left the composer — that is a definitive failure whose
+        // draft restore must stand, even when its message happens to be a
+        // transport string.
+        if (dispatchOutcomeUnknown) {
+          releaseSubmitLock()
+
+          // Notify whenever the submit STARTED in the current view — the
+          // user who sent it needs the warning even if they switched
+          // sessions while the response was lost.
+          if (targetStartedInCurrentView) {
+            notify({ kind: 'warning', message: copy.sendStatusUncertain })
+          }
+
+          return 'uncertain'
+        }
+
         releaseBusy()
 
         // A queued drain that raced a not-yet-settled turn gets a transient

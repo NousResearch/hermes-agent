@@ -149,3 +149,61 @@ describe('session drafts', () => {
     clearSessionDraft('to')
   })
 })
+
+describe('uncertain-send pending stash protection', () => {
+  afterEach(() => {
+    clearSessionDraft('session-a')
+    window.localStorage.clear()
+  })
+
+  it('an empty write cannot delete a pending recovery stash', () => {
+    // dispatchSubmit stashes the words with pending on an uncertain outcome;
+    // the session-switch stash-on-leave / post-clear debounce then writes the
+    // (empty) composer over the same key. The pending marker must protect the
+    // recovery stash (pending-stash race protection).
+    stashSessionDraft('session-a', 'must remain recoverable', [], { pending: true })
+
+    stashSessionDraft('session-a', '', [])
+
+    expect(takeSessionDraft('session-a').text).toBe('must remain recoverable')
+  })
+
+  it('a non-empty write supersedes a pending stash', () => {
+    stashSessionDraft('session-a', 'old uncertain words', [], { pending: true })
+    stashSessionDraft('session-a', 'new words typed over it', [])
+
+    expect(takeSessionDraft('session-a').text).toBe('new words typed over it')
+  })
+
+  it('clearSessionDraft deletes even a pending stash (the send landed)', () => {
+    stashSessionDraft('session-a', 'sent words', [], { pending: true })
+    clearSessionDraft('session-a')
+
+    expect(takeSessionDraft('session-a')).toEqual({ attachments: [], text: '' })
+  })
+
+  it('takeSessionDraft hands the words back and clears the pending marker', () => {
+    stashSessionDraft('session-a', 'recovered words', [], { pending: true })
+
+    expect(takeSessionDraft('session-a').text).toBe('recovered words')
+
+    // The words are back in the composer — the next empty write (user deleted
+    // them, switched away) must clear normally instead of being
+    // merge-protected forever.
+    stashSessionDraft('session-a', '', [])
+    expect(takeSessionDraft('session-a')).toEqual({ attachments: [], text: '' })
+  })
+
+  it('migration to a post-compression tip keeps the pending protection', () => {
+    const tipBefore = '20260720_062637_ad96b3'
+    const tipAfter = '20260720_071049_a28905'
+
+    stashSessionDraft(tipBefore, 'uncertain words mid-compress', [], { pending: true })
+    expect(migrateSessionDraft(tipBefore, tipAfter)).toBe(true)
+
+    // The moved stash is still pending: the swap-away empty write must not
+    // delete it on the new tip either.
+    stashSessionDraft(tipAfter, '', [])
+    expect(takeSessionDraft(tipAfter).text).toBe('uncertain words mid-compress')
+  })
+})

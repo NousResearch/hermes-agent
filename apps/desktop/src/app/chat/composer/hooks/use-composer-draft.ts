@@ -209,8 +209,12 @@ export function useComposerDraft({
     }
   }, [appendExternalText, inputDisabled, paintDraft, target])
 
-  const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
-    stashSessionDraft(scope, text, attachments)
+  const stashAt = (
+    scope: string | null,
+    text = draftRef.current,
+    attachments = attachmentScope.$attachments.get(),
+    opts?: { pending?: boolean }
+  ) => stashSessionDraft(scope, text, attachments, opts)
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
     // Diagnostic breadcrumb for #59305-class reports: identifies WHAT kind of

@@ -1,4 +1,5 @@
 import type { AppendMessage } from '@assistant-ui/react'
+import { GatewayRequestError } from '@hermes/shared'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -10,9 +11,11 @@ import {
   type GatewayRequest,
   imageFilenameFromPath,
   inlineErrorMessage,
+  isGatewayTimeoutError,
   isSessionBusyError,
   isSessionIdCandidate,
   isSessionNotFoundError,
+  isUncertainSendOutcomeError,
   readFileDataUrlForAttach,
   renderRpcResult,
   SessionRecoveryAborted,
@@ -255,6 +258,44 @@ describe('withSessionNotFoundResume', () => {
     await expect(withSessionNotFoundResume(DEAD, STORED, call, d)).rejects.toThrow('session not found')
     expect(call).toHaveBeenCalledTimes(2)
     expect(d.requestGateway).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('send-outcome classifiers — typed dispatch authority', () => {
+  it('a typed RPC rejection wins over a message that says "request timed out"', () => {
+    // The server answered with an error frame; its message merely CONTAINS the
+    // client-side timeout phrase. Message heuristics must not override the
+    // typed kind: this is a CERTAIN rejection, never an uncertain send
+    // (the typed RPC classifier must remain authoritative).
+    const rpc = new GatewayRequestError(
+      'rpc',
+      "Error invoking remote method 'prompt.submit': Error: request timed out: prompt.submit",
+      true
+    )
+
+    expect(isGatewayTimeoutError(rpc)).toBe(false)
+    expect(isUncertainSendOutcomeError(rpc)).toBe(false)
+  })
+
+  it('typed timeout and closed (post-dispatch) failures are uncertain', () => {
+    expect(isGatewayTimeoutError(new GatewayRequestError('timeout', 'request timed out: prompt.submit', true))).toBe(true)
+    expect(isUncertainSendOutcomeError(new GatewayRequestError('timeout', 'request timed out: prompt.submit', true))).toBe(true)
+    expect(isGatewayTimeoutError(new GatewayRequestError('closed', 'connection closed', true))).toBe(false)
+    expect(isUncertainSendOutcomeError(new GatewayRequestError('closed', 'connection closed', true))).toBe(true)
+  })
+
+  it('typed pre-dispatch failures are certain rejections (draft restore stands)', () => {
+    expect(isGatewayTimeoutError(new GatewayRequestError('not_connected', 'gateway not connected', false))).toBe(false)
+    expect(isUncertainSendOutcomeError(new GatewayRequestError('not_connected', 'gateway not connected', false))).toBe(false)
+    expect(isUncertainSendOutcomeError(new GatewayRequestError('send_failed', 'socket send failed', false))).toBe(false)
+  })
+
+  it('untyped legacy errors fall back to message shape', () => {
+    expect(isGatewayTimeoutError(new Error('request timed out: prompt.submit'))).toBe(true)
+    expect(isUncertainSendOutcomeError(new Error('request timed out: prompt.submit'))).toBe(true)
+    expect(isUncertainSendOutcomeError(new Error('connection closed'))).toBe(true)
+    expect(isUncertainSendOutcomeError(new Error('not connected'))).toBe(false)
+    expect(isUncertainSendOutcomeError(new Error('connection closed while not connected'))).toBe(false)
   })
 })
 

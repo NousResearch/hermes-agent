@@ -1,4 +1,5 @@
 import type { AppendMessage } from '@assistant-ui/react'
+import { GatewayRequestError } from '@hermes/shared'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -217,12 +218,70 @@ export function isTargetSessionBusy(
 // backend event loop is starved (e.g. a poller spin or a heavy async-injected
 // turn). For prompt.submit this is indistinguishable from a dead runtime
 // session on the client side — recovery must treat it like one (#55578):
-// resume the SELECTED stored session and retry, instead of surfacing an error
-// that leads to a null activeSessionId and a silently minted new session.
+// resume the SELECTED stored session so the next deliberate send binds
+// cleanly, and NEVER re-submit the prompt (the request may still be queued
+// and execute once the loop unwinds).
+//
+// Typed GatewayRequestErrors own their classification: a typed RPC rejection
+// whose server message happens to contain "request timed out" is a CERTAIN
+// server answer, not a client-side timeout — matching on message text alone
+// would override the typed dispatch authority. Message
+// heuristics apply only to untyped legacy errors from other bridges.
 export function isGatewayTimeoutError(error: unknown): boolean {
+  if (error instanceof GatewayRequestError) {
+    return error.kind === 'timeout'
+  }
+
   const message = error instanceof Error ? error.message : String(error)
 
   return /request timed out/i.test(message)
+}
+
+/**
+ * The composer's submit contract. `true` = the gateway accepted the prompt;
+ * `false` = the gateway definitively rejected it (nothing was dispatched, or
+ * the server answered with an error); `'uncertain'` = a prompt WAS dispatched
+ * but its outcome is unknown — the client never saw the response (transport
+ * drop, event-loop starvation timeout), so the gateway may still run it.
+ *
+ * Callers must NOT treat `'uncertain'` like `false`: restoring the draft into
+ * the composer under an uncertain outcome resurrects text under a message
+ * that may have landed (the "sent AND still in the composer" bug) and invites
+ * a duplicate send. Keep the optimistic clear, keep the words recoverable in
+ * the draft stash, and tell the user to verify the thread first.
+ */
+export type SubmitOutcome = boolean | 'uncertain'
+
+/**
+ * True when a failed prompt.submit error means the request may still run on
+ * the gateway. These are client-side failure classes — the response never
+ * made it back — so "rejected" would be a lie:
+ *
+ * The transport boundary owns dispatch authority (`GatewayRequestError`):
+ * - `dispatched === false` ('not connected' pre-flight, `socket.send` throw) —
+ *   the frame never left the machine. CERTAIN non-dispatch: the draft must
+ *   restore (a legitimately failed send). Classifying this 'uncertain' would
+ *   kill the offline draft-restore (regression).
+ * - `dispatched === true` + no response (`timeout`, `closed`) — the gateway
+ *   may have accepted the request before the response was lost. UNCERTAIN.
+ * - `dispatched === true` + RPC error frame (`rpc`) — the server answered.
+ *   CERTAIN rejection.
+ *
+ * Untyped errors (other bridges) fall back to message shape: 'connection
+ * closed' implies the frame may have left the socket; a bare 'not connected'
+ * fires BEFORE any send.
+ *
+ * Anything else (session not found, session busy, provider setup) is a server
+ * response — a definitive rejection.
+ */
+export function isUncertainSendOutcomeError(error: unknown): boolean {
+  if (error instanceof GatewayRequestError) {
+    return error.dispatched && (error.kind === 'timeout' || error.kind === 'closed')
+  }
+
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /request timed out|connection closed/i.test(message) && !/not connected/i.test(message)
 }
 
 // The gateway refuses prompt.submit while a turn is running (4009 "session

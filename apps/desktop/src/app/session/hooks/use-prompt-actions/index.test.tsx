@@ -1,3 +1,4 @@
+import { GatewayRequestError } from '@hermes/shared'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
@@ -26,7 +27,7 @@ import { dropSessionState, publishSessionState } from '@/store/session-states'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import type { SessionInfo } from '@/types/hermes'
 
-import type { SubmitTextOptions } from './utils'
+import type { SubmitOutcome, SubmitTextOptions } from './utils'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
 
@@ -85,8 +86,8 @@ interface HarnessHandle {
   redirectPrompt: (text: string) => Promise<boolean>
   /** @deprecated Use `redirectPrompt`. */
   steerPrompt: (text: string) => Promise<boolean>
-  submitTextRaw: (text: string, options?: SubmitTextOptions) => Promise<boolean>
-  submitText: (text: string, options?: SubmitTextOptions) => Promise<boolean>
+  submitTextRaw: (text: string, options?: SubmitTextOptions) => Promise<SubmitOutcome>
+  submitText: (text: string, options?: SubmitTextOptions) => Promise<SubmitOutcome>
 }
 
 function Harness({
@@ -194,7 +195,7 @@ function Harness({
         act(async () => actions.steerPrompt(...args)) as Promise<boolean>,
       submitTextRaw: actions.submitText,
       submitText: (...args: Parameters<typeof actions.submitText>) =>
-        act(async () => actions.submitText(...args)) as Promise<boolean>
+        act(async () => actions.submitText(...args)) as Promise<SubmitOutcome>
     })
   }, [
     actions.cancelRun,
@@ -823,7 +824,7 @@ describe('usePromptActions /compress', () => {
     // helper cannot be used here: this test intentionally keeps its promise
     // pending while the user switches sessions, which would leave React's
     // async act scope open and overlap the wait below.
-    let submitted: Promise<boolean>
+    let submitted: Promise<SubmitOutcome>
     act(() => {
       submitted = handle!.submitTextRaw('/compress')
     })
@@ -882,7 +883,7 @@ describe('usePromptActions /compress', () => {
 
     // Keep the RPC pending while the selected stored session changes without
     // leaving an async React act scope open (see the foreground-race test).
-    let submitted: Promise<boolean>
+    let submitted: Promise<SubmitOutcome>
     act(() => {
       submitted = handle!.submitTextRaw('/compress')
     })
@@ -3103,11 +3104,13 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls).not.toContain('session.resume')
   })
 
-  it('recovers via session.resume when prompt.submit TIMES OUT and a stored session is selected (#55578)', async () => {
-    // A starved gateway loop rejects with "request timed out: prompt.submit".
-    // With a stored session selected, that must recover exactly like
-    // "session not found" — resume + retry — not surface an error that leaves
-    // activeSessionId null and lets the next send mint a new session.
+  it('resumes the stored session on a prompt.submit TIMEOUT but NEVER re-submits the prompt (#55578 + no-double-run)', async () => {
+    // A starved gateway loop rejects with "request timed out: prompt.submit" —
+    // but the request may still be queued and execute once the loop unwinds.
+    // The recovery must (a) re-register the stored session so the NEXT
+    // deliberate send binds cleanly (#55578 — no error that leaves
+    // activeSessionId null and lets the next send mint a new session), and
+    // (b) NEVER re-submit the same prompt — a retry would run the turn twice.
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let submitAttempts = 0
 
@@ -3143,17 +3146,19 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     const ok = await handle!.submitText('message during starved loop')
 
-    expect(ok).toBe(true)
-    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    // The outcome is UNKNOWN (the prompt may still run), not a clean success —
+    // the composer keeps the optimistic bubble and warns instead of restoring.
+    expect(ok).toBe('uncertain')
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume'])
+    expect(submitAttempts).toBe(1)
     expect(calls[1]?.params).toEqual({
       session_id: STORED_SESSION_ID,
       source: 'desktop',
       omit_messages: true
     })
-    expect(calls[2]?.params).toEqual({
-      session_id: RECOVERED_SESSION_ID,
-      text: 'message during starved loop'
-    })
+    // The #55578 point stands: the resume restored the live binding so the
+    // next deliberate send does not mint a fresh session.
+    expect(handle!.activeSessionIdRef.current).toBe(RECOVERED_SESSION_ID)
   })
 
   it('resumes the SELECTED stored session instead of minting a new one when activeSessionId is null (#55578 split)', async () => {
@@ -3606,7 +3611,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     expect(calls.some(c => c.method === 'prompt.submit')).toBe(true)
   })
 
-  it('aborts recovery submit when the user switches sessions during timeout resume', async () => {
+  it("reports 'uncertain' when a timeout races a session switch — the prompt is never re-submitted (no double-run)", async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let submitAttempts = 0
 
@@ -3653,7 +3658,13 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     await waitFor(() => expect(calls.some(c => c.method === 'session.resume')).toBe(true))
     releaseResume()
 
-    expect(await submitting).toBe(false)
+    // The FIRST prompt.submit timed out, so it may still run in A — and the
+    // prompt is NEVER re-submitted after an unknown outcome (a retry could
+    // run the turn twice). The resume is only a harmless re-registration; the
+    // user switching mid-resume changes nothing. Outcome 'uncertain': the
+    // composer must not restore the draft as "failed" under a message that
+    // may have landed.
+    expect(await submitting).toBe('uncertain')
     expect(submitAttempts).toBe(1)
     expect(calls.filter(c => c.method === 'prompt.submit')).toHaveLength(1)
     expect(calls.find(c => c.method === 'session.resume')?.params).toMatchObject({
@@ -4499,5 +4510,267 @@ describe('usePromptActions stale-closure session routing', () => {
         expect(params.session_id).toBe(RUNTIME_SESSION_B)
       }
     }
+  })
+})
+
+describe('usePromptActions uncertain send outcomes (response lost after dispatch)', () => {
+  afterEach(() => {
+    cleanup()
+    clearNotifications()
+    vi.restoreAllMocks()
+  })
+
+  it("returns 'uncertain' when a transport drop swallows the prompt.submit response — no error bubble, busy kept, warning toast", async () => {
+    // The gateway may have accepted the prompt even though the response
+    // never made it back (remote-proxy transport drop). A definitive `false`
+    // here would make the composer resurrect the draft under a message that
+    // may have landed — the "sent AND still in the composer" bug — and
+    // invite a duplicate send.
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('Hermes gateway connection closed')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const outcome = await handle!.submitText('may have landed')
+
+    expect(outcome).toBe('uncertain')
+    // No assistant-error bubble for an outcome nobody actually knows.
+    expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
+      false
+    )
+    // Busy/awaiting stay set — the turn may still stream in; only the submit
+    // lock was released so a deliberate resend can proceed.
+    expect(seeds.at(-1)).toMatchObject({ busy: true, awaitingResponse: true })
+    // The honest signal: verify the thread before resending.
+    expect($notifications.get().some(n => n.kind === 'warning' && n.message.includes('Send status unknown'))).toBe(true)
+  })
+
+  it("returns 'uncertain' when a timeout's recovery races a session switch — the first prompt may still run", async () => {
+    // First prompt.submit timed out (starved gateway — the request is still
+    // queued and may execute). While the resume+retry recovery is in flight
+    // the user switches sessions; the post-resume drift check must NOT abort
+    // as a clean "not sent" (which would restore the draft under a message
+    // that may land) — it reports the uncertainty instead.
+    const STORED_A = 'stored-a'
+    const STORED_B = 'stored-b'
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_A }
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('request timed out: prompt.submit')
+      }
+
+      if (method === 'session.resume') {
+        // The user switches sessions while the recovery is in flight — the
+        // drift check must see the move.
+        selectedStoredSessionIdRef.current = STORED_B
+
+        return { session_id: 'rt-recovered-456' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_A}
+      />
+    )
+
+    const outcome = await handle!.submitText('typed before the switch')
+
+    expect(outcome).toBe('uncertain')
+    expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
+      false
+    )
+    expect($notifications.get().some(n => n.kind === 'warning' && n.message.includes('Send status unknown'))).toBe(true)
+  })
+
+  it("a timeout recovery resumes the session once but NEVER re-submits the prompt — even when the resume succeeds", async () => {
+    // The reviewer's boundary case: timeout + resume + retry. The FIRST
+    // prompt.submit timed out, so it may have been accepted — the recovery
+    // must re-register the stored session (idempotent) without re-sending the
+    // prompt, or the turn runs twice on the gateway.
+    const calls: { method: string }[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push({ method })
+
+      if (method === 'prompt.submit') {
+        throw new Error('request timed out: prompt.submit')
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: 'rt-recovered-456' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const outcome = await handle!.submitText('must not be sent twice')
+
+    expect(outcome).toBe('uncertain')
+    expect(calls.filter(c => c.method === 'prompt.submit')).toHaveLength(1)
+    expect(calls.filter(c => c.method === 'session.resume')).toHaveLength(1)
+    expect($notifications.get().some(n => n.kind === 'warning' && n.message.includes('Send status unknown'))).toBe(true)
+  })
+
+  it("a pre-dispatch 'not connected' is a DEFINITIVE rejection — draft restore contract stands (false + error bubble)", async () => {
+    // The reviewer's boundary case: the gateway client rejects BEFORE
+    // socket.send when the socket is not open. Nothing was dispatched, so
+    // this is a real failure: the composer must restore the draft and the
+    // error must surface — NOT the uncertain path (which would kill the
+    // offline draft restore).
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('Hermes gateway is not connected')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const outcome = await handle!.submitText('offline words')
+
+    expect(outcome).toBe(false)
+    // Real failure — the assistant-error bubble is present.
+    expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
+      true
+    )
+    // Busy released — the send failed for real, nothing may be running.
+    expect(seeds.at(-1)).toMatchObject({ busy: false, awaitingResponse: false })
+    // And no "status unknown" warning — the outcome is known.
+    expect($notifications.get().some(n => n.kind === 'warning' && n.message.includes('Send status unknown'))).toBe(false)
+  })
+
+  it("'session not found' keeps the resume + retry recovery — a server rejection cannot duplicate the prompt", async () => {
+    // The reviewer's boundary case: session-not-found is a SERVER response —
+    // the prompt definitively did not run, so resume + retry is safe and must
+    // be preserved (the one path that may re-submit).
+    const calls: { method: string }[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push({ method })
+
+      if (method === 'prompt.submit') {
+        if (calls.filter(c => c.method === 'prompt.submit').length === 1) {
+          throw new Error('session not found')
+        }
+
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: 'rt-recovered-456' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const outcome = await handle!.submitText('resume retry')
+
+    expect(outcome).toBe(true)
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+  })
+
+  it("a TYPED post-dispatch transport error is 'uncertain' and a TYPED pre-dispatch one is a definitive rejection", async () => {
+    // The transport boundary now classifies by the typed dispatched flag
+    // (GatewayRequestError), not the message string. Prove both sides of the
+    // instanceof path.
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new GatewayRequestError('closed', 'Hermes gateway connection closed', true)
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    expect(await handle!.submitText('typed drop')).toBe('uncertain')
+
+    const preDispatchGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new GatewayRequestError('not_connected', 'Hermes gateway is not connected', false)
+      }
+
+      return {} as never
+    })
+
+    let preHandle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (preHandle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={preDispatchGateway}
+      />
+    )
+
+    expect(await preHandle!.submitText('typed offline')).toBe(false)
+    expect(
+      seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))
+    ).toBe(true)
   })
 })

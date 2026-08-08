@@ -16,9 +16,9 @@ import { notify } from '@/store/notifications'
 import { $sessions, idsShareLineage } from '@/store/session'
 import { $workingSessionIds } from '@/store/session-states'
 
-import type { SubmitTextOptions } from './use-prompt-actions/utils'
+import type { SubmitOutcome, SubmitTextOptions } from './use-prompt-actions/utils'
 
-type SubmitQueuedPrompt = (text: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
+type SubmitQueuedPrompt = (text: string, options?: SubmitTextOptions) => Promise<SubmitOutcome> | SubmitOutcome
 
 interface BackgroundQueueDrainOptions {
   enabled: boolean

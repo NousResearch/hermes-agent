@@ -39,7 +39,10 @@ export {
   type GatewayClientOptions,
   type GatewayEvent,
   type GatewayEventName,
+  GatewayRequestError,
+  type GatewayRequestErrorKind,
   type GatewayRequestId,
+  isGatewayPreDispatchError,
   type JsonRpcFrame,
   JsonRpcGatewayClient,
   type WebSocketLike

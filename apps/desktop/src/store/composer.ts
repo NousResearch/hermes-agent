@@ -123,13 +123,22 @@ const EMPTY_SESSION_DRAFT: SessionDraft = { attachments: [], text: '' }
 export interface SessionDraft {
   attachments: ComposerAttachment[]
   text: string
+  /** True while this stash is an uncertain-send recovery stash (the prompt
+   *  may still be running on the gateway — the send outcome is unknown).
+   *  Empty cleanup writes (stash-on-leave, the post-clear debounce) must NOT
+   *  delete it; only a non-empty write (new text supersedes), a take (the
+   *  words are back in the composer), or an explicit clearSessionDraft (the
+   *  send landed) may. Memory-only — a reload restores the text into the
+   *  composer, which then owns it like any draft. */
+  pending?: boolean
 }
 
 const draftKey = (scope: string | null | undefined) => scope?.trim() || NEW_SESSION_DRAFT_KEY
 
 const cloneDraft = (draft: SessionDraft): SessionDraft => ({
   attachments: draft.attachments.map(attachment => ({ ...attachment })),
-  text: draft.text
+  text: draft.text,
+  ...(draft.pending ? { pending: true } : {})
 })
 
 function loadPersistedDraftTexts(): [string, SessionDraft][] {
@@ -246,14 +255,31 @@ function persistDraftTexts() {
   }
 }
 
-export function stashSessionDraft(scope: string | null | undefined, text: string, attachments: ComposerAttachment[]) {
+export function stashSessionDraft(
+  scope: string | null | undefined,
+  text: string,
+  attachments: ComposerAttachment[],
+  opts?: { pending?: boolean }
+) {
   const key = draftKey(scope)
+  const existing = draftsBySession.get(key)
+
+  // Merge protection for uncertain-send recovery stashes: an EMPTY write —
+  // the stash-on-leave cleanup after a session switch, the debounced empty
+  // stash left by the optimistic composer clear, the pagehide flush — must
+  // not delete a newer non-empty stash whose send outcome is still unknown
+  // (that deleted the user's words mid-recovery). Only a non-empty write
+  // (new text supersedes), a take (the words are back in the composer), or
+  // the explicit clearSessionDraft (the send landed) may replace it.
+  if (!text.trim() && attachments.length === 0 && existing?.pending) {
+    return
+  }
 
   // Delete-then-set keeps MRU order for MAX_PERSISTED_DRAFTS eviction.
   draftsBySession.delete(key)
 
   if (text.trim() || attachments.length > 0) {
-    draftsBySession.set(key, cloneDraft({ attachments, text }))
+    draftsBySession.set(key, cloneDraft({ attachments, text, ...(opts?.pending ? { pending: true } : {}) }))
   }
 
   persistDraftTexts()
@@ -262,10 +288,26 @@ export function stashSessionDraft(scope: string | null | undefined, text: string
 export function takeSessionDraft(scope: string | null | undefined): SessionDraft {
   const stashed = draftsBySession.get(draftKey(scope))
 
-  return stashed ? cloneDraft(stashed) : EMPTY_SESSION_DRAFT
+  if (!stashed) {
+    return EMPTY_SESSION_DRAFT
+  }
+
+  // Taking IS the ownership transfer: the words are now loaded into the
+  // composer, so the next empty stash-on-leave write (the user deleted them,
+  // switched away) must clear normally instead of being merge-protected
+  // forever.
+  delete stashed.pending
+
+  return cloneDraft(stashed)
 }
 
-export const clearSessionDraft = (scope: string | null | undefined) => stashSessionDraft(scope, '', [])
+// The send landed (or a draft explicitly discarded): the stash must go even
+// when it is a pending recovery stash — the words are in the thread now, and
+// resurrecting them on reload would be the duplicate-send trap.
+export const clearSessionDraft = (scope: string | null | undefined) => {
+  draftsBySession.delete(draftKey(scope))
+  persistDraftTexts()
+}
 
 /**
  * Move a stashed composer draft from one session key onto another.
@@ -296,7 +338,7 @@ export function migrateSessionDraft(fromKey: string | null | undefined, toKey: s
     return false
   }
 
-  stashSessionDraft(toKey, source.text, source.attachments)
+  stashSessionDraft(toKey, source.text, source.attachments, source.pending ? { pending: true } : undefined)
   clearSessionDraft(fromKey)
 
   return true

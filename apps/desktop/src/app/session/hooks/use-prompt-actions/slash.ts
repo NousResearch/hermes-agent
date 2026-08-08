@@ -63,6 +63,7 @@ import {
   renderCommandsCatalog,
   renderRpcResult,
   slashStatusText,
+  type SubmitOutcome,
   type SubmitTextOptions,
   withSessionNotFoundResume
 } from './utils'
@@ -143,7 +144,7 @@ interface SlashCommandDeps {
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
-  submitPromptText: (rawText: string, options?: SubmitTextOptions) => Promise<boolean>
+  submitPromptText: (rawText: string, options?: SubmitTextOptions) => Promise<SubmitOutcome>
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,

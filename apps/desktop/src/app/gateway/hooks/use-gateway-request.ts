@@ -1,4 +1,4 @@
-import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
+import { isGatewayPreDispatchError, isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
@@ -135,6 +135,17 @@ export function useGatewayRequest() {
             throw reauthError
           }
 
+          throw error
+        }
+
+        // Replay ONLY when the failure provably happened BEFORE the frame left
+        // the socket: the gateway cannot have seen the request, so a replay is
+        // always safe. A post-dispatch close/timeout means the gateway may
+        // have ACCEPTED the request while the response was lost — replaying
+        // prompt.submit would run the turn a second time (the "send appears to
+        // fire but the message never lands / lands twice" bug class). The
+        // caller sees the transport error and owns the outcome classification.
+        if (!isGatewayPreDispatchError(error)) {
           throw error
         }
 

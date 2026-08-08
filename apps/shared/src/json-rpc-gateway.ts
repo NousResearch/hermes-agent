@@ -49,6 +49,52 @@ type PendingCall = {
   timer?: ReturnType<typeof setTimeout>
 }
 
+export type GatewayRequestErrorKind = 'not_connected' | 'send_failed' | 'closed' | 'timeout' | 'rpc'
+
+/**
+ * A gateway RPC failure that carries DISPATCH AUTHORITY: whether the request
+ * frame was written to the socket. Callers deciding between "the request was
+ * rejected" and "the outcome is unknown" (e.g. the composer's draft restore on
+ * prompt.submit) must key off `dispatched`, not the message text:
+ *
+ * - `dispatched === false` — the request never left the socket (the
+ *   'not connected' pre-flight, a `socket.send` throw). A CERTAIN non-dispatch:
+ *   the server cannot have seen the request, so a retry is always safe.
+ * - `dispatched === true` with no response (`timeout`, `closed`) — the gateway
+ *   may have accepted the request while the response was lost. UNCERTAIN:
+ *   retrying can double-execute a write (e.g. prompt.submit runs the turn
+ *   twice).
+ * - `dispatched === true` with an RPC error frame (`rpc`) — the server
+ *   answered. A CERTAIN rejection.
+ */
+export class GatewayRequestError extends Error {
+  readonly dispatched: boolean
+  readonly kind: GatewayRequestErrorKind
+
+  constructor(kind: GatewayRequestErrorKind, message: string, dispatched: boolean) {
+    super(message)
+    this.name = 'GatewayRequestError'
+    this.kind = kind
+    this.dispatched = dispatched
+  }
+}
+
+/**
+ * True when the failure provably happened BEFORE the frame left the socket —
+ * the only failure class safe to auto-replay (a replay cannot double-dispatch).
+ * Untyped errors fall back to message shape: a bare 'not connected' fires
+ * pre-send; 'connection closed' may follow a send and must not be replayed.
+ */
+export function isGatewayPreDispatchError(error: unknown): boolean {
+  if (error instanceof GatewayRequestError) {
+    return !error.dispatched
+  }
+
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /not connected/i.test(message) && !/connection closed/i.test(message)
+}
+
 export interface GatewayClientOptions {
   closedErrorMessage?: string
   connectErrorMessage?: string
@@ -150,7 +196,9 @@ export class JsonRpcGatewayClient {
 
       this.socket = null
       this.setState('closed')
-      this.rejectAllPending(new Error(this.options.closedErrorMessage))
+      // Every pending call was already written to the socket — the gateway may
+      // have processed it before the drop (dispatched:true).
+      this.rejectAllPending(new GatewayRequestError('closed', this.options.closedErrorMessage, true))
     })
 
     await new Promise<void>((resolve, reject) => {
@@ -231,7 +279,9 @@ export class JsonRpcGatewayClient {
     } finally {
       this.socket = null
       this.setState('closed')
-      this.rejectAllPending(new Error(this.options.closedErrorMessage))
+      // Calls already in flight were dispatched before the deliberate close —
+      // the gateway may still execute them (dispatched:true).
+      this.rejectAllPending(new GatewayRequestError('closed', this.options.closedErrorMessage, true))
     }
   }
 
@@ -272,7 +322,10 @@ export class JsonRpcGatewayClient {
     const socket = this.socket
 
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error(this.options.notConnectedErrorMessage))
+      // Pre-flight: the frame never left this machine. CERTAIN non-dispatch —
+      // carries dispatched:false so callers can safely retry (or restore a
+      // draft) without double-send risk.
+      return Promise.reject(new GatewayRequestError('not_connected', this.options.notConnectedErrorMessage, false))
     }
 
     if (signal?.aborted) {
@@ -309,7 +362,9 @@ export class JsonRpcGatewayClient {
             // at an error toast) can tell whether the default 30s window
             // fired or a per-call override — e.g. /compress opts into 120s.
             const seconds = Math.round(timeoutMs / 1000)
-            reject(new Error(`request timed out after ${seconds}s: ${method}`))
+            // The frame WAS sent; only the response was lost — dispatched:true
+            // so the caller knows the request may still be executing.
+            reject(new GatewayRequestError('timeout', `request timed out after ${seconds}s: ${method}`, true))
           }
         }, timeoutMs)
       }
@@ -346,7 +401,10 @@ export class JsonRpcGatewayClient {
       } catch (error) {
         this.clearPending(id)
         detach()
-        reject(error instanceof Error ? error : new Error(String(error)))
+        // socket.send threw — the frame never left the machine. CERTAIN
+        // non-dispatch, same authority as the 'not connected' pre-flight.
+        const message = error instanceof Error ? error.message : String(error)
+        reject(new GatewayRequestError('send_failed', message, false))
       }
     })
   }
@@ -371,7 +429,9 @@ export class JsonRpcGatewayClient {
       this.clearPending(frame.id)
 
       if (frame.error) {
-        call.reject(new Error(frame.error.message || 'Hermes RPC failed'))
+        // The server answered with an error — a CERTAIN rejection (dispatched
+        // true, but the request WAS processed; only an RPC error came back).
+        call.reject(new GatewayRequestError('rpc', frame.error.message || 'Hermes RPC failed', true))
       } else {
         call.resolve(frame.result)
       }

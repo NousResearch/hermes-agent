@@ -445,6 +445,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("KILOCODE_API_KEY",),
         base_url_env_var="KILOCODE_BASE_URL",
     ),
+    "sambanova": ProviderConfig(
+        id="sambanova",
+        name="SambaNova",
+        auth_type="api_key",
+        inference_base_url="https://api.sambanova.ai/v1",
+        api_key_env_vars=("SAMBANOVA_API_KEY",),
+        base_url_env_var="SAMBANOVA_BASE_URL",
+    ),
     "huggingface": ProviderConfig(
         id="huggingface",
         name="Hugging Face",

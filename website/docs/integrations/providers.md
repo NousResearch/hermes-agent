@@ -52,6 +52,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Qwen OAuth** | `hermes model` → "Qwen OAuth" (provider: `qwen-oauth`; browser PKCE login) |
 | **MiniMax OAuth** | `hermes model` → "MiniMax (OAuth)" (provider: `minimax-oauth`; browser PKCE login) |
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
+| **SambaNova** | `SAMBANOVA_API_KEY` in `~/.hermes/.env` (provider: `sambanova`; aliases: `sambanova-ai`, `sambanovaai`; base models: MiniMax-M2.7, gemma-4-31B-it, gpt-oss-120b) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 

@@ -43,6 +43,7 @@ class TestProviderRegistry:
         ("ai-gateway", "Vercel AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
         ("gmi", "GMI Cloud", "api_key"),
+        ("sambanova", "SambaNova", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -97,6 +98,11 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["gmi"]
         assert pconfig.api_key_env_vars == ("GMI_API_KEY",)
         assert pconfig.base_url_env_var == "GMI_BASE_URL"
+
+    def test_sambanova_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["sambanova"]
+        assert pconfig.api_key_env_vars == ("SAMBANOVA_API_KEY",)
+        assert pconfig.base_url_env_var == "SAMBANOVA_BASE_URL"
 
     def test_huggingface_env_vars(self):
         pconfig = PROVIDER_REGISTRY["huggingface"]

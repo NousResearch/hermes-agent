@@ -1,0 +1,5 @@
+name: sambanova-provider
+kind: model-provider
+version: 1.0.0
+description: SambaNova — AI acceleration platform with OpenAI-compatible API
+author: Nous Research

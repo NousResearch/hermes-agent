@@ -3202,6 +3202,65 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
   })
 
+  it('resumes the stored session and retries once when reloadFromMessage (regenerate) reports "session not found"', async () => {
+    // reloadFromMessage builds its own prompt.submit call inline instead of
+    // going through the shared send() path submitText/redirectPrompt use, so
+    // it needs the same sleep/wake recovery independently — otherwise
+    // "Regenerate" on a stale session surfaces a raw error instead of
+    // silently resuming, same as the general submit case above.
+    //
+    // reloadFromMessage bails early on $busy — an earlier suite in this file
+    // can leave it true (see the stale-closure describe block's own note),
+    // so reset it defensively rather than relying on run order.
+    $busy.set(false)
+    setMessages([
+      { id: 'u1', parts: [textPart('original prompt')], role: 'user', timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant', timestamp: 1 }
+    ] as never)
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return {} as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    await handle!.reloadFromMessage('u1')
+
+    // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
+    expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
+    expect(calls[2]?.params).toEqual(
+      expect.objectContaining({ session_id: RECOVERED_SESSION_ID, text: 'original prompt' })
+    )
+  })
+
   // #67603 (second symptom): a recovery resume must re-register on the session's
   // OWNING profile. Resuming on whichever profile is live forks the conversation
   // into the wrong profile's DB — the session then appears under both profiles.

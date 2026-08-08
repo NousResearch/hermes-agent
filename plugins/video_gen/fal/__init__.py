@@ -7,28 +7,32 @@ called without ``image_url``, and to its image-to-video endpoint when
 ``image_url`` is provided. The agent never sees the routing — it just
 calls ``video_generate(prompt=..., image_url=...)``.
 
-Model families (each with t2v + i2v endpoints):
+Model families (most expose both t2v + i2v; gemini-omni-flash is image-to-video only):
 
   Cheap tier:
-    ltx-2.3       fal-ai/ltx-2.3-22b/text-to-video               /  fal-ai/ltx-2.3-22b/image-to-video
-    pixverse-v6   fal-ai/pixverse/v6/text-to-video               /  fal-ai/pixverse/v6/image-to-video
+    ltx-2.3            fal-ai/ltx-2.3-22b/text-to-video           /  fal-ai/ltx-2.3-22b/image-to-video
+    pixverse-v6        fal-ai/pixverse/v6/text-to-video           /  fal-ai/pixverse/v6/image-to-video
+    seedance-2.0-mini  bytedance/seedance-2.0/mini/text-to-video  /  bytedance/seedance-2.0/mini/image-to-video
 
   Premium tier:
-    veo3.1             fal-ai/veo3.1                             /  fal-ai/veo3.1/image-to-video
-    seedance-2.0       bytedance/seedance-2.0/text-to-video      /  bytedance/seedance-2.0/image-to-video
-    seedance-2.5       bytedance/seedance-2.5/text-to-video      /  bytedance/seedance-2.5/image-to-video
-    minimax-h3         minimax/h3/text-to-video                  /  minimax/h3/image-to-video
-    kling-v3-4k        fal-ai/kling-video/v3/4k/text-to-video    /  fal-ai/kling-video/v3/4k/image-to-video
-    happy-horse        alibaba/happy-horse/text-to-video         /  alibaba/happy-horse/image-to-video
+    veo3.1             fal-ai/veo3.1                              /  fal-ai/veo3.1/image-to-video
+    seedance-2.0       bytedance/seedance-2.0/text-to-video       /  bytedance/seedance-2.0/image-to-video
+    seedance-2.5       bytedance/seedance-2.5/text-to-video       /  bytedance/seedance-2.5/image-to-video
+    minimax-h3         minimax/h3/text-to-video                   /  minimax/h3/image-to-video
+    flux-3             blackforestlabs/flux-3/text-to-video       /  blackforestlabs/flux-3/image-to-video
+    grok-imagine-1.5   xai/grok-imagine-video/v1.5/text-to-video  /  xai/grok-imagine-video/v1.5/image-to-video
+    kling-v3-4k        fal-ai/kling-video/v3/4k/text-to-video     /  fal-ai/kling-video/v3/4k/image-to-video
+    happy-horse        alibaba/happy-horse/text-to-video          /  alibaba/happy-horse/image-to-video
 
-  Cheap tier (continued):
-    seedance-2.0-mini  bytedance/seedance-2.0/mini/text-to-video /  bytedance/seedance-2.0/mini/image-to-video
+  Image-to-video only (no text_endpoint):
+    gemini-omni-flash  google/gemini-omni-flash/image-to-video
 
 Selection precedence for the active family:
     1. ``model=`` arg from the tool call
     2. ``FAL_VIDEO_MODEL`` env var
     3. ``video_gen.fal.model`` in ``config.yaml``
-    4. ``video_gen.model`` in ``config.yaml`` (when it's one of our family IDs)
+    4. ``video_gen.model`` in ``config.yaml`` (when it's one of our family IDs
+       or a full endpoint path that contains a family ID)
     5. ``DEFAULT_MODEL``
 
 Authentication via ``FAL_KEY`` or the managed Nous gateway. Output is an
@@ -68,6 +72,10 @@ logger = logging.getLogger(__name__)
 #                    (heuristic: 2-element with gap > 1 is a range)
 #   audio          : True if generate_audio is supported
 #   negative       : True if negative_prompt is supported
+#   seed           : False when the endpoint declares no `seed` field
+#                    (absent = True, so existing families keep sending it)
+#   duration_int   : True when FAL types duration as an integer rather than
+#                    the usual queue-API string
 
 FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
     # ─── Cheap / fast tier ─────────────────────────────────────────────
@@ -114,6 +122,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "durations": (4, 15),
         "audio": True,
         "negative": False,
+        "seed": False,
     },
     # ─── Expensive / premium tier ──────────────────────────────────────
     "veo3.1": {
@@ -146,6 +155,8 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "durations": (4, 15),
         "audio": True,
         "negative": False,
+        # FAL input schema has no `seed` (only returned on output).
+        "seed": False,
     },
     "seedance-2.5": {
         "display": "Seedance 2.5",
@@ -164,6 +175,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "durations": (4, 30),
         "audio": True,
         "negative": False,
+        "seed": False,
     },
     "minimax-h3": {
         "display": "MiniMax H3",
@@ -190,6 +202,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "durations": (5, 15),
         "audio": False,  # audio is native/always-on; no generate_audio key
         "negative": False,
+        "seed": False,
     },
     "flux-3": {
         "display": "FLUX 3 (via FAL)",
@@ -206,6 +219,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "durations": (5, 20),
         "audio": True,
         "negative": False,
+        "seed": False,
     },
     "grok-imagine-1.5": {
         "display": "Grok Imagine 1.5 (via FAL)",
@@ -223,6 +237,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "durations": (1, 15),
         "audio": False,  # audio is native; no generate_audio key
         "negative": False,
+        "seed": False,
     },
     "gemini-omni-flash": {
         "display": "Gemini Omni Flash (via FAL)",
@@ -239,6 +254,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "durations": (3, 10),
         "audio": False,  # audio is native; no generate_audio key
         "negative": False,
+        "seed": False,
     },
     "kling-v3-4k": {
         "display": "Kling v3 4K",
@@ -323,6 +339,61 @@ def _load_video_gen_section() -> Dict[str, Any]:
         return {}
 
 
+_ENDPOINT_MODALITY_LEAVES = frozenset({"text-to-video", "image-to-video"})
+
+
+def _normalize_family_key(c: str) -> Optional[str]:
+    """Try to extract a known family ID from a model string.
+
+    Handles bare IDs (``seedance-2.5``), full endpoint paths
+    (``bytedance/seedance-2.5/text-to-video``), truncated endpoint stems
+    (``minimax/h3``, ``bytedance/seedance-2.0/mini``), and provider-prefixed
+    names (``bytedance/seedance-2.5``).
+    """
+    c = c.strip()
+    if not c:
+        return None
+    if c in FAL_FAMILIES:
+        return c
+
+    # Exact declared endpoint — unambiguous, and beats any segment scan
+    # that would otherwise see "seedance-2.0" inside ".../seedance-2.0/mini/...".
+    for fid, meta in FAL_FAMILIES.items():
+        if c in (meta.get("text_endpoint"), meta.get("image_endpoint")):
+            return fid
+
+    # Truncated stem of a declared endpoint: "minimax/h3" or
+    # "bytedance/seedance-2.0/mini". The next path segment after ``c`` must
+    # be a modality leaf so "bytedance/seedance-2.0" does not also match the
+    # Mini family's deeper ".../seedance-2.0/mini/text-to-video" path.
+    stem_hits: List[Tuple[int, str]] = []
+    for fid, meta in FAL_FAMILIES.items():
+        for endpoint in (meta.get("text_endpoint"), meta.get("image_endpoint")):
+            if not isinstance(endpoint, str):
+                continue
+            if not endpoint.startswith(c + "/"):
+                continue
+            first = endpoint[len(c) + 1:].split("/", 1)[0]
+            if first in _ENDPOINT_MODALITY_LEAVES:
+                stem_hits.append((len(c), fid))
+                break
+    if stem_hits:
+        stem_hits.sort(key=lambda item: item[0], reverse=True)
+        return stem_hits[0][1]
+
+    # Longest family-id path-segment match ("bytedance/seedance-2.5" →
+    # seedance-2.5; prefers seedance-2.0-mini over seedance-2.0 when both
+    # somehow appear).
+    parts = set(c.split("/"))
+    best_fid: Optional[str] = None
+    best_len = -1
+    for fid in FAL_FAMILIES:
+        if fid in parts and len(fid) > best_len:
+            best_fid = fid
+            best_len = len(fid)
+    return best_fid
+
+
 def _resolve_family(explicit: Optional[str]) -> Tuple[str, Dict[str, Any]]:
     """Decide which FAL family to use. Returns ``(family_id, meta)``."""
     candidates: List[Optional[str]] = []
@@ -338,9 +409,10 @@ def _resolve_family(explicit: Optional[str]) -> Tuple[str, Dict[str, Any]]:
         candidates.append(top)
 
     for c in candidates:
-        if isinstance(c, str) and c.strip() and c.strip() in FAL_FAMILIES:
-            fid = c.strip()
-            return fid, FAL_FAMILIES[fid]
+        if isinstance(c, str) and c.strip():
+            fid = _normalize_family_key(c)
+            if fid:
+                return fid, FAL_FAMILIES[fid]
 
     return DEFAULT_MODEL, FAL_FAMILIES[DEFAULT_MODEL]
 
@@ -373,7 +445,10 @@ def _build_payload(
         # declare an override.
         key = family.get("image_param_key") or "image_url"
         payload[key] = image_url
-    if seed is not None:
+    # Several newer endpoints (seedance 2.x, minimax h3, flux-3, grok, gemini)
+    # declare no `seed` field, and the managed gateway forwards whatever we
+    # send — so gate it on the family rather than leaking an unknown key.
+    if seed is not None and family.get("seed", True):
         payload["seed"] = seed
 
     if family.get("aspect_ratios"):
@@ -604,7 +679,7 @@ class FALVideoGenProvider(VideoGenProvider):
                 modalities.append("text")
             if meta.get("image_endpoint"):
                 modalities.append("image")
-            out.append({
+            entry: Dict[str, Any] = {
                 "id": fid,
                 "display": meta["display"],
                 "speed": meta["speed"],
@@ -612,7 +687,15 @@ class FALVideoGenProvider(VideoGenProvider):
                 "price": meta["price"],
                 "tier": meta.get("tier", "premium"),
                 "modalities": modalities,
-            })
+            }
+            durs = meta.get("durations")
+            if durs:
+                if _is_duration_range(durs):
+                    entry["min_duration"], entry["max_duration"] = durs
+                else:
+                    entry["min_duration"] = min(durs)
+                    entry["max_duration"] = max(durs)
+            out.append(entry)
         return out
 
     def default_model(self) -> Optional[str]:
@@ -622,7 +705,7 @@ class FALVideoGenProvider(VideoGenProvider):
         return {
             "name": "FAL",
             "badge": "paid",
-            "tag": "LTX, Pixverse, Seedance 2.0/2.5 + Mini, MiniMax H3, Veo 3.1, Kling 4K, Happy Horse — text-to-video & image-to-video",
+            "tag": "LTX, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 4K, Happy Horse, Grok Imagine, Gemini Omni — text-to-video & image-to-video",
             "env_vars": [
                 {
                     "key": "FAL_KEY",
@@ -633,12 +716,26 @@ class FALVideoGenProvider(VideoGenProvider):
         }
 
     def capabilities(self) -> Dict[str, Any]:
+        # Union across families so the tool schema doesn't understate the
+        # longest-running models (Seedance 2.5 = 30s, FLUX 3 = 20s).
+        max_dur = 1
+        min_dur: Optional[int] = None
+        for meta in FAL_FAMILIES.values():
+            durs = meta.get("durations")
+            if not durs:
+                continue
+            if _is_duration_range(durs):
+                lo, hi = durs
+            else:
+                lo, hi = min(durs), max(durs)
+            max_dur = max(max_dur, hi)
+            min_dur = lo if min_dur is None else min(min_dur, lo)
         return {
             "modalities": ["text", "image"],
             "aspect_ratios": ["16:9", "9:16", "1:1"],
             "resolutions": ["360p", "540p", "720p", "1080p"],
-            "max_duration": 15,
-            "min_duration": 1,
+            "max_duration": max_dur,
+            "min_duration": min_dur if min_dur is not None else 1,
             "supports_audio": True,
             "supports_negative_prompt": True,
             "max_reference_images": 0,

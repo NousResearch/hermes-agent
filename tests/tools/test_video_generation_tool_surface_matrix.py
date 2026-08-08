@@ -137,7 +137,19 @@ def _all_fal_families():
     return list(FAL_FAMILIES.keys())
 
 
-@pytest.mark.parametrize("family_id", _all_fal_families())
+def _t2v_fal_families():
+    """Families that advertise a text-to-video endpoint."""
+    from plugins.video_gen.fal import FAL_FAMILIES
+    return [fid for fid, meta in FAL_FAMILIES.items() if meta.get("text_endpoint")]
+
+
+def _i2v_only_fal_families():
+    """Families that only animate an existing image (no text_endpoint)."""
+    from plugins.video_gen.fal import FAL_FAMILIES
+    return [fid for fid, meta in FAL_FAMILIES.items() if not meta.get("text_endpoint")]
+
+
+@pytest.mark.parametrize("family_id", _t2v_fal_families())
 def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
     home, fal_calls, _ = matrix_env
     from plugins.video_gen.fal import FAL_FAMILIES
@@ -169,6 +181,54 @@ def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
     payload = fal_calls[0]["arguments"] or {}
     image_keys = [k for k in payload if "image" in k and "url" in k]
     assert not image_keys, f"{family_id} text-only leaked image keys: {image_keys}"
+
+
+@pytest.mark.parametrize("family_id", _i2v_only_fal_families())
+def test_fal_i2v_only_family_refuses_text_only(matrix_env, family_id):
+    """An i2v-only family must refuse a text-only call rather than guess an endpoint."""
+    home, fal_calls, _ = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "fal", "model": family_id}},
+        {"prompt": "a dog running"},
+    )
+
+    assert result["success"] is False, f"{family_id} has no text-to-video route"
+    assert result.get("error_type") == "modality_unsupported"
+    assert not fal_calls, f"{family_id} must not reach FAL for an unsupported modality"
+
+
+def _i2v_fal_families():
+    """Every family that can animate an existing image."""
+    from plugins.video_gen.fal import FAL_FAMILIES
+    return [fid for fid, meta in FAL_FAMILIES.items() if meta.get("image_endpoint")]
+
+
+@pytest.mark.parametrize("family_id", _i2v_fal_families())
+def test_fal_image_to_video_routes_to_image_endpoint(matrix_env, family_id):
+    home, fal_calls, _ = matrix_env
+    from plugins.video_gen.fal import FAL_FAMILIES
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "fal", "model": family_id}},
+        {"prompt": "animate this", "image_url": "https://example.com/i.png"},
+    )
+
+    meta = FAL_FAMILIES[family_id]
+    assert result["success"] is True, f"{family_id}: {result.get('error')}"
+    assert result["modality"] == "image"
+    assert len(fal_calls) == 1
+    assert fal_calls[0]["endpoint"] == meta["image_endpoint"]
+
+    # The image must land under the family's declared key and no other
+    # (kling v3 4k wants start_image_url; sending both would be a 422).
+    payload = fal_calls[0]["arguments"] or {}
+    image_key = meta.get("image_param_key") or "image_url"
+    assert payload.get(image_key) == "https://example.com/i.png"
+    other_keys = [k for k in payload if "image" in k and "url" in k and k != image_key]
+    assert not other_keys, f"{family_id} sent extra image keys: {other_keys}"
 
 
 # ─────────────────────────────────────────────────────────────────────────

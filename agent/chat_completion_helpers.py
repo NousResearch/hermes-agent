@@ -4424,15 +4424,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if isinstance(_agent_cfg, dict):
             _v = _agent_cfg.get("reasoning_only_stale_timeout")
             if _v is not None:
-                _reasoning_only_stale_timeout_configured = True
                 # bool is a subclass of int in Python — reject it so
                 # ``reasoning_only_stale_timeout: true`` cannot silently
                 # become a 1-second kill.
                 if isinstance(_v, (int, float)) and not isinstance(_v, bool):
+                    _reasoning_only_stale_timeout_configured = True
                     if _v > 0:
                         _reasoning_only_stale_timeout = float(_v)
                     elif _v == 0:
                         _reasoning_only_stale_timeout = float("inf")
+                else:
+                    # Malformed value: ignore it entirely (the floor-aware
+                    # default applies) rather than treating it as an
+                    # explicit configuration that bypasses the floor.
+                    logger.warning(
+                        "Ignoring invalid agent.reasoning_only_stale_timeout "
+                        "value %r (expected a number of seconds; 0 disables).",
+                        _v,
+                    )
     except Exception:
         pass
     if not _reasoning_only_stale_timeout_configured:

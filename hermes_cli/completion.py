@@ -146,6 +146,50 @@ complete -F _hermes_completion hermes
 def generate_zsh(parser: argparse.ArgumentParser) -> str:
     tree = _walk(parser)
 
+    # Top-level flag lines. The three classic flags (-h/-V/-p) keep their
+    # long-standing verbatim specs (the repo's own tests assert them);
+    # every other global option is extracted live from the parser so new
+    # flags get completion automatically. Options with a value get a
+    # generic :value: tag unless special-cased below
+    # (--resume/-r/--continue/-c → session list). --profile/-p never
+    # appears in parser._actions (consumed by main._apply_profile_override
+    # before argparse runs), so it is kept manual here.
+    flag_lines: list[str] = [
+        "'(-)'{-h,--help}'[Show help and exit]'",
+        "'(-)'{-V,--version}'[Show version and exit]'",
+        "'(-)'{-p,--profile}'[Profile name]:profile:_hermes_profiles'",
+    ]
+    _legacy_flags = {"-h", "--help", "-V", "--version", "-p", "--profile"}
+    for action in parser._actions:
+        if not action.option_strings:
+            continue
+        opts = [o for o in action.option_strings if o.startswith("-")]
+        if not opts:
+            continue
+        if set(opts) & _legacy_flags:
+            continue  # already emitted verbatim above
+        spec = "{" + ",".join(opts) + "}" if len(opts) > 1 else opts[0]
+        help_text = _clean(action.help or "")
+        # zsh _arguments: description must not contain ':' or ']' (they are
+        # syntax); strip them to keep the spec parseable.
+        help_text = help_text.replace(":", " ").replace("]", " ").replace("[", " ")
+        desc = f"[{help_text}]" if help_text else ""
+        takes_arg = not isinstance(
+            action,
+            (argparse._StoreTrueAction, argparse._StoreFalseAction,
+             argparse._HelpAction, argparse._VersionAction),
+        ) and getattr(action, "nargs", None) != 0
+        if takes_arg:
+            if set(opts) & {"--resume", "-r", "--continue", "-c"}:
+                flag_lines.append(
+                    f"'(-)'{spec}'{desc}:session:_hermes_sessions'"
+                )
+            else:
+                flag_lines.append(f"'(-)'{spec}'{desc}:value:'")
+        else:
+            flag_lines.append(f"'(-)'{spec}'{desc}'")
+    flags_str = (" \\\n        ").join(flag_lines)
+
     top_cmds_lines: list[str] = []
     for cmd in sorted(tree["subcommands"]):
         help_text = _clean(tree["subcommands"][cmd].get("help", ""))
@@ -177,6 +221,31 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
                 f"{sub_str}\n"
                 f"                            )\n"
                 f"                            _describe 'profile command' profile_cmds\n"
+                f"                            ;;\n"
+                f"                    esac\n"
+                f"                    ;;"
+            )
+        elif cmd == "sessions":
+            # Sessions subcommand: complete actions, then session IDs for
+            # actions whose first positional arg is a session_id
+            # (delete, rename). Other actions keep the plain action list.
+            sub_lines: list[str] = []
+            for sc in sorted(info["subcommands"]):
+                sh = _clean(info["subcommands"][sc].get("help", ""))
+                sub_lines.append(f"                        '{sc}:{sh}'")
+            sub_str = "\n".join(sub_lines)
+            sub_cases.append(
+                f"                sessions)\n"
+                f"                    case ${{line[2]}} in\n"
+                f"                        delete|rename)\n"
+                f"                            _hermes_sessions\n"
+                f"                            ;;\n"
+                f"                        *)\n"
+                f"                            local -a sessions_cmds\n"
+                f"                            sessions_cmds=(\n"
+                f"{sub_str}\n"
+                f"                            )\n"
+                f"                            _describe 'sessions command' sessions_cmds\n"
                 f"                            ;;\n"
                 f"                    esac\n"
                 f"                    ;;"
@@ -213,14 +282,46 @@ _hermes_profiles() {{
     _describe 'profile' profiles
 }}
 
+_hermes_sessions() {{
+    local -a descs values
+    local db="$HOME/.hermes/state.db"
+    if [[ -n "$HERMES_HOME" ]]; then
+        db="$HERMES_HOME/state.db"
+    fi
+    if [[ ! -r "$db" ]]; then
+        _message 'no session database'
+        return 1
+    fi
+    local now=$(date +%s)
+    local rel diff
+    while IFS='|' read -r title ws ts id; do
+        diff=$(( now - ts ))
+        if (( diff < 60 )); then
+            rel='just now'
+        elif (( diff < 3600 )); then
+            rel="$(( diff / 60 ))m ago"
+        elif (( diff < 86400 )); then
+            rel="$(( diff / 3600 ))h ago"
+        else
+            rel="$(( diff / 86400 ))d ago"
+        fi
+        if [[ -n "$ws" ]]; then
+            ws="${{ws:t}}"
+        else
+            ws='—'
+        fi
+        descs+=("$title  [$ws]  $rel  [$id]")
+        values+=("$id")
+    done < <(sqlite3 -cmd '.timeout 500' -separator '|' "$db" "SELECT title, COALESCE(NULLIF(git_repo_root,''), cwd, ''), CAST(COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id), s.started_at) AS INTEGER), id FROM (SELECT s.* FROM sessions s WHERE s.title IS NOT NULL ORDER BY COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id), s.started_at) DESC LIMIT 50) s" 2>/dev/null)
+    compadd -l -d descs -a values
+}}
+
 _hermes() {{
     local context state line
     typeset -A opt_args
 
     _arguments -C \\
-        '(-)'{{-h,--help}}'[Show help and exit]' \\
-        '(-)'{{-V,--version}}'[Show version and exit]' \\
-        '(-)'{{-p,--profile}}'[Profile name]:profile:_hermes_profiles' \\
+{flags_str} \\
         '1:command:->commands' \\
         '*::arg:->args'
 

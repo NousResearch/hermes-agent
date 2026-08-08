@@ -126,6 +126,19 @@ TOOLSETS = {
         "tools": ["x_search"],
         "includes": []
     },
+
+    "xai_collections_search": {
+        "description": (
+            "Search existing xAI Collections / vector stores via the "
+            "Responses API file_search tool (xAI SDK: collections_search). "
+            "Search-only RAG — does not create collections or upload files. "
+            "Requires xAI credentials and one or more collection IDs "
+            "(per call or xai_collections_search.collection_ids). Off by "
+            "default; enable in `hermes tools` → xAI Collections Search."
+        ),
+        "tools": ["xai_collections_search"],
+        "includes": []
+    },
     
     "vision": {
         "description": "Image analysis and vision tools",

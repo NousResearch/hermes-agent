@@ -273,6 +273,7 @@ export const applyDisplay = (
     battery: !!d.battery,
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
+    copyOnSelect: typeof d.tui_copy_on_select === 'boolean' ? d.tui_copy_on_select : null,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
     focusView: !!d.focus_view,

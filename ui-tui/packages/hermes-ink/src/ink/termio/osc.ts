@@ -238,7 +238,9 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
  * utilities (pbcopy/wl-copy/xclip/xsel/clip.exe) always work locally. Over
  * SSH these would write to the remote clipboard — OSC 52 is the right path there.
  *
- * Returns { sequence, success }:
+ * Returns { path, sequence, success }:
+ *   - `path` identifies the primary transport that was attempted. `null`
+ *     means no clipboard path was available.
  *   - `sequence` is the bytes to write to stdout (raw OSC 52 outside tmux,
  *     DCS-wrapped inside; empty string when we shouldn't emit).
  *   - `success` is true when we believe SOME path reached the clipboard:
@@ -250,14 +252,31 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
  *     callers distinguish "nothing attempted" from "attempted".
  */
 export type ClipboardResult = {
+  path: ClipboardPath | null
   sequence: string
   success: boolean
 }
 
-export async function setClipboard(text: string): Promise<ClipboardResult> {
+/**
+ * Copy through terminal-owned transports only: tmux's paste buffer and OSC 52.
+ * The returned sequence is written by the caller that owns the active stdout.
+ */
+export async function setTerminalClipboard(text: string): Promise<ClipboardResult> {
   const b64 = Buffer.from(text, 'utf8').toString('base64')
   const raw = osc(OSC.CLIPBOARD, 'c', b64)
   const emitSequence = shouldEmitClipboardSequence(process.env)
+
+  const tmuxBufferLoaded = await tmuxLoadBuffer(text)
+
+  // Inner OSC uses BEL directly (not osc()) — ST's ESC would need doubling
+  // too, and BEL works everywhere for OSC 52.
+  const sequence = emitSequence ? (tmuxBufferLoaded ? tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`) : raw) : ''
+  const path: ClipboardPath | null = tmuxBufferLoaded ? 'tmux-buffer' : sequence ? 'osc52' : null
+
+  return { path, sequence, success: path !== null }
+}
+
+export async function setClipboard(text: string): Promise<ClipboardResult> {
 
   // Native safety net — fire FIRST, before the tmux await, so a quick
   // focus-switch after selecting doesn't race pbcopy. Previously this ran
@@ -286,11 +305,7 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
   // whether ANY native path will be tried.
   const nativeAttempted = shouldUseNativeClipboard(process.env, envModule.terminal) && copyNative(text)
 
-  const tmuxBufferLoaded = await tmuxLoadBuffer(text)
-
-  // Inner OSC uses BEL directly (not osc()) — ST's ESC would need doubling
-  // too, and BEL works everywhere for OSC 52.
-  const sequence = emitSequence ? (tmuxBufferLoaded ? tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`) : raw) : ''
+  const terminal = await setTerminalClipboard(text)
 
   // Success if any path was taken. Native and tmux are fire-and-forget,
   // so we can't truly confirm the clipboard was written — but if native
@@ -298,9 +313,11 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
   // paste is likely to work. The only false case is "we did literally
   // nothing" (e.g. local-in-tmux with osc52 suppressed and tmux buffer
   // load failed), in which case reporting failure to the user is honest.
-  const success = nativeAttempted || tmuxBufferLoaded || sequence.length > 0
-
-  return { sequence, success }
+  return {
+    ...terminal,
+    path: nativeAttempted ? 'native' : terminal.path,
+    success: nativeAttempted || terminal.success
+  }
 }
 
 // Linux clipboard tool: undefined = not yet probed, null = none available.

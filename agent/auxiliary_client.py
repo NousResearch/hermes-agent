@@ -6007,7 +6007,10 @@ def resolve_provider_client(
         custom_base = ""
         custom_key = ""
         if explicit_base_url:
-            custom_base = _to_openai_base_url(explicit_base_url).strip()
+            if api_mode == "anthropic_messages":
+                custom_base = explicit_base_url.strip().rstrip("/")
+            else:
+                custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
                 (explicit_api_key or "").strip()
                 or _scoped_key_env("OPENAI_API_KEY")

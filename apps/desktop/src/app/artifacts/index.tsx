@@ -136,6 +136,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     try {
       const sessions = (await listAllProfileSessions(30, 1)).sessions
+
       const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(
         sessions,
         async session => (await getAllSessionMessages(session.id, session.profile)).messages
@@ -145,7 +146,9 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         const safeLimitFailures = failures.filter(({ error }) =>
           String(error instanceof Error ? error.message : error).includes('safe-load limit')
         ).length
+
         const otherFailures = failures.length - safeLimitFailures
+
         const detail = [
           safeLimitFailures ? `${safeLimitFailures} exceeded the safe transcript load limit.` : '',
           otherFailures ? `${otherFailures} could not be read.` : ''

@@ -666,15 +666,19 @@ export function getSessionMessages(
   if (profile) {
     query.set('profile', profile)
   }
+
   if (page.limit !== undefined) {
     query.set('limit', String(page.limit))
   }
+
   if (page.offset !== undefined) {
     query.set('offset', String(page.offset))
   }
+
   if (page.order) {
     query.set('order', page.order)
   }
+
   const suffix = query.size ? `?${query.toString()}` : ''
 
   return window.hermesDesktop.api<SessionMessagesResponse>({
@@ -683,10 +687,7 @@ export function getSessionMessages(
   })
 }
 
-export function getLatestSessionMessages(
-  id: string,
-  profile?: string | null
-): Promise<SessionMessagesResponse> {
+export function getLatestSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
   return getSessionMessages(id, profile, { limit: 500, order: 'latest' })
 }
 
@@ -708,23 +709,23 @@ export async function getAllSessionMessages(
       offset,
       order: 'oldest'
     })
+
     resolvedSessionId = page.session_id
     jsonChars += (JSON.stringify(page.messages) ?? '').length
+
     if (jsonChars > maxJsonChars) {
       throw new Error(
         'Session transcript exceeds the Desktop safe-load limit; use the Web Dashboard export for this session.'
       )
     }
+
     messages.push(...page.messages)
 
     // Legacy backends ignore pagination and return the full transcript.
-    if (
-      !page.pagination ||
-      page.messages.length === 0 ||
-      page.messages.length < page.pagination.limit
-    ) {
+    if (!page.pagination || page.messages.length === 0 || page.messages.length < page.pagination.limit) {
       break
     }
+
     offset += page.messages.length
   }
 

@@ -96,7 +96,7 @@ def _resolve_home_dir() -> str:
     # Last resort: /tmp (writable on any POSIX system). Avoids crashing the
     # subprocess with no HOME; callers can set HERMES_HOME explicitly if they
     # need a different writable dir.
-    return "/tmp"
+    return os.environ.get("TMPDIR", "/tmp")
 
 
 def _build_subprocess_env() -> dict[str, str]:

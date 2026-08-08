@@ -486,19 +486,24 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self._guid_cache.move_to_end(target)
             return self._guid_cache[target]
         try:
-            payload = await self._api_post(
-                "/api/v1/chat/query",
-                {"limit": 100, "offset": 0},
-            )
-            for chat in payload.get("data", []) or []:
-                guid = chat.get("guid") or chat.get("chatGuid")
-                identifier = chat.get("chatIdentifier") or chat.get("identifier")
-                if identifier == target:
-                    if guid:
-                        self._guid_cache[target] = guid
-                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
-                            self._guid_cache.popitem(last=False)
-                    return guid
+            limit = 100
+            for page in range(50):  # safety cap for unexpectedly large servers
+                payload = await self._api_post(
+                    "/api/v1/chat/query",
+                    {"limit": limit, "offset": page * limit},
+                )
+                chats = payload.get("data", []) or []
+                for chat in chats:
+                    guid = chat.get("guid") or chat.get("chatGuid")
+                    identifier = chat.get("chatIdentifier") or chat.get("identifier")
+                    if identifier == target:
+                        if guid:
+                            self._guid_cache[target] = guid
+                            while len(self._guid_cache) > _GUID_CACHE_SIZE:
+                                self._guid_cache.popitem(last=False)
+                        return guid
+                if len(chats) < limit:
+                    break
         except Exception:
             pass
         return None

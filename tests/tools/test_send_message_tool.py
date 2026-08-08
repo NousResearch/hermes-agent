@@ -437,6 +437,114 @@ class TestSendTelegramMediaDelivery:
         bot.send_audio.assert_not_awaited()
         bot.send_message.assert_not_awaited()
 
+    def test_sends_audio_for_mp3(self, tmp_path, monkeypatch):
+        audio_path = tmp_path / "clip.mp3"
+        audio_path.write_bytes(b"ID3" + b"\x00" * 32)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock(return_value=SimpleNamespace(message_id=8))
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "",
+                media_files=[(str(audio_path), False)],
+            )
+        )
+
+        assert result["success"] is True
+        bot.send_audio.assert_awaited_once()
+        bot.send_voice.assert_not_awaited()
+
+    def test_audio_caption_parse_retry_uses_send_audio(self, tmp_path, monkeypatch):
+        """When an .mp3 with a caption fails to parse, the retry must still
+        use send_audio — not fall back to send_document (issue #69252)."""
+        audio_path = tmp_path / "clip.mp3"
+        audio_path.write_bytes(b"ID3" + b"\x00" * 32)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_document = AsyncMock()
+        # First send_audio raises a caption-parse error; retry succeeds.
+        bot.send_audio = AsyncMock(
+            side_effect=[
+                Exception("can't parse entities in caption: unexpected end of string"),
+                SimpleNamespace(message_id=9),
+            ]
+        )
+        _install_telegram_mock(monkeypatch, bot)
+
+        # .mp3 is not in _CAPTIONABLE_EXTS, so _media_caption_split returns
+        # (None, text) and parse_mode is never set on media_kwargs.  Patch
+        # it to return a caption so the caption-parse retry path is reached.
+        monkeypatch.setattr(
+            "tools.send_message_tool._media_caption_split",
+            lambda text, media_files, max_caption_len: ("Some caption text", ""),
+        )
+
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "Some caption text",
+                media_files=[(str(audio_path), False)],
+            )
+        )
+
+        assert result["success"] is True
+        # send_audio called twice: first attempt (parse error) + retry.
+        assert bot.send_audio.await_count == 2
+        # send_document must never be called for an .mp3.
+        bot.send_document.assert_not_awaited()
+
+    def test_caption_fallback_error_surfaces_in_warnings(self, tmp_path, monkeypatch):
+        """When the caption-fallback send for a missing media file fails,
+        the sanitized error must appear in the result warnings (issue #69252)."""
+        # Reference a media file that does not exist so the caption-fallback
+        # path is triggered.  The caption text is short enough to be attached
+        # as a media caption, so _tg_caption is set and formatted is emptied.
+        missing_path = str(tmp_path / "nonexistent.png")
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        # Patch the retry helper to raise so the fallback send fails.
+        monkeypatch.setattr(
+            "tools.send_message_tool._send_telegram_message_with_retry",
+            AsyncMock(side_effect=Exception("connection refused")),
+        )
+
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "Caption for missing file",
+                media_files=[(missing_path, False)],
+            )
+        )
+
+        # The warning list should contain the sanitized fallback error.
+        warnings = result.get("warnings", [])
+        assert any("connection refused" in w for w in warnings), (
+            f"expected fallback error in warnings, got {warnings}"
+        )
+
     def test_missing_media_returns_error_without_leaking_raw_tag(self, monkeypatch):
         bot = MagicMock()
         bot.send_message = AsyncMock()

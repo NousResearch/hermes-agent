@@ -5361,15 +5361,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
-            try:
-                parsed = json.loads(result)
-                if "error" in parsed:
-                    _bump_server_error(server_name)
-                else:
-                    _reset_server_error(server_name)  # success — reset
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)  # non-JSON = success
+            # The RPC round-trip completed, so the server transport is healthy.
+            # A CallToolResult with isError=True is an application-level tool
+            # refusal (invalid arguments, missing resource, etc.), not evidence
+            # that every tool on this MCP server is unreachable. Keep returning
+            # the tool error to the caller, but close the server-wide transport
+            # breaker. Missing sessions and raised transport exceptions still
+            # bump the breaker in their dedicated paths below.
+            _reset_server_error(server_name)
             return result
         except InterruptedError:
             return _interrupted_call_result()

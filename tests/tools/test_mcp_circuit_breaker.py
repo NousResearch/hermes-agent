@@ -101,6 +101,45 @@ def _cleanup(mcp_tool_module, name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_application_tool_errors_do_not_open_server_transport_breaker(
+    monkeypatch, tmp_path,
+):
+    """A healthy RPC-level refusal must not disable sibling server tools."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_invalid(*args, **kwargs):
+        call_count["n"] += 1
+        result = MagicMock()
+        result.isError = True
+        block = MagicMock()
+        block.text = "invalid arguments"
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_invalid)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        handler = _make_tool_handler("srv", "invalid_tool", 10.0)
+        attempts = mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 2
+
+        for _ in range(attempts):
+            parsed = json.loads(handler({"invalid": True}))
+            assert "invalid arguments" in parsed.get("error", "")
+
+        assert call_count["n"] == attempts
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+        assert "srv" not in mcp_tool._server_breaker_opened_at
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
 def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
     """After a tripped breaker's cooldown elapses, the *next* call must
     actually execute against the session (half-open probe). When the

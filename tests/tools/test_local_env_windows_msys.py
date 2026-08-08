@@ -271,7 +271,11 @@ class TestGitBashCoreutilsOnPath:
         existing = {"/pg/mingw64/bin", "/pg/usr/bin", "/pg/bin"}
         monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
 
-        dirs = _git_bash_bin_dirs()
+        # _git_bash_bin_dirs builds paths with os.path.join, which emits "\"
+        # when the tests actually run on Windows — so compare in the same
+        # normalized form ``_fake_isdir`` above already uses. Every assertion
+        # below is unchanged; only the separator is made irrelevant.
+        dirs = [d.replace("\\", "/") for d in _git_bash_bin_dirs()]
 
         # usr/bin is the load-bearing coreutils dir; mingw64 precedes it.
         assert "/pg/usr/bin" in dirs

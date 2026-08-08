@@ -191,8 +191,9 @@ class TestUnconfiguredErrorEnvelopeParity:
             monkeypatch.delenv(k, raising=False)
 
     def test_unconfigured_search_emits_top_level_error(self, monkeypatch):
-        """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
-        — matching main's ``tool_error()`` envelope, not a per-result shape.
+        """``web_search_tool`` with no usable backend returns a top-level
+        ``error`` key — matching main's ``tool_error()`` envelope, not a
+        per-result shape.
         """
         from tools import web_tools
 
@@ -202,12 +203,18 @@ class TestUnconfiguredErrorEnvelopeParity:
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        # Force the registry's availability walk to see ddgs as unusable too,
+        # so the test is deterministic whether or not the ddgs package is
+        # installed in the dev environment.
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+        monkeypatch.setattr(DDGSWebSearchProvider, "is_available", lambda self: False)
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
         assert "error" in result, f"expected top-level 'error' key, got {result}"
-        # ``Error searching web:`` prefix comes from web_tools' top-level except handler
-        assert "Error searching web:" in result["error"]
-        assert "FIRECRAWL_API_KEY" in result["error"]
+        # The dispatcher falls through to the registry's availability walk,
+        # which surfaces the setup hint instead of the firecrawl default
+        # backend's "not configured" message.
+        assert "No web search provider configured" in result["error"]
         # No per-result burying
         assert "results" not in result
 
@@ -388,6 +395,225 @@ class TestDispatchersTriggerPluginDiscovery:
             )
             assert "No web search provider configured" not in json.dumps(result)
             assert web_search_registry.get_provider("brave-free") is not None
+        finally:
+            restore()
+
+
+class TestDispatcherFallsBackToAvailableProvider:
+    """Regression: a registered-but-unavailable default backend (e.g.
+    ``firecrawl`` with no API key) must fall through to the registry's
+    availability-aware resolution instead of surfacing the default
+    backend's "not configured" error.
+
+    This is what makes an OAuth-only backend like xAI usable with no
+    explicit ``web.*`` config: the registry's single-provider shortcut
+    picks the one provider the user actually has credentials for.
+    """
+
+    def _clear_registry(self):
+        from agent import web_search_registry
+
+        with web_search_registry._lock:
+            original = dict(web_search_registry._providers)
+            web_search_registry._providers.clear()
+
+        def _restore():
+            with web_search_registry._lock:
+                web_search_registry._providers.clear()
+                web_search_registry._providers.update(original)
+
+        return _restore
+
+    @staticmethod
+    def _register(providers):
+        from agent.web_search_registry import register_provider
+
+        for provider in providers:
+            register_provider(provider)
+
+    def _stub_resolution(self, monkeypatch, backend="firecrawl"):
+        """Point the dispatchers at a fixed backend name with plugins
+        pre-loaded (the registry is populated by the test)."""
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_tools, "_get_search_backend", lambda: backend)
+        monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: backend)
+
+    def test_search_falls_back_to_only_available_provider(self, monkeypatch):
+        import json
+
+        from agent.web_search_provider import WebSearchProvider
+        from tools import web_tools
+
+        class FakeFirecrawl(WebSearchProvider):
+            @property
+            def name(self):
+                return "firecrawl"
+
+            @property
+            def display_name(self):
+                return "Fake Firecrawl"
+
+            def is_available(self):
+                return False
+
+            def supports_search(self):
+                return True
+
+            def supports_extract(self):
+                return True
+
+            def search(self, query, limit=5):
+                raise ValueError(
+                    "Web tools are not configured. Set FIRECRAWL_API_KEY ..."
+                )
+
+        class FakeXai(WebSearchProvider):
+            @property
+            def name(self):
+                return "xai"
+
+            @property
+            def display_name(self):
+                return "Fake xAI"
+
+            def is_available(self):
+                return True
+
+            def supports_search(self):
+                return True
+
+            def supports_extract(self):
+                return True
+
+            def search(self, query, limit=5):
+                return {"success": True, "data": {"web": [
+                    {"title": "xai-result", "url": "https://x",
+                     "description": "", "position": 0}]}}
+
+        restore = self._clear_registry()
+        try:
+            self._register([FakeFirecrawl(), FakeXai()])
+            self._stub_resolution(monkeypatch, backend="firecrawl")
+
+            result = json.loads(web_tools.web_search_tool("hello", limit=1))
+            assert "error" not in result, result
+            assert result["data"]["web"][0]["title"] == "xai-result"
+        finally:
+            restore()
+
+    def test_extract_falls_back_to_only_available_provider(self, monkeypatch):
+        import asyncio
+        import json
+
+        from agent.web_search_provider import WebSearchProvider
+        from tools import web_tools
+
+        class FakeFirecrawl(WebSearchProvider):
+            @property
+            def name(self):
+                return "firecrawl"
+
+            @property
+            def display_name(self):
+                return "Fake Firecrawl"
+
+            def is_available(self):
+                return False
+
+            def supports_search(self):
+                return True
+
+            def supports_extract(self):
+                return True
+
+            def extract(self, urls, format=None):
+                raise ValueError(
+                    "Web tools are not configured. Set FIRECRAWL_API_KEY ..."
+                )
+
+        class FakeXai(WebSearchProvider):
+            @property
+            def name(self):
+                return "xai"
+
+            @property
+            def display_name(self):
+                return "Fake xAI"
+
+            def is_available(self):
+                return True
+
+            def supports_search(self):
+                return True
+
+            def supports_extract(self):
+                return True
+
+            def extract(self, urls, format=None):
+                return [{
+                    "url": "https://example.com", "title": "t",
+                    "content": "xai-extracted", "raw_content": "xai-extracted",
+                    "metadata": {},
+                }]
+
+        restore = self._clear_registry()
+        try:
+            self._register([FakeFirecrawl(), FakeXai()])
+            self._stub_resolution(monkeypatch, backend="firecrawl")
+
+            result = json.loads(asyncio.run(
+                web_tools.web_extract_tool(["https://example.com"]),
+            ))
+            assert "error" not in result, result
+            assert result["results"][0]["content"] == "xai-extracted"
+        finally:
+            restore()
+
+    def test_explicit_config_still_surfaces_precise_error(self, monkeypatch):
+        """Explicit ``web.backend: firecrawl`` must NOT be silently switched
+        away — the user gets the precise missing-key error instead."""
+        import json
+
+        from agent import web_search_registry
+        from agent.web_search_provider import WebSearchProvider
+        from tools import web_tools
+
+        class FakeFirecrawl(WebSearchProvider):
+            @property
+            def name(self):
+                return "firecrawl"
+
+            @property
+            def display_name(self):
+                return "Fake Firecrawl"
+
+            def is_available(self):
+                return False
+
+            def supports_search(self):
+                return True
+
+            def search(self, query, limit=5):
+                raise ValueError("FIRECRAWL_API_KEY is not set")
+
+        restore = self._clear_registry()
+        try:
+            self._register([FakeFirecrawl()])
+            self._stub_resolution(monkeypatch, backend="firecrawl")
+            # Simulate an explicit web.search_backend: firecrawl in config —
+            # the registry's rule 1 (explicit config wins, ignoring
+            # availability) must keep routing to firecrawl so the error
+            # names the missing key rather than silently switching.
+            monkeypatch.setattr(
+                web_search_registry, "_read_config_key",
+                lambda *path: "firecrawl" if path == ("web", "search_backend") else None,
+            )
+
+            result = json.loads(web_tools.web_search_tool("hello", limit=1))
+            assert "error" in result, result
+            assert "FIRECRAWL_API_KEY is not set" in result["error"]
         finally:
             restore()
 

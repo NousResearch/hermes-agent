@@ -352,6 +352,19 @@ def _is_backend_available(backend: str) -> bool:
     return False
 
 
+def _provider_is_available(provider) -> bool:
+    """Safe availability probe for a resolved provider instance.
+
+    Delegates to the provider's own ``is_available()`` — the same gate the
+    registry's availability walk uses. Never raises: a broken provider must
+    fall through to the active-provider resolution, not kill dispatch.
+    """
+    try:
+        return bool(provider.is_available())
+    except Exception:
+        return False
+
+
 def _ddgs_package_importable() -> bool:
     """Return True when the ``ddgs`` Python package can be imported.
 
@@ -684,10 +697,19 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
+        if (
+            provider is None
+            or not provider.supports_search()
+            or not _provider_is_available(provider)
+        ):
             # Fall back to availability-walked active provider when the
             # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
+            # uninstalled plugin, capability mismatch) OR is registered but
+            # has no usable credentials (e.g. the firecrawl default with no
+            # API key). The registry's single-provider shortcut then picks
+            # the one backend the user actually has credentials for (e.g.
+            # xAI OAuth) instead of surfacing the default backend's
+            # "not configured" error.
             provider = get_active_search_provider()
 
         if provider is None:
@@ -871,26 +893,31 @@ async def web_extract_tool(
             )
 
             provider = _wsp_get_provider(backend) if backend else None
-            if provider is None or not provider.supports_extract():
+            if provider is not None and not provider.supports_extract():
                 # When the configured name IS registered but doesn't support
                 # extract (search-only providers like brave-free / ddgs /
                 # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
-                if provider is not None and not provider.supports_extract():
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                f"{provider.display_name} is a search-only "
-                                "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
+                # rather than silently switching backends.
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"{provider.display_name} is a search-only "
+                            "backend and cannot extract URL content. "
+                            "Set web.extract_backend to firecrawl, "
+                            "tavily, exa, or parallel."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            if provider is None or not _provider_is_available(provider):
+                # When the name isn't registered at all (typo / uninstalled
+                # plugin) or is registered but has no usable credentials
+                # (e.g. the firecrawl default with no API key), fall through
+                # to the active-provider walk — its single-provider shortcut
+                # picks the one backend the user actually has credentials
+                # for (e.g. xAI OAuth) instead of surfacing the default
+                # backend's "not configured" error.
                 provider = get_active_extract_provider()
                 if provider is None:
                     # If the configured backend is a bundled web plugin the

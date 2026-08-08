@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [GitHub, Code-Review, Pull-Requests, Git, Quality]
-    related_skills: [github-auth, github-pr-workflow]
+    related_skills: [github-auth, github-pr-workflow, hermes-pr-provenance]
 ---
 
 # GitHub Code Review
@@ -19,6 +19,7 @@ Perform code reviews on local changes before pushing, or review open PRs on GitH
 
 - Authenticated with GitHub (see `github-auth` skill)
 - Inside a git repository
+- When posting a formal review or summary comment as Hermes, use `hermes-pr-provenance` if provider-level attribution should be visible on the PR.
 
 ### Setup (for PR interactions)
 

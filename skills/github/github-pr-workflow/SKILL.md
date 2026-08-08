@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [GitHub, Pull-Requests, CI/CD, Git, Automation, Merge]
-    related_skills: [github-auth, github-code-review]
+    related_skills: [github-auth, github-code-review, hermes-pr-provenance]
 ---
 
 # GitHub Pull Request Workflow
@@ -77,19 +77,22 @@ Branch naming conventions:
 
 ## 2. Making Commits
 
-Use the agent's file tools (`write_file`, `patch`) to make changes, then commit:
+Use the agent's file tools (`write_file`, `patch`) to make changes, then commit. When Hermes or a routed provider authored the code/update, include provider-level provenance trailers so the GitHub actor (`hermesbot`, etc.) can be distinguished from the actual writer route:
 
 ```bash
 # Stage specific files
 git add src/auth.py src/models/user.py tests/test_auth.py
 
-# Commit with a conventional commit message
+# Commit with a conventional commit message plus provider provenance trailers
 git commit -m "feat: add JWT-based user authentication
 
 - Add login/register endpoints
 - Add User model with password hashing
 - Add auth middleware for protected routes
-- Add unit tests for auth flow"
+- Add unit tests for auth flow
+
+Writer: codex
+Refs: #42"
 ```
 
 Commit message format (Conventional Commits):
@@ -97,9 +100,19 @@ Commit message format (Conventional Commits):
 type(scope): short description
 
 Longer explanation if needed. Wrap at 72 characters.
+
+Writer: <writer-provider>
+Refs: #<issue-or-pr-or-task>
+Co-Authored-By: <stable agent/provider persona> <noreply@example.com>
 ```
 
 Types: `feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `chore`, `perf`
+
+Hermes provenance rules:
+- Keep `Writer:` stable and provider-level (`claude`, `codex`, `grok`, `gemini`, `openrouter`, or the repository's existing writer vocabulary). Do **not** encode exact model names in `Writer:` because downstream audit/issue tooling may parse it as an enum.
+- Do not add exact model/version trailers by default; model-level provenance is deferred unless the user or repository explicitly requests it.
+- Keep `Writer:`, `Refs:`, and any `Co-Authored-By:` trailers contiguous at the end of the commit message with no blank lines between them.
+- In Beads/issue-led repositories, preserve provider-level fields such as `implemented_by`, `closed_by`, and `pr_created_by` (see `hermes-pr-provenance`).
 
 ## 3. Pushing and Creating a PR
 
@@ -110,6 +123,8 @@ git push -u origin HEAD
 ```
 
 ### Create the PR
+
+Include a provenance block when Hermes created or updated the branch so reviewers can see which routed provider produced the changes, not just which GitHub bot/account pushed them. See `hermes-pr-provenance` for the full portable contract.
 
 **With gh:**
 
@@ -122,6 +137,13 @@ gh pr create \
 
 ## Test Plan
 - [ ] Unit tests pass
+
+## Provenance
+- GitHub actor: hermesbot-almace
+- PR created by: codex
+- Implemented by: codex
+- Writers from commit trailers: codex
+- Task ledger: GitHub #42
 
 Closes #42"
 ```
@@ -139,7 +161,7 @@ curl -s -X POST \
   https://api.github.com/repos/$OWNER/$REPO/pulls \
   -d "{
     \"title\": \"feat: add JWT-based user authentication\",
-    \"body\": \"## Summary\nAdds login and register API endpoints.\n\nCloses #42\",
+    \"body\": \"## Summary\nAdds login and register API endpoints.\n\n## Provenance\n- GitHub actor: hermesbot-almace\n- PR created by: codex\n- Implemented by: codex\n- Writers from commit trailers: codex\n- Task ledger: GitHub #42\n\nCloses #42\",
     \"head\": \"$BRANCH\",
     \"base\": \"main\"
   }"
@@ -255,7 +277,10 @@ After identifying the issue, use file tools (`patch`, `write_file`) to fix it:
 
 ```bash
 git add <fixed_files>
-git commit -m "fix: resolve CI failure in <check_name>"
+git commit -m "fix: resolve CI failure in <check_name>
+
+Writer: codex
+Refs: #42"
 git push
 ```
 
@@ -270,7 +295,7 @@ When asked to auto-fix CI, follow this loop:
 1. Check CI status → identify failures
 2. Read failure logs → understand the error
 3. Use `read_file` + `patch`/`write_file` → fix the code
-4. `git add . && git commit -m "fix: ..." && git push`
+4. `git add . && git commit -m $'fix: ...\n\nWriter: codex\nRefs: #42' && git push`
 5. Wait for CI → re-check status
 6. Repeat if still failing (up to 3 attempts, then ask the user)
 
@@ -342,7 +367,10 @@ git checkout -b fix/login-redirect-bug
 git add src/auth/login.py tests/test_login.py
 git commit -m "fix: correct redirect URL after login
 
-Preserves the ?next= parameter instead of always redirecting to /dashboard."
+Preserves the ?next= parameter instead of always redirecting to /dashboard.
+
+Writer: codex
+Refs: #42"
 
 # 5. Push
 git push -u origin HEAD
@@ -350,10 +378,17 @@ git push -u origin HEAD
 # 6. Create PR (picks gh or curl based on what's available)
 # ... (see Section 3)
 
+# Optional but recommended: validate commit and PR provenance before handoff
+hermes-provenance-check --base origin/main --head HEAD
+
 # 7. Monitor CI (see Section 4)
 
 # 8. Merge when green (see Section 6)
 ```
+
+## Hermes PR Provenance Reference
+
+For the full portable Hermes provider-attribution pattern — `Writer:` trailers, PR provenance blocks, optional Beads metadata, and the `hermes-provenance-check` helper — load `hermes-pr-provenance`.
 
 ## Useful PR Commands Reference
 

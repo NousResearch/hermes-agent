@@ -2124,6 +2124,18 @@ web:
 
 **SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
 
+**Fallback chains:** When a backend fails at runtime (e.g. a free-tier quota returning HTTP 402), Hermes can walk an ordered list of fallbacks. Search falls back when the primary returns `success: false`; extract falls back when the primary raises. Unavailable candidates are skipped automatically.
+
+```yaml
+web:
+  search_backend: "brave-free"
+  search_fallbacks: ["exa", "tavily"]
+  extract_backend: "firecrawl"
+  extract_fallbacks: ["tavily", "exa"]
+```
+
+Set from the CLI: `hermes config set web.search_fallbacks "exa, tavily"`. See the [Web Search setup guide](/user-guide/features/web-search#fallback-chains) for full semantics.
+
 **Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=*** on the server to disable auth).
 
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).

@@ -347,6 +347,42 @@ When per-capability keys are empty, both fall through to `web.backend`. When `we
 2. `web.backend` (shared fallback)
 3. Auto-detect from environment variables
 
+### Fallback chains
+
+A single backend can fail at runtime — a free-tier quota running out (Brave's
+HTTP 402), a transient outage, or a revoked key. Configure an ordered list of
+fallbacks and Hermes walks them in sequence when the primary fails, using the
+first provider that returns a usable result:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "brave-free"
+  search_fallbacks: ["exa", "tavily"]   # tried in order if brave-free fails
+  extract_backend: "firecrawl"
+  extract_fallbacks: ["tavily", "exa"]  # tried in order if firecrawl raises
+```
+
+Behavior:
+
+- **Search** falls back when the primary returns a failure (`success: false`).
+  An empty-but-successful result set is *not* a failure, so a query with no
+  matches does not burn through your fallbacks.
+- **Extract** falls back when the primary *raises* (unreachable backend, missing
+  SDK, auth error). Per-URL errors inside a returned result are normal and do not
+  trigger a fallback.
+- Candidates that are unregistered, lack the capability, or report
+  `is_available() == false` (missing credentials) are skipped automatically, so a
+  chain can name a provider whose key you add later with no config edit.
+- If every fallback fails, the primary's original error is surfaced — it names
+  the backend you actually configured, which is more actionable.
+
+Set it from the CLI too (the value is parsed as a comma/space-separated list):
+
+```bash
+hermes config set web.search_fallbacks "exa, tavily"
+```
+
 ### Auto-detection
 
 If no backend is explicitly configured, Hermes picks the first available one based on which credentials are set:

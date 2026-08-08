@@ -5601,6 +5601,28 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_queue(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/queue {prompt}", "Queued for the next turn.")
 
+        @tree.command(name="start", description="Open a new project thread and ping its worker")
+        @discord.app_commands.describe(
+            project="Project slug (il, il-cortes, il-launcher, thazeron, hermes/improve, default)",
+            title="Short title for the new conversation thread",
+        )
+        @discord.app_commands.choices(project=[
+            discord.app_commands.Choice(name="il — 🎮 SA-MP IL server", value="il"),
+            discord.app_commands.Choice(name="il-cortes — 🎬 IL Cortes pipeline", value="il-cortes"),
+            discord.app_commands.Choice(name="il-launcher — 🚀 IL mobile launcher", value="il-launcher"),
+            discord.app_commands.Choice(name="thazeron — 🗡️ Thazeron forum bot", value="thazeron"),
+            discord.app_commands.Choice(name="hermes/improve — 🛠️ Hermes self-improve", value="hermes/improve"),
+            discord.app_commands.Choice(name="default — 💬 fallback #geral", value="default"),
+        ])
+        async def slash_start(
+            interaction: discord.Interaction,
+            project: str,
+            title: str,
+        ):
+            # defer() runs inside the handler *after* the auth gate so a
+            # rejected invoker can still receive an ephemeral rejection.
+            await self._handle_start_slash(interaction, project=project, title=title)
+
         @tree.command(name="background", description="Run a prompt in the background")
         @discord.app_commands.describe(prompt="The prompt to run in the background")
         async def slash_background(interaction: discord.Interaction, prompt: str):
@@ -6123,6 +6145,345 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
         )
         await self.handle_message(event)
+
+    # ── /start slash command ────────────────────────────────────────────
+    # Project-aware thread launcher: ``/start <project> <title>`` resolves the
+    # project's #geral channel from config (or hardcoded defaults), creates a
+    # new public thread there with the project's standard name format, sends
+    # a worker mention + the title as the seed message, and shows a typing
+    # indicator for ~5s so the worker has time to acknowledge before the user
+    # returns to the channel.
+    #
+    # Project mappings live in ``config.extra["start_projects"]`` and fall
+    # back to the built-in defaults below when the override is missing. Each
+    # entry is ``{channel_id, worker_mention, display_name}`` — channel_id is
+    # the #geral text channel for the project (where the thread is created),
+    # worker_mention is the @mention sent as the seed message, and
+    # display_name is the human-readable prefix used in the thread title.
+    _DEFAULT_START_PROJECTS: Dict[str, Dict[str, str]] = {
+        "il": {
+            "channel_id": "1528777357505069167",
+            # TODO: resolve to <@id> when worker-il bot is added to the guild.
+            "worker_mention": "@worker-il ",
+            "display_name": "IL",
+        },
+        "il-cortes": {
+            "channel_id": "1528777364069154972",
+            # TODO: resolve to <@id> when worker-ilcortes bot is added to the guild.
+            "worker_mention": "@worker-ilcortes ",
+            "display_name": "IL Cortes",
+        },
+        "il-launcher": {
+            "channel_id": "1529554075375370404",
+            # TODO: resolve to <@id> when worker-illauncher bot is added to the guild.
+            "worker_mention": "@worker-illauncher ",
+            "display_name": "IL Launcher",
+        },
+        "thazeron": {
+            "channel_id": "1528792880640954542",
+            "worker_mention": "<@1528631797343064194>",
+            "display_name": "Thazeron",
+        },
+        "hermes/improve": {
+            "channel_id": "1528777372042662111",
+            # Resolved to Norph (luizfelipe7300) — the user who owns the improve
+            # project. Replace with the dedicated worker-improve bot's <@id> once
+            # that bot is invited to the guild.
+            "worker_mention": "<@305205937998659585>",
+            "display_name": "Hermes Improve",
+        },
+        "default": {
+            "channel_id": "1528777372042662111",
+            "worker_mention": "",
+            "display_name": "Hermes",
+        },
+    }
+
+    def _resolve_start_projects(self) -> Dict[str, Dict[str, str]]:
+        """Return the project → channel/worker mapping, merging config overrides.
+
+        The override schema in ``config.extra["start_projects"]`` mirrors
+        ``_DEFAULT_START_PROJECTS``: a dict keyed by project slug whose values
+        are ``{channel_id, worker_mention, display_name}``. Any key supplied
+        replaces the built-in default for that project; missing keys keep
+        their built-in defaults. An entirely-empty override dict falls back
+        to all defaults.
+        """
+        extra = self.config.extra if isinstance(getattr(self.config, "extra", None), dict) else {}
+        override = extra.get("start_projects")
+        if not isinstance(override, dict):
+            return dict(self._DEFAULT_START_PROJECTS)
+        merged: Dict[str, Dict[str, str]] = {k: dict(v) for k, v in self._DEFAULT_START_PROJECTS.items()}
+        for project_slug, fields in override.items():
+            if not isinstance(fields, dict) or not isinstance(project_slug, str):
+                continue
+            entry = merged.setdefault(project_slug, {"channel_id": "0", "worker_mention": "", "display_name": project_slug})
+            for key in ("channel_id", "worker_mention", "display_name"):
+                value = fields.get(key)
+                if isinstance(value, str) and value:
+                    entry[key] = value
+        return merged
+
+    @staticmethod
+    def _format_start_thread_name(project_slug: str, display_name: str, title: str) -> str:
+        """Build the canonical ``🎮 <name> — Nova conversa [<title>]`` thread name.
+
+        Falls back to a generic name when the title is empty so the thread is
+        always created with something Discord will accept.
+        """
+        slug_to_emoji = {
+            "il": "🎮",
+            "il-cortes": "🎬",
+            "il-launcher": "🚀",
+            "thazeron": "🗡️",
+            "hermes/improve": "🛠️",
+            "default": "💬",
+        }
+        emoji = slug_to_emoji.get(project_slug, "💬")
+        clean_title = (title or "").strip() or "Nova conversa"
+        # Discord thread titles are budgeted in UTF-16 code units (emoji count
+        # double); keep the tail safe by trimming the title prefix.
+        from gateway.platforms.base import utf16_len, _prefix_within_utf16_limit
+        # The outer `...` suffix lives outside the brackets (so the thread
+        # name visibly ends with "..."), so its 3 UTF-16 code units are part
+        # of the total budget, not the title's slice. Reserve room for `[]`
+        # (2) plus the suffix (3) up front so the final name + suffix stays
+        # inside Discord's 80-unit cap.
+        max_title = 80 - len(f"{emoji} {display_name} — Nova conversa []") - 1
+        if max_title < 10:
+            max_title = 30
+        truncated = False
+        if utf16_len(clean_title) > max_title:
+            # Trim the title so the full name (prefix + [title] + ...) still
+            # fits within the 80-unit Discord cap. The "- 3" subtracts the
+            # trailing `...` we will append after the closing bracket.
+            clean_title = _prefix_within_utf16_limit(clean_title, max(1, max_title - 3)).rstrip()
+            truncated = True
+        # Suffix-style ellipsis: render the brackets, then append "..." after
+        # the closing bracket so the thread name visibly ends with "..." when
+        # the title was truncated. Keeping "..." outside the brackets — not
+        # inside them — matches the test contract (endswith("...")) and reads
+        # more naturally to a human scanning the thread list.
+        suffix = "..." if truncated else ""
+        return f"{emoji} {display_name} — Nova conversa [{clean_title}]{suffix}"
+
+    async def _send_seed_message_to_thread(self, thread: Any, body: str) -> None:
+        """Best-effort wrapper around ``thread.send`` for the /start seed."""
+        try:
+            await thread.send(body)
+        except Exception as exc:
+            logger.warning("[Discord] /start: failed to send seed message: %s", exc)
+
+    async def _typing_indicator(self, channel: Any, seconds: float) -> None:
+        """Show ``channel.typing()`` for ~5s so the worker has time to ack.
+
+        ``channel.typing()`` is the discord.py async context manager; we
+        enter it, sleep, and exit cleanly even if the context manager raises
+        (which it can when the bot loses the gateway connection mid-typing).
+        """
+        if channel is None or seconds <= 0:
+            return
+        try:
+            async with channel.typing():
+                await asyncio.sleep(seconds)
+        except Exception as exc:
+            logger.debug("[Discord] /start: typing indicator ended early: %s", exc)
+
+    async def _handle_start_slash(
+        self,
+        interaction: discord.Interaction,
+        *,
+        project: str,
+        title: str,
+    ) -> None:
+        """Handle the ``/start <project> <title>`` slash command.
+
+        Resolves the project's #geral channel and worker mention, creates a
+        thread there with the canonical name format, sends the worker mention
+        + title as the seed message, and shows a typing indicator in the new
+        thread so the worker has ~5s to acknowledge before the user returns.
+
+        Behaviour notes:
+        * ``/start`` is project-scoped; an unknown project slug fails fast
+          with an ephemeral error rather than silently falling back to
+          ``default``. The ``default`` project is opt-in (the user must
+          explicitly pick it) so misclicks are loud.
+        * When the project's ``channel_id`` is unresolved (placeholder ``"0"``
+          or empty) the handler creates the thread in the channel where
+          ``/start`` was invoked and reports the fallback to the user.
+        """
+        projects = self._resolve_start_projects()
+        project_slug = (project or "").strip().lower()
+        if project_slug not in projects:
+            valid = ", ".join(sorted(projects))
+            try:
+                await interaction.response.send_message(
+                    f"Unknown project `{project_slug}`. Valid projects: {valid}.",
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
+            return
+
+        if not await self._check_slash_authorization(interaction, f"/start {project_slug}"):
+            return
+
+        entry = projects[project_slug]
+        target_channel_id = (entry.get("channel_id") or "").strip()
+        worker_mention = (entry.get("worker_mention") or "").strip()
+        display_name = (entry.get("display_name") or project_slug).strip()
+        thread_name = self._format_start_thread_name(project_slug, display_name, title)
+
+        deferred_response = False
+        try:
+            await interaction.response.defer(ephemeral=True)
+            deferred_response = True
+        except Exception as exc:
+            if not self._is_discord_unknown_interaction(exc):
+                raise
+            logger.warning(
+                "[Discord] /start %s: interaction expired before defer. "
+                "Creating the thread anyway, skipping interaction followups.",
+                project_slug,
+            )
+
+        # Resolve the target channel. If the configured channel_id is the
+        # placeholder, fall back to the channel the user invoked /start in
+        # so the command still works out-of-the-box for new installs.
+        target_channel: Any = None
+        used_fallback_channel = False
+        client = getattr(self, "_client", None)
+        if target_channel_id and target_channel_id != "0" and client is not None:
+            try:
+                target_channel = client.get_channel(int(target_channel_id))
+                if target_channel is None:
+                    target_channel = await client.fetch_channel(int(target_channel_id))
+            except Exception as exc:
+                logger.warning(
+                    "[Discord] /start %s: failed to resolve channel_id=%s (%s); "
+                    "falling back to the invocation channel.",
+                    project_slug, target_channel_id, exc,
+                )
+                target_channel = None
+
+        if target_channel is None:
+            target_channel = await self._resolve_interaction_channel(interaction)
+            used_fallback_channel = True
+
+        if target_channel is None:
+            if deferred_response:
+                try:
+                    await interaction.followup.send(
+                        "Could not resolve a target Discord channel for /start.",
+                        ephemeral=True,
+                    )
+                except Exception:
+                    pass
+            return
+
+        # Reuse _create_thread — but the canonical /thread flow defers to
+        # parent_channel.create_thread; we build the same payload via a
+        # local helper that uses the resolved target_channel directly.
+        thread = await self._create_thread_in_channel(
+            target_channel,
+            name=thread_name,
+            auto_archive_duration=1440,
+            reason=f"Requested via /start {project_slug} by {getattr(getattr(interaction, 'user', None), 'display_name', 'unknown user')}",
+        )
+        if thread is None:
+            if deferred_response:
+                try:
+                    await interaction.followup.send(
+                        f"Failed to create thread for project `{project_slug}`.",
+                        ephemeral=True,
+                    )
+                except Exception:
+                    pass
+            return
+
+        thread_id = str(getattr(thread, "id", "") or "")
+        thread_display = getattr(thread, "name", None) or thread_name
+
+        # Seed message: worker mention + the user's title so the worker can
+        # pick up the request via mention in the new thread.
+        seed_lines = []
+        if worker_mention:
+            seed_lines.append(worker_mention.rstrip())
+        seed_lines.append(f"**{title.strip() or 'Nova conversa'}**")
+        seed_body = "\n".join(seed_lines)
+        await self._send_seed_message_to_thread(thread, seed_body)
+
+        # Track thread participation so follow-ups don't require @mention.
+        if thread_id and hasattr(self, "_threads") and self._threads is not None:
+            try:
+                self._threads.mark(thread_id)
+            except Exception:
+                pass
+
+        # Typing indicator — gives the worker ~5s to acknowledge before the
+        # user is dropped back into the original channel.
+        await self._typing_indicator(thread, seconds=5.0)
+
+        # Tell the user where the thread is.
+        link = f"<#{thread_id}>" if thread_id else f"**{thread_display}**"
+        msg = f"Started **{project_slug}** thread {link}"
+        if used_fallback_channel:
+            msg += " (using invocation channel; configure `start_projects.{slug}.channel_id` to redirect)."
+        if deferred_response:
+            try:
+                await interaction.followup.send(msg, ephemeral=True)
+            except Exception as exc:
+                logger.debug("[Discord] /start: failed to deliver followup: %s", exc)
+
+    async def _create_thread_in_channel(
+        self,
+        channel: Any,
+        *,
+        name: str,
+        auto_archive_duration: int = 1440,
+        reason: str = "",
+    ) -> Optional[Any]:
+        """Create a thread inside ``channel`` (a text channel).
+
+        Mirrors the parent_channel.create_thread() + seed-message fallback
+        pair used by ``_create_thread``, but takes the target channel as an
+        argument instead of resolving it from the interaction. Returns the
+        created thread, or ``None`` on failure.
+        """
+        name = (name or "").strip()
+        if not name:
+            return None
+        if auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+            auto_archive_duration = 1440
+
+        parent_channel = self._thread_parent_channel(channel) or channel
+        if parent_channel is None:
+            return None
+
+        try:
+            thread = await parent_channel.create_thread(
+                name=name,
+                auto_archive_duration=auto_archive_duration,
+                reason=reason,
+            )
+            return thread
+        except Exception as direct_error:
+            try:
+                seed_msg = await parent_channel.send(
+                    f"\U0001f9f5 Thread created by Hermes: **{name}**"
+                )
+                thread = await seed_msg.create_thread(
+                    name=name,
+                    auto_archive_duration=auto_archive_duration,
+                    reason=reason,
+                )
+                return thread
+            except Exception as fallback_error:
+                logger.warning(
+                    "[Discord] /start: thread creation failed. Direct: %s. Fallback: %s.",
+                    direct_error, fallback_error,
+                )
+                return None
 
     def _resolve_channel_skills(self, channel_id: str, parent_id: str | None = None) -> list[str] | None:
         """Look up auto-skill bindings for a Discord channel/forum thread.

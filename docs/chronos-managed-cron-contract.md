@@ -132,7 +132,7 @@ public HTTP surface on hosted deployments (the gateway may be idle/scaled down);
 it is in `PUBLIC_API_PATHS` so the dashboard cookie gate lets the bearer-JWT
 callback through to the verifier. (Also registered on the optional
 `APIServerAdapter` for self-host API-server deployments.) The verifier is
-`plugins/cron/chronos/verify.py`.
+`plugins/cron_providers/chronos/verify.py`.
 
 - **Auth:** `Authorization: Bearer <NAS-minted JWT>`. The agent verifies:
   - signature against the NAS JWKS (`cron.chronos.nas_jwks_url`),
@@ -190,7 +190,7 @@ credentials. For hosted agents NAS sets these at provision time:
 
 | key | meaning |
 |---|---|
-| `cron.provider` | `"chronos"` to activate (empty = built-in ticker) |
+| `cron.provider` | `"chronos"` to activate (empty = built-in ticker; `"none"` = scheduler disabled) |
 | `cron.chronos.portal_url` | NAS base URL (also the expected JWT `iss`) |
 | `cron.chronos.callback_url` | the agent's own public base URL for NAS→agent fires |
 | `cron.chronos.expected_audience` | this agent's JWT `aud` (`agent:{instance_id}`) |
@@ -198,7 +198,8 @@ credentials. For hosted agents NAS sets these at provision time:
 
 If `callback_url` / `portal_url` is blank or the agent has no Nous login,
 `is_available()` returns False and the resolver falls back to the built-in
-in-process ticker — cron never loses its trigger.
+in-process ticker — cron never silently loses its trigger (only the explicit
+`cron.provider: none` disables it).
 
 ## Escape hatch (not default)
 

@@ -252,7 +252,7 @@ What they do:
 
 - `pause` — keep the job but stop scheduling it
 - `resume` — re-enable the job and compute the next future run
-- `run` — trigger the job on the next scheduler tick
+- `run` — execute the job immediately (works even when no scheduler is running)
 - `remove` — delete it entirely
 - `edit` — modify schedule, prompt, delivery, etc.
 

@@ -113,31 +113,59 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     }
 
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let retryCount = 0
 
-    setIsLoadingConfig(true)
-    setConfigLoadError(null)
+    // The desktop races its own backend at startup: the renderer mounts before
+    // the backend is ready, so the first /api/config call can time out. We keep
+    // the established permanent-failure contract — a rejected config load
+    // settles on English so the UI stays usable — but bounded retries recover
+    // transient startup failures, applying the persisted display.language once
+    // the backend comes up.
+    const MAX_LOCALE_RETRIES = 10
+    const LOCALE_RETRY_DELAY_MS = 3_000
 
-    configClient
-      .getConfig()
-      .then(config => {
-        if (!cancelled) {
-          setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
-        }
-      })
-      .catch(error => {
-        if (!cancelled) {
+    const loadLocale = () => {
+      setIsLoadingConfig(true)
+      setConfigLoadError(null)
+
+      return configClient
+        .getConfig()
+        .then(config => {
+          if (!cancelled) {
+            setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
+          }
+        })
+        .catch(error => {
+          if (cancelled) {
+            return
+          }
+
           setConfigLoadError(toError(error))
           setLocaleState(DEFAULT_LOCALE)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsLoadingConfig(false)
-        }
-      })
+
+          if (retryCount < MAX_LOCALE_RETRIES) {
+            retryCount += 1
+            retryTimer = setTimeout(() => {
+              loadLocale()
+            }, LOCALE_RETRY_DELAY_MS)
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setIsLoadingConfig(false)
+          }
+        })
+    }
+
+    loadLocale()
 
     return () => {
       cancelled = true
+
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+      }
     }
   }, [configClient, initialLocale])
 

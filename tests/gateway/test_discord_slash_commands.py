@@ -103,7 +103,7 @@ def adapter():
     adapter._client = SimpleNamespace(
         tree=FakeTree(),
         get_channel=lambda _id: None,
-        fetch_channel=AsyncMock(),
+        fetch_channel=AsyncMock(return_value=None),
         user=SimpleNamespace(id=99999, name="HermesBot"),
     )
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
@@ -427,6 +427,110 @@ async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
     assert name == "please help"
 
 
+def _failed_auto_thread_message():
+    return SimpleNamespace(
+        id=123,
+        content="Trip idea",
+        create_thread=AsyncMock(side_effect=ConnectionError("response lost")),
+        thread=None,
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_reuses_attached_starter_thread(adapter):
+    existing = _FakeThreadChannel(channel_id=123, name="already-there")
+    message = _failed_auto_thread_message()
+    message.thread = existing
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is existing
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_reuses_cached_starter_thread(adapter):
+    existing = _FakeThreadChannel(channel_id=123, name="already-there")
+    message = _failed_auto_thread_message()
+    adapter._client.get_channel = MagicMock(return_value=existing)
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is existing
+    adapter._client.get_channel.assert_called_once_with(message.id)
+    adapter._client.fetch_channel.assert_not_awaited()
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_fetches_starter_thread_after_cache_miss(adapter):
+    existing = _FakeThreadChannel(channel_id=123, name="already-there")
+    message = _failed_auto_thread_message()
+    adapter._client.get_channel = MagicMock(return_value=None)
+    adapter._client.fetch_channel = AsyncMock(return_value=existing)
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is existing
+    adapter._client.fetch_channel.assert_awaited_once_with(message.id)
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_retries_reconciliation_before_fallback(adapter, monkeypatch):
+    existing = _FakeThreadChannel(channel_id=123, name="eventually-visible")
+    message = _failed_auto_thread_message()
+    adapter._client.get_channel = MagicMock(return_value=None)
+    adapter._client.fetch_channel = AsyncMock(side_effect=[None, existing])
+    sleep = AsyncMock()
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", sleep)
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is existing
+    assert adapter._client.fetch_channel.await_count == 2
+    sleep.assert_awaited_once_with(0.25)
+    message.channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_does_not_reuse_unrelated_channel(adapter, monkeypatch):
+    unrelated = _FakeTextChannel(channel_id=999)
+    fallback = SimpleNamespace(id=456, name="fallback")
+    seed_message = SimpleNamespace(create_thread=AsyncMock(return_value=fallback))
+    message = _failed_auto_thread_message()
+    message.thread = unrelated
+    message.channel.send.return_value = seed_message
+    adapter._client.get_channel = MagicMock(return_value=unrelated)
+    adapter._client.fetch_channel = AsyncMock(return_value=None)
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", AsyncMock())
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is fallback
+    message.channel.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_skips_fallback_when_reconciliation_is_inconclusive(
+    adapter,
+    monkeypatch,
+):
+    message = _failed_auto_thread_message()
+    adapter._client.get_channel = MagicMock(return_value=None)
+    adapter._client.fetch_channel = AsyncMock(side_effect=ConnectionError("lookup failed"))
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", AsyncMock())
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    assert message.create_thread.await_count == 2
+    assert adapter._client.fetch_channel.await_count == 4
+    message.channel.send.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     thread = SimpleNamespace(
@@ -600,5 +704,4 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
         f"Flat /skill command payload is ~{len(payload)} bytes — the whole "
         f"point of this design is that it stays small regardless of skill count"
     )
-
 

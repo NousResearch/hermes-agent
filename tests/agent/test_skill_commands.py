@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
+import agent.skill_commands as skill_commands_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
@@ -235,6 +236,135 @@ class TestScanSkillCommands:
 
             assert "/telegram-only" in bare_commands
             assert sc_mod._skill_commands_platform is None
+
+    def test_scan_failure_preserves_commands_and_platform_scope(self, tmp_path, monkeypatch):
+        """A failed scan keeps the command map and its platform marker together."""
+        from agent.skill_commands import get_skill_commands
+
+        def _disabled_skills():
+            platform = os.getenv("HERMES_PLATFORM")
+            if platform == "telegram":
+                return {"telegram-only"}
+            if platform == "discord":
+                return {"discord-only"}
+            return set()
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch.object(skill_commands_module, "_skill_commands", {}),
+            patch.object(skill_commands_module, "_skill_commands_platform", None),
+        ):
+            _make_skill(tmp_path, "shared")
+            _make_skill(tmp_path, "telegram-only")
+            _make_skill(tmp_path, "discord-only")
+
+            monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+            initial = dict(get_skill_commands())
+            assert "/shared" in initial
+            assert "/telegram-only" not in initial
+            assert skill_commands_module._skill_commands_platform == "telegram"
+
+            monkeypatch.setenv("HERMES_PLATFORM", "discord")
+            with patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                side_effect=OSError("scan setup failed"),
+            ):
+                failed = skill_commands_module.scan_skill_commands()
+
+            assert failed == initial
+            assert skill_commands_module._skill_commands == initial
+            assert skill_commands_module._skill_commands_platform == "telegram"
+
+            recovered = dict(get_skill_commands())
+            assert skill_commands_module._skill_commands_platform == "discord"
+
+        assert "/shared" in recovered
+        assert "/telegram-only" in recovered
+        assert "/discord-only" not in recovered
+
+    def test_successful_empty_scan_replaces_cached_commands(self, tmp_path):
+        """An empty successful scan must still remove stale commands."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "stale")
+            assert "/stale" in scan_skill_commands()
+
+            empty = tmp_path / "empty"
+            empty.mkdir()
+            with patch("tools.skills_tool.SKILLS_DIR", empty):
+                result = scan_skill_commands()
+
+        assert result == {}
+
+    def test_reload_skills_preserves_commands_on_scan_failure(self, tmp_path):
+        """A failed reload must not report the retained cache as removed."""
+        from agent.skill_commands import reload_skills
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "survivor")
+            assert "/survivor" in scan_skill_commands()
+
+            with patch(
+                "agent.skill_utils.iter_skill_index_files",
+                side_effect=OSError("directory traversal failed"),
+            ):
+                result = reload_skills()
+
+        assert result["added"] == []
+        assert result["removed"] == []
+        assert result["unchanged"] == ["survivor"]
+        assert result["total"] == 1
+        assert result["commands"] == 1
+
+    def test_scan_failure_logs_a_diagnostic_warning(self, tmp_path, caplog):
+        """Outer scan failures remain non-fatal but are observable in logs."""
+        import logging
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_utils.iter_skill_index_files",
+                side_effect=OSError("directory traversal failed"),
+            ),
+            caplog.at_level(logging.WARNING, logger="agent.skill_commands"),
+        ):
+            scan_skill_commands()
+
+        assert any("skill command scan failed" in record.message for record in caplog.records)
+
+    def test_concurrent_scans_do_not_share_partial_command_maps(self, tmp_path):
+        """Overlapping scans must build in independent local maps."""
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier, Lock
+
+        alpha = _make_skill(tmp_path, "alpha") / "SKILL.md"
+        beta = _make_skill(tmp_path, "beta") / "SKILL.md"
+        barrier = Barrier(2)
+        assignment_lock = Lock()
+        assignments = {}
+
+        def _scan_index(_scan_dir, _filename):
+            thread_id = __import__("threading").current_thread().ident
+            with assignment_lock:
+                index = len(assignments)
+                assignments[thread_id] = index
+            barrier.wait(timeout=5)
+            return [alpha if index == 0 else beta]
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+            patch("agent.skill_utils.iter_skill_index_files", side_effect=_scan_index),
+            patch.object(skill_commands_module, "_skill_commands", {}),
+            patch.object(skill_commands_module, "_skill_commands_platform", None),
+        ):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda _unused: scan_skill_commands(), range(2)))
+
+        assert {frozenset(result) for result in results} == {
+            frozenset({"/alpha"}),
+            frozenset({"/beta"}),
+        }
 
 
 

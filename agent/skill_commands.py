@@ -378,9 +378,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
     global _skill_commands, _skill_commands_platform
-    _skill_commands_platform = _resolve_skill_commands_platform()
-    _skill_commands = {}
+    new_commands: Dict[str, Dict[str, Any]] = {}
     try:
+        next_platform = _resolve_skill_commands_platform()
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
         from hermes_cli.commands import resolve_command
@@ -447,14 +447,14 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     # slug (e.g. "git_helper" vs "git-helper"). First-wins
                     # preserves local-before-external precedence.
                     cmd_key = f"/{cmd_name}"
-                    if cmd_key in _skill_commands:
+                    if cmd_key in new_commands:
                         logger.warning(
                             "Skill %r maps to slash command %s already claimed "
                             "by %r; keeping the first and skipping this one.",
-                            name, cmd_key, _skill_commands[cmd_key]["name"],
+                            name, cmd_key, new_commands[cmd_key]["name"],
                         )
                         continue
-                    _skill_commands[cmd_key] = {
+                    new_commands[cmd_key] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
@@ -463,7 +463,14 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                 except Exception:
                     continue
     except Exception:
-        pass
+        logger.warning(
+            "skill command scan failed; preserving previous cache (%d commands)",
+            len(_skill_commands),
+            exc_info=True,
+        )
+        return _skill_commands
+    _skill_commands = new_commands
+    _skill_commands_platform = next_platform
     return _skill_commands
 
 
@@ -523,8 +530,9 @@ def reload_skills() -> Dict[str, Any]:
 
     before = _snapshot(_skill_commands)
 
-    # Rescan the skills dir. ``scan_skill_commands`` resets
-    # ``_skill_commands = {}`` internally and repopulates it.
+    # Rescan the skills dir. ``scan_skill_commands`` publishes a new map and
+    # platform marker only after the complete scan succeeds; on failure its
+    # return value is the unchanged last-known-good cache.
     new_commands = scan_skill_commands()
 
     after = _snapshot(new_commands)

@@ -148,6 +148,14 @@ docker image prune -a --filter "until=168h"   # unused images older than 7 days
 
 ### 4. Docker Compose
 
+**Port binding defaults for stateful services:**
+
+- Default to production multi-host deployments when generating deploy guidance or Compose templates. MySQL/PostgreSQL/Redis host ports must bind to the database/cache server's private interface via explicit required variables; do not use `127.0.0.1` as a production default.
+- If services run on the same Docker Compose network, prefer no host `ports:` mapping for databases/caches; application containers should connect by service name (for example `db:5432`, `mysql:3306`, `redis:6379`).
+- For production multi-host deployments, require values such as `${MYSQL_BIND_ADDRESS:?set MYSQL_BIND_ADDRESS to the database server private IP}:3306:3306` and restrict the port to trusted app-server private IPs with cloud security groups/firewall rules.
+- `127.0.0.1` examples are local-development/admin-only patterns. Do not emit them as the default for production deployment repositories or runbooks.
+- Never expose MySQL/PostgreSQL/Redis directly to the public internet for convenience. Use private networking, source allowlists, VPN/Tailscale, or SSH tunnels for ad-hoc administration.
+
 ```bash
 # Start/stop
 docker compose up -d                   # start all services detached
@@ -185,6 +193,10 @@ services:
 
   db:
     image: postgres:16-alpine
+    # Default for production multi-host deployments: require the DB server private IP.
+    # If the app and DB are only on the same Compose network, omit host ports entirely.
+    ports:
+      - "${POSTGRES_BIND_ADDRESS:?set POSTGRES_BIND_ADDRESS to the database server private IP}:5432:5432"
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: pass
@@ -252,6 +264,7 @@ docker system prune -a --volumes       # EVERYTHING — named volumes too
 | "port is already allocated" | Another process using that port | `docker ps` or `lsof -i :PORT` to find it |
 | "no space left on device" | Docker disk full | `docker system df` then targeted prune |
 | Can't connect to container | App binds to 127.0.0.1 inside container | App must bind to `0.0.0.0`, check `-p` mapping |
+| Remote app server can't reach database | Database host port is bound to `127.0.0.1` on the DB server | In multi-host deployments bind to the DB server private IP or `0.0.0.0`, then restrict the port to trusted app-server private IPs with security groups/firewall rules |
 | Permission denied on volume | UID/GID mismatch host vs container | Use `--user $(id -u):$(id -g)` or fix permissions |
 | Compose services can't reach each other | Wrong network or service name | Services use service name as hostname, check `docker compose config` |
 | Build cache not working | Layer order wrong in Dockerfile | Put rarely-changing layers first (deps before source code) |

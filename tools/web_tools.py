@@ -447,6 +447,30 @@ def _get_extract_char_limit() -> int:
     return DEFAULT_EXTRACT_CHAR_LIMIT
 
 
+# Aggregate wall-clock cap on one provider extract() batch. The HTTP timeouts
+# inside providers bound a single request, but a hung stream or a provider
+# that retries internally can stall far past them — and the dispatcher awaits
+# extract() with nothing above it, so one bad batch hangs the tool (and any
+# idle-limited caller, e.g. a cron-driven agent) indefinitely. On timeout the
+# batch degrades to per-URL error entries instead. Override via
+# web.extract_timeout in config.yaml.
+DEFAULT_EXTRACT_TIMEOUT_S = 180.0
+
+
+def _get_extract_timeout_s() -> float:
+    """Resolve the extract dispatch cap from config; non-positive/garbage
+    values fall back to the default rather than disabling the cap."""
+    try:
+        configured = _load_web_config().get("extract_timeout")
+        if configured is not None:
+            value = float(configured)
+            if value > 0:
+                return value
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_EXTRACT_TIMEOUT_S
+
+
 def convert_base64_images_to_links(text: str) -> str:
     """Replace inline base64 image blobs with labeled markdown links.
 
@@ -933,14 +957,45 @@ async def web_extract_tool(
             # Async-or-sync dispatch: parallel + firecrawl have async
             # extract(); exa + tavily are sync.
             import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
-            else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
+            extract_timeout_s = _get_extract_timeout_s()
+            try:
+                if inspect.iscoroutinefunction(provider.extract):
+                    results = await asyncio.wait_for(
+                        provider.extract(safe_urls, format=format),
+                        timeout=extract_timeout_s,
+                    )
+                else:
+                    # Run sync extract() in a thread so we don't block the
+                    # event loop on network I/O. On timeout the thread is
+                    # abandoned, not killed — the caller unblocks and the
+                    # orphan request dies with its connection.
+                    results = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            provider.extract, safe_urls, format=format
+                        ),
+                        timeout=extract_timeout_s,
+                    )
+            except asyncio.TimeoutError:
+                # One hung source must not stall the whole tool. Degrade to
+                # per-URL error entries so the caller gets a structured
+                # result (and the SSRF/invalid entries merged below) instead
+                # of an unbounded wait.
+                logger.warning(
+                    "web_extract via %s exceeded the %.0fs wall-clock cap "
+                    "for %d URL(s); returning timeout errors for this batch "
+                    "(override via web.extract_timeout)",
+                    provider.name, extract_timeout_s, len(safe_urls),
                 )
+                results = [
+                    {
+                        "url": url, "title": "", "content": "",
+                        "error": (
+                            f"Extraction timed out after "
+                            f"{extract_timeout_s:.0f}s"
+                        ),
+                    }
+                    for url in safe_urls
+                ]
 
         # Reconstruct the original input order across invalid, blocked, and
         # provider-processed entries. Providers are expected to preserve the

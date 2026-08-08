@@ -3535,11 +3535,13 @@ class BasePlatformAdapter(ABC):
                 name="media-history-lookup",
                 daemon=True,
             ).start()
-        except BaseException:
-            # Thread could not be started (e.g. thread exhaustion). The
-            # worker never ran, so its finally-release never fires — release
-            # the admission permit here to avoid leaking it permanently, and
-            # fail open like every other path in this helper.
+        except Exception:
+            # Thread could not be started (e.g. thread exhaustion — start()
+            # raises RuntimeError). The worker never ran, so its
+            # finally-release never fires — release the admission permit here
+            # to avoid leaking it permanently, and fail open like every other
+            # path in this helper. (Unlike _worker's BaseException forwarding,
+            # swallowing here must not eat KeyboardInterrupt/SystemExit.)
             admission.release()
             logger.warning(
                 "[%s] Could not start media-delivery history lookup worker "

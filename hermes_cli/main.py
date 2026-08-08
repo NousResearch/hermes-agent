@@ -5532,6 +5532,16 @@ def _run_npm_install_deterministic(
     committed lockfile and makes every future ``npm ci`` fail — a
     self-reinforcing cycle where web devDeps never install and a stale dist
     is served on every update (PR #65595).
+
+    When ``npm ci`` fails, ``node_modules`` is removed before the ``npm
+    install`` fallback runs. An interrupted previous install (power loss,
+    Ctrl+C, a killed gateway holding a file open) can leave a half-written
+    tree that trips ``npm install`` over the exact same corruption ``npm ci``
+    just hit — most visibly ``ENOTEMPTY`` on Windows, where a stale nested
+    ``.bin`` directory blocks npm's rename-based package writes (issue
+    #75584). ``npm ci`` itself would have wiped and rebuilt ``node_modules``
+    from scratch had it succeeded, so this keeps the fallback's starting
+    point consistent with what a clean ``ci`` run would have produced.
     """
     # unicode-animations' postinstall animates to /dev/tty (bypasses
     # --silent/capture_output). It no-ops when CI is set — same as the TUI
@@ -5554,6 +5564,14 @@ def _run_npm_install_deterministic(
                 return ci_result
             # Fall through to `npm install` — lockfile may be out of sync on a
             # WIP fork/branch, or `npm ci` may not be available on very old npm.
+            # Clear a possibly half-written node_modules first (see docstring)
+            # so the fallback doesn't inherit the same corruption. Best-effort:
+            # a locked file (e.g. an antivirus scan, a straggler process) must
+            # not crash the updater — `npm install` still runs and surfaces its
+            # own, clearer error if the tree really can't be repaired.
+            node_modules = cwd / "node_modules"
+            if node_modules.exists():
+                shutil.rmtree(node_modules, ignore_errors=True)
         return _run([npm_exe, "install", "--no-save", "--include=dev", *extra_args])
 
     result = _attempt(npm)

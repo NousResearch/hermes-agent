@@ -368,3 +368,74 @@ class TestBuildRecoversFromMissingToolchain:
         assert mock_install.call_count == 1
         assert mock_build.call_count == 1
 
+
+class TestNpmCiFailureCleansNodeModules:
+    """``npm ci`` failure must wipe ``node_modules`` before the ``npm install``
+    fallback runs, so an interrupted-update corruption (issue #75584's
+    Windows ``ENOTEMPTY`` on a stale nested ``.bin`` dir) doesn't survive into
+    the fallback attempt.
+    """
+
+    def test_ci_failure_removes_node_modules_before_install_fallback(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+        node_modules = web_dir / "node_modules"
+        (node_modules / "@babel" / "core" / "node_modules" / ".bin").mkdir(parents=True)
+
+        Subprocess = __import__("subprocess")
+        ci_fail = Subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="npm error code ENOTEMPTY\nnpm error syscall rmdir"
+        )
+        install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        node_modules_existed_at_install = None
+
+        def mock_run(cmd, **kwargs):
+            nonlocal node_modules_existed_at_install
+            if cmd[1] == "ci":
+                return ci_fail
+            if cmd[1] == "install":
+                node_modules_existed_at_install = node_modules.exists()
+            return install_ok
+
+        with patch("hermes_cli.main.subprocess.run", side_effect=mock_run):
+            result = _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        assert result.returncode == 0
+        assert not node_modules.exists(), "corrupted tree must be removed"
+        assert node_modules_existed_at_install is False, (
+            "cleanup must happen before the install fallback runs, not after"
+        )
+
+    def test_ci_success_leaves_node_modules_untouched(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+        node_modules = web_dir / "node_modules"
+        node_modules.mkdir()
+
+        Subprocess = __import__("subprocess")
+        ci_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with patch("hermes_cli.main.subprocess.run", return_value=ci_ok):
+            _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        assert node_modules.exists(), "a successful npm ci must not be touched"
+
+    def test_missing_node_modules_does_not_error_on_ci_failure(self, tmp_path):
+        """No node_modules to begin with (e.g. very first install attempt) —
+        the cleanup step must be a no-op, not raise."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        Subprocess = __import__("subprocess")
+        ci_fail = Subprocess.CompletedProcess([], 1, stdout="", stderr="ERESOLVE")
+        install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        def mock_run(cmd, **kwargs):
+            return ci_fail if cmd[1] == "ci" else install_ok
+
+        with patch("hermes_cli.main.subprocess.run", side_effect=mock_run):
+            result = _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        assert result.returncode == 0
+

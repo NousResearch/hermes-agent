@@ -126,6 +126,37 @@ def install_cmd_backspace_alias() -> int:
     return changed
 
 
+def install_ctrl_backspace_alias() -> int:
+    """Map Ctrl+Backspace to prompt_toolkit's word-delete binding.
+
+    Terminals using Kitty CSI-u or xterm modifyOtherKeys report Ctrl as
+    modifier 5 (or 6 with Shift). prompt_toolkit does not map these enhanced
+    Backspace sequences, so the raw bytes otherwise fall through instead of
+    invoking ``unix-word-rubout``.
+
+    Ctrl+Backspace -> ``Keys.ControlW``:
+      - ``\\x1b[127;5u`` / ``\\x1b[127;6u`` - Kitty CSI-u
+      - ``\\x1b[27;5;127~``                  - xterm modifyOtherKeys
+
+    Ctrl+ForwardDelete is deliberately excluded because prompt_toolkit already
+    maps ``\\x1b[3;5~`` to ``Keys.ControlDelete``.
+
+    Returns the number of sequences whose mapping was changed.
+    """
+    try:
+        from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+        from prompt_toolkit.keys import Keys
+    except Exception:
+        return 0
+
+    changed = 0
+    for seq in ("\x1b[127;5u", "\x1b[127;6u", "\x1b[27;5;127~"):
+        if ANSI_SEQUENCES.get(seq) != Keys.ControlW:
+            ANSI_SEQUENCES[seq] = Keys.ControlW
+            changed += 1
+    return changed
+
+
 def install_ignored_terminal_sequences() -> int:
     """Map terminal-emitted noise sequences to ``Keys.Ignore`` so they
     are consumed by the VT100 parser before they reach key bindings or

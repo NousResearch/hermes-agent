@@ -1,6 +1,5 @@
-"""Verify Cmd+Backspace / Cmd+ForwardDelete byte sequences from CSI-u
-terminals reach prompt_toolkit's readline kill bindings instead of leaking
-into the buffer as literal text.
+"""Verify enhanced Cmd/Ctrl+Backspace byte sequences reach prompt_toolkit's
+readline kill bindings instead of leaking into the buffer as literal text.
 """
 
 from __future__ import annotations
@@ -11,15 +10,18 @@ from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.input.vt100_parser import Vt100Parser
 from prompt_toolkit.keys import Keys
 
-from hermes_cli.pt_input_extras import install_cmd_backspace_alias
+from hermes_cli.pt_input_extras import (
+    install_cmd_backspace_alias,
+    install_ctrl_backspace_alias,
+)
 
 
 # Cmd rides as the super modifier bit (8), so modifier = 9 (super) or
 # 10 (super+shift).
 CMD_BACKSPACE_SEQUENCES = (
-    "\x1b[127;9u",       # Kitty CSI-u
-    "\x1b[127;10u",      # Kitty CSI-u, +shift
-    "\x1b[27;9;127~",    # xterm modifyOtherKeys
+    "\x1b[127;9u",  # Kitty CSI-u
+    "\x1b[127;10u",  # Kitty CSI-u, +shift
+    "\x1b[27;9;127~",  # xterm modifyOtherKeys
 )
 
 # Forward-delete is a CSI tilde key, not a CSI-u codepoint.
@@ -28,10 +30,17 @@ CMD_FWD_DELETE_SEQUENCES = (
     "\x1b[3;10~",
 )
 
+CTRL_BACKSPACE_SEQUENCES = (
+    "\x1b[127;5u",  # Kitty CSI-u
+    "\x1b[127;6u",  # Kitty CSI-u, +shift
+    "\x1b[27;5;127~",  # xterm modifyOtherKeys
+)
+
 
 @pytest.fixture(autouse=True)
 def _ensure_alias_installed():
     install_cmd_backspace_alias()
+    install_ctrl_backspace_alias()
 
 
 def _parse(byte_seq: str):
@@ -55,7 +64,16 @@ def test_cmd_forward_delete_parses_as_ctrl_k(seq):
     assert _parse(seq) == _parse("\x0b")
 
 
-@pytest.mark.parametrize("seq", CMD_BACKSPACE_SEQUENCES + CMD_FWD_DELETE_SEQUENCES)
+@pytest.mark.parametrize("seq", CTRL_BACKSPACE_SEQUENCES)
+def test_ctrl_backspace_parses_as_ctrl_w(seq):
+    """Ctrl+Backspace must reach unix-word-rubout, exactly as Ctrl+W does."""
+    assert _parse(seq) == _parse("\x17")
+
+
+@pytest.mark.parametrize(
+    "seq",
+    CMD_BACKSPACE_SEQUENCES + CMD_FWD_DELETE_SEQUENCES + CTRL_BACKSPACE_SEQUENCES,
+)
 def test_sequences_emit_exactly_one_keypress(seq):
     """The whole sequence is consumed. A partial match would emit Escape
     plus the remainder as literal text — the bug this alias exists to fix."""
@@ -65,6 +83,8 @@ def test_sequences_emit_exactly_one_keypress(seq):
 def test_install_is_idempotent():
     install_cmd_backspace_alias()
     assert install_cmd_backspace_alias() == 0
+    install_ctrl_backspace_alias()
+    assert install_ctrl_backspace_alias() == 0
 
 
 def test_unmodified_keys_keep_their_own_bindings():

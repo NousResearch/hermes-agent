@@ -322,3 +322,8 @@ The bundled NeMo Relay plugin maps the same generic observer contract to NeMo
 Relay scopes, LLM spans, tool spans, marks, ATOF streams, and ATIF exports.
 NeMo Relay-specific configuration and examples live in
 [`plugins/observability/nemo_relay/README.md`](../../plugins/observability/nemo_relay/README.md).
+
+Audit and receipt-chain plugins use the same hooks with a different goal: producing
+signed, tamper-evident records rather than telemetry. The integration seam, the rules
+that differ from tracing, and the external implementations are documented in
+[Audit and receipt-chain plugins](audit-receipt-chains.md).

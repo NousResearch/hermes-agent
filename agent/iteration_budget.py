@@ -26,12 +26,16 @@ class IterationBudget:
     in config.yaml.
 
     ``execute_code`` (programmatic tool calling) iterations are refunded via
-    :meth:`refund` so they don't eat into the budget.
+    :meth:`refund` so they don't eat into the budget.  Refunds are capped
+    at ``max_refunds`` (default 15) per turn to prevent infinite loops when
+    the model repeatedly calls execute_code without making progress.
     """
 
-    def __init__(self, max_total: int):
+    def __init__(self, max_total: int, *, max_refunds: int = 15):
         self.max_total = max_total
+        self.max_refunds = max_refunds
         self._used = 0
+        self._refunds_given = 0
         self._lock = threading.Lock()
 
     def consume(self) -> bool:
@@ -42,11 +46,20 @@ class IterationBudget:
             self._used += 1
             return True
 
-    def refund(self) -> None:
-        """Give back one iteration (e.g. for execute_code turns)."""
+    def refund(self) -> bool:
+        """Give back one iteration (e.g. for execute_code turns).
+
+        Returns True if the refund was granted, False if the refund cap
+        has been reached.  When the cap is hit, the budget erodes normally
+        which ensures the loop eventually terminates even when the model
+        keeps calling execute_code without progress.
+        """
         with self._lock:
-            if self._used > 0:
+            if self._used > 0 and self._refunds_given < self.max_refunds:
                 self._used -= 1
+                self._refunds_given += 1
+                return True
+            return False
 
     @property
     def used(self) -> int:
@@ -57,6 +70,12 @@ class IterationBudget:
     def remaining(self) -> int:
         with self._lock:
             return max(0, self.max_total - self._used)
+
+    @property
+    def refunds_remaining(self) -> int:
+        """How many refunds are still available this turn."""
+        with self._lock:
+            return max(0, self.max_refunds - self._refunds_given)
 
 
 __all__ = ["IterationBudget"]

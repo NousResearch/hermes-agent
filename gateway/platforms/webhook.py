@@ -869,9 +869,19 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=502,
             )
 
-        # Use delivery_id in session key so concurrent webhooks on the
-        # same route get independent agent runs (not queued/interrupted).
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        # Session scope is per-route configurable:
+        #   * "per-delivery" (default) — delivery_id in the key: concurrent
+        #     webhooks on the same route get independent agent runs
+        #     (not queued/interrupted). Right for independent event streams.
+        #   * "shared" — one persistent session per route: deliveries
+        #     serialize into a single ongoing conversation with memory.
+        #     Right for workflow/relay routes where each event continues
+        #     the same collaboration.
+        session_scope = str(route_config.get("session") or "per-delivery").strip().lower()
+        if session_scope == "shared":
+            session_chat_id = f"webhook:{route_name}"
+        else:
+            session_chat_id = f"webhook:{route_name}:{delivery_id}"
 
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),

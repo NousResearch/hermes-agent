@@ -8857,10 +8857,19 @@ def _restart_gateway_after_whatsapp_onboarding(profile: Optional[str] = None) ->
 
 
 @app.post("/api/messaging/whatsapp/onboarding/start")
-async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
+async def start_whatsapp_onboarding(
+    body: WhatsAppOnboardingStart, profile: Optional[str] = None
+):
     mode = _normalize_whatsapp_onboarding_mode(body.mode)
     allowed_users = _normalize_whatsapp_allowed_users(body.allowed_users)
-    effective_profile = body.profile
+    # Same resolution order as ``apply_whatsapp_onboarding``. The dashboard
+    # sends the management profile as ``?profile=`` (``/api/messaging/whatsapp/
+    # onboarding`` is in the client's PROFILE_SCOPED_PREFIXES) and never
+    # populates ``body.profile``, so reading the body alone silently pinned
+    # the Baileys session directory, the bridge subprocess and the linked
+    # ``creds.json`` to the LAUNCH profile — while ``apply`` honoured the
+    # query param and wrote the config into the managed one.
+    effective_profile = body.profile or profile
 
     with _config_profile_scope(effective_profile):
         session_path = _whatsapp_session_path()

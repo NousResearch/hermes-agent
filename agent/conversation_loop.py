@@ -4712,6 +4712,7 @@ def run_conversation(
                 _should_fallback = (
                     is_rate_limited
                     or (_is_transport_failure and retry_count >= 2)
+                    or classified.should_fallback
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
@@ -5332,13 +5333,17 @@ def run_conversation(
                 # (real-world: ~$40 in 48h on a 24/7 gateway).  Aborting
                 # mirrors how 401/403 (also ``should_fallback=True``)
                 # already behave once their recovery paths have failed.
+                #
+                # ``rate_limit`` is intentionally not excluded either.
+                # Ordinary rate limits are retryable and never enter this
+                # predicate; deterministic quota errors can opt out of retry
+                # after fallback has been exhausted or is unavailable.
                 is_client_error = (
                     is_local_validation_error
                     or (
                         not classified.retryable
                         and not classified.should_compress
                         and classified.reason not in {
-                            FailoverReason.rate_limit,
                             FailoverReason.overloaded,
                             FailoverReason.context_overflow,
                             FailoverReason.payload_too_large,

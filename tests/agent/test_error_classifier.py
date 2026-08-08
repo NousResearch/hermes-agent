@@ -532,9 +532,85 @@ class TestClassifyApiError:
 
     # ── Error code classification ──
 
+    def test_error_code_resource_exhausted(self):
+        e = MockAPIError(
+            "Resource exhausted",
+            body={"error": {"code": "resource_exhausted", "message": "Too many requests"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
 
+    def test_error_code_throttled_triggers_fallback(self):
+        e = MockAPIError(
+            "Throttled",
+            body={"error": {"code": "throttled", "message": "Try again later"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
 
+    def test_nvidia_worker_rate_limit_triggers_fallback(self):
+        msg = (
+            "Upstream error from Nvidia: ResourceExhausted: "
+            "Worker local total request limit reached (32/32)"
+        )
+        e = MockAPIError(msg, status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is False
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
 
+    def test_nvidia_worker_rate_limit_message_only(self):
+        msg = (
+            "Upstream error from Nvidia: Worker local total request limit "
+            "reached (267/32) — rotating credential"
+        )
+        e = RuntimeError(msg)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is False
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+
+    def test_generic_resource_exhausted_remains_retryable(self):
+        result = classify_api_error(RuntimeError("Resource exhausted"))
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_error_code_rate_limit_exceeded_triggers_fallback(self):
+        e = MockAPIError(
+            "Rate limit exceeded",
+            body={"error": {"code": "rate_limit_exceeded", "message": "Quota hit"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_loop_should_fallback_flag_triggers_classifier_signal(self):
+        """Guard that conversation_loop's _should_fallback gate reads
+        ``classified.should_fallback`` directly so classifier-level
+        signals (e.g. hard-quota exhaustion) can trigger fallback even
+        when the classified reason is outside the rate_limit set.
+        Regression test for the classifier→loop coupling fixed in #73792.
+        """
+        from agent import conversation_loop as cl
+        # Assert the source line contains the fallback signal
+        import inspect
+        src = inspect.getsource(cl.run_conversation)
+        assert "classified.should_fallback" in src, (
+            "conversation_loop must read classified.should_fallback "
+            "directly so classifier-level fallback signals are honored"
+        )
 
     # ── Message-only patterns (no status code) ──
 
@@ -1080,6 +1156,5 @@ class TestExpandedOverflowPatterns:
         )
         result = classify_api_error(e, provider="openrouter", model="m")
         assert result.reason == FailoverReason.context_overflow
-
 
 

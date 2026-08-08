@@ -168,6 +168,14 @@ _RATE_LIMIT_PATTERNS = [
     # BEFORE _CONTEXT_OVERFLOW_PATTERNS in the message-only path, so the
     # throttle wins.  (port of anomalyco/opencode#37848's exclusion guard)
     "throttling",
+    "resource exhausted",
+]
+
+# Deterministic NVIDIA worker-cap exhaustion. Unlike a transient 429, the
+# reported count keeps increasing when the same request is retried. A fallback
+# model can recover, but retrying or rotating the caller's key cannot.
+_HARD_WORKER_QUOTA_PATTERNS = [
+    "worker local total request limit",
 ]
 
 # Patterns that indicate provider-side overload, NOT a per-credential rate
@@ -850,6 +858,14 @@ def classify_api_error(
             should_fallback=True,
         )
 
+    if any(p in error_msg for p in _HARD_WORKER_QUOTA_PATTERNS):
+        return _result(
+            FailoverReason.rate_limit,
+            retryable=False,
+            should_rotate_credential=False,
+            should_fallback=True,
+        )
+
     # ── 2. HTTP status code classification ──────────────────────────
 
     if status_code is not None:
@@ -1500,6 +1516,7 @@ def _classify_by_error_code(
             FailoverReason.rate_limit,
             retryable=True,
             should_rotate_credential=True,
+            should_fallback=True,
         )
 
     if code_lower in _BILLING_ERROR_CODES:

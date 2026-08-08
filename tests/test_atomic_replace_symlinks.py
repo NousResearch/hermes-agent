@@ -245,3 +245,155 @@ def test_atomic_replace_real_cross_device(tmp_path: Path) -> None:
         assert not tmp.exists()
     finally:
         _shutil.rmtree(other_fs_dir, ignore_errors=True)
+
+
+def test_atomic_replace_cross_device_never_truncates_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupted cross-device write must leave the target untouched.
+
+    ``shutil.copyfile`` opens its destination ``"wb"``, so copying straight
+    onto the resolved target truncates the user's file before the first
+    replacement byte exists.  A crash, ENOSPC or SIGKILL midway then leaves
+    ``config.yaml`` / ``auth.json`` partial or empty — precisely the outcome
+    this helper exists to prevent.
+    """
+    if os.name != "posix":
+        pytest.skip("POSIX-only")
+
+    real = tmp_path / "config.yaml"
+    link = tmp_path / "link.yaml"
+    original = "provider: openrouter\napi_key: keep-me\n"
+    real.write_text(original, encoding="utf-8")
+    os.chmod(real, 0o600)
+    link.symlink_to(real)
+    tmp = _write_tmp(tmp_path, "provider: replacement\n")
+
+    genuine_replace = os.replace
+    replace_calls = 0
+
+    def exdev_once(src: str, dst: str) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 1:
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+        genuine_replace(src, dst)
+
+    def copyfileobj_runs_out_of_space(
+        src_handle: object, dst_handle: object, *_args: object, **_kwargs: object
+    ) -> None:
+        # Land a few bytes, then fail the way a filling disk does.
+        dst_handle.write(src_handle.read(8))  # type: ignore[attr-defined]
+        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+    monkeypatch.setattr("utils.os.replace", exdev_once)
+    monkeypatch.setattr("utils.shutil.copyfileobj", copyfileobj_runs_out_of_space)
+
+    with pytest.raises(OSError) as excinfo:
+        atomic_replace(tmp, link)
+    assert excinfo.value.errno == errno.ENOSPC
+
+    assert link.is_symlink(), "symlink must survive a failed cross-device write"
+    assert (
+        real.read_text(encoding="utf-8") == original
+    ), "a failed cross-device write destroyed the target's contents"
+
+    import stat as _stat
+
+    assert _stat.S_IMODE(real.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob(".tmp_xdev_*")), "staged temp leaked after failure"
+
+
+def test_atomic_replace_cross_device_uses_rename_not_inplace_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cross-device fallback must finish by rename, not by in-place copy."""
+    if os.name != "posix":
+        pytest.skip("POSIX-only")
+
+    real = tmp_path / "config.yaml"
+    link = tmp_path / "link.yaml"
+    real.write_text("old\n", encoding="utf-8")
+    link.symlink_to(real)
+    tmp = _write_tmp(tmp_path, "new\n")
+    original_inode = real.stat().st_ino
+
+    genuine_replace = os.replace
+    destinations: list[str] = []
+
+    def exdev_once(src: str, dst: str) -> None:
+        destinations.append(str(dst))
+        if len(destinations) == 1:
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+        genuine_replace(src, dst)
+
+    monkeypatch.setattr("utils.os.replace", exdev_once)
+
+    assert Path(atomic_replace(tmp, link)) == real
+
+    assert (
+        len(destinations) >= 2
+    ), "cross-device fallback copied in place instead of staging then renaming"
+    assert destinations[-1] == str(real)
+    assert (
+        real.stat().st_ino != original_inode
+    ), "target was overwritten in place rather than replaced by an atomic rename"
+    assert link.is_symlink()
+    assert real.read_text(encoding="utf-8") == "new\n"
+    assert not tmp.exists()
+    assert not list(tmp_path.glob(".tmp_xdev_*")), "staged temp leaked"
+
+
+def test_atomic_replace_busy_target_falls_back_to_inplace_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A busy inode cannot be renamed onto, so the in-place copy must remain.
+
+    Behaviour-preservation guard: green before and after the staging change.
+    It pins the last-resort path and catches a staged temp leaking when the
+    staged rename fails.
+    """
+    real = tmp_path / "config.yaml"
+    link = tmp_path / "link.yaml"
+    real.write_text("old\n", encoding="utf-8")
+    link.symlink_to(real)
+    tmp = _write_tmp(tmp_path, "new\n")
+
+    def always_busy(src: str, dst: str) -> None:
+        raise OSError(errno.EBUSY, os.strerror(errno.EBUSY), src, None, dst)
+
+    monkeypatch.setattr("utils.os.replace", always_busy)
+
+    assert Path(atomic_replace(tmp, link)) == real
+    assert link.is_symlink()
+    assert real.read_text(encoding="utf-8") == "new\n"
+    assert not tmp.exists()
+    assert not list(tmp_path.glob(".tmp_xdev_*")), "staged temp leaked on EBUSY"
+
+
+def test_atomic_replace_cross_device_survives_unstageable_target_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A target directory that rejects a staged temp still gets the write.
+
+    Behaviour-preservation guard: green before and after the staging change.
+    """
+    real = tmp_path / "config.yaml"
+    link = tmp_path / "link.yaml"
+    real.write_text("old\n", encoding="utf-8")
+    link.symlink_to(real)
+    tmp = _write_tmp(tmp_path, "new\n")
+
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+
+    def refuse_staging(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+
+    monkeypatch.setattr("utils.os.replace", fail_replace)
+    monkeypatch.setattr("utils.tempfile.mkstemp", refuse_staging)
+
+    assert Path(atomic_replace(tmp, link)) == real
+    assert link.is_symlink()
+    assert real.read_text(encoding="utf-8") == "new\n"
+    assert not tmp.exists()

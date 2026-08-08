@@ -9,7 +9,7 @@ import type { HermesConfigRecord } from '@/types/hermes'
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { ConfigField } from './config-field'
-import { SECTIONS } from './constants'
+import { SCHEMA_OPTION_LABELS, SECTIONS } from './constants'
 import { enumOptionsFor, getNested, inferFieldSchema, setNested } from './helpers'
 
 // The curated voice keys (Settings → Voice) are the single source of which
@@ -129,7 +129,7 @@ export function VoiceProviderFields({ section, providerKey }: { section: 'tts' |
             enumOptions={enumOptionsFor(key, value, config, isElVoice ? (elVoices ?? undefined) : undefined)}
             key={key}
             onChange={next => updateConfig(setNested(config, key, next))}
-            optionLabels={isElVoice ? elVoiceLabels : undefined}
+            optionLabels={isElVoice ? elVoiceLabels : SCHEMA_OPTION_LABELS[key]}
             schema={field}
             schemaKey={key}
             value={value}

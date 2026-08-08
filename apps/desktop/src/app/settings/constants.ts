@@ -38,6 +38,22 @@ interface ProviderPrefix {
 export const EMPTY_SELECT_VALUE = '__hermes_empty__'
 export const CONTROL_TEXT = 'text-xs'
 
+// Labels are scoped by config key: identical stored values can mean different
+// things in other settings and must not change their display names there.
+export const SCHEMA_OPTION_LABELS: Record<string, Record<string, string>> = {
+  'terminal.backend': { ssh: 'SSH' },
+  'tts.provider': {
+    openai: 'OpenAI',
+    xai: 'xAI',
+    elevenlabs: 'ElevenLabs',
+    minimax: 'MiniMax',
+    neutts: 'NeuTTS',
+    kittentts: 'KittenTTS'
+  },
+  'stt.provider': { openai: 'OpenAI', xai: 'xAI', elevenlabs: 'ElevenLabs' },
+  'tts.neutts.device': { cpu: 'CPU', cuda: 'CUDA', mps: 'MPS' }
+}
+
 export const PROVIDER_GROUPS: ProviderPrefix[] = [
   {
     prefix: 'NOUS_',

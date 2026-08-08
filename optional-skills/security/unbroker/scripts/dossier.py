@@ -22,7 +22,7 @@ def now() -> str:
 def new_subject_id(full_name: str = "") -> str:
     # Opaque id: derives NOTHING from the name, so PII never leaks into directory names,
     # case ids, drafts, or the audit log. full_name kept only for call compatibility.
-    return "sub_" + hashlib.sha1(os.urandom(8)).hexdigest()[:10]
+    return "sub_" + hashlib.sha1(os.urandom(8), usedforsecurity=False).hexdigest()[:10]
 
 
 def create(identity: dict, consent: dict, residency: str = "US", prefs: dict | None = None) -> dict:

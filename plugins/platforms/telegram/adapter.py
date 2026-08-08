@@ -8863,6 +8863,36 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
 
+<<<<<<< HEAD
+=======
+    def _is_duplicate_update(self, update: Update) -> bool:
+        """Return True if this update was already processed (#68502).
+
+        Telegram can redeliver the same update_id via retry-delivery,
+        webhook/polling overlap, or a graceful-shutdown ACK race. A bounded
+        in-memory dict keyed on ``update.update_id`` suppresses duplicates
+        before any handler work begins.
+        """
+        uid = getattr(update, "update_id", None)
+        if uid is None:
+            return False
+        with self._seen_update_ids_lock:
+            if uid in self._seen_update_ids:
+                logger.debug("[Telegram] Suppressing duplicate update_id=%s", uid)
+                return True
+            self._seen_update_ids[uid] = time.time()
+            # Evict oldest entries when the cap is hit. Keep at least the
+            # entry we just inserted so a misconfigured max<=0 cannot wipe
+            # the current update_id and disable dedup for the next hop.
+            _cap = self._seen_update_ids_max if self._seen_update_ids_max > 0 else 1
+            if len(self._seen_update_ids) > _cap:
+                _sorted = sorted(self._seen_update_ids.items(), key=lambda kv: kv[1])
+                _evict = len(self._seen_update_ids) - _cap
+                for k, _ in _sorted[:_evict]:
+                    del self._seen_update_ids[k]
+        return False
+
+>>>>>>> 06d172dd7 (fix(telegram): handler-level update_id dedup proof + eviction floor)
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.
 

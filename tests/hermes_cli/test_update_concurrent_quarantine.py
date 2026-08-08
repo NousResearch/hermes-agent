@@ -149,13 +149,42 @@ def test_quarantine_succeeds_first_attempt(_winp, tmp_path):
     shim = tmp_path / "hermes.exe"
     shim.write_bytes(b"old")
 
-    pairs = cli_main._quarantine_running_hermes_exe(tmp_path)
+    pairs, blocked = cli_main._quarantine_running_hermes_exe(tmp_path)
 
+    assert blocked == []
     assert len(pairs) == 1
     orig, quarantine = pairs[0]
     assert orig == shim
     assert quarantine.name.startswith("hermes.exe.old.")
     assert quarantine.exists()
+    assert not shim.exists()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_quarantine_retries_then_succeeds(_winp, tmp_path, monkeypatch):
+    """A transient OSError on the first attempt should not be fatal."""
+    shim = tmp_path / "hermes.exe"
+    shim.write_bytes(b"old")
+
+    original_rename = Path.rename
+    call_count = {"n": 0}
+
+    def flaky_rename(self, target):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise OSError(32, "share violation (simulated AV scan)")
+        return original_rename(self, target)
+
+    # Speed up the test: avoid actual sleeps in the backoff schedule.
+    monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda d: [shim])
+    with patch.object(Path, "rename", flaky_rename), patch(
+        "time.sleep", lambda *_a, **_k: None
+    ):
+        pairs, blocked = cli_main._quarantine_running_hermes_exe(tmp_path)
+
+    assert call_count["n"] >= 2
+    assert blocked == []
+    assert len(pairs) == 1
     assert not shim.exists()
 
 
@@ -178,7 +207,7 @@ def test_quarantine_falls_back_to_reboot_schedule(_winp, tmp_path, capsys, monke
     with patch.object(Path, "rename", always_fails), patch.object(
         cli_main, "_schedule_replace_on_reboot", fake_schedule
     ), patch("time.sleep", lambda *_a, **_k: None):
-        pairs = cli_main._quarantine_running_hermes_exe(tmp_path)
+        pairs, blocked = cli_main._quarantine_running_hermes_exe(tmp_path)
 
     captured = capsys.readouterr().out
 
@@ -187,11 +216,73 @@ def test_quarantine_falls_back_to_reboot_schedule(_winp, tmp_path, capsys, monke
     # It is NOT added to the returned roll-back list (the issue calls this
     # out — don't undo a deferred operation).
     assert pairs == []
+    # Still locked until reboot — callers must abort install (#68760).
+    assert blocked and blocked[0][0] == shim and blocked[0][1] == "reboot_required"
     # The user got a clear message, not raw [WinError 32].
     assert "scheduled" in captured.lower()
     assert "reboot" in captured.lower()
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_quarantine_actionable_warning_when_everything_fails(
+    _winp, tmp_path, capsys, monkeypatch
+):
+    """When even MoveFileEx fails we should print remediation hints, not a bare error."""
+    shim = tmp_path / "hermes.exe"
+    shim.write_bytes(b"locked")
+
+    def always_fails(self, target):
+        raise OSError(32, "share violation")
+
+    monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda d: [shim])
+    with patch.object(Path, "rename", always_fails), patch.object(
+        cli_main, "_schedule_replace_on_reboot", lambda *_a, **_k: False
+    ), patch("time.sleep", lambda *_a, **_k: None):
+        pairs, blocked = cli_main._quarantine_running_hermes_exe(tmp_path)
+
+    captured = capsys.readouterr().out
+    assert pairs == []
+    assert blocked and blocked[0][1] == "locked"
+    # New message format: no raw "[WinError 32]" dump; instead names the cause
+    # and tells the user what to do.
+    assert "another process" in captured.lower()
+    assert "Hermes Desktop" in captured or "gateway" in captured.lower()
+
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_run_quarantined_install_aborts_when_shim_stays_locked(
+    _winp, tmp_path, capsys, monkeypatch
+):
+    """#68760: do not hand a still-locked hermes.exe to uv/pip."""
+    shim = tmp_path / "hermes.exe"
+    shim.write_bytes(b"locked")
+
+    def always_fails(self, target):
+        raise OSError(32, "share violation")
+
+    monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda d: [shim])
+    monkeypatch.setattr(cli_main, "_detect_concurrent_hermes_instances", lambda d: [(4242, "hermes.exe")])
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
+    install_called = {"n": 0}
+
+    def boom_install(*_a, **_k):
+        install_called["n"] += 1
+
+    with patch.object(Path, "rename", always_fails), patch.object(
+        cli_main, "_schedule_replace_on_reboot", lambda *_a, **_k: False
+    ), patch("time.sleep", lambda *_a, **_k: None), patch.object(
+        cli_main, "_run_install_with_heartbeat", boom_install
+    ):
+        with pytest.raises(cli_main.HermesShimLockedError):
+            cli_main._run_quarantined_install(
+                ["uv", "pip", "install", "-e", ".[all]"], scripts_dir=tmp_path
+            )
+
+    assert install_called["n"] == 0
+    out = capsys.readouterr().out
+    assert "WinError 32" in out or "locked" in out.lower()
+    assert "4242" in out
 
 
 # ---------------------------------------------------------------------------
@@ -524,5 +615,39 @@ def test_unreadable_argv_falls_back_to_the_captured_prefix(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_run_quarantined_install_aborts_on_reboot_required(
+    _winp, tmp_path, capsys, monkeypatch
+):
+    """#68760: reboot-deferred quarantine must not proceed to uv/pip."""
+    shim = tmp_path / "hermes.exe"
+    shim.write_bytes(b"locked")
 
+    monkeypatch.setattr(
+        cli_main,
+        "_quarantine_running_hermes_exe",
+        lambda d: ([], [(shim, "reboot_required")]),
+    )
+    install_calls = []
+
+    def fake_install(cmd, env=None):
+        install_calls.append(list(cmd))
+
+    monkeypatch.setattr(cli_main, "_run_install_with_heartbeat", fake_install)
+    monkeypatch.setattr(cli_main, "_restore_quarantined_exes", lambda moved: None)
+    monkeypatch.setattr(
+        cli_main,
+        "_format_blocked_shim_message",
+        lambda blocked, scripts_dir: "shim reboot required",
+    )
+
+    try:
+        cli_main._run_quarantined_install(["uv", "pip", "install", "-e", "."], scripts_dir=tmp_path)
+        raised = False
+    except cli_main.HermesShimLockedError:
+        raised = True
+
+    assert raised, "reboot_required must raise HermesShimLockedError"
+    assert install_calls == [], "uv/pip must not run when reboot_required"
+    assert "shim reboot required" in capsys.readouterr().out
 

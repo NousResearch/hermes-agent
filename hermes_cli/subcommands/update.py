@@ -73,4 +73,15 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         default=False,
         help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
     )
+    update_parser.add_argument(
+        "--no-auto-restart-desktop",
+        action="store_true",
+        default=False,
+        help=(
+            "Windows: disable the default behavior of closing and reopening the Hermes "
+            "Desktop app to release venv file locks during the update. With this flag, "
+            "if the Desktop is running, `hermes update` will refuse and ask you to "
+            "close it manually — matching the pre-self-restart behavior."
+        ),
+    )
     update_parser.set_defaults(func=cmd_update)

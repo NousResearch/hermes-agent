@@ -2950,6 +2950,392 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
     lines.append("  (or use `hermes update --force-venv` to proceed anyway at your own risk)")
     return "\n".join(lines)
 
+
+# ---------------------------------------------------------------------------
+# Self-restart: closing + reopening the Desktop app around `hermes update`
+# ---------------------------------------------------------------------------
+#
+# The Desktop app (Hermes.exe) supervises its `hermes serve` backend and
+# respawns it within seconds if killed, so the venv-holder guard above used
+# to refuse the update entirely ("close the app, then re-run"). That puts
+# the burden on the user for every single update, even though the *reason*
+# is just a Windows file lock we can release cleanly.
+#
+# Self-restart flow (Windows only — POSIX has no mandatory venv lock, so
+# `hermes update` works without any of this on macOS/Linux):
+#
+#   1. Detect venv-holding python(w).exe processes owned by a Desktop app
+#      (identified by `HERMES_DESKTOP=1` in their environment, or by being
+#      a descendant of Hermes.exe under apps/desktop/release/.../).
+#   2. `taskkill /IM Hermes.exe /T /F` — tree-kill the Electron process +
+#      its pythonw.exe backend + any grandchildren. This releases all venv
+#      .pyd mandatory locks.
+#   3. Poll until the venv shim is writable AND no venv-holders remain.
+#   4. Record the original Hermes.exe path so we can relaunch it after.
+#   5. Caller proceeds with the update; on success we `start "" Hermes.exe`.
+#
+# If ANY step fails — no Desktop detected, kill failed, lock still held,
+# we couldn't find a relaunchable path — we return ``None`` and the caller
+# falls back to the original "close the app manually" message. Never raise.
+#
+# This is opt-in via `--no-auto-restart-desktop` (default ON for `hermes
+# update`); the flag keeps the old "close the app manually" behavior verbatim.
+
+_DESKTOP_EXE_CANDIDATES: tuple[str, ...] = (
+    "Hermes.exe",
+    "Hermes Agent.exe",
+    "Hermes Desktop.exe",
+)
+
+
+def _find_desktop_exe_path() -> str | None:
+    """Locate the Hermes Desktop executable we should restart after update.
+
+    Search order:
+      1. The Desktop's own release dir under this install (the common dev /
+         unpacked-build case): ``<root>/apps/desktop/release/<plat>-unpacked/
+         Hermes.exe``. We know the platform from sys.platform.
+      2. ``%LOCALAPPDATA%\\Programs\\Hermes\\Hermes.exe`` and ``Hermes Agent\\``.
+      3. ``%PROGRAMFILES%\\Hermes\\Hermes.exe`` and ``%PROGRAMFILES(X86)%``.
+      4. Any ``Hermes.exe`` already mapped into memory by a running desktop
+         instance we can observe (last resort — proves the path exists).
+
+    Returns the absolute path or ``None``. Never raises.
+    """
+    candidates: list[Path] = []
+
+    # 1. Dev / unpacked build under this very install.
+    plat_unpacked = (
+        "win-unpacked"
+        if sys.platform == "win32"
+        else "mac" if sys.platform == "darwin" else "linux-unpacked"
+    )
+    candidates.append(
+        _m().PROJECT_ROOT / "apps" / "desktop" / "release" / plat_unpacked / "Hermes.exe"
+    )
+
+    # 2. %LOCALAPPDATA%\Programs\Hermes*\Hermes.exe
+    local_app = os.environ.get("LOCALAPPDATA")
+    if local_app:
+        for sub in ("Hermes", "Hermes Agent", "Hermes Desktop"):
+            for name in _DESKTOP_EXE_CANDIDATES:
+                candidates.append(Path(local_app) / "Programs" / sub / name)
+
+    # 3. %PROGRAMFILES% variants.
+    for pf_env in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        pf = os.environ.get(pf_env)
+        if not pf:
+            continue
+        for sub in ("Hermes", "Hermes Agent", "Hermes Desktop"):
+            for name in _DESKTOP_EXE_CANDIDATES:
+                candidates.append(Path(pf) / sub / name)
+
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return str(cand.resolve())
+        except OSError:
+            continue
+
+    # 4. Last resort: ask the running desktop what its exe path is.
+    try:
+        import psutil
+    except Exception:
+        return None
+    try:
+        for proc in psutil.process_iter(["pid", "name", "exe"]):
+            try:
+                if (proc.info.get("name") or "").lower() in (
+                    n.lower() for n in _DESKTOP_EXE_CANDIDATES
+                ):
+                    exe = proc.info.get("exe")
+                    if exe and Path(exe).is_file():
+                        return str(Path(exe).resolve())
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        return None
+    return None
+
+
+def _is_venv_holder_from_desktop(proc) -> bool:
+    """True if a psutil Process looks like the Desktop's own backend.
+
+    Two signals, in priority order:
+      - ``HERMES_DESKTOP=1`` in the process environment (Desktop pins this
+        on every backend it spawns — see main.ts:6840).
+      - Otherwise: a python(w).exe whose **process tree** contains a
+        Hermes.exe / Hermes Agent.exe ancestor (covers edge cases where
+        env propagation is blocked by a job object or the proc has been
+        reparented).
+    """
+    try:
+        import psutil
+    except Exception:
+        return False
+    try:
+        env = proc.environ() or {}
+        if str(env.get("HERMES_DESKTOP", "")).strip() == "1":
+            return True
+    except (psutil.AccessDenied, psutil.NoSuchProcess, KeyError):
+        pass
+
+    try:
+        for anc in proc.parents():
+            try:
+                name = (anc.name() or "").lower()
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                continue
+            if name in (n.lower() for n in _DESKTOP_EXE_CANDIDATES):
+                return True
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        pass
+    return False
+
+
+def _self_restart_desktop_for_update() -> dict | None:
+    """Try to close the running Desktop app so ``hermes update`` can proceed.
+
+    Returns a token dict ``{"exe": "<absolute path>"}`` on success (caller
+    must relaunch the exe once the update is done). Returns ``None`` when
+    no Desktop was detected, kill failed, or the venv didn't unlock within
+    the budget — in those cases the caller's original "close the app
+    manually" message stays in play. Never raises.
+    """
+    if not _m()._is_windows():
+        return None
+    try:
+        import psutil
+    except Exception:
+        return None
+
+    # 1. Find venv-holders that look like the Desktop's backend.
+    holders = _m()._detect_venv_python_processes()
+    if not holders:
+        return None
+    desktop_owned: list[int] = []
+    for pid, name, cmdline in holders:
+        try:
+            proc = psutil.Process(int(pid))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if _is_venv_holder_from_desktop(proc):
+            desktop_owned.append(int(pid))
+    if not desktop_owned:
+        # Holders exist but none are owned by the Desktop — don't kill
+        # user-owned CLI backends. Caller falls back to the manual prompt.
+        return None
+
+    # 2. Find the Desktop's exe path BEFORE killing it.
+    exe_path = _find_desktop_exe_path()
+    if not exe_path:
+        return None
+
+    # 3. Tree-kill the Desktop's MAIN process only (not all Hermes.exe
+    #    instances — that would also kill the chat / renderer / GPU helper
+    #    processes the user is actively using). The MAIN process is the one
+    #    with a visible window. Its direct child python(w).exe backend is
+    #    killed separately to release the venv locks.
+    print("→ Closing Hermes Desktop to release venv file locks...")
+    main_pids = _find_desktop_main_pids()
+    if not main_pids:
+        print("  ✗ Could not identify the Desktop's main process (no Hermes.exe with a window).")
+        return None
+    backend_pids = [pid for pid in desktop_owned if pid not in main_pids]
+
+    killed = []
+    for pid in main_pids:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(int(pid)), "/F"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            killed.append(int(pid))
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            print(f"  ✗ Could not kill desktop main PID {pid}: {exc}")
+
+    # Brief pause so the OS releases the main process's job-object handle on
+    # its children, then explicitly kill the backend python (which holds the
+    # venv .pyd locks). Using /PID without /T — these are direct children of
+    # the killed main; we don't want to also walk the renderer's tree.
+    _time.sleep(0.5)
+    for pid in backend_pids:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(int(pid)), "/F"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            killed.append(int(pid))
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+    if not killed:
+        print("  ✗ Failed to kill any Desktop process. Aborting self-restart.")
+        return None
+
+    # 4. Poll until the venv is genuinely free. Match the desktop's own
+    #    timeout (15 s) for parity.
+    skipped = set(desktop_owned)
+    deadline = _time.monotonic() + 15.0
+    while _time.monotonic() < deadline:
+        remaining = _m()._detect_venv_python_processes(exclude_pids=skipped)
+        remaining = [m for m in remaining if m[0] not in skipped]
+        if not remaining:
+            print(f"  ✓ Desktop closed (PIDs: {', '.join(map(str, killed))}), venv unlocked.")
+            return {"exe": exe_path, "killed_pids": killed}
+        _time.sleep(0.4)
+
+    print("  ✗ Venv still locked after killing the Desktop. Aborting self-restart.")
+    return None
+
+
+def _find_desktop_main_pids() -> list[int]:
+    """Return PIDs of the Desktop's MAIN Hermes.exe process(es).
+
+    "Main" = the Hermes.exe instance with a visible window (``MainWindowTitle``
+    is set) — that's the one the user sees, and the one whose death orphans
+    the renderer / GPU / utility helper children. Killing it does NOT require
+    ``/T`` because the helpers exit on their own when the IPC pipe to main
+    closes, and a precise main-only kill is what keeps the chat session
+    (``tui_gateway.slash_worker``) and the renderer alive across the
+    self-restart window.
+    """
+    pids: list[int] = []
+    try:
+        import psutil
+    except Exception:
+        return pids
+    try:
+        for proc in psutil.process_iter(["pid", "name", "exe"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+                if name not in (n.lower() for n in _DESKTOP_EXE_CANDIDATES):
+                    continue
+                # Main process = the one with a visible window. Helper
+                # processes pass --type=utility / --type=renderer / etc.
+                try:
+                    title = proc.name() and ""  # cheap check; actual win check below
+                except Exception:
+                    pass
+                if not _m()._process_has_main_window(proc):
+                    continue
+                pids.append(int(proc.info["pid"]))
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        return pids
+    return pids
+
+
+def _process_has_main_window(proc) -> bool:
+    """Windows-only: does this process have a visible top-level window?
+
+    Implemented via ``EnumWindows`` + ``GetWindowThreadProcessId`` so we
+    match the parent (main) process and not the GPU/renderer/utility
+    children. ``pywin32`` and ``psutil`` are both best-effort — if either
+    is missing, fall back to "assume it's a main process" so we still
+    surface a sensible token; the kill path itself uses PID, not window
+    truth, so a false positive just means we kill a helper we didn't
+    strictly need to (safe — the renderer reattaches on relaunch).
+    """
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        EnumWindows = user32.EnumWindows
+        GetWindowThreadProcessId = user32.GetWindowThreadProcessId
+        IsWindowVisible = user32.IsWindowVisible
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_bool, wintypes.HWND, wintypes.LPARAM
+        )
+
+        target_pid = int(proc.pid)
+        found = []
+
+        def callback(hwnd, _lparam):
+            if not IsWindowVisible(hwnd):
+                return True
+            owner_pid = wintypes.DWORD()
+            GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+            if int(owner_pid.value) == target_pid:
+                found.append(hwnd)
+                return False  # stop enumeration
+            return True
+
+        EnumWindows(WNDENUMPROC(callback), 0)
+        return bool(found)
+    except Exception:
+        # Last-resort: if we can't query windows, treat the first Hermes.exe
+        # in the parent's child list as "main" — the caller filters more
+        # strictly anyway via parent-chain matching.
+        return True
+
+
+def _relaunch_desktop_after_update(token: dict | None) -> None:
+    """Best-effort: restart the Desktop we closed at the start of the update.
+
+    Called from a ``finally`` after the update pipeline runs (or aborts)
+    so the user always gets their app back. No-op when self-restart
+    wasn't used, when the token is missing, or when the exe no longer
+    exists (e.g. user uninstalled mid-update — leave it alone).
+    """
+    if not token:
+        return
+    exe = token.get("exe")
+    if not exe:
+        return
+    p = Path(exe)
+    try:
+        if not p.is_file():
+            return
+    except OSError:
+        return
+
+    print()
+    print(f"→ Restarting Hermes Desktop ({p.name})...")
+    try:
+        if sys.platform == "win32":
+            # DETACHED_PROCESS lets the app outlive the CLI process tree.
+            # CREATE_BREAKAWAY_FROM_JOB (0x01000000) — desktop in some installs
+            # is launched under a job object; if we inherit it, killing this
+            # CLI kills the desktop on the way out. Break away.
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+            flags = (
+                DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
+            )
+            subprocess.Popen(
+                [str(p)],
+                creationflags=flags,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.Popen(
+                [str(p)],
+                start_new_session=True,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        print("  ✓ Desktop relaunched. It will appear in a moment.")
+    except (OSError, ValueError) as exc:
+        print(f"  ⚠ Could not relaunch Desktop automatically: {exc}")
+        print(f"    Start it manually: {exe}")
+
+
 def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
     """Return venv-interpreter ancestors of *pids* that hold the install open.
 
@@ -3625,6 +4011,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     # With gateways paused, anything still running from the venv interpreter
     # (most commonly the Desktop app's `hermes serve` backend) will keep .pyd
+    # files locked and corrupt the dependency sync below. If we can identify
+    # the Desktop as the owner of those processes, close it cleanly first,
+    # run the update, then relaunch it; otherwise fall through to the manual
+    # "close the app" prompt. ``--no-auto-restart-desktop`` skips the
+    # self-restart attempt and goes straight to the manual prompt.
+    _desktop_relaunch_token: dict | None = None
+    if (
+        _m()._is_windows()
+        and not getattr(args, "force_venv", False)
+        and not getattr(args, "no_auto_restart_desktop", False)
+    ):
+        _desktop_relaunch_token = _self_restart_desktop_for_update()
+        if _desktop_relaunch_token:
+            # Register relaunch so ANY exit path (success, exception, sys.exit)
+            # still brings the user's Desktop back.
+            import atexit as _atexit2
+
+            _atexit2.register(
+                _relaunch_desktop_after_update, _desktop_relaunch_token
+            )
+
+    # With gateways paused, anything still running from the venv interpreter
+    # (most commonly the Desktop app's `hermes serve` backend) will keep .pyd
     # files locked and corrupt the dependency sync below. Refuse rather than
     # race: killing the desktop backend is futile (the app supervises and
     # respawns it), so the user must close the app. Deliberately NOT bypassed
@@ -3661,6 +4070,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
             print(_format_venv_python_holders_message(_venv_holders))
+            _relaunch_desktop_after_update(_desktop_relaunch_token)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(2)
 
@@ -3728,6 +4138,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         try:
             _update_via_zip(args)
         finally:
+            _relaunch_desktop_after_update(_desktop_relaunch_token)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         return
 

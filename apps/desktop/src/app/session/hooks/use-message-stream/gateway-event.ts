@@ -1079,6 +1079,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             })
           })
         }
+      } else if (event.type === 'window.read.request') {
+        // read_window_below tool: main owns native window enumeration, so ask
+        // it over IPC and answer. Empty text = unavailable (no bridge, or
+        // enumeration unsupported on this system e.g. Wayland).
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const read = window.hermesDesktop?.readWindowBelow
+          void Promise.resolve(read ? read() : null).then(result => {
+            void $gateway.get()?.request('window.read.respond', {
+              request_id: requestId,
+              text: result ? JSON.stringify(result) : ''
+            })
+          })
+        }
       } else if (event.type === 'agent.terminal.output') {
         // Live chunk from a background process → its read-only agent terminal tab.
         writeAgentTerminalChunk(payload?.process_id ?? '', payload?.chunk ?? '')

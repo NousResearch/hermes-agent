@@ -132,6 +132,18 @@ declare global {
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
+      /** read_window_below tool: metadata for the OS window directly underneath this one (never pixels). */
+      readWindowBelow?: () => Promise<{
+        frontmost: { app: string; title: string } | null
+        note?: string
+        platform: string
+        window: {
+          app: string
+          bounds: { height: number; width: number; x: number; y: number }
+          id: number
+          title: string
+        } | null
+      } | null>
       readFileDataUrl: (filePath: string) => Promise<string>
       /** Remote non-image attach: higher dedicated cap than preview/Settings default. */
       readFileDataUrlForAttach?: (filePath: string) => Promise<string>

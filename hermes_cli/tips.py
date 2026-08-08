@@ -305,6 +305,7 @@ TIPS = [
     "Every interrupt during an agent run is logged to ~/.hermes/interrupt_debug.log with timestamps.",
     "BROWSER_CDP_URL connects browser tools to any running Chromium-family browser — accepts WebSocket, HTTP, or host:port.",
     "BROWSERBASE_ADVANCED_STEALTH=true enables advanced anti-detection with custom Chromium (Scale Plan).",
+    "BROWSERBASE_CONTEXT_ID attaches cloud browser sessions to a persistent Browserbase Context — cookies and logins survive across sessions.",
     "The CLI auto-switches to compact mode in terminals narrower than 80 columns.",
     "Quick commands support two types: exec (run shell command directly) and alias (redirect to another command).",
     "Per-task delegation model: delegation.model and delegation.provider in config route subagents to cheaper models.",

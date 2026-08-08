@@ -49,6 +49,31 @@ BROWSERBASE_PROJECT_ID=your-project-id-here
 
 在 [browserbase.com](https://browserbase.com) 获取您的凭据。
 
+### 使用 Browserbase Context 实现持久登录
+
+默认情况下，每个 Browserbase 会话都从一个空白浏览器配置文件启动 — 会话关闭后，会话期间完成的任何登录都会丢失。设置 `BROWSERBASE_CONTEXT_ID` 可将每个新会话附加到一个 Browserbase [Context](https://docs.browserbase.com/features/contexts)：这是一个持久化配置文件，可在彼此独立的会话之间保留 Cookie、`localStorage`、IndexedDB、会话存储、Service Worker 和浏览器偏好设置（HTTP 缓存不会持久化）。Hermes 以 `persist: true` 附加该 Context，因此会话期间的更改 — 登录、保存站点偏好 — 会被写回并延续到后续会话。它可与 `BROWSERBASE_ADVANCED_STEALTH=true` 同时使用；两者作用于同一个会话。
+
+这与 `BROWSERBASE_KEEP_ALIVE` 不同：keep-alive 让**单个**会话保持在线，以便 Hermes 在断连后重新连接；而 Context 在彼此独立的多个会话**之间**传递已认证状态。
+
+先通过 Browserbase API 创建一个 Context（名称在项目内唯一，不区分大小写）：
+
+```bash
+curl -X POST https://api.browserbase.com/v1/contexts \
+  -H "X-BB-API-Key: $BROWSERBASE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-context"}'
+```
+
+将返回的 `id` 填入 `BROWSERBASE_CONTEXT_ID`。首次登录时，让代理导航到目标站点，然后在 Browserbase 的 **Live View** 中打开会话并手动完成登录 — 包括 2FA 或 CAPTCHA。代理始终不需要密码：会话关闭后，认证状态就保存在 Context 中，之后的每个会话都会以已登录状态启动。该变量按 profile 解析，因此在多路复用 gateway 下，每个 profile 可通过自己的 `.env` 指向各自的 Context。
+
+一些注意事项：
+
+- 关闭会话后，请等待几秒再启动下一个会话 — Context 需要片刻才能完成数据同步。
+- 不要在两个同时运行的会话中使用同一个 Context；站点可能会强制注销。
+- Context 中保存着有效的认证材料（会话 Cookie 和令牌），应视为敏感数据：为每个代理或用途使用单独的 Context，不要在不相关的自动化流程之间共享。Context ID 本身只是一个标识符，不像 API 密钥那样属于凭据 — 但也没有理由公开它。
+- 网站仍可能在服务端使 Cookie 过期或令牌失效；Context 无法阻止这种情况。
+- Context 会一直存在，直到您显式删除它（或其所在项目被删除）。
+
 ### Browser Use 云端模式
 
 要使用 Browser Use 作为云端浏览器提供商，请添加：
@@ -360,6 +385,10 @@ BROWSERBASE_ADVANCED_STEALTH=false
 
 # Session reconnection after disconnects — requires paid plan (default: "true")
 BROWSERBASE_KEEP_ALIVE=true
+
+# Persistent Context — login state survives across sessions (default: unset)
+# See "使用 Browserbase Context 实现持久登录" above
+BROWSERBASE_CONTEXT_ID=your-context-id-here
 
 # Custom session timeout in milliseconds (default: project default)
 # Examples: 600000 (10min), 1800000 (30min)

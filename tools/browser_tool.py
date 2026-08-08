@@ -35,6 +35,9 @@ Environment Variables:
   requires paid plan (default: "true")
 - BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in seconds (max 21600 = 6h).
   Set to extend beyond project default. Common values: 600 (10min), 1800 (30min) (default: none)
+- BROWSERBASE_CONTEXT_ID: Attach sessions to a persistent Browserbase Context
+  (browserSettings.context with persist=true) so cookies and login state carry
+  across sessions (default: none)
 
 Usage:
     from tools.browser_tool import browser_navigate, browser_snapshot, browser_click

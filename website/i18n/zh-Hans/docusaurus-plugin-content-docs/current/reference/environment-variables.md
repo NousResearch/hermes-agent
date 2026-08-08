@@ -131,6 +131,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `EXA_API_KEY` | Exa API 密钥，用于 AI 原生网络搜索和内容获取（[exa.ai](https://exa.ai/)） |
 | `BROWSERBASE_API_KEY` | 浏览器自动化（[browserbase.com](https://browserbase.com/)） |
 | `BROWSERBASE_PROJECT_ID` | Browserbase 项目 ID |
+| `BROWSERBASE_CONTEXT_ID` | 可选的 Browserbase Context ID——以 `persist: true` 将每个会话附加到该持久化 [Context](https://docs.browserbase.com/features/contexts)，使 Cookie 和登录状态在会话之间延续 |
 | `BROWSER_USE_API_KEY` | Browser Use 云浏览器 API 密钥（[browser-use.com](https://browser-use.com/)） |
 | `FIRECRAWL_BROWSER_TTL` | Firecrawl 浏览器会话 TTL（秒，默认：300） |
 | `BROWSER_CDP_URL` | 本地浏览器的 Chrome DevTools Protocol（CDP）URL（通过 `/browser connect` 设置，例如 `ws://localhost:9222`） |

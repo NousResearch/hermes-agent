@@ -49,6 +49,31 @@ BROWSERBASE_PROJECT_ID=your-project-id-here
 
 Get your credentials at [browserbase.com](https://browserbase.com).
 
+### Persistent login with Browserbase Contexts
+
+By default every Browserbase session starts from a blank browser profile — any login performed during a session is gone once it closes. Set `BROWSERBASE_CONTEXT_ID` to attach every new session to a Browserbase [Context](https://docs.browserbase.com/features/contexts): a persistent profile that carries cookies, `localStorage`, IndexedDB, session storage, service workers, and browser preferences across separate sessions (the HTTP cache is not persisted). Hermes attaches the Context with `persist: true`, so changes made during a session — logging in, saving site preferences — are written back and survive into future sessions. It works alongside `BROWSERBASE_ADVANCED_STEALTH=true`; both apply to the same session.
+
+This is not the same as `BROWSERBASE_KEEP_ALIVE`: keep-alive keeps **one** session warm so Hermes can reconnect to it after a disconnect, while a Context carries authenticated state **across** separate, independent sessions.
+
+Create a Context once via the Browserbase API (names are unique per project, case-insensitive):
+
+```bash
+curl -X POST https://api.browserbase.com/v1/contexts \
+  -H "X-BB-API-Key: $BROWSERBASE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-context"}'
+```
+
+Put the returned `id` into `BROWSERBASE_CONTEXT_ID`. For the initial login, ask the agent to navigate to the site, then open the session in Browserbase's **Live View** and log in by hand — including any 2FA or CAPTCHA. The agent never needs the password: once the session closes, the authenticated state lives in the Context, and every later session starts already logged in. The variable is resolved per profile, so under a multiplexed gateway each profile can point at its own Context through its own `.env`.
+
+A few caveats:
+
+- After closing a session, wait a few seconds before starting the next one — the Context needs a moment to finish syncing.
+- Don't use the same Context in two simultaneous sessions; sites may force a logout.
+- A Context stores live authentication material (session cookies and tokens), so treat it as sensitive: use a separate Context per agent or purpose instead of sharing one across unrelated automations. The Context ID itself is an identifier, not a credential like the API key — but there's no reason to publish it either.
+- Websites can still expire cookies or invalidate tokens server-side; a Context doesn't prevent that.
+- A Context lives until you explicitly delete it (or its project is deleted).
+
 ### Browser Use cloud mode
 
 To use Browser Use as your cloud browser provider, add:
@@ -396,6 +421,10 @@ BROWSERBASE_ADVANCED_STEALTH=false
 
 # Session reconnection after disconnects — requires paid plan (default: "true")
 BROWSERBASE_KEEP_ALIVE=true
+
+# Persistent Context — login state survives across sessions (default: unset)
+# See "Persistent login with Browserbase Contexts" above
+BROWSERBASE_CONTEXT_ID=your-context-id-here
 
 # Custom session timeout in seconds (max 21600 = 6 hours) (default: project default)
 # Examples: 600 (10min), 1800 (30min), 21600 (6h max)

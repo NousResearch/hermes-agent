@@ -147,6 +147,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `BRAVE_SEARCH_API_KEY` | Brave Search API subscription token for web search (free tier available) ([brave.com/search/api](https://brave.com/search/api/)) |
 | `BROWSERBASE_API_KEY` | Browser automation ([browserbase.com](https://browserbase.com/)) |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
+| `BROWSERBASE_CONTEXT_ID` | Optional Browserbase Context ID — attaches every session to a persistent [Context](https://docs.browserbase.com/features/contexts) with `persist: true`, so cookies and login state carry across sessions |
 | `BROWSER_USE_API_KEY` | Browser Use cloud browser API key ([browser-use.com](https://browser-use.com/)) |
 | `FIRECRAWL_BROWSER_TTL` | Firecrawl browser session TTL in seconds (default: 300) |
 | `BROWSER_CDP_URL` | Chrome DevTools Protocol URL for local browser (set via `/browser connect`, e.g. `ws://localhost:9222`) |

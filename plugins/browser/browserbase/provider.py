@@ -27,12 +27,20 @@ Optional feature knobs::
     BROWSERBASE_ADVANCED_STEALTH=false
     BROWSERBASE_KEEP_ALIVE=true   # default true
     BROWSERBASE_SESSION_TIMEOUT=... (seconds, integer, max 21600 = 6h)
+    BROWSERBASE_CONTEXT_ID=...    # optional persistent Browserbase Context
+
+``BROWSERBASE_CONTEXT_ID`` attaches every session to an existing Browserbase
+Context with ``persist: true``, so cookies/localStorage — and therefore
+logins — survive across *separate* sessions. That is distinct from
+``BROWSERBASE_KEEP_ALIVE``, which keeps a single session reconnectable.
+Create the Context once (``POST /v1/contexts``) and reuse its id; the id is
+an identifier, not a credential, but the data behind it is authentication
+state, so give each agent/purpose its own Context.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from typing import Any, Dict, Optional
 
@@ -73,7 +81,7 @@ class BrowserbaseBrowserProvider(BrowserProvider):
             return {
                 "api_key": api_key,
                 "project_id": project_id,
-                "base_url": os.environ.get(
+                "base_url": get_secret(
                     "BROWSERBASE_BASE_URL", "https://api.browserbase.com"
                 ).rstrip("/"),
             }
@@ -95,15 +103,21 @@ class BrowserbaseBrowserProvider(BrowserProvider):
     def create_session(self, task_id: str) -> Dict[str, object]:
         config = self._get_config()
 
-        # Optional env-var knobs
-        enable_proxies = os.environ.get("BROWSERBASE_PROXIES", "true").lower() != "false"
+        # Optional knobs. All read through get_secret rather than os.environ: a
+        # profile's .env is installed as a contextvar scope under the
+        # multiplexing gateway, so an os.environ read would miss the profile's
+        # setting (or pick up a sibling profile's). With multiplexing off,
+        # get_secret falls through to os.environ, so single-profile installs
+        # behave exactly as before.
+        enable_proxies = get_secret("BROWSERBASE_PROXIES", "true").lower() != "false"
         enable_advanced_stealth = (
-            os.environ.get("BROWSERBASE_ADVANCED_STEALTH", "false").lower() == "true"
+            get_secret("BROWSERBASE_ADVANCED_STEALTH", "false").lower() == "true"
         )
         enable_keep_alive = (
-            os.environ.get("BROWSERBASE_KEEP_ALIVE", "true").lower() != "false"
+            get_secret("BROWSERBASE_KEEP_ALIVE", "true").lower() != "false"
         )
-        custom_timeout_ms = os.environ.get("BROWSERBASE_SESSION_TIMEOUT")
+        custom_timeout_ms = get_secret("BROWSERBASE_SESSION_TIMEOUT")
+        context_id = (get_secret("BROWSERBASE_CONTEXT_ID") or "").strip()
 
         features_enabled = {
             "basic_stealth": True,
@@ -111,6 +125,7 @@ class BrowserbaseBrowserProvider(BrowserProvider):
             "advanced_stealth": False,
             "keep_alive": False,
             "custom_timeout": False,
+            "persistent_context": False,
         }
 
         session_config: Dict[str, object] = {"projectId": config["project_id"]}
@@ -131,8 +146,17 @@ class BrowserbaseBrowserProvider(BrowserProvider):
         if enable_proxies:
             session_config["proxies"] = True
 
+        # Build browserSettings incrementally: advanced stealth and a
+        # persistent Context share the object, so neither may clobber the
+        # other. Attach it only when non-empty to keep the payload byte-
+        # identical for users who set neither.
+        browser_settings: Dict[str, object] = {}
         if enable_advanced_stealth:
-            session_config["browserSettings"] = {"advancedStealth": True}
+            browser_settings["advancedStealth"] = True
+        if context_id:
+            browser_settings["context"] = {"id": context_id, "persist": True}
+        if browser_settings:
+            session_config["browserSettings"] = browser_settings
 
         # --- Create session via API ---
         headers = {
@@ -202,6 +226,8 @@ class BrowserbaseBrowserProvider(BrowserProvider):
             features_enabled["keep_alive"] = True
         if custom_timeout_ms and "timeout" in session_config:
             features_enabled["custom_timeout"] = True
+        if context_id:
+            features_enabled["persistent_context"] = True
 
         feature_str = ", ".join(k for k, v in features_enabled.items() if v)
         logger.info(

@@ -3737,6 +3737,14 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
     },
+    "BROWSERBASE_CONTEXT_ID": {
+        "description": "Browserbase Context ID for a persistent browser context (optional — keeps cookies and logins across cloud browser sessions)",
+        "prompt": "Browserbase context ID",
+        "url": "https://browserbase.com/",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
+        "category": "tool",
+    },
     "BROWSER_USE_API_KEY": {
         "description": "Browser Use API key for cloud browser (optional — local browser works without this)",
         "prompt": "Browser Use API key",

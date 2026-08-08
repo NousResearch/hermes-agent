@@ -26154,6 +26154,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 first_response,
                                 metadata=_status_thread_metadata,
                             )
+                            # Mark delivery on the stream consumer so the
+                            # normal completion pipeline that runs after this
+                            # branch recognises the response as already in
+                            # the user's chat and does not re-send the same
+                            # text moments later (#81052).
+                            if _sc is not None and hasattr(
+                                _sc, "mark_out_of_band_delivery"
+                            ):
+                                try:
+                                    _sc.mark_out_of_band_delivery(first_response)
+                                except Exception as _mark_exc:
+                                    logger.debug(
+                                        "Stream consumer mark_out_of_band_delivery failed: %s",
+                                        _mark_exc,
+                                    )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:

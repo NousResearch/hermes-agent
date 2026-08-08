@@ -362,6 +362,28 @@ class GatewayStreamConsumer:
         """The Discord/chat message ID of the last-sent or edited message."""
         return self._message_id
 
+    def mark_out_of_band_delivery(self, text: str) -> None:
+        """Record that ``text`` reached the user via a non-streaming send.
+
+        Used by paths like the queued-follow-up fallback in
+        ``gateway/run.py`` that hand ``first_response`` straight to
+        ``adapter.send()`` when streaming confirmation has not yet arrived.
+        Without this, the normal completion pipeline does not know the
+        message is already in the user's chat and re-sends the same text
+        moments later (#81052).
+
+        Sets ``final_response_sent`` / ``final_content_delivered`` so the
+        gateway's suppression check (the same ``_stream_confirmed_final_delivery``
+        predicate the streaming path uses) recognises the message as
+        delivered, and records the text so ``delivered_final_matches``
+        reconciles cleanly with the completed ``final_response``.
+        """
+        if not text:
+            return
+        self._final_response_sent = True
+        self._final_content_delivered = True
+        self._record_turn_final_payload(text)
+
     @property
     def final_content_delivered(self) -> bool:
         """True when the final response content reached the user, even if

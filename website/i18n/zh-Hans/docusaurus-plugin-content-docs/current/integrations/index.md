@@ -69,6 +69,10 @@ Hermes 内置完整的浏览器自动化功能，提供多种后端选项，用�
 
 - **[IDE 集成（ACP）](/user-guide/features/acp)** — 在兼容 ACP 的编辑器（如 VS Code、Zed 和 JetBrains）中使用 Hermes Agent。Hermes 作为 ACP 服务器运行，在编辑器内渲染聊天消息、工具活动、文件差异和终端命令。
 
+## 语音前台
+
+- **[qwen-audio-agent](/integrations/qwen-audio-agent)** —— 开源实时全双工语音前台。通过 `hermes acp` 免提驱动 Hermes，支持插嘴打断、完全本地化的唤醒词，后台任务结果自动读回对话。提供 macOS 桌面悬浮球、终端 TUI 与 Web 三种形态。
+
 ## 程序化访问
 
 - **[API 服务器](/user-guide/features/api-server)** — 将 Hermes 暴露为兼容 OpenAI 的 HTTP 端点。任何支持 OpenAI 格式的前端——Open WebUI、LobeChat、LibreChat、NextChat、ChatBox——均可连接并将 Hermes 作为后端使用，享有其完整工具集。

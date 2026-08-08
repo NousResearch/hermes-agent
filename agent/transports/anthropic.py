@@ -106,7 +106,11 @@ class AnthropicTransport(ProviderTransport):
         # tests/agent/test_anthropic_thinking_block_order.py.
         ordered_blocks = []
 
-        for block in response.content:
+        # Some Anthropic-compatible endpoints return non-spec ``content=None``.
+        # Direct callers such as AnthropicAuxiliaryClient normalize before any
+        # validation, so keep normalization total; validate_response() still
+        # classifies the original response as invalid for guarded call paths.
+        for block in (response.content or []):
             block_dict = _to_plain_data(block)
             clean_block = None
             if isinstance(block_dict, dict):

@@ -194,6 +194,20 @@ if is_termux; then
     export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk 2>/dev/null || printf '%s' "${ANDROID_API_LEVEL:-}")"
     echo -e "${CYAN}→${NC} Termux detected — installing the tested Android bundle"
     "$SETUP_PYTHON" -m pip install --upgrade pip setuptools wheel
+
+    # On Android, psutil's setup.py rejects sys.platform == 'android' before
+    # it ever invokes the C build, so the pip install below would fail at
+    # "platform android is not supported".  Prebuild psutil from the official
+    # sdist with a one-line marker patch (Linux source path is fine on
+    # Android).  Stopgap until psutil#2762 ships upstream.
+    if "$SETUP_PYTHON" -c 'import sys; raise SystemExit(0 if sys.platform == "android" else 1)' 2>/dev/null; then
+        echo -e "${CYAN}→${NC} Android Python detected: prebuilding psutil compatibility shim..."
+        if ! "$SETUP_PYTHON" "$SCRIPT_DIR/scripts/install_psutil_android.py" --pip "$SETUP_PYTHON -m pip"; then
+            echo -e "${YELLOW}⚠${NC} psutil Android prebuild failed — package install will likely fail next."
+            echo -e "${CYAN}→${NC} Workaround: manually rerun 'python scripts/install_psutil_android.py' once your toolchain is set up."
+        fi
+    fi
+
     if [ -f "constraints-termux.txt" ]; then
         "$SETUP_PYTHON" -m pip install -e ".[termux]" -c constraints-termux.txt || {
             echo -e "${YELLOW}⚠${NC} Termux bundle install failed, falling back to base install..."

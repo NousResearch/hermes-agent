@@ -2934,6 +2934,13 @@ def _run_portal_one_shot(config: dict) -> None:
     print_info("  Run `hermes` to start chatting.")
 
 
+def _print_config_backup_notice(backup_path: Path, config_path: Path) -> None:
+    """Tell the user where the pre-setup copy of config.yaml lives."""
+    print_info(f"Previous config backed up to: {backup_path}")
+    print_info("If setup changed a value you customized, restore it with:")
+    print_info(f"  cp {backup_path} {config_path}")
+
+
 def run_setup_wizard(args):
     """Run the interactive setup wizard.
 
@@ -2953,18 +2960,13 @@ def run_setup_wizard(args):
         return
     ensure_hermes_home()
 
-    reset_requested = bool(getattr(args, "reset", False))
-    if reset_requested:
-        save_config(copy.deepcopy(DEFAULT_CONFIG))
-        print_success("Configuration reset to defaults.")
-
-    reconfigure_requested = bool(getattr(args, "reconfigure", False))
-    quick_requested = bool(getattr(args, "quick", False))
-
-    config = load_config()
-    hermes_home = get_hermes_home()
-
-    # Back up existing config before setup modifies it (#3522)
+    # Back up existing config before setup modifies it (#3522).
+    #
+    # This MUST stay ahead of the --reset branch below: --reset overwrites
+    # config.yaml with DEFAULT_CONFIG, and get_config_path() is the very file
+    # save_config() writes, so a backup taken afterwards copies the defaults we
+    # just wrote. The user's real config would be unrecoverable on precisely
+    # the invocation where the backup matters most.
     config_path = get_config_path()
     if config_path.exists():
         from datetime import datetime as _dt
@@ -2978,6 +2980,24 @@ def run_setup_wizard(args):
             _backup_path = None
     else:
         _backup_path = None
+    _backup_notice_shown = False
+
+    reset_requested = bool(getattr(args, "reset", False))
+    if reset_requested:
+        save_config(copy.deepcopy(DEFAULT_CONFIG))
+        print_success("Configuration reset to defaults.")
+        # --reset is destructive and can leave the wizard early (e.g. the
+        # non-interactive return below), never reaching the end-of-setup
+        # notice. Tell the user where the copy is while it still helps.
+        if _backup_path and _backup_path.exists():
+            _print_config_backup_notice(_backup_path, config_path)
+            _backup_notice_shown = True
+
+    reconfigure_requested = bool(getattr(args, "reconfigure", False))
+    quick_requested = bool(getattr(args, "quick", False))
+
+    config = load_config()
+    hermes_home = get_hermes_home()
 
     # Detect non-interactive environments (headless SSH, Docker, CI/CD)
     non_interactive = getattr(args, 'non_interactive', False)
@@ -3163,10 +3183,8 @@ def run_setup_wizard(args):
 
     # Save and show summary
     save_config(config)
-    if _backup_path and _backup_path.exists():
-        print_info(f"Previous config backed up to: {_backup_path}")
-        print_info("If setup changed a value you customized, restore it with:")
-        print_info(f"  cp {_backup_path} {config_path}")
+    if _backup_path and _backup_path.exists() and not _backup_notice_shown:
+        _print_config_backup_notice(_backup_path, config_path)
     _print_setup_summary(config, hermes_home)
 
 

@@ -70,6 +70,35 @@ _api_request_profile: ContextVar[Optional[str]] = ContextVar(
     "api_server_request_profile", default=None
 )
 
+_RUN_RUNTIME_ENV_KEYS = frozenset({
+    "PAPERCLIP_API_KEY",
+    "PAPERCLIP_API_URL",
+    "PAPERCLIP_AGENT_ID",
+    "PAPERCLIP_COMPANY_ID",
+    "PAPERCLIP_RUN_ID",
+    "PAPERCLIP_TASK_ID",
+})
+_RUN_RUNTIME_ENV_MAX_BYTES = 32 * 1024
+
+
+def _parse_run_runtime_env(body: Any) -> tuple[dict[str, str], Optional[str]]:
+    """Validate the narrow subprocess environment accepted by ``/v1/runs``."""
+    raw = body.get("runtime_env")
+    if raw is None:
+        return {}, None
+    if not isinstance(raw, dict):
+        return {}, "'runtime_env' must be an object"
+    if any(
+        not isinstance(key, str)
+        or key not in _RUN_RUNTIME_ENV_KEYS
+        or not isinstance(value, str)
+        for key, value in raw.items()
+    ):
+        return {}, "'runtime_env' contains an unsupported name or non-string value"
+    if sum(len(key.encode()) + len(value.encode()) for key, value in raw.items()) > _RUN_RUNTIME_ENV_MAX_BYTES:
+        return {}, "'runtime_env' is too large"
+    return dict(raw), None
+
 def _approval_event_choices(*, smart_denied: bool, allow_permanent: bool) -> list[str]:
     if smart_denied:
         return ["once", "deny"]
@@ -6470,6 +6499,10 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
 
+        runtime_env, runtime_env_error = _parse_run_runtime_env(body)
+        if runtime_env_error:
+            return web.json_response(_openai_error(runtime_env_error), status=400)
+
         raw_input = body.get("input")
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
@@ -6648,6 +6681,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         pass
 
                 def _run_sync():
+                    from gateway.runtime_context import bind_runtime_env
                     from gateway.session_context import clear_session_vars
                     from tools.approval import (
                         register_gateway_notify,
@@ -6659,7 +6693,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     effective_task_id = session_id or run_id
                     approval_token = None
                     session_tokens = []
-                    with self._profile_scope(request_profile):
+                    with self._profile_scope(request_profile), bind_runtime_env(runtime_env):
                         try:
                             # Bind approval/session identity for this API run via
                             # contextvars so concurrent runs do not share process

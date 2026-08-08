@@ -1325,6 +1325,12 @@ def _make_run_env(env: dict) -> dict:
 
     run_env = _scrub_delegated_child_kanban_env(run_env)
 
+    # Trusted `/v1/runs` integration values are request-local. Merge them last
+    # so they reach tool subprocesses without mutating process-global state.
+    from gateway.runtime_context import get_runtime_env
+
+    run_env.update(get_runtime_env())
+
     return run_env
 
 

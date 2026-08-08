@@ -9,6 +9,9 @@ Covers:
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import subprocess
+import sys
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -189,6 +192,83 @@ class TestStartRun:
         assert captured.get("origin_session_id") == "runs-raw-sid", (
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
+
+    @pytest.mark.asyncio
+    async def test_start_scopes_runtime_env_to_tool_subprocess(self, adapter):
+        app = _create_runs_app(adapter)
+        captured = {}
+        child_ran = threading.Event()
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _capture_run(user_message=None, conversation_history=None, task_id=None):
+                    from tools.environments.local import _make_run_env
+
+                    child_env = _make_run_env({})
+                    captured["child"] = subprocess.check_output(
+                        [
+                            sys.executable,
+                            "-c",
+                            "import os; print(os.environ['PAPERCLIP_API_KEY']); print(os.environ['PAPERCLIP_RUN_ID'])",
+                        ],
+                        env=child_env,
+                        text=True,
+                    ).splitlines()
+                    child_ran.set()
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _capture_run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "runtime_env": {
+                            "PAPERCLIP_API_KEY": "scoped-test-token",
+                            "PAPERCLIP_RUN_ID": "paperclip-run-1",
+                        },
+                    },
+                )
+                assert resp.status == 202
+                assert await asyncio.to_thread(child_ran.wait, 120)
+
+        assert captured["child"] == ["scoped-test-token", "paperclip-run-1"]
+        from gateway.runtime_context import get_runtime_env
+
+        assert get_runtime_env() == {}
+
+    def test_runtime_env_isolated_between_concurrent_workers(self):
+        from gateway.runtime_context import bind_runtime_env, get_runtime_env
+        from tools.environments.local import _make_run_env
+
+        barrier = threading.Barrier(2)
+
+        def _read_bound_value(value):
+            with bind_runtime_env({"PAPERCLIP_API_KEY": value}):
+                barrier.wait(timeout=10)
+                return _make_run_env({})["PAPERCLIP_API_KEY"]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            values = list(pool.map(_read_bound_value, ["run-token-a", "run-token-b"]))
+
+        assert values == ["run-token-a", "run-token-b"]
+        assert get_runtime_env() == {}
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_unallowlisted_runtime_env(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hello", "runtime_env": {"PATH": "/tmp/unsafe"}},
+            )
+        assert resp.status == 400
 
 
     @pytest.mark.asyncio

@@ -217,6 +217,7 @@ def set_session_vars(
     message_id: str = "",
     profile: str = "",
     cwd: str = "",
+    cwd_authoritative: bool = False,
     async_delivery: bool = True,
     ui_session_id: str = "",
     cron_session: Any = _UNSET,
@@ -229,7 +230,9 @@ def set_session_vars(
     helpers are not nestable/stack-safe, and the returned tokens are accepted
     only for API compatibility.
 
-    ``cwd`` pins the logical working directory for this context.
+    ``cwd`` pins the logical working directory for this context. Set
+    ``cwd_authoritative`` for scheduler runs whose cwd must override mutable
+    terminal session state at every dispatch.
 
     ``async_delivery`` declares whether this session's channel can route a
     background completion back to the agent after the turn ends (see
@@ -263,9 +266,14 @@ def set_session_vars(
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
     try:
-        from agent.runtime_cwd import set_session_cwd
+        if cwd_authoritative:
+            from agent.runtime_cwd import set_authoritative_session_cwd
 
-        set_session_cwd(cwd)
+            set_authoritative_session_cwd(cwd)
+        else:
+            from agent.runtime_cwd import set_session_cwd
+
+            set_session_cwd(cwd)
     except Exception:
         pass
     return tokens

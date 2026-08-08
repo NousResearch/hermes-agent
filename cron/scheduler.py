@@ -3521,6 +3521,7 @@ def run_job(
         # See declare_stateless_channel(). Upstream: #53027, #63142.
         async_delivery=False,
         cwd=_job_workdir or "",
+        cwd_authoritative=bool(_job_workdir),
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",

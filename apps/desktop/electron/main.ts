@@ -175,6 +175,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { ensureLoginShellPath } from './shell-path'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -8431,6 +8432,22 @@ async function startHermes() {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
+
+    // GUI launches (Finder/Dock, desktop launchers) inherit a minimal PATH
+    // that skips the user's shell profiles. Merge the login-shell PATH into
+    // process.env BEFORE resolving the runtime or spawning the backend, so
+    // both the Electron-side resolvers and the whole backend subtree (tool
+    // availability checks, stdio MCP servers) can find Homebrew-, nvm-, and
+    // ~/.local/bin-installed CLIs. Single-flight with the whenReady warmup;
+    // failure-hardened — a broken shell profile never blocks boot.
+    const loginShellPath = await ensureLoginShellPath()
+
+    if (loginShellPath.applied) {
+      rememberLog('[env] merged login-shell PATH into process.env for backend spawn')
+    } else if (loginShellPath.reason && !['win32', 'unchanged'].includes(loginShellPath.reason)) {
+      rememberLog(`[env] login-shell PATH resolution unavailable (${loginShellPath.reason}); keeping inherited PATH`)
+    }
+
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
     const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
@@ -11832,6 +11849,10 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  // Warm the login-shell PATH resolution immediately so it usually completes
+  // before the backend start path awaits the same single-flight promise.
+  void ensureLoginShellPath()
+
   const systemCa = installWindowsSystemCaTrust(tls)
 
   if (systemCa.applied) {

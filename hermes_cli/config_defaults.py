@@ -252,6 +252,17 @@ DEFAULT_CONFIG = {
         # detector instead of hanging forever. The env var
         # ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch use.
         "local_stream_stale_timeout": 900,
+        # Total wall-clock cap in seconds for ONE streaming response attempt
+        # (ported from QwenLM/qwen-code#8602). The stale-stream detector only
+        # bounds the gap BETWEEN chunks and resets on every chunk, so a
+        # drip-fed stream — a gateway trickling keep-alive-shaped chunks, or a
+        # model crawling through one runaway generation — can defeat it
+        # indefinitely. This cap never resets on chunk arrival; tripping it
+        # kills the connection like a stale kill (bounded retry / partial-stub
+        # continuation recover it). Never fires before the effective
+        # stale-stream timeout. Env override: HERMES_STREAM_MAX_LIFETIME.
+        # 0 disables.
+        "stream_max_lifetime": 1800,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly

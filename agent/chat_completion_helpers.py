@@ -429,6 +429,32 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     return _timeout
 
 
+def _resolve_stream_max_lifetime(agent) -> float:
+    """Total wall-clock cap (seconds) for one streaming response attempt.
+
+    Resolution: config.yaml ``agent.stream_max_lifetime`` → env
+    ``HERMES_STREAM_MAX_LIFETIME`` → default 1800 (30 minutes). ``0``
+    disables the cap. Ported from QwenLM/qwen-code#8602
+    (``streamMaxLifetimeMs``): the stale detector resets on every chunk, so
+    only a lifetime cap bounds a drip-fed stream that never goes quiet but
+    also never completes.
+    """
+    _default = 1800.0
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        _cfg = load_config_readonly()  # read-only consumer — no deepcopy
+        _agent_cfg = _cfg.get("agent") if isinstance(_cfg, dict) else None
+        if isinstance(_agent_cfg, dict):
+            _v = _agent_cfg.get("stream_max_lifetime")
+            if isinstance(_v, (int, float)) and not isinstance(_v, bool):
+                _default = float(_v)
+    except Exception:
+        pass
+    _lifetime = env_float("HERMES_STREAM_MAX_LIFETIME", _default)
+    return max(0.0, _lifetime)
+
+
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     """Map a Bedrock inference-profile id to its reasoning stale-timeout floor.
 
@@ -2759,6 +2785,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _bedrock_region = api_kwargs.get("__bedrock_region__", "us-east-1")
         # Same patience budget as the OpenAI/Anthropic stale detector.
         _bedrock_stale_timeout = _derive_stream_stale_timeout(agent, api_kwargs)
+        # Total-lifetime cap — same drip-fed-stream class as the main poll
+        # loop below (the event watchdog resets on every yielded event).
+        _bedrock_max_lifetime = _resolve_stream_max_lifetime(agent)
+        if _bedrock_max_lifetime > 0:
+            _bedrock_max_lifetime = max(_bedrock_max_lifetime, _bedrock_stale_timeout)
+        _bedrock_lifetime_start = time.time()
 
         # Cross-turn stale-stream circuit breaker (#58962): a pre-elevated
         # streak from prior wedged turns aborts before we even start — mirrors
@@ -2902,17 +2934,37 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # no data, or a silently hung provider).  Without this the worker
             # blocks in ``for event in event_stream`` indefinitely.
             _stale_elapsed = time.time() - _bedrock_last_event["t"]
-            if _stale_elapsed > _bedrock_stale_timeout:
-                logger.warning(
-                    "Bedrock stream stale for %.0fs (threshold %.0fs) — no events "
-                    "received. region=%s model=%s. Aborting call.",
-                    _stale_elapsed, _bedrock_stale_timeout,
-                    _bedrock_region, api_kwargs.get("modelId", "unknown"),
-                )
-                agent._buffer_status(
-                    f"⚠️ No events from Bedrock for {int(_stale_elapsed)}s "
-                    f"(model: {api_kwargs.get('modelId', 'unknown')}). Aborting..."
-                )
+            _bedrock_lifetime_hit = (
+                _bedrock_max_lifetime > 0
+                and (time.time() - _bedrock_lifetime_start) > _bedrock_max_lifetime
+            )
+            if _stale_elapsed > _bedrock_stale_timeout or _bedrock_lifetime_hit:
+                if _bedrock_lifetime_hit:
+                    _bedrock_elapsed_total = time.time() - _bedrock_lifetime_start
+                    logger.warning(
+                        "Bedrock stream exceeded max lifetime %.0fs (elapsed "
+                        "%.0fs) — aborting runaway stream. region=%s model=%s.",
+                        _bedrock_max_lifetime, _bedrock_elapsed_total,
+                        _bedrock_region, api_kwargs.get("modelId", "unknown"),
+                    )
+                    agent._buffer_status(
+                        f"⚠️ Bedrock stream still running after "
+                        f"{int(_bedrock_elapsed_total)}s (cap "
+                        f"{int(_bedrock_max_lifetime)}s). Aborting..."
+                    )
+                    # Fresh cap in case the (unabortable) worker survives.
+                    _bedrock_lifetime_start = time.time()
+                else:
+                    logger.warning(
+                        "Bedrock stream stale for %.0fs (threshold %.0fs) — no events "
+                        "received. region=%s model=%s. Aborting call.",
+                        _stale_elapsed, _bedrock_stale_timeout,
+                        _bedrock_region, api_kwargs.get("modelId", "unknown"),
+                    )
+                    agent._buffer_status(
+                        f"⚠️ No events from Bedrock for {int(_stale_elapsed)}s "
+                        f"(model: {api_kwargs.get('modelId', 'unknown')}). Aborting..."
+                    )
                 # Count the stale kill in the SAME cross-turn breaker as the
                 # OpenAI/Anthropic path (#58962).
                 _bump_stale_streak(agent)
@@ -2942,6 +2994,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # and the streak carries forward.  Break rather than keep polling
                 # a worker we cannot abort.
                 result["error"] = TimeoutError(
+                    f"Bedrock stream exceeded max lifetime "
+                    f"{int(_bedrock_max_lifetime)}s — aborting runaway stream "
+                    f"so the retry/fallback path can recover."
+                    if _bedrock_lifetime_hit else
                     f"Bedrock stream produced no events for {int(_stale_elapsed)}s "
                     f"(threshold {int(_bedrock_stale_timeout)}s) — aborting stalled "
                     f"stream so the retry/fallback path can recover."
@@ -4352,12 +4408,68 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if _reasoning_floor is not None:
             _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
+    # Total-lifetime cap for one streaming response (ported from
+    # QwenLM/qwen-code#8602).  The stale detector above only bounds the gap
+    # BETWEEN chunks and resets on every chunk, so a drip-fed stream — a
+    # gateway trickling keep-alive-shaped chunks, or a model crawling through
+    # one oversized message for hours — defeats it indefinitely.  This cap is
+    # charged on wall-clock time since the CURRENT stream attempt began and
+    # never resets on chunk arrival.  Tripping it kills the connection the
+    # same way a stale kill does: the worker surfaces a transport error, the
+    # bounded retry loop may reconnect (each retry gets a fresh cap), and a
+    # turn that already streamed text returns the partial-stub / continuation
+    # path instead of sitting silent for hours.  0 disables.
+    _stream_max_lifetime = _resolve_stream_max_lifetime(agent)
+    if (
+        _stream_max_lifetime > 0
+        and _stream_stale_timeout is not None
+        and _stream_stale_timeout != float("inf")
+    ):
+        # Never let the lifetime cap preempt the stale detector's patience.
+        _stream_max_lifetime = max(_stream_max_lifetime, _stream_stale_timeout)
+    _stream_lifetime_start = {"t": time.time()}
+
     t = threading.Thread(target=_context_thread_target(_call), daemon=True)
     t.start()
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
     while t.is_alive():
         t.join(timeout=0.3)
+
+        # Lifetime cap: fires even while chunks are still flowing (the stale
+        # detector below can never fire in that case).
+        if _stream_max_lifetime > 0:
+            _lifetime_elapsed = time.time() - _stream_lifetime_start["t"]
+            if _lifetime_elapsed > _stream_max_lifetime:
+                logger.warning(
+                    "Stream exceeded max lifetime %.0fs (elapsed %.0fs) — "
+                    "killing connection. model=%s. A drip-fed or runaway "
+                    "stream never completes on its own; see "
+                    "agent.stream_max_lifetime / HERMES_STREAM_MAX_LIFETIME.",
+                    _stream_max_lifetime, _lifetime_elapsed,
+                    api_kwargs.get("model", "unknown"),
+                )
+                agent._buffer_status(
+                    f"⚠️ Stream still running after {int(_lifetime_elapsed)}s "
+                    f"(cap {int(_stream_max_lifetime)}s) — aborting runaway "
+                    f"response (model: {api_kwargs.get('model', 'unknown')})."
+                )
+                try:
+                    _cancel_current_stream_attempt("stream_max_lifetime_kill")
+                    _close_request_client_once("stream_max_lifetime_kill")
+                except Exception:
+                    pass
+                # Count the kill in the SAME cross-turn breaker as a stale
+                # kill (#58962) — a provider that repeatedly drip-feeds
+                # never-ending streams is as wedged as one that goes silent.
+                _bump_stale_streak(agent)
+                # Fresh cap for any retry attempt the worker's bounded retry
+                # loop opens after this forced close.
+                _stream_lifetime_start["t"] = time.time()
+                last_chunk_time["t"] = time.time()
+                agent._touch_activity(
+                    f"stream exceeded max lifetime {int(_stream_max_lifetime)}s, aborted"
+                )
 
         # Periodic heartbeat: touch the agent's activity tracker so the
         # gateway's inactivity monitor knows we're alive while waiting

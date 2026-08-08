@@ -12,6 +12,7 @@ import {
   Bell,
   Download,
   Globe,
+  ImageIcon,
   Info,
   Keyboard,
   KeyRound,
@@ -32,6 +33,7 @@ import { SKILLS_ROUTE } from '../routes'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
+import { AvatarSettings } from './avatar-settings'
 import { BillingSettings } from './billing'
 import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
@@ -251,6 +253,14 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView('sessions')
       },
       {
+        active: activeView === 'avatar',
+        gapBefore: true,
+        icon: ImageIcon,
+        id: 'avatar',
+        label: t.settings.nav.avatar ?? 'Avatar',
+        onSelect: () => setActiveView('avatar')
+      },
+      {
         active: activeView === 'about',
         gapBefore: true,
         icon: Info,
@@ -301,6 +311,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         <OverlayMain className="px-0 pb-0">
           {activeView === 'config:appearance' ? (
             <AppearanceSettings />
+          ) : activeView === 'avatar' ? (
+            <AvatarSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />
           ) : activeView === 'gateway' ? (

@@ -142,6 +142,28 @@ def finalize_turn(
         final_response = agent._handle_max_iterations(messages, api_call_count)
         iteration_limit_fallback = True
 
+    try:
+        from agent.autonomous_task_hooks import (
+            event_for_turn_budget,
+            notify_turn_budget_or_closeout,
+        )
+
+        _autonomous_event = event_for_turn_budget(
+            turns_used=api_call_count,
+            max_turns=agent.max_iterations,
+            iteration_limit_fallback=iteration_limit_fallback,
+            budget_exhausted=budget_exhausted,
+        )
+        if _autonomous_event:
+            notify_turn_budget_or_closeout(
+                event=_autonomous_event,
+                turns_used=api_call_count,
+                max_turns=agent.max_iterations,
+                session_id=agent.session_id,
+            )
+    except Exception:
+        logger.warning("autonomous task turn-budget notification failed", exc_info=True)
+
     if iteration_limit_fallback:
         # If running as a kanban worker, signal the dispatcher that the
         # worker could not complete (rather than treating it as a

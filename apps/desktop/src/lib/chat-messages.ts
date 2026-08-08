@@ -910,6 +910,93 @@ function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {
   })
 }
 
+// Human-readable members of a structured reasoning entry, in the precedence
+// the backend's own `extract_reasoning` (agent/agent_runtime_helpers.py) uses:
+//   * Anthropic thinking block  → {type: 'thinking', thinking, signature}
+//   * OpenRouter summary/text   → {type: 'reasoning.summary', summary} etc.
+//   * Codex Responses item      → {type: 'reasoning', summary: [{text}], …}
+// `signature`, `data` and `encrypted_content` are deliberately absent: those
+// are opaque replay blobs (redacted_thinking, reasoning.encrypted_content,
+// Codex encrypted reasoning) that would render as base64 noise, so an entry
+// carrying only those contributes nothing to the displayed text.
+const REASONING_DETAIL_FIELDS = ['summary', 'thinking', 'content', 'text'] as const
+
+function isReasoningRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+// A readable member is either prose or a list of `{text}` parts — Codex stores
+// `summary` as `[{type: 'summary_text', text}]`, OpenRouter as a bare string.
+// Anything else degrades to '' rather than stringifying into `[object Object]`.
+function readableReasoningText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map(part => (isReasoningRecord(part) && typeof part.text === 'string' ? part.text : ''))
+      .filter(Boolean)
+      .join('\n')
+  }
+
+  return ''
+}
+
+/**
+ * Flatten a persisted assistant row's reasoning fields into one display string.
+ *
+ * `tui_gateway/server.py`'s `_history_to_messages` forwards four reasoning keys
+ * verbatim out of persisted history (`reasoning_keys`), and deliberately keeps
+ * an assistant turn that carries *only* reasoning so "the desktop's reasoning
+ * disclosure" has something to render (#44022). Two of those keys —
+ * `reasoning_details` and `codex_reasoning_items` — are provider replay
+ * payloads, i.e. lists of structured entries, never plain strings.
+ *
+ * De-duplication is load-bearing rather than cosmetic: the Anthropic transport
+ * populates `reasoning` *and* `reasoning_details` from the same thinking
+ * blocks, so a resumed Claude turn would otherwise show its reasoning twice.
+ */
+function flattenStoredReasoning(message: SessionMessage): string {
+  const blocks: string[] = []
+
+  const add = (value: unknown) => {
+    const text = readableReasoningText(value).trim()
+
+    if (text && !blocks.includes(text)) {
+      blocks.push(text)
+    }
+  }
+
+  add(message.reasoning)
+  add(message.reasoning_content)
+
+  // `reasoning_details` before `codex_reasoning_items`, matching the order the
+  // gateway walks its `reasoning_keys` tuple.
+  for (const entries of [message.reasoning_details, message.codex_reasoning_items]) {
+    if (!Array.isArray(entries)) {
+      continue
+    }
+
+    for (const entry of entries) {
+      if (!isReasoningRecord(entry)) {
+        continue
+      }
+
+      // First readable member wins — an entry never carries two of these.
+      for (const name of REASONING_DETAIL_FIELDS) {
+        if (readableReasoningText(entry[name]).trim()) {
+          add(entry[name])
+
+          break
+        }
+      }
+    }
+  }
+
+  return blocks.join('\n\n')
+}
+
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
@@ -1005,10 +1092,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     const parts: ChatMessagePart[] = []
 
-    const reasoning =
-      message.reasoning ||
-      message.reasoning_content ||
-      (typeof message.reasoning_details === 'string' ? message.reasoning_details : '')
+    const reasoning = flattenStoredReasoning(message)
 
     if (reasoning && message.role === 'assistant') {
       parts.push(reasoningPart(reasoning))

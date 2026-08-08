@@ -337,6 +337,132 @@ describe('toChatMessages', () => {
   })
 })
 
+// tui_gateway/server.py's `_history_to_messages` forwards four reasoning keys
+// verbatim (`reasoning_keys`) and deliberately keeps a reasoning-only assistant
+// turn so "the desktop's reasoning disclosure" has something to render (#44022).
+// Two of them — `reasoning_details` and `codex_reasoning_items` — are provider
+// replay payloads: lists of structured entries, never plain strings.
+describe('toChatMessages structured reasoning on resume', () => {
+  const reasoningTextOf = (message: ChatMessage): string[] =>
+    message.parts.flatMap(part => (part.type === 'reasoning' ? [part.text] : []))
+
+  it('keeps a thinking-only assistant turn that carries only reasoning_details', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'why?', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 2,
+        reasoning_details: [
+          { type: 'reasoning.summary', summary: 'Weighing the two options.' },
+          { type: 'thinking', thinking: 'The second one is cheaper.', signature: 'sig-abc' }
+        ]
+      }
+    ])
+
+    // Without a reader for the list form the turn produces zero parts and is
+    // dropped by toChatMessages' empty-turn guard — it vanishes from the
+    // resumed transcript entirely.
+    expect(messages).toHaveLength(2)
+    expect(messages[1].role).toBe('assistant')
+    expect(reasoningTextOf(messages[1])).toEqual(['Weighing the two options.\n\nThe second one is cheaper.'])
+  })
+
+  it('surfaces Codex summary_text parts from codex_reasoning_items', () => {
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 1,
+        codex_reasoning_items: [
+          { type: 'reasoning', summary: [{ type: 'summary_text', text: 'Reading the config.' }] }
+        ]
+      }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(reasoningTextOf(messages[0])).toEqual(['Reading the config.'])
+  })
+
+  it('shows Anthropic reasoning once when reasoning_details repeats it', () => {
+    // The Anthropic transport populates `reasoning` AND `reasoning_details`
+    // from the same thinking blocks, so a resumed Claude turn would otherwise
+    // render its reasoning twice.
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Done.',
+        timestamp: 1,
+        reasoning: 'Checking the lockfile.',
+        reasoning_details: [{ type: 'thinking', thinking: 'Checking the lockfile.', signature: 'sig-1' }]
+      }
+    ])
+
+    expect(reasoningTextOf(messages[0])).toEqual(['Checking the lockfile.'])
+    expect(chatMessageText(messages[0])).toBe('Done.')
+  })
+
+  it('ignores opaque replay blobs instead of rendering them as noise', () => {
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Done.',
+        timestamp: 1,
+        reasoning_details: [
+          { type: 'reasoning.encrypted', data: 'ZW5jcnlwdGVk', signature: 'sig-2' },
+          { type: 'redacted_thinking', encrypted_content: 'cmVkYWN0ZWQ=' }
+        ]
+      }
+    ])
+
+    expect(reasoningTextOf(messages[0])).toEqual([])
+    expect(chatMessageText(messages[0])).toBe('Done.')
+  })
+
+  it('degrades odd reasoning shapes to no reasoning part instead of throwing', () => {
+    const read = () =>
+      toChatMessages([
+        {
+          role: 'assistant',
+          content: 'Done.',
+          timestamp: 1,
+          reasoning_details: { type: 'thinking', thinking: 'not a list' },
+          codex_reasoning_items: 'unparsed json text'
+        }
+      ])
+
+    expect(read).not.toThrow()
+    expect(reasoningTextOf(read()[0])).toEqual([])
+    expect(chatMessageText(read()[0])).toBe('Done.')
+  })
+
+  it('leaves plain-string reasoning and reasoning_content unchanged', () => {
+    const [fromReasoning] = toChatMessages([
+      { role: 'assistant', content: 'Done.', timestamp: 1, reasoning: 'Direct field.' }
+    ])
+
+    const [fromReasoningContent] = toChatMessages([
+      { role: 'assistant', content: 'Done.', timestamp: 1, reasoning_content: 'Alternate field.' }
+    ])
+
+    expect(reasoningTextOf(fromReasoning)).toEqual(['Direct field.'])
+    expect(reasoningTextOf(fromReasoningContent)).toEqual(['Alternate field.'])
+  })
+
+  it('does not render reasoning on a non-assistant row', () => {
+    const messages = toChatMessages([
+      {
+        role: 'user',
+        content: 'hi',
+        timestamp: 1,
+        reasoning_details: [{ type: 'thinking', thinking: 'should not surface' }]
+      }
+    ])
+
+    expect(reasoningTextOf(messages[0])).toEqual([])
+  })
+})
+
 describe('renderMediaTags', () => {
   it('renders standalone and inline MEDIA tags as links', () => {
     expect(renderMediaTags('here\nMEDIA:/tmp/voice.mp3\nthere')).toBe(

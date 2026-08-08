@@ -92,6 +92,23 @@ class TestRunner:
         result = run_verify(tmp_path, recipe, skip_start=True)
         assert "hello-verify" in result.phases[0].output_tail
 
+    def test_chatty_phase_command_still_completes_and_tail_is_bounded(self, tmp_path):
+        """A phase command printing far more than the tail limit before
+        exiting must not be collected unbounded in memory — see
+        _BoundedOutputReader. This exercises the real Popen + drain path,
+        not just the reader class in isolation."""
+        from agent.verify.runner import _TAIL_CHARS
+
+        recipe = Recipe(
+            name="x",
+            test=["python3 -c \"[print('x' * 200) for _ in range(2000)]\""],
+        )
+        result = run_verify(tmp_path, recipe, skip_start=True)
+        assert result.ok
+        assert not result.phases[0].timed_out
+        assert result.phases[0].exit_code == 0
+        assert len(result.phases[0].output_tail) <= _TAIL_CHARS
+
     def test_phase_selection(self, tmp_path):
         recipe = Recipe(name="x", bootstrap=["true"], build=["true"], test=["true"])
         result = run_verify(tmp_path, recipe, phases=("test",))
@@ -187,3 +204,21 @@ class TestReadiness:
         finally:
             server.shutdown()
             thread.join(timeout=5)
+
+
+class TestBoundedOutputReader:
+    def test_keeps_only_the_tail_while_draining(self):
+        from agent.verify.runner import _BoundedOutputReader
+
+        # 500 lines of 10 chars (+ newline) = 5500 chars total, well past a
+        # small limit — the reader must never hold more than `limit` chars
+        # even mid-drain, not just after truncating a fully-collected string.
+        lines = [f"line-{i:04d}\n" for i in range(500)]
+        reader = _BoundedOutputReader(iter(lines), limit=100).start()
+
+        result = reader.result(timeout=5)
+
+        assert len(result) <= 100
+        # The tail survives; the head (line-0000) does not.
+        assert "line-0499" in result
+        assert "line-0000" not in result

@@ -16,6 +16,7 @@ with different backends via a bridge pattern.
 """
 
 import asyncio
+import json
 import logging
 import os
 import platform
@@ -709,6 +710,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 _v = _wenv(_key)
                 if _v:
                     bridge_env[_key] = _v
+            # YAML-bridged values (the ``whatsapp:`` config block) live in this
+            # profile's ``extra``. The legacy path wrote WHATSAPP_* to
+            # process-global os.environ instead, so under multiplex_profiles a
+            # secondary profile's bridge inherited the first profile's
+            # allowlist/policy (#80099). Inject this profile's own values,
+            # leaving .env-derived values (set above) in place.
+            _seed_bridge_env_from_extra(
+                bridge_env, getattr(self.config, "extra", None) or {}
+            )
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
             # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges
@@ -1833,38 +1843,83 @@ def interactive_setup() -> None:
             print_info("Home channel cleared.")
 
 
-def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
-    """Translate config.yaml whatsapp: keys into WHATSAPP_* env vars.
+def _seed_bridge_env_from_extra(bridge_env: dict, extra: dict) -> None:
+    """Inject YAML-bridged whatsapp config into a bridge subprocess env.
 
-    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
-    whatsapp_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML. Returns None — everything flows through env.
+    The ``whatsapp:`` config block is stored per-profile in ``extra`` by
+    load_gateway_config's shared-key loop and apply_yaml_config_fn. The legacy
+    path wrote WHATSAPP_* to process-global os.environ instead, so under
+    ``multiplex_profiles`` a secondary profile's bridge inherited the first
+    profile's allowlist/policy (#80099). Values already present in
+    ``bridge_env`` (e.g. from the profile's .env) win; this only fills gaps.
     """
-    import json as _json
-    if "require_mention" in whatsapp_cfg and not os.getenv("WHATSAPP_REQUIRE_MENTION"):
-        os.environ["WHATSAPP_REQUIRE_MENTION"] = str(whatsapp_cfg["require_mention"]).lower()
-    if "mention_patterns" in whatsapp_cfg and not os.getenv("WHATSAPP_MENTION_PATTERNS"):
-        os.environ["WHATSAPP_MENTION_PATTERNS"] = _json.dumps(whatsapp_cfg["mention_patterns"])
-    frc = whatsapp_cfg.get("free_response_chats")
-    if frc is not None and not os.getenv("WHATSAPP_FREE_RESPONSE_CHATS"):
+    if not isinstance(extra, dict):
+        return
+
+    def _bridge_seed(name: str, value: Any) -> None:
+        if value and name not in bridge_env:
+            bridge_env[name] = str(value)
+
+    if extra.get("require_mention") is not None:
+        _bridge_seed("WHATSAPP_REQUIRE_MENTION", str(extra["require_mention"]).lower())
+    if extra.get("mention_patterns") is not None:
+        try:
+            _bridge_seed(
+                "WHATSAPP_MENTION_PATTERNS", json.dumps(extra["mention_patterns"])
+            )
+        except (TypeError, ValueError):
+            # Unserializable value — leave the bridge default rather than crash.
+            pass
+    if extra.get("free_response_chats") is not None:
+        frc = extra["free_response_chats"]
         if isinstance(frc, list):
             frc = ",".join(str(v) for v in frc)
-        os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
-    if "dm_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_DM_POLICY"):
-        os.environ["WHATSAPP_DM_POLICY"] = str(whatsapp_cfg["dm_policy"]).lower()
-    af = whatsapp_cfg.get("allow_from")
-    if af is not None and not os.getenv("WHATSAPP_ALLOWED_USERS"):
+        _bridge_seed("WHATSAPP_FREE_RESPONSE_CHATS", str(frc))
+    if extra.get("dm_policy") is not None:
+        _bridge_seed("WHATSAPP_DM_POLICY", str(extra["dm_policy"]).lower())
+    if extra.get("allow_from") is not None:
+        af = extra["allow_from"]
         if isinstance(af, list):
             af = ",".join(str(v) for v in af)
-        os.environ["WHATSAPP_ALLOWED_USERS"] = str(af)
-    if "group_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_GROUP_POLICY"):
-        os.environ["WHATSAPP_GROUP_POLICY"] = str(whatsapp_cfg["group_policy"]).lower()
-    gaf = whatsapp_cfg.get("group_allow_from")
-    if gaf is not None and not os.getenv("WHATSAPP_GROUP_ALLOWED_USERS"):
+        _bridge_seed("WHATSAPP_ALLOWED_USERS", str(af))
+    if extra.get("group_policy") is not None:
+        _bridge_seed("WHATSAPP_GROUP_POLICY", str(extra["group_policy"]).lower())
+    if extra.get("group_allow_from") is not None:
+        gaf = extra["group_allow_from"]
         if isinstance(gaf, list):
             gaf = ",".join(str(v) for v in gaf)
-        os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = str(gaf)
-    return None
+        _bridge_seed("WHATSAPP_GROUP_ALLOWED_USERS", str(gaf))
+
+
+def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
+    """Translate config.yaml whatsapp: keys into profile-scoped config values.
+
+    Implements the apply_yaml_config_fn contract (#24849). Returns the bridged
+    values as a dict, which gateway/config.py merges into this profile's
+    platform ``extra``. Under ``multiplex_profiles`` each profile's extra is
+    its own, so a secondary profile's adapter and Node bridge see its own
+    YAML-derived allowlist/policy instead of a sibling profile's process-global
+    env vars (#80099).
+    """
+    seeded: dict[str, Any] = {}
+    if "require_mention" in whatsapp_cfg:
+        seeded["require_mention"] = str(whatsapp_cfg["require_mention"]).lower()
+    if "mention_patterns" in whatsapp_cfg:
+        seeded["mention_patterns"] = whatsapp_cfg["mention_patterns"]
+    frc = whatsapp_cfg.get("free_response_chats")
+    if frc is not None:
+        seeded["free_response_chats"] = frc
+    if "dm_policy" in whatsapp_cfg:
+        seeded["dm_policy"] = str(whatsapp_cfg["dm_policy"]).lower()
+    af = whatsapp_cfg.get("allow_from")
+    if af is not None:
+        seeded["allow_from"] = af
+    if "group_policy" in whatsapp_cfg:
+        seeded["group_policy"] = str(whatsapp_cfg["group_policy"]).lower()
+    gaf = whatsapp_cfg.get("group_allow_from")
+    if gaf is not None:
+        seeded["group_allow_from"] = gaf
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

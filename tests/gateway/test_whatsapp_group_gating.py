@@ -1,4 +1,5 @@
 import json
+import os
 from unittest.mock import AsyncMock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
@@ -178,9 +179,12 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
     assert config.platforms[Platform.WHATSAPP].extra["dm_policy"] == "disabled"
     assert config.platforms[Platform.WHATSAPP].extra["group_policy"] == "allowlist"
     assert config.platforms[Platform.WHATSAPP].extra["group_allow_from"] == ["120363001234567890@g.us"]
-    assert __import__("os").environ["WHATSAPP_DM_POLICY"] == "disabled"
-    assert __import__("os").environ["WHATSAPP_GROUP_POLICY"] == "allowlist"
-    assert __import__("os").environ["WHATSAPP_GROUP_ALLOWED_USERS"] == "120363001234567890@g.us"
+    # #80099: the YAML bridge must scope values to the profile's extra rather
+    # than write to process-global os.environ, which under multiplex_profiles
+    # leaks the first profile's allowlist/policy into every sibling bridge.
+    assert "WHATSAPP_DM_POLICY" not in os.environ
+    assert "WHATSAPP_GROUP_POLICY" not in os.environ
+    assert "WHATSAPP_GROUP_ALLOWED_USERS" not in os.environ
 
 
 # --- Broadcast / status / newsletter pseudo-chats are always dropped ---

@@ -9,6 +9,8 @@ inbound messages.
 The fix routes WHATSAPP_* reads through ``get_secret()`` (``agent.secret_scope``)
 which honours the active scope.
 """
+import os
+
 import pytest
 
 from agent import secret_scope as ss
@@ -156,3 +158,88 @@ class TestWhatsAppCloudAdapterUsesSecretScope:
             assert _get_wsecret("WHATSAPP_DM_POLICY", default="pairing") == "allowlist"
         finally:
             ss.reset_secret_scope(tok)
+
+
+class TestWhatsAppYamlBridgeScopeIsolation:
+    """#80099 — YAML-bridged whatsapp config must be profile-scoped.
+
+    The old ``_apply_yaml_config`` wrote WHATSAPP_* to process-global
+    os.environ (first-writer-wins), so under ``multiplex_profiles`` a
+    secondary profile's Node bridge inherited the first profile's
+    allowlist/policy. Values now flow through each profile's ``extra`` and are
+    injected into the bridge env per-profile.
+    """
+
+    def test_apply_yaml_config_returns_values_without_global_env(self, monkeypatch):
+        from plugins.platforms.whatsapp.adapter import _apply_yaml_config
+
+        for key in (
+            "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY",
+            "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_ALLOWED_USERS",
+            "WHATSAPP_REQUIRE_MENTION", "WHATSAPP_MENTION_PATTERNS",
+            "WHATSAPP_FREE_RESPONSE_CHATS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        seeded = _apply_yaml_config(
+            {},
+            {
+                "dm_policy": "disabled",
+                "group_policy": "allowlist",
+                "group_allow_from": ["120363001234567890@g.us"],
+                "allow_from": ["120363001234567890@g.us"],
+                "require_mention": True,
+                "mention_patterns": ["(?i)bot"],
+                "free_response_chats": ["120363001234567890@g.us"],
+            },
+        )
+
+        assert seeded == {
+            "dm_policy": "disabled",
+            "group_policy": "allowlist",
+            "group_allow_from": ["120363001234567890@g.us"],
+            "allow_from": ["120363001234567890@g.us"],
+            "require_mention": "true",
+            "mention_patterns": ["(?i)bot"],
+            "free_response_chats": ["120363001234567890@g.us"],
+        }
+        # The bridged values must NOT leak into process-global env.
+        for key in (
+            "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY",
+            "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_ALLOWED_USERS",
+            "WHATSAPP_REQUIRE_MENTION", "WHATSAPP_MENTION_PATTERNS",
+            "WHATSAPP_FREE_RESPONSE_CHATS",
+        ):
+            assert key not in os.environ
+
+    def test_seed_bridge_env_injects_profile_values(self):
+        from plugins.platforms.whatsapp.adapter import _seed_bridge_env_from_extra
+
+        bridge_env = {}
+        _seed_bridge_env_from_extra(
+            bridge_env,
+            {
+                "dm_policy": "disabled",
+                "group_policy": "allowlist",
+                "group_allow_from": ["120363001234567890@g.us"],
+                "allow_from": ["120363001234567890@g.us"],
+                "require_mention": True,
+                "mention_patterns": ["(?i)bot"],
+                "free_response_chats": ["120363001234567890@g.us"],
+            },
+        )
+        assert bridge_env["WHATSAPP_DM_POLICY"] == "disabled"
+        assert bridge_env["WHATSAPP_GROUP_POLICY"] == "allowlist"
+        assert bridge_env["WHATSAPP_GROUP_ALLOWED_USERS"] == "120363001234567890@g.us"
+        assert bridge_env["WHATSAPP_ALLOWED_USERS"] == "120363001234567890@g.us"
+        assert bridge_env["WHATSAPP_REQUIRE_MENTION"] == "true"
+        assert bridge_env["WHATSAPP_MENTION_PATTERNS"] == '["(?i)bot"]'
+        assert bridge_env["WHATSAPP_FREE_RESPONSE_CHATS"] == "120363001234567890@g.us"
+
+    def test_seed_bridge_env_does_not_override_env_values(self):
+        """A profile's .env-derived bridge value wins over YAML config."""
+        from plugins.platforms.whatsapp.adapter import _seed_bridge_env_from_extra
+
+        bridge_env = {"WHATSAPP_DM_POLICY": "open"}
+        _seed_bridge_env_from_extra(bridge_env, {"dm_policy": "disabled"})
+        assert bridge_env["WHATSAPP_DM_POLICY"] == "open"

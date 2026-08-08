@@ -1333,6 +1333,14 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Deferred platform plugins whose client tools were registered at
+        # discovery time (see _register_deferred_platform_tools). Keyed by
+        # plugin id: the already-imported package module, so materializing the
+        # adapter later doesn't re-execute it, and the tool names it
+        # contributed, so `hermes plugins list` still attributes them once the
+        # full plugin loads.
+        self._predeclared_modules: Dict[str, types.ModuleType] = {}
+        self._predeclared_tools: Dict[str, List[str]] = {}
 
     # -----------------------------------------------------------------------
     # Public
@@ -1363,6 +1371,8 @@ class PluginManager:
             self._portable_mcp_servers.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
+            self._predeclared_modules.clear()
+            self._predeclared_tools.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
@@ -1899,6 +1909,105 @@ class PluginManager:
                 exc_info=True,
             )
             self._load_plugin(manifest)
+            return
+
+        self._register_deferred_platform_tools(manifest, loaded)
+
+    def _register_deferred_platform_tools(
+        self, manifest: PluginManifest, loaded: LoadedPlugin
+    ) -> None:
+        """Register a deferred platform's *client* tools without its adapter.
+
+        A platform plugin can ship two independent things: an inbound adapter
+        (heavy — it imports the platform SDK) and outbound client tools the
+        agent calls like any other tool. Deferring the plugin defers both, so
+        in a CLI/TUI process the client tools never register at all:
+        ``resolve_toolset()`` returns ``[]``, the toolset is missing from the
+        ``hermes tools`` checklist, and even an explicit ``platform_toolsets``
+        entry is dropped because the key is unknown. The same tools work in
+        gateway/web processes only because those materialize every platform at
+        startup (issue #78050).
+
+        Client tools that live in a dedicated ``tools`` submodule can be
+        registered at discovery time instead: importing ``<plugin>/tools.py``
+        does not import the adapter, so the SDK stays unloaded and startup
+        stays cheap. A plugin taking this path must therefore keep its package
+        ``__init__`` import-light and pull the adapter in from inside
+        ``register()`` (as ``plugins/platforms/a2a`` does).
+
+        Opting in is explicit: the manifest must declare ``provides_tools``
+        (the field the plugin list and web server already read to name a
+        plugin's tools, per #78538). Keying off the mere presence of a
+        ``tools.py`` would opt a plugin in by accident — a platform is free to
+        put internal helpers there — and would leave the contract invisible to
+        anyone reading the manifest. ``tools.py`` remains where the code is
+        imported from; ``provides_tools`` is what asks for it. A platform that
+        does not declare the field is untouched and stays fully deferred.
+        """
+        if not manifest.provides_tools:
+            return
+
+        lookup_key = manifest.key or manifest.name
+        plugin_dir = Path(manifest.path) if manifest.path else None
+        if plugin_dir is None or not (plugin_dir / "tools.py").is_file():
+            # Declared but undeliverable. Staying quiet here reproduces the
+            # exact symptom this path exists to fix — tools the manifest
+            # promises, silently absent from the session (#78050) — so say so.
+            logger.warning(
+                "Plugin '%s' declares provides_tools %s but has no tools.py; "
+                "those tools will not be available in CLI/TUI sessions.",
+                lookup_key,
+                list(manifest.provides_tools),
+            )
+            return
+
+        try:
+            module = self._load_directory_module(manifest)
+            # Record the module even if nothing below registers: the package
+            # body has already run, so materializing the adapter later must
+            # reuse it rather than execute it a second time.
+            loaded.module = module
+            self._predeclared_modules[lookup_key] = module
+
+            tools_module = importlib.import_module(f"{module.__name__}.tools")
+            register_tools = getattr(tools_module, "register_tools", None)
+            if register_tools is None:
+                logger.warning(
+                    "Plugin '%s' declares provides_tools %s but its tools.py "
+                    "has no register_tools(ctx); those tools will not be "
+                    "available in CLI/TUI sessions.",
+                    lookup_key,
+                    list(manifest.provides_tools),
+                )
+                return
+
+            before = set(self._plugin_tool_names)
+            register_tools(PluginContext(manifest, self))
+            registered = [
+                t for t in self._plugin_tool_names if t not in before
+            ]
+
+            loaded.tools_registered = registered
+            self._predeclared_tools[lookup_key] = registered
+            logger.debug(
+                "Deferred platform '%s': pre-registered %d client tool(s) %s",
+                lookup_key,
+                len(registered),
+                registered,
+            )
+        except Exception as exc:
+            # Never let a client-tool import break discovery — the platform
+            # stays deferred and behaves exactly as it did before. But a
+            # broken tools.py produces the #78050 symptom itself (declared
+            # tools missing from the session), so this has to be visible
+            # without turning on debug logging to find it.
+            logger.warning(
+                "Plugin '%s': client-tool pre-registration failed (%s); the "
+                "tools it declares will be missing from CLI/TUI sessions.",
+                lookup_key,
+                exc,
+                exc_info=_PLUGINS_DEBUG,
+            )
 
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
@@ -1920,7 +2029,13 @@ class PluginManager:
             PluginContext(manifest, self)._tool_override_allowed(""),
         )
         try:
-            if manifest.source in {"user", "project", "bundled"}:
+            # A deferred platform whose client tools were already registered at
+            # discovery time has its package imported too — reuse it so the
+            # module body doesn't execute twice (#78050).
+            preloaded = self._predeclared_modules.pop(_plugin_id, None)
+            if preloaded is not None:
+                module = preloaded
+            elif manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
             else:
                 module = self._load_entrypoint_module(manifest)
@@ -1949,9 +2064,17 @@ class PluginManager:
                     kind: len(cbs) for kind, cbs in self._middleware.items()
                 }
                 register_fn(ctx)
-                loaded.tools_registered = [
+                # Tools this plugin already contributed at discovery time are
+                # in _tools_before, so the diff alone would under-report them
+                # once the deferred adapter materializes (#78050). Credit them
+                # back to the plugin that actually registered them.
+                _predeclared = [
+                    t for t in self._predeclared_tools.pop(_plugin_id, [])
+                    if t in self._plugin_tool_names
+                ]
+                loaded.tools_registered = _predeclared + [
                     t for t in self._plugin_tool_names
-                    if t not in _tools_before
+                    if t not in _tools_before and t not in _predeclared
                 ]
                 loaded.hooks_registered = [
                     h

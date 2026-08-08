@@ -1,6 +1,15 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
+import {
+  type ClipboardEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
@@ -13,6 +22,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
+import { type ComposerAttachment } from '@/store/composer'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
@@ -22,6 +32,7 @@ import { $threadScrolledUp } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
+import { AnnotateDialog } from './annotate/annotate-dialog'
 import { AttachmentList } from './attachments'
 import {
   acceptsTriggerCompletion,
@@ -141,6 +152,8 @@ export function ChatBar({
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
   const scope = useComposerScope()
   const attachments = useStore(scope.attachments.$attachments)
+  // The image attachment currently open in the annotation overlay, if any.
+  const [annotateTarget, setAnnotateTarget] = useState<ComposerAttachment | null>(null)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
   const scrolledUp = useStore($threadScrolledUp)
   const autoSpeak = useStore($autoSpeakReplies)
@@ -219,6 +232,37 @@ export function ChatBar({
     stashAt,
     syncDraftFromEditor
   } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
+
+  // Image annotation overlay: opening it records which attachment is being
+  // marked up; saving replaces the attachment's preview with the composited
+  // (image + overlay) PNG and drops the auto-generated legend into the draft so
+  // it is editable before send, mirroring Codex's annotate-and-attach flow.
+  const handleAnnotateImage = useCallback((attachment: ComposerAttachment) => {
+    setAnnotateTarget(attachment)
+  }, [])
+
+  const handleAnnotateSave = useCallback(
+    (result: { dataUrl: string; legend: string }) => {
+      const target = annotateTarget
+
+      if (!target) {
+        return
+      }
+
+      scope.attachments.update({ ...target, previewUrl: result.dataUrl })
+
+      if (result.legend) {
+        insertText(result.legend)
+      }
+
+      setAnnotateTarget(null)
+    },
+    [annotateTarget, insertText, scope.attachments]
+  )
+
+  const handleAnnotateClose = useCallback(() => {
+    setAnnotateTarget(null)
+  }, [])
 
   // Undo/redo. The rich editor bypasses Chromium's editing pipeline for speed,
   // which also bypasses its undo stack — so we own the stack and every edit
@@ -1240,7 +1284,13 @@ export function ChatBar({
                       </div>
                     </div>
                   )}
-                  {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                  {attachments.length > 0 && (
+                    <AttachmentList
+                      attachments={attachments}
+                      onAnnotateImage={handleAnnotateImage}
+                      onRemove={onRemoveAttachment}
+                    />
+                  )}
                   <div
                     className={cn(
                       'grid w-full',
@@ -1282,6 +1332,15 @@ export function ChatBar({
         open={urlOpen}
         value={urlValue}
       />
+      {annotateTarget && (
+        <AnnotateDialog
+          imageLabel={annotateTarget.label}
+          imageSrc={annotateTarget.previewUrl ?? ''}
+          onClose={handleAnnotateClose}
+          onSave={handleAnnotateSave}
+          open
+        />
+      )}
     </>
   )
 }

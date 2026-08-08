@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n/context'
 import type { ComposerAttachment } from '@/store/composer'
@@ -107,5 +107,46 @@ describe('AttachmentList', () => {
 
     expect(screen.queryByRole('dialog')).toBeNull()
     expect($previewTabs.get().map(tab => tab.target.path)).toEqual(['/tmp/notes.md'])
+  })
+
+  it('shows the annotate button on image attachments', async () => {
+    const image: ComposerAttachment = {
+      id: 'img',
+      kind: 'image',
+      label: 'shot.png',
+      previewUrl: DATA_URL
+    }
+
+    await renderWithI18n(<AttachmentList attachments={[image]} onAnnotateImage={() => {}} />)
+
+    expect(screen.getByRole('button', { name: /annotate shot\.png/i })).toBeDefined()
+  })
+
+  it('does not show the annotate button on non-image attachments', async () => {
+    const file: ComposerAttachment = { id: 'doc', kind: 'file', label: 'notes.md', path: '/tmp/notes.md' }
+
+    await renderWithI18n(<AttachmentList attachments={[file]} />)
+
+    expect(screen.queryByRole('button', { name: /annotate notes\.md/i })).toBeNull()
+  })
+
+  it('fires onAnnotateImage with the attachment when the annotate button is clicked', async () => {
+    const image: ComposerAttachment = {
+      id: 'img',
+      kind: 'image',
+      label: 'shot.png',
+      previewUrl: DATA_URL
+    }
+
+    const onAnnotateImage = vi.fn()
+
+    await renderWithI18n(<AttachmentList attachments={[image]} onAnnotateImage={onAnnotateImage} />)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /annotate shot\.png/i }))
+    })
+
+    expect(onAnnotateImage).toHaveBeenCalledTimes(1)
+    expect(onAnnotateImage).toHaveBeenCalledWith(image)
   })
 })

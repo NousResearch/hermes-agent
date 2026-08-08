@@ -43,6 +43,7 @@ The center of the app. You get:
 - **Streaming responses** with live tool activity and structured tool-call summaries as the agent works.
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
+- **Annotate attached images** — hover an attached image in the composer and click the pencil to open the annotation overlay: rectangle, ellipse, arrow, freehand pen, and numbered callouts in six colors, with undo/redo/clear. On **Apply annotation**, the markup is composited into the image and an auto-generated legend (e.g. `Region 1: red arrow`) is inserted into your message, editable before send, so the agent sees exactly what you're pointing at.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
 - **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent. Pressing Stop (or Esc) while turns are queued pauses the queue and expands it above the composer; resume it from there, or send, edit, and delete individual entries.
 - **A conversation timeline rail** — long chats get a slim rail of markers along the edge of the transcript, one per prompt. Hover it to pop open the list of prompts, click one to jump straight to that point in the conversation. (It appears once the chat has a handful of turns.)

@@ -7,7 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
-import { AlertCircle, FileText, FolderOpen, ImageIcon, Link, Loader2, Terminal } from '@/lib/icons'
+import { AlertCircle, FileText, FolderOpen, ImageIcon, Link, Loader2, PencilLine, Terminal } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
@@ -16,21 +16,36 @@ import { openPreview } from '@/store/preview'
 
 export function AttachmentList({
   attachments,
+  onAnnotateImage,
   onRemove
 }: {
   attachments: ComposerAttachment[]
+  onAnnotateImage?: (attachment: ComposerAttachment) => void
   onRemove?: (id: string) => void
 }) {
   return (
     <div className="flex max-w-full flex-wrap gap-1.5 px-1 pt-1" data-slot="composer-attachments">
       {attachments.filter(Boolean).map(attachment => (
-        <AttachmentPill attachment={attachment} key={attachment.id} onRemove={onRemove} />
+        <AttachmentPill
+          attachment={attachment}
+          key={attachment.id}
+          onAnnotateImage={onAnnotateImage}
+          onRemove={onRemove}
+        />
       ))}
     </div>
   )
 }
 
-function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove?: (id: string) => void }) {
+function AttachmentPill({
+  attachment,
+  onAnnotateImage,
+  onRemove
+}: {
+  attachment: ComposerAttachment
+  onAnnotateImage?: (attachment: ComposerAttachment) => void
+  onRemove?: (id: string) => void
+}) {
   const { t } = useI18n()
   const c = t.composer
   const Icon = { folder: FolderOpen, url: Link, image: ImageIcon, file: FileText, terminal: Terminal }[attachment.kind]
@@ -149,6 +164,16 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
               type="button"
             >
               <Codicon name="close" size="0.625rem" />
+            </button>
+          )}
+          {onAnnotateImage && attachment.kind === 'image' && !isUploading && !hasUploadError && (
+            <button
+              aria-label={c.annotateImage(attachment.label)}
+              className="absolute -bottom-1 -right-1 grid size-3.5 place-items-center rounded-full border border-border/70 bg-background text-muted-foreground opacity-0 shadow-xs transition hover:bg-accent hover:text-foreground group-hover/attachment:opacity-100 focus-visible:opacity-100"
+              onClick={() => onAnnotateImage(attachment)}
+              type="button"
+            >
+              <PencilLine className="size-2.5" />
             </button>
           )}
         </div>

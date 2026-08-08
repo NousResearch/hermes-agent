@@ -1371,6 +1371,15 @@ def list_quick_snapshots(
     hermes_home: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
     """List existing quick state snapshots, most recent first."""
+    try:
+        limit_n = int(limit)
+    except (TypeError, ValueError):
+        limit_n = 20
+    # Keep listing bounded — zero/negative stops after the first row via
+    # ``len(results) >= limit``, and huge limits force reading every
+    # manifest under state-snapshots/.
+    limit_n = max(1, min(limit_n, 500))
+
     root = _quick_snapshot_root(hermes_home)
     if not root.exists():
         return []
@@ -1386,7 +1395,7 @@ def list_quick_snapshots(
                     results.append(json.load(f))
             except (json.JSONDecodeError, OSError):
                 results.append({"id": d.name, "file_count": 0, "total_size": 0})
-        if len(results) >= limit:
+        if len(results) >= limit_n:
             break
 
     return results

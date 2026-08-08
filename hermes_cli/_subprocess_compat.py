@@ -349,7 +349,7 @@ def noninteractive_git_env(
 # -----------------------------------------------------------------------------
 
 
-def _kill_git_process_tree(proc: "subprocess.Popen") -> None:
+def _kill_git_process_tree(proc: "subprocess.Popen", *, leads_own_group: bool = False) -> None:
     """Best-effort terminate *proc* and its descendants on both platforms.
 
     ``proc.kill()`` alone only terminates the direct child. On Windows a
@@ -361,10 +361,24 @@ def _kill_git_process_tree(proc: "subprocess.Popen") -> None:
     (credential helpers, ``git-remote-https``, hook children) running and
     holding the pipe write ends. The probe is spawned in its own process group
     (``process_group=0`` in :func:`bounded_git_probe`), so when — and only
-    when — the child leads its own group (``pgid == pid``), the entire group is
-    signalled with ``os.killpg``. The ownership check means a fallback spawn
-    that shares our group can never cause us to kill unrelated processes.
+    when — the child leads its own group, the entire group is signalled with
+    ``os.killpg``. The ownership check means a fallback spawn that shares our
+    group can never cause us to kill unrelated processes.
     Ported from openai/codex#36793 ("Terminate timed-out Git process trees").
+
+    ``leads_own_group`` states that ownership up front, for callers that spawned
+    with ``process_group=0`` and therefore know ``pgid == pid`` by construction.
+    It must not be inferred from ``os.getpgid(proc.pid)`` at kill time: once the
+    direct child has exited (even unreaped), ``getpgid`` raises
+    ``ProcessLookupError`` on macOS, which would skip the group signal and leak
+    exactly the descendants this exists to collect — a background helper that
+    outlives the launcher still holds the pipe write ends, so the pipes never
+    reach EOF and the probe still burns its full timeout. Signalling the pid is
+    safe even then: the caller reaches cleanup without having reaped *proc*, and
+    an unreaped child stays a zombie, so its pid cannot be recycled onto an
+    unrelated group leader. The group also remains addressable through the
+    leader's pid while any member lives. Callers that did not create a new group
+    leave this False and keep the runtime ownership check.
 
     All failures are swallowed — this is cleanup on an already-failing path, and
     the caller's contract is to fail open. ``kill()`` can raise (access denied,
@@ -374,12 +388,21 @@ def _kill_git_process_tree(proc: "subprocess.Popen") -> None:
     own timeout cleanup has no reader threads to join.
     """
     if not IS_WINDOWS:
-        # Group-kill first: verify the child actually leads its own process
-        # group before signalling it, so we never blast a shared group.
+        # Group-kill first, but only for a group the child actually leads, so we
+        # never blast a shared group. A caller that spawned with
+        # ``process_group=0`` asserts that via ``leads_own_group``; otherwise
+        # fall back to asking the OS (which only answers while the child lives).
+        # ``returncode is None`` means we have not reaped the child, so its pid is
+        # still reserved (a dead child stays a zombie) and cannot have been
+        # recycled onto some unrelated group leader — that check is what makes
+        # trusting the caller's claim safe rather than merely convenient.
         try:
             import signal as _signal
 
-            pgid = os.getpgid(proc.pid)
+            if leads_own_group and proc.returncode is None:
+                pgid = proc.pid
+            else:
+                pgid = os.getpgid(proc.pid)
             if pgid == proc.pid:
                 os.killpg(pgid, _signal.SIGKILL)  # windows-footgun: ok — inside `if not IS_WINDOWS` gate
         except Exception:
@@ -455,7 +478,9 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
         # Timeout OR any other communicate() failure (torn-down pipe, decode
         # error): terminate the child + descendants and drain bounded. Leaving
         # it running would leak the same suspended-descendant class this guards.
-        _kill_git_process_tree(proc)
+        # On POSIX we spawned the group, so state that rather than re-deriving it
+        # — the child may already have exited while a helper holds the pipes.
+        _kill_git_process_tree(proc, leads_own_group=not IS_WINDOWS)
         try:
             proc.communicate(timeout=1)
         except Exception:

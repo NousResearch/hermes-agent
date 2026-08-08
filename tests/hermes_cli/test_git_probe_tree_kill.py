@@ -27,17 +27,25 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _write_forking_script(tmp_path, marker_name="child.pid"):
-    """A fake ``git`` that forks a long-lived descendant, then stalls."""
+def _write_forking_script(tmp_path, marker_name="child.pid", *, wrapper_exits=False):
+    """A fake ``git`` that forks a long-lived descendant, then stalls.
+
+    With ``wrapper_exits`` the launcher returns immediately instead of stalling,
+    leaving the descendant holding the captured pipe write ends — a shell-wrapped
+    ``git``, an alias, or a hook that backgrounds work and returns. The probe
+    still times out (the pipes never reach EOF) but the direct child is already
+    gone by cleanup time, so cleanup cannot rely on querying it.
+    """
     marker = tmp_path / marker_name
     script = tmp_path / "fakegit.sh"
+    tail = "exit 0" if wrapper_exits else "sleep 300"
     script.write_text(
         textwrap.dedent(
             f"""\
             #!/bin/bash
             sleep 300 &
             echo $! > {marker}
-            sleep 300
+            {tail}
             """
         )
     )
@@ -79,6 +87,35 @@ def test_timeout_kills_descendants(tmp_path):
     if alive:  # cleanup so a failure doesn't leak a 300s sleeper
         os.kill(child_pid, 9)
     assert not alive, f"descendant {child_pid} survived probe timeout"
+
+
+def test_timeout_kills_descendants_after_wrapper_exits(tmp_path):
+    """The descendant must die even when the launcher exited before cleanup.
+
+    Upstream openai/codex#36793 covers cleanup both while the wrapper runs and
+    after it exits; this is the second half. Deriving the process group from
+    ``os.getpgid(proc.pid)`` at kill time fails here — the direct child is an
+    unreaped zombie, so ``getpgid`` raises ``ProcessLookupError`` on macOS, the
+    group signal is skipped, and the helper survives holding the pipes.
+    """
+    script, marker = _write_forking_script(tmp_path, wrapper_exits=True)
+
+    out = bounded_git_probe([str(script)], timeout=1.0)
+    assert out == ""
+
+    child_pid = _wait_marker(marker)
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and _pid_alive(child_pid):
+        time.sleep(0.05)
+    alive = _pid_alive(child_pid)
+    if alive:
+        # Cleanup so a failure doesn't leak a 300s sleeper. Spawn ``kill``
+        # instead of calling os.kill: on the failing path the survivor has been
+        # reparented to init, so conftest's live-system guard rejects it as
+        # outside the test subtree and its RuntimeError would mask the assertion
+        # below — the actual diagnosis.
+        subprocess.run(["kill", "-9", str(child_pid)], check=False)
+    assert not alive, f"descendant {child_pid} survived after wrapper exited"
 
 
 def test_posix_spawn_uses_own_process_group(tmp_path):

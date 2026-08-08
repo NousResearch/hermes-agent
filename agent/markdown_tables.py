@@ -63,14 +63,40 @@ def _pad_to_width(s: str, target: int) -> str:
 
 
 def split_table_row(row: str) -> List[str]:
-    """Split ``| a | b | c |`` into ``["a", "b", "c"]`` with trims."""
+    """Split a GFM table row without treating escaped pipes as delimiters."""
 
-    s = row.strip()
-    if s.startswith("|"):
-        s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [c.strip() for c in s.split("|")]
+    stripped = row.strip()
+    cells: List[str] = []
+    cell: List[str] = []
+    ended_with_delimiter = False
+
+    for char in stripped:
+        if char != "|":
+            cell.append(char)
+            ended_with_delimiter = False
+            continue
+
+        backslashes = 0
+        for previous in reversed(cell):
+            if previous != "\\":
+                break
+            backslashes += 1
+        if backslashes % 2:
+            cell.pop()
+            cell.append("|")
+            ended_with_delimiter = False
+            continue
+
+        cells.append("".join(cell).strip())
+        cell = []
+        ended_with_delimiter = True
+
+    cells.append("".join(cell).strip())
+    if stripped.startswith("|"):
+        cells.pop(0)
+    if ended_with_delimiter:
+        cells.pop()
+    return cells
 
 
 def is_table_divider(row: str) -> bool:
@@ -115,9 +141,13 @@ def _render_block(rows: List[List[str]], available_width: int | None = None) -> 
 
     ncols = max(len(r) for r in rows)
     rows = [r + [""] * (ncols - len(r)) for r in rows]
+    horizontal_rows = [
+        [cell.replace("|", r"\|") for cell in row]
+        for row in rows
+    ]
 
     widths = [
-        max(_MIN_COL_WIDTH, *(_disp_width(r[c]) for r in rows))
+        max(_MIN_COL_WIDTH, *(_disp_width(r[c]) for r in horizontal_rows))
         for c in range(ncols)
     ]
 
@@ -135,9 +165,9 @@ def _render_block(rows: List[List[str]], available_width: int | None = None) -> 
             + " |"
         )
 
-    out = [_row(rows[0])]
+    out = [_row(horizontal_rows[0])]
     out.append("|" + "|".join("-" * (w + 2) for w in widths) + "|")
-    for r in rows[1:]:
+    for r in horizontal_rows[1:]:
         out.append(_row(r))
     return out
 

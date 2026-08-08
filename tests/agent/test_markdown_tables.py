@@ -43,6 +43,40 @@ def test_split_strips_outer_pipes_and_trims():
     assert split_table_row("a | b | c") == ["a", "b", "c"]
 
 
+def test_split_preserves_escaped_pipe_in_cell():
+    assert split_table_row(r"| a \| b | true |") == ["a | b", "true"]
+
+
+def test_split_even_backslashes_do_not_escape_separator():
+    assert split_table_row(r"| path \\| result |") == ["path \\\\", "result"]
+
+
+def test_split_uses_backslash_parity_for_pipes():
+    for count in range(1, 7):
+        backslashes = "\\" * count
+        cells = split_table_row(f"| left {backslashes}| right |")
+
+        if count % 2:
+            expected = "left " + ("\\" * (count - 1)) + "| right"
+            assert cells == [expected]
+        else:
+            assert cells == ["left " + backslashes, "right"]
+
+
+def test_realign_preserves_escaped_pipe_as_one_cell():
+    src = (
+        "| Expression | Result |\n"
+        "|------------|--------|\n"
+        r"| a \| b | true |"
+    )
+
+    out = realign_markdown_tables(src)
+
+    body = out.splitlines()[2]
+    assert r"a \| b" in body
+    assert split_table_row(body) == ["a | b", "true"]
+
+
 
 
 def test_looks_like_table_row():

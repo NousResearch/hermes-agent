@@ -68,3 +68,12 @@ class TestConvertTableToBullets:
         assert "• head2: b" in out
 
 
+    def test_escaped_pipe_stays_in_one_cell(self):
+        text = (
+            "| Expression | Result |\n"
+            "|------------|--------|\n"
+            "| a \\| b    | true   |"
+        )
+        out = convert_table_to_bullets(text)
+        assert "**a | b**" in out
+        assert "• Result: true" in out

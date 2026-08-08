@@ -43,6 +43,16 @@ class TestDiscordFormatMessage:
         assert out.rstrip().endswith("Done.")
         assert "|---" not in out
 
+    def test_table_preserves_literal_pipe_cell(self):
+        adapter = _make_discord_adapter()
+        text = (
+            "| Expression | Result |\n"
+            "|------------|--------|\n"
+            "| a \\| b    | true   |"
+        )
+        out = adapter.format_message(text)
+        assert "**a | b**" in out
+        assert "• Result: true" in out
 
 class TestDiscordToolPreviewFormatting:
     def test_truncated_url_keeps_full_click_target(self):

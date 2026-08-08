@@ -107,7 +107,17 @@ def _load_hermes_env_vars() -> dict[str, str]:
 
         return load_env() or {}
     except Exception:
+        logger.warning(
+            "Could not load ~/.hermes/.env for docker env forwarding; "
+            "forwarded keys may be missing from this command", exc_info=True,
+        )
         return {}
+
+
+# Explicit docker_forward_env keys that resolved to no value and were warned
+# about already. A key is removed when it resolves again, so each failure
+# streak logs exactly once instead of once per command.
+_unresolved_forward_warned: set = set()
 
 
 # Docker label values must match [a-zA-Z0-9_.-] and stay ≤63 chars to round-trip
@@ -1577,7 +1587,16 @@ class DockerEnvironment(BaseEnvironment):
                 value = resolve_passthrough_value(key, value)
             if value is not None:
                 exec_env[key] = value
-            elif multiplex_active and not is_global_env(key) and _ENV_VAR_NAME_RE.fullmatch(key):
+                _unresolved_forward_warned.discard(key)
+                continue
+            if key in explicit_forward_keys and key not in _unresolved_forward_warned:
+                _unresolved_forward_warned.add(key)
+                logger.warning(
+                    "docker_forward_env key %s resolved to no value (not in the "
+                    "process environment nor ~/.hermes/.env); it will be missing "
+                    "in the container", key,
+                )
+            if multiplex_active and not is_global_env(key) and _ENV_VAR_NAME_RE.fullmatch(key):
                 unset_names.add(key)
         return exec_env, unset_names
 

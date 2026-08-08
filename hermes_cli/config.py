@@ -3721,18 +3721,26 @@ def load_env() -> Dict[str, str]:
     same file on every call was burning ~300ms of CPU per `hermes tools`
     menu paint on top of the OAuth-refresh slowness. The mtime check
     invalidates the cache when the user edits .env mid-process.
+
+    A failed stat/read never becomes the new cached truth: a transient
+    unreadable window (e.g. mid-rewrite of .env) falls back to the last
+    successful load with a warning, because a long-running gateway
+    silently losing its keys is worse than briefly serving stale ones.
+    Writers that intentionally change .env via this module still call
+    ``invalidate_env_cache()``, which also drops the fallback copy.
     """
-    global _env_cache
+    global _env_cache, _env_load_failing
     env_path = get_env_path()
 
+    cache_key = None
+    failure = None
     try:
-        mtime = env_path.stat().st_mtime
-        size = env_path.stat().st_size
-        cache_key = (str(env_path), mtime, size)
+        st = env_path.stat()
+        cache_key = (str(env_path), st.st_mtime, st.st_size)
     except FileNotFoundError:
-        cache_key = (str(env_path), None, None)
-    except Exception:
-        cache_key = None
+        failure = "file not found"
+    except Exception as exc:
+        failure = f"stat failed: {exc!r}"
 
     if cache_key is not None and _env_cache is not None:
         cached_key, cached_vars = _env_cache
@@ -3741,38 +3749,68 @@ def load_env() -> Dict[str, str]:
 
     env_vars: Dict[str, str] = {}
 
-    if env_path.exists():
+    if failure is None:
         # On Windows, open() defaults to the system locale (cp1252) which can
         # fail on UTF-8 .env files. Always use explicit UTF-8; tolerate BOM
         # via utf-8-sig since users may edit .env in Notepad which adds one.
         open_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-        with open(env_path, **open_kw) as f:
-            raw_lines = f.readlines()
-        # Normalize line endings without interpreting value contents as syntax.
-        lines = _sanitize_env_lines(raw_lines)
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                # Strip the bash-compatible ``export `` prefix so lines like
-                # ``export API_KEY=...`` parse as ``API_KEY`` rather than being
-                # stored under the wrong key ``"export API_KEY"`` (#6659).
-                if line.startswith('export '):
-                    line = line[7:]
-                key, _, value = line.partition('=')
-                env_vars[key.strip()] = _parse_env_value(value)
+        try:
+            with open(env_path, **open_kw) as f:
+                raw_lines = f.readlines()
+        except FileNotFoundError:
+            failure = "file not found"  # disappeared between stat and open
+        except Exception as exc:
+            failure = f"read failed: {exc!r}"
+        else:
+            # Normalize line endings without interpreting value contents as syntax.
+            lines = _sanitize_env_lines(raw_lines)
+            for line in lines:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    # Strip the bash-compatible ``export `` prefix so lines like
+                    # ``export API_KEY=...`` parse as ``API_KEY`` rather than being
+                    # stored under the wrong key ``"export API_KEY"`` (#6659).
+                    if line.startswith('export '):
+                        line = line[7:]
+                    key, _, value = line.partition('=')
+                    env_vars[key.strip()] = _parse_env_value(value)
 
-    if cache_key is not None:
+    if failure is None:
         _env_cache = (cache_key, dict(env_vars))
+        _env_load_failing = False
+        return env_vars
 
-    return env_vars
+    # Unreadable .env: keep the last good values instead of caching "empty"
+    # as the new truth, and log the first failure of each streak so the
+    # incident is observable from the journal.
+    if _env_cache is not None:
+        cached_key, cached_vars = _env_cache
+        if not _env_load_failing:
+            logger.warning(
+                "Could not read %s (%s); keeping %d value(s) from the last successful load",
+                env_path, failure, len(cached_vars),
+            )
+        _env_load_failing = True
+        return dict(cached_vars)
+    if failure != "file not found" and not _env_load_failing:
+        # A missing .env with nothing to fall back to is a legitimate state
+        # (fresh install); any other failure with no fallback is worth a line.
+        logger.warning("Could not read %s (%s); no previous load to fall back to", env_path, failure)
+        _env_load_failing = True
+    return {}
 
 
 # Module-level memo for load_env(), keyed on (path, mtime, size).
 # Editing .env bumps mtime → next load_env() rebuilds. invalidate_env_cache()
 # is the explicit knob for writers that update .env via this module
 # (set_env_value, save_env, etc.) without relying on filesystem mtime
-# resolution.
+# resolution. Holds the last *successful* load only; failed loads never
+# overwrite it (load_env falls back to it instead).
 _env_cache: Optional[Tuple[Tuple[str, Optional[float], Optional[int]], Dict[str, str]]] = None
+
+# True while load_env() is inside a failure streak (unreadable .env);
+# used to log each streak once instead of once per call.
+_env_load_failing: bool = False
 
 
 def invalidate_env_cache() -> None:

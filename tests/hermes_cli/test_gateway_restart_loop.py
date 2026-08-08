@@ -66,6 +66,17 @@ class TestGatewayLifecyclePattern:
         )
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
 
+    def test_skill_word_does_not_match_kill_branch(self):
+        text = 'grep -a "Registered /skill" ~/.hermes/logs/gateway.log'
+        assert not _contains_gateway_lifecycle_command(text)
+
+    @pytest.mark.parametrize("text", [
+        "pkill -f hermes gateway",
+        "kill hermes gateway",
+    ])
+    def test_standalone_kill_commands_still_match(self, text):
+        assert _contains_gateway_lifecycle_command(text)
+
 
     @pytest.mark.parametrize("text", [
         "restart the server application",

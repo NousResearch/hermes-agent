@@ -1104,10 +1104,17 @@ class ProcessRegistry:
                 shell_argv, unit_suffix=unit_suffix,
             )
             session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
-            # systemd-run creates the new session/cgroup for us; do NOT also
-            # set start_new_session (harmless, but redundant and it can mask
-            # scope-creation failures in some systemd versions).
-            popen_start_new_session = False
+            # CRITICAL (#70716 regression): systemd-run --scope does NOT give
+            # the worker a new session — the invoked process keeps the
+            # parent's session and inherits its controlling terminal.  From an
+            # interactive TUI this drops the worker into the same session as
+            # the foreground process group: background spawns then stop the
+            # whole session (observed as 5 dead TUIs in state T / "Arrêté").
+            # start_new_session=True gives systemd-run (and the scoped worker
+            # below it) a private session.  Cgroup isolation is preserved:
+            # the scope is attached to the invoked process, not to the
+            # spawning session.
+            popen_start_new_session = True
         else:
             spawn_argv = shell_argv
             popen_start_new_session = True
@@ -1163,10 +1170,12 @@ class ProcessRegistry:
             # leak as untracked background processes.
             try:
                 if session.systemd_unit:
-                    # systemd-run --scope shares the gateway's process group
-                    # because start_new_session=False.  Never killpg here: that
-                    # can signal the gateway itself.  Stop the sibling cgroup,
-                    # then safely terminate the wrapper PID tree as fallback.
+                    # The worker runs in its own systemd scope and, since the
+                    # #70716 session-isolation fix, its own session.  Stop the
+                    # scope (kills every process in the worker cgroup), then
+                    # terminate the systemd-run wrapper PID as fallback.
+                    # Never killpg: scope teardown is the authoritative
+                    # cleanup for the worker cgroup.
                     _stop_systemd_unit(session.systemd_unit)
                     self._terminate_host_pid(proc.pid, session.host_start_time)
                 elif not _IS_WINDOWS:

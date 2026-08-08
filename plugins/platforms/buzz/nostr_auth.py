@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import secrets
+import struct
 import time
 from typing import Any, Optional
 
@@ -126,6 +129,169 @@ def public_key_hex(private_key: str) -> str:
     if point is None:  # pragma: no cover - range validation makes this unreachable
         raise ValueError("invalid private key")
     return point[0].to_bytes(32, "big").hex()
+
+
+def _lift_x(public_key: str) -> tuple[int, int]:
+    try:
+        x = int(public_key, 16)
+    except ValueError as exc:
+        raise ValueError("public key must be 64 hex characters") from exc
+    if len(public_key) != 64 or x >= FIELD_ORDER:
+        raise ValueError("public key must be a valid 32-byte x-only key")
+    y_squared = (pow(x, 3, FIELD_ORDER) + 7) % FIELD_ORDER
+    y = pow(y_squared, (FIELD_ORDER + 1) // 4, FIELD_ORDER)
+    if pow(y, 2, FIELD_ORDER) != y_squared:
+        raise ValueError("public key is not on secp256k1")
+    return x, y if y % 2 == 0 else FIELD_ORDER - y
+
+
+def validate_x_only_public_key(public_key: str) -> str:
+    """Return a normalized x-only key or raise when it is not on secp256k1."""
+
+    normalized = str(public_key or "").strip().lower()
+    _lift_x(normalized)
+    return normalized
+
+
+def _hkdf_expand(prk: bytes, info: bytes, length: int) -> bytes:
+    output = bytearray()
+    previous = b""
+    counter = 1
+    while len(output) < length:
+        previous = hmac.new(prk, previous + info + bytes([counter]), hashlib.sha256).digest()
+        output.extend(previous)
+        counter += 1
+    return bytes(output[:length])
+
+
+def _rotate_left(value: int, shift: int) -> int:
+    return ((value << shift) & 0xFFFFFFFF) | (value >> (32 - shift))
+
+
+def _chacha20_xor(key: bytes, nonce: bytes, payload: bytes) -> bytes:
+    if len(key) != 32 or len(nonce) != 12:
+        raise ValueError("ChaCha20 requires a 32-byte key and 12-byte nonce")
+
+    def quarter_round(state: list[int], a: int, b: int, c: int, d: int) -> None:
+        state[a] = (state[a] + state[b]) & 0xFFFFFFFF
+        state[d] = _rotate_left(state[d] ^ state[a], 16)
+        state[c] = (state[c] + state[d]) & 0xFFFFFFFF
+        state[b] = _rotate_left(state[b] ^ state[c], 12)
+        state[a] = (state[a] + state[b]) & 0xFFFFFFFF
+        state[d] = _rotate_left(state[d] ^ state[a], 8)
+        state[c] = (state[c] + state[d]) & 0xFFFFFFFF
+        state[b] = _rotate_left(state[b] ^ state[c], 7)
+
+    constants = list(struct.unpack("<4I", b"expand 32-byte k"))
+    key_words = list(struct.unpack("<8I", key))
+    nonce_words = list(struct.unpack("<3I", nonce))
+    encrypted = bytearray()
+    for block_index in range((len(payload) + 63) // 64):
+        initial = constants + key_words + [block_index] + nonce_words
+        state = initial.copy()
+        for _ in range(10):
+            quarter_round(state, 0, 4, 8, 12)
+            quarter_round(state, 1, 5, 9, 13)
+            quarter_round(state, 2, 6, 10, 14)
+            quarter_round(state, 3, 7, 11, 15)
+            quarter_round(state, 0, 5, 10, 15)
+            quarter_round(state, 1, 6, 11, 12)
+            quarter_round(state, 2, 7, 8, 13)
+            quarter_round(state, 3, 4, 9, 14)
+        key_stream = struct.pack(
+            "<16I",
+            *((word + original) & 0xFFFFFFFF for word, original in zip(state, initial)),
+        )
+        chunk = payload[block_index * 64 : (block_index + 1) * 64]
+        encrypted.extend(left ^ right for left, right in zip(chunk, key_stream))
+    return bytes(encrypted)
+
+
+def _nip44_padded_length(length: int) -> int:
+    if length <= 32:
+        return 32
+    next_power = 1 << (length - 1).bit_length()
+    chunk = 32 if next_power <= 256 else next_power // 8
+    return chunk * ((length - 1) // chunk + 1)
+
+
+def nip44_encrypt(
+    plaintext: str,
+    *,
+    private_key: str,
+    recipient_pubkey: str,
+    nonce: Optional[bytes] = None,
+) -> str:
+    """Encrypt UTF-8 text with NIP-44 v2 for an x-only secp256k1 recipient."""
+    encoded = plaintext.encode("utf-8")
+    if not 1 <= len(encoded) <= 65_535:
+        raise ValueError("NIP-44 plaintext must contain 1 to 65535 bytes")
+    nonce = secrets.token_bytes(32) if nonce is None else nonce
+    if len(nonce) != 32:
+        raise ValueError("NIP-44 nonce must be 32 bytes")
+
+    shared_point = _point_multiply(decode_private_key(private_key), _lift_x(recipient_pubkey))
+    if shared_point is None:  # pragma: no cover - validated nonzero keys make this unreachable
+        raise ValueError("invalid NIP-44 shared point")
+    shared_x = shared_point[0].to_bytes(32, "big")
+    conversation_key = hmac.new(b"nip44-v2", shared_x, hashlib.sha256).digest()
+    message_keys = _hkdf_expand(conversation_key, nonce, 76)
+    chacha_key = message_keys[:32]
+    chacha_nonce = message_keys[32:44]
+    hmac_key = message_keys[44:]
+
+    prefix = len(encoded).to_bytes(2, "big")
+    padded = prefix + encoded + bytes(_nip44_padded_length(len(encoded)) - len(encoded))
+    ciphertext = _chacha20_xor(chacha_key, chacha_nonce, padded)
+    mac = hmac.new(hmac_key, nonce + ciphertext, hashlib.sha256).digest()
+    return base64.b64encode(b"\x02" + nonce + ciphertext + mac).decode("ascii")
+
+
+def build_observer_event(
+    *,
+    private_key: str,
+    owner_pubkey: str,
+    payload: dict[str, Any],
+    created_at: Optional[int] = None,
+    nonce: Optional[bytes] = None,
+    auxiliary_randomness: Optional[bytes] = None,
+) -> dict[str, Any]:
+    """Build a signed, owner-encrypted NIP-AO telemetry event (kind 24200)."""
+    plaintext = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    if len(plaintext.encode("utf-8")) > 65_535:
+        raise ValueError("observer plaintext exceeds 65535 bytes")
+    content = nip44_encrypt(
+        plaintext,
+        private_key=private_key,
+        recipient_pubkey=owner_pubkey,
+        nonce=nonce,
+    )
+    pubkey = public_key_hex(private_key)
+    timestamp = int(time.time()) if created_at is None else int(created_at)
+    tags = [
+        ["p", owner_pubkey.lower()],
+        ["agent", pubkey],
+        ["frame", "telemetry"],
+    ]
+    serialized = json.dumps(
+        [0, pubkey, timestamp, 24200, tags, content],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    event_id = hashlib.sha256(serialized).digest()
+    return {
+        "id": event_id.hex(),
+        "pubkey": pubkey,
+        "created_at": timestamp,
+        "kind": 24200,
+        "tags": tags,
+        "content": content,
+        "sig": schnorr_sign(
+            event_id,
+            private_key,
+            auxiliary_randomness=auxiliary_randomness,
+        ).hex(),
+    }
 
 
 def schnorr_sign(

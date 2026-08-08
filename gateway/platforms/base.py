@@ -3540,6 +3540,16 @@ class BasePlatformAdapter(ABC):
         """
         self._message_handler = handler
 
+    def on_turn_lifecycle(self, event: Any) -> bool:
+        """Consume a platform-neutral Gateway turn event when supported.
+
+        The default is deliberately a fail-open no-op. Concrete adapters may
+        translate the closed event contract into platform-native activity
+        telemetry without exposing adapter objects through the public hook or
+        outbound-webhook systems.
+        """
+        return False
+
     def set_topic_recovery_fn(
         self,
         fn: Optional[Callable[[Any], Optional[str]]],

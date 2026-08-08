@@ -33,6 +33,7 @@ gateway:
         poll_interval: 4           # seconds between inbound poll sweeps
         cli_path: ""               # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""       # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
+        activity_owner_pubkey: ""  # optional owner npub/hex; enables encrypted View activity events
         allowed_users: []          # empty = allow all; hex pubkeys or npubs
 ```
 
@@ -55,6 +56,21 @@ BUZZ_PRIVATE_KEY=nsec1...
 | `BUZZ_POLL_INTERVAL` | — | Seconds between inbound poll sweeps (default: 4) |
 | `BUZZ_CLI_PATH` | — | Path to the `buzz` binary (default: `buzz` on PATH, then `~/bin/buzz`) |
 | `BUZZ_CREDENTIALS_FILE` | — | JSON credentials file holding the nsec, used when `BUZZ_PRIVATE_KEY` is unset |
+| `BUZZ_AUTH_TAG` | — | Owner-signed NIP-OA attestation for this agent identity; required by hosted relays for owner-authorized activity |
+
+## Native Gateway activity
+
+Set `gateway.platforms.buzz.extra.activity_owner_pubkey` in `config.yaml` to publish native Hermes turn and tool lifecycle activity for Buzz's **View activity** panel. This non-secret behavior setting is intentionally configuration-only; environment variables remain reserved for credentials and deployment concerns. Hermes remains the execution engine: this observer stream does not route the turn through Buzz ACP. Activity is published on the authenticated WebSocket. Automatic polling fallback can continue ordinary chat while Activity is unavailable; explicit `transport: poll` cannot be combined with Activity.
+
+Activity events are ephemeral NIP-AO events (kind `24200`), encrypted to the owner with NIP-44 and signed by the configured agent identity. Tool activity contains only a bounded tool name, a turn-local opaque call ID, and status. Hermes deliberately omits provider call IDs, tool arguments, results, model text, credentials, code, queries, and local paths.
+
+Encryption protects event contents, not traffic metadata. The relay can still see the outer `p`, `agent`, and `frame` tags, creation time, ciphertext size, and event cadence, which reveal the owner-agent relationship and approximate turn/tool timing. NIP-44 does not provide forward secrecy, and “ephemeral” is relay retention policy rather than cryptographic deletion.
+
+Activity transport is bounded and fail-open. Ordinary progress and liveness frames are dropped while the WebSocket is unavailable. A terminal completion, cancellation, timeout, or failure that occurs during a temporary outage is retained in a bounded, terminal-only replay buffer and sent once on reconnect so a previously observed turn cannot remain stuck as working indefinitely.
+
+The setting is optional and fail-open. If it is absent, no observer events are emitted. If encryption, signing, WebSocket delivery, or relay acceptance fails, the normal Hermes turn and Buzz reply continue unaffected. A malformed owner key is rejected at startup rather than silently disabling activity.
+
+The Buzz relay must recognize the signing identity as an agent owned by that owner and must authorize the owner as an observer. Signing a valid kind-`24200` event alone does not grant relay authorization.
 
 ## Recommended default settings
 
@@ -76,6 +92,7 @@ gateway:
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         poll_interval: 4                  # seconds between inbound poll sweeps (default 4 — balances latency vs. relay load)
+        activity_owner_pubkey: ""         # optional owner npub/hex; enables encrypted View activity events
         cli_path: ""                      # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""              # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
@@ -117,7 +134,7 @@ Check status with `hermes gateway status` — Buzz connection state is reported 
 
 ## Notes and limitations
 
-- **Inbound is polled, not streamed.** The `buzz` CLI is request/response, so the adapter polls `buzz messages get` per watched channel every `poll_interval` seconds (default 4). Expect up to one interval of latency on inbound messages. A future optimization is a websocket transport (the Buzz repo ships `buzz-ws-client` for true streaming).
+- **Inbound is WebSocket-first with polling fallback.** `transport: auto` (the default) uses an authenticated WebSocket and falls back to CLI polling if initial WebSocket authentication is unavailable. `transport: websocket` requires WebSocket startup; `transport: poll` forces polling. Native Activity requires WebSocket delivery and cannot be enabled with explicit poll-only transport.
 - On (re)connect the adapter seeds its high-water mark from the newest events, so channel history is never replayed into the agent.
 - New DM conversations are discovered automatically (every few poll sweeps).
 - The private key is passed to the CLI via the subprocess environment — it never appears in argv or logs.

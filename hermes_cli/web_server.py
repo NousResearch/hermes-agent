@@ -12167,6 +12167,7 @@ def _normalize_mcp_server_create(
     """
     from hermes_cli.mcp_config import (
         _bearer_auth_headers,
+        _bearer_auth_token_ref,
         _strip_bearer_prefix,
     )
     from hermes_cli.mcp_security import validate_mcp_server_entry
@@ -12186,7 +12187,7 @@ def _normalize_mcp_server_create(
 
     if bool(url) == bool(command):
         raise ValueError("Provide exactly one of URL (HTTP/SSE) or command (stdio)")
-    if auth not in {"none", "header", "oauth"}:
+    if auth not in {"none", "header", "query", "oauth"}:
         raise ValueError(f"Unsupported auth mode: {auth}")
 
     server_config: Dict[str, Any] = {}
@@ -12197,13 +12198,17 @@ def _normalize_mcp_server_create(
             raise ValueError(
                 "Environment variables are only supported for stdio MCP servers"
             )
-        if auth == "header":
+        if auth in {"header", "query"}:
             normalized = _strip_bearer_prefix(bearer_token) if bearer_token else ""
             if not normalized or normalized.lower() == "bearer":
                 raise ValueError("Bearer token is required")
-            server_config["headers"] = _bearer_auth_headers(name)
+            if auth == "header":
+                server_config["headers"] = _bearer_auth_headers(name)
+            else:
+                server_config["auth"] = "query"
+                server_config["token"] = _bearer_auth_token_ref(name)
         elif body.bearer_token is not None:
-            raise ValueError("Bearer token requires header authentication")
+            raise ValueError("Bearer token requires header or query authentication")
 
         server_config["url"] = url
         if auth == "oauth":
@@ -13678,7 +13683,9 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
                 )
                 continue
             if bearer_token is not None:
-                entry["headers"] = _save_bearer_auth_token(name, bearer_token)
+                saved_headers = _save_bearer_auth_token(name, bearer_token)
+                if entry.get("auth") != "query":
+                    entry["headers"] = saved_headers
             mcp[name] = entry
             written += 1
         if written:

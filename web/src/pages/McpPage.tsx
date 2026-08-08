@@ -421,28 +421,38 @@ export default function McpPage() {
                       onValueChange={(value) => {
                         const nextAuth = value as McpHttpAuth;
                         setHttpAuth(nextAuth);
-                        if (nextAuth !== "header") setBearerToken("");
+                        if (nextAuth !== "header" && nextAuth !== "query") {
+                          setBearerToken("");
+                        }
                       }}
                     >
                       <SelectOption value="none">None</SelectOption>
                       <SelectOption value="header">Bearer token</SelectOption>
+                      <SelectOption value="query">URL query token</SelectOption>
                       <SelectOption value="oauth">OAuth</SelectOption>
                     </Select>
                   </div>
-                  {httpAuth === "header" && (
+                  {(httpAuth === "header" || httpAuth === "query") && (
                     <div className="grid gap-2">
-                      <Label htmlFor="mcp-bearer-token">Bearer token</Label>
+                      <Label htmlFor="mcp-bearer-token">
+                        {httpAuth === "query" ? "URL query token" : "Bearer token"}
+                      </Label>
                       <Input
                         id="mcp-bearer-token"
                         type="password"
                         autoComplete="new-password"
-                        placeholder="Token or Bearer token"
+                        placeholder={
+                          httpAuth === "query"
+                            ? "Token appended as ?token=..."
+                            : "Token or Bearer token"
+                        }
                         value={bearerToken}
                         onChange={(e) => setBearerToken(e.target.value)}
                       />
                       <p className="text-xs text-muted-foreground">
-                        Stored in this profile&apos;s .env; config.yaml keeps
-                        only an environment-variable reference.
+                        {httpAuth === "query"
+                          ? "Stored in this profile's .env and sent as a redacted ?token= query parameter."
+                          : "Stored in this profile's .env; config.yaml keeps only an environment-variable reference."}
                       </p>
                     </div>
                   )}
@@ -634,7 +644,11 @@ export default function McpPage() {
                     {server.auth && (
                       <Badge tone="outline">
                         auth:{" "}
-                        {server.auth === "header" ? "bearer" : server.auth}
+                        {server.auth === "header"
+                          ? "bearer"
+                          : server.auth === "query"
+                            ? "query token"
+                            : server.auth}
                       </Badge>
                     )}
                     {!server.enabled && <Badge tone="outline">disabled</Badge>}

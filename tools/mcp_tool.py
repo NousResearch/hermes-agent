@@ -4970,8 +4970,8 @@ def _load_mcp_config() -> Dict[str, dict]:
 
     Returns a dict of ``{server_name: server_config}`` or empty dict.
     Server config can contain either ``command``/``args``/``env`` for stdio
-    transport or ``url``/``headers`` for HTTP transport, plus optional
-    ``timeout``, ``connect_timeout``, and ``auth`` overrides.
+    transport or ``url``/``headers``/``token`` for HTTP transport, plus
+    optional ``timeout``, ``connect_timeout``, and ``auth`` overrides.
 
     ``${ENV_VAR}`` placeholders in string values are resolved from
     ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).

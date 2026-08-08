@@ -708,7 +708,9 @@ class TestNodeRuntimeNpmResolution:
         )
 
         failed = hm._update_node_dependencies()
-        assert failed == ["repo root"]
+        # Single-pass contract (#64354): the one npm invocation covers root +
+        # ui-tui + web; a failure is reported under the workspace label.
+        assert failed == ["ui-tui, web workspaces"]
         out = capsys.readouterr().out
         assert "mixed state" in out
 

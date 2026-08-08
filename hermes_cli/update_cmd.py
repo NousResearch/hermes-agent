@@ -2003,6 +2003,27 @@ def _npm_manifests_digest() -> str | None:
             h.update(b"<missing>")
     return h.hexdigest()
 
+def _root_declared_deps_present() -> bool:
+    """True when every dep declared in the root package.json is installed.
+
+    Only ``dependencies`` are checked: ``optionalDependencies`` may be
+    legitimately absent (platform-specific, install-failure-tolerant), and
+    ``devDependencies`` are not something ``hermes update`` guarantees at the
+    repo root. A missing or unparseable manifest returns True — no evidence the
+    deps are missing — so this guard only ever *adds* a reinstall for the
+    concrete pruned-tree case and never strips the cache's existing behaviour.
+    An empty ``dependencies`` (e.g. if root deps are dropped entirely) is
+    vacuously present, so the guard is a no-op there.
+    """
+    root_pkg = _m().PROJECT_ROOT / "package.json"
+    try:
+        deps = json.loads(root_pkg.read_text(encoding="utf-8")).get("dependencies", {})
+    except (OSError, ValueError):
+        return True
+    node_modules = _m().PROJECT_ROOT / "node_modules"
+    return all((node_modules / name).exists() for name in deps)
+
+
 def _npm_lockfile_changed(hermes_root: Path) -> bool:
     current = _npm_manifests_digest()
     if current is None:
@@ -2010,6 +2031,14 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
     # Also check that node_modules exists; a matching hash with missing
     # node_modules means the cache was recorded by another checkout.
     if not (_m().PROJECT_ROOT / "node_modules").is_dir():
+        return True
+    # A tree pruned by the pre-fix two-pass update (agent-browser/@streamdown
+    # deleted, #64354) still has a node_modules/ and records a matching marker,
+    # so honouring the cache here would skip the repair on exactly the installs
+    # that hit the bug. Verify the root deps are present before trusting it;
+    # this also self-heals trees damaged by any other cause (manual rm, an
+    # older hermes) and is a no-op once root declares no deps.
+    if not _root_declared_deps_present():
         return True
     # A matching lockfile hash over a tree whose web build toolchain never
     # landed must NOT skip the reinstall — otherwise every later `hermes
@@ -2111,24 +2140,22 @@ def _update_node_dependencies() -> list[str]:
     # print download progress, and capturing it makes a long download look
     # hung. The chatty npm-deprecation noise during `hermes update` comes from
     # the *desktop* build, not this step; that one is captured to update.log.
-    root_args = [*extra_args, "--workspaces=false"]
-    root_result = _m()._run_npm_install_deterministic(
-        npm,
-        _m().PROJECT_ROOT,
-        extra_args=tuple(root_args),
-        capture_output=False,
-        env=nixos_env,
-    )
-    if root_result.returncode != 0:
-        print("  ⚠ npm install failed in repo root")
-        stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
-        return _partial_update_failure("repo root")
-
-    # Step 2: install only the workspaces update needs (ui-tui, web).
-    # --workspace selects specific workspaces; the rest (desktop) are skipped.
-    ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
+    #
+    # This must be a SINGLE npm invocation (--include-workspace-root rather
+    # than a root-only pass followed by a workspace-scoped pass): the helper
+    # prefers `npm ci`, which deletes node_modules before reifying the
+    # requested tree, so a second scoped pass silently wipes the root-only
+    # deps (agent-browser, @streamdown) installed by the first while still
+    # exiting 0. See #64354/#43564. Prior art: #64410 diagnosed the
+    # two-pass wipe and proposed --include-workspace-root.
+    ws_args = [
+        *extra_args,
+        "--workspace",
+        "ui-tui",
+        "--workspace",
+        "web",
+        "--include-workspace-root",
+    ]
     ws_result = _m()._run_npm_install_deterministic(
         npm,
         _m().PROJECT_ROOT,

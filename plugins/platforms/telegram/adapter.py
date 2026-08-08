@@ -4968,6 +4968,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
+            _last_sent_content = content
             try:
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
@@ -4987,6 +4988,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     safe_format_error,
                 )
                 _plain = _strip_mdv2(content) if content else content
+                _last_sent_content = _plain
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
@@ -5043,7 +5045,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self._bot.edit_message_text(
                         chat_id=normalize_telegram_chat_id(chat_id),
                         message_id=int(message_id),
-                        text=content,
+                        text=_last_sent_content,
                     )
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:

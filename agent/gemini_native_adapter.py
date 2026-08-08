@@ -575,6 +575,25 @@ def _map_gemini_finish_reason(reason: str) -> str:
         "MAX_TOKENS": "length",
         "SAFETY": "content_filter",
         "RECITATION": "content_filter",
+        # Sibling content-policy block reasons: without these they fall through
+        # to "stop", so a blocked turn surfaces as a silent empty stop instead of
+        # the `finish_reason == "content_filter"` refusal branch in
+        # agent/conversation_loop.py.  This is the complete set of policy-block
+        # members of the documented Gemini ``FinishReason`` enum, including the
+        # image-generation variants.
+        "BLOCKLIST": "content_filter",
+        "PROHIBITED_CONTENT": "content_filter",
+        "SPII": "content_filter",
+        "LANGUAGE": "content_filter",
+        "IMAGE_SAFETY": "content_filter",
+        "IMAGE_PROHIBITED_CONTENT": "content_filter",
+        "IMAGE_RECITATION": "content_filter",
+        # The remaining enum members are deliberately left on the "stop"
+        # default because they are NOT policy blocks -- reporting them as
+        # content_filter would show the user a refusal that never happened:
+        # FINISH_REASON_UNSPECIFIED (no reason reported), IMAGE_OTHER (mirrors
+        # OTHER), MALFORMED_FUNCTION_CALL (unparseable tool call) and
+        # UNEXPECTED_TOOL_CALL (tool call emitted when none was allowed).
         "OTHER": "stop",
     }
     return mapping.get(str(reason or "").upper(), "stop")

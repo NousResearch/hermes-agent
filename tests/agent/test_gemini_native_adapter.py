@@ -309,3 +309,118 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
 
 
 
+
+
+@pytest.mark.parametrize(
+    "reason,expected",
+    [
+        # Content-policy block reasons must all surface as content_filter so the
+        # downstream refusal path (agent/conversation_loop.py) engages.
+        ("PROHIBITED_CONTENT", "content_filter"),
+        ("BLOCKLIST", "content_filter"),
+        ("SPII", "content_filter"),
+        ("LANGUAGE", "content_filter"),
+        # Image-generation variants of the same blocks.
+        ("IMAGE_SAFETY", "content_filter"),
+        ("IMAGE_PROHIBITED_CONTENT", "content_filter"),
+        ("IMAGE_RECITATION", "content_filter"),
+        # Anchors for the pre-existing mappings (guard against regressions).
+        ("SAFETY", "content_filter"),
+        ("RECITATION", "content_filter"),
+        ("STOP", "stop"),
+        ("MAX_TOKENS", "length"),
+        # Non-policy reasons must NOT be reported as a content filter, or the
+        # user sees a refusal that never happened.
+        ("OTHER", "stop"),
+        ("IMAGE_OTHER", "stop"),
+        ("MALFORMED_FUNCTION_CALL", "stop"),
+        ("UNEXPECTED_TOOL_CALL", "stop"),
+        ("FINISH_REASON_UNSPECIFIED", "stop"),
+        ("", "stop"),
+    ],
+)
+def test_map_gemini_finish_reason_content_policy_blocks(reason, expected):
+    from agent.gemini_native_adapter import _map_gemini_finish_reason
+
+    assert _map_gemini_finish_reason(reason) == expected
+
+
+def test_map_gemini_finish_reason_covers_documented_enum():
+    """Every documented ``FinishReason`` member is classified deliberately.
+
+    Guards against the failure mode this PR was reviewed for: a new policy-block
+    reason silently taking the ``"stop"`` default and bypassing the refusal
+    path.  If Google adds a member, this list is where it gets triaged.
+    """
+    from agent.gemini_native_adapter import _map_gemini_finish_reason
+
+    blocks = {
+        "SAFETY",
+        "RECITATION",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "LANGUAGE",
+        "IMAGE_SAFETY",
+        "IMAGE_PROHIBITED_CONTENT",
+        "IMAGE_RECITATION",
+    }
+    non_blocks = {
+        "FINISH_REASON_UNSPECIFIED": "stop",
+        "STOP": "stop",
+        "MAX_TOKENS": "length",
+        "OTHER": "stop",
+        "IMAGE_OTHER": "stop",
+        "MALFORMED_FUNCTION_CALL": "stop",
+        "UNEXPECTED_TOOL_CALL": "stop",
+    }
+
+    for reason in blocks:
+        assert _map_gemini_finish_reason(reason) == "content_filter", reason
+    for reason, expected in non_blocks.items():
+        assert _map_gemini_finish_reason(reason) == expected, reason
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["PROHIBITED_CONTENT", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION"],
+)
+def test_translate_response_surfaces_policy_block_as_content_filter(reason):
+    """A blocked Gemini turn (empty parts + a policy finish reason) must map to
+    content_filter, not the silent "stop" that hides the refusal."""
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    payload = {
+        "candidates": [
+            {
+                "content": {"parts": []},
+                "finishReason": reason,
+            }
+        ],
+    }
+
+    response = translate_gemini_response(payload, model="gemini-2.5-flash")
+    assert response.choices[0].finish_reason == "content_filter"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["PROHIBITED_CONTENT", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION"],
+)
+def test_stream_surfaces_policy_block_as_content_filter(reason):
+    """The streaming path shares ``_map_gemini_finish_reason``; pin it too so a
+    blocked stream ends on content_filter rather than a bare stop."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    chunks = translate_stream_event(
+        {"candidates": [{"content": {"parts": []}, "finishReason": reason}]},
+        model="gemini-2.5-flash",
+        tool_call_indices={},
+    )
+
+    finish_reasons = [
+        c.choices[0].finish_reason
+        for c in chunks
+        if c.choices and c.choices[0].finish_reason
+    ]
+    assert finish_reasons == ["content_filter"]

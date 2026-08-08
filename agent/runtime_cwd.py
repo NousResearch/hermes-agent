@@ -98,3 +98,25 @@ def resolve_context_cwd() -> Path | None:
         else:
             return p
     return None
+
+
+def snapshot_terminal_cwd() -> str:
+    """Snapshot the process-global TERMINAL_CWD (with ``os.getcwd()`` fallback)
+    so the caller can pin it for the lifetime of a session.
+
+    Used by the gateway's session-bind path so a multi-session gateway does
+    not inherit a TERMINAL_CWD that a concurrent workdir cron job is mid-way
+    through writing (#81451).  Always returns a non-empty absolute path: if
+    both TERMINAL_CWD and ``os.getcwd()`` are unreachable, the empty string
+    is returned and the caller decides what to do with it.
+    """
+    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    if raw:
+        try:
+            return str(Path(raw).expanduser().resolve())
+        except Exception:
+            return raw
+    try:
+        return os.getcwd()
+    except Exception:
+        return ""

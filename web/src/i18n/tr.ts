@@ -324,6 +324,8 @@ export const tr: Translations = {
     disableRuntime: "Devre dışı bırak",
     enableAfterInstall: "Yüklemeden sonra etkinleştir",
     enableRuntime: "Etkinleştir",
+    toggleTakesEffectAfterRestart:
+      "Kaydedildi — değişikliği uygulamak için ağ geçidini yeniden başlatın.",
     forceReinstall: "Yeniden yüklemeyi zorla (önce mevcut klasörü sil)",
     headline:
       "Hermes eklentilerini keşfedin, yükleyin, etkinleştirin ve güncelleyin (`hermes plugins` ile eşdeğer).",

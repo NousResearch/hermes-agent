@@ -1025,6 +1025,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "approvals": "security",
     "human_delay": "display",
     "dashboard": "display",
+    # `serve.pty_ttl_minutes` is the only schema-surfaced serve field —
+    # fold it into the display tab (alongside dashboard) rather than
+    # spawning a one-field orphan category.
+    "serve": "display",
     "code_execution": "agent",
     "prompt_caching": "agent",
     "goals": "agent",
@@ -14629,8 +14633,39 @@ _PTY_READ_CHUNK_TIMEOUT = 0.2
 # bound to a process that survives disconnect/refresh and is reattachable.
 from hermes_cli.pty_session import PtySessionRegistry, RegistryFull, run_reaper  # noqa: E402
 
+# Default keep-alive TTL for detached desktop chat PTYs (seconds). The
+# desktop chat runs in a keep-alive PTY child of `hermes serve`; after the
+# browser detaches, the reaper kills the child once it has been detached
+# for this long. Configurable via `serve.pty_ttl_minutes` (see
+# _pty_keepalive_ttl_seconds).
+_DEFAULT_PTY_KEEPALIVE_TTL_SECONDS = 30 * 60
+
+
+def _pty_keepalive_ttl_seconds() -> float:
+    """Resolve the desktop PTY keep-alive TTL from config.
+
+    Reads ``serve.pty_ttl_minutes`` (default 30, matching the historical
+    hardcoded 30-minute TTL). Values <= 0 fall back to the default; a
+    non-numeric value is ignored. The registry is built at import time, so
+    this is resolved once per process — a config change takes effect on
+    the next ``hermes serve`` / dashboard start.
+    """
+    try:
+        cfg = load_config() or {}
+        serve_cfg = cfg.get("serve") or {}
+        raw = serve_cfg.get("pty_ttl_minutes")
+        if raw is None:
+            return float(_DEFAULT_PTY_KEEPALIVE_TTL_SECONDS)
+        minutes = float(raw)
+        if minutes <= 0:
+            return float(_DEFAULT_PTY_KEEPALIVE_TTL_SECONDS)
+        return minutes * 60.0
+    except Exception:
+        return float(_DEFAULT_PTY_KEEPALIVE_TTL_SECONDS)
+
+
 PTY_REGISTRY = PtySessionRegistry(
-    ttl=30 * 60,
+    ttl=_pty_keepalive_ttl_seconds(),
     max_sessions=16,
     buffer_cap=1 * 1024 * 1024,
     read_timeout=_PTY_READ_CHUNK_TIMEOUT,

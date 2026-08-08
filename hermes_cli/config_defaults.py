@@ -1791,6 +1791,18 @@ DEFAULT_CONFIG = {
         "max_turns": 20,
     },
 
+    # `hermes serve` — the headless backend the desktop app and remote
+    # clients connect to (same gateway as `hermes dashboard`, always
+    # headless). Settings here apply to the serve/dashboard web server.
+    "serve": {
+        # Keep-alive TTL (minutes) for detached desktop chat PTYs. The
+        # desktop chat runs in a keep-alive PTY child of `hermes serve`;
+        # after the browser detaches, the reaper kills the child once it
+        # has been detached for this long. Default 30 (the historical
+        # hardcoded 30-minute TTL). Set to 0 to fall back to the default.
+        "pty_ttl_minutes": 30,
+    },
+
     # Mixture of Agents — named presets used by /moa. A preset is an execution
     # mode around the main model, not a provider/model itself: references +
     # aggregator synthesize private guidance before each main-model iteration.

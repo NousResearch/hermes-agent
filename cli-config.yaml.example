@@ -1602,6 +1602,18 @@ updates:
 # =============================================================================
 # Web Dashboard
 # =============================================================================
+# `hermes serve` is the headless backend the desktop app and remote clients
+# connect to — the same gateway as `hermes dashboard`, always headless.
+# Settings under `serve:` apply to the serve/dashboard web server.
+#
+# serve:
+#   # Keep-alive TTL (minutes) for detached desktop chat PTYs. The desktop
+#   # chat runs in a keep-alive PTY child of `hermes serve`; after the
+#   # browser detaches, the reaper kills the child once it has been
+#   # detached for this long. Default 30 (the historical hardcoded
+#   # 30-minute TTL). Set to 0 to fall back to the default.
+#   pty_ttl_minutes: 30
+#
 # OAuth gate configuration for `hermes dashboard --host <non-loopback>`.
 # The bundled Nous Portal plugin reads these on startup; settings here are
 # the canonical surface. Each can be overridden by an environment variable:

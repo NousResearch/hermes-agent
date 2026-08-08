@@ -4844,6 +4844,28 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     return True, None
 
 
+def _parse_list_value(raw: str) -> Optional[list]:
+    """Parse a CLI string as a list value.
+
+    Accepts JSON arrays (``'["a", "b"]'``), comma-separated values
+    (``"a,b"``), or a single value (``"x"`` becomes ``["x"]``). Returns
+    ``None`` if the input starts with ``[`` but fails to parse as a JSON
+    array (clear intent failure rather than silent fallback).
+    """
+    raw = raw.strip()
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return None
+    if "," in raw:
+        return [v.strip() for v in raw.split(",") if v.strip()]
+    return [raw] if raw else []
+
+
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value.
 
@@ -4921,11 +4943,43 @@ def set_config_value(key: str, value: str, force: bool = False):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
+    # Guard: detect list-valued keys and parse the input as a list instead of
+    # writing a corrupting scalar. List keys are detected from DEFAULT_CONFIG
+    # defaults (e.g. toolsets) AND from the existing config value (e.g.
+    # plugins.enabled, which is absent from DEFAULT_CONFIG but list-valued).
+    # Also treat a leading `[` as unconditional list intent (covers first-set
+    # of keys absent from both DEFAULT_CONFIG and the existing config).
+    _list_default = _default_value_for_key(key)
+    _existing_val: Any = user_config
+    for _part in key.split("."):
+        if isinstance(_existing_val, dict) and _part in _existing_val:
+            _existing_val = _existing_val[_part]
+        else:
+            _existing_val = None
+            break
+    _is_list_key = isinstance(_list_default, list) or isinstance(_existing_val, list)
+    _looks_like_list = isinstance(value, str) and value.strip().startswith("[")
+    if _is_list_key or _looks_like_list:
+        _parsed = _parse_list_value(value)
+        if _parsed is None:
+            print(
+                f"✗ '{key}' is a list-valued setting. The value could not be\n"
+                f"  parsed as a list. Use JSON array syntax:\n"
+                f"    hermes config set {key} '[\"item1\", \"item2\"]'\n"
+                f"  Or comma-separated:\n"
+                f"    hermes config set {key} 'item1,item2'\n"
+                f"  Or use `hermes config edit` to edit the file directly.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        value = _parsed
+
     # Preserve values for string-typed settings.  In particular, enum members
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
+    # Skip scalar coercion when the value was already parsed as a list above.
     coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
+    if not isinstance(value, list) and not isinstance(_list_default, str):
         if value.lower() in {'true', 'yes', 'on'}:
             coerced_value = True
         elif value.lower() in {'false', 'no', 'off'}:

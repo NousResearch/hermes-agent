@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -173,6 +174,9 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
+    resume_session_id: Optional[str] = None,
+    continue_last: object = None,
+    restore_resume_cwd: bool = True,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -187,6 +191,11 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        resume_session_id: Existing session ID or title whose history and
+            durable row should receive this turn.
+        continue_last: ``True`` for the latest CLI session, or a session title.
+        restore_resume_cwd: Restore the resumed session's recorded workspace
+            before constructing the agent.
 
     Returns the exit code.  The caller owns process termination.
     """
@@ -248,6 +257,9 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    resume_session_id=resume_session_id,
+                    continue_last=continue_last,
+                    restore_resume_cwd=restore_resume_cwd,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -310,12 +322,115 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _load_oneshot_resume(
+    session_db,
+    *,
+    resume_session_id: Optional[str],
+    continue_last: object,
+    restore_resume_cwd: bool,
+) -> tuple[Optional[str], Optional[list[dict]]]:
+    """Resolve and load one persisted session for a one-shot continuation."""
+    if not (resume_session_id or continue_last):
+        return None, None
+    if session_db is None:
+        raise RuntimeError("Session database unavailable; cannot resume in one-shot mode.")
+
+    target = str(resume_session_id or "").strip()
+    if not target and isinstance(continue_last, str):
+        target = continue_last.strip()
+    if not target and continue_last:
+        recent = []
+        workspace_key = _resolve_oneshot_workspace_key()
+        if workspace_key:
+            recent = session_db.search_sessions(
+                source="cli",
+                limit=1,
+                workspace_key=workspace_key,
+            )
+        if not recent:
+            recent = session_db.search_sessions(source="cli", limit=1)
+        if not recent:
+            raise ValueError("No previous CLI session found to continue.")
+        target = recent[0]["id"]
+
+    session_meta = session_db.get_session(target)
+    if not session_meta:
+        title_match = session_db.resolve_session_by_title(target)
+        if title_match:
+            target = title_match
+            session_meta = session_db.get_session(target)
+    if not session_meta:
+        raise ValueError(f"Session not found: {target}")
+
+    resolved_session_id = session_db.resolve_resume_session_id(target) or target
+    if resolved_session_id != target:
+        session_meta = session_db.get_session(resolved_session_id)
+    if not session_meta:
+        raise ValueError(f"Session not found: {resolved_session_id}")
+
+    conversation_history, _display_history = session_db.get_resume_conversations(
+        resolved_session_id
+    )
+    conversation_history = [
+        message
+        for message in conversation_history
+        if message.get("role") != "session_meta"
+    ]
+
+    if restore_resume_cwd:
+        saved_cwd = str(session_meta.get("cwd") or "").strip()
+        if saved_cwd:
+            if not os.path.isdir(saved_cwd):
+                raise FileNotFoundError(
+                    "Recorded session working directory is unavailable: "
+                    f"{saved_cwd}"
+                )
+            try:
+                os.chdir(saved_cwd)
+            except OSError as exc:
+                raise RuntimeError(
+                    "Failed to restore recorded session working directory: "
+                    f"{saved_cwd}"
+                ) from exc
+            # Prompt construction and file/terminal tools prefer this value.
+            # Publish it only after chdir succeeds so a failed resume leaves
+            # the caller's runtime context untouched.
+            os.environ["TERMINAL_CWD"] = saved_cwd
+
+    session_db.reopen_session(resolved_session_id)
+    return resolved_session_id, conversation_history
+
+
+def _resolve_oneshot_workspace_key() -> Optional[str]:
+    """Return the current repo root, or CWD outside a Git workspace."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return os.path.abspath(result.stdout.strip())
+    except Exception:
+        pass
+    try:
+        return os.getcwd()
+    except Exception:
+        return None
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    resume_session_id: Optional[str] = None,
+    continue_last: object = None,
+    restore_resume_cwd: bool = True,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -416,6 +531,13 @@ def _run_agent(
     # os._exit and skips finalizers, so an un-closed connection here would leak.
     agent = None
     try:
+        resolved_session_id, conversation_history = _load_oneshot_resume(
+            session_db,
+            resume_session_id=resume_session_id,
+            continue_last=continue_last,
+            restore_resume_cwd=restore_resume_cwd,
+        )
+
         # Read the effective fallback chain from profile config so oneshot
         # workers honour the same merge semantics as interactive CLI and
         # gateway sessions.
@@ -432,6 +554,7 @@ def _run_agent(
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
+            session_id=resolved_session_id,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
             # Interactive callbacks are intentionally NOT wired beyond this
@@ -454,7 +577,10 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
-        result = agent.run_conversation(prompt)
+        result = agent.run_conversation(
+            prompt,
+            conversation_history=conversation_history,
+        )
         return (result.get("final_response") or "", result)
     finally:
         # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,

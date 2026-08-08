@@ -180,6 +180,9 @@ def _run_and_exit_oneshot(
     provider: object = None,
     toolsets: object = None,
     usage_file: object = None,
+    resume_session_id: object = None,
+    continue_last: object = None,
+    restore_resume_cwd: bool = True,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -190,6 +193,9 @@ def _run_and_exit_oneshot(
             provider=provider,
             toolsets=toolsets,
             usage_file=usage_file,
+            resume_session_id=resume_session_id,
+            continue_last=continue_last,
+            restore_resume_cwd=restore_resume_cwd,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -10964,6 +10970,9 @@ def _try_termux_fast_cli_launch() -> bool:
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             usage_file=getattr(args, "usage_file", None),
+            resume_session_id=getattr(args, "resume", None),
+            continue_last=getattr(args, "continue_last", None),
+            restore_resume_cwd=not getattr(args, "no_restore_cwd", False),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -12605,6 +12614,9 @@ def main():
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             usage_file=getattr(args, "usage_file", None),
+            resume_session_id=getattr(args, "resume", None),
+            continue_last=getattr(args, "continue_last", None),
+            restore_resume_cwd=not getattr(args, "no_restore_cwd", False),
         )
 
     # Handle top-level --resume / --continue as shortcut to chat

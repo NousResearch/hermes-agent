@@ -65,6 +65,58 @@ def _same_endpoint(a: str, b: str) -> bool:
     )
 
 
+def _reclaim_stranded_auth_lock(
+    lock: Any,
+    prior_owner: Any,
+    *,
+    server_name: str = "",
+) -> bool:
+    """Release an auth-flow lock stranded by cross-task generator cleanup.
+
+    anyio's asyncio ``Lock.release()`` is task-bound: it raises
+    ``RuntimeError("The current task is not holding this lock")`` unless the
+    *current* task is the recorded owner. When the MCP SDK's ``async_auth_flow``
+    generator is finalized from some other task, that release blows up and
+    ``_owner_task`` keeps pointing at the dead flow — every later auth flow for
+    the same provider then blocks on ``async with self.context.lock`` forever.
+
+    Reclaims only when the lock is still owned by exactly the task recorded
+    when this flow acquired it. A clean release either clears ``_owner_task``
+    or hands it to a waiting task, and both fail that identity check — so a
+    lock legitimately held by a concurrent flow is never stolen. Returns True
+    if the lock was reclaimed.
+    """
+    if lock is None or prior_owner is None:
+        return False
+    try:
+        if not lock.locked():
+            return False
+        if getattr(lock, "_owner_task", None) is not prior_owner:
+            return False
+        # Satisfy anyio's owner check, then release normally so a queued
+        # waiter (if any) is handed the lock instead of it going idle. If
+        # anyio's private owner field ever changes shape, leave the lock state
+        # exactly as found so a later, version-aware reclaim still has a shot.
+        lock._owner_task = asyncio.current_task()  # noqa: SLF001
+        try:
+            lock.release()
+        except Exception:
+            lock._owner_task = prior_owner  # noqa: SLF001
+            raise
+    except Exception as exc:  # pragma: no cover — defensive, must not throw
+        logger.debug(
+            "MCP OAuth '%s': could not reclaim stranded auth lock: %s",
+            server_name, exc,
+        )
+        return False
+    logger.warning(
+        "MCP OAuth '%s': reclaimed OAuth lock stranded by cross-task "
+        "auth-flow cleanup",
+        server_name,
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Per-server entry
 # ---------------------------------------------------------------------------
@@ -417,8 +469,15 @@ def _make_hermes_provider_class() -> Optional[type]:
             # contract. Regression from PR #11383 caught by
             # tests/tools/test_mcp_oauth_bidirectional.py.
             inner = super().async_auth_flow(request)
+            lock = getattr(self.context, "lock", None)
+            prior_lock_owner: Any = None
             try:
                 outgoing = await inner.__anext__()
+                # The SDK's flow opens with ``async with self.context.lock``,
+                # so once the first request is out the lock is held by *this*
+                # task. Record the owner: cleanup uses it to tell a clean
+                # release apart from one stranded by cross-task finalization.
+                prior_lock_owner = getattr(lock, "_owner_task", None)
                 while True:
                     incoming = yield outgoing
                     # Sniff the response for a dead-client-registration signal
@@ -430,6 +489,70 @@ def _make_hermes_provider_class() -> Optional[type]:
                 # 401 branch so a subsequent cold-load skips discovery.
                 self._persist_oauth_metadata_if_changed()
                 return
+            finally:
+                await self._close_inner_auth_flow(
+                    inner, lock, prior_lock_owner
+                )
+
+        async def _close_inner_auth_flow(
+            self,
+            inner: Any,
+            lock: Any,
+            prior_lock_owner: Any,
+        ) -> None:
+            """Close the SDK's auth-flow generator from *this* task.
+
+            httpx closes our wrapper (``await auth_flow.aclose()`` in
+            ``httpx._client._send_handling_auth``'s ``finally``) whenever a
+            request is cancelled or abandoned mid-flow — an OAuth login that
+            outran a connect timeout, a reconnect, an interrupt. Without this
+            cleanup the inner SDK generator was simply dropped while suspended
+            inside ``async with self.context.lock``: the garbage collector
+            later handed it to asyncio's async-generator finalizer, which runs
+            ``aclose()`` in a *different* task. Two consequences, both observed
+            in the wild:
+
+            1. ``GeneratorExit`` in ``mcp/client/auth/oauth2.py`` followed by
+               ``RuntimeError: The current task is not holding this lock``,
+               surfaced as unretrieved-task-exception noise on the console.
+            2. ``context.lock`` stayed permanently held, so every subsequent
+               auth flow for that server blocked on it forever. A successful
+               OAuth callback ("Authorization Successful") then never produced
+               tokens and ``hermes mcp login`` sat until its bounded timeout,
+               after which ``hermes mcp test`` still reported no cached tokens.
+
+            Closing ``inner`` here runs the SDK's ``async with`` unwind in the
+            task that acquired the lock, so the release succeeds. The reclaim
+            below is the belt-and-braces path for when our own wrapper was
+            itself finalized off-task.
+            """
+            # Outer try/finally so the reclaim still runs when aclose() raises
+            # a BaseException we deliberately let through (e.g. CancelledError).
+            try:
+                try:
+                    await inner.aclose()
+                except RuntimeError as exc:
+                    # Cross-task cleanup (our wrapper was GC-finalized rather
+                    # than closed by httpx) — the SDK's task-bound lock release
+                    # refuses. Swallow so it never escapes as an unhandled task
+                    # exception; the reclaim below keeps the provider usable.
+                    logger.debug(
+                        "MCP OAuth '%s': auth-flow cleanup raised "
+                        "(non-fatal): %s",
+                        self._hermes_server_name, exc,
+                    )
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.debug(
+                        "MCP OAuth '%s': auth-flow cleanup failed "
+                        "(non-fatal): %s",
+                        self._hermes_server_name, exc,
+                    )
+            finally:
+                _reclaim_stranded_auth_lock(
+                    lock,
+                    prior_lock_owner,
+                    server_name=self._hermes_server_name,
+                )
 
     return HermesMCPOAuthProvider
 

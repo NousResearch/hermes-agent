@@ -3858,7 +3858,6 @@ OPTIONAL_ENV_VARS = {
         "category": "skill",
         "advanced": True,
     },
-
     # ── Honcho ──
     "HONCHO_API_KEY": {
         "description": "Honcho API key for AI-native persistent memory",

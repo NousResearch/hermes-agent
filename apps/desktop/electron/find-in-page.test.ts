@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 
+import type { BrowserWindow } from 'electron'
 import { describe, test } from 'vitest'
 
 import { formatFoundInPage, installFindShortcut, installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
@@ -225,7 +226,7 @@ describe('installFoundInPageForwarder', () => {
 describe('installFindShortcut', () => {
   // Minimal BrowserWindow stub: only `webContents` is touched.
   function makeFakeWindow(wc: FakeWebContents) {
-    return { webContents: asWC(wc) } as unknown as import('electron').BrowserWindow
+    return { webContents: asWC(wc) } as unknown as BrowserWindow
   }
 
   test('sends hermes:open-find-bar on Ctrl+F (Linux/Windows) and prevents default', () => {

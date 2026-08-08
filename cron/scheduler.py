@@ -4207,6 +4207,16 @@ def run_job(
                 f"agent.run_conversation returned {type(result).__name__} instead of dict: {result!r}"
             )
 
+        # Stashed on the job (same in-band convention as `_resolved_model`) so
+        # process_job can enforce `require_tool_use` without widening run_job's
+        # return signature. Counts assistant turns that actually issued tool
+        # calls -- the same expression the turn finalizer logs as `tool_turns`.
+        job["_tool_call_count"] = sum(
+            1
+            for m in (result.get("messages") or [])
+            if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+        )
+
         # If the agent itself reported failure (e.g. all retries exhausted on
         # API errors, model abort, mid-run interrupt), do not silently mark the
         # job as successful. run_agent populates `failed=True`/`completed=False`
@@ -4611,6 +4621,30 @@ def run_one_job(
                 error = (
                     "Interrupted by gateway shutdown before the run finished "
                     "(tool subprocess was killed mid-flight)."
+                )
+
+            # A job that declares it must consult its sources cannot have done so
+            # if it never called a tool. Seen in practice when a provider outage
+            # pushed a scheduled report onto a much weaker fallback model: it made
+            # zero tool calls, emitted "I will read the required files from ..."
+            # and stopped. That planning preamble was delivered as the report and
+            # the run recorded last_status=ok.
+            #
+            # Opt-in per job, because a job that only asks the model to write
+            # something legitimately calls no tools. Like the interrupt guard
+            # above, this runs BEFORE deliver_content is computed -- the
+            # empty-response guard further down only relabels last_status after
+            # delivery has already happened.
+            if success and job.get("require_tool_use") and not job.get("_tool_call_count"):
+                success = False
+                error = (
+                    "Agent produced a response without calling any tool, but this job "
+                    "declares require_tool_use -- it cannot have consulted its sources. "
+                    "Response withheld as unverified."
+                )
+                logger.error(
+                    "Job '%s': withholding response -- require_tool_use set but 0 tool calls made",
+                    job.get("name", job["id"]),
                 )
 
             # Deliver the final response to the origin/target chat.

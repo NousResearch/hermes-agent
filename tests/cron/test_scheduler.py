@@ -1976,3 +1976,59 @@ class TestSetCronSessionTitle:
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
 
 
+
+
+class TestRequireToolUse:
+    """A job that declares it must consult its sources cannot answer without a tool call.
+
+    Observed in production: a provider outage pushed a scheduled report onto a much
+    weaker fallback model, which made zero tool calls, emitted "I will read the
+    required files from ..." and stopped. That planning preamble was delivered as the
+    report and the run recorded last_status=ok.
+    """
+
+    def _make_job(self, **extra):
+        job = {
+            "id": "report-job",
+            "name": "scheduled-report",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+        job.update(extra)
+        return job
+
+    def _run(self, job, tool_calls, response="I will read the required files from outbox/."):
+        def fake_run_job(j, **_kwargs):
+            j["_tool_call_count"] = tool_calls
+            return (True, "# output", response, None)
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.run_job", side_effect=fake_run_job), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+        return deliver_mock, mark_mock
+
+    def test_zero_tool_calls_withholds_the_response(self):
+        deliver_mock, mark_mock = self._run(self._make_job(require_tool_use=True), tool_calls=0)
+        assert "I will read the required files" not in deliver_mock.call_args[0][1]
+        assert mark_mock.call_args[0][1] is False
+
+    def test_zero_tool_calls_is_recorded_as_error_not_ok(self):
+        _deliver, mark_mock = self._run(self._make_job(require_tool_use=True), tool_calls=0)
+        assert "without calling any tool" in mark_mock.call_args[0][2]
+
+    def test_a_run_that_used_its_tools_is_delivered(self):
+        deliver_mock, mark_mock = self._run(
+            self._make_job(require_tool_use=True), tool_calls=9, response="Report body."
+        )
+        assert "Report body." in deliver_mock.call_args[0][1]
+        assert mark_mock.call_args[0][1] is True
+
+    def test_jobs_without_the_flag_may_legitimately_call_no_tools(self):
+        """Opt-in only -- a write-something job calls no tools and is still fine."""
+        deliver_mock, mark_mock = self._run(self._make_job(), tool_calls=0, response="a haiku")
+        assert "a haiku" in deliver_mock.call_args[0][1]
+        assert mark_mock.call_args[0][1] is True

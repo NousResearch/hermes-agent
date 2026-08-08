@@ -1302,6 +1302,61 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
     return fallback_base_url or None
 
 
+def _resolve_child_fallback_chain(parent_agent, delegation_cfg, pinned):
+    """Decide which fallback chain a delegated child gets — the full matrix.
+
+    ============ ======================= =========================================
+    pin          delegation.             result
+    (provider)   fallback_providers
+    ============ ======================= =========================================
+    yes          declared, non-empty     declared chain (delegation-scoped recovery)
+    yes          declared, empty []      None — explicit disable
+    yes          absent                  None — pin fails loudly (#80450)
+    no           declared, non-empty     declared chain (#65038)
+    no           declared, empty []      None — explicit disable
+    no           absent                  inherit parent chain (historical default)
+    ============ ======================= =========================================
+
+    Rationale for the pin+declared cell: the silent-drag problem in #80450 is
+    specifically the *parent's* chain substituting a pinned provider or model
+    with no surfaced signal. A chain declared under ``delegation.*`` is scoped
+    to workers by construction — honoring it respects both explicit intents.
+    "Pinned" covers every explicit routing arm of #80450: delegation.provider,
+    delegation.base_url (which resolves to a provider override), and a
+    model-only delegation.model pin.
+
+    A malformed declared value logs and falls back to the PIN-AWARE default
+    (None when pinned, parent chain otherwise): falling back to the parent
+    chain on a pinned child would reintroduce the silent drag through the
+    config-error path.
+
+    Entries are normalized through the canonical
+    ``hermes_cli.fallback_config.get_fallback_chain`` so ordering, dedupe,
+    and malformed-entry handling match top-level ``fallback_providers``.
+    """
+    parent_chain = getattr(parent_agent, "_fallback_chain", None) or None
+    default = None if pinned else parent_chain
+    declared = (
+        delegation_cfg.get("fallback_providers")
+        if isinstance(delegation_cfg, dict)
+        else None
+    )
+    if declared is None:
+        return default
+    try:
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        return get_fallback_chain({"fallback_providers": declared}) or None
+    except Exception as exc:
+        logger.warning(
+            "Ignoring malformed delegation.fallback_providers (%s); "
+            "using %s.",
+            exc,
+            "no chain (provider pinned)" if pinned else "parent chain",
+        )
+        return default
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -1567,11 +1622,17 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    # Fallback chain: full decision matrix in _resolve_child_fallback_chain
+    # (#80450 cross-PR map — composes the pin semantics of #80465 with the
+    # delegation.fallback_providers semantics of #80438/#80421).
+    # Pin = any explicit delegation routing: provider, base_url (which
+    # resolves to a provider override), or a model-only pin — `model` here is
+    # creds["model"], i.e. delegation.model config, at both call sites. A
+    # model-only pin with the parent chain inherited would let a mid-run
+    # failure silently swap the pinned model (the model arm of #80450).
+    parent_fallback = _resolve_child_fallback_chain(
+        parent_agent, delegation_cfg, pinned=bool(override_provider or model)
+    )
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing

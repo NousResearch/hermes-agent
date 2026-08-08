@@ -6045,6 +6045,11 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     let pollTimer = null
     let revealTimer = null
 
+    // Navigation event handlers (named for removal)
+    const onNavigate = () => void checkCookie()
+    const onRedirect = () => void checkCookie()
+    const onFrameNavigate = () => void checkCookie()
+
     const finish = err => {
       if (settled) {
         return
@@ -6054,10 +6059,26 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
 
       if (pollTimer) {
         clearInterval(pollTimer)
+        pollTimer = null
       }
 
       if (revealTimer) {
         clearTimeout(revealTimer)
+        revealTimer = null
+      }
+
+      try {
+        if (win && !win.isDestroyed()) {
+
+          const wc = win.webContents
+          if (wc && !wc.isDestroyed()) {
+            wc.removeListener('did-navigate', onNavigate)
+            wc.removeListener('did-redirect-navigation', onRedirect)
+            wc.removeListener('did-frame-navigate', onFrameNavigate)
+          }
+        }
+      } catch {
+        // already torn down
       }
 
       try {
@@ -6114,9 +6135,9 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     // Re-check the cookie jar on every successful navigation (the callback
     // redirect is the moment cookies get set) plus a low-frequency poll as a
     // belt-and-braces fallback for IDPs that finish via in-page JS.
-    win.webContents.on('did-navigate', () => void checkCookie())
-    win.webContents.on('did-redirect-navigation', () => void checkCookie())
-    win.webContents.on('did-frame-navigate', () => void checkCookie())
+    win.webContents.on('did-navigate', onNavigate)
+    win.webContents.on('did-redirect-navigation', onRedirect)
+    win.webContents.on('did-frame-navigate', onFrameNavigate)
     pollTimer = setInterval(() => void checkCookie(), 750)
 
     // Silent-mode reveal fallback: if the cascade hasn't settled shortly, the
@@ -6139,6 +6160,11 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     win.on('closed', () => {
       if (!settled) {
         finish(new Error('Login window closed before authentication completed.'))
+      }
+    })
+    win.on('destroyed', () => {
+      if (!settled) {
+        finish(new Error('Login window destroyed before authentication completed.'))
       }
     })
 
@@ -6550,6 +6576,11 @@ function openPortalLoginWindow() {
     let win = null
     let pollTimer = null
 
+    // Navigation event handlers (named for removal)
+    const onNavigate = () => void checkCookie()
+    const onRedirect = () => void checkCookie()
+    const onFrameNavigate = () => void checkCookie()
+
     const finish = err => {
       if (settled) {
         return
@@ -6559,6 +6590,21 @@ function openPortalLoginWindow() {
 
       if (pollTimer) {
         clearInterval(pollTimer)
+        pollTimer = null
+      }
+
+      try {
+        if (win && !win.isDestroyed()) {
+
+          const wc = win.webContents
+          if (wc && !wc.isDestroyed()) {
+            wc.removeListener('did-navigate', onNavigate)
+            wc.removeListener('did-redirect-navigation', onRedirect)
+            wc.removeListener('did-frame-navigate', onFrameNavigate)
+          }
+        }
+      } catch {
+        // already torn down
       }
 
       try {
@@ -6607,14 +6653,19 @@ function openPortalLoginWindow() {
       return
     }
 
-    win.webContents.on('did-navigate', () => void checkCookie())
-    win.webContents.on('did-redirect-navigation', () => void checkCookie())
-    win.webContents.on('did-frame-navigate', () => void checkCookie())
+    win.webContents.on('did-navigate', onNavigate)
+    win.webContents.on('did-redirect-navigation', onRedirect)
+    win.webContents.on('did-frame-navigate', onFrameNavigate)
     pollTimer = setInterval(() => void checkCookie(), 750)
 
     win.on('closed', () => {
       if (!settled) {
         finish(new Error('Sign-in window closed before authentication completed.'))
+      }
+    })
+    win.on('destroyed', () => {
+      if (!settled) {
+        finish(new Error('Sign-in window destroyed before authentication completed.'))
       }
     })
 

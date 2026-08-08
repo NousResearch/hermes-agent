@@ -100,3 +100,46 @@ class TestCopilotReasoningEffortClamp:
             supports_reasoning=True,
         )
         assert extra_body["reasoning"] == {"effort": "low"}
+
+    def test_luna_known_api_capability_adds_max_when_catalog_omits_it(self):
+        """Luna's verified API capability wins over its incomplete catalog."""
+        from hermes_cli.models import github_model_reasoning_efforts
+
+        catalog = [
+            {
+                "id": "gpt-5.6-luna",
+                "capabilities": {
+                    "supports": {
+                        "reasoning_effort": ["minimal", "low", "medium", "high"],
+                    }
+                },
+            }
+        ]
+        assert github_model_reasoning_efforts("gpt-5.6-luna", catalog=catalog) == [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "max",
+        ]
+
+    def test_other_gpt5_model_does_not_receive_luna_max_override(self):
+        """The verified Luna exception must not broaden other models."""
+        from hermes_cli.models import github_model_reasoning_efforts
+
+        catalog = [
+            {
+                "id": "gpt-5.5",
+                "capabilities": {
+                    "supports": {
+                        "reasoning_effort": ["minimal", "low", "medium", "high"],
+                    }
+                },
+            }
+        ]
+        assert github_model_reasoning_efforts("gpt-5.5", catalog=catalog) == [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+        ]

@@ -4282,7 +4282,15 @@ def github_model_reasoning_efforts(
                         for effort in efforts
                         if str(effort).strip()
                     ]
-                    return list(dict.fromkeys(normalized_efforts))
+                    normalized_efforts = list(dict.fromkeys(normalized_efforts))
+                    # The live Copilot catalog for Luna currently omits
+                    # ``max``, but the authenticated endpoint accepted
+                    # ``reasoning.effort=max`` in a controlled probe. Keep this
+                    # override model-specific; do not invent capabilities for
+                    # other GPT-5 models.
+                    if normalized == "gpt-5.6-luna" and "max" not in normalized_efforts:
+                        normalized_efforts.append("max")
+                    return normalized_efforts
             return []
         legacy_capabilities = {
             str(capability).strip().lower()
@@ -4292,7 +4300,10 @@ def github_model_reasoning_efforts(
         if "reasoning" not in legacy_capabilities:
             return []
 
-    return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
+    fallback_efforts = _github_reasoning_efforts_for_model_id(str(model_id or normalized))
+    if normalized == "gpt-5.6-luna" and "max" not in fallback_efforts:
+        fallback_efforts.append("max")
+    return fallback_efforts
 
 
 def probe_api_models(

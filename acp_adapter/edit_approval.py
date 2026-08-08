@@ -190,11 +190,14 @@ def build_edit_proposal(tool_name: str, arguments: dict[str, Any]) -> EditPropos
 
 
 def _is_sensitive_auto_approve_path(path: str) -> bool:
-    parts = Path(path).expanduser().parts
+    # Resolve symlinks so that symlink-to-sensitive-file is also caught.
+    # Without this, `notes.txt -> ~/.ssh/authorized_keys` bypasses the guard.
+    resolved = Path(path).expanduser().resolve(strict=False)
+    parts = resolved.parts
     lowered = {part.lower() for part in parts}
     if ".git" in lowered or ".ssh" in lowered:
         return True
-    return Path(path).name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
+    return resolved.name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
 
 
 def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | None = None) -> bool:

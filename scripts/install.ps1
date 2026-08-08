@@ -2697,9 +2697,9 @@ function Write-BootstrapMarker {
     #   apps/desktop/electron/main.ts lines 1199-1222
     #   BOOTSTRAP_MARKER_SCHEMA_VERSION = 1 (line 187)
     #
-    # Pinned commit/branch come from -Commit + -Branch flags (passed by
-    # Hermes-Setup.exe) or fall back to whatever git resolves in the
-    # checkout. The desktop validates schemaVersion + pinnedCommit
+    # Record the checkout that actually finished installing. Rollback
+    # protection may intentionally keep it ahead of the requested -Commit.
+    # The desktop validates schemaVersion + pinnedCommit
     # length but doesn't enforce that HEAD matches the pin (users
     # update via `hermes update` which moves HEAD legitimately).
     if (-not (Test-Path $InstallDir)) {
@@ -2707,31 +2707,27 @@ function Write-BootstrapMarker {
         return
     }
 
-    # Resolve the pinned commit: explicit -Commit wins, otherwise read
-    # the checkout's HEAD via git. If git can't run, leave commit empty
-    # and the marker will fail desktop validation (pinnedCommit.length
-    # >= 7) -- better to be invalid than wrong.
-    $pinnedCommit = $Commit
-    if (-not $pinnedCommit) {
-        # PS 5.1 doesn't support the ?. null-conditional operator, so
-        # check Get-Command's result explicitly before reading .Source.
-        $gitCmd = Get-Command git -ErrorAction SilentlyContinue
-        $gitExe = if ($gitCmd) { $gitCmd.Source } else { $null }
-        if ($gitExe) {
-            Push-Location $InstallDir
-            try {
-                $resolved = & $gitExe rev-parse HEAD 2>$null
-                if ($LASTEXITCODE -eq 0 -and $resolved) {
-                    $pinnedCommit = $resolved.Trim()
-                }
-            } catch {
-                # Ignore -- pinnedCommit stays empty, marker stays invalid,
-                # desktop falls through to its legacy bootstrap path.
-            } finally {
-                Pop-Location
+    # Prefer the installed checkout's HEAD. If git cannot inspect it, fall back
+    # to the requested commit so archive installs can still publish a marker.
+    $pinnedCommit = $null
+    # PS 5.1 doesn't support the ?. null-conditional operator, so
+    # check Get-Command's result explicitly before reading .Source.
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    $gitExe = if ($gitCmd) { $gitCmd.Source } else { $null }
+    if ($gitExe) {
+        Push-Location $InstallDir
+        try {
+            $resolved = & $gitExe rev-parse HEAD 2>$null
+            if ($LASTEXITCODE -eq 0 -and $resolved) {
+                $pinnedCommit = $resolved.Trim()
             }
+        } catch {
+            # Fall back to the requested commit below.
+        } finally {
+            Pop-Location
         }
     }
+    if (-not $pinnedCommit) { $pinnedCommit = $Commit }
 
     $pinnedBranch = $Branch
     if (-not $pinnedBranch) {
@@ -3374,41 +3370,15 @@ function Install-Desktop {
     # for some other tool, electron-builder would still try to sign.
     Write-Info "Building desktop app (this takes 1-3 minutes)..."
     $buildLog = "$env:TEMP\hermes-desktop-build-$(Get-Random).log"
-    # Seed GITHUB_SHA for write-build-stamp.mjs. The stamp prefers CI env vars
-    # over `git rev-parse`, so this covers: (1) node can't find git.exe on PATH
-    # even though this PowerShell session can, (2) ZIP/init trees that still
-    # lack a HEAD after a failed post-extract fetch. Without it the desktop
-    # pack dies with "could not determine git commit" (#50823).
-    if (-not $env:GITHUB_SHA) {
-        if ($Commit) {
-            $env:GITHUB_SHA = $Commit
-        } else {
-            Push-Location $InstallDir
-            try {
-                $global:LASTEXITCODE = 0
-                $resolvedSha = & git -c windows.appendAtomically=false rev-parse HEAD 2>$null
-                if ($LASTEXITCODE -ne 0 -or -not $resolvedSha) {
-                    # ZIP path may have FETCH_HEAD after a fetch even when HEAD is unset.
-                    $global:LASTEXITCODE = 0
-                    $resolvedSha = & git -c windows.appendAtomically=false rev-parse FETCH_HEAD 2>$null
-                }
-                if ($LASTEXITCODE -eq 0 -and $resolvedSha) {
-                    $env:GITHUB_SHA = ("$resolvedSha").Trim()
-                }
-            } catch { } finally {
-                Pop-Location
-            }
-        }
-    }
-    if (-not $env:GITHUB_REF_NAME) {
-        $env:GITHUB_REF_NAME = if ($Branch) { $Branch } else { "main" }
-    }
-    if ($env:GITHUB_SHA) {
-        $shaPreview = if ($env:GITHUB_SHA.Length -ge 12) { $env:GITHUB_SHA.Substring(0, 12) } else { $env:GITHUB_SHA }
-        Write-Info "Desktop build stamp: $shaPreview ($($env:GITHUB_REF_NAME))"
-    } else {
-        Write-Warn "Could not resolve a git commit for the desktop stamp -- write-build-stamp will use its non-git fallback"
-    }
+    # This is an installer-local build, even if the installer was launched
+    # from a CI shell. Let write-build-stamp inspect the checkout itself so it
+    # records the installed HEAD, actual branch, and tracked-file dirty state.
+    $prevGithubSha = [Environment]::GetEnvironmentVariable("GITHUB_SHA", "Process")
+    $prevGithubRefName = [Environment]::GetEnvironmentVariable("GITHUB_REF_NAME", "Process")
+    $prevGithubHeadRef = [Environment]::GetEnvironmentVariable("GITHUB_HEAD_REF", "Process")
+    Remove-Item Env:GITHUB_SHA -ErrorAction SilentlyContinue
+    Remove-Item Env:GITHUB_REF_NAME -ErrorAction SilentlyContinue
+    Remove-Item Env:GITHUB_HEAD_REF -ErrorAction SilentlyContinue
     Push-Location $desktopDir
     $prevEAP = $ErrorActionPreference
     $prevCSCAuto = $env:CSC_IDENTITY_AUTO_DISCOVERY
@@ -3470,9 +3440,12 @@ function Install-Desktop {
         Pop-Location
         throw
     } finally {
-        # Restore env to whatever the caller had -- don't leak our
-        # signing-off override into anything install.ps1 invokes later
-        # (Stage-PlatformSdks, etc.).
+        # Restore env to whatever the caller had -- don't leak our signing or
+        # build-provenance overrides into anything install.ps1 invokes later
+        # (Stage-PlatformSdks, etc.), or into the caller's `irm | iex` shell.
+        [Environment]::SetEnvironmentVariable("GITHUB_SHA", $prevGithubSha, "Process")
+        [Environment]::SetEnvironmentVariable("GITHUB_REF_NAME", $prevGithubRefName, "Process")
+        [Environment]::SetEnvironmentVariable("GITHUB_HEAD_REF", $prevGithubHeadRef, "Process")
         $env:CSC_IDENTITY_AUTO_DISCOVERY = $prevCSCAuto
         $env:WIN_CSC_LINK = $prevWinCscLink
         $env:WIN_CSC_KEY_PASSWORD = $prevWinCscKeyPassword

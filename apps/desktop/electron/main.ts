@@ -3604,7 +3604,7 @@ function readJson(filePath) {
 // Marker schema (version 1):
 //   {
 //     schemaVersion: 1,
-//     pinnedCommit: "<40-char SHA>",       // what install.ps1 was driven against
+//     pinnedCommit: "<40-char SHA>",       // checkout HEAD after installation
 //     pinnedBranch: "<branch name>" | null,
 //     completedAt:  "<ISO 8601>",
 //     desktopVersion: "<app.getVersion()>"  // for forensics

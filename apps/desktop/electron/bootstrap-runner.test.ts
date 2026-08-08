@@ -131,7 +131,7 @@ test('fallback install stamps use an unpinned branch ref', () => {
   )
 })
 
-test('resolveMarkerPinnedCommit prefers real HEAD over fallback stamp zeros', () => {
+test('resolveMarkerPinnedCommit records installed HEAD ahead of the requested pin', () => {
   const realHead = 'c'.repeat(40)
   assert.equal(
     resolveMarkerPinnedCommit({ commit: ZERO_COMMIT, branch: 'main' }, '/tmp/checkout', {
@@ -143,8 +143,8 @@ test('resolveMarkerPinnedCommit prefers real HEAD over fallback stamp zeros', ()
     resolveMarkerPinnedCommit({ commit: 'd'.repeat(40), branch: 'main' }, '/tmp/checkout', {
       resolveHead: () => realHead
     }),
-    'd'.repeat(40),
-    'packaged real pin wins over checkout HEAD'
+    realHead,
+    'installed HEAD wins when rollback protection keeps a newer checkout'
   )
   assert.equal(
     resolveMarkerPinnedCommit({ commit: ZERO_COMMIT, branch: 'main' }, '/tmp/missing', {

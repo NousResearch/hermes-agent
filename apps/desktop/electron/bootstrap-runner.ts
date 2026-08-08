@@ -101,8 +101,9 @@ function readExistingPinnedCommit(activeRoot: string | null | undefined): string
 
 /**
  * Pick the commit to store on the bootstrap-complete marker.
- * Packaged fallback stamps must NOT win (all-zero is not a real pin); after a
- * successful install the checkout's HEAD (or install.ps1's marker) does.
+ * A successful install may intentionally keep a checkout newer than the
+ * packaged pin. Record the installed checkout's HEAD when it is available,
+ * then fall back to the requested pin or install.ps1's existing marker.
  */
 function resolveMarkerPinnedCommit(
   installStamp: { commit?: string; branch?: string | null } | null | undefined,
@@ -111,14 +112,14 @@ function resolveMarkerPinnedCommit(
 ): string | null {
   const resolveHead = opts.resolveHead || resolveCheckoutHead
 
-  if (installStamp && isPinnedCommit(installStamp.commit)) {
-    return installStamp.commit
-  }
-
   const head = resolveHead(activeRoot)
 
   if (head) {
     return head
+  }
+
+  if (installStamp && isPinnedCommit(installStamp.commit)) {
+    return installStamp.commit
   }
 
   return readExistingPinnedCommit(activeRoot)

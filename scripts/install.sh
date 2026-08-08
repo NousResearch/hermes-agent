@@ -2547,13 +2547,13 @@ write_bootstrap_marker() {
         return 0
     fi
 
-    # Explicit --commit wins; otherwise read HEAD from the checkout we just
-    # installed. If neither resolves, skip the marker entirely rather than
-    # write one the desktop will reject -- an absent marker is a clean
-    # "bootstrap needed", a malformed one is a confusing half-state.
-    local pinned_commit="$INSTALL_COMMIT"
+    # Record the checkout that actually finished installing. Rollback
+    # protection may intentionally keep it ahead of the requested --commit.
+    # Fall back to the request only when git cannot inspect the checkout.
+    local pinned_commit=""
+    pinned_commit=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || pinned_commit=""
     if [ -z "$pinned_commit" ]; then
-        pinned_commit=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || pinned_commit=""
+        pinned_commit="$INSTALL_COMMIT"
     fi
 
     if [ -z "$pinned_commit" ]; then
@@ -2833,6 +2833,9 @@ EOF
 _desktop_pack() {
     local desktop_dir="$1"
     local mirror="${2:-}"
+    # npm run pack is a local build even when install.sh was launched from a
+    # CI shell. Let write-build-stamp inspect HEAD, branch, and dirty state.
+    unset GITHUB_SHA GITHUB_REF_NAME GITHUB_HEAD_REF
     if [ -n "$mirror" ]; then
         ( cd "$desktop_dir" && ELECTRON_MIRROR="$mirror" CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
     else

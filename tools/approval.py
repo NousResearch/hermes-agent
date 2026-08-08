@@ -690,6 +690,88 @@ def _sudo_stdin_block_result(description: str) -> dict:
 # Dangerous command patterns
 # =========================================================================
 
+# Git accepts GLOBAL options BETWEEN the program name and the subcommand:
+# `git -C /repo branch -D main`, `git --git-dir=/x --work-tree=/y clean -fdx`,
+# `git -c core.pager=cat reset --hard`, `git --no-pager push -f`. Every git
+# rule below is anchored to `git` immediately followed by its subcommand, so
+# ANY such option slips the whole gate — and `-C` is precisely the spelling an
+# agent emits when it operates on a checkout other than its cwd.
+#
+# Fix shape: keep each bare-spelling rule verbatim (unchanged match behavior,
+# unchanged approval keys) and generate a second, option-tolerant spelling for
+# every one of them, so the hole closes for the whole class rather than for
+# the one subcommand that surfaced it.
+#
+# The generated rule is anchored to _CMDPOS (a real command position) instead
+# of `\b`. That is load-bearing, not decoration: widening the gap between
+# `git` and its subcommand also makes quoted DATA far easier to match, and
+# `git commit -m "why git -C x branch -D is dangerous"` must not trip the
+# gate. _CMDPOS is the same guard the rm hardline rules use for exactly this
+# reason, and _mark_command_starts still exposes genuine chained/subshell
+# command positions to it.
+#
+# The option run accepts only real git global-option shapes, per git's own
+# usage line (`git [-C <path>] [-c <name>=<value>] [--git-dir=<path>] …`):
+# `-c`/`-C` whose value is a separate token, the value-taking long options in
+# either `--opt=value` or `--opt value` spelling, and valueless long/short
+# options. It deliberately does NOT accept arbitrary words, so ordinary prose
+# ("git the branch -d thing") cannot bridge `git` to a subcommand.
+#
+# Verified against git 2.43.0 that the separated-value spelling really runs:
+# `git --git-dir /r/.git --work-tree /r branch -D tmp` deleted the branch.
+_GIT_VALUE_OPTS = r'--(?:git-dir|work-tree|namespace|exec-path|config-env)(?:=[^\s;|&]*|\s+[^\s;|&]+)'
+_GIT_GLOBAL_OPTS = (
+    r'(?:\s+(?:' + _GIT_VALUE_OPTS + r'|-[cC]\s+[^\s;|&]+'
+    r'|--?[a-z][\w-]*(?:=[^\s;|&]*)?))+'
+)
+
+# `GIT_DIR=/x git -C /repo branch -D main` is a real, verified spelling too:
+# a bare VAR=VAL assignment prefix is a command position the shell accepts.
+# _CMDPOS already consumes the `env VAR=VAL` form; extend it locally (rather
+# than widening _CMDPOS itself, which would change the hardline floor's blast
+# radius) so the option-tolerant rule reaches the same commands the bare rule
+# already does — the bare `\bgit\s+…` spelling is unanchored and matches
+# through such a prefix today.
+_GIT_CMD_ANCHOR = _CMDPOS + r'(?:\w+=[^\s;|&]*\s+)*git'
+
+# (subcommand-and-flags tail, description). The bare rule is
+# `\bgit\s+` + tail — byte-identical to the historical literals, so the
+# regex-derived legacy approval keys in _PATTERN_KEY_ALIASES are preserved.
+_GIT_DESTRUCTIVE_RULES = [
+    # `git reset --hard` accepts any unambiguous long-flag prefix (--h,
+    # --ha, --har, --hard) because git's own option parser resolves
+    # abbreviated long flags -- `--hard` is the only `git reset` mode
+    # starting with "h" (siblings are --soft/--mixed/--merge/--keep), so
+    # this cannot collide with another reset mode. It also does not match
+    # `--help`, which git special-cases before mode resolution.
+    (r'reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
+    (r'push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
+    (r'push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (r'clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
+    (r'branch\s+-D\b', "git branch force delete"),
+    # `-D` is shorthand for `-d --force`; the long-flag spellings
+    # (`--delete`, `--force`) are different tokens entirely, so they slip
+    # past the `-D\b` pattern above even though `git branch -d --force`
+    # and `git branch --delete --force` delete an unmerged branch exactly
+    # like `-D` does. Match delete+force in either order, bounded to the
+    # same command segment (not spanning `;`/`|`/`&`/newline) the same
+    # way the sudo patterns below do, to avoid contaminating an unrelated
+    # later command in the same script.
+    (r'branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
+    (r'branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
+]
+
+# Bare spellings first, in their historical order, so a command that matches
+# today keeps reporting the exact same description; the option-tolerant
+# spellings only ever add matches that were previously missed entirely.
+_GIT_DESTRUCTIVE_PATTERNS = [
+    (r'\bgit\s+' + _tail, _description)
+    for _tail, _description in _GIT_DESTRUCTIVE_RULES
+] + [
+    (_GIT_CMD_ANCHOR + _GIT_GLOBAL_OPTS + r'\s+' + _tail, _description)
+    for _tail, _description in _GIT_DESTRUCTIVE_RULES
+]
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -898,28 +980,12 @@ DANGEROUS_PATTERNS = [
     # a full shell context.
     (r'\b(bash|sh|zsh|ksh)\s+<<', "shell execution via heredoc"),
     # Git destructive operations that can lose uncommitted work or rewrite
-    # shared history. Not captured by rm/chmod/etc patterns.
-    # `git reset --hard` accepts any unambiguous long-flag prefix (--h,
-    # --ha, --har, --hard) because git's own option parser resolves
-    # abbreviated long flags -- `--hard` is the only `git reset` mode
-    # starting with "h" (siblings are --soft/--mixed/--merge/--keep), so
-    # this cannot collide with another reset mode. It also does not match
-    # `--help`, which git special-cases before mode resolution.
-    (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
-    (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
-    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
-    # `-D` is shorthand for `-d --force`; the long-flag spellings
-    # (`--delete`, `--force`) are different tokens entirely, so they slip
-    # past the `-D\b` pattern above even though `git branch -d --force`
-    # and `git branch --delete --force` delete an unmerged branch exactly
-    # like `-D` does. Match delete+force in either order, bounded to the
-    # same command segment (not spanning `;`/`|`/`&`/newline) the same
-    # way the sudo patterns below do, to avoid contaminating an unrelated
-    # later command in the same script.
-    (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
-    (r'\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
+    # shared history. Not captured by rm/chmod/etc patterns. Each rule is
+    # emitted twice by _GIT_DESTRUCTIVE_PATTERNS above: the historical bare
+    # `git <subcommand>` spelling, plus a command-position-anchored spelling
+    # that tolerates git's global options (`-C`, `--git-dir`, `-c k=v`, …)
+    # sitting between `git` and the subcommand.
+    *_GIT_DESTRUCTIVE_PATTERNS,
     # Script execution after chmod +x — catches the two-step pattern where
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.

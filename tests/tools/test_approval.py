@@ -880,6 +880,118 @@ class TestGitDestructiveOps:
             assert dangerous is False, cmd
 
 
+class TestGitGlobalOptionsDoNotBypassApproval:
+    """Git global options sit BETWEEN `git` and its subcommand.
+
+    `git -C /repo branch -D main`, `git --git-dir=/x clean -fdx` and
+    `git -c core.pager=cat reset --hard` are the exact same destructive
+    operations as their bare spellings -- `-C` in particular is what an
+    agent naturally emits when operating on a checkout other than its cwd.
+
+    Contract asserted here is a RELATION, not a snapshot: for each
+    destructive operation, the option-prefixed spelling must classify the
+    same as the bare spelling. The bare spelling is looked up at runtime, so
+    these stay meaningful if the underlying patterns or their descriptions
+    are ever rewritten.
+    """
+
+    # Bare spellings whose classification is the reference for the
+    # option-prefixed variants below.
+    DESTRUCTIVE_TAILS = (
+        "branch -D main",
+        "branch -d --force main",
+        "branch --delete --force main",
+        "branch --force --delete main",
+        "reset --hard HEAD~3",
+        "push --force origin main",
+        "push -f origin main",
+        "clean -fdx",
+    )
+
+    # Global-option runs accepted by git's usage line, including the
+    # separated-value spelling (`--git-dir /x`) and a bare VAR=VAL
+    # environment prefix -- both verified to really delete a branch.
+    GLOBAL_OPTION_PREFIXES = (
+        "-C /repo ",
+        "-c core.pager=cat ",
+        "--git-dir=/x --work-tree=/y ",
+        "--git-dir /x --work-tree /y ",
+        "--no-pager ",
+        "--exec-path=/usr/lib/git-core ",
+        "-c a=b -C /repo ",
+    )
+
+    def test_global_options_classify_like_bare_spelling(self):
+        for tail in self.DESTRUCTIVE_TAILS:
+            bare = f"git {tail}"
+            bare_dangerous, _, bare_desc = detect_dangerous_command(bare)
+            # Sanity: the bare spelling is the thing we mirror. If this ever
+            # goes False the reference itself regressed.
+            assert bare_dangerous is True, bare
+            for prefix in self.GLOBAL_OPTION_PREFIXES:
+                cmd = f"git {prefix}{tail}"
+                dangerous, _, desc = detect_dangerous_command(cmd)
+                assert dangerous is True, cmd
+                assert desc == bare_desc, cmd
+
+    def test_env_assignment_prefix_classifies_like_bare_spelling(self):
+        for tail in self.DESTRUCTIVE_TAILS:
+            bare_dangerous, _, bare_desc = detect_dangerous_command(f"git {tail}")
+            assert bare_dangerous is True, tail
+            for cmd in (
+                f"GIT_DIR=/x git -C /repo {tail}",
+                f"GIT_DIR=/x GIT_WORK_TREE=/y git {tail}",
+            ):
+                dangerous, _, desc = detect_dangerous_command(cmd)
+                assert dangerous is True, cmd
+                assert desc == bare_desc, cmd
+
+    def test_global_options_at_chained_command_positions(self):
+        """A real command position is still a command position with options."""
+        for cmd in (
+            "cd /tmp && git -C /repo branch -D main",
+            "cd /tmp; git -C /repo reset --hard",
+            "sudo git -C /repo clean -fdx",
+            "(git -C /repo push -f origin main)",
+        ):
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+
+    def test_read_only_git_ops_with_global_options_not_flagged(self):
+        """Widening the anchor must not gate ordinary read-only work."""
+        for cmd in (
+            "git -C /repo status",
+            "git -C /repo log --oneline",
+            "git -C /repo branch -a",
+            "git -C /repo branch --list",
+            "git -C /repo push origin main",
+            "git -C /repo clean -n",
+            "git -C /repo reset --soft HEAD~1",
+            "git -C /repo reset --help",
+            "git -c user.name=x commit -m 'hello'",
+            "git --no-pager diff",
+            "git --git-dir=/x status",
+        ):
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+
+    def test_quoted_mention_of_option_spelling_is_data_not_command(self):
+        """The load-bearing guard: a wider anchor must not gate quoted DATA.
+
+        DANGEROUS_PATTERNS deliberately anchors to command positions so a
+        destructive spelling quoted inside another command's argument still
+        runs. Widening the git anchor makes this easier to get wrong.
+        """
+        for cmd in (
+            'git commit -m "explain why git -C x branch -D is dangerous"',
+            'git commit -m "port the git -C /repo reset --hard guard"',
+            'gh pr create --body "git --git-dir=/x clean -fdx bypasses the gate"',
+            'git log --grep="git --git-dir /x branch -D"',
+        ):
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+
+
 class TestChmodExecuteCombo:
     """chmod +x && ./ is the two-step social engineering pattern where a
     script is first made executable then immediately run. The script

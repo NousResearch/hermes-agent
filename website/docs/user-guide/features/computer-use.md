@@ -420,10 +420,16 @@ HERMES_CUA_DRIVER_CMD=/path/to/cua/libs/cua-driver/rust/target/debug/cua-driver
 
 - **Hermes spawns a `cua-driver mcp` stdio proxy.** In a normal session the
   proxy connects to (and may start) the standard machine daemon. In explicit
-  Hermes YOLO, Hermes instead owns a private `cua-driver serve --embedded`
-  child and points the proxy at its private socket or named pipe. The Windows
-  autostart/UIAccess pattern still matters for interactive Session 1+ input
-  from SSH — see the Limitations section.
+  Hermes YOLO, Hermes owns a private daemon on its own socket or named pipe and
+  points the proxy at it. On macOS that private daemon is started through
+  LaunchServices (`open -n -W -a CuaDriver.app --args serve ...`) so it is its
+  own responsible process under `com.trycua.driver` and reuses CuaDriver's
+  Screen Recording grant; a direct child would be attributed to Hermes and
+  re-prompt on every session. Where no `CuaDriver.app` bundle exists (Windows,
+  Linux, an unbundled macOS install) Hermes spawns `cua-driver serve
+  --embedded` directly instead. The Windows autostart/UIAccess pattern still
+  matters for interactive Session 1+ input from SSH — see the Limitations
+  section.
 - **Locked binary on Windows.** A running `cua-driver-serve` daemon can
   hold `cua-driver.exe` and block an overwrite on rebuild.
   `install-local.ps1` renames the locked binary out of the way

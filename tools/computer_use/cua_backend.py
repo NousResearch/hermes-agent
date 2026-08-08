@@ -380,16 +380,71 @@ def _wsl_windows_path_to_posix(path: str) -> str:
     return os.path.join("/mnt", drive, *(str(part) for part in win.parts[1:]))
 
 
+# macOS launches the private daemon through LaunchServices so it gets the
+# CuaDriver TCC identity instead of Hermes'. See _EmbeddedCuaDaemon.
+_MACOS_OPEN = "/usr/bin/open"
+_CUA_DRIVER_APP_NAME = "CuaDriver.app"
+_CUA_DRIVER_APP_SEARCH_DIRS = ("/Applications", "~/Applications")
+_BUNDLE_BINARY_MARKER = os.path.join("Contents", "MacOS") + os.sep
+
+
+def _app_bundle_for_binary(binary: str) -> Optional[str]:
+    """Return the ``.app`` bundle whose ``Contents/MacOS`` holds *binary*."""
+    head, marker, _ = os.path.realpath(binary).partition(_BUNDLE_BINARY_MARKER)
+    bundle = head.rstrip(os.sep) if marker else ""
+    return bundle if bundle.endswith(".app") and os.path.isdir(bundle) else None
+
+
+def resolve_cua_driver_app(driver_cmd: Optional[str] = None) -> Optional[str]:
+    """Path to the installed ``CuaDriver.app``, or ``None`` (macOS only).
+
+    The canonical installer symlinks the CLI into the bundle, so the resolved
+    binary's real path is the most reliable pointer; the Applications
+    directories are the fallback for a relocated CLI.
+    """
+    if sys.platform != "darwin":
+        return None
+    binary = driver_cmd or resolve_cua_driver_cmd()
+    bundle = _app_bundle_for_binary(binary) if binary else None
+    if bundle:
+        return bundle
+    for root in _CUA_DRIVER_APP_SEARCH_DIRS:
+        candidate = os.path.join(os.path.expanduser(root), _CUA_DRIVER_APP_NAME)
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
+
+
 class _EmbeddedCuaDaemon:
     """Private host-owned daemon used for an explicit unrestricted session.
 
     Cua Driver permission mode is immutable after daemon startup.  Reusing the
     machine-wide daemon would therefore let one Hermes session's YOLO choice
-    affect another session.  A private embedded daemon gives the requesting
-    session its own socket, process, and launch-time risk acknowledgement.
+    affect another session.  A private daemon gives the requesting session its
+    own socket, process, and launch-time risk acknowledgement.
+
+    On macOS the daemon is launched through LaunchServices (``open -n -W -a
+    CuaDriver.app``) instead of spawned directly: a direct child inherits Hermes
+    as its responsible process, so ScreenCaptureKit consults *Hermes'* Screen
+    Recording row — whose stored cdhash goes stale on every Hermes rebuild,
+    re-prompting on each unrestricted session. Under LaunchServices it is its
+    own responsible process (``com.trycua.driver``) and reuses CuaDriver's
+    grant. Isolation is unchanged; platforms with no app bundle keep the direct
+    ``serve --embedded`` spawn.
     """
 
     _START_TIMEOUT_SECONDS = 15.0
+
+    # Policy flags that make this daemon the session's own unrestricted one.
+    _SERVE_POLICY_ARGS = (
+        "--no-permissions-gate", "--permission-mode", "unrestricted",
+        "--dangerously-bypass-approvals",
+    )
+    _FORWARDED_ENV_KEYS = (
+        _CUA_TELEMETRY_ENV_VAR, "CUA_DRIVER_PERMISSION_MODE",
+        "CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS",
+    )
 
     def __init__(self, driver_cmd: str, permission_mode: str) -> None:
         if permission_mode != "unrestricted":
@@ -399,6 +454,7 @@ class _EmbeddedCuaDaemon:
         self._command = driver_cmd
         self._mcp_args: List[str] = list(_CUA_DRIVER_ARGS)
         self._process: Any = None
+        self._via_launch_services = False
         self._stderr_tail: deque[str] = deque(maxlen=20)
         self._stderr_thread: Optional[threading.Thread] = None
         token = uuid.uuid4().hex[:12]
@@ -414,6 +470,45 @@ class _EmbeddedCuaDaemon:
         env["CUA_DRIVER_PERMISSION_MODE"] = "unrestricted"
         env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
         return env
+
+    def _ensure_driver_cmd(self) -> str:
+        if not self._driver_cmd:
+            self._driver_cmd = resolve_cua_driver_cmd() or ""
+        if not self._driver_cmd:
+            raise RuntimeError(cua_driver_install_hint())
+        return self._driver_cmd
+
+    def _launch_env_args(self, env: Dict[str, str]) -> List[str]:
+        """``open --env`` pairs: LaunchServices drops the caller's environment,
+        and cua-driver's telemetry opt-out is env-only. Non-secret knobs only —
+        argv is world-readable via ``ps``."""
+        return [
+            arg
+            for key in self._FORWARDED_ENV_KEYS
+            if env.get(key) is not None
+            for arg in ("--env", f"{key}={env[key]}")
+        ]
+
+    def _launch_command(
+        self, env: Optional[Dict[str, str]] = None
+    ) -> Tuple[List[str], bool]:
+        """Return ``(argv, via_launch_services)`` for this session's daemon."""
+        driver_cmd = self._ensure_driver_cmd()
+        serve_args = ["--socket", self.socket_path, *self._SERVE_POLICY_ARGS]
+        app = resolve_cua_driver_app(driver_cmd)
+        if app is None:
+            # No app bundle (Windows, Linux, unbundled macOS): historical direct
+            # spawn. ``--embedded`` inherits the host's TCC grants, which is
+            # what you want when the host IS the responsible process.
+            command = self._command or driver_cmd
+            return [command, "serve", "--embedded", *serve_args], False
+        # -n: our own instance, never a shared one. -W: the handle we hold stays
+        # alive for exactly as long as that instance does.
+        return [
+            _MACOS_OPEN, "-n", "-W", "-a", app,
+            *self._launch_env_args(env if env is not None else self.child_env()),
+            "--args", "serve", *serve_args,
+        ], True
 
     def _drain_stderr(self, process: Any) -> None:
         stream = getattr(process, "stderr", None)
@@ -433,23 +528,10 @@ class _EmbeddedCuaDaemon:
             return
         from tools.environments.local import _sanitize_subprocess_env
 
-        if not self._driver_cmd:
-            self._driver_cmd = resolve_cua_driver_cmd() or ""
-        if not self._driver_cmd:
-            raise RuntimeError(cua_driver_install_hint())
-        self._command, self._mcp_args = _resolve_mcp_invocation(self._driver_cmd)
+        driver_cmd = self._ensure_driver_cmd()
+        self._command, self._mcp_args = _resolve_mcp_invocation(driver_cmd)
         env = _sanitize_subprocess_env(self.child_env())
-        command = [
-            self._command,
-            "serve",
-            "--embedded",
-            "--socket",
-            self.socket_path,
-            "--no-permissions-gate",
-            "--permission-mode",
-            "unrestricted",
-            "--dangerously-bypass-approvals",
-        ]
+        command, self._via_launch_services = self._launch_command(env)
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -495,9 +577,13 @@ class _EmbeddedCuaDaemon:
     def proxy_invocation(self) -> Tuple[str, List[str]]:
         if self._process is None or self._process.poll() is not None:
             raise RuntimeError("embedded cua-driver daemon is not running")
+        # ``--embedded`` makes the proxy claim the HOST's TCC identity for
+        # check_permissions and suppresses daemon relaunch.  A LaunchServices
+        # daemon owns its own identity, so the proxy must not overlay Hermes'.
+        host_args = [] if self._via_launch_services else ["--embedded"]
         return self._command, [
             *self._mcp_args,
-            "--embedded",
+            *host_args,
             "--socket",
             self.socket_path,
         ]

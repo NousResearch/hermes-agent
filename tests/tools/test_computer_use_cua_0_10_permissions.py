@@ -163,7 +163,12 @@ def test_yolo_toggle_immediately_releases_mode_dependent_backend():
     ]
 
 
-def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
+def test_unrestricted_daemon_uses_private_socket_and_two_part_ack():
+    """Direct-spawn path (no CuaDriver.app bundle installed).
+
+    The macOS LaunchServices path is covered in
+    tests/tools/test_computer_use_cua_launchservices_daemon.py.
+    """
     from tools.computer_use import cua_backend
 
     process = Mock()
@@ -178,6 +183,8 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
         cua_backend,
         "_resolve_mcp_invocation",
         return_value=("/opt/cua-driver", ["mcp"]),
+    ), patch.object(
+        cua_backend, "resolve_cua_driver_app", return_value=None
     ), patch.object(cua_backend.subprocess, "Popen", return_value=process) as popen, patch.object(
         cua_backend.subprocess, "run", side_effect=[status, stopped]
     ):

@@ -43,6 +43,7 @@ from typing import Any, Dict, List
 from agent.memory_provider import MemoryProvider
 from agent.secret_scope import get_secret
 from tools.registry import tool_error
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -360,9 +361,7 @@ class Mem0MemoryProvider(MemoryProvider):
         # explicitly; per-call args still win. Platform-only feature — other
         # backends accept-and-ignore the flag.
         _rr = self._config.get("rerank", False)
-        self._rerank_default = (
-            _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
-        )
+        self._rerank_default = is_truthy_value(_rr, default=False)
         self._channel = kwargs.get("platform") or "cli"
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
@@ -538,10 +537,9 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 top_k = max(1, min(int(args.get("top_k", 10)), 50))
                 rerank_raw = args.get("rerank", getattr(self, "_rerank_default", False))
-                if isinstance(rerank_raw, str):
-                    rerank = rerank_raw.lower() not in ("false", "0", "no")
-                else:
-                    rerank = bool(rerank_raw)
+                # Shared truthy aliases — previously treated anything other than
+                # false/0/no as True, so "off" incorrectly enabled rerank.
+                rerank = is_truthy_value(rerank_raw, default=False)
                 results = self._backend.search(query, filters=self._read_filters(), top_k=top_k, rerank=rerank)
                 self._record_success()
                 if not results:

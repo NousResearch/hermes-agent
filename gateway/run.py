@@ -2790,6 +2790,48 @@ def _build_document_context_note(display_name: str, agent_path: str, mtype: str)
     )
 
 
+def _build_document_context_notes_for_event(event: MessageEvent) -> List[str]:
+    """Return agent-visible context notes for non-image/audio/video attachments.
+
+    Ordinary inbound turns and replies intercepted as ``clarify`` answers must
+    expose documents with the same path contract. Keep ``event.media_urls``
+    gateway-local and translate only the path rendered into the agent-facing
+    note.
+    """
+    import mimetypes as _mimetypes
+    from tools.credential_files import to_agent_visible_cache_path
+
+    text_extensions = {
+        ".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml",
+        ".yml", ".toml", ".ini", ".cfg",
+    }
+    notes: List[str] = []
+    for i, path in enumerate(getattr(event, "media_urls", None) or []):
+        if (
+            _event_media_is_image(event, i)
+            or _event_media_is_audio(event, i)
+            or _event_media_is_video(event, i)
+        ):
+            continue
+
+        mtype = _event_media_type_at(event, i)
+        if mtype in {"", "application/octet-stream"}:
+            ext = os.path.splitext(path)[1].lower()
+            if ext in text_extensions:
+                mtype = "text/plain"
+            else:
+                guessed, _ = _mimetypes.guess_type(path)
+                mtype = guessed or "application/octet-stream"
+
+        basename = os.path.basename(path)
+        parts = basename.split("_", 2)
+        display_name = parts[2] if len(parts) >= 3 else basename
+        display_name = re.sub(r"[^\w.\- ]", "_", display_name)
+        agent_path = to_agent_visible_cache_path(path)
+        notes.append(_build_document_context_note(display_name, agent_path, mtype))
+    return notes
+
+
 def _format_duration(seconds: float) -> str:
     total = int(round(seconds))
     if total < 0:
@@ -14937,12 +14979,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return ""
             # Skip slash commands — the user clearly wanted to issue a
-            # command, not answer the clarify.  Leave the clarify pending
-            # so the user can retry; if it times out, the agent unblocks
-            # with an empty response.
-            if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
-                _resolved = _clarify_mod.resolve_text_response_for_session(
-                    _quick_key, _raw_clarify_reply,
+            # command, not answer the clarify. Leave the clarify pending so the
+            # user can retry; if it times out, the agent unblocks with an empty
+            # response. Check the authored/transcribed text before adding
+            # attachment notes.
+            if not _raw_clarify_reply.startswith("/"):
+                _clarify_parts = _build_document_context_notes_for_event(event)
+                if _raw_clarify_reply:
+                    _clarify_parts.append(_raw_clarify_reply)
+                _clarify_reply = "\n\n".join(_clarify_parts).strip()
+                _resolved = bool(_clarify_reply) and (
+                    _clarify_mod.resolve_text_response_for_session(
+                        _quick_key, _clarify_reply,
+                    )
                 )
                 if _resolved:
                     logger.info(
@@ -16347,52 +16396,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
-        if event.media_urls:
-            import mimetypes as _mimetypes
-            from tools.credential_files import to_agent_visible_cache_path
-
-            _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
-            for i, path in enumerate(event.media_urls):
-                # Per-attachment document handling. Skip anything already routed
-                # as image / audio / video by the buckets above — only genuine
-                # non-media files get a path-pointing context note. This makes a
-                # document mixed into a PHOTO/VOICE message (whole-message type
-                # != DOCUMENT) still reach the agent as a readable cached file,
-                # instead of being silently dropped because the message-level
-                # type wasn't DOCUMENT.
-                if (
-                    _event_media_is_image(event, i)
-                    or _event_media_is_audio(event, i)
-                    or _event_media_is_video(event, i)
-                ):
-                    continue
-                mtype = event.media_types[i] if i < len(event.media_types) else ""
-                if mtype in {"", "application/octet-stream"}:
-                    _ext = os.path.splitext(path)[1].lower()
-                    if _ext in _TEXT_EXTENSIONS:
-                        mtype = "text/plain"
-                    else:
-                        guessed, _ = _mimetypes.guess_type(path)
-                        if guessed:
-                            mtype = guessed
-                        else:
-                            mtype = "application/octet-stream"
-                # Any accepted file gets a path-pointing context note — we accept
-                # all file types now, so a non-text/non-application MIME (font/*,
-                # model/*, etc.) must still tell the agent the file exists.
-
-                basename = os.path.basename(path)
-                parts = basename.split("_", 2)
-                display_name = parts[2] if len(parts) >= 3 else basename
-                display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-
-                # Translate host cache path to in-container path if running under Docker backend.
-                # This ensures the agent receives a path it can open inside its sandbox, as the
-                # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
-                agent_path = to_agent_visible_cache_path(path)
-
-                context_note = _build_document_context_note(display_name, agent_path, mtype)
-                message_text = f"{context_note}\n\n{message_text}"
+        for context_note in _build_document_context_notes_for_event(event):
+            message_text = f"{context_note}\n\n{message_text}"
 
         # Discord: surface the triggering message id per-turn on the user
         # message rather than in the cached system prompt. message_id changes

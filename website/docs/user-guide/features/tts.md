@@ -29,6 +29,7 @@ Convert text to speech with eleven providers:
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
+| **Supertonic** | Good | Free (local) | None needed |
 
 ### Platform Delivery
 
@@ -44,7 +45,7 @@ Convert text to speech with eleven providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" | "supertonic"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -103,6 +104,14 @@ tts:
     # noise_w_scale: 0.8
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
+  supertonic:
+    voice: M1                                   # M1-M5 (male) / F1-F5 (female)
+    lang: en                                    # 31 languages + 'na' neutral (see list below)
+    speed: 1.0                                  # 0.7 - 2.0 (higher = faster)
+    total_steps: 8                              # 5 - 12 (higher = better quality, slower)
+    # voice_style_path: ''                      # custom voice style from the Supertonic Voice Builder
+    # max_chunk_length: 300                      # override internal text chunking (minimum: 10)
+    # silence_duration: 0.0                      # silence between chunks (seconds)
 ```
 
 MiniMax TTS selects its region, endpoint, and credential together:
@@ -163,6 +172,7 @@ Each provider has a documented per-request input-character cap. Hermes truncates
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
 | Piper | 5000 |
+| Supertonic | 5000 |
 
 **ElevenLabs** picks a cap from the configured `model_id`:
 
@@ -196,6 +206,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **Supertonic** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 
 ```bash
 # Ubuntu/Debian
@@ -208,7 +219,7 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, Piper, and Supertonic audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
@@ -255,6 +266,48 @@ tts:
 ```
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
+
+### Supertonic (local, 31 languages)
+
+Supertonic is a light, fully-local neural TTS engine built on ONNX Runtime (99M params, no PyTorch). It runs on CPU, supports **31 languages**, ships with male/female voices, understands inline **expression tags**, and needs no API key.
+
+**Install via `hermes tools`** -> Voice & TTS -> Supertonic - Hermes runs `pip install "supertonic>=1.3.1,<2"` for you. You can also pick it interactively via `hermes setup tts` (which lets you choose voice, language, speed, and quality), or install manually: `pip install "supertonic>=1.3.1,<2"`.
+
+On the first TTS call, Supertonic downloads its ~400MB model into `~/.cache/supertonic3/`. Subsequent calls reuse the cached model (loaded once per process).
+
+**Switch to Supertonic:**
+
+```yaml
+tts:
+  provider: supertonic
+  supertonic:
+    voice: M1            # M1-M5 (male) / F1-F5 (female)
+    lang: en
+    speed: 1.0           # 0.7 - 2.0 (higher = faster)
+    total_steps: 8       # 5 - 12 (higher = better quality, slower)
+```
+
+**Voices.** Ten built-in voice styles: `M1`-`M5` (male) and `F1`-`F5` (female).
+
+**Languages.** Set `tts.supertonic.lang` to one of the 31 supported ISO codes (plus `na` for a neutral/accentless rendering):
+
+`en, ko, ja, ar, bg, cs, da, de, el, es, et, fi, fr, hi, hr, hu, id, it, lt, lv, nl, pl, pt, ro, ru, sk, sl, sv, tr, uk, vi, na`
+
+**Expression tags.** Embed `<laugh>`, `<breath>`, or `<sigh>` directly in the text to add non-verbal expression, e.g. `That's hilarious <laugh> - anyway, where were we?`
+
+**Custom voices.** If you built a voice with the Supertonic Voice Builder, point `tts.supertonic.voice_style_path` at the exported style file; it takes precedence over `voice`.
+
+**Polish example** (matches a known-good production setup):
+
+```yaml
+tts:
+  provider: supertonic
+  supertonic:
+    voice: M3
+    lang: pl
+    speed: 1.4
+    total_steps: 10
+```
 
 ### Custom command providers
 

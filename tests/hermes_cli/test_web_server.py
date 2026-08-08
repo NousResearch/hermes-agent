@@ -1186,6 +1186,9 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         return resp.json()["fields"][key]["options"]
 
+    def test_config_schema_lists_supertonic_provider(self):
+        assert "supertonic" in self._schema_provider_options("tts.provider")
+
 
 
 

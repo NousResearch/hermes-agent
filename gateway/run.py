@@ -26597,8 +26597,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             elif not _is_empty_sentinel and _transformed and _sc is not None:
                 # Plugin hooks transformed the response after streaming — edit the
                 # existing streamed message instead of sending a duplicate.
+                #
+                # Not valid for a multi-message split delivery: there
+                # ``message_id`` is only the LAST chunk, so editing it with the
+                # complete (transformed) response would repeat every sealed head
+                # chunk's text inside the tail message — the same reasoning as
+                # the stale-finalize branch above (#78541). Fall through to the
+                # normal final send instead, which already knows how to deliver
+                # a complete response across a split turn.
                 _sc_msg_id = _sc.message_id
-                if _sc_msg_id:
+                if getattr(_sc, "_turn_split_delivery", False):
+                    logger.info(
+                        "Plugin-transformed response for session %s is on a multi-message split; skipping the in-place edit and delivering the complete response via normal final send (#78541).",
+                        session_key or "?",
+                    )
+                elif _sc_msg_id:
                     try:
                         await _sc.adapter.edit_message(
                             chat_id=source.chat_id,

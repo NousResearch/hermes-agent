@@ -41,6 +41,7 @@ from tui_gateway import git_probe
 from tui_gateway.turn_marker import (
     clear_turn_marker,
     read_turn_marker,
+    record_auto_continue_attempt,
     record_turn_start,
 )
 from tui_gateway.transport import (
@@ -7406,6 +7407,27 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
 
     def kickoff() -> None:
         rid = f"__auto_continue__{int(time.time() * 1000)}"
+        with session["history_lock"]:
+            if (
+                session.get("running")
+                or session.get("_turn_cancel_requested")
+                or session.get("_finalized")
+            ):
+                session["_auto_continue_scheduled"] = False
+                return
+        # Agent construction is part of the recovery attempt and may itself
+        # fail or kill the process. Count it before entering that fallible
+        # stage so repeated cold resumes cannot bypass max_attempts forever.
+        # The compare-and-set guard refuses to overwrite a newer user turn.
+        if not record_auto_continue_attempt(
+            home,
+            session_key,
+            prompt=marker["prompt"],
+            started_at=marker["started_at"],
+            attempts=attempt,
+        ):
+            session["_auto_continue_scheduled"] = False
+            return
         try:
             _start_agent_build(sid, session)
             err = _wait_agent(session, rid, timeout=120.0)
@@ -7413,7 +7435,8 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             logger.warning("auto-continue agent build failed for %s", sid, exc_info=True)
             err = {"error": {"message": "agent build failed"}}
         if err:
-            # Leave the marker: the next resume retries (bounded by attempts).
+            # Leave the advanced marker: the next resume may retry, bounded by
+            # the persisted attempt count.
             session["_auto_continue_scheduled"] = False
             return
         with session["history_lock"]:

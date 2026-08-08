@@ -121,6 +121,58 @@ def record_turn_start(
         logger.debug("failed to record turn marker for %s", session_key, exc_info=True)
 
 
+def record_auto_continue_attempt(
+    home: Path | str,
+    session_key: str,
+    *,
+    prompt: str,
+    started_at: float,
+    attempts: int,
+) -> bool:
+    """Persist an auto-continue attempt before fallible agent initialization.
+
+    The prompt and timestamp form a compare-and-set guard: a user turn may
+    replace the interrupted marker while the continuation thread starts, and
+    that newer marker must never be overwritten. Returns whether the original
+    marker was still current and the attempt was durably recorded.
+    """
+    if not session_key or not prompt:
+        return False
+    try:
+        expected_started_at = float(started_at)
+        next_attempts = max(0, int(attempts))
+    except (TypeError, ValueError):
+        return False
+    try:
+        with _lock:
+            path = _marker_path(home)
+            entries = _load(path)
+            current = entries.get(session_key)
+            if not isinstance(current, dict):
+                return False
+            try:
+                current_started_at = float(current.get("started_at") or 0)
+            except (TypeError, ValueError):
+                return False
+            if (
+                str(current.get("prompt") or "") != prompt
+                or current_started_at != expected_started_at
+            ):
+                return False
+            updated = dict(current)
+            updated["attempts"] = next_attempts
+            entries[session_key] = updated
+            _store(path, entries)
+            return True
+    except Exception:
+        logger.debug(
+            "failed to record auto-continue attempt for %s",
+            session_key,
+            exc_info=True,
+        )
+        return False
+
+
 def clear_turn_marker(home: Path | str, session_key: str) -> None:
     """Remove the marker once its turn concluded (any outcome the client saw)."""
     if not session_key:

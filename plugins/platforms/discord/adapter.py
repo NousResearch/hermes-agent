@@ -7285,11 +7285,40 @@ class DiscordAdapter(BasePlatformAdapter):
             clean_choices = clean_choices[:24]
 
             if clean_choices:
-                embed.add_field(
-                    name="Choices",
-                    value="Pick one below, or click ✏️ Other to type a custom answer.",
-                    inline=False,
+                # Discord button labels are hard-capped at 80 chars, so long
+                # choices get truncated with an ellipsis on the button itself.
+                # To keep the FULL choice text readable, enumerate every option
+                # here as a numbered list that matches the "N." prefix on each
+                # button. The user reads the complete option and clicks the
+                # matching number.
+                numbered = [
+                    f"**{i + 1}.** {c}" for i, c in enumerate(clean_choices)
+                ]
+                choices_block = "\n".join(numbered)
+                pick_hint = (
+                    "\nPick the matching number below, or click "
+                    "✏️ Other to type a custom answer."
                 )
+                # Embed field values are capped at 1024 chars; if the enumerated
+                # list overflows, fall back to a plain description append (4096
+                # budget) rather than silently dropping the tail.
+                field_value = choices_block + pick_hint
+                if len(field_value) <= 1024:
+                    embed.add_field(
+                        name="Choices", value=field_value, inline=False,
+                    )
+                else:
+                    embed.add_field(
+                        name="Choices",
+                        value=(
+                            "Pick the matching number below, or click "
+                            "✏️ Other to type a custom answer."
+                        ),
+                        inline=False,
+                    )
+                    desc = embed.description or ""
+                    extra = "\n\n**Choices**\n" + choices_block
+                    embed.description = (desc + extra)[:4088]
                 view = ClarifyChoiceView(
                     choices=clean_choices,
                     clarify_id=clarify_id,
@@ -7305,12 +7334,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 view = None
 
             # Mirror the question in plain content — embeds are invisible on
-            # some clients (see send_exec_approval).
-            clarify_tail = (
-                "\n\nPick one below, or click ✏️ Other to type a custom answer."
-                if clean_choices
-                else "\n\nReply in this channel with your answer."
-            )
+            # some clients (see send_exec_approval). Include the full numbered
+            # choice list so the options are readable even when the embed and
+            # the truncated buttons are not.
+            if clean_choices:
+                clarify_tail = (
+                    "\n\n"
+                    + "\n".join(
+                        f"{i + 1}. {c}" for i, c in enumerate(clean_choices)
+                    )
+                    + "\n\nPick the matching number below, or click "
+                    "✏️ Other to type a custom answer."
+                )
+            else:
+                clarify_tail = "\n\nReply in this channel with your answer."
             content = self._self_contained_prompt_content(
                 "❓ **Hermes needs your input**", str(question or "").strip(),
                 tail=clarify_tail,

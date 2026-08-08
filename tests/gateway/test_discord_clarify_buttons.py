@@ -234,6 +234,63 @@ class TestDiscordSendClarify:
         assert len(kwargs["view"].children) == 4
 
     @pytest.mark.asyncio
+    async def test_long_choices_shown_in_full(self):
+        """Long choices appear in full in the embed and the plain content.
+
+        Regression: Discord button labels are hard-capped at 80 chars, so a
+        long choice gets truncated with an ellipsis on the button. The full
+        text must still be readable, so send_clarify enumerates every option
+        as a numbered list in both the embed body (4096-char budget) and the
+        plain-text content mirror, matching the "N." prefix on each button.
+        """
+        adapter = _make_adapter(allowed_users={"42"})
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 777
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        long_a = (
+            "First register 3-4 extra runners, then fan out jax plus vllm plus "
+            "sglang plus pytorch in parallel across the available DO VMs"
+        )
+        long_b = (
+            "Write the env-bump PRs for vllm, sglang and pytorch first, then "
+            "dispatch everything together once all four are reviewed and merged"
+        )
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="What is next?",
+            choices=[long_a, long_b],
+            clarify_id="cidLong",
+            session_key="sk-Long",
+        )
+
+        assert result.success is True
+        kwargs = channel.send.call_args.kwargs
+
+        # Gather all text the message carries: plain content + embed.
+        blob = str(kwargs.get("content") or "")
+        embed = kwargs.get("embed")
+        if embed is not None:
+            blob += "\n" + (getattr(embed, "description", None) or "")
+            for field in getattr(embed, "fields", []):
+                blob += "\n" + (field.get("value") or "")
+
+        # The FULL text of each long choice must appear verbatim somewhere.
+        assert long_a in blob
+        assert long_b in blob
+        # Numbered prefixes present so the list maps to the buttons.
+        assert "1." in blob
+        assert "2." in blob
+        # Buttons themselves may be truncated by Discord's 80-char cap.
+        labels = [
+            c.label for c in kwargs["view"].children if getattr(c, "label", None)
+        ]
+        assert any(lbl.startswith("1.") for lbl in labels)
+
+    @pytest.mark.asyncio
     async def test_open_ended_omits_view(self):
         adapter = _make_adapter()
         channel = MagicMock()

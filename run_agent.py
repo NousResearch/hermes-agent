@@ -221,6 +221,8 @@ from agent.tool_dispatch_helpers import (
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
+from plugins.agent.mixins.tool_execution_mixin import ToolExecutionMixin
+from plugins.agent.mixins.reasoning_echo_mixin import ReasoningEchoMixin
 
 
 # Internal flags that mark a message as ephemeral empty-response/prefill
@@ -409,7 +411,7 @@ class _StreamErrorEvent(Exception):
         }
 
 
-class AIAgent:
+class AIAgent(ToolExecutionMixin, ReasoningEchoMixin):
     """
     AI Agent with tool calling capabilities.
 
@@ -7233,91 +7235,6 @@ class AIAgent:
         from agent.chat_completion_helpers import build_assistant_message
         return build_assistant_message(self, assistant_message, finish_reason)
 
-    def _needs_thinking_reasoning_pad(self) -> bool:
-        """Return True when the active provider enforces reasoning_content echo-back.
-
-        DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
-        of assistant tool-call messages that omit ``reasoning_content`` (refs
-        #15250, #17400). Xiaomi MiMo thinking mode has the same requirement.
-
-        Result cached on the AIAgent instance keyed by (provider, model,
-        base_url); invalidated whenever ``switch_model()`` /
-        ``_try_activate_fallback()`` mutate any of those. This is hot — the
-        agent loop hits ~16 invocations per turn, each of which would
-        otherwise re-run ~5 ``base_url_host_matches`` (and therefore
-        ``urlparse``) calls under it. Caching drops the per-turn cost from
-        ~5us × 16 = ~80us to <1us.
-        """
-        key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
-        cached = getattr(self, "_thinking_pad_cache", None)
-        if cached is not None and cached[0] == key:
-            return cached[1]
-        result = (
-            self._needs_deepseek_tool_reasoning()
-            or self._needs_kimi_tool_reasoning()
-            or self._needs_mimo_tool_reasoning()
-        )
-        self._thinking_pad_cache = (key, result)
-        return result
-
-    def _needs_kimi_tool_reasoning(self) -> bool:
-        """Return True when the current provider is Kimi / Moonshot thinking mode.
-
-        Kimi ``/coding`` and Moonshot thinking mode both require
-        ``reasoning_content`` on every assistant tool-call message; omitting
-        it causes the next replay to fail with HTTP 400.
-
-        Detection is host-driven, not model-name-driven: aggregators like
-        OpenRouter that re-export Kimi/Moonshot models speak their own
-        protocol and reject ``reasoning_content`` echoes. We only enable the
-        kimi-reasoning replay when the request actually targets a
-        kimi/moonshot endpoint or the dedicated kimi-coding provider.
-
-        Rule table owner: ``agent.message_sanitization.reasoning_echo_family``.
-        """
-        from agent.message_sanitization import matches_reasoning_echo_family
-        return matches_reasoning_echo_family(
-            "kimi", self.provider, None, self.base_url
-        )
-
-    def _needs_deepseek_tool_reasoning(self) -> bool:
-        """Return True when the current provider is DeepSeek thinking mode.
-
-        DeepSeek V4 thinking mode requires ``reasoning_content`` on every
-        assistant tool-call turn; omitting it causes HTTP 400 when the
-        message is replayed in a subsequent API request (#15250).
-
-        Rule table owner: ``agent.message_sanitization.reasoning_echo_family``.
-        """
-        from agent.message_sanitization import matches_reasoning_echo_family
-        return matches_reasoning_echo_family(
-            "deepseek", (self.provider or "").lower(), self.model, self.base_url
-        )
-
-    def _needs_mimo_tool_reasoning(self) -> bool:
-        """Return True when the current provider is Xiaomi MiMo thinking mode.
-
-        MiMo thinking mode requires ``reasoning_content`` on every assistant
-        tool-call message when replaying history; omitting it causes HTTP 400.
-        Refs: https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/passing-back-reasoning_content
-
-        Rule table owner: ``agent.message_sanitization.reasoning_echo_family``.
-        """
-        from agent.message_sanitization import matches_reasoning_echo_family
-        return matches_reasoning_echo_family(
-            "mimo", (self.provider or "").lower(), self.model, self.base_url
-        )
-
-    def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:
-        """Forwarder — see ``agent.agent_runtime_helpers.copy_reasoning_content_for_api``."""
-        from agent.agent_runtime_helpers import copy_reasoning_content_for_api
-        return copy_reasoning_content_for_api(self, source_msg, api_msg)
-
-    def _reapply_reasoning_echo_for_provider(self, api_messages: list) -> int:
-        """Forwarder — see ``agent.agent_runtime_helpers.reapply_reasoning_echo_for_provider``."""
-        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
-        return reapply_reasoning_echo_for_provider(self, api_messages)
-
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: "str | None" = None) -> dict:
         """Strip Codex Responses API fields from tool_calls for strict providers.
@@ -7662,143 +7579,6 @@ class AIAgent:
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)
-
-    def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
-        """Execute tool calls from the assistant message and append results to messages.
-
-        The segment planner splits the batch into maximal contiguous runs of
-        parallel-safe calls (read-only tools, non-overlapping file targets,
-        opted-in MCP tools) separated by sequential barriers (interactive,
-        unsafe, or unrecognized tools). Homogeneous batches keep their
-        original single-path dispatch; mixed batches execute segment by
-        segment in emission order so safe subsets still run concurrently
-        while side-effect ordering is preserved.
-        """
-        tool_calls = assistant_message.tool_calls
-
-        # Allow _vprint during tool execution even with stream consumers
-        self._executing_tools = True
-        try:
-            if len(tool_calls) <= 1:
-                return self._execute_tool_calls_sequential(
-                    assistant_message, messages, effective_task_id, api_call_count
-                )
-
-            from agent.tool_dispatch_helpers import _plan_tool_batch_segments
-            _active_env = get_active_env(effective_task_id)
-            _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
-            segments = _plan_tool_batch_segments(tool_calls, execution_cwd=_exec_cwd)
-
-            if len(segments) == 1:
-                kind = segments[0][0]
-                if kind == "parallel":
-                    return self._execute_tool_calls_concurrent(
-                        assistant_message, messages, effective_task_id, api_call_count
-                    )
-                return self._execute_tool_calls_sequential(
-                    assistant_message, messages, effective_task_id, api_call_count
-                )
-
-            from agent.tool_executor import execute_tool_calls_segmented
-            return execute_tool_calls_segmented(
-                self, assistant_message, messages, effective_task_id, api_call_count,
-                segments=segments,
-            )
-        finally:
-            self._executing_tools = False
-
-    def _dispatch_delegate_task(self, function_args: dict) -> str:
-        """Single call site for delegate_task dispatch.
-
-        New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
-        invocation paths (concurrent, sequential, inline).
-        """
-        from tools.delegate_tool import (
-            _strip_model_hidden_task_fields,
-            delegate_task as _delegate_task,
-        )
-        # Delegations from the top-level MODEL always run in the background —
-        # the model does not get to choose. delegate_task returns immediately
-        # with a handle (one per task) and each subagent's result re-enters the
-        # conversation as a new message when it finishes. This applies to BOTH
-        # a single task and a fan-out batch (each task becomes its own
-        # independent background subagent). The one exception:
-        #   - A delegation from an ORCHESTRATOR SUBAGENT (depth > 0) stays
-        #     synchronous: the orchestrator needs its workers' results within
-        #     its own turn to compose a summary, and a subagent doesn't own the
-        #     gateway session the async result would route back to.
-        # The schema-level `background` param is intentionally ignored here.
-        _is_subagent = getattr(self, "_delegate_depth", 0) > 0
-        return _delegate_task(
-            goal=function_args.get("goal"),
-            context=function_args.get("context"),
-            tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
-            max_iterations=function_args.get("max_iterations"),
-            role=function_args.get("role"),
-            background=(not _is_subagent),
-            parent_agent=self,
-        )
-
-    def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
-                     tool_call_id: Optional[str] = None, messages: list = None,
-                     pre_tool_block_checked: bool = False,
-                     skip_tool_request_middleware: bool = False,
-                     tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
-                     skip_tool_execution_middleware: bool = False) -> str:
-        """Forwarder — see ``agent.agent_runtime_helpers.invoke_tool``."""
-        from agent.agent_runtime_helpers import invoke_tool
-        return invoke_tool(
-            self,
-            function_name,
-            function_args,
-            effective_task_id,
-            tool_call_id,
-            messages,
-            pre_tool_block_checked,
-            skip_tool_request_middleware,
-            tool_request_middleware_trace,
-            skip_tool_execution_middleware,
-        )
-
-    @staticmethod
-    def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
-        """Word-wrap verbose tool output to fit the terminal width.
-
-        Splits *text* on existing newlines and wraps each line individually,
-        preserving intentional line breaks (e.g. pretty-printed JSON).
-        Returns a ready-to-print string with *label* on the first line and
-        continuation lines indented.
-        """
-        import shutil as _shutil
-        import textwrap as _tw
-        cols = _shutil.get_terminal_size((120, 24)).columns
-        wrap_width = max(40, cols - len(indent))
-        out_lines: list[str] = []
-        for raw_line in text.split("\n"):
-            if len(raw_line) <= wrap_width:
-                out_lines.append(raw_line)
-            else:
-                wrapped = _tw.wrap(raw_line, width=wrap_width,
-                                   break_long_words=True,
-                                   break_on_hyphens=False)
-                out_lines.extend(wrapped or [raw_line])
-        body = ("\n" + indent).join(out_lines)
-        return f"{indent}{label}{body}"
-
-    def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
-        """Forwarder — see ``agent.tool_executor.execute_tool_calls_concurrent``."""
-        from agent.tool_executor import execute_tool_calls_concurrent
-        return execute_tool_calls_concurrent(self, assistant_message, messages, effective_task_id, api_call_count)
-
-    def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
-        """Forwarder — see ``agent.tool_executor.execute_tool_calls_sequential``."""
-        from agent.tool_executor import execute_tool_calls_sequential
-        return execute_tool_calls_sequential(self, assistant_message, messages, effective_task_id, api_call_count)
-
-    def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
-        """Forwarder — see ``agent.chat_completion_helpers.handle_max_iterations``."""
-        from agent.chat_completion_helpers import handle_max_iterations
-        return handle_max_iterations(self, messages, api_call_count)
 
     def _conversation_root_id(self) -> Optional[str]:
         """Resolve the stable conversation id for Portal usage attribution.

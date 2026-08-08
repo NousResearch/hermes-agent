@@ -864,9 +864,15 @@ def _read_command_stt_output(output_path: Path, stdout: str, fmt: str) -> str:
             return content
     if stdout and stdout.strip():
         return stdout.strip()
+    # "empty transcript" is load-bearing wording, not decoration: the desktop
+    # transcribe endpoint and the CLI voice loop both treat an empty-transcript
+    # error as silence and re-listen, instead of surfacing a failure on every
+    # quiet gap. A command that exits 0 without producing output is
+    # indistinguishable from silence here, so it stays an error for callers
+    # that report errors — reporting success would hide a mis-wired provider.
     raise RuntimeError(
-        f"Command STT provider wrote no output file at {output_path} "
-        f"and produced no stdout"
+        "Command STT provider returned an empty transcript: no output file at "
+        f"{output_path} and no stdout"
     )
 
 

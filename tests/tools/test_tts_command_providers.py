@@ -203,6 +203,35 @@ class TestConfigGetters:
         assert _get_command_tts_output_format({}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
 
 
+    def test_output_format_rejects_unknown(self):
+        assert _get_command_tts_output_format({"format": "midi"}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
+        assert _get_command_tts_output_format({}, "/tmp/clip.midi") == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
+
+
+    def test_output_format_default_is_recognized(self):
+        assert DEFAULT_COMMAND_TTS_OUTPUT_FORMAT in COMMAND_TTS_OUTPUT_FORMATS
+
+
+    @pytest.mark.parametrize("fmt", sorted(COMMAND_TTS_OUTPUT_FORMATS))
+    def test_output_format_accepts_every_supported_format(self, fmt):
+        # Every recognized extension must survive both entry points: an explicit
+        # config value and inference from the output path suffix. A format that
+        # is allowed but silently coerced back to mp3 would mismatch the path
+        # the post-run existence check expects.
+        assert _get_command_tts_output_format({"format": fmt}) == fmt
+        assert _get_command_tts_output_format({"output_format": fmt}) == fmt
+        assert _get_command_tts_output_format({}, f"/tmp/clip.{fmt}") == fmt
+
+
+    def test_output_format_suffix_overrides_config(self):
+        assert _get_command_tts_output_format({"format": "mp3"}, "/tmp/clip.m4a") == "m4a"
+
+
+    def test_output_format_normalizes_case_and_dot(self):
+        assert _get_command_tts_output_format({"format": ".M4A"}) == "m4a"
+        assert _get_command_tts_output_format({}, "/tmp/clip.OPUS") == "opus"
+
+
     def test_voice_compatible_boolean(self):
         assert _is_command_tts_voice_compatible({"voice_compatible": True}) is True
         assert _is_command_tts_voice_compatible({"voice_compatible": False}) is False

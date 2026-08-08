@@ -2300,10 +2300,6 @@ button[data-slot='aui_msg-reactions'] svg {
   --hud-thread-mask: linear-gradient(to top, var(--hud-thread-mask-stops));
 }
 
-[data-hud-shell][data-hud-edge='top'] {
-  --hud-thread-mask: linear-gradient(to bottom, var(--hud-thread-mask-stops));
-}
-
 /* Chat surface carries nothing in HUD mode — the visual is the BAND below. */
 [data-hud-shell] [data-chat-surface] {
   background: transparent !important;
@@ -2445,6 +2441,11 @@ button[data-slot='aui_msg-reactions'] svg {
   background: var(--dt-background);
 }
 
+/* Flipped, the sheet hangs from the bar instead of standing on it. The MASK
+   does not flip with it: the transcript still reads oldest-to-newest downward,
+   so the newest turn is at the bottom either way and the fade always runs away
+   from it. Flipping the gradient too faded the newest reply and left the oldest
+   solid, which reads as the band having come apart. */
 [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
   top: 0;
   bottom: auto;
@@ -2577,11 +2578,6 @@ button[data-slot='aui_msg-reactions'] svg {
 
 [data-hud-shell][data-hud-edge='top'] [data-slot='aui_thread-content'] {
   padding-block-start: calc(var(--hud-bar-height, var(--composer-fallback-height)) + 0.25rem) !important;
-}
-
-[data-hud-shell][data-hud-edge='top'] [data-slot='aui_thread-viewport'] {
-  -webkit-mask-position: top;
-  mask-position: top;
 }
 
 [data-hud-shell][data-hud-edge='top'] [data-hud-drag-strip] {

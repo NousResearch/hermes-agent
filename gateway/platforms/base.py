@@ -5625,6 +5625,21 @@ class BasePlatformAdapter(ABC):
         state = self._text_debounce_store().pop(session_key, None)
         if state is not None and state.task is not None and not state.task.done():
             state.task.cancel()
+        self._discard_session_ingress(session_key)
+
+    def _discard_session_ingress(self, session_key: str) -> None:
+        """Discard adapter-specific buffered ingress fragments for a session.
+
+        Conversation boundaries (/stop, /new, /reset, auto-reset) funnel
+        through :meth:`cancel_session_processing` / :meth:`_discard_text_debounce`,
+        which clear the base-layer text-debounce and pending-message state.
+        Adapters that keep their own per-session ingress buffers (Telegram's
+        text/photo/media-group debounce slots) must override this to drop
+        them too, so fragments from a previous conversation can never merge
+        into the next unrelated user turn (#81370).  The default is a no-op
+        for adapters with no adapter-level buffers.
+        """
+        return
 
     # ------------------------------------------------------------------
     # Session task + guard ownership helpers

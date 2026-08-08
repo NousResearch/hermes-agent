@@ -4349,6 +4349,69 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         return False
 
+    def _discard_session_ingress(self, session_key: str) -> None:
+        """Drop Telegram ingress fragments buffered for a session.
+
+        Overrides the base-adapter hook called at every conversation
+        boundary (/stop, /new, /reset, auto-reset, expiry finalization).
+        Telegram keeps per-session debounce slots — text batching,
+        photo bursts/albums, and media-group coalescing — that only
+        ``disconnect()`` used to clear.  A forward/media download that
+        finishes after the conversation was reset kept its fragments in
+        those slots and could merge into the next unrelated user message
+        (#81370).  Cancelling the flush tasks and dropping the buffered
+        events at the boundary invalidates every in-flight fragment.
+        """
+        # Text batches are keyed by the bare session key.
+        pending_tasks: list[asyncio.Task] = []
+        for key, task in list(self._pending_text_batch_tasks.items()):
+            if key == session_key:
+                self._pending_text_batches.pop(key, None)
+                if task is not None and not task.done():
+                    pending_tasks.append(task)
+                self._pending_text_batch_tasks.pop(key, None)
+        # Photo batches key as f"{session_key}:album:{media_group_id}" and
+        # f"{session_key}:photo-burst".
+        prefix = f"{session_key}:"
+        for key, task in list(self._pending_photo_batch_tasks.items()):
+            if key.startswith(prefix):
+                self._pending_photo_batches.pop(key, None)
+                if task is not None and not task.done():
+                    pending_tasks.append(task)
+                self._pending_photo_batch_tasks.pop(key, None)
+        # Media-group coalescing is keyed by media_group_id; the buffered
+        # ``event.source`` carries the SessionSource fields needed to
+        # rebuild the session key (SessionSource itself has no
+        # ``session_key`` attribute — that key is always *derived* via
+        # ``build_session_key``), so we compare on the recomputed key
+        # instead of reading a stale attribute (#81370).
+        from gateway.session import build_session_key
+        for media_group_id, event in list(self._media_group_events.items()):
+            source = getattr(event, "source", None)
+            if source is None:
+                continue
+            try:
+                event_session_key = build_session_key(
+                    source,
+                    group_sessions_per_user=self.config.extra.get(
+                        "group_sessions_per_user", True
+                    ),
+                    thread_sessions_per_user=self.config.extra.get(
+                        "thread_sessions_per_user", False
+                    ),
+                    profile=getattr(source, "profile", None)
+                    or getattr(self, "_gateway_profile_name", None),
+                )
+            except Exception:
+                continue
+            if event_session_key == session_key:
+                self._media_group_events.pop(media_group_id, None)
+                task = self._media_group_tasks.pop(media_group_id, None)
+                if task is not None and not task.done():
+                    pending_tasks.append(task)
+        for task in pending_tasks:
+            task.cancel()
+
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending delayed deliveries, and disconnect."""
         # Mark disconnected first so the drop guard short-circuits any flush

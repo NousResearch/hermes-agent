@@ -1826,6 +1826,20 @@ class WeixinAdapter(BasePlatformAdapter):
                                 self.name, _safe_id(chat_id),
                             )
                             continue
+                        # Parameter error (-2 + "prepare failed") — not a rate
+                        # limit.  iLink returns ret=-2 with errmsg "prepare
+                        # failed" when the context_token is missing or invalid
+                        # (e.g. fresh account with no inbound messages yet).
+                        # Treat this as a hard error so operators see the real
+                        # cause instead of a misleading 30s cooldown.
+                        if (
+                            ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE
+                        ) and (resp.get("errmsg") or "").lower() == "prepare failed":
+                            raise RuntimeError(
+                                f"iLink sendmessage parameter error: prepare failed"
+                                f" (ret={ret}, likely missing context_token —"
+                                f" user must send an inbound message first or re-pair)"
+                            )
                         # Rate limit (-2) — backoff and retry
                         is_rate_limited = (
                             ret == RATE_LIMIT_ERRCODE

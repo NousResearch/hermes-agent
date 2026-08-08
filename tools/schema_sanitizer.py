@@ -91,8 +91,9 @@ def unrename_tool_args(params_schema: Any, args: Any) -> Any:
     """Map sanitized property keys in model-emitted args back to wire names.
 
     ``params_schema`` is the ORIGINAL (unsanitized) parameters schema from the
-    registry. Recurses into object-typed values and array items so nested
-    renamed keys are restored too. Unknown keys pass through untouched.
+    registry. Recurses into object-typed values, homogeneous ``items`` arrays,
+    and positional ``prefixItems`` arrays so nested renamed keys are restored.
+    Unknown keys pass through untouched.
     """
     if not isinstance(params_schema, dict) or not isinstance(args, dict):
         return args
@@ -103,18 +104,31 @@ def unrename_tool_args(params_schema: Any, args: Any) -> Any:
     out = {}
     for key, value in args.items():
         orig = reverse.get(key, key)
-        subschema = props.get(orig)
-        if isinstance(subschema, dict):
-            if isinstance(value, dict):
-                value = unrename_tool_args(subschema, value)
-            elif isinstance(value, list) and isinstance(subschema.get("items"), dict):
-                value = [
-                    unrename_tool_args(subschema["items"], item)
-                    if isinstance(item, dict) else item
-                    for item in value
-                ]
+        value = _unrename_schema_value(props.get(orig), value)
         out[orig] = value
     return out
+
+
+def _unrename_schema_value(schema: Any, value: Any) -> Any:
+    """Recursively reverse-map one runtime value using its original schema."""
+    if not isinstance(schema, dict):
+        return value
+    if isinstance(value, dict):
+        return unrename_tool_args(schema, value)
+    if not isinstance(value, list):
+        return value
+
+    prefix_items = schema.get("prefixItems", [])
+    if not isinstance(prefix_items, list):
+        prefix_items = []
+    items_schema = schema.get("items")
+    return [
+        _unrename_schema_value(
+            prefix_items[i] if i < len(prefix_items) else items_schema,
+            item,
+        )
+        for i, item in enumerate(value)
+    ]
 
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:

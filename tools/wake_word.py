@@ -844,8 +844,21 @@ def _stt_ready() -> bool:
     voice mode's ``check_voice_requirements``: enabled + a real provider.
     """
     try:
-        from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled
+        from tools.transcription_tools import (
+            _get_provider,
+            _load_stt_config,
+            _recheck_package_availability,
+            is_stt_enabled,
+        )
 
+        # Re-probe optional STT packages so a provider installed into the
+        # venv after gateway startup is picked up by the wake arming gate
+        # without a restart (#81235 follow-up). The original PR added this
+        # only to ``check_voice_requirements``; the wake path's
+        # ``_stt_ready()`` calls the same cached ``_HAS_*`` flags and would
+        # otherwise keep reporting the provider unavailable until a
+        # restart, leaving the desktop ear permanently disarmed.
+        _recheck_package_availability()
         stt_config = _load_stt_config()
         return is_stt_enabled(stt_config) and _get_provider(stt_config) != "none"
     except Exception:

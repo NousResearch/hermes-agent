@@ -214,11 +214,15 @@ How the wiring stays equivalent:
 | `_iters_since_skill` increments | per tool iteration in the chat-completions loop | by `turn.tool_iterations` after the codex turn returns |
 | Memory trigger (`_turns_since_memory >= _memory_nudge_interval`) | computed in pre-loop, fires after response | computed in pre-loop, passed through to codex helper |
 | Skill trigger (`_iters_since_skill >= _skill_nudge_interval`) | computed after the loop | computed after the codex turn |
+| `agent.background_review.enabled` master gate | checked before spawning the fork | checked identically before spawning the fork |
 | `_spawn_background_review(messages_snapshot=..., review_memory=..., review_skills=...)` | called when either trigger fires | called identically when either trigger fires |
 
 One detail: the review fork itself needs to call Hermes' agent-loop tools (`memory`, `skill_manage`), which require Hermes' own dispatch. So when the parent agent is on `codex_app_server`, the review fork is **downgraded to `codex_responses`** — same OAuth credentials, same `openai-codex` provider, but talks to OpenAI's Responses API directly so Hermes owns the loop and the agent-loop tools work. This is invisible to the user.
 
-Net effect: enable the codex runtime and your memory + skill nudges keep firing exactly as they would otherwise.
+Net effect: enable the codex runtime and your memory + skill nudges keep firing
+exactly as they would otherwise. To disable the automatic fork on both runtimes,
+set `agent.background_review.enabled: false`; the individual interval settings
+keep their existing cadence semantics.
 
 ## How approvals work
 

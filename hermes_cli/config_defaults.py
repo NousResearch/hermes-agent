@@ -30,6 +30,12 @@ DEFAULT_CONFIG = {
     "max_live_sessions": 16,
     "agent": {
         "max_turns": 500,
+        # Post-turn self-improvement fork. The memory.nudge_interval and
+        # skills.creation_nudge_interval settings still control cadence; this
+        # is the single master gate for spawning either review path.
+        "background_review": {
+            "enabled": True,
+        },
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

@@ -305,6 +305,45 @@ class TestRunConversationCodexPath:
         # Counter should be reset after the review fires
         assert agent._iters_since_skill == 0
 
+    def test_background_review_config_gate_disables_codex_fork_but_keeps_cadence(
+        self, monkeypatch
+    ):
+        """Codex honors the shared gate without changing interval accounting."""
+        from agent.transports.codex_app_server_session import (
+            CodexAppServerSession, TurnResult,
+        )
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text=f"echo: {user_input}",
+                projected_messages=[
+                    {"role": "assistant", "content": f"echo: {user_input}"},
+                ],
+                tool_iterations=10,
+                turn_id="t1", thread_id="th1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th1"
+        )
+
+        agent = _make_codex_agent()
+        agent.background_review_enabled = False
+        agent._skill_nudge_interval = 10
+        agent._iters_since_skill = 0
+        agent.valid_tool_names = set(getattr(agent, "valid_tool_names", set()))
+        agent.valid_tool_names.add("skill_manage")
+
+        with patch.object(agent, "_spawn_background_review",
+                          return_value=None) as spawn:
+            agent.run_conversation("do tool work")
+
+        spawn.assert_not_called()
+        # The bool is only a fork gate. Existing cadence semantics remain:
+        # crossing the interval still consumes/resets the trigger counter.
+        assert agent._iters_since_skill == 0
+
     def test_background_review_signature_never_breaks(self, fake_session):
         """Even when no trigger fires, the helper must never call
         _spawn_background_review with the wrong signature. Run a turn,

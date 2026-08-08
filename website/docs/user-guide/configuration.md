@@ -980,6 +980,40 @@ When the iteration budget is fully exhausted, the CLI shows a notification to th
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
+## Background Review
+
+Hermes can start an automatic self-improvement fork after a completed turn when
+the memory or skill cadence reaches its threshold. Use the dedicated master gate
+to disable both automatic post-turn review paths without disabling foreground
+memory or skill tools:
+
+```yaml
+agent:
+  background_review:
+    enabled: true   # true (default) | false
+```
+
+The scriptable CLI equivalent is:
+
+```bash
+hermes config set agent.background_review.enabled false
+```
+
+This switch is independent of the existing cadence settings:
+
+- `memory.nudge_interval` controls the memory-review threshold in user turns.
+- `skills.creation_nudge_interval` controls the skill-review threshold in tool
+  iterations.
+- Setting either interval to `0` still disables only that trigger. Setting
+  `agent.background_review.enabled: false` suppresses the fork when either
+  trigger fires; it does not change their interval values or foreground write
+  semantics.
+
+The default is `true`, preserving behavior for existing installations. On a
+running gateway, changing the value takes effect on the next message: the agent
+cache signature includes this setting and transparently rebuilds the cached
+agent. The default and Codex app-server runtimes honor the same gate.
+
 ## Verify-on-Stop (coding verification)
 
 When enabled, Hermes refuses to accept a final answer on a turn where the agent edited code in a workspace but produced no fresh verification evidence (a passing test run, build, lint, etc.) — it injects a synthetic follow-up asking the agent to verify or explain why it can't. Doc/markdown/skill-only edits never trigger it, and the loop is bounded so it can never trap the agent.

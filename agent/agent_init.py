@@ -456,6 +456,34 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _background_review_enabled_from_config() -> bool:
+    """Return the fail-open user gate for post-turn background review.
+
+    ``load_config_readonly`` includes ``DEFAULT_CONFIG``, so an absent setting
+    preserves the historical enabled behavior. Only a literal YAML boolean is
+    accepted here; malformed/manual values fail open rather than silently
+    disabling self-improvement.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        agent_config = config.get("agent") if isinstance(config, dict) else None
+        review_config = (
+            agent_config.get("background_review")
+            if isinstance(agent_config, dict)
+            else None
+        )
+        enabled = (
+            review_config.get("enabled", True)
+            if isinstance(review_config, dict)
+            else True
+        )
+        return enabled if isinstance(enabled, bool) else True
+    except Exception:
+        return True
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -611,7 +639,11 @@ def init_agent(
     agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
     agent.skip_context_files = skip_context_files
     agent.load_soul_identity = load_soul_identity
-    # Background review (memory/skill) opt-out switch. When True, skips the
+    # User-facing master gate for the post-turn memory/skill review fork.
+    # This is baked into the agent at construction so gateway cache signatures
+    # can rebuild the instance atomically after a live config edit.
+    agent.background_review_enabled = _background_review_enabled_from_config()
+    # Internal/call-site opt-out switch. When True, skips the
     # _spawn_background_review fork at end-of-turn -- avoids ~30K tokens /
     # event of extra LLM cost on cron-style sessions where review forks
     # provide no value (no human in the loop, no skill-creation pressure).

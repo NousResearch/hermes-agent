@@ -22949,6 +22949,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "proactive_prune_min_reclaim_tokens"),
         ("compression", "min_tail_user_messages"),
         ("agent", "disabled_toolsets"),
+        ("agent", "background_review.enabled"),
         ("memory", "provider"),
         ("checkpoints", "enabled"),
         ("checkpoints", "max_snapshots"),
@@ -23022,7 +23023,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # toggle must still rebuild the cached agent.
                 out[f"{section}.{key}"] = section_val if key == "enabled" else None
             elif isinstance(section_val, dict):
-                out[f"{section}.{key}"] = section_val.get(key)
+                value: Any = section_val
+                for key_part in key.split("."):
+                    if not isinstance(value, dict):
+                        value = None
+                        break
+                    value = value.get(key_part)
+                out[f"{section}.{key}"] = value
             else:
                 out[f"{section}.{key}"] = None
         try:

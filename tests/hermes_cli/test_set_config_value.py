@@ -104,6 +104,21 @@ class TestConfigYamlRouting:
         config = _read_config(_isolated_hermes_home)
         assert "python:3.12" in config
 
+    def test_background_review_gate_is_known_boolean_config(
+        self, _isolated_hermes_home, capsys
+    ):
+        """The documented gate is accepted by the CLI schema without --force."""
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["agent"]["background_review"]["enabled"] is True
+
+        set_config_value("agent.background_review.enabled", "false")
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["agent"]["background_review"]["enabled"] is False
+        assert "not a recognized config key" not in capsys.readouterr().out
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)

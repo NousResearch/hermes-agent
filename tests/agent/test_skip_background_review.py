@@ -85,6 +85,32 @@ def test_default_skip_background_review_is_false() -> None:
     assert agent.skip_background_review is False
 
 
+def test_background_review_config_defaults_enabled(monkeypatch) -> None:
+    """The user-facing config gate preserves the historical enabled default."""
+    from hermes_cli import config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "load_config_readonly",
+        lambda: {"agent": {"background_review": {"enabled": True}}},
+    )
+    agent = _make_agent()
+    assert agent.background_review_enabled is True
+
+
+def test_background_review_config_can_disable_constructor_gate(monkeypatch) -> None:
+    """agent.background_review.enabled=false reaches every AIAgent instance."""
+    from hermes_cli import config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "load_config_readonly",
+        lambda: {"agent": {"background_review": {"enabled": False}}},
+    )
+    agent = _make_agent()
+    assert agent.background_review_enabled is False
+
+
 def test_skip_background_review_flag_persists() -> None:
     """Passing skip_background_review=True records the flag on the instance."""
     agent = _make_agent(skip_background_review=True)
@@ -109,6 +135,17 @@ def test_finalize_turn_fires_review_when_flag_unset() -> None:
     _stub_agent_for_finalize(agent)
     _run_finalize(agent)
     agent._spawn_background_review.assert_called_once()
+
+
+def test_finalize_turn_skips_review_when_config_gate_disabled() -> None:
+    """The normal runtime must honor the user-facing background-review gate."""
+    agent = _make_agent(skip_background_review=False)
+    agent.background_review_enabled = False
+    _stub_agent_for_finalize(agent)
+    _run_finalize(agent)
+    agent._spawn_background_review.assert_not_called()
+    # The master bool gates only the fork; interval accounting is unchanged.
+    assert agent._iters_since_skill == 0
 
 
 def test_cron_construction_sets_skip_background_review() -> None:

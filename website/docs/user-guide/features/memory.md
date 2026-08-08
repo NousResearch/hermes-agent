@@ -277,6 +277,13 @@ before they affect future sessions. By default it surfaces a short
 `💾 Memory updated` line in chat so you know it happened. Control how chatty
 that is:
 
+To disable the automatic post-turn review itself (memory and skill paths) while
+leaving foreground memory/skill tools available, set
+`agent.background_review.enabled: false`; see
+[Background Review](/user-guide/configuration#background-review). The existing
+`memory.nudge_interval` and `skills.creation_nudge_interval` values continue to
+control the individual trigger cadence.
+
 ```yaml
 display:
   memory_notifications: on    # off | on (default) | verbose

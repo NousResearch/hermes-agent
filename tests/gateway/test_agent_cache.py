@@ -90,6 +90,27 @@ class TestAgentConfigSignature:
         assert sig1 != sig2
 
 
+    def test_background_review_toggle_change_busts_cache(self):
+        """A live gateway rebuilds its baked-at-construction review gate."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        enabled = GatewayRunner._extract_cache_busting_config(
+            {"agent": {"background_review": {"enabled": True}}}
+        )
+        disabled = GatewayRunner._extract_cache_busting_config(
+            {"agent": {"background_review": {"enabled": False}}}
+        )
+
+        sig_enabled = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=enabled,
+        )
+        sig_disabled = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=disabled,
+        )
+        assert sig_enabled != sig_disabled
+
+
     def test_cache_keys_key_order_does_not_matter(self):
         """Signature must be stable regardless of dict key insertion order."""
         from gateway.run import GatewayRunner

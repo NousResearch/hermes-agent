@@ -821,6 +821,13 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # Master gate for the automatic post-turn memory/skill review fork.
+  # Defaults to true for backward compatibility. The memory.nudge_interval and
+  # skills.creation_nudge_interval settings above still control each trigger's
+  # cadence; set enabled false to suppress both forks with one switch.
+  background_review:
+    enabled: true
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

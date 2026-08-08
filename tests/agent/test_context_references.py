@@ -202,7 +202,14 @@ async def test_blocks_canonical_read_denylist_credential_stores(tmp_path: Path, 
     """
     from agent.context_references import preprocess_context_references_async
 
+    # The sensitive-path guard derives the home dir from os.path.expanduser,
+    # which reads USERPROFILE (then HOMEDRIVE+HOMEPATH) on Windows and HOME on
+    # POSIX. Pin all of them to tmp_path so the ~/.ssh block is actually tested
+    # on Windows instead of falling back to the real user profile.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
     hermes_home = tmp_path / ".hermes"

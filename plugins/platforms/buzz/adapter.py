@@ -1033,7 +1033,7 @@ class BuzzAdapter(BasePlatformAdapter):
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
         # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
+        if not is_dm and self.require_mention and not self._is_addressed(event, content):
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
@@ -1136,8 +1136,47 @@ class BuzzAdapter(BasePlatformAdapter):
         self._channel_names.setdefault(channel_id, "DM")
         logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
 
+    def _is_addressed(self, event: dict, content: str) -> bool:
+        """True when this agent should treat a channel message as directed at it.
+
+        The text gate stays authoritative for dispatch: Buzz resolves ``@Name``
+        into the mentioned member's pubkey, so a genuine mention is visible in
+        the content. What the ``p`` tags add is the ability to reject a *false*
+        text match — when a message addresses somebody else and merely happens
+        to contain this agent's name.
+
+        Without that, an agent named "Hermes" answers any message containing
+        the word "hermes", including one aimed at a different bot and prose
+        that only discusses Hermes. With several agents in one channel the
+        wrong one replies.
+
+        A message whose ``p`` tags exist but exclude us was addressed to
+        somebody else, so it is dropped. Everything else falls through to the
+        existing text check, which keeps clients or relays that omit mention
+        tags working exactly as before.
+        """
+        if not self._is_mentioned(content):
+            return False
+        if not self._self_pubkey:
+            return True
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return True
+        p_tags = [
+            str(tag[1]).lower()
+            for tag in tags
+            if isinstance(tag, (list, tuple)) and len(tag) > 1 and tag[0] == "p"
+        ]
+        if not p_tags:
+            return True
+        return self._self_pubkey in p_tags
+
     def _is_mentioned(self, content: str) -> bool:
-        """True when the message addresses this agent (npub, hex, or name)."""
+        """True when the message text names this agent (npub, hex, or name).
+
+        Text-only heuristic — see ``_is_addressed`` for the gate that should
+        drive dispatch decisions.
+        """
         lowered = content.lower()
         if self._self_pubkey and self._self_pubkey in lowered:
             return True

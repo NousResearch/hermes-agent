@@ -243,6 +243,68 @@ class TestMentionGating:
         await self._poll_with(adapter, _event("e1", content="hey @Chip can you help?", created_at=10))
         assert len(adapter._dispatched) == 1
 
+    @pytest.mark.asyncio
+    async def test_mention_of_another_agent_is_not_hijacked(self, adapter):
+        """A message addressed to a different agent must not dispatch here.
+
+        Buzz resolves ``@Name`` to that member's pubkey and p-tags it. Gating on
+        the text alone means an agent named "Chip" answers anything containing
+        the word "chip" — including a question aimed at another bot. With
+        several agents in one channel the wrong one replies.
+        """
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "e1",
+                CHANNEL,
+                content="@OtherBot does Chip support this?",
+                p=OTHER_PUBKEY,
+                created_at=10,
+            ),
+        )
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_p_tagged_mention_dispatches(self, adapter):
+        await self._poll_with(
+            adapter,
+            _tagged_event("e1", CHANNEL, content="@Chip hello", p=SELF_PUBKEY, created_at=10),
+        )
+        assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_multi_mention_including_self_dispatches(self, adapter):
+        """Addressed alongside another agent still counts as addressed."""
+        event = _tagged_event(
+            "e1", CHANNEL, content="@OtherBot @Chip compare notes", p=OTHER_PUBKEY, created_at=10
+        )
+        event["tags"].append(["p", SELF_PUBKEY])
+        await self._poll_with(adapter, event)
+        assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_name_in_prose_without_p_tags_still_dispatches(self, adapter):
+        """Fallback for relays/clients that do not emit mention p-tags."""
+        await self._poll_with(adapter, _event("e1", content="@Chip status?", created_at=10))
+        assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_p_tags_never_widen_the_gate(self, adapter):
+        """A p-tag alone does not dispatch — the text gate still has to pass.
+
+        Guards the obvious over-correction: treating "p-tagged to me" as
+        sufficient would make every thread reply that tags us a dispatch.
+        ``_channel_meta`` marks this as a real channel so the DM-latch path
+        (which legitimately dispatches un-mentioned p-tagged messages) cannot
+        mask the gate being tested here.
+        """
+        adapter._channel_meta[CHANNEL] = {"name": "announcements", "description": ""}
+        await self._poll_with(
+            adapter,
+            _tagged_event("e1", CHANNEL, content="thanks everyone", p=SELF_PUBKEY, created_at=10),
+        )
+        assert adapter._dispatched == []
+
 
     @pytest.mark.asyncio
     async def test_allowlist_blocks_unauthorized(self, adapter):

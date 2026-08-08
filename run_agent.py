@@ -3290,6 +3290,25 @@ class AIAgent:
                 self._pending_steer = cleaned
         return True
 
+    def clear_pending_steer(self) -> bool:
+        """Drop any queued /steer text before it is injected.
+
+        Returns True if there was a pending steer to drop, False otherwise.
+        Thread-safe like steer(): the gateway/TUI calls this when the user
+        deletes the pending-steer row from the queue strip, so the text is
+        not injected on the next tool result behind their back.
+        """
+        _lock = getattr(self, "_pending_steer_lock", None)
+        if _lock is None:
+            # Test stubs that built AIAgent via object.__new__ skip __init__.
+            had = getattr(self, "_pending_steer", None) is not None
+            self._pending_steer = None
+            return had
+        with _lock:
+            had = self._pending_steer is not None
+            self._pending_steer = None
+            return had
+
     def redirect(self, text: str) -> bool:
         """Redirect the active turn without converting it into a new task.
 

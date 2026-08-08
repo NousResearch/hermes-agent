@@ -8768,7 +8768,7 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
 
 def test_session_steer_calls_agent_steer_when_agent_supports_it():
     """The TUI RPC method must call agent.steer(text) and return a
-    queued status without touching interrupt state.
+    steered status without touching interrupt state.
     """
     calls = {}
 
@@ -8793,7 +8793,7 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
         server._sessions.pop("sid", None)
 
     assert "result" in resp, resp
-    assert resp["result"]["status"] == "queued"
+    assert resp["result"]["status"] == "steered"
     assert resp["result"]["text"] == "also check auth.log"
     assert calls["steer_text"] == "also check auth.log"
     assert "interrupt_called" not in calls  # must NOT interrupt
@@ -8833,6 +8833,83 @@ def test_session_steer_errors_when_agent_has_no_steer_method():
 
     assert "error" in resp, resp
     assert resp["error"]["code"] == 4010
+
+
+def test_session_steer_rejected_when_agent_refuses():
+    """When the agent refuses the steer, the RPC must report 'rejected' so the
+    client falls back to the queue instead of showing a phantom pending steer.
+    """
+    server._sessions["sid"] = _session(agent=types.SimpleNamespace(steer=lambda t: False))
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {"session_id": "sid", "text": "nope"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "result" in resp, resp
+    assert resp["result"]["status"] == "rejected"
+    assert resp["result"]["text"] == "nope"
+
+
+def test_session_steer_clear_drops_pending_steer():
+    """session.steer_clear must drop the agent's stashed pending steer and
+    report whether there was anything to drop."""
+    lock = threading.Lock()
+    agent = types.SimpleNamespace(_pending_steer="inject me", _pending_steer_lock=lock)
+    server._sessions["sid"] = _session(agent=agent)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer_clear",
+                "params": {"session_id": "sid"},
+            }
+        )
+        assert resp["result"]["status"] == "cleared"
+        assert resp["result"]["cleared"] is True
+        assert agent._pending_steer is None
+
+        resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "session.steer_clear",
+                "params": {"session_id": "sid"},
+            }
+        )
+        assert resp["result"]["status"] == "noop"
+        assert resp["result"]["cleared"] is False
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_pending_snapshots_steer_and_queue():
+    """session.pending must expose the pending steer plus every queued prompt
+    so a reconnect can rebuild the TUI pending strip."""
+    agent = types.SimpleNamespace(_pending_steer="wait, use SQLite")
+    server._sessions["sid"] = _session(
+        agent=agent,
+        queued_prompt={"text": "first queued", "transport": object()},
+        queued_prompts=[{"text": "second queued", "transport": object()}],
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.pending",
+                "params": {"session_id": "sid"},
+            }
+        )
+        assert resp["result"] == {
+            "steer": "wait, use SQLite",
+            "queue": ["first queued", "second queued"],
+        }
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_session_redirect_calls_capable_core_agent(monkeypatch):

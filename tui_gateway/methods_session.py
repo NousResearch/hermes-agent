@@ -3234,7 +3234,71 @@ def _(rid, params: dict) -> dict:
         with session["history_lock"]:
             _record_inflight_correction(session, text)
             session["last_active"] = time.time()
-    return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
+    return _ok(rid, {"status": "steered" if accepted else "rejected", "text": text})
+
+
+@method("session.steer_clear")
+def _(rid, params: dict) -> dict:
+    """Drop any pending /steer text that has not been injected yet.
+
+    The TUI shows a pending steer as the top row of its queue strip; when the
+    user deletes that row (Ctrl+X) it calls this so the agent's stashed slot is
+    cleared too — otherwise the text would still be injected on the next tool
+    result. ``cleared`` is True when there was a pending steer to drop.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    if agent is None:
+        return _err(rid, 4010, "no active agent")
+    clearer = getattr(agent, "clear_pending_steer", None)
+    if callable(clearer):
+        try:
+            cleared = bool(clearer())
+        except Exception as exc:
+            return _err(rid, 5000, f"steer clear failed: {exc}")
+        return _ok(rid, {"status": "cleared" if cleared else "noop", "cleared": cleared})
+    # Older runtimes / test stubs without the method: clear the internal slot
+    # directly under its lock when present.
+    _steer_lock = getattr(agent, "_pending_steer_lock", None)
+    try:
+        if _steer_lock is not None:
+            with _steer_lock:
+                had = getattr(agent, "_pending_steer", None) is not None
+                agent._pending_steer = None
+        else:
+            had = getattr(agent, "_pending_steer", None) is not None
+            setattr(agent, "_pending_steer", None)
+    except Exception as exc:
+        return _err(rid, 5000, f"steer clear failed: {exc}")
+    return _ok(rid, {"status": "cleared" if had else "noop", "cleared": bool(had)})
+
+
+@method("session.pending")
+def _(rid, params: dict) -> dict:
+    """Snapshot of what will run on the next turn: the pending steer (if any)
+    plus the queued prompts. The TUI renders this as the pending strip, and a
+    reconnect can rebuild it from here so a pending steer is never invisible
+    after a resume."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    steer: str | None = None
+    if agent is not None:
+        pending = getattr(agent, "_pending_steer", None)
+        if isinstance(pending, str) and pending:
+            steer = pending
+    queue: list[str] = []
+    queued = session.get("queued_prompt")
+    if queued and isinstance(queued.get("text"), str):
+        queue.append(queued["text"])
+    for extra in session.get("queued_prompts", []) or []:
+        text = extra.get("text") if isinstance(extra, dict) else None
+        if isinstance(text, str):
+            queue.append(text)
+    return _ok(rid, {"steer": steer, "queue": queue})
 
 
 @method("session.redirect")

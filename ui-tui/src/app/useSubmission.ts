@@ -20,6 +20,15 @@ const DOUBLE_ENTER_MS = 450
 const spliceMatches = (text: string, matches: RegExpMatchArray[], results: string[]) =>
   matches.reduceRight((acc, m, i) => acc.slice(0, m.index!) + results[i] + acc.slice(m.index! + m[0].length), text)
 
+/**
+ * Whether a `session.steer` response means the steer was accepted. Both
+ * gateway steer paths (session.steer and the prompt.submit busy path) report
+ * 'steered' on success; 'queued' is the legacy value and means the same
+ * thing. Only 'rejected' (or a missing/errored response) is a failure.
+ */
+export const isSteerAccepted = (r: Pick<SessionSteerResponse, 'status'> | null | undefined): boolean =>
+  !!r && (r.status === 'steered' || r.status === 'queued')
+
 export const expandPasteTokens = (tokens: ComposerToken[]) =>
   expandTokens(tokens.filter(token => token.kind === 'paste'))
 
@@ -206,9 +215,19 @@ export function useSubmission(opts: UseSubmissionOptions) {
           .then(raw => {
             const r = asRpcResult<SessionSteerResponse>(raw)
 
-            if (r?.status !== 'queued') {
+            // Contract: both gateway steer paths (session.steer and the
+            // prompt.submit busy path) report 'steered' on success; 'queued'
+            // is the legacy value and means the same thing. Only 'rejected'
+            // (or a missing/errored response) falls back to the queue.
+            if (!isSteerAccepted(r)) {
               fallback('steer rejected — message queued for next turn')
+
+              return
             }
+
+            // Accepted: park the text in the pending-steer slot so the queue
+            // strip shows it first (tagged, editable, deletable).
+            composerActions.setSteer(item.text)
           })
           .catch(() => fallback('steer failed — message queued for next turn'))
 
@@ -278,7 +297,34 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       const editIdx = composerRefs.queueEditRef.current
+      const steerEdit = composerRefs.steerEditRef.current
       composerActions.clearIn()
+
+      if (steerEdit !== null) {
+        // Editing the pending steer: swap the text in place and re-inject via
+        // session.steer so the agent slot carries the corrected wording. The
+        // steer row stays visible (tagged) until the next tool drain.
+        composerActions.replaceSteer(full)
+        composerActions.setSteerEdit(null)
+
+        if (!live.sid) {
+          return
+        }
+
+        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text: full })
+          .then(raw => {
+            const r = asRpcResult<SessionSteerResponse>(raw)
+
+            if (!r || r.status === 'rejected') {
+              // Rejected mid-edit: keep the row so the user sees the state
+              // instead of silently dropping the replacement.
+              sys('steer replace rejected — pending steer kept')
+            }
+          })
+          .catch(() => sys('steer replace failed — pending steer kept'))
+
+        return
+      }
 
       if (editIdx !== null) {
         const picked = composerActions.takeQueue(editIdx, full)

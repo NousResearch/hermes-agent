@@ -84,6 +84,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+from agent.redact import redact_sensitive_text
+
+#: Depth bound for payload redaction. Hook extras are shallow dicts; this only
+#: exists so a pathological structure cannot cause unbounded recursion.
+_REDACT_MAX_DEPTH = 12
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 10
@@ -428,7 +434,49 @@ def _serialize_payload(
         .isoformat()
         .replace("+00:00", "Z"),
     }
-    return json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+    return json.dumps(
+        _redact_payload(payload), ensure_ascii=False, default=str
+    ).encode("utf-8")
+
+
+def _redact_payload(value: Any) -> Any:
+    """Mask credentials in every string reachable from an outbound payload.
+
+    ``tool_input`` and the per-event extras carry raw tool arguments and tool
+    output — ``export OPENAI_API_KEY=...``, ``curl -H "Authorization: ..."``,
+    the contents of a written ``.env``. The terminal path masks exactly this
+    material before the model or the session DB sees it; without the same pass
+    here an outbound webhook ships it verbatim to a receiver outside the trust
+    boundary, in cleartext when the configured URL is plain ``http://``.
+
+    Redaction walks the structure and rewrites the *leaf strings* rather than
+    the serialised body. Masking the finished JSON text corrupts the envelope:
+    a mask emitted inside a quoted value can introduce characters that break
+    the string, and a receiver that cannot parse the delivery has merely traded
+    a leak for an outage. Walking first means ``json.dumps`` re-escapes every
+    value afterwards, so the envelope is always well formed.
+
+    Recursion is depth-bounded; anything deeper is serialised by ``default=str``
+    anyway. Redaction never raises — a failure to mask one value must not drop
+    an entire delivery, and the surrounding values are still masked.
+    """
+    return _redact_value(value, 0)
+
+
+def _redact_value(value: Any, depth: int) -> Any:
+    if depth > _REDACT_MAX_DEPTH:
+        return value
+    if isinstance(value, str):
+        try:
+            return redact_sensitive_text(value)
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("payload redaction failed for one value", exc_info=True)
+            return value
+    if isinstance(value, dict):
+        return {k: _redact_value(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_value(v, depth + 1) for v in value]
+    return value
 
 
 def _build_delivery(

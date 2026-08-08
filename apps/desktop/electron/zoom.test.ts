@@ -73,7 +73,7 @@ test('extreme percentages clamp to the level bounds', () => {
   assert.equal(percentToZoomLevel(1_000_000), 9)
 })
 
-test('installZoomReassertOnWindowEvents wires show, restore, resize, and cross-display moves on macOS and Windows', () => {
+test('installZoomReassertOnWindowEvents reasserts zoom after focus, show, restore, resize, and cross-display moves on macOS and Windows', () => {
   const handlers = new Map()
 
   const win = {
@@ -95,9 +95,10 @@ test('installZoomReassertOnWindowEvents wires show, restore, resize, and cross-d
   assert.deepEqual([...handlers.keys()], zoomReassertWindowEvents('win32'))
   handlers.get('show')()
   handlers.get('restore')()
+  handlers.get('focus')()
   handlers.get('resized')()
   handlers.get('moved')()
-  assert.equal(calls, 4)
+  assert.equal(calls, 5)
 })
 
 test('installZoomReassertOnWindowEvents debounces Linux resize and move events at the trailing edge', () => {
@@ -125,18 +126,20 @@ test('installZoomReassertOnWindowEvents debounces Linux resize and move events a
     )
 
     assert.deepEqual([...handlers.keys()], zoomReassertWindowEvents('linux'))
+    handlers.get('focus')()
+    assert.equal(calls, 1)
     handlers.get('resize')()
     vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
     handlers.get('move')()
     vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
-    assert.equal(calls, 0)
-    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
     assert.equal(calls, 1)
+    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
+    assert.equal(calls, 2)
 
     handlers.get('resize')()
     destroyed = true
     vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS)
-    assert.equal(calls, 1)
+    assert.equal(calls, 2)
   } finally {
     vi.useRealTimers()
   }

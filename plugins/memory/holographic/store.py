@@ -486,7 +486,7 @@ class MemoryStore:
         """
         # Exact name match
         row = self._conn.execute(
-            "SELECT entity_id FROM entities WHERE name LIKE ?", (name,)
+            "SELECT entity_id FROM entities WHERE name = ?", (name,)
         ).fetchone()
         if row is not None:
             return int(row["entity_id"])

@@ -3762,7 +3762,25 @@ class AIAgent:
                 heartbeat_current_worker_from_env()
                 # Fold any new operator notes into the running turn (OUT-OF-BAND
                 # steer) so the user can talk to a live task without a restart.
-                inject_new_comments_from_env(self)
+                #
+                # Gated on dispatcher ownership (#79657/#78961's fix for the
+                # same env-trust gap in kanban_tools' own toolset/task-id
+                # gates): this method runs on every AIAgent, including a cron
+                # job's own agent fired in-process from a kanban worker
+                # (cronjob(action="run") -> run_job(), same process, worker's
+                # HERMES_KANBAN_TASK still in os.environ). Unlike
+                # heartbeat_current_worker_from_env() -- which only extends
+                # the claim TTL for whichever task id env identifies, safe
+                # regardless of caller -- this steers ``self``, i.e. the
+                # CALLER's own live conversation. An unrelated cron agent
+                # would otherwise pull the worker's operator comments and
+                # inject them into its own turn, and (since
+                # _comment_watermark is keyed by task id, not by agent)
+                # silently consume the notification the real worker was
+                # supposed to receive.
+                from agent.delegation_context import is_dispatcher_owned_worker_context
+                if is_dispatcher_owned_worker_context():
+                    inject_new_comments_from_env(self)
             except Exception:
                 # Never let the bridge break the agent loop.  The function
                 # already swallows exceptions internally; this outer guard

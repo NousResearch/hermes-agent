@@ -19202,6 +19202,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if watch:
             watch.pop(quick_key, None)
 
+    async def _poll_heartbeat_watch_entry(self, quick_key: str, source: Any, session_id: str) -> None:
+        """Check and, if due, fire one heartbeat watch entry.
+
+        Runs the actual check (not just the surrounding scope decision) so
+        tests can exercise it directly under either profile-scoping branch.
+        """
+        # Busy sessions coalesce their tick to the next idle poll.
+        if quick_key in self._running_agents:
+            return
+        from hermes_cli.heartbeat import HeartbeatManager
+
+        mgr = HeartbeatManager(session_id=session_id)
+        if not mgr.has_heartbeat():
+            watch = getattr(self, "_heartbeat_watch", None)
+            if watch is not None:
+                watch.pop(quick_key, None)
+            return
+        prompt = mgr.due_prompt()
+        if not prompt:
+            return
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return
+        hb_event = MessageEvent(
+            text=prompt,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=None,
+            channel_prompt=None,
+        )
+        self._enqueue_fifo(quick_key, hb_event, adapter)
+
     def _start_heartbeat_poller(self) -> None:
         """Start the single gateway-wide heartbeat poll task (idempotent)."""
         existing = getattr(self, "_heartbeat_poll_task", None)
@@ -19218,29 +19250,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
                 for quick_key, (source, session_id) in list(watch.items()):
                     try:
-                        # Busy sessions coalesce their tick to the next idle poll.
-                        if quick_key in self._running_agents:
-                            continue
-                        from hermes_cli.heartbeat import HeartbeatManager
-
-                        mgr = HeartbeatManager(session_id=session_id)
-                        if not mgr.has_heartbeat():
-                            watch.pop(quick_key, None)
-                            continue
-                        prompt = mgr.due_prompt()
-                        if not prompt:
-                            continue
-                        adapter = self._adapter_for_source(source)
-                        if adapter is None:
-                            continue
-                        hb_event = MessageEvent(
-                            text=prompt,
-                            message_type=MessageType.TEXT,
-                            source=source,
-                            message_id=None,
-                            channel_prompt=None,
-                        )
-                        self._enqueue_fifo(quick_key, hb_event, adapter)
+                        # This gateway-wide task is created once, by whichever
+                        # profile's request registers the first heartbeat —
+                        # asyncio freezes contextvars (HERMES_HOME override,
+                        # secret scope) at task-creation time, so without
+                        # re-entering _profile_runtime_scope per source here,
+                        # every OTHER profile's heartbeat is polled under the
+                        # first profile's HERMES_HOME: HeartbeatManager opens
+                        # the wrong SessionDB, has_heartbeat() reads back
+                        # False, and the watch entry is popped as if the user
+                        # had cleared it.
+                        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                            profile_home = self._resolve_profile_home_for_source(source)
+                            with _profile_runtime_scope(profile_home):
+                                await self._poll_heartbeat_watch_entry(quick_key, source, session_id)
+                        else:
+                            await self._poll_heartbeat_watch_entry(quick_key, source, session_id)
                     except Exception as exc:
                         logger.debug("heartbeat poll for %s failed: %s", quick_key, exc)
 

@@ -5,7 +5,14 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    do_check,
+    do_install,
+    do_list,
+    do_update,
+    handle_skills_slash,
+    skills_command,
+)
 
 
 class _DummyLockFile:
@@ -101,6 +108,28 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_skills_command_surfaces_source_policy_error(monkeypatch):
+    from types import SimpleNamespace
+    import hermes_cli.skills_hub as cli_hub
+    from tools.skills_hub import SkillsHubSourcePolicy, SourceRouter
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    router = SourceRouter(
+        [], SkillsHubSourcePolicy(allowed_sources=frozenset({"official"}))
+    )
+    monkeypatch.setattr("tools.skills_hub.create_source_router", lambda auth: router)
+    monkeypatch.setattr(cli_hub, "_console", console)
+
+    result = skills_command(SimpleNamespace(
+        skills_action="search", query="demo", source="github", limit=10, json=False
+    ))
+
+    assert result == 2
+    assert "github" in sink.getvalue()
+    assert "disabled" in sink.getvalue()
 
 
 
@@ -312,4 +341,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

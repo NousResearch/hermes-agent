@@ -590,6 +590,63 @@ class _FakeBundle:
         self.metadata = {}
 
 
+class TestSkillsHubSourcePolicyEndpoints:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    @staticmethod
+    def _router(*, sources, github_taps=None):
+        from tools.skills_hub import SkillsHubSourcePolicy, SourceRouter
+
+        return SourceRouter(
+            [],
+            SkillsHubSourcePolicy(
+                allowed_sources=frozenset(sources),
+                allowed_github_taps=(
+                    frozenset(github_taps) if github_taps is not None else None
+                ),
+            ),
+        )
+
+    def test_search_returns_403_for_disabled_source(self, monkeypatch):
+        router = self._router(sources={"official"})
+        monkeypatch.setattr("tools.skills_hub.create_source_router", lambda: router)
+
+        response = self.client.get("/api/skills/hub/search?q=demo&source=github")
+
+        assert response.status_code == 403
+        assert "github" in response.json()["detail"]
+
+    def test_preview_returns_403_for_disallowed_github_tap(self, monkeypatch):
+        router = self._router(
+            sources={"github"}, github_taps={"openai/skills"}
+        )
+        monkeypatch.setattr("tools.skills_hub.create_source_router", lambda: router)
+
+        response = self.client.get(
+            "/api/skills/hub/preview",
+            params={"identifier": "anthropics/skills/skills/pdf"},
+        )
+
+        assert response.status_code == 403
+        assert "anthropics/skills" in response.json()["detail"]
+
+    def test_install_is_rejected_before_spawning_for_disabled_source(
+        self, monkeypatch
+    ):
+        router = self._router(sources={"official"})
+        monkeypatch.setattr("tools.skills_hub.create_source_router", lambda: router)
+
+        response = self.client.post(
+            "/api/skills/hub/install",
+            json={"identifier": "openai/skills/skills/example"},
+        )
+
+        assert response.status_code == 403
+        assert "github" in response.json()["detail"]
+
+
 class TestSkillsHubSourcesEndpoint:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):

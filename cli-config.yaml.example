@@ -812,6 +812,16 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Optional profile-scoped Skills Hub allowlist. Leave source_policy empty
+  # (the default) to preserve every built-in source. When github_taps is
+  # present, each exact owner/repo must first be added with `hermes skills tap
+  # add owner/repo`; the restriction applies to search and direct installs.
+  # hub:
+  #   source_policy:
+  #     mode: allowlist
+  #     sources: [github]
+  #     github_taps: [myorg/approved-skills]
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

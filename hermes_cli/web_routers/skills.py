@@ -56,10 +56,27 @@ async def install_skill_hub(body: SkillInstallRequest, profile: Optional[str] = 
     identifier = (body.identifier or "").strip()
     if not identifier:
         raise HTTPException(status_code=400, detail="identifier is required")
+    effective_profile = body.profile or profile
+    try:
+        from tools.skills_hub import create_source_router
+
+        with _config_profile_scope(effective_profile):
+            sources = create_source_router()
+            require_identifier = getattr(sources, "require_identifier", None)
+            if callable(require_identifier):
+                require_identifier(identifier)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        from tools.skills_hub import SkillsHubSourceDisabledError
+
+        if isinstance(exc, SkillsHubSourceDisabledError):
+            raise HTTPException(status_code=403, detail=str(exc))
+        raise
     name = _hub_action_name("install", identifier)
     try:
         proc = _spawn_hermes_action(
-            _profile_cli_args(body.profile or profile)
+            _profile_cli_args(effective_profile)
             + ["skills", "install", identifier, "--yes"],
             name,
         )
@@ -227,6 +244,10 @@ async def search_skills_hub(
     except HTTPException:
         raise
     except Exception as exc:
+        from tools.skills_hub import SkillsHubSourceDisabledError
+
+        if isinstance(exc, SkillsHubSourceDisabledError):
+            raise HTTPException(status_code=403, detail=str(exc))
         _log.exception("skills hub search failed")
         raise HTTPException(status_code=502, detail=f"Hub search failed: {exc}")
 
@@ -289,6 +310,10 @@ async def preview_skill_hub(identifier: str = "", profile: Optional[str] = None)
     try:
         result = await asyncio.to_thread(_run)
     except Exception as exc:
+        from tools.skills_hub import SkillsHubSourceDisabledError
+
+        if isinstance(exc, SkillsHubSourceDisabledError):
+            raise HTTPException(status_code=403, detail=str(exc))
         _log.exception("skills hub preview failed")
         raise HTTPException(status_code=502, detail=f"Hub preview failed: {exc}")
     if result is None:
@@ -384,6 +409,10 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
     try:
         result = await asyncio.to_thread(_run)
     except Exception as exc:
+        from tools.skills_hub import SkillsHubSourceDisabledError
+
+        if isinstance(exc, SkillsHubSourceDisabledError):
+            raise HTTPException(status_code=403, detail=str(exc))
         _log.exception("skills hub scan failed")
         raise HTTPException(status_code=502, detail=f"Hub scan failed: {exc}")
     if result is None:

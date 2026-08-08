@@ -1833,6 +1833,12 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Optional profile-scoped policy for Skills Hub discovery and installs.
+        # Empty preserves the complete built-in source set. See the Skills
+        # System guide for the strict allowlist shape.
+        "hub": {
+            "source_policy": {},
+        },
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled

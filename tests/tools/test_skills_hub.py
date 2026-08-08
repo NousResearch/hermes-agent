@@ -11,6 +11,7 @@ import pytest
 from tools.skills_hub import (
     GitHubAuth,
     GitHubSource,
+    HermesIndexSource,
     LobeHubSource,
     SkillsShSource,
     UrlSource,
@@ -21,6 +22,9 @@ from tools.skills_hub import (
     SkillMeta,
     HubLockFile,
     TapsManager,
+    SkillsHubSourcePolicy,
+    SkillsHubSourcePolicyError,
+    SourceRouter,
     bundle_content_hash,
     check_for_skill_updates,
     create_source_router,
@@ -28,6 +32,7 @@ from tools.skills_hub import (
     unified_search,
     append_audit_log,
     quarantine_bundle,
+    resolve_source_policy,
 )
 
 
@@ -468,6 +473,154 @@ class TestCreateSourceRouter:
         url_idx = next(i for i, src in enumerate(sources) if isinstance(src, UrlSource))
         gh_idx = next(i for i, src in enumerate(sources) if isinstance(src, GitHubSource))
         assert url_idx < gh_idx
+
+    def test_empty_policy_preserves_every_existing_source(self):
+        sources = create_source_router(
+            auth=MagicMock(spec=GitHubAuth),
+            policy=SkillsHubSourcePolicy(),
+        )
+        assert [source.source_id() for source in sources] == [
+            "official",
+            "hermes-index",
+            "skills-sh",
+            "well-known",
+            "url",
+            "github",
+            "clawhub",
+            "lobehub",
+            "browse-sh",
+        ]
+
+    def test_allowlist_builds_only_enabled_sources_and_github_taps(self):
+        policy = resolve_source_policy(
+            {
+                "skills": {
+                    "hub": {
+                        "source_policy": {
+                            "mode": "allowlist",
+                            "sources": ["official", "github"],
+                            "github_taps": ["openai/skills"],
+                        }
+                    }
+                }
+            },
+            configured_github_taps=GitHubSource.DEFAULT_TAPS,
+        )
+
+        sources = create_source_router(
+            auth=MagicMock(spec=GitHubAuth), policy=policy
+        )
+
+        assert [source.source_id() for source in sources] == ["official", "github"]
+        github = next(source for source in sources if source.source_id() == "github")
+        assert {tap["repo"].lower() for tap in github.taps} == {"openai/skills"}
+
+    def test_explicitly_disabled_source_fails_before_search(self):
+        source = MagicMock(spec=SkillSource)
+        source.source_id.return_value = "official"
+        router = SourceRouter(
+            [source],
+            SkillsHubSourcePolicy(allowed_sources=frozenset({"official"})),
+        )
+
+        with pytest.raises(SkillsHubSourcePolicyError, match="github.*disabled"):
+            parallel_search_sources(router, query="demo", source_filter="github")
+
+        source.search.assert_not_called()
+
+
+class TestSkillsHubSourcePolicy:
+
+    def test_unknown_source_fails_closed(self):
+        with pytest.raises(SkillsHubSourcePolicyError, match="Unknown Skills Hub source"):
+            resolve_source_policy({
+                "skills": {"hub": {"source_policy": {
+                    "mode": "allowlist", "sources": ["typo-source"],
+                }}}
+            })
+
+    def test_unconfigured_allowed_tap_fails_closed(self):
+        with pytest.raises(SkillsHubSourcePolicyError, match="not configured"):
+            resolve_source_policy(
+                {"skills": {"hub": {"source_policy": {
+                    "mode": "allowlist",
+                    "sources": ["github"],
+                    "github_taps": ["example/private-skills"],
+                }}}},
+                configured_github_taps=GitHubSource.DEFAULT_TAPS,
+            )
+
+    def test_empty_github_tap_allowlist_is_rejected(self):
+        with pytest.raises(SkillsHubSourcePolicyError, match="cannot be empty"):
+            resolve_source_policy({"skills": {"hub": {"source_policy": {
+                "mode": "allowlist",
+                "sources": ["github"],
+                "github_taps": [],
+            }}}})
+
+    def test_index_requires_an_allowed_provenance_source(self):
+        with pytest.raises(SkillsHubSourcePolicyError, match="provenance source"):
+            resolve_source_policy({"skills": {"hub": {"source_policy": {
+                "mode": "allowlist",
+                "sources": ["hermes-index"],
+            }}}})
+
+    def test_github_adapter_rejects_direct_install_outside_allowed_taps(self):
+        source = GitHubSource(
+            auth=MagicMock(spec=GitHubAuth),
+            allowed_taps=frozenset({"openai/skills"}),
+        )
+
+        with patch.object(source, "_fetch_file_content") as fetch:
+            assert source.fetch("anthropics/skills/skills/example") is None
+
+        fetch.assert_not_called()
+
+    def test_index_filters_provenance_and_github_repo(self):
+        policy = SkillsHubSourcePolicy(
+            allowed_sources=frozenset({"hermes-index", "official", "github"}),
+            allowed_github_taps=frozenset({"openai/skills"}),
+        )
+        source = HermesIndexSource(
+            auth=MagicMock(spec=GitHubAuth), policy=policy
+        )
+        source._loaded = True
+        source._index = {"skills": [
+            {
+                "name": "official-demo", "source": "official",
+                "identifier": "official/demo",
+            },
+            {
+                "name": "openai-demo", "source": "github",
+                "identifier": "openai/skills/skills/demo", "repo": "openai/skills",
+            },
+            {
+                "name": "anthropic-demo", "source": "github",
+                "identifier": "anthropics/skills/skills/demo", "repo": "anthropics/skills",
+            },
+            {
+                "name": "claw-demo", "source": "clawhub",
+                "identifier": "claw-demo",
+            },
+        ]}
+
+        assert [meta.name for meta in source.search("", limit=10)] == [
+            "official-demo", "openai-demo",
+        ]
+        assert source.inspect("anthropics/skills/skills/demo") is None
+        assert source.inspect("openai/skills/skills/demo").name == "openai-demo"
+
+    def test_identifier_guard_rejects_disallowed_tap(self):
+        router = SourceRouter(
+            [],
+            SkillsHubSourcePolicy(
+                allowed_sources=frozenset({"github"}),
+                allowed_github_taps=frozenset({"openai/skills"}),
+            ),
+        )
+
+        with pytest.raises(SkillsHubSourcePolicyError, match="anthropics/skills.*disabled"):
+            router.require_identifier("anthropics/skills/skills/pdf")
 
 
 # ---------------------------------------------------------------------------

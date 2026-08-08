@@ -28,7 +28,7 @@ from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.skill_utils import is_excluded_skill_path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple, Union
 from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunparse
 
 import httpx
@@ -540,6 +540,275 @@ def github_provider_for(repo: str) -> Optional[str]:
 _PROVIDER_FILTER_VALUES = frozenset(v.lower() for v in GITHUB_TAP_PROVIDERS.values())
 
 
+HUB_SOURCE_IDS = frozenset({
+    "official",
+    "hermes-index",
+    "skills-sh",
+    "well-known",
+    "url",
+    "github",
+    "clawhub",
+    "lobehub",
+    "browse-sh",
+})
+_HERMES_INDEX_PROVENANCE_IDS = HUB_SOURCE_IDS - {"hermes-index", "url"}
+_SOURCE_ID_ALIASES = {"skills.sh": "skills-sh"}
+
+
+class SkillsHubSourcePolicyError(ValueError):
+    """The active profile's Skills Hub source policy is invalid or denied an operation."""
+
+
+class SkillsHubSourceDisabledError(SkillsHubSourcePolicyError):
+    """A valid source policy denied an explicitly requested source."""
+
+
+def _normalize_source_id(value: str) -> str:
+    normalized = value.strip().lower()
+    return _SOURCE_ID_ALIASES.get(normalized, normalized)
+
+
+def _normalize_github_repo(value: str) -> str:
+    repo = value.strip().strip("/")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise SkillsHubSourcePolicyError(
+            f"Invalid GitHub tap {value!r}; expected an exact 'owner/repo' name."
+        )
+    return repo.lower()
+
+
+@dataclass(frozen=True)
+class SkillsHubSourcePolicy:
+    """Resolved source policy for one Hermes profile.
+
+    ``allowed_sources=None`` is the backwards-compatible unrestricted state.
+    In allowlist mode, GitHub taps are independently restricted only when
+    ``allowed_github_taps`` is not ``None``. Exact repo identities are used so
+    policy does not depend on display labels or source ordering.
+    """
+
+    allowed_sources: Optional[FrozenSet[str]] = None
+    allowed_github_taps: Optional[FrozenSet[str]] = None
+
+    @property
+    def restricted(self) -> bool:
+        return self.allowed_sources is not None
+
+    def allows_source(self, source_id: str) -> bool:
+        return (
+            self.allowed_sources is None
+            or _normalize_source_id(source_id) in self.allowed_sources
+        )
+
+    def allows_github_repo(self, repo: str) -> bool:
+        return (
+            self.allowed_github_taps is None
+            or repo.strip().strip("/").lower() in self.allowed_github_taps
+        )
+
+    def allows_provider(self, provider: str) -> bool:
+        if not self.allows_source("github"):
+            return False
+        if self.allowed_github_taps is None:
+            return True
+        wanted = provider.strip().lower()
+        return any(
+            repo in self.allowed_github_taps and label.lower() == wanted
+            for repo, label in GITHUB_TAP_PROVIDERS.items()
+        )
+
+    def allows_index_entry(self, entry: Mapping[str, Any]) -> bool:
+        source_id = _normalize_source_id(str(entry.get("source", "")))
+        if not self.allows_source(source_id):
+            return False
+        if source_id != "github" or self.allowed_github_taps is None:
+            return True
+        repos = []
+        repo = str(entry.get("repo", "")).strip()
+        if repo:
+            repos.append(repo)
+        resolved = str(entry.get("resolved_github_id", ""))
+        parts = resolved.split("/", 2)
+        if len(parts) >= 2 and all(parts[:2]):
+            repos.append("/".join(parts[:2]))
+        return bool(repos) and all(self.allows_github_repo(item) for item in repos)
+
+
+def resolve_source_policy(
+    config: Optional[Mapping[str, Any]] = None,
+    *,
+    configured_github_taps: Optional[List[Mapping[str, Any]]] = None,
+) -> SkillsHubSourcePolicy:
+    """Resolve and validate the active profile's Skills Hub source policy.
+
+    The empty/default block is deliberately unrestricted. Any non-empty block
+    must declare a mode; invalid or misspelled policy fails closed instead of
+    restoring the full source set.
+    """
+    if config is None:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+
+    skills = config.get("skills", {}) if isinstance(config, Mapping) else {}
+    if not isinstance(skills, Mapping):
+        raise SkillsHubSourcePolicyError("skills must be a mapping in config.yaml.")
+    hub = skills.get("hub", {})
+    if not isinstance(hub, Mapping):
+        raise SkillsHubSourcePolicyError("skills.hub must be a mapping in config.yaml.")
+    raw = hub.get("source_policy", {})
+    if raw is None or raw == {}:
+        return SkillsHubSourcePolicy()
+    if not isinstance(raw, Mapping):
+        raise SkillsHubSourcePolicyError(
+            "skills.hub.source_policy must be a mapping in config.yaml."
+        )
+
+    unknown_keys = set(raw) - {"mode", "sources", "github_taps"}
+    if unknown_keys:
+        raise SkillsHubSourcePolicyError(
+            "Unknown skills.hub.source_policy field(s): "
+            + ", ".join(sorted(str(key) for key in unknown_keys))
+        )
+
+    mode = str(raw.get("mode", "")).strip().lower()
+    if mode == "all":
+        if raw.get("sources") or raw.get("github_taps"):
+            raise SkillsHubSourcePolicyError(
+                "source_policy mode 'all' cannot include allowlist entries."
+            )
+        return SkillsHubSourcePolicy()
+    if mode != "allowlist":
+        raise SkillsHubSourcePolicyError(
+            "skills.hub.source_policy.mode must be 'all' or 'allowlist'."
+        )
+
+    raw_sources = raw.get("sources")
+    if not isinstance(raw_sources, list) or not all(
+        isinstance(item, str) and item.strip() for item in raw_sources
+    ):
+        raise SkillsHubSourcePolicyError(
+            "source_policy.sources must be a list of source ids."
+        )
+    allowed_sources = frozenset(_normalize_source_id(item) for item in raw_sources)
+    unknown_sources = allowed_sources - HUB_SOURCE_IDS
+    if unknown_sources:
+        raise SkillsHubSourcePolicyError(
+            "Unknown Skills Hub source id(s): " + ", ".join(sorted(unknown_sources))
+        )
+    if (
+        "hermes-index" in allowed_sources
+        and not allowed_sources.intersection(_HERMES_INDEX_PROVENANCE_IDS)
+    ):
+        raise SkillsHubSourcePolicyError(
+            "'hermes-index' requires at least one indexed provenance source in "
+            "source_policy.sources."
+        )
+
+    allowed_taps: Optional[FrozenSet[str]] = None
+    if "github_taps" in raw:
+        raw_taps = raw["github_taps"]
+        if not isinstance(raw_taps, list) or not all(
+            isinstance(item, str) and item.strip() for item in raw_taps
+        ):
+            raise SkillsHubSourcePolicyError(
+                "source_policy.github_taps must be a list of exact owner/repo names."
+            )
+        if "github" not in allowed_sources:
+            raise SkillsHubSourcePolicyError(
+                "source_policy.github_taps requires 'github' in source_policy.sources."
+            )
+        allowed_taps = frozenset(_normalize_github_repo(item) for item in raw_taps)
+        if not allowed_taps:
+            raise SkillsHubSourcePolicyError(
+                "source_policy.github_taps cannot be empty; remove 'github' from "
+                "source_policy.sources to disable GitHub."
+            )
+
+        if configured_github_taps is not None:
+            configured = {
+                str(tap.get("repo", "")).strip().strip("/").lower()
+                for tap in configured_github_taps
+                if isinstance(tap, Mapping) and tap.get("repo")
+            }
+            missing = allowed_taps - configured
+            if missing:
+                raise SkillsHubSourcePolicyError(
+                    "GitHub tap(s) allowed by source policy are not configured: "
+                    + ", ".join(sorted(missing))
+                )
+
+    return SkillsHubSourcePolicy(
+        allowed_sources=allowed_sources,
+        allowed_github_taps=allowed_taps,
+    )
+
+
+class SourceRouter(list):
+    """List-compatible router carrying the effective profile source policy."""
+
+    def __init__(self, sources: List[SkillSource], policy: SkillsHubSourcePolicy):
+        super().__init__(sources)
+        self.policy = policy
+
+    def require_source_filter(self, source_filter: str) -> None:
+        requested = _normalize_source_id(source_filter)
+        if requested == "all":
+            return
+        if requested in _PROVIDER_FILTER_VALUES:
+            if not self.policy.allows_provider(requested):
+                raise SkillsHubSourceDisabledError(
+                    f"Skills Hub source provider '{source_filter}' is disabled by "
+                    "skills.hub.source_policy for this profile."
+                )
+            return
+        if requested in HUB_SOURCE_IDS and not self.policy.allows_source(requested):
+            raise SkillsHubSourceDisabledError(
+                f"Skills Hub source '{source_filter}' is disabled by "
+                "skills.hub.source_policy for this profile."
+            )
+        if requested not in HUB_SOURCE_IDS:
+            raise SkillsHubSourcePolicyError(
+                f"Unknown Skills Hub source filter: '{source_filter}'."
+            )
+
+    def require_identifier(self, identifier: str) -> None:
+        source_id, repo = _identifier_policy_identity(identifier)
+        if source_id and not self.policy.allows_source(source_id):
+            raise SkillsHubSourceDisabledError(
+                f"Skills Hub source '{source_id}' is disabled by "
+                "skills.hub.source_policy for this profile."
+            )
+        if source_id == "github" and repo and not self.policy.allows_github_repo(repo):
+            raise SkillsHubSourceDisabledError(
+                f"GitHub tap '{repo}' is disabled by skills.hub.source_policy "
+                "for this profile."
+            )
+
+
+def _identifier_policy_identity(identifier: str) -> Tuple[Optional[str], Optional[str]]:
+    ident = (identifier or "").strip()
+    lower = ident.lower()
+    for prefix, source_id in (
+        ("official/", "official"),
+        ("skills-sh/", "skills-sh"),
+        ("skills.sh/", "skills-sh"),
+        ("clawhub/", "clawhub"),
+        ("lobehub/", "lobehub"),
+        ("browse-sh/", "browse-sh"),
+    ):
+        if lower.startswith(prefix):
+            return source_id, None
+    if lower.startswith("well-known:") or "/.well-known/skills/" in lower:
+        return "well-known", None
+    if lower.startswith(("http://", "https://")):
+        return "url", None
+    parts = ident.split("/", 2)
+    if len(parts) == 3 and all(parts[:2]):
+        return "github", f"{parts[0]}/{parts[1]}"
+    return None, None
+
+
 def _filter_results_by_provider(
     results: List["SkillMeta"], provider: str
 ) -> List["SkillMeta"]:
@@ -579,11 +848,23 @@ class GitHubSource(SkillSource):
         {"repo": "garrytan/gstack", "path": ""},
     ]
 
-    def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
+    def __init__(
+        self,
+        auth: GitHubAuth,
+        extra_taps: Optional[List[Dict]] = None,
+        *,
+        allowed_taps: Optional[FrozenSet[str]] = None,
+    ):
         self.auth = auth
         self.taps = list(self.DEFAULT_TAPS)
         if extra_taps:
             self.taps.extend(extra_taps)
+        self._allowed_taps = allowed_taps
+        if allowed_taps is not None:
+            self.taps = [
+                tap for tap in self.taps
+                if str(tap.get("repo", "")).lower() in allowed_taps
+            ]
         # Per-instance cache: repo -> (default_branch, tree_entries)
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
@@ -652,6 +933,8 @@ class GitHubSource(SkillSource):
             return None
 
         repo = f"{parts[0]}/{parts[1]}"
+        if self._allowed_taps is not None and repo.lower() not in self._allowed_taps:
+            return None
         skill_path = parts[2]
 
         skill_md = self._fetch_file_content(repo, f"{skill_path.rstrip('/')}/SKILL.md")
@@ -714,6 +997,8 @@ class GitHubSource(SkillSource):
             return None
 
         repo = f"{parts[0]}/{parts[1]}"
+        if self._allowed_taps is not None and repo.lower() not in self._allowed_taps:
+            return None
         skill_path = parts[2].rstrip("/")
         skill_md_path = f"{skill_path}/SKILL.md"
 
@@ -4083,10 +4368,15 @@ class HermesIndexSource(SkillSource):
     downstream sources take over transparently.
     """
 
-    def __init__(self, auth: GitHubAuth):
+    def __init__(
+        self,
+        auth: GitHubAuth,
+        policy: Optional[SkillsHubSourcePolicy] = None,
+    ):
         self._index: Optional[dict] = None
         self._loaded = False
         self.auth = auth
+        self.policy = policy or SkillsHubSourcePolicy()
         # Lazily create GitHubSource for fetch — only used when actually
         # downloading files, which requires real GitHub API calls.
         self._github: Optional[GitHubSource] = None
@@ -4109,7 +4399,7 @@ class HermesIndexSource(SkillSource):
     def is_available(self) -> bool:
         """Whether the index is loaded and has skills."""
         index = self._ensure_loaded()
-        return bool(index.get("skills"))
+        return any(self.policy.allows_index_entry(s) for s in index.get("skills", []))
 
     def trust_level_for(self, identifier: str) -> str:
         index = self._ensure_loaded()
@@ -4131,7 +4421,10 @@ class HermesIndexSource(SkillSource):
         relevant skills.
         """
         index = self._ensure_loaded()
-        skills = index.get("skills", [])
+        skills = [
+            skill for skill in index.get("skills", [])
+            if self.policy.allows_index_entry(skill)
+        ]
         if not skills:
             return []
 
@@ -4217,7 +4510,10 @@ class HermesIndexSource(SkillSource):
 
     def _find_entry(self, identifier: str, index: dict) -> Optional[dict]:
         """Look up a skill in the index by identifier or name."""
-        skills = index.get("skills", [])
+        skills = [
+            skill for skill in index.get("skills", [])
+            if self.policy.allows_index_entry(skill)
+        ]
 
         # Exact identifier match
         for s in skills:
@@ -4260,7 +4556,11 @@ class HermesIndexSource(SkillSource):
         )
 
 
-def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]:
+def create_source_router(
+    auth: Optional[GitHubAuth] = None,
+    *,
+    policy: Optional[SkillsHubSourcePolicy] = None,
+) -> SourceRouter:
     """
     Create all configured source adapters.
     Returns a list of active sources for search/fetch operations.
@@ -4270,20 +4570,36 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
 
     taps_mgr = TapsManager()
     extra_taps = taps_mgr.list_taps()
+    configured_taps = list(GitHubSource.DEFAULT_TAPS) + extra_taps
+    effective_policy = policy or resolve_source_policy(
+        configured_github_taps=configured_taps
+    )
 
-    sources: List[SkillSource] = [
-        OptionalSkillSource(),        # Official optional skills (highest priority)
-        HermesIndexSource(auth=auth), # Centralized index (search + resolved install paths)
-        SkillsShSource(auth=auth),
-        WellKnownSkillSource(),
-        UrlSource(),                  # Direct HTTP(S) URL to a SKILL.md file
-        GitHubSource(auth=auth, extra_taps=extra_taps),
-        ClawHubSource(),
-        LobeHubSource(),
-        BrowseShSource(),   # browse.sh: 169+ site-specific browser automation skills
-    ]
+    sources: List[SkillSource] = []
+    if effective_policy.allows_source("official"):
+        sources.append(OptionalSkillSource())
+    if effective_policy.allows_source("hermes-index"):
+        sources.append(HermesIndexSource(auth=auth, policy=effective_policy))
+    if effective_policy.allows_source("skills-sh"):
+        sources.append(SkillsShSource(auth=auth))
+    if effective_policy.allows_source("well-known"):
+        sources.append(WellKnownSkillSource())
+    if effective_policy.allows_source("url"):
+        sources.append(UrlSource())
+    if effective_policy.allows_source("github"):
+        sources.append(GitHubSource(
+            auth=auth,
+            extra_taps=extra_taps,
+            allowed_taps=effective_policy.allowed_github_taps,
+        ))
+    if effective_policy.allows_source("clawhub"):
+        sources.append(ClawHubSource())
+    if effective_policy.allows_source("lobehub"):
+        sources.append(LobeHubSource())
+    if effective_policy.allows_source("browse-sh"):
+        sources.append(BrowseShSource())
 
-    return sources
+    return SourceRouter(sources, effective_policy)
 
 
 def _search_one_source(
@@ -4315,6 +4631,8 @@ def parallel_search_sources(
     from concurrent.futures import as_completed
 
     per_source_limits = per_source_limits or {}
+    if isinstance(sources, SourceRouter):
+        sources.require_source_filter(source_filter)
 
     # A provider filter (e.g. "nvidia", "openai") targets GitHub-tap skills
     # that the runtime index stores under source="github" with an

@@ -124,6 +124,9 @@ def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
 
 def _resolve_source_meta_and_bundle(identifier: str, sources):
     """Resolve metadata and bundle for a specific identifier."""
+    require_identifier = getattr(sources, "require_identifier", None)
+    if callable(require_identifier):
+        require_identifier(identifier)
     meta = None
     bundle = None
     matched_source = None
@@ -1722,7 +1725,19 @@ def do_snapshot_import(input_path: str, force: bool = False,
 # CLI argparse entry point
 # ---------------------------------------------------------------------------
 
-def skills_command(args) -> None:
+def skills_command(args) -> int:
+    """Run a ``hermes skills`` command with user-facing policy errors."""
+    from tools.skills_hub import SkillsHubSourcePolicyError
+
+    try:
+        _skills_command(args)
+    except SkillsHubSourcePolicyError as exc:
+        _console.print(f"[bold red]Error:[/] {exc}\n")
+        return 2
+    return 0
+
+
+def _skills_command(args) -> None:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
     action = getattr(args, "skills_action", None)
 
@@ -1797,6 +1812,17 @@ def skills_command(args) -> None:
 # ---------------------------------------------------------------------------
 
 def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
+    """Run a ``/skills`` command with user-facing policy errors."""
+    from tools.skills_hub import SkillsHubSourcePolicyError
+
+    c = console or _console
+    try:
+        _handle_skills_slash(cmd, console=c)
+    except SkillsHubSourcePolicyError as exc:
+        c.print(f"[bold red]Error:[/] {exc}\n")
+
+
+def _handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     """
     Parse and dispatch `/skills <subcommand> [args]` from the chat interface.
 

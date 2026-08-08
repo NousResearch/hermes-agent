@@ -16,6 +16,7 @@ probes used to confirm the bug class.
 
 import threading
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -77,6 +78,38 @@ class TestSkillsHubPathResolution:
         assert b_lock == prof_b / "skills" / ".hub" / "lock.json"
         assert b_audit == prof_b / "skills" / ".hub" / "audit.log"
         assert b_index == prof_b / "skills" / ".hub" / "index-cache"
+
+    def test_source_policy_follows_active_profile(self, two_profiles):
+        prof_a, prof_b = two_profiles
+        (prof_a / "config.yaml").write_text(
+            "skills:\n"
+            "  hub:\n"
+            "    source_policy:\n"
+            "      mode: allowlist\n"
+            "      sources: [official]\n",
+            encoding="utf-8",
+        )
+        (prof_b / "config.yaml").write_text(
+            "skills:\n"
+            "  hub:\n"
+            "    source_policy:\n"
+            "      mode: allowlist\n"
+            "      sources: [url]\n",
+            encoding="utf-8",
+        )
+
+        from tools.skills_hub import GitHubAuth, create_source_router
+
+        auth = MagicMock(spec=GitHubAuth)
+        a_ids = _under_override(
+            prof_a, lambda: [source.source_id() for source in create_source_router(auth)]
+        )
+        b_ids = _under_override(
+            prof_b, lambda: [source.source_id() for source in create_source_router(auth)]
+        )
+
+        assert a_ids == ["official"]
+        assert b_ids == ["url"]
 
 
 

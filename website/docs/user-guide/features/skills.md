@@ -563,11 +563,52 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 | Source | Example | Notes |
 |--------|---------|-------|
 | `official` | `official/security/1password` | Optional skills shipped with Hermes. |
+| `hermes-index` | n/a | Centralized catalog accelerator. It preserves each entry's real source provenance. |
 | `skills-sh` | `skills-sh/vercel-labs/agent-skills/vercel-react-best-practices` | Searchable via `hermes skills search <query> --source skills-sh`. Hermes resolves alias-style skills when the skills.sh slug differs from the repo folder. |
 | `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills served directly from `/.well-known/skills/index.json` on a website. Search using the site or docs URL. |
 | `url` | `https://sharethis.chat/SKILL.md` | Direct HTTP(S) URL to `SKILL.md` plus explicitly referenced support files. Name resolution: frontmatter → URL slug → interactive prompt → `--name` flag. |
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
 | `clawhub`, `lobehub`, `browse-sh` | Source-specific identifiers | Community or marketplace integrations. |
+
+### Restricting hub sources per profile
+
+By default, every built-in source above remains available. Embedded,
+enterprise, offline, or restricted-network profiles can instead declare an
+exact allowlist in that profile's `config.yaml`:
+
+```yaml
+skills:
+  hub:
+    source_policy:
+      mode: allowlist
+      sources:
+        - github
+      github_taps:
+        - myorg/approved-skills
+```
+
+The GitHub repository must already be configured with
+`hermes skills tap add myorg/approved-skills`. `github_taps` is optional: when
+omitted, every configured default and custom GitHub tap remains available.
+When present, it restricts both discovery and direct `owner/repo/path`
+installs; it is not a display-only filter.
+
+Use the existing source ids from the table, plus `hermes-index` when the
+centralized Hermes catalog is permitted. In allowlist mode, omitting
+`hermes-index` prevents requests to it. When enabled, index entries are still
+filtered by their real source and, for GitHub entries, the exact tap allowlist.
+Therefore `hermes-index` must be listed together with at least one indexed
+provenance source; it is not an independent registry identity.
+
+The effective policy applies to the CLI, slash commands, dashboard/API, and
+agent-facing Skills Hub operations. A disabled source requested explicitly is
+an error. Unknown source ids, unknown fields, malformed tap identities, and
+allowlisted taps that are not configured also fail clearly; Hermes never
+restores the full source set as a fallback.
+
+An empty `source_policy: {}` (the default), or explicit `mode: all`, preserves
+the current unrestricted behavior. The policy is resolved from the active
+profile, so named profiles can have independent source sets.
 
 ### Integrated hubs and registries
 

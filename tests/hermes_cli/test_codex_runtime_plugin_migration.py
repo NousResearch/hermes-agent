@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 
 import pytest
 
@@ -70,22 +71,23 @@ class TestTomlValueFormatter:
                 default_permission_profile=None)
         # config.toml should exist
         assert (tmp_path / "config.toml").exists()
-        # And no .config.toml.* temp files left behind
+        # And no temp files left behind. Match any dot-prefixed leftover
+        # rather than one writer's prefix, so this stays meaningful if the
+        # temp-name scheme changes.
         leftover = [p.name for p in tmp_path.iterdir()
-                    if p.name.startswith(".config.toml.")]
+                    if p.name.startswith(".")]
         assert leftover == [], f"temp file leaked after migration: {leftover}"
 
     def test_atomic_write_cleanup_on_rename_failure(self, tmp_path, monkeypatch):
         """If rename fails partway through (out of disk, permissions,
         crash), the temp file must be cleaned up. Otherwise repeated
-        failed migrations would pile up .config.toml.* files."""
-        from pathlib import Path as _Path
-        original_replace = _Path.replace
-
-        def failing_replace(self, target):
+        failed migrations would pile up temp files in ~/.codex."""
+        def failing_replace(src, dst, **kwargs):
             raise OSError("simulated disk full")
 
-        monkeypatch.setattr(_Path, "replace", failing_replace)
+        # The write goes through utils.atomic_replace, which renames with
+        # os.replace -- patch at that level rather than pathlib's wrapper.
+        monkeypatch.setattr(os, "replace", failing_replace)
         report = migrate(
             {"mcp_servers": {"x": {"command": "y"}}},
             codex_home=tmp_path,
@@ -97,9 +99,44 @@ class TestTomlValueFormatter:
         assert any("simulated disk full" in e for e in report.errors)
         # And no leaked temp file
         leftover = [p.name for p in tmp_path.iterdir()
-                    if p.name.startswith(".config.toml.")]
+                    if p.name.startswith(".")]
         assert leftover == [], f"temp files leaked: {leftover}"
 
+    @pytest.mark.skipif(os.name == "nt",
+                        reason="POSIX symlink semantics")
+    def test_migrate_preserves_symlinked_config_toml(self, tmp_path):
+        """A symlinked ~/.codex/config.toml must survive the migration.
+
+        Renaming onto the link path replaces the link itself with a
+        regular file, detaching dotfiles/chezmoi/stow deployments and
+        leaving the real file on stale pre-migration content."""
+        real_dir = tmp_path / "dotfiles"
+        real_dir.mkdir()
+        real = real_dir / "config.toml"
+        real.write_text('[mcp_servers.mine]\ncommand = "x"\n', encoding="utf-8")
+
+        codex_home = tmp_path / "codex"
+        codex_home.mkdir()
+        (codex_home / "config.toml").symlink_to(real)
+
+        report = migrate(
+            {"mcp_servers": {"a": {"command": "b"}}},
+            codex_home=codex_home,
+            discover_plugins=False,
+            expose_hermes_tools=False,
+            default_permission_profile=None,
+        )
+
+        assert report.errors == []
+        assert report.written is True
+        # The link itself must still be a link, pointing where it did.
+        assert (codex_home / "config.toml").is_symlink()
+        assert (codex_home / "config.toml").resolve() == real.resolve()
+        # And the migration must have landed in the real file.
+        real_text = real.read_text(encoding="utf-8")
+        assert "mcp_servers.a" in real_text
+        # The user's own pre-existing entry is preserved.
+        assert "mcp_servers.mine" in real_text
 
 
 class TestRenderToml:

@@ -139,11 +139,20 @@ class TestImageRejectionPhraseIsolation:
         "model does not support image",
         "image_url'. expected",
         "no endpoints found that support image input",
+        "failed to decode image",
     )
 
     def _matches(self, body: str) -> bool:
         low = body.lower()
         return any(p in low for p in self._REJECTION_PHRASES)
+
+    def test_kimi_truncated_image_trips_recovery(self):
+        # Kimi/Moonshot reject truncated image bytes with this 400; the
+        # bad bytes are in immutable history so stripping must fire.
+        body = ("HTTP 400: Invalid request: prepare image failed error, "
+                "status code: 400, message: failed to decode image: invalid "
+                "or unsupported image format")
+        assert self._matches(body) is True
 
     def test_anthropic_image_too_large_does_not_trip(self):
         # From agent/error_classifier.py _IMAGE_TOO_LARGE_PATTERNS —

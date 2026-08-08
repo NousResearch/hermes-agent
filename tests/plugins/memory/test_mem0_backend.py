@@ -152,6 +152,80 @@ class TestOSSBackend:
         assert "api_base" not in captured["embedder"]["config"]
         assert raw == before
 
+    @staticmethod
+    def _stub_mem0(monkeypatch, captured):
+        import sys
+        import types
+
+        class Memory:
+            @staticmethod
+            def from_config(config):
+                captured.update(config)
+                return FakeOSSMemory()
+
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = Memory  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+
+    def test_chroma_does_not_receive_embedding_model_dims(self, monkeypatch):
+        captured = {}
+        self._stub_mem0(monkeypatch, captured)
+        raw = {
+            "vector_store": {
+                "provider": "chroma",
+                "config": {"collection_name": "test", "path": "/tmp/test_chroma"},
+            },
+            "llm": {"provider": "ollama", "config": {"model": "qwen2.5:3b"}},
+            "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
+        }
+        OSSBackend(raw)
+        assert "embedding_model_dims" not in captured["vector_store"]["config"]
+
+    def test_qdrant_still_receives_embedding_model_dims(self, monkeypatch):
+        captured = {}
+        self._stub_mem0(monkeypatch, captured)
+        raw = {
+            "vector_store": {
+                "provider": "qdrant",
+                "config": {"collection_name": "test", "path": "/tmp/test_qdrant"},
+            },
+            "llm": {"provider": "ollama", "config": {"model": "qwen2.5:3b"}},
+            "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
+        }
+        OSSBackend(raw)
+        assert captured["vector_store"]["config"]["embedding_model_dims"] == 768
+
+    def test_chroma_with_unknown_model_still_skips_dims(self, monkeypatch):
+        captured = {}
+        self._stub_mem0(monkeypatch, captured)
+        raw = {
+            "vector_store": {
+                "provider": "chroma",
+                "config": {"collection_name": "test", "path": "/tmp/test_chroma"},
+            },
+            "llm": {"provider": "ollama", "config": {"model": "qwen2.5:3b"}},
+            "embedder": {"provider": "ollama", "config": {"model": "bge-m3"}},
+        }
+        OSSBackend(raw)
+        assert "embedding_model_dims" not in captured["vector_store"]["config"]
+
+    def test_explicit_embedding_dims_respects_provider_allowlist_for_chroma(self, monkeypatch):
+        captured = {}
+        self._stub_mem0(monkeypatch, captured)
+        raw = {
+            "vector_store": {
+                "provider": "chroma",
+                "config": {"collection_name": "test", "path": "/tmp/test_chroma"},
+            },
+            "llm": {"provider": "ollama", "config": {"model": "qwen2.5:3b"}},
+            "embedder": {
+                "provider": "ollama",
+                "config": {"model": "custom-embedder", "embedding_dims": 1024},
+            },
+        }
+        OSSBackend(raw)
+        assert "embedding_model_dims" not in captured["vector_store"]["config"]
+
 
 httpx = pytest.importorskip("httpx")
 

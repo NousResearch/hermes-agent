@@ -238,7 +238,10 @@ function SidebarSessionRowImpl({
               />
             </Tip>
           ) : null}
-          <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+          <SidebarRowLabel
+            className="flex-1 text-start font-normal [unicode-bidi:plaintext] group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+            dir="auto"
+          >
             {title}
           </SidebarRowLabel>
           {showProfile && <ProfileTag profile={session.profile} />}

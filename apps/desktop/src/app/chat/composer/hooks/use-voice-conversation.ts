@@ -262,7 +262,7 @@ export function useVoiceConversation({
   }, [handle, handleTurn, onFatalError, voiceCopy.couldNotStartSession, voiceCopy.microphoneFailed])
 
   const settleAfterSpeech = useCallback(
-    (barged: boolean, stoppedDuringSetup = false) => {
+    (barged: boolean) => {
       if (barged || !awaitingSpokenResponseRef.current) {
         awaitingSpokenResponseRef.current = false
         consumePendingResponse()
@@ -282,16 +282,15 @@ export function useVoiceConversation({
 
       dropSpeechSession()
 
-      // If stopVoicePlayback() was called externally (Stop button, end), the
-      // voice-playback sequence has advanced past what we captured at speech
-      // start — don't auto-start the next sentence, the user chose to stop.
-      const stoppedByUser =
-        stoppedDuringSetup ||
-        (speechStartSequenceRef.current > 0 && $voicePlayback.get().sequence > speechStartSequenceRef.current)
-
+      // An external stopVoicePlayback() (the playback Stop button) silences
+      // the current reply. The conversation loop must keep listening — the
+      // user pressed stop to speak, not to leave; ending the conversation is
+      // end()'s job (it clears pendingStartRef itself). Without the re-arm,
+      // a mid-reply Stop wedged the loop into idle with the mic never
+      // reopening, and the user could not continue speaking.
       speechStartSequenceRef.current = 0
 
-      if (enabledRef.current && !stoppedByUser) {
+      if (enabledRef.current) {
         pendingStartRef.current = true
       }
 
@@ -517,7 +516,7 @@ export function useVoiceConversation({
           // live attempt into fresh fallback playback.
           if ($voicePlayback.get().sequence > sequenceBeforeStart) {
             awaitingSpokenResponseRef.current = false
-            settleAfterSpeech(false, true)
+            settleAfterSpeech(false)
 
             return
           }
@@ -542,7 +541,7 @@ export function useVoiceConversation({
         if (stoppedDuringStart) {
           stopVoicePlayback()
           awaitingSpokenResponseRef.current = false
-          settleAfterSpeech(false, true)
+          settleAfterSpeech(false)
 
           return
         }

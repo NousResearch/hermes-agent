@@ -78,9 +78,12 @@ class TestCheckLintBracePaths:
             result = ops._check_lint("/tmp/test_file.js")
 
         assert result.success is True
-        # Verify the command was built correctly
+        # Verify the command was built correctly. Quoting style is
+        # incidental: _escape_shell_arg wraps in single quotes, while
+        # shlex.quote (used for Windows-native executables) may omit
+        # quotes for safe characters.
         cmd_arg = mock_exec.call_args[0][0]
-        assert "'/tmp/test_file.js'" in cmd_arg
+        assert "/tmp/test_file.js" in cmd_arg
 
     def test_path_with_curly_braces(self, ops):
         """Path containing ``{`` and ``}`` must not raise KeyError/ValueError."""

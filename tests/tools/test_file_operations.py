@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 from tools.file_operations import (
     _is_write_denied,
+    _native_path,
     ReadResult,
     WriteResult,
     PatchResult,
@@ -673,3 +674,69 @@ class TestReadNonUtf8IsBinary:
         ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
         # Proper UTF-8 (including non-ASCII) must still read as text.
         assert ops._is_likely_binary("notes.txt", "café résumé\nsecond\n") is False
+
+
+# =========================================================================
+# _native_path — Windows drive paths for the shell linters
+# =========================================================================
+
+class TestNativePath:
+    """_native_path must hand a Windows-native executable ``D:/...`` paths.
+
+    Hermes disables MSYS argv conversion by default
+    (``MSYS2_ARG_CONV_EXCL=*`` / ``MSYS_NO_PATHCONV=1``), so the Git Bash
+    ``/d/...`` form that ``_bash_safe_path`` produces is never converted
+    back for a Windows-native executable — it resolves to ``C:\\d\\...``
+    and fails with os error 3.
+    """
+
+    def test_msys_drive_form_converted_to_native(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _native_path("/d/projects/foo") == "D:/projects/foo"
+
+    def test_bare_msys_drive_converted(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _native_path("/d") == "D:/"
+
+    def test_backslash_native_form_normalized(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _native_path("D:\\projects\\foo") == "D:/projects/foo"
+
+    def test_forward_slash_native_form_unchanged(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _native_path("D:/projects/foo") == "D:/projects/foo"
+
+    def test_relative_path_unchanged(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        assert _native_path("src/components") == "src/components"
+
+    def test_noop_off_windows(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", False)
+        assert _native_path("/d/projects/foo") == "/d/projects/foo"
+        assert _native_path("D:/projects/foo") == "D:/projects/foo"
+
+
+class TestLinterWindowsDrivePath:
+    """Shell linters are Windows-native exes — path must be ``D:/...`` form.
+
+    ``_escape_shell_arg`` rewrites ``D:\\...`` to ``/d/...``, which
+    ``node``/``python``/``npx``/``go``/``rustfmt`` cannot resolve on
+    Windows (os error 3), turning every write of a .js/.py/.ts/.go/.rs
+    file into a phantom lint error.
+    """
+
+    def _make_env(self):
+        env = MagicMock()
+        env.cwd = "/"
+        env.execute.return_value = {"output": "", "returncode": 0}
+        return env
+
+    def test_lint_command_uses_native_drive_path(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        env = self._make_env()
+        ops = ShellFileOperations(env)
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: True)
+        ops._check_lint("D:\\projects\\foo\\app.js", "console.log(1)\n")
+        cmd = env.execute.call_args.args[0]
+        assert "D:/projects/foo/app.js" in cmd
+        assert "/d/projects/foo" not in cmd

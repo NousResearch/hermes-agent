@@ -434,6 +434,353 @@ def test_encrypted_cache_falls_back_on_network_error(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Encrypted-only storage policy (default) + legacy plaintext migration
+# ---------------------------------------------------------------------------
+
+
+def test_default_cache_storage_is_encrypted_only(monkeypatch, tmp_path):
+    """With the default config (no encrypted_cache section), secrets are
+    persisted ONLY in the encrypted cache file — the plaintext bws_cache.json
+    must never be written."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+    payload = _fake_bws_payload([{"key": "K1", "value": "secret-value"}])
+
+    monkeypatch.setattr(
+        bw.subprocess,
+        "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+    bw._reset_cache_for_tests(home)
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+
+    assert secrets == {"K1": "secret-value"}
+    assert warnings == []
+    # Plaintext file must not exist at all under the default policy.
+    assert not bw._disk_cache_path(home).exists()
+    enc_path = bw._encrypted_disk_cache_path(home)
+    assert enc_path.exists()
+    assert "secret-value" not in enc_path.read_text(encoding="utf-8")
+
+
+def test_legacy_plaintext_cache_migrated_to_encrypted(monkeypatch, tmp_path):
+    """A pre-existing plaintext bws_cache.json (written by an older Hermes)
+    is re-encrypted and removed on the first default-config fetch.  The
+    migrated value is served without a live fetch (a cache hit is a cache
+    hit), and the plaintext file is deleted."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+    bw._reset_cache_for_tests(home)
+
+    # Simulate a plaintext cache written by an older Hermes version.
+    legacy_key = (bw._token_fingerprint("0.t"), "proj-1", "")
+    bw._DISK_CACHE.write(
+        legacy_key,
+        bw._CachedFetch(secrets={"K1": "legacy"}, fetched_at=time.time()),
+        300,
+        home,
+    )
+    assert bw._disk_cache_path(home).exists()
+
+    # No live bws call should happen — the migrated entry is served directly.
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            AssertionError("live bws call should not run when a fresh "
+                           "migrated cache entry is served")),
+    )
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+    assert secrets == {"K1": "legacy"}
+    assert warnings == []
+    # Legacy plaintext file is gone; only the encrypted cache remains.
+    assert not bw._disk_cache_path(home).exists()
+    enc_path = bw._encrypted_disk_cache_path(home)
+    assert enc_path.exists()
+    assert "legacy" not in enc_path.read_text(encoding="utf-8")
+
+
+def test_legacy_plaintext_cache_served_and_migrated_on_offline_start(
+    monkeypatch, tmp_path
+):
+    """When the live fetch fails (offline start) and only a stale legacy
+    plaintext cache exists, the stale value is served AND re-encrypted so the
+    plaintext file is removed."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+    bw._reset_cache_for_tests(home)
+
+    # Stale legacy plaintext: fetched an hour ago, TTL is 300s.
+    _seed_stale_disk_cache(home, secrets={"K1": "legacy"}, age_seconds=3600)
+    assert bw._disk_cache_path(home).exists()
+
+    def fail_run(*a, **kw):
+        return mock.Mock(returncode=1, stdout="",
+                         stderr="Error: network is unreachable")
+    monkeypatch.setattr(bw.subprocess, "run", fail_run)
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, encrypted_cache_max_stale_seconds=604800,
+        home_path=home,
+    )
+    assert secrets == {"K1": "legacy"}
+    assert len(warnings) == 1
+    assert "stale disk cache" in warnings[0]
+    # The legacy plaintext was migrated: file removed, encrypted cache written.
+    assert not bw._disk_cache_path(home).exists()
+    enc_path = bw._encrypted_disk_cache_path(home)
+    assert enc_path.exists()
+    assert "legacy" not in enc_path.read_text(encoding="utf-8")
+
+
+def test_migration_skips_legacy_when_encrypted_write_fails(
+    monkeypatch, tmp_path
+):
+    """When the encrypted write/removal fails, _migrate_legacy_plaintext_cache
+    must return None — treat it as a cache miss — so the caller falls through
+    to a live fetch rather than serving a value whose plaintext file may still
+    be on disk."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    bw._reset_cache_for_tests(home)
+
+    # Seed a fresh legacy plaintext cache.
+    legacy_key = (bw._token_fingerprint("0.t"), "proj-1", "")
+    bw._DISK_CACHE.write(
+        legacy_key,
+        bw._CachedFetch(secrets={"K1": "legacy"}, fetched_at=time.time()),
+        300,
+        home,
+    )
+    assert bw._disk_cache_path(home).exists()
+
+    # Simulate an encrypted write that fails (disk full, permission, etc.).
+    monkeypatch.setattr(
+        bw, "_write_encrypted_disk_cache", lambda **kw: False,
+    )
+
+    # Direct unit test: even with a valid DiskCache entry, migration
+    # returns None when _write_encrypted_disk_cache returns False.
+    result = bw._migrate_legacy_plaintext_cache(
+        cache_key=legacy_key,
+        access_token="0.t",
+        max_age_seconds=300,
+        home_path=home,
+    )
+    assert result is None
+    assert bw._disk_cache_path(home).exists()  # plaintext still on disk
+
+
+def test_legacy_plaintext_offline_fallback_respects_stale_bound(
+    monkeypatch, tmp_path
+):
+    """Offline fallback for legacy plaintext must honor
+    encrypted_cache_max_stale_seconds, not float('inf').  A legacy entry
+    older than the configured bound must NOT be served."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+    bw._reset_cache_for_tests(home)
+
+    # Seed a very stale legacy plaintext cache (25 hours old).
+    _seed_stale_disk_cache(home, secrets={"K1": "ancient"}, age_seconds=90000)
+    assert bw._disk_cache_path(home).exists()
+
+    def fail_run(*a, **kw):
+        return mock.Mock(returncode=1, stdout="",
+                         stderr="Error: network is unreachable")
+    monkeypatch.setattr(bw.subprocess, "run", fail_run)
+
+    # max_stale_seconds=0 means NO stale fallback should serve anything.
+    with pytest.raises(RuntimeError):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            cache_ttl_seconds=300, encrypted_cache_max_stale_seconds=0,
+            home_path=home,
+        )
+
+    # With a generous bound, the stale legacy entry IS migrated and served.
+    bw._reset_cache_for_tests(home)
+    _seed_stale_disk_cache(home, secrets={"K1": "ancient"}, age_seconds=90000)
+    assert bw._disk_cache_path(home).exists()
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, encrypted_cache_max_stale_seconds=999999,
+        home_path=home,
+    )
+    assert secrets == {"K1": "ancient"}
+    assert len(warnings) == 1
+    assert "stale disk cache" in warnings[0]
+    assert not bw._disk_cache_path(home).exists()
+
+
+def test_legacy_plaintext_removed_when_encryption_disabled(
+    monkeypatch, tmp_path
+):
+    """With encrypted_cache_enabled=False, the legacy plaintext cache is never
+    consulted — but it must still be removed so a pre-upgrade bws_cache.json
+    does not survive the encrypted-only policy."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+    payload = _fake_bws_payload([{"key": "K1", "value": "live-value"}])
+
+    bw._reset_cache_for_tests(home)
+
+    # Seed a legacy plaintext cache from a prior version.
+    _seed_stale_disk_cache(home, secrets={"K1": "legacy"}, age_seconds=100)
+    assert bw._disk_cache_path(home).exists()
+
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, encrypted_cache_enabled=False,
+        home_path=home,
+    )
+    # The live fetch succeeded; legacy plaintext is gone even though
+    # encryption was disabled (the removal happens before the live fetch).
+    assert secrets == {"K1": "live-value"}
+    assert warnings == []
+    assert not bw._disk_cache_path(home).exists()
+    # No encrypted cache written either — encryption is off.
+    enc_path = bw._encrypted_disk_cache_path(home)
+    assert not enc_path.exists()
+
+
+def test_legacy_unlink_failure_blocks_migration(monkeypatch, tmp_path):
+    """When the legacy plaintext file cannot be removed, the encrypted write
+    must NOT report success and migration must NOT serve the legacy value —
+    the plaintext copy is still at rest (P2: unlink-error probe)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    bw._reset_cache_for_tests(home)
+
+    # Seed a fresh legacy plaintext cache.
+    legacy_key = (bw._token_fingerprint("0.t"), "proj-1", "")
+    bw._DISK_CACHE.write(
+        legacy_key,
+        bw._CachedFetch(secrets={"K1": "legacy"}, fetched_at=time.time()),
+        300,
+        home,
+    )
+    assert bw._disk_cache_path(home).exists()
+
+    # The legacy file refuses to be unlinked (permissions, AV lock, ...).
+    def _refuse_unlink(*a, **kw):
+        raise OSError(13, "Permission denied")
+    monkeypatch.setattr(
+        bw, "_disk_cache_path",
+        lambda home_path=None: mock.Mock(unlink=_refuse_unlink),
+    )
+
+    ok = bw._write_encrypted_disk_cache(
+        cache_key=legacy_key,
+        access_token="0.t",
+        entry=bw._CachedFetch(secrets={"K1": "legacy"}, fetched_at=time.time()),
+        home_path=home,
+    )
+    assert ok is False
+
+    # Migration must not serve the legacy value while the plaintext file
+    # may still be on disk.
+    migrated = bw._migrate_legacy_plaintext_cache(
+        cache_key=legacy_key,
+        access_token="0.t",
+        max_age_seconds=300,
+        home_path=home,
+    )
+    assert migrated is None
+
+
+@pytest.mark.parametrize(
+    "fetch_kwargs",
+    [
+        {"cache_ttl_seconds": 0},
+        {"use_cache": False},
+    ],
+)
+def test_legacy_plaintext_removed_after_successful_fetch_without_disk_cache(
+    monkeypatch, tmp_path, fetch_kwargs
+):
+    """A successful live fetch must remove a pre-upgrade plaintext cache even
+    when the disk cache is disabled (zero TTL) or bypassed (use_cache=False)
+    with encryption disabled — cleanup is independent of cache settings
+    (P2: zero-TTL / use-cache bypass probes)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+    payload = _fake_bws_payload([{"key": "K1", "value": "live-value"}])
+
+    bw._reset_cache_for_tests(home)
+    _seed_stale_disk_cache(home, secrets={"K1": "legacy"}, age_seconds=100)
+    assert bw._disk_cache_path(home).exists()
+
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        encrypted_cache_enabled=False, home_path=home, **fetch_kwargs,
+    )
+    assert secrets == {"K1": "live-value"}
+    assert warnings == []
+    assert not bw._disk_cache_path(home).exists()
+
+
+def test_legacy_plaintext_removed_when_fetch_fails_and_cache_bypassed(
+    monkeypatch, tmp_path
+):
+    """Even when the live fetch fails, a pre-upgrade plaintext cache must be
+    removed when disk persistence is disabled — the cleanup runs regardless
+    of use_cache, not only in the transport-error cache branch."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("", encoding="utf-8")
+    bw._reset_cache_for_tests(home)
+
+    _seed_stale_disk_cache(home, secrets={"K1": "legacy"}, age_seconds=100)
+    assert bw._disk_cache_path(home).exists()
+
+    def fail_run(*a, **kw):
+        return mock.Mock(returncode=1, stdout="",
+                         stderr="Error: network is unreachable")
+    monkeypatch.setattr(bw.subprocess, "run", fail_run)
+
+    with pytest.raises(RuntimeError):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            use_cache=False, encrypted_cache_enabled=False,
+            home_path=home,
+        )
+    assert not bw._disk_cache_path(home).exists()
+
+
+# ---------------------------------------------------------------------------
 # Stale disk cache fallback when live bws fetch fails
 # ---------------------------------------------------------------------------
 
@@ -478,7 +825,8 @@ def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
 
     secrets, warnings = bw.fetch_bitwarden_secrets(
         access_token="0.t", project_id="proj-1", binary=fake_binary,
-        cache_ttl_seconds=300, home_path=home,
+        cache_ttl_seconds=300, encrypted_cache_max_stale_seconds=7200,
+        home_path=home,
     )
     assert secrets == {"OPENAI_API_KEY": "sk-old"}
     assert len(warnings) == 1

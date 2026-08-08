@@ -3715,6 +3715,57 @@ def _reconnect_backoff(attempt: int) -> int:
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
+# ---------------------------------------------------------------------------
+# message:pre_route hook timeout
+# ---------------------------------------------------------------------------
+# The pre_route hook fires on every inbound message before the turn-lease is
+# claimed.  The multi-role-router classifier makes an LLM call that routinely
+# takes 15-120s, so the timeout must be generous — the historical 5s hard
+# limit killed it on every invocation ("message:pre_route hook timed out
+# after 5s").  Configurable via config.yaml `hooks.pre_route_timeout`
+# (seconds), bounded so a wedged hook can never stall the gateway loop.
+_PRE_ROUTE_TIMEOUT_DEFAULT = 30.0
+_PRE_ROUTE_TIMEOUT_MAX = 120.0
+# Cache the resolved value + log it only once (first resolution) and on any
+# change — a gateway resolves this per inbound message, so per-call logging
+# would spam the log on every message.
+_pre_route_timeout_last_logged: float | None = None
+
+
+def _resolve_pre_route_timeout() -> float:
+    """Resolve the message:pre_route hook timeout from config, bounded.
+
+    Reads ``hooks.pre_route_timeout`` from config.yaml (seconds), clamps to
+    ``[1, _PRE_ROUTE_TIMEOUT_MAX]``, and logs which value is in effect the
+    first time it is resolved so a non-default setting is visible in the
+    gateway logs.
+    """
+    global _pre_route_timeout_last_logged
+
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        _cfg = load_config()
+        raw = cfg_get(_cfg, "hooks", "pre_route_timeout", default=_PRE_ROUTE_TIMEOUT_DEFAULT)
+        timeout = float(raw)
+    except Exception:
+        timeout = _PRE_ROUTE_TIMEOUT_DEFAULT
+
+    if timeout < 1.0:
+        timeout = 1.0
+    if timeout > _PRE_ROUTE_TIMEOUT_MAX:
+        timeout = _PRE_ROUTE_TIMEOUT_MAX
+
+    if timeout != _pre_route_timeout_last_logged:
+        logger.info(
+            "message:pre_route hook timeout in effect: %ss (config hooks.pre_route_timeout, max %ss)",
+            timeout,
+            _PRE_ROUTE_TIMEOUT_MAX,
+        )
+        _pre_route_timeout_last_logged = timeout
+    return timeout
+
+
 class TurnRunner:
     """Per-turn collaborator carrying the tool-progress callbacks that used to
     be nested closures inside ``GatewayRunner._run_agent_inner``.
@@ -16982,6 +17033,83 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
+
+        # ── message:pre_route — hook-driven session redirect ──────────
+        # Fires after all session resolution (get_or_create, delegation
+        # pinning, topic tip-walk, auto-reset) is complete but BEFORE the
+        # turn-lease is claimed.  Hooks may return
+        #   {"decision": "switch_session", "session_id": "<id>"}
+        # to redirect this turn to a different session/worker profile.
+        #
+        # Timeout is configurable via config.yaml `hooks.pre_route_timeout`
+        # (seconds). Default 30s — the multi-role-router classifier makes an
+        # LLM call that routinely takes 15-120s, and the historical 5s hard
+        # limit killed it on every invocation. Bounded at 120s so a wedged
+        # hook can never stall the gateway loop indefinitely.
+        _pre_route_timeout = _resolve_pre_route_timeout()
+        _pre_route_ctx = {
+            "platform": source.platform.value if hasattr(source.platform, "value") else str(source.platform),
+            "user_id": str(source.user_id),
+            "chat_id": str(source.chat_id),
+            "thread_id": str(source.thread_id) if source.thread_id else None,
+            "chat_type": source.chat_type or "",
+            "session_id": session_entry.session_id,
+            "session_key": session_key,
+            "message": event.text or "",
+        }
+        try:
+            _pre_route_results = await asyncio.wait_for(
+                self.hooks.emit_collect("message:pre_route", _pre_route_ctx),
+                timeout=_pre_route_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "message:pre_route hook timed out after %ss (config hooks.pre_route_timeout)",
+                _pre_route_timeout,
+            )
+            _pre_route_results = []
+        except Exception:
+            logger.warning("message:pre_route hook emit failed", exc_info=True)
+            _pre_route_results = []
+        for _pr in _pre_route_results:
+            if not isinstance(_pr, dict):
+                continue
+            if _pr.get("decision") == "switch_session" and _pr.get("session_id"):
+                _target_id = str(_pr["session_id"])
+                if _target_id != session_entry.session_id:
+                    _switched = await self._async_session_store.switch_session(
+                        session_key, _target_id
+                    )
+                    if _switched:
+                        session_entry = _switched
+                        # Evict the cached agent for this session key so the
+                        # next turn starts with a clean agent context bound to
+                        # the new session_id — mirrors /resume behaviour at
+                        # slash_commands.py:4430-4442.  Without this the
+                        # cached AIAgent (and its memory provider, which
+                        # cached the old _session_id during initialize())
+                        # would continue writing into the wrong session's
+                        # transcript record.  See #6672 for the same bug
+                        # class on /branch and /reset.
+                        self._evict_cached_agent(session_key)
+                break
+
+        # ── Agent-cache isolation note (pre-route hooks) ──────────────
+        # NOTE: build_session_context() and _set_session_env() (above, at
+        # the "Build session context" block) run BEFORE this pre-route hook
+        # fires, so the session context and tool-session environment are
+        # already stamped with the *original* session_entry.  Swapping
+        # session_entry here via switch_session updates the session for
+        # history loading and transcript writes.  The _evict_cached_agent
+        # call (inside the _switched block above) ensures the next turn
+        # rebuilds a fresh AIAgent bound to the new session_id, mirroring
+        # the pattern used by /resume (slash_commands.py:4430-4442).
+        # The session context / tool-session environment stamps for the
+        # *current* turn still reference the original session; those are
+        # already in-flight and cannot be rewound.  This is acceptable:
+        # the current turn's output is written to the correct (new) session
+        # because session_entry.session_id has been updated in-place, and
+        # future turns start with the correct cached agent.
 
         # ── Turn lease (#64934) ────────────────────────────────────────
         # Session resolution is FINAL here (get_or_create → async-delegation

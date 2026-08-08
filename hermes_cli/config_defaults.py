@@ -2159,7 +2159,16 @@ DEFAULT_CONFIG = {
     # command prompts the user for consent; subsequent runs reuse the
     # stored approval from ~/.hermes/shell-hooks-allowlist.json.
     # See `website/docs/user-guide/features/hooks.md` for schema + examples.
-    "hooks": {},
+    # `pre_route_timeout` is a reserved sub-key (not an event name): timeout
+    # in seconds for the gateway's `message:pre_route` hook, which fires on
+    # every inbound message before the turn-lease is claimed.  The
+    # multi-role-router classifier makes an LLM call that routinely takes
+    # 15-120s, so the historical 5s hard limit killed it on every
+    # invocation.  Default 30s; values are clamped to a 120s maximum so a
+    # wedged hook can never stall the gateway loop indefinitely.
+    "hooks": {
+        "pre_route_timeout": 30.0,
+    },
 
     # Auto-accept shell-hook registrations without a TTY prompt.  Also
     # toggleable per-invocation via --accept-hooks or HERMES_ACCEPT_HOOKS=1.

@@ -368,6 +368,50 @@ def test_delegate_child_stays_persistent_for_normal_parent():
 
 
 # ---------------------------------------------------------------------------
+# Background self-improvement review: the fork's entire output is durable
+# state (MEMORY.md, the skill library) distilled from the conversation, so it
+# must never spawn for a temporary chat. Its own _persist_disabled is the
+# weaker contract — it deliberately still allows memory/skill writes. The
+# guard lives inside _spawn_background_review so the automatic post-turn
+# trigger, CLI /refine, and gateway /refine are all covered at once.
+# ---------------------------------------------------------------------------
+def test_background_review_never_spawns_for_temporary_chat():
+    agent = _make_agent(ephemeral=True)
+    with (
+        patch(
+            "agent.background_review.spawn_background_review_thread"
+        ) as spawn,
+        patch("run_agent.threading.Thread") as thread_cls,
+    ):
+        agent._spawn_background_review(
+            messages_snapshot=[{"role": "user", "content": "PROBE"}],
+            review_memory=True,
+            review_skills=True,
+        )
+    spawn.assert_not_called()
+    thread_cls.assert_not_called()
+
+
+def test_background_review_still_spawns_for_normal_sessions():
+    agent = _make_agent(ephemeral=False)
+    with (
+        patch(
+            "agent.background_review.spawn_background_review_thread",
+            return_value=(lambda: None, "prompt"),
+        ) as spawn,
+        patch("run_agent.threading.Thread") as thread_cls,
+    ):
+        agent._spawn_background_review(
+            messages_snapshot=[{"role": "user", "content": "q"}],
+            review_memory=True,
+            review_skills=False,
+        )
+    spawn.assert_called_once()
+    thread_cls.assert_called_once()
+    thread_cls.return_value.start.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # Trajectory capture: a trajectory line is the full message history, so
 # persistence-isolated agents must skip it even when the operator runs with
 # --save_trajectories.

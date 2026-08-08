@@ -2966,6 +2966,15 @@ class GatewaySlashCommandsMixin:
         if agent is None:
             return "Nothing to refine yet — send a message first."
 
+        # _spawn_background_review refuses for ephemeral agents; reply
+        # honestly instead of announcing a review that will never run.
+        if getattr(agent, "ephemeral", False):
+            return (
+                "🕵 Temporary chat — /refine is off. Nothing from this "
+                "conversation is saved to memory or skills. Send /temp off "
+                "first if you want it reviewed."
+            )
+
         snapshot = list(getattr(agent, "_session_messages", None) or [])
         if not snapshot:
             return "Nothing to refine yet — the conversation is empty."

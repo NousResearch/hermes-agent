@@ -40,6 +40,10 @@ temporary can never silently downgrade to a saved one.
   you asked us not to keep.
 - **No memory.** End-of-session extraction, per-turn syncing to memory
   providers, and conversation trajectories are all skipped.
+- **No self-improvement.** The background review that normally distills
+  conversations into memory and skill updates (including `/refine`) does
+  not run on a temporary chat — its entire output would be durable state
+  derived from the conversation.
 - **No resumability.** `/resume` has nothing to find.
 - **Minimal logs.** The agent's operational log records that a turn happened,
   but the message preview is redacted.

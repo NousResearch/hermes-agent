@@ -1819,6 +1819,18 @@ class AIAgent:
         appended to the review prompt — e.g. "save the deploy workflow as a
         skill". The automatic post-turn triggers never set it.
         """
+        # A temporary (/temp, --no-session) conversation is not raw material
+        # for self-improvement: the review fork's entire output is durable
+        # state (MEMORY.md, the skill library) distilled from a conversation
+        # the user was promised is not written down. The fork's own
+        # _persist_disabled is the weaker contract — it only stops the fork
+        # saving a transcript and deliberately still allows memory/skill
+        # writes, which is exactly what must not happen here. The guard
+        # lives inside the spawn rather than at its call sites (automatic
+        # post-turn, CLI /refine, gateway /refine) so a missed caller cannot
+        # leak.
+        if getattr(self, "ephemeral", False):
+            return
         from agent.background_review import spawn_background_review_thread
         from tools.thread_context import propagate_context_to_thread
         target, _prompt = spawn_background_review_thread(

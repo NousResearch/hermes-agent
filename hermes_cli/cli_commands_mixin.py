@@ -2574,6 +2574,16 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}Nothing to refine yet — send a message first.{_RST}")
             return
 
+        # _spawn_background_review refuses for ephemeral agents; reply
+        # honestly instead of announcing a review that will never run.
+        if getattr(agent, "ephemeral", False):
+            _cprint(
+                "  🕵 Temporary chat — /refine is off. Nothing from this "
+                "conversation is saved to memory or skills. Run /temp off "
+                "first if you want it reviewed."
+            )
+            return
+
         snapshot = list(getattr(self, "conversation_history", None) or [])
         if not snapshot:
             _cprint(f"  {_DIM}Nothing to refine yet — the conversation is empty.{_RST}")

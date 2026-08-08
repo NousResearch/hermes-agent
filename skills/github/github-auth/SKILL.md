@@ -62,18 +62,36 @@ Tell the user to go to: **https://github.com/settings/tokens**
 
 **Step 2: Configure git to store the token**
 
+Use git's built-in `store` helper. Two things that will silently break this — read before running:
+
+- **`store` ships with git.** It is *not* a separate package. Never `apt install git-credential-store`, and **never create or edit anything under `/usr/lib/git-core/`** — that directory holds git's own binaries; a stray file named `git` or `git-credential-store` there will hang every future git command.
+- **`~/.git-credentials` is one URL-encoded line per host** (`https://user:token@host`), *not* `protocol=`/`host=`/`username=`/`password=` lines. The attribute format is what git passes on stdin to a helper; it is not the on-disk store format, and `store` cannot read it.
+
+*Interactive shell (a human is present to answer the prompt):*
+
 ```bash
-# Set up the credential helper to cache credentials
 # "store" saves to ~/.git-credentials in plaintext (simple, persistent)
 git config --global credential.helper store
 
-# Now do a test operation that triggers auth — git will prompt for credentials
+# Triggers an auth prompt; git writes ~/.git-credentials in the correct format for you.
 # Username: <their-github-username>
 # Password: <paste the personal access token, NOT their GitHub password>
 git ls-remote https://github.com/<their-username>/<any-repo>.git
 ```
 
-After entering credentials once, they're saved and reused for all future operations.
+*Headless / agent context (no TTY — the prompt above would hang, so seed the file directly):*
+
+```bash
+git config --global credential.helper store
+# Single URL line, mode 600. This is the ONLY correct on-disk format.
+printf 'https://%s:%s@github.com\n' '<username>' '<token>' > ~/.git-credentials
+chmod 600 ~/.git-credentials
+
+# Verify with prompts disabled so a misconfig fails fast instead of hanging for 2 min:
+GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/<username>/<any-repo>.git
+```
+
+After this, credentials are saved and reused for all future operations.
 
 **Alternative: cache helper (credentials expire from memory)**
 
@@ -245,3 +263,7 @@ fi
 | Credentials not persisting | Check `git config --global credential.helper` — must be `store` or `cache` |
 | Multiple GitHub accounts | Use SSH with different keys per host alias in `~/.ssh/config`, or per-repo credential URLs |
 | `gh: command not found` + no sudo | Use git-only Method 1 above — no installation needed |
+| `apt: Unable to locate package git-credential-store` | `store` is built into git — there is no such package. Just run `git config --global credential.helper store`. |
+| `fatal: could not read Username` despite a configured helper | `~/.git-credentials` is in the wrong format. It must be a single `https://user:token@github.com` line, not `protocol=`/`host=` lines. Re-seed it (see Step 2, headless). |
+| `git clone`/`ls-remote` hangs for ~2 min then times out | Something under `/usr/lib/git-core/` was replaced with a script. Verify `file /usr/lib/git-core/git` is an **ELF executable**, not a shell script; if broken, restore with `sudo cp /usr/bin/git /usr/lib/git-core/git` or `sudo apt-get install --reinstall git`. Never write helper scripts into that directory. |
+| Prefer `gh` when available | If `gh` is installed, `echo "<token>" \| gh auth login --with-token && gh auth setup-git` configures both API and git credentials correctly — fewer footguns than hand-editing `~/.git-credentials`. |

@@ -110,6 +110,49 @@ describe('PreviewPane console state', () => {
     forgetPreviewStripTools(tabId)
   })
 
+  // The webview has its own webContents, so the BrowserWindow's
+  // setWindowOpenHandler never sees window.open() calls inside the previewed
+  // page. Without routing target="_blank" externally, the click was silent —
+  // Electron's default would either spawn an unmanaged BrowserWindow or
+  // dismiss the request (#81660).
+  it('routes target=_blank clicks from the webview through openExternal', async () => {
+    const openExternal = vi.fn(async () => undefined)
+    vi.stubGlobal('window', {
+      ...window,
+      hermesDesktop: {
+        openExternal
+      }
+    })
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174',
+            url: 'http://localhost:5174'
+          }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview')
+    const newWindow = new Event('new-window', { cancelable: true })
+
+    Object.defineProperty(newWindow, 'url', { value: 'https://example.com/product/42' })
+
+    act(() => {
+      webview?.dispatchEvent(newWindow)
+    })
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/product/42')
+    expect(newWindow.defaultPrevented).toBe(true)
+
+    rendered.unmount()
+  })
+
   it('renders authenticated remote HTML safely and honors source mode', async () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
 

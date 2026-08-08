@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { openExternalLink } from '@/lib/external-link'
 import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
@@ -624,6 +625,22 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     const onDevToolsOpened = () => setDevtoolsOpen(true)
     const onDevToolsClosed = () => setDevtoolsOpen(false)
 
+    // The webview has its own webContents, so the BrowserWindow's
+    // setWindowOpenHandler never sees links clicked inside it. Without this,
+    // <a target="_blank"> in the previewed page silently fails — the webview's
+    // default would open a bare BrowserWindow without our session/handlers
+    // (#81660). Route through the same IPC bridge as renderer-anchored links.
+    const onNewWindow = (event: Event) => {
+      const url = (event as Event & { url?: string }).url
+
+      if (!url) {
+        return
+      }
+
+      event.preventDefault()
+      openExternalLink(url)
+    }
+
     webview.addEventListener('console-message', onConsole)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
@@ -632,6 +649,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.addEventListener('did-navigate-in-page', onNavigate)
     webview.addEventListener('did-start-loading', onStart)
     webview.addEventListener('did-stop-loading', onStop)
+    webview.addEventListener('new-window', onNewWindow)
     host.appendChild(webview)
     webviewRef.current = webview
 
@@ -644,6 +662,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.removeEventListener('did-navigate-in-page', onNavigate)
       webview.removeEventListener('did-start-loading', onStart)
       webview.removeEventListener('did-stop-loading', onStop)
+      webview.removeEventListener('new-window', onNewWindow)
       webview.remove()
     }
   }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, target.url])

@@ -22,6 +22,8 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
+from plugins.platforms.telegram.reactions import canonical_standard_emoji
+
 logger = logging.getLogger(__name__)
 
 _THREAD_ID_UNSET = object()
@@ -816,6 +818,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Bot API update ids are monotonic for a bot token. Keep a bounded set
         # for reaction events so reconnect/replay cannot start duplicate turns.
         self._seen_reaction_update_ids: Dict[int, None] = {}
+        # Targets where an intentional model reaction replaced the lifecycle
+        # marker during the active turn. Completion must not overwrite it.
+        self._intentional_reaction_targets: Set[tuple[str, str]] = set()
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting: bool = False
         self._polling_progress_verifier_task: Optional[asyncio.Task] = None
@@ -10372,6 +10377,7 @@ class TelegramAdapter(BasePlatformAdapter):
             channel_prompt=channel_prompt,
             metadata={
                 "telegram_reaction_event": True,
+                "deferred_followup_event": True,
                 "telegram_reaction_added": list(added),
                 "telegram_reaction_removed": list(removed),
                 "telegram_reaction_target_message_id": str(message_id),
@@ -10411,7 +10417,13 @@ class TelegramAdapter(BasePlatformAdapter):
         emoji = (emoji or "").strip()
         if not emoji or message_id is None:
             return False
-        return await self._set_reaction(chat_id, str(message_id), emoji)
+        success = await self._set_reaction(chat_id, str(message_id), emoji)
+        if success and self._reactions_enabled():
+            targets = getattr(self, "_intentional_reaction_targets", None)
+            if targets is None:
+                targets = self._intentional_reaction_targets = set()
+            targets.add((str(chat_id), str(message_id)))
+        return success
 
     async def remove_reaction(
         self,
@@ -10427,32 +10439,14 @@ class TelegramAdapter(BasePlatformAdapter):
         """Set a single emoji reaction on a Telegram message."""
         if not self._bot:
             return False
-        # PTB's standard-reaction enum uses canonical spellings that can omit
-        # display variation selectors (``❤`` vs ``❤️``). Canonicalise direct
-        # adapter callers too; otherwise PTB treats the display form as a
-        # custom-emoji ID and Telegram rejects it.
-        if "\u200d" not in emoji and emoji.endswith(("\ufe0e", "\ufe0f")):
-            emoji = emoji[:-1]
-        try:
-            from telegram.constants import ReactionEmoji
-
-            allowed = {str(getattr(item, "value", item)) for item in ReactionEmoji}
-            if emoji not in allowed:
-                key = emoji.replace("\ufe0e", "").replace("\ufe0f", "")
-                matches = {
-                    item
-                    for item in allowed
-                    if item.replace("\ufe0e", "").replace("\ufe0f", "") == key
-                }
-                if len(matches) == 1:
-                    emoji = next(iter(matches))
-        except ImportError:
-            pass
+        canonical = canonical_standard_emoji(emoji)
+        if canonical is None:
+            return False
         try:
             await self._bot.set_message_reaction(
                 chat_id=normalize_telegram_chat_id(chat_id),
                 message_id=int(message_id),
-                reaction=emoji,
+                reaction=canonical,
             )
             return True
         except Exception as e:
@@ -10487,6 +10481,9 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
+            getattr(self, "_intentional_reaction_targets", set()).discard(
+                (str(chat_id), str(message_id))
+            )
             await self._set_reaction(chat_id, message_id, "\U0001f440")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
@@ -10507,6 +10504,11 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if not (chat_id and message_id):
+            return
+        intentional_targets = getattr(self, "_intentional_reaction_targets", set())
+        target = (str(chat_id), str(message_id))
+        if target in intentional_targets:
+            intentional_targets.discard(target)
             return
         if outcome == ProcessingOutcome.CANCELLED:
             await self._clear_reactions(chat_id, message_id)

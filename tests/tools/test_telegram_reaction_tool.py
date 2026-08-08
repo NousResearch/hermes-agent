@@ -98,6 +98,60 @@ def test_telegram_reaction_tool_normalizes_variation_selectors():
     assert module._canonical_standard_emoji("👍") == "👍"
 
 
+def test_telegram_reaction_tool_rejects_cached_source_chat_mismatch(monkeypatch):
+    from tools import telegram_reaction_tool as module
+
+    values = {
+        "HERMES_SESSION_PLATFORM": "telegram",
+        "HERMES_SESSION_CHAT_ID": "-999",
+        "HERMES_SESSION_MESSAGE_ID": "900",
+        "HERMES_SESSION_KEY": "session",
+    }
+    monkeypatch.setattr(
+        module,
+        "get_session_env",
+        lambda name, default="": values.get(name, default),
+    )
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100",
+        chat_type="group",
+        user_id="42",
+    )
+    runner = type(
+        "Runner",
+        (),
+        {
+            "_get_cached_session_source": lambda self, key: source,
+            "_adapter_for_source": lambda self, current_source: (_ for _ in ()).throw(
+                AssertionError("adapter resolution must not run for mismatched context")
+            ),
+        },
+    )()
+
+    import gateway.run
+
+    monkeypatch.setattr(gateway.run, "_gateway_runner_ref", lambda: runner)
+
+    result = json.loads(module.telegram_reaction_tool("👍"))
+
+    assert result == {"error": "The current Telegram message context is unavailable."}
+
+
+def test_telegram_reaction_tool_rejects_unsupported_standard_emoji(monkeypatch):
+    from tools import telegram_reaction_tool as module
+
+    monkeypatch.setattr(
+        module,
+        "get_session_env",
+        lambda name, default="": "telegram" if name == "HERMES_SESSION_PLATFORM" else default,
+    )
+
+    result = json.loads(module.telegram_reaction_tool("🧠"))
+
+    assert result == {"error": "Telegram does not support that standard reaction emoji."}
+
+
 def test_every_installed_standard_reaction_and_display_alias_is_canonicalized():
     # Some adapter tests install optional-dependency mocks in sys.modules at
     # collection time. Use a fresh interpreter to inspect the real PTB enum.

@@ -121,6 +121,7 @@ async def test_reaction_delta_starts_immediate_authenticated_turn(
     assert event.reply_to_is_own_message is True
     assert event.internal is False
     assert event.metadata["telegram_reaction_event"] is True
+    assert event.metadata["deferred_followup_event"] is True
     assert event.metadata["telegram_reaction_target_message_id"] == "900"
     assert event.metadata["telegram_reaction_session_key"] == "telegram:42:77"
     note = event.text

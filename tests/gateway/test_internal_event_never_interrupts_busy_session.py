@@ -137,7 +137,10 @@ async def test_reaction_event_does_not_interrupt_or_redirect_busy_session() -> N
     adapter = _make_adapter()
     event = _make_internal_event("[Telegram reaction: added 👍]")
     event.internal = False
-    event.metadata = {"telegram_reaction_event": True}
+    event.metadata = {
+        "telegram_reaction_event": True,
+        "deferred_followup_event": True,
+    }
     sk = build_session_key(event.source)
     parent = _make_running_parent()
     parent._supports_active_turn_redirect = True
@@ -159,7 +162,10 @@ def test_deferred_followup_classification_covers_internal_and_reaction_events() 
     internal = _make_internal_event()
     reaction = _make_internal_event("[Telegram reaction: added 👍]")
     reaction.internal = False
-    reaction.metadata = {"telegram_reaction_event": True}
+    reaction.metadata = {
+        "telegram_reaction_event": True,
+        "deferred_followup_event": True,
+    }
     ordinary = _make_internal_event("ordinary text")
     ordinary.internal = False
 
@@ -175,7 +181,10 @@ async def test_reaction_event_cannot_satisfy_pending_clarify(monkeypatch) -> Non
 
     event = _make_internal_event("[Telegram reaction: added 👍]")
     event.internal = False
-    event.metadata = {"telegram_reaction_event": True}
+    event.metadata = {
+        "telegram_reaction_event": True,
+        "deferred_followup_event": True,
+    }
     session_key = build_session_key(event.source)
 
     adapter = MagicMock()

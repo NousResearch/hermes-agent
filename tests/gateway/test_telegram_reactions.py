@@ -18,6 +18,7 @@ def _make_adapter(**extra):
     adapter.config = PlatformConfig(enabled=True, token="fake-token", extra=extra)
     adapter._bot = AsyncMock()
     adapter._bot.set_message_reaction = AsyncMock()
+    adapter._intentional_reaction_targets = set()
     return adapter
 
 
@@ -100,6 +101,25 @@ async def test_intentional_reaction_ignores_lifecycle_flag(monkeypatch):
     )
 
 
+@pytest.mark.asyncio
+async def test_lifecycle_completion_does_not_overwrite_intentional_reaction(monkeypatch):
+    """A model-selected emoji must survive the automatic completion hook."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    event = _make_event()
+
+    await adapter.on_processing_start(event)
+    assert await adapter.add_reaction("123", "❤️", "456") is True
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    bot = adapter._bot
+    assert bot is not None
+    assert bot.set_message_reaction.await_count == 2
+    reactions = [call.kwargs["reaction"] for call in bot.set_message_reaction.await_args_list]
+    assert reactions == ["👀", "❤"]
+    assert adapter._intentional_reaction_targets == set()
+
+
 @pytest.mark.parametrize(
     ("enabled", "expected"),
     [(False, False), (True, True), ("yes", True), ("off", False)],
@@ -131,6 +151,23 @@ def test_application_handler_registration_gates_inbound_reactions(
     if expected:
         assert reaction_handlers[0].callback == adapter._handle_message_reaction
         assert reaction_handlers[0].kwargs == {"message_reaction_types": "updated"}
+
+
+def test_inbound_reactions_skip_cleanly_without_message_reaction_handler(
+    monkeypatch, caplog,
+):
+    """Older PTB installs keep the rest of Telegram connected when opted in."""
+    from plugins.platforms.telegram import adapter as telegram_module
+
+    monkeypatch.setattr(telegram_module, "MessageReactionHandler", None)
+    adapter = _make_adapter(inbound_reactions=True)
+    handlers = []
+    app = SimpleNamespace(add_handler=lambda handler: handlers.append(handler))
+
+    with caplog.at_level("WARNING"):
+        adapter._register_application_handlers(app)
+
+    assert "MessageReactionHandler support" in caplog.text
 
 
 def test_sent_index_edit_preserves_existing_thread_id(monkeypatch, tmp_path):

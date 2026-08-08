@@ -120,7 +120,7 @@ def _is_deferred_followup_event(event) -> bool:
     if bool(getattr(event, "internal", False)):
         return True
     metadata = getattr(event, "metadata", None) or {}
-    return bool(metadata.get("telegram_reaction_event"))
+    return bool(metadata.get("deferred_followup_event"))
 
 
 def _reply_anchor_for_event(event) -> str | None:

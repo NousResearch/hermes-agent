@@ -5,45 +5,13 @@ import concurrent.futures
 import json
 
 from gateway.session_context import get_session_env
+from plugins.platforms.telegram.reactions import (
+    canonical_standard_emoji as _canonical_standard_emoji,
+)
 from tools.registry import registry, tool_error
 
 
 _GATEWAY_REACTION_TIMEOUT = 10.0
-
-
-def _canonical_standard_emoji(emoji: str) -> str | None:
-    """Return PTB's canonical spelling for a standard reaction emoji.
-
-    Telegram's display form may add a variation selector (for example ``❤️``),
-    while ``python-telegram-bot``'s ``ReactionEmoji`` enum uses ``❤``. Passing
-    the display form makes PTB misclassify it as a custom-emoji ID. Match
-    variation-selector-insensitively, but keep ZWJ structure otherwise intact.
-    """
-    # Telegram's standard list canonically omits the presentation selector on
-    # simple one-base reactions such as ❤. Do this without PTB so collection
-    # environments that mock optional Telegram modules behave identically.
-    if "\u200d" not in emoji and emoji.endswith(("\ufe0e", "\ufe0f")):
-        emoji = emoji[:-1]
-
-    try:
-        from telegram.constants import ReactionEmoji
-    except ImportError:
-        # Preserve compatibility with minimal/older Telegram installations;
-        # the live adapter/API remains the final validator there.
-        return emoji
-
-    allowed = {str(getattr(item, "value", item)) for item in ReactionEmoji}
-    if not allowed:
-        return emoji
-    if emoji in allowed:
-        return emoji
-    key = emoji.replace("\ufe0e", "").replace("\ufe0f", "")
-    matches = {
-        item
-        for item in allowed
-        if item.replace("\ufe0e", "").replace("\ufe0f", "") == key
-    }
-    return next(iter(matches)) if len(matches) == 1 else None
 
 
 TELEGRAM_REACTION_SCHEMA = {
@@ -110,6 +78,8 @@ def telegram_reaction_tool(emoji: str) -> str:
         )
         if str(source_platform or "").lower() != Platform.TELEGRAM.value:
             return tool_error("The current session is not a Telegram session.")
+        if str(getattr(source, "chat_id", "") or "") != str(chat_id):
+            return tool_error("The current Telegram message context is unavailable.")
 
         adapter = resolve_adapter(source)
         adapter_platform = getattr(

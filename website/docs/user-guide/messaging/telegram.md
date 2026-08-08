@@ -1229,7 +1229,7 @@ In Telegram conversations, Hermes also has a `telegram_react` tool for reacting 
 
 ### Inbound reactions
 
-Hermes can also treat a user's reaction to a Hermes-authored Telegram message as a new turn in the same conversation or forum topic. This is disabled by default because reactions can otherwise trigger unexpected agent usage.
+Hermes can also treat an authorized user's reaction to a Hermes-authored Telegram message as a new turn in that user's conversation lane within the original chat and forum topic. This is disabled by default because reactions can otherwise trigger unexpected agent usage.
 
 ```yaml
 platforms:

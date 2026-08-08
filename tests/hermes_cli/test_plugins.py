@@ -390,6 +390,96 @@ class TestPluginDiscovery:
 class TestPluginLoading:
     """Tests for plugin module loading."""
 
+    def test_eager_platform_registers_tools_while_ordinary_platform_is_deferred(
+        self, tmp_path, monkeypatch
+    ):
+        """Manifest metadata can opt a tool-providing platform out of deferral."""
+        bundled = tmp_path / "bundled"
+        platforms = bundled / "platforms"
+        eager = platforms / "a2a"
+        lazy = platforms / "ordinary"
+        eager.mkdir(parents=True)
+        lazy.mkdir(parents=True)
+
+        (eager / "plugin.yaml").write_text(
+            (
+                Path(__file__).parents[2]
+                / "plugins"
+                / "platforms"
+                / "a2a"
+                / "plugin.yaml"
+            ).read_text()
+        )
+        (eager / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_tool(\n"
+            "        name='a2a_discover', toolset='a2a',\n"
+            "        schema={'type': 'function', 'function': {'name': 'a2a_discover'}},\n"
+            "        handler=lambda args: args,\n"
+            "    )\n"
+        )
+        (lazy / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "ordinary-platform", "kind": "platform"})
+        )
+        (lazy / "__init__.py").write_text(
+            "raise AssertionError('ordinary platform was imported eagerly')\n"
+        )
+
+        monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: bundled)
+        monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda self: [])
+        monkeypatch.setattr("tools.registry.registry.register", MagicMock())
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+        from gateway.platform_registry import platform_registry
+
+        original_entries = dict(platform_registry._entries)
+        original_deferred = dict(platform_registry._deferred)
+        platform_registry._entries.clear()
+        platform_registry._deferred.clear()
+        try:
+            manager = PluginManager()
+            manager.discover_and_load()
+
+            assert manager._plugins["a2a-platform"].enabled is True
+            assert manager._plugins["a2a-platform"].deferred is False
+            assert manager._plugins["a2a-platform"].tools_registered == ["a2a_discover"]
+            assert manager._plugins["ordinary-platform"].deferred is True
+            assert "ordinary" in platform_registry._deferred
+        finally:
+            platform_registry._entries.clear()
+            platform_registry._entries.update(original_entries)
+            platform_registry._deferred.clear()
+            platform_registry._deferred.update(original_deferred)
+            sys.modules.pop("hermes_plugins.a2a_platform", None)
+
+    def test_real_a2a_platform_eager_load_registers_client_tools(
+        self, tmp_path, monkeypatch
+    ):
+        """The bundled A2A plugin must expose outbound tools during startup."""
+        from tools.registry import registry
+
+        expected_tools = {
+            "a2a_call",
+            "a2a_discover",
+            "a2a_history",
+            "a2a_list",
+            "a2a_orchestrate",
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda self: [])
+
+        for tool_name in expected_tools:
+            registry.deregister(tool_name)
+
+        manager = PluginManager()
+        manager.discover_and_load()
+
+        loaded = manager._plugins["a2a-platform"]
+        assert loaded.enabled is True
+        assert loaded.deferred is False
+        assert expected_tools.issubset(set(loaded.tools_registered))
+        assert expected_tools.issubset(registry._tools.keys())
+        assert {registry._tools[name].toolset for name in expected_tools} == {"a2a"}
 
 
     def test_load_registers_namespace_module(self, tmp_path, monkeypatch):

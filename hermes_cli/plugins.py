@@ -333,6 +333,11 @@ class PluginManifest:
     #              in ~/.hermes/plugins/ still gated by ``plugins.enabled``
     #              (untrusted code).
     kind: str = "standalone"
+    # Bundled platform plugins are normally deferred to avoid importing every
+    # platform SDK during ordinary chat startup.  A platform that also exposes
+    # non-gateway capabilities (for example model tools) may opt into eager
+    # registration through its manifest.
+    eager_load: bool = False
     # Registry key — path-derived, used by ``plugins.enabled``/``disabled``
     # lookups and by ``hermes plugins list``. For a flat plugin at
     # ``plugins/disk-cleanup/`` the key is ``disk-cleanup``; for a nested
@@ -1798,6 +1803,7 @@ class PluginManager:
                 source=source,
                 path=str(plugin_dir),
                 kind=kind,
+                eager_load=data.get("eager_load") is True,
                 key=key,
             )
         except Exception as exc:
@@ -1860,15 +1866,21 @@ class PluginManager:
         return name
 
     def _register_deferred_platform(self, manifest: PluginManifest) -> None:
-        """Register a lazy loader for a bundled platform plugin.
+        """Register a loader for a bundled platform plugin.
 
-        The platform adapter module is imported only when the gateway / cron /
-        setup / send_message path first asks the ``platform_registry`` for this
-        platform. Until then we record a lightweight ``LoadedPlugin`` so
-        ``hermes plugins list`` still shows the platform as available, and we
-        hand the registry a loader that runs the normal eager-load path.
+        Most platform adapters are imported only when the gateway / cron /
+        setup / send_message path first asks the ``platform_registry`` for the
+        platform.  Manifests with ``eager_load: true`` are loaded immediately;
+        this supports platform plugins that also register capabilities needed
+        outside inbound gateway sessions while preserving the lazy default.
         """
         lookup_key = manifest.key or manifest.name
+
+        if manifest.eager_load:
+            logger.debug("Eager-loading platform plugin: %s", lookup_key)
+            self._load_plugin(manifest)
+            return
+
         platform_name = self._platform_name_from_manifest(manifest)
 
         # Record an enabled placeholder for introspection (`hermes plugins

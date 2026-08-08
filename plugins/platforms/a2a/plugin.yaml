@@ -1,6 +1,7 @@
 name: a2a-platform
 label: A2A
 kind: platform
+eager_load: true
 version: 1.0.0
 description: >
   A2A (Agent-to-Agent) protocol v1.0 support for Hermes Agent — both directions

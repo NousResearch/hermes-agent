@@ -13,11 +13,11 @@ def proj(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     d = tmp_path / "proj"
     d.mkdir()
-    (d / "a.py").write_text("TOKEN_ALPHA = 'find_me_value'\nother = 1\n")
-    (d / "b.py").write_text("x = compute(TOKEN_ALPHA)\n")
+    (d / "a.py").write_text("TOKEN_ALPHA = 'find_me_value'\nother = 1\n", encoding="utf-8")
+    (d / "b.py").write_text("x = compute(TOKEN_ALPHA)\n", encoding="utf-8")
     e = tmp_path / "extra"
     e.mkdir()
-    (e / "c.txt").write_text("TOKEN_ALPHA appears here too\n")
+    (e / "c.txt").write_text("TOKEN_ALPHA appears here too\n", encoding="utf-8")
     return tmp_path
 
 
@@ -29,7 +29,7 @@ class TestZeroMatchProbe:
 
     def test_regex_metachar_literal_hint(self, proj):
         d = proj / "proj"
-        (d / "meta.py").write_text("result = lookup[key+1]\n")
+        (d / "meta.py").write_text("result = lookup[key+1]\n", encoding="utf-8")
         r = json.loads(search_tool("lookup[key+1]", path=str(d), task_id="t-zm"))
         assert r["total_count"] == 0
         assert "literal match" in r.get("warning", "")
@@ -42,7 +42,10 @@ class TestZeroMatchProbe:
     def test_hidden_only_match_gets_hint(self, proj):
         d = proj / "proj"
         (d / ".secretdir").mkdir()
-        (d / ".secretdir" / "conf.cfg").write_text("HIDDEN_ONLY_TOKEN = true\n")
+        (d / ".secretdir" / "conf.cfg").write_text(
+            "HIDDEN_ONLY_TOKEN = true\n",
+            encoding="utf-8",
+        )
         r = json.loads(search_tool("HIDDEN_ONLY_TOKEN", path=str(d), task_id="t-zm"))
         assert r["total_count"] == 0
         assert "hidden or gitignored" in r.get("warning", "")
@@ -93,6 +96,33 @@ class TestMultiPathRecovery:
         assert "error" not in r
         blob = json.dumps(r)
         assert "a.py" in blob
+
+
+class TestFilesTargetGlobHints:
+    @pytest.mark.parametrize("pattern", [".", "./", ".\\"])
+    def test_current_directory_pattern_lists_all_visible_files_with_warning(self, proj, pattern):
+        r = json.loads(
+            search_tool(pattern, path=str(proj / "proj"), target="files", task_id="t-files")
+        )
+        assert r["total_count"] == 2
+        blob = json.dumps(r)
+        assert "a.py" in blob and "b.py" in blob
+        assert f"interpreted {pattern!r} as '*'" in r.get("warning", "")
+
+    def test_bare_literal_zero_match_gets_glob_hint(self, proj):
+        r = json.loads(
+            search_tool("token_alpha", path=str(proj / "proj"), target="files", task_id="t-files")
+        )
+        assert r["total_count"] == 0
+        warning = r.get("warning", "")
+        assert "target='files' uses glob syntax" in warning
+        assert "*token_alpha*" in warning
+        assert "*.md" in warning
+
+    def test_matching_glob_keeps_warning_clear(self, proj):
+        r = json.loads(search_tool("*.py", path=str(proj / "proj"), target="files", task_id="t-files"))
+        assert r["total_count"] == 2
+        assert "warning" not in r
 
 
 class TestZeroMatchProbeEngineParity:

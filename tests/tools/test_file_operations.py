@@ -427,6 +427,30 @@ class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
         return make_real_subprocess_env("/")
 
+    @pytest.mark.parametrize("pattern", [".", "./", ".\\"])
+    def test_current_directory_pattern_on_find_backend_lists_visible_files(
+        self,
+        tmp_path,
+        monkeypatch,
+        pattern,
+    ):
+        root = tmp_path / "repo"
+        root.mkdir()
+        visible_file = root / "agent.log"
+        visible_nested_file = root / "nested" / "visible.log"
+
+        for p in [visible_file, visible_nested_file]:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x", encoding="utf-8")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops.search(pattern, target="files", path=str(root))
+
+        assert result.error is None
+        assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+        assert f"interpreted {pattern!r} as '*'" in (result.warning or "")
+
     def test_hidden_root_with_hidden_ancestor_includes_files(self, tmp_path, monkeypatch):
         """Fallback find should include visible files when path is inside hidden root."""
         root = tmp_path / ".hermes" / "logs"
@@ -438,7 +462,7 @@ class TestSearchFilesFallbackHiddenPaths:
 
         for p in [visible_file, nested_hidden_file, visible_nested_file, hidden_dir_file]:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("x")
+            p.write_text("x", encoding="utf-8")
 
         ops = ShellFileOperations(self._make_env())
         monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
@@ -457,7 +481,7 @@ class TestSearchFilesFallbackHiddenPaths:
 
         for p in [visible_file, visible_nested_file, hidden_dir_file]:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("x")
+            p.write_text("x", encoding="utf-8")
 
         ops = ShellFileOperations(self._make_env())
         monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
@@ -607,7 +631,7 @@ class TestAtomicWriteNewFilePermissions:
         mode preservation (e.g. an executable script stays 0755)."""
         ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
         dest = tmp_path / "existing.sh"
-        dest.write_text("#!/bin/sh\n")
+        dest.write_text("#!/bin/sh\n", encoding="utf-8")
         dest.chmod(0o755)
 
         result = ops.write_file(str(dest), "#!/bin/sh\necho updated\n")
@@ -628,7 +652,7 @@ class TestAtomicWriteThroughSymlink:
         ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
         real = tmp_path / "real.txt"
         link = tmp_path / "link.txt"
-        real.write_text("original\n")
+        real.write_text("original\n", encoding="utf-8")
         link.symlink_to(real)
 
         result = ops.write_file(str(link), "newcontent\n")

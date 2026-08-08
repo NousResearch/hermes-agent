@@ -2521,7 +2521,7 @@ SEARCH_FILES_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search"},
+            "pattern": {"type": "string", "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search. When target='files', use '*' to list all visible files."},
             "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside file contents, 'files' searches for files by name", "default": "content"},
             "path": {"type": "string", "description": "Directory or file to search in (default: current working directory)", "default": "."},
             "file_glob": {"type": "string", "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"},

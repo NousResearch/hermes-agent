@@ -2333,6 +2333,59 @@ class ShellFileOperations(FileOperations):
         merged.warning = note
         return merged
 
+    def _normalize_file_search_pattern(self, pattern: str) -> tuple[str, Optional[str]]:
+        """Normalize common non-glob shortcuts for ``target='files'``."""
+        stripped = pattern.strip()
+        if stripped in {".", "./", ".\\"}:
+            return (
+                "*",
+                f"target='files' expects a glob; interpreted {stripped!r} as '*' to list "
+                "all visible files. Use '*.md' to filter by extension or "
+                "'*name*' to match a substring.",
+            )
+        return pattern, None
+
+    def _zero_file_match_probe(self, pattern: str) -> Optional[str]:
+        """Return glob guidance for suspicious zero-match file searches."""
+        stripped = pattern.strip()
+        if not stripped or "/" in stripped:
+            return None
+        if stripped == ".*":
+            return (
+                "0 file matches. target='files' uses glob syntax for visible "
+                "files; use '*' to list all visible files or '*.md' to filter "
+                "by extension."
+            )
+        if re.search(r"[(){}+^$|\\]", stripped):
+            return (
+                f"0 file matches for pattern {pattern!r}. target='files' uses "
+                "glob syntax, not regex. Use '*' wildcards such as '*.md' or "
+                "'*config*'."
+            )
+        if not any(ch in stripped for ch in "*?["):
+            return (
+                f"0 file matches for pattern {pattern!r}. target='files' uses "
+                "glob syntax. Try '*' to list all visible files, '*.md' to "
+                f"filter by extension, or '*{stripped}*' to match a substring."
+            )
+        return None
+
+    def _finalize_file_search_result(
+        self,
+        result: SearchResult,
+        original_pattern: str,
+        pattern_warning: Optional[str],
+    ) -> SearchResult:
+        if pattern_warning:
+            result.warning = (
+                pattern_warning if not result.warning else f"{result.warning} {pattern_warning}"
+            )
+        elif not result.error and result.total_count == 0 and not result.files:
+            hint = self._zero_file_match_probe(original_pattern)
+            if hint:
+                result.warning = hint if not result.warning else f"{result.warning} {hint}"
+        return result
+
     def _zero_match_probe(self, pattern: str, path: str,
                           file_glob: Optional[str]) -> Optional[str]:
         """Return a hint for a 0-match content search, or None.
@@ -2409,6 +2462,9 @@ class ShellFileOperations(FileOperations):
 
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
+        original_pattern = pattern
+        pattern, pattern_warning = self._normalize_file_search_pattern(pattern)
+
         # Auto-prepend **/ for recursive search if not already present
         if not pattern.startswith('**/') and '/' not in pattern:
             search_pattern = pattern
@@ -2425,14 +2481,22 @@ class ShellFileOperations(FileOperations):
         # default, and has parallel directory traversal (~200x faster than
         # find on wide trees).  Mirrors _search_content which already uses rg.
         if self._has_command('rg'):
-            return self._search_files_rg(search_pattern, path, limit, offset)
+            return self._finalize_file_search_result(
+                self._search_files_rg(search_pattern, path, limit, offset),
+                original_pattern,
+                pattern_warning,
+            )
 
         # Fallback: find (slower, no .gitignore awareness)
         if not self._has_command('find'):
-            return SearchResult(
-                error="File search requires 'rg' (ripgrep) or 'find'. "
-                      "Install ripgrep for best results: "
-                      "https://github.com/BurntSushi/ripgrep#installation"
+            return self._finalize_file_search_result(
+                SearchResult(
+                    error="File search requires 'rg' (ripgrep) or 'find'. "
+                          "Install ripgrep for best results: "
+                          "https://github.com/BurntSushi/ripgrep#installation"
+                ),
+                original_pattern,
+                pattern_warning,
             )
 
         # Exclude hidden directories (matching ripgrep's default behavior).
@@ -2486,11 +2550,15 @@ class ShellFileOperations(FileOperations):
             files = filtered_files[offset:offset + limit]
         # pagination for standard roots is already applied in shell
 
-        return SearchResult(
-            files=files,
-            total_count=len(files),
-            truncated=bool(limit_reason),
-            limit_reason=limit_reason,
+        return self._finalize_file_search_result(
+            SearchResult(
+                files=files,
+                total_count=len(files),
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            ),
+            original_pattern,
+            pattern_warning,
         )
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:

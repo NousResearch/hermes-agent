@@ -142,6 +142,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
     ),
+    "qwencloud": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("QWENCLOUD_API_KEY",),
+        base_url_override="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        base_url_env_var="QWENCLOUD_BASE_URL",
+    ),
     "vercel": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -349,6 +355,11 @@ ALIASES: Dict[str, str] = {
     "alibaba-coding": "alibaba-coding-plan",
     "alibaba_coding_plan": "alibaba-coding-plan",
 
+    # qwencloud (QwenCloud Token Plan)
+    "qwencloud-token-plan": "qwencloud",
+    "qwencloud_token_plan": "qwencloud",
+    "qwen-cloud": "qwencloud",
+
     # huggingface
     "hf": "huggingface",
     "hugging-face": "huggingface",
@@ -421,6 +432,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "upstage": "Upstage Solar",
     "actual": "Actual Computer",
     "tencent-tokenhub": "Tencent TokenHub",
+    "qwencloud": "QwenCloud (Token Plan)",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",

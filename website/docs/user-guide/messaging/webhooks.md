@@ -42,7 +42,7 @@ There are two ways to enable the webhook adapter.
 hermes gateway setup
 ```
 
-Follow the prompts to enable webhooks, set the port, and set a global HMAC secret.
+Follow the prompts to enable webhooks, set the port, and set a global webhook secret. That secret can be used for HMAC signature validation or plain-token auth, depending on what the webhook provider supports.
 
 ### Via environment variables
 
@@ -79,7 +79,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | Property | Required | Description |
 |----------|----------|-------------|
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
-| `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
+| `secret` | **Yes** | Secret used for signature validation or plain-token authentication. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
 | `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
@@ -339,7 +339,7 @@ Benefits:
 
 - **Zero LLM tokens** — the agent is never invoked
 - **Sub-second delivery** — a single adapter call, no reasoning loop
-- **Same security as agent mode** — HMAC auth, rate limits, idempotency, and body-size limits all still apply
+- **Same security as agent mode** — signature/plain-token auth, rate limits, idempotency, and body-size limits all still apply
 - **Synchronous response** — the POST returns `200 OK` once delivery succeeds, or `502` if the target rejects it, so your upstream service can retry intelligently
 
 ### Example: Telegram push from Supabase
@@ -411,7 +411,7 @@ hermes webhook subscribe github-issues \
   --description "Triage new GitHub issues"
 ```
 
-This returns the webhook URL and an auto-generated HMAC secret. Configure your service to POST to that URL.
+This returns the webhook URL and an auto-generated secret. Configure your service to POST to that URL with an auth method your provider supports, such as an HMAC signature or an `Authorization` bearer token.
 
 ### List subscriptions
 
@@ -458,8 +458,11 @@ The adapter validates incoming webhook signatures using the appropriate method f
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
 - **Generic (V1, legacy)**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2.
+- **Bearer token**: `Authorization` header using the Bearer scheme — plain secret string match
 
-If a secret is configured but no recognized signature header is present, the request is rejected.
+Use HMAC signatures when your webhook provider supports them. Bearer-token auth is useful for services that can send a fixed authorization token but cannot compute per-payload HMAC signatures.
+
+If a secret is configured but no recognized signature or auth header is present, the request is rejected.
 
 ### Secret is required
 
@@ -503,7 +506,7 @@ platforms:
 ### Authenticated does not mean trusted
 
 :::warning
-**HMAC validation authenticates the _sender_, not the _content_.** A valid signature only proves the request came from a party holding the route's secret (e.g. GitHub). It says nothing about who wrote the _business fields_ inside the payload — PR titles, commit messages, issue descriptions, and any other upstream text are authored by arbitrary third parties and must be treated as untrusted.
+**Signature or token validation authenticates the _sender_, not the _content_.** A valid signature or token only proves the request came from a party holding the route's secret (e.g. GitHub). It says nothing about who wrote the _business fields_ inside the payload — PR titles, commit messages, issue descriptions, and any other upstream text are authored by arbitrary third parties and must be treated as untrusted.
 
 This is the same trust model that applies to everything the agent reads: web pages, files, and tool output are all untrusted input. Hermes does not — and cannot reliably — sanitize untrusted text with a blocklist; phrasing, encoding, and translation make that trivially bypassable. **The trust boundary is the agent's capability surface, not the input channel.** Harden there:
 
@@ -529,6 +532,9 @@ This is the same trust model that applies to everything the agent reads: web pag
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
+- For generic HMAC V2 integrations, check both `X-Webhook-Signature-V2` and `X-Webhook-Timestamp`
+- For legacy generic HMAC V1 integrations, check `X-Webhook-Signature`
+- For bearer-token integrations, check the `Authorization` header and Bearer scheme
 - Check gateway logs for `Invalid signature` warnings
 
 ### Event being ignored
@@ -563,4 +569,4 @@ This is the same trust model that applies to everything the agent reads: web pag
 |----------|-------------|---------|
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter | `false` |
 | `WEBHOOK_PORT` | HTTP server port for receiving webhooks | `8644` |
-| `WEBHOOK_SECRET` | Global HMAC secret (used as fallback when routes don't specify their own) | _(none)_ |
+| `WEBHOOK_SECRET` | Global webhook secret for signature validation or plain-token auth (used as fallback when routes don't specify their own) | _(none)_ |

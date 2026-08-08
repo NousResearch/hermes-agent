@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
@@ -53,6 +54,11 @@ from hermes_constants import get_hermes_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+_PLUGIN_SECTION_FRAME_RE = re.compile(
+    r"^## Plugin Context: (?P<id>[a-z0-9][a-z0-9._-]{0,127})\n"
+    r"<!-- hermes-plugin-section-chars:(?P<chars>[0-9]{1,4}) -->\n\n",
+    re.MULTILINE,
+)
 
 
 def _ra():
@@ -147,6 +153,113 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
     if not is_truthy_value(os.getenv("HERMES_DESKTOP_TERMINAL")):
         return hint
     return hint + _TUI_EMBEDDED_PANE_CLARIFIER
+
+
+def _plugin_session_info(agent: Any) -> Dict[str, str]:
+    """Return immutable-at-render-time metadata exposed to prompt sections."""
+    try:
+        cwd = str(resolve_context_cwd() or "")
+    except Exception:
+        cwd = ""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile_name = str(get_active_profile_name() or "default")
+    except Exception:
+        profile_name = "default"
+    return {
+        "session_id": str(getattr(agent, "session_id", None) or ""),
+        "model": str(getattr(agent, "model", None) or ""),
+        "provider": str(getattr(agent, "provider", None) or ""),
+        "platform": str(getattr(agent, "platform", None) or ""),
+        "profile_name": profile_name,
+        "cwd": cwd,
+    }
+
+
+def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
+    """Render once on a new session; never re-evaluate a restored prompt.
+
+    Compression rebuilds reuse the per-agent tuple. A fresh process restores
+    ``_cached_system_prompt`` before reconstructing its static cache prefix;
+    because plugin sections live after memory in the volatile tail, that
+    reconstruction can safely omit them and must not call plugin code again.
+    """
+    attr = "_plugin_system_prompt_sections_snapshot"
+    if hasattr(agent, attr):
+        return getattr(agent, attr)
+    stored_prompt = getattr(agent, "_cached_system_prompt", None)
+    if isinstance(stored_prompt, str) and stored_prompt:
+        rendered = _restore_plugin_prompt_sections(stored_prompt)
+        setattr(agent, attr, rendered)
+        return rendered
+    try:
+        from hermes_cli.plugins import render_system_prompt_sections
+
+        rendered = tuple(render_system_prompt_sections(_plugin_session_info(agent)))
+    except Exception as exc:
+        logger.warning("Plugin system prompt sections could not be rendered: %s", exc)
+        rendered = ()
+    setattr(agent, attr, rendered)
+    return rendered
+
+
+def _restore_plugin_prompt_sections(prompt: str) -> tuple:
+    """Recover frozen section bytes from the already-persisted full prompt."""
+    from hermes_cli.plugins import (
+        MAX_SYSTEM_PROMPT_SECTION_CHARS,
+        PLUGIN_SECTIONS_END,
+        PLUGIN_SECTIONS_START,
+        RenderedPluginSystemPromptSection,
+        format_system_prompt_sections,
+    )
+
+    start = prompt.rfind(PLUGIN_SECTIONS_START)
+    if start < 0:
+        return ()
+    end = prompt.find(PLUGIN_SECTIONS_END, start + len(PLUGIN_SECTIONS_START))
+    if end < 0:
+        return ()
+    after_end = end + len(PLUGIN_SECTIONS_END)
+    if not prompt[after_end:].startswith("\n\nConversation started:"):
+        return ()
+    framed = prompt[start:after_end]
+
+    restored = []
+    for match in _PLUGIN_SECTION_FRAME_RE.finditer(framed):
+        content_len = int(match.group("chars"))
+        if content_len > MAX_SYSTEM_PROMPT_SECTION_CHARS:
+            continue
+        content_start = match.end()
+        content = framed[content_start : content_start + content_len]
+        if len(content) != content_len:
+            continue
+        restored.append(
+            RenderedPluginSystemPromptSection(
+                id=match.group("id"),
+                content=content,
+                position="after_memory",
+                plugin="persisted-prompt",
+            )
+        )
+    # User/project text may resemble a frame. Accept only the exact canonical
+    # container emitted by core, never a partial or malformed lookalike.
+    if format_system_prompt_sections(restored) != framed:
+        return ()
+    return tuple(restored)
+
+
+def restore_plugin_prompt_sections(agent: Any, prompt: str) -> None:
+    """Seed a resumed agent's frozen snapshot from persisted prompt bytes."""
+    agent._plugin_system_prompt_sections_snapshot = _restore_plugin_prompt_sections(prompt)
+
+
+def _plugin_section_blocks(sections: tuple, position: str) -> List[str]:
+    from hermes_cli.plugins import format_system_prompt_sections
+
+    selected = [section for section in sections if section.position == position]
+    block = format_system_prompt_sections(selected)
+    return [block] if block else []
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
@@ -540,6 +653,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    # Plugin sections are intentionally confined to one coarse anchor in the
+    # volatile tail. This preserves deterministic ordering and lets a resumed
+    # process reconstruct the stable cache prefix without re-running plugins.
+    volatile_parts.extend(
+        _plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory")
+    )
+
     from hermes_time import now as _hermes_now
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable
@@ -689,5 +809,6 @@ __all__ = [
     "build_system_prompt_parts",
     "build_system_prompt",
     "invalidate_system_prompt",
+    "restore_plugin_prompt_sections",
     "format_tools_for_system_message",
 ]

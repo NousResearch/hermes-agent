@@ -386,6 +386,50 @@ def register(ctx):
 - Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
+### Cache-safe system prompt sections
+
+Plugins that need durable, always-on guidance can register a bounded system
+prompt section instead of injecting the same text through `pre_llm_call` on
+every turn:
+
+```python
+def board_rules(session_info):
+    return f"Apply the worker rules for profile {session_info['profile_name']}."
+
+def register(ctx):
+    ctx.register_system_prompt_section(
+        "kanban-advanced.worker-rules",
+        board_rules,                       # a string is also accepted
+        position="after_memory",
+        max_chars=4000,
+    )
+```
+
+The contract is deliberately narrow:
+
+- IDs are global, stable, 1–128 character lowercase identifiers using only
+  letters, numbers, `.`, `_`, and `-`. Duplicate IDs are rejected.
+- `after_memory` is the only placement anchor. Sections are sorted by ID,
+  rendered after memory/profile context and before session metadata; plugins
+  cannot reorder or replace core prompt content.
+- A callable receives a read-only mapping with `session_id`, `model`,
+  `provider`, `platform`, `profile_name`, and `cwd`. It runs **once for a new
+  session**. Its rendered bytes are frozen on compression and recovered from
+  the already-persisted full system prompt after a process restart/resume;
+  plugin state is not re-read for an existing session.
+- `max_chars` is capped at 4,000 characters. All plugin sections together,
+  including their audit headings, are capped at 8,000 characters and 32
+  sections. Empty, non-string, oversized, aggregate-over-budget, or raising
+  sections are skipped with a warning; prompt construction continues.
+- Every accepted section is named in the prompt and logged at session start
+  with its plugin, position, and character count.
+
+Use `pre_llm_call` for truly dynamic per-turn context. There is intentionally
+no plugin environment-hints hook in this contract: changing cwd, branch, or
+other environment data must not silently mutate a session's cached prompt.
+Such a hook needs a concrete consumer and the same frozen/resume-safe semantics
+before it can be added.
+
 ### Quick reference
 
 | Hook | Fires when | Returns |

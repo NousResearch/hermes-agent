@@ -3977,6 +3977,82 @@ def _is_unsupported_temperature_error(exc: Exception) -> bool:
     return _is_unsupported_parameter_error(exc, "temperature")
 
 
+# Max stacked parameter quirks we try to peel off one request (e.g. gpt-5
+# rejects temperature AND wants max_completion_tokens — #78273).
+_MAX_UNSUPPORTED_PARAM_RETRIES = 3
+
+
+def _looks_like_unsupported_param_error(exc: Exception) -> bool:
+    """True when another strip/translate pass may recover the request."""
+    if _is_unsupported_temperature_error(exc):
+        return True
+    err_lower = str(exc).lower()
+    if "max_tokens" in err_lower or "max_completion_tokens" in err_lower:
+        return True
+    if _is_unsupported_parameter_error(exc, "max_tokens"):
+        return True
+    if _is_unsupported_parameter_error(exc, "max_completion_tokens"):
+        return True
+    if "unsupported_parameter" in err_lower:
+        return True
+    # ZAI vision multimodal: error 1210 without naming max_tokens.
+    if "1210" in str(exc):
+        return True
+    return False
+
+
+def _next_unsupported_param_kwargs(
+    kwargs: dict,
+    err: Exception,
+    *,
+    client_base_url: str = "",
+) -> Optional[dict]:
+    """Return adjusted kwargs for one unsupported-parameter recovery step.
+
+    Returns ``None`` when *err* is not a recoverable parameter quirk or when
+    *kwargs* no longer carries the offending key. Prefer translating
+    ``max_tokens`` → ``max_completion_tokens`` when the provider asks for it
+    (gpt-5 / o-series) rather than dropping the output bound entirely (#78273).
+    """
+    next_kwargs = dict(kwargs)
+    err_str = str(err)
+    err_lower = err_str.lower()
+
+    if "temperature" in next_kwargs and _is_unsupported_temperature_error(err):
+        next_kwargs.pop("temperature", None)
+        return next_kwargs
+
+    has_mt = "max_tokens" in next_kwargs or "max_completion_tokens" in next_kwargs
+    is_zai_param_error = (
+        "1210" in err_str
+        and "bigmodel" in (client_base_url or "").lower()
+    )
+    mentions_mt = (
+        "max_tokens" in err_lower
+        or "max_completion_tokens" in err_lower
+        or _is_unsupported_parameter_error(err, "max_tokens")
+        or _is_unsupported_parameter_error(err, "max_completion_tokens")
+        or "unsupported_parameter" in err_lower
+        or is_zai_param_error
+    )
+    if not mentions_mt or not has_mt:
+        return None
+
+    # Provider says: use max_completion_tokens instead of max_tokens.
+    if (
+        "max_tokens" in next_kwargs
+        and "max_completion_tokens" in err_lower
+        and "max_completion_tokens" not in next_kwargs
+    ):
+        next_kwargs["max_completion_tokens"] = next_kwargs.pop("max_tokens")
+        return next_kwargs
+
+    # Pure unsupported / zai / already on max_completion_tokens: strip caps.
+    next_kwargs.pop("max_tokens", None)
+    next_kwargs.pop("max_completion_tokens", None)
+    return next_kwargs
+
+
 def _is_model_not_found_error(exc: Exception) -> bool:
     """Detect "the requested model doesn't exist" errors (404 / invalid model).
 
@@ -8972,70 +9048,53 @@ def _call_llm_impl(
             # Retries exhausted — fall through to first_err fallback handling.
             raise _last_transient
     except Exception as first_err:
-        if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
-            retry_kwargs = dict(kwargs)
-            retry_kwargs.pop("temperature", None)
+        # Iterative recovery for stacked provider parameter quirks (#78273):
+        # reasoning models may reject temperature AND max_tokens on the same
+        # request. Peel one offending key per attempt (prefer translating
+        # max_tokens → max_completion_tokens when asked). Surface the *last*
+        # error to later chains / callers.
+        _param_client_base = str(getattr(client, "base_url", "") or "")
+        _working_kwargs = dict(kwargs)
+        _param_err = first_err
+        for _param_attempt in range(_MAX_UNSUPPORTED_PARAM_RETRIES):
+            _next_kwargs = _next_unsupported_param_kwargs(
+                _working_kwargs,
+                _param_err,
+                client_base_url=_param_client_base,
+            )
+            if _next_kwargs is None:
+                break
             logger.info(
-                "Auxiliary %s: provider rejected temperature; retrying once without it",
+                "Auxiliary %s: provider rejected a request parameter; "
+                "retrying with adjusted kwargs (attempt %d/%d)",
                 task or "call",
+                _param_attempt + 1,
+                _MAX_UNSUPPORTED_PARAM_RETRIES,
             )
             try:
                 return _validate_llm_response(
                     _relay_sync_completion(
                         client,
-                        retry_kwargs,
+                        _next_kwargs,
                         provider=resolved_provider,
                         api_mode=resolved_api_mode,
                     ), task)
             except Exception as retry_err:
-                retry_err_str = str(retry_err)
-                # If retry still fails, fall through to the max_tokens /
-                # payment / auth chains below using the temperature-stripped
-                # kwargs.  Re-raise only if the retry hit something those
-                # chains won't handle.
+                _param_err = retry_err
+                _working_kwargs = _next_kwargs
+                first_err = retry_err
+                kwargs = _working_kwargs
+                if _looks_like_unsupported_param_error(retry_err):
+                    continue
+                # payment / connection / auth / rate-limit → fall through
                 if not (
                     _is_payment_error(retry_err)
                     or _is_connection_error(retry_err)
                     or _is_auth_error(retry_err)
-                    or "max_tokens" in retry_err_str
-                    or "unsupported_parameter" in retry_err_str
+                    or _is_rate_limit_error(retry_err)
                 ):
                     raise
-                first_err = retry_err
-                kwargs = retry_kwargs
-
-        err_str = str(first_err)
-        # ZAI vision models (glm-4v-flash etc.) return error code 1210
-        # ("API 调用参数有误") when max_tokens is passed on multimodal
-        # calls.  The error message does NOT contain "max_tokens" so the
-        # generic retry below never fires.  Detect the ZAI-specific error
-        # and strip max_tokens before retrying.
-        _is_zai_param_error = (
-            "1210" in err_str
-            and "bigmodel" in str(getattr(client, "base_url", ""))
-        )
-        if max_tokens is not None and (
-            "max_tokens" in err_str
-            or "unsupported_parameter" in err_str
-            or _is_unsupported_parameter_error(first_err, "max_tokens")
-            or _is_zai_param_error
-        ):
-            kwargs.pop("max_tokens", None)
-            kwargs.pop("max_completion_tokens", None)
-            try:
-                return _validate_llm_response(
-                    _relay_sync_completion(
-                        client,
-                        kwargs,
-                        provider=resolved_provider,
-                        api_mode=resolved_api_mode,
-                    ), task)
-            except Exception as retry_err:
-                # If the max_tokens retry also hits a payment or connection
-                # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
-                    raise
-                first_err = retry_err
+                break
 
         # ── Stale-model self-heal (Nous Portal recommendation drift) ───
         # A long-lived process can pin a Portal-recommended model that has
@@ -9675,66 +9734,48 @@ async def _async_call_llm_impl(
                 ),
                 task)
     except Exception as first_err:
-        if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
-            retry_kwargs = dict(kwargs)
-            retry_kwargs.pop("temperature", None)
+        # Same iterative unsupported-parameter recovery as call_llm (#78273).
+        _param_client_base = str(getattr(client, "base_url", "") or "")
+        _working_kwargs = dict(kwargs)
+        _param_err = first_err
+        for _param_attempt in range(_MAX_UNSUPPORTED_PARAM_RETRIES):
+            _next_kwargs = _next_unsupported_param_kwargs(
+                _working_kwargs,
+                _param_err,
+                client_base_url=_param_client_base,
+            )
+            if _next_kwargs is None:
+                break
             logger.info(
-                "Auxiliary %s (async): provider rejected temperature; retrying once without it",
+                "Auxiliary %s (async): provider rejected a request parameter; "
+                "retrying with adjusted kwargs (attempt %d/%d)",
                 task or "call",
+                _param_attempt + 1,
+                _MAX_UNSUPPORTED_PARAM_RETRIES,
             )
             try:
                 return _validate_llm_response(
                     await _relay_async_completion(
                         client,
-                        retry_kwargs,
+                        _next_kwargs,
                         provider=resolved_provider,
                         api_mode=resolved_api_mode,
                     ), task)
             except Exception as retry_err:
-                retry_err_str = str(retry_err)
+                _param_err = retry_err
+                _working_kwargs = _next_kwargs
+                first_err = retry_err
+                kwargs = _working_kwargs
+                if _looks_like_unsupported_param_error(retry_err):
+                    continue
                 if not (
                     _is_payment_error(retry_err)
                     or _is_connection_error(retry_err)
                     or _is_auth_error(retry_err)
-                    or "max_tokens" in retry_err_str
-                    or "unsupported_parameter" in retry_err_str
+                    or _is_rate_limit_error(retry_err)
                 ):
                     raise
-                first_err = retry_err
-                kwargs = retry_kwargs
-
-        err_str = str(first_err)
-        # ZAI vision models (glm-4v-flash etc.) return error code 1210
-        # ("API 调用参数有误") when max_tokens is passed on multimodal
-        # calls.  The error message does NOT contain "max_tokens" so the
-        # generic retry below never fires.  Detect the ZAI-specific error
-        # and strip max_tokens before retrying.
-        _is_zai_param_error = (
-            "1210" in err_str
-            and "bigmodel" in str(getattr(client, "base_url", ""))
-        )
-        if max_tokens is not None and (
-            "max_tokens" in err_str
-            or "unsupported_parameter" in err_str
-            or _is_unsupported_parameter_error(first_err, "max_tokens")
-            or _is_zai_param_error
-        ):
-            kwargs.pop("max_tokens", None)
-            kwargs.pop("max_completion_tokens", None)
-            try:
-                return _validate_llm_response(
-                    await _relay_async_completion(
-                        client,
-                        kwargs,
-                        provider=resolved_provider,
-                        api_mode=resolved_api_mode,
-                    ), task)
-            except Exception as retry_err:
-                # If the max_tokens retry also hits a payment or connection
-                # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
-                    raise
-                first_err = retry_err
+                break
 
         # ── Stale-model self-heal (Nous Portal recommendation drift) ───
         # See the sync call_llm() path for the rationale: a long-lived process

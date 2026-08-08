@@ -124,3 +124,131 @@ class TestMaxTokensRetryHardening:
 
         assert client.chat.completions.create.call_count == 1
 
+
+
+class TestStackedUnsupportedParamRetry:
+    """#78273: temperature then max_tokens on the same request must both recover.
+
+    gpt-5 / o-series reject temperature (fixed server default) and require
+    max_completion_tokens instead of max_tokens. A single-shot temperature
+    strip left the second 400 unhandled / mis-reported.
+    """
+
+    def test_sync_temperature_then_max_tokens_translates_and_succeeds(self):
+        client = MagicMock()
+        client.base_url = "https://api.openai.com/v1"
+        temp_err = RuntimeError(
+            "Unsupported value: 'temperature' does not support 0.3 with this model. "
+            "Only the default (1) value is supported."
+        )
+        mt_err = RuntimeError(
+            "Unsupported parameter: 'max_tokens' is not supported with this model. "
+            "Use 'max_completion_tokens' instead."
+        )
+
+        def _create(**kwargs):
+            if "temperature" in kwargs:
+                raise temp_err
+            if "max_tokens" in kwargs:
+                raise mt_err
+            assert kwargs.get("max_completion_tokens") == 500
+            assert "temperature" not in kwargs
+            return _dummy_response()
+
+        client.chat.completions.create.side_effect = _create
+
+        # Force both params into the wire kwargs (title_generation path).
+        def _fake_build(*_a, **_k):
+            return {
+                "model": "gpt-5",
+                "messages": [{"role": "user", "content": "hi"}],
+                "temperature": 0.3,
+                "max_tokens": 500,
+                "timeout": 30.0,
+            }
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openai-direct", "gpt-5", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(client, "gpt-5"),
+            ),
+            patch("agent.auxiliary_client._build_call_kwargs", side_effect=_fake_build),
+            patch(
+                "agent.auxiliary_client._validate_llm_response",
+                side_effect=lambda resp, _task, **_kw: resp,
+            ),
+        ):
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                temperature=0.3,
+                max_tokens=500,
+            )
+
+        assert result == {"ok": True}
+        # initial + temp strip + max_tokens→max_completion_tokens
+        assert client.chat.completions.create.call_count == 3
+        last = client.chat.completions.create.call_args_list[-1].kwargs
+        assert last.get("max_completion_tokens") == 500
+        assert "temperature" not in last
+        assert "max_tokens" not in last
+
+    @pytest.mark.asyncio
+    async def test_async_temperature_then_max_tokens_translates_and_succeeds(self):
+        client = MagicMock()
+        client.base_url = "https://api.openai.com/v1"
+        temp_err = RuntimeError(
+            "Unsupported value: 'temperature' does not support 0.3 with this model."
+        )
+        mt_err = RuntimeError(
+            "Unsupported parameter: 'max_tokens' is not supported with this model. "
+            "Use 'max_completion_tokens' instead."
+        )
+
+        async def _acreate(**kwargs):
+            if "temperature" in kwargs:
+                raise temp_err
+            if "max_tokens" in kwargs:
+                raise mt_err
+            assert kwargs.get("max_completion_tokens") == 500
+            return _dummy_response()
+
+        client.chat.completions.create = AsyncMock(side_effect=_acreate)
+
+        def _fake_build(*_a, **_k):
+            return {
+                "model": "gpt-5",
+                "messages": [{"role": "user", "content": "hi"}],
+                "temperature": 0.3,
+                "max_tokens": 500,
+                "timeout": 30.0,
+            }
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openai-direct", "gpt-5", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(client, "gpt-5"),
+            ),
+            patch("agent.auxiliary_client._build_call_kwargs", side_effect=_fake_build),
+            patch(
+                "agent.auxiliary_client._validate_llm_response",
+                side_effect=lambda resp, _task, **_kw: resp,
+            ),
+        ):
+            result = await async_call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                temperature=0.3,
+                max_tokens=500,
+            )
+
+        assert result == {"ok": True}
+        assert client.chat.completions.create.call_count == 3

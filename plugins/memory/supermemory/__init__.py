@@ -750,7 +750,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._session_turns.append({"user": clean_user, "assistant": clean_assistant})
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        if not self._active or not self._write_enabled or not self._client or not self._session_id:
+        if not self._active or not self._auto_capture or not self._write_enabled or not self._client or not self._session_id:
             return
         cleaned = []
         for message in messages or []:
@@ -791,9 +791,10 @@ class SupermemoryMemoryProvider(MemoryProvider):
         **kwargs,
     ) -> None:
         """Flush any buffered turns from the old session as one document, then reset for the new session."""
-        if not self._active or not self._write_enabled or not self._client:
+        if not self._active or not self._auto_capture or not self._write_enabled or not self._client:
             self._session_id = str(new_session_id or "").strip() or self._session_id
             self._session_turns = []
+            self._turn_count = 0
             return
 
         old_session_id = self._session_id
@@ -851,7 +852,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         # Emergency fallback (crashes only). Buffer is cleared on normal on_session_end().
-        if self._active and self._write_enabled and self._client and self._session_turns and self._session_id:
+        if self._active and self._auto_capture and self._write_enabled and self._client and self._session_turns and self._session_id:
             logger.warning("Supermemory: Saving session via shutdown (session=%s, turns=%d)", self._session_id, len(self._session_turns))
 
             messages: list[dict] = []

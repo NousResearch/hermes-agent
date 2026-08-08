@@ -4209,6 +4209,15 @@ class GatewaySlashCommandsMixin:
                 new_session_id = tmp_agent.session_id
                 rotated = new_session_id != session_entry.session_id
                 _in_place = bool(getattr(tmp_agent, "_last_compaction_in_place", False))
+                # Did the compressor produce a compacted list whose DB persist
+                # was rolled back (locked/contended state.db, FK error, ENOSPC)?
+                # That is a TRANSIENT, retryable failure which leaves session_id
+                # unchanged — the same surface signature as a genuine no-op — so
+                # without this flag the reply reports a success (or the bland
+                # "No changes") for a save that actually failed.
+                _persist_failed = bool(
+                    getattr(tmp_agent, "_last_compaction_persist_failed", False)
+                )
 
                 # Persist the compressed transcript BEFORE repointing the live
                 # session onto the new session_id. Order matters: if we
@@ -4316,6 +4325,20 @@ class GatewaySlashCommandsMixin:
                 await self._cleanup_agent_resources_off_loop(
                     tmp_agent, context="manual compression"
                 )
+            # A compacted transcript was produced but its DB write was rolled
+            # back, so session_id is unchanged and NOTHING was persisted. On the
+            # surface that is identical to a genuine no-op, but it is a
+            # TRANSIENT, retryable FAILURE — report it plainly and stop here.
+            # There is nothing persisted to report a before/after over, and the
+            # next request resends the same context. Nothing was lost: the
+            # original transcript is untouched.
+            if _persist_failed and not (rotated or _in_place):
+                _pf_lines = [t("gateway.compress.persist_failed")]
+                if focus_topic:
+                    _pf_lines.append(
+                        t("gateway.compress.focus_line", topic=focus_topic)
+                    )
+                return "\n".join(_pf_lines)
             lines = [f"🗜️ {summary['headline']}"]
             if focus_topic:
                 lines.append(t("gateway.compress.focus_line", topic=focus_topic))

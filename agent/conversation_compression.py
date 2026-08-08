@@ -2309,6 +2309,16 @@ def compress_context(
     # Set True once the in-place DB write actually completes (the DB block can
     # raise and skip it). Surfaced to the gateway via agent._last_compaction_in_place.
     compacted_in_place = False
+    # Set True when the compressor DID produce a compacted list but the DB write
+    # that would persist it (the rotation's child-session create, or the
+    # in-place archive_and_compact) failed and was rolled back — a locked /
+    # contended state.db, an FK error, ENOSPC. The returned list is then
+    # compacted in memory while the STORE is untouched, so the next request
+    # resends the original context. Callers read
+    # ``agent._last_compaction_persist_failed`` to tell this TRANSIENT,
+    # retryable failure apart from a genuine nothing-to-compress no-op: both
+    # leave ``session_id`` unchanged, so an id-diff alone cannot separate them.
+    persist_failed = False
     logger.info(
         "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
         agent.session_id or "none", _pre_msg_count,
@@ -3385,11 +3395,26 @@ def compress_context(
                                 "_proactive_prune_rearm_tokens"
                             ]
                         )
+                    # The compacted list was produced but NOT persisted (we
+                    # rolled back to the parent). Flag it so callers report a
+                    # retryable save failure instead of a benign "No changes"
+                    # no-op — session_id is unchanged either way.
+                    persist_failed = True
                 split_status = (
                     "aborted"
                     if locals().get("old_session_id") is None and not in_place
                     else "failed_not_indexed"
                 )
+                # Sibling case: any other exception out of this block also means
+                # the DB persist did not complete cleanly, so the in-memory
+                # `compressed` list was never written to the store — flag it for
+                # the same retryable-failure report. Exception: a genuine
+                # in-place success sets `compacted_in_place` BEFORE any later
+                # bookkeeping step that could raise here, so don't override it
+                # (the archive already landed; a later bookkeeping failure is
+                # not a persistence failure).
+                if not compacted_in_place:
+                    persist_failed = True
                 # If the rotation rolled back to the parent (orphan-avoidance
                 # above), agent.session_id is the still-indexed parent and
                 # old_session_id was cleared — so this is recovery, not an
@@ -3513,6 +3538,12 @@ def compress_context(
         # rewrite on the same id) when compaction happened in place. See #38763.
         agent._last_compression_attempt_in_place = compacted_in_place
         agent._last_compaction_in_place = compacted_in_place
+        # Surface the persist-failure signal (rotation-independent). True when a
+        # compacted list was produced but the DB write to persist it was rolled
+        # back. Callers read this to distinguish a TRANSIENT, retryable save
+        # failure from a genuine nothing-to-compress no-op — both leave
+        # session_id unchanged, so the id-diff alone can't tell them apart.
+        agent._last_compaction_persist_failed = persist_failed
 
         # Keep the post-compression rough estimate for diagnostics, but do not
         # treat it as provider-reported prompt usage. Schema-heavy rough estimates

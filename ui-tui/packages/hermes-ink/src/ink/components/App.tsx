@@ -817,15 +817,29 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       return
     }
 
+    if ((m.button & 0x20) !== 0) {
+      if (app.mouseCaptureTarget) {
+        app.props.onMouseDragAt(app.mouseCaptureTarget, col, row, baseButton)
+
+        return
+      }
+
+      if (baseButton !== 0) {
+        return
+      }
+
+      // Drag motion: mode-aware extension (char/word/line). onSelectionDrag
+      // calls notifySelectionChange internally — no extra onSelectionChange.
+      app.props.onSelectionDrag(col, row)
+
+      return
+    }
+
     if (baseButton !== 0) {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
 
       if (baseButton === 2 && hasSelection(sel)) {
-        if ((m.button & 0x20) !== 0) {
-          return
-        }
-
         if (!app.props.getSelectedText()) {
           return
         }
@@ -851,20 +865,6 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       }
 
       app.props.onMouseDownAt(col, row, baseButton)
-
-      return
-    }
-
-    if ((m.button & 0x20) !== 0) {
-      if (app.mouseCaptureTarget) {
-        app.props.onMouseDragAt(app.mouseCaptureTarget, col, row, baseButton)
-
-        return
-      }
-
-      // Drag motion: mode-aware extension (char/word/line). onSelectionDrag
-      // calls notifySelectionChange internally — no extra onSelectionChange.
-      app.props.onSelectionDrag(col, row)
 
       return
     }
@@ -931,20 +931,23 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     return
   }
 
-  // Release: end the drag even for non-zero button codes. Some terminals
-  // encode release with the motion bit or button=3 "no button" (carried
-  // over from pre-SGR X10 encoding) — filtering those would orphan
-  // isDragging=true and leave drag-to-scroll's timer running until the
-  // scroll boundary. Only act on non-left releases when we ARE dragging
-  // (so an unrelated middle/right click-release doesn't touch selection).
+  // Release: SGR commonly encodes button release as low bits 3 ("no
+  // button"), with modifier bits preserved (e.g. meta-left press 8 →
+  // release 11). If a left press started a selection, treat that release as
+  // the matching left release so modified link clicks still activate.
+  // Non-left releases only end an active drag; unrelated middle/right
+  // click-release should not touch selection.
+  const isLeftRelease = baseButton === 0 || (baseButton === 3 && sel.isDragging)
+  const releaseButton = isLeftRelease ? 0 : baseButton
+
   if (app.mouseCaptureTarget) {
-    app.props.onMouseUpAt(app.mouseCaptureTarget, col, row, baseButton)
+    app.props.onMouseUpAt(app.mouseCaptureTarget, col, row, releaseButton)
     app.mouseCaptureTarget = undefined
 
     return
   }
 
-  if (baseButton !== 0) {
+  if (!isLeftRelease) {
     if (!sel.isDragging) {
       return
     }
@@ -954,6 +957,8 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
 
     return
   }
+
+  const hadSelection = hasSelection(sel)
 
   finishSelection(sel)
 
@@ -969,7 +974,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
   // set anchor+focus (hasSelection true), so release just keeps the
   // highlight. The anchor check guards against an orphaned release (no
   // prior press — e.g. button was held when mouse tracking was enabled).
-  if (!hasSelection(sel) && sel.anchor) {
+  if (!hadSelection && sel.anchor) {
     // Single click: dispatch DOM click immediately (cursor repositioning
     // etc. are latency-sensitive). If no DOM handler consumed it, defer
     // the hyperlink check so a second click can cancel it.

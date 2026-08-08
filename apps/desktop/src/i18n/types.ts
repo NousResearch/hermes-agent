@@ -1555,6 +1555,7 @@ export interface Translations {
     projects: {
       sectionLabel: string
       home: string
+      autoDiscovered: string
       newButton: string
       createTitle: string
       createDesc: string

@@ -1644,6 +1644,7 @@ export const zhHant = defineLocale({
     projects: {
       sectionLabel: '專案',
       home: '主頁',
+      autoDiscovered: '自動探索',
       newButton: '新增專案',
       createTitle: '新增專案',
       createDesc: '為工作區命名並新增一個或多個資料夾。',

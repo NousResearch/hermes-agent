@@ -2052,6 +2052,7 @@ export const zh: Translations = {
     projects: {
       sectionLabel: '项目',
       home: '主页',
+      autoDiscovered: '自动发现',
       newButton: '新建项目',
       createTitle: '新建项目',
       createDesc: '为工作区命名并添加一个或多个文件夹。',

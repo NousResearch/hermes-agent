@@ -28,7 +28,10 @@ import { WorkspaceAddButton } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
 // the lead's default tertiary. The glyph wrapper centers + caps size either way.
-export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
+// Auto-discovered repos (git lanes Desktop found by scanning disk, not rows in
+// projects.db) get the `repo` glyph so a glance tells explicit projects
+// (`folder-library`) apart from incidental disk/session findings.
+export function projectIcon({ color, icon, isAuto, isNoProject }: SidebarProjectTree) {
   if (color && !icon) {
     return (
       <SidebarRowLeadGlyph>
@@ -39,7 +42,10 @@ export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
 
   return (
     <SidebarRowLeadGlyph style={color ? { color } : undefined}>
-      <Codicon name={icon || (isNoProject ? 'home' : 'folder-library')} size={SIDEBAR_LEAD_ICON_SIZE} />
+      <Codicon
+        name={icon || (isNoProject ? 'home' : isAuto ? 'repo' : 'folder-library')}
+        size={SIDEBAR_LEAD_ICON_SIZE}
+      />
     </SidebarRowLeadGlyph>
   )
 }
@@ -112,6 +118,16 @@ export function ProjectOverviewRow({
     <SidebarRowLead>{projectIcon(project)}</SidebarRowLead>
   )
 
+  const labelLink = (
+    <SidebarRowLink
+      aria-label={s.projects.enter(project.label)}
+      labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
+      onClick={() => onEnter?.(project.id)}
+    >
+      {project.label}
+    </SidebarRowLink>
+  )
+
   const shell = (
     <SidebarRowShell
       actions={
@@ -129,13 +145,11 @@ export function ProjectOverviewRow({
     >
       <SidebarRowCluster className="min-w-0 flex-1">
         {lead}
-        <SidebarRowLink
-          aria-label={s.projects.enter(project.label)}
-          labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
-          onClick={() => onEnter?.(project.id)}
-        >
-          {project.label}
-        </SidebarRowLink>
+        {project.isAuto ? (
+          <Tip label={s.projects.autoDiscovered}>{labelLink}</Tip>
+        ) : (
+          labelLink
+        )}
         {preview.length > 0 ? (
           <Tip label={s.projects.toggle(project.label, !open)}>
             <button

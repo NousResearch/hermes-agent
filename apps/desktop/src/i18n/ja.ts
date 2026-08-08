@@ -1699,6 +1699,7 @@ export const ja = defineLocale({
     projects: {
       sectionLabel: 'プロジェクト',
       home: 'ホーム',
+      autoDiscovered: '自動検出',
       newButton: '新規プロジェクト',
       createTitle: '新規プロジェクト',
       createDesc: 'ワークスペースに名前を付け、1つ以上のフォルダを追加します。',

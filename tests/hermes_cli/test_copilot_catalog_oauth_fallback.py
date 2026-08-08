@@ -10,9 +10,14 @@ only consulted env vars / ``gh auth token`` and never read the
 credential pool.
 """
 
+import json
 from unittest.mock import patch
 
-from hermes_cli.models import _resolve_copilot_catalog_api_key
+from hermes_cli.models import (
+    _resolve_copilot_catalog_api_key,
+    _resolve_copilot_catalog_api_key_candidates,
+    provider_model_ids,
+)
 
 
 class TestCopilotCatalogApiKeyResolution:
@@ -61,5 +66,97 @@ class TestCopilotCatalogApiKeyResolution:
             assert _resolve_copilot_catalog_api_key() == "tid_from_second"
             assert attempts == ["gho_unsupported_account", "gho_valid_token"]
 
+    def test_all_pool_entries_fail_exchange_returns_raw_catalog_fallback(self):
+        """All exchanges fail → return first valid raw token so /models can try it."""
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": ""},
+        ), patch(
+            "hermes_cli.auth.read_credential_pool",
+            return_value=[
+                {"access_token": "gho_expired_a"},
+                {"access_token": "gho_expired_b"},
+            ],
+        ), patch(
+            "hermes_cli.copilot_auth.exchange_copilot_token",
+            side_effect=ValueError("Copilot token exchange failed"),
+        ):
+            assert _resolve_copilot_catalog_api_key() == "gho_expired_a"
 
+    def test_all_pool_entries_fail_exchange_returns_raw_candidates_in_pool_order(self):
+        """Catalog probing must be able to try later raw pool entries."""
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": ""},
+        ), patch(
+            "hermes_cli.auth.read_credential_pool",
+            return_value=[
+                {"access_token": "gho_expired_a"},
+                {"access_token": "gho_expired_b"},
+            ],
+        ), patch(
+            "hermes_cli.copilot_auth.exchange_copilot_token",
+            side_effect=ValueError("Copilot token exchange failed"),
+        ):
+            assert _resolve_copilot_catalog_api_key_candidates() == [
+                "gho_expired_a",
+                "gho_expired_b",
+            ]
+
+    def test_provider_model_ids_uses_raw_pool_token_when_exchange_fails(self):
+        """If token exchange fails but /models accepts the raw token, use the live catalog."""
+        attempted: list[str] = []
+
+        def fake_fetch(api_key):
+            attempted.append(api_key)
+            return ["gpt-5.5", "claude-sonnet-4.6"]
+
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": ""},
+        ), patch(
+            "hermes_cli.auth.read_credential_pool",
+            return_value=[{"access_token": "gho_raw_catalog_token"}],
+        ), patch(
+            "hermes_cli.copilot_auth.exchange_copilot_token",
+            side_effect=ValueError("Copilot token exchange failed: HTTP Error 404"),
+        ), patch(
+            "hermes_cli.models._fetch_github_models",
+            side_effect=fake_fetch,
+        ):
+            assert provider_model_ids("copilot") == ["gpt-5.5", "claude-sonnet-4.6"]
+
+        assert attempted == ["gho_raw_catalog_token"]
+
+    def test_provider_model_ids_tries_later_raw_pool_token_when_first_fails_models(self):
+        """A syntactically valid raw pool[0] must not wedge pool[1]."""
+        attempted: list[str] = []
+
+        def fake_fetch(api_key):
+            attempted.append(api_key)
+            if api_key == "gho_raw_first":
+                return None
+            if api_key == "gho_raw_second":
+                return ["gpt-5.5", "claude-sonnet-4.6"]
+            raise AssertionError(f"unexpected api key {api_key}")
+
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": ""},
+        ), patch(
+            "hermes_cli.auth.read_credential_pool",
+            return_value=[
+                {"access_token": "gho_raw_first"},
+                {"access_token": "gho_raw_second"},
+            ],
+        ), patch(
+            "hermes_cli.copilot_auth.exchange_copilot_token",
+            side_effect=ValueError("Copilot token exchange failed: HTTP Error 404"),
+        ), patch(
+            "hermes_cli.models._fetch_github_models",
+            side_effect=fake_fetch,
+        ):
+            assert provider_model_ids("copilot") == ["gpt-5.5", "claude-sonnet-4.6"]
+
+        assert attempted == ["gho_raw_first", "gho_raw_second"]
 

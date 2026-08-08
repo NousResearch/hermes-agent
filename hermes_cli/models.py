@@ -2647,8 +2647,8 @@ def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | Non
     return {"service_tier": "priority"}
 
 
-def _resolve_copilot_catalog_api_key() -> str:
-    """Best-effort GitHub token for fetching the Copilot model catalog.
+def _resolve_copilot_catalog_api_key_candidates() -> list[str]:
+    """Best-effort GitHub tokens for fetching the Copilot model catalog.
 
     Resolution order:
       1. ``resolve_api_key_provider_credentials("copilot")`` — env vars
@@ -2663,9 +2663,11 @@ def _resolve_copilot_catalog_api_key() -> str:
     Without (2), users whose only Copilot credential is in the pool see
     the ``/model`` picker fall back to a stale hardcoded list because the
     live catalog fetch silently 401s. To avoid wedging on a malformed pool
-    entry, each candidate is exchanged via ``exchange_copilot_token`` —
-    only entries that actually exchange successfully are returned, so a
-    later valid entry is reachable when an earlier one is unsupported.
+    entry, each candidate is exchanged via ``exchange_copilot_token`` first,
+    so a later valid entry is reachable when an earlier one is unsupported.
+    If no exchange succeeds, validated raw pool tokens are returned in pool
+    order as catalog-only fallbacks because ``/models`` can accept raw
+    Copilot credentials even when ``/copilot_internal/v2/token`` is unavailable.
     """
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
@@ -2673,7 +2675,7 @@ def _resolve_copilot_catalog_api_key() -> str:
         creds = resolve_api_key_provider_credentials("copilot")
         api_key = str(creds.get("api_key") or "").strip()
         if api_key:
-            return api_key
+            return [api_key]
     except Exception:
         pass
 
@@ -2684,6 +2686,7 @@ def _resolve_copilot_catalog_api_key() -> str:
             validate_copilot_token,
         )
 
+        raw_catalog_fallbacks: list[str] = []
         for entry in read_credential_pool("copilot"):
             if not isinstance(entry, dict):
                 continue
@@ -2696,13 +2699,37 @@ def _resolve_copilot_catalog_api_key() -> str:
             try:
                 api_token, _expires_at = exchange_copilot_token(raw)
             except Exception:
+                if raw not in raw_catalog_fallbacks:
+                    raw_catalog_fallbacks.append(raw)
                 continue
             if api_token:
-                return api_token
+                return [api_token]
+            if raw not in raw_catalog_fallbacks:
+                raw_catalog_fallbacks.append(raw)
+        if raw_catalog_fallbacks:
+            return raw_catalog_fallbacks
     except Exception:
         pass
 
-    return ""
+    return []
+
+
+def _resolve_copilot_catalog_api_key() -> str:
+    """Return the first Copilot catalog credential candidate, if any."""
+    candidates = _resolve_copilot_catalog_api_key_candidates()
+    return candidates[0] if candidates else ""
+
+
+def _fetch_first_copilot_catalog() -> Optional[list[str]]:
+    """Try Copilot catalog credentials in order until one returns models."""
+    for api_key in _resolve_copilot_catalog_api_key_candidates():
+        try:
+            live = _fetch_github_models(api_key)
+        except Exception:
+            continue
+        if live:
+            return live
+    return None
 
 
 # Providers where models.dev is treated as authoritative: curated static
@@ -2850,7 +2877,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
     if normalized in {"copilot", "copilot-acp"}:
         try:
-            live = _fetch_github_models(_resolve_copilot_catalog_api_key())
+            live = _fetch_first_copilot_catalog()
             if live:
                 return live
         except Exception:

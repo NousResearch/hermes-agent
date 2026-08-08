@@ -2,6 +2,11 @@
 
 from typing import Optional
 
+try:
+    from aiohttp import web
+except ImportError:
+    web = None  # type: ignore[assignment]
+
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None

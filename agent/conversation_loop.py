@@ -1479,6 +1479,37 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    # ── Plugin pre-LLM veto (inspired by Claude Cowork inference hooks) ──
+    # A pre_llm_call hook returned {"action": "block", "message": "..."}:
+    # stop the turn before ANY provider request. The block message becomes
+    # the assistant response so message-role alternation stays valid for
+    # session resume, and no prompt bytes ever reach the provider.
+    if _ctx.plugin_block_message:
+        _block_response = _ctx.plugin_block_message
+        messages.append({"role": "assistant", "content": _block_response})
+        agent._delivered_interim_texts = set()
+        agent._incremental_persistence_failed = False
+        # Normally reset just before the loop below; reset here too so the
+        # finalizer's context-engine notification can't see a stale prior
+        # turn's usage on a vetoed turn.
+        agent._last_turn_usage = None
+        from agent.turn_finalizer import finalize_turn as _finalize_blocked_turn
+        return _finalize_blocked_turn(
+            agent,
+            final_response=_block_response,
+            api_call_count=0,
+            interrupted=False,
+            failed=False,
+            messages=messages,
+            conversation_history=conversation_history,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            _should_review_memory=False,
+            _turn_exit_reason="blocked_by_plugin_pre_llm_call",
+        )
+
     # Commentary deduplication spans all provider continuations and tool calls
     # within one user turn, but must not suppress the same phrase next turn.
     agent._delivered_interim_texts = set()

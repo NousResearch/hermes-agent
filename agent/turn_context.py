@@ -334,6 +334,12 @@ class TurnContext:
     should_review_memory: bool = False
     # Context contributed by ``pre_llm_call`` plugins (appended to user message).
     plugin_user_context: str = ""
+    # Block directive from a ``pre_llm_call`` plugin: when non-empty, the turn
+    # is vetoed BEFORE any provider request is made and this message is
+    # returned to the user. Inspired by Claude Cowork / Claude Enterprise
+    # "inference hooks" (Aug 2026): a policy layer inspects every prompt
+    # before it reaches the model and returns an allow/deny verdict.
+    plugin_block_message: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
     # Turn-start preflight already proved an immediate retry ineffective.
@@ -1064,6 +1070,7 @@ def build_turn_context(
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
+    plugin_block_message = ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
@@ -1094,6 +1101,22 @@ def build_turn_context(
             _spill_config_cached = None
         for r in _pre_results:
             _piece: str = ""
+            if isinstance(r, dict) and r.get("action") == "block":
+                # Inference-hook-style veto (inspired by Claude Cowork /
+                # Claude Enterprise inference hooks, Aug 2026): a plugin may
+                # return {"action": "block", "message": "..."} to stop the
+                # turn before ANY provider request is made. The message is
+                # returned to the user in place of a model response. First
+                # block wins; a block without a message is ignored (matching
+                # the pre_tool_call directive contract).
+                _block_msg = r.get("message")
+                if (
+                    not plugin_block_message
+                    and isinstance(_block_msg, str)
+                    and _block_msg.strip()
+                ):
+                    plugin_block_message = _block_msg.strip()
+                continue
             if isinstance(r, dict) and r.get("context"):
                 _piece = str(r["context"])
             elif isinstance(r, str) and r.strip():
@@ -1276,6 +1299,7 @@ def build_turn_context(
         current_turn_user_idx=current_turn_user_idx,
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
+        plugin_block_message=plugin_block_message,
         ext_prefetch_cache=ext_prefetch_cache,
         preflight_compression_blocked=_preflight_compression_blocked,
     )

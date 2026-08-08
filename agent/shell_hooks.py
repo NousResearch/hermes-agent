@@ -750,6 +750,16 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
                 return {"action": "continue", "message": message.strip()}
         return None
 
+    if event == "pre_llm_call":
+        # Inference-hook-style veto (inspired by Claude Cowork / Claude
+        # Enterprise inference hooks): a shell hook may block the turn before
+        # any provider request. Both the Hermes-canonical and the
+        # Claude-Code-style shapes are accepted, mirroring pre_tool_call.
+        if data.get("action") == "block":
+            return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
+        if data.get("decision") == "block":
+            return {"action": "block", "message": _block_message(data.get("reason"), data.get("message"))}
+
     context = data.get("context")
     if isinstance(context, str) and context.strip():
         return {"context": context}

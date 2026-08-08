@@ -383,7 +383,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call or **block the turn** before it reaches the model. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -392,7 +392,7 @@ def register(ctx):
 |------|-----------|---------|
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
-| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
+| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message, or `{"action": "block", "message": str}` to veto the turn |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
@@ -522,7 +522,7 @@ def register(ctx):
 
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. Its return value can inject context into the current turn's user message, or block the turn entirely before any provider request is made.
 
 **Callback signature:**
 
@@ -542,7 +542,7 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 
 **Fires:** In `run_agent.py`, inside `run_conversation()`, after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 
-**Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection.
+**Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection. A callback may instead return a **block directive** to veto the turn before any provider request is made (inspired by Claude Cowork's inference hooks): the block message is returned to the user in place of a model response, and no prompt bytes ever reach the provider.
 
 ```python
 # Inject context
@@ -551,9 +551,14 @@ return {"context": "Recalled memories:\n- User likes Python\n- Working on hermes
 # Plain string (equivalent)
 return "Recalled memories:\n- User likes Python"
 
+# Block the turn before it reaches the model (DLP / policy enforcement)
+return {"action": "block", "message": "⛔ Blocked by policy: prompt contains a customer SSN."}
+
 # No injection
 return None
 ```
+
+**Block semantics:** the first valid block directive across all plugins wins; a block without a message is ignored. The blocked turn still persists a valid `user → assistant` pair to the session (the block message becomes the assistant response), so session resume and message-role alternation are unaffected. Zero API calls are made and the turn result carries `turn_exit_reason: "blocked_by_plugin_pre_llm_call"`.
 
 **Where context is injected:** Always the **user message**, never the system prompt. This preserves the prompt cache — the system prompt stays identical across turns, so cached tokens are reused. The system prompt is Hermes's territory (model guidance, tool enforcement, personality, skills). Plugins contribute context alongside the user's input.
 

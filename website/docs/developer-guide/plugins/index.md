@@ -672,7 +672,7 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation or block the turn before it reaches the model, and `pre_tool_call`, which can return a block/approve directive.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
@@ -680,7 +680,7 @@ The kanban lifecycle hooks fire **after** the board DB change commits, so a call
 
 ### `pre_llm_call` context injection
 
-This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
+When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
 
 #### Return format
 
@@ -691,11 +691,17 @@ return {"context": "Recalled memories:\n- User prefers dark mode\n- Last project
 # Plain string (equivalent to the dict form above)
 return "Recalled memories:\n- User prefers dark mode"
 
+# Block the turn before it reaches the model (DLP / policy middleware —
+# inspired by Claude Cowork's inference hooks)
+return {"action": "block", "message": "⛔ Blocked by policy: prompt contains a customer SSN."}
+
 # Return None or don't return → no injection (observer-only)
 return None
 ```
 
 Any non-None, non-empty return with a `"context"` key (or a plain non-empty string) is collected and appended to the user message for the current turn.
+
+A `{"action": "block", "message": "..."}` return vetoes the turn **before any provider request is made**: the message is delivered to the user in place of a model response, zero API calls happen, and the turn result carries `turn_exit_reason: "blocked_by_plugin_pre_llm_call"`. The blocked turn still persists a valid `user → assistant` pair (the block message becomes the assistant response), so message-role alternation and session resume are unaffected. The first valid block across all plugins wins; a block without a message is ignored.
 
 #### Oversized-context spill
 

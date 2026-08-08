@@ -2114,6 +2114,11 @@ class PluginManager:
             {"context": "recalled text..."}
             "recalled text..."          # plain string, equivalent
 
+        or a block directive that vetoes the turn before any provider
+        request is made (inspired by Claude Cowork inference hooks)::
+
+            {"action": "block", "message": "Reason shown to the user"}
+
         Context is ALWAYS injected into the user message, never the
         system prompt.  This preserves the prompt cache prefix — the
         system prompt stays identical across turns so cached tokens

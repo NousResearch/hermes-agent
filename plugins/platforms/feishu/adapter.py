@@ -4952,7 +4952,7 @@ class FeishuAdapter(BasePlatformAdapter):
             extra_ua_tags=["channel"],
         )
         self._ws_future = loop.run_in_executor(
-            None,
+            self._get_sdk_executor(),
             _run_official_feishu_ws_client,
             self._ws_client,
             self,

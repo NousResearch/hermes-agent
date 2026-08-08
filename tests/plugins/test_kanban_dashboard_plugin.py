@@ -8,6 +8,7 @@ REST surface without spinning up the whole dashboard.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -181,7 +182,7 @@ def test_dashboard_markdown_html_is_sanitized_before_render():
 
     repo_root = Path(__file__).resolve().parents[2]
     bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    js = bundle.read_text()
+    js = bundle.read_text(encoding="utf-8")
 
     assert "function sanitizeMarkdownHtml(html)" in js
     assert "MARKDOWN_ALLOWED_TAGS" in js
@@ -224,6 +225,54 @@ def test_task_detail_includes_links_and_events(client):
 # ---------------------------------------------------------------------------
 
 
+def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
+    secret = "ghp_" + "D" * 40
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "review me", "assignee": "builder"},
+    ).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "status": "review",
+            "assignee": "reviewer",
+            "summary": f"Implementation ready. {secret}",
+            "metadata": {"tests_run": 4, "token": secret},
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == "review"
+    with kb.connect() as conn:
+        run = kb.latest_run(conn, task["id"])
+        assert run is not None
+        assert run.outcome == "review_requested"
+        assert run.metadata is not None
+        assert run.metadata["tests_run"] == 4
+        assert secret not in str(run.summary)
+        assert secret not in json.dumps(run.metadata)
+        review_event = [
+            event for event in kb.list_events(conn, task["id"])
+            if event.kind == "review_requested"
+        ][-1]
+        assert secret not in json.dumps(review_event.payload)
+        assert review_event.payload is not None
+        assert review_event.payload["implementer"] == "builder"
+        assert review_event.payload["reviewer"] == "reviewer"
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == "ready"
+    assert response.json()["task"]["assignee"] == "builder"
+    with kb.connect() as conn:
+        assert any(
+            event.kind == "review_reopened"
+            for event in kb.list_events(conn, task["id"])
+        )
+
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 
@@ -259,6 +308,153 @@ def test_reopening_parent_demotes_ready_child(client):
         f"/api/plugins/kanban/tasks/{child['id']}"
     ).json()["task"]
     assert child_after_reopen["status"] == "todo"
+
+
+def test_reopening_parent_retracts_review_and_blocks_approval(client):
+    with kb.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent", assignee="planner")
+        assert kb.complete_task(conn, parent_id)
+        child_id = kb.create_task(
+            conn,
+            title="child in review",
+            assignee="reviewer",
+            parents=[parent_id],
+        )
+        grandchild_id = kb.create_task(
+            conn,
+            title="downstream",
+            assignee="writer",
+            parents=[child_id],
+        )
+        implementation = kb.claim_task(conn, child_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            child_id,
+            summary="ready",
+            expected_run_id=implementation.current_run_id,
+        )
+        active_review = kb.claim_review_task(conn, child_id)
+        assert active_review is not None
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{parent_id}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 200, response.text
+
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_id)
+        assert child is not None
+        assert child.status == "todo"
+        reclaimed = kb.latest_run(conn, child_id)
+        assert reclaimed is not None
+        assert reclaimed.outcome == "reclaimed"
+        assert kb.claim_review_task(conn, child_id) is None
+        assert not kb.complete_task(conn, child_id, summary="must not approve")
+        grandchild = kb.get_task(conn, grandchild_id)
+        assert grandchild is not None
+        assert grandchild.status == "todo"
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{parent_id}",
+        json={"status": "done"},
+    )
+    assert response.status_code == 200, response.text
+
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_id)
+        assert child is not None
+        assert child.status == "review"
+        review = kb.claim_review_task(conn, child_id)
+        assert review is not None
+        assert kb.complete_task(
+            conn,
+            child_id,
+            summary="approved after parent stabilized",
+            expected_run_id=review.current_run_id,
+        )
+        grandchild = kb.get_task(conn, grandchild_id)
+        assert grandchild is not None
+        assert grandchild.status == "ready"
+
+
+def test_reopening_parent_recursively_retracts_done_and_running_descendants(client):
+    with kb.connect() as conn:
+        parent_id = kb.create_task(conn, title="root", assignee="planner")
+        assert kb.complete_task(conn, parent_id)
+        child_id = kb.create_task(
+            conn,
+            title="accepted child",
+            assignee="builder",
+            parents=[parent_id],
+        )
+        assert kb.complete_task(conn, child_id)
+        grandchild_id = kb.create_task(
+            conn,
+            title="running grandchild",
+            assignee="writer",
+            parents=[child_id],
+        )
+        grandchild_run = kb.claim_task(conn, grandchild_id)
+        assert grandchild_run is not None
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{parent_id}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 200, response.text
+
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_id)
+        grandchild = kb.get_task(conn, grandchild_id)
+        assert child is not None and child.status == "todo"
+        assert grandchild is not None and grandchild.status == "todo"
+        assert grandchild.current_run_id is None
+        assert kb.claim_task(conn, grandchild_id) is None
+        reclaimed = kb.latest_run(conn, grandchild_id)
+        assert reclaimed is not None
+        assert reclaimed.outcome == "reclaimed"
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{parent_id}",
+        json={"status": "done"},
+    )
+    assert response.status_code == 200, response.text
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_id)
+        grandchild = kb.get_task(conn, grandchild_id)
+        assert child is not None and child.status == "ready"
+        assert grandchild is not None and grandchild.status == "todo"
+
+
+def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="active review", assignee="reviewer")
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="ready",
+            expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, task_id)
+        assert review is not None
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == "review"
+    assert response.json()["task"]["assignee"] == "reviewer"
+    with kb.connect() as conn:
+        run = kb.latest_run(conn, task_id)
+        assert run is not None
+        assert run.outcome == "reclaimed"
+        next_review = kb.claim_review_task(conn, task_id)
+        assert next_review is not None
 
 
 # ---------------------------------------------------------------------------
@@ -406,19 +602,57 @@ def test_bulk_status_ready(client):
     c2 = client.post("/api/plugins/kanban/tasks", json={"title": "c"}).json()["task"]
     # Parent-less tasks land in "ready" already; push them to blocked first.
     for tid in (a["id"], b["id"], c2["id"]):
-        client.patch(f"/api/plugins/kanban/tasks/{tid}",
-                     json={"status": "blocked", "block_reason": "wait"})
+        client.patch(
+            f"/api/plugins/kanban/tasks/{tid}",
+            json={"status": "blocked", "block_reason": "wait"},
+        )
 
-    r = client.post("/api/plugins/kanban/tasks/bulk",
-                    json={"ids": [a["id"], b["id"], c2["id"]], "status": "ready"})
-    assert r.status_code == 200
-    results = r.json()["results"]
-    assert all(r["ok"] for r in results)
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [a["id"], b["id"], c2["id"]], "status": "ready"},
+    )
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert all(item["ok"] for item in results)
     # All three are now ready.
     board = client.get("/api/plugins/kanban/board").json()
     ready = next(col for col in board["columns"] if col["name"] == "ready")
-    ids = {t["id"] for t in ready["tasks"]}
+    ids = {task["id"] for task in ready["tasks"]}
     assert {a["id"], b["id"], c2["id"]}.issubset(ids)
+
+
+def test_bulk_review_assignment_preserves_implementer_provenance(client):
+    tasks = [
+        client.post(
+            "/api/plugins/kanban/tasks",
+            json={"title": title, "assignee": "builder"},
+        ).json()["task"]
+        for title in ("review a", "review b")
+    ]
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={
+            "ids": [task["id"] for task in tasks],
+            "status": "review",
+            "assignee": "reviewer",
+            "summary": "ready",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert all(item["ok"] for item in response.json()["results"])
+    with kb.connect() as conn:
+        for task in tasks:
+            current = kb.get_task(conn, task["id"])
+            assert current is not None
+            assert current.status == "review"
+            assert current.assignee == "reviewer"
+            event = [
+                item for item in kb.list_events(conn, task["id"])
+                if item.kind == "review_requested"
+            ][-1]
+            assert event.payload is not None
+            assert event.payload["implementer"] == "builder"
+            assert event.payload["reviewer"] == "reviewer"
 
 
 # ---------------------------------------------------------------------------

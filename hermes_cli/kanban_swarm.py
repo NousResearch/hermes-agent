@@ -91,6 +91,74 @@ def create_swarm(
     priority: int = 0,
     idempotency_key: Optional[str] = None,
 ) -> SwarmCreated:
+    """Atomically create a durable, immediately dispatchable Kanban swarm."""
+    activation_summary = (
+        "Swarm topology planned; root remains the shared blackboard."
+    )
+    activated = False
+    with kb.write_txn(conn):
+        created = _create_swarm_uncommitted(
+            conn,
+            goal=goal,
+            workers=workers,
+            verifier_assignee=verifier_assignee,
+            synthesizer_assignee=synthesizer_assignee,
+            root_title=root_title,
+            verifier_title=verifier_title,
+            synthesizer_title=synthesizer_title,
+            tenant=tenant,
+            created_by=created_by,
+            workspace_kind=workspace_kind,
+            workspace_path=workspace_path,
+            priority=priority,
+            idempotency_key=idempotency_key,
+        )
+        root = kb.get_task(conn, created.root_id)
+        if root is not None and root.status == "blocked":
+            if not kb.complete_task(
+                conn,
+                created.root_id,
+                summary=activation_summary,
+                metadata={
+                    "kind": "kanban_swarm_v1",
+                    "goal": goal.strip(),
+                    "worker_count": len(created.worker_ids),
+                },
+                fire_lifecycle_hook=False,
+            ):
+                raise RuntimeError("could not activate the completed swarm topology")
+            activated = True
+    if activated:
+        root = kb.get_task(conn, created.root_id)
+        run = kb.latest_run(conn, created.root_id)
+        kb._fire_kanban_lifecycle_hook(
+            "kanban_task_completed",
+            created.root_id,
+            board=kb.get_current_board(),
+            assignee=root.assignee if root else None,
+            run_id=run.id if run else None,
+            summary=activation_summary,
+        )
+    return created
+
+
+def _create_swarm_uncommitted(
+    conn: sqlite3.Connection,
+    *,
+    goal: str,
+    workers: Iterable[SwarmWorkerSpec],
+    verifier_assignee: str,
+    synthesizer_assignee: str,
+    root_title: Optional[str] = None,
+    verifier_title: str = "Verify swarm outputs",
+    synthesizer_title: str = "Synthesize swarm outputs",
+    tenant: Optional[str] = None,
+    created_by: str = "swarm-orchestrator",
+    workspace_kind: str = "scratch",
+    workspace_path: Optional[str] = None,
+    priority: int = 0,
+    idempotency_key: Optional[str] = None,
+) -> SwarmCreated:
     """Create a durable Kanban swarm graph.
 
     The returned graph is immediately dispatchable: the planning root is marked
@@ -122,6 +190,7 @@ def create_swarm(
         tenant=tenant,
         priority=priority,
         idempotency_key=idempotency_key,
+        initial_status="blocked",
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
     )
@@ -141,17 +210,6 @@ def create_swarm(
                 verifier_id=str(verifier_id),
                 synthesizer_id=str(synthesizer_id),
             )
-
-    kb.complete_task(
-        conn,
-        root,
-        summary="Swarm topology planned; root remains the shared blackboard.",
-        metadata={
-            "kind": "kanban_swarm_v1",
-            "goal": goal,
-            "worker_count": len(worker_specs),
-        },
-    )
 
     context_suffix = _swarm_context(root, goal)
     worker_ids: list[str] = []

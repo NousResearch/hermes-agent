@@ -270,6 +270,51 @@ class TestWeixinChunkDelivery:
         assert send_message_mock.await_count == 2
         assert sleep_mock.await_count == 1
 
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_prepare_failed_raises_descriptive_error_without_opening_breaker(
+        self, send_message_mock, sleep_mock
+    ):
+        # Regression for #80125: ret=-2 with errmsg "prepare failed" is a
+        # parameter error (missing/invalid context_token), NOT a rate limit.
+        # It must surface a descriptive error and must NOT open the 30s
+        # rate-limit circuit breaker, which would hide the real cause.
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 3
+        adapter._send_chunk_retry_delay_seconds = 0
+        adapter._rate_limit_circuit_threshold = 1
+        adapter._rate_limit_circuit_window_seconds = 60
+        adapter._rate_limit_circuit_open_seconds = 60
+
+        send_message_mock.return_value = {
+            "ret": weixin.RATE_LIMIT_ERRCODE,
+            "errcode": weixin.RATE_LIMIT_ERRCODE,
+            "errmsg": "prepare failed",
+        }
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is False
+        assert result.error is not None
+        assert "parameter error" in result.error
+        assert "prepare failed" in result.error
+        assert "context_token" in result.error
+        # The message must NOT look like a frequency-limit self-recovery.
+        assert "rate limited" not in result.error
+        assert "cooldown" not in result.error
+        # Fail fast: exactly one API call, no retry, no backoff sleep.
+        assert send_message_mock.await_count == 1
+        assert sleep_mock.await_count == 0
+        # The circuit breaker must NOT have opened.
+        assert adapter._rate_limit_events == []
+        assert adapter._rate_limit_circuit_until == 0.0
+
+        # A subsequent send with a healthy response must succeed immediately,
+        # proving the breaker was never tripped by the parameter error.
+        send_message_mock.return_value = {"ret": 0}
+        ok = asyncio.run(adapter.send("wxid_test123", "hello again"))
+        assert ok.success is True
+
 
 class TestWeixinOutboundMedia:
 
@@ -509,6 +554,41 @@ class TestIsStaleSessionRet:
         # -14 is handled by the separate SESSION_EXPIRED_ERRCODE path; the
         # helper only disambiguates -2 from a genuine rate limit.
         assert weixin._is_stale_session_ret(-14, None, "session expired") is False
+
+
+class TestIsContextTokenErrorRet:
+    """Regression test for #80125: ret=-2 with errmsg 'prepare failed' is a
+    parameter error (missing/invalid context_token), not a rate limit."""
+
+
+    def test_ret_minus_2_with_prepare_failed_is_context_token_error(self):
+        assert weixin._is_context_token_error_ret(-2, None, "prepare failed") is True
+
+
+    def test_errcode_minus_2_with_prepare_failed_is_context_token_error(self):
+        assert weixin._is_context_token_error_ret(None, -2, "prepare failed") is True
+
+
+    def test_prepare_failed_matches_case_insensitively(self):
+        assert weixin._is_context_token_error_ret(-2, -2, "Prepare Failed") is True
+
+
+    def test_freq_limit_is_not_context_token_error(self):
+        # Genuine rate limit — must NOT be treated as a parameter error.
+        assert weixin._is_context_token_error_ret(-2, None, "freq limit") is False
+
+
+    def test_unknown_error_is_not_context_token_error(self):
+        # Stale-session signal — handled by _is_stale_session_ret instead.
+        assert weixin._is_context_token_error_ret(-2, None, "unknown error") is False
+
+
+    def test_missing_errmsg_is_not_context_token_error(self):
+        assert weixin._is_context_token_error_ret(-2, None, None) is False
+
+
+    def test_non_minus_2_ret_is_not_context_token_error(self):
+        assert weixin._is_context_token_error_ret(-14, None, "prepare failed") is False
 
 
 class TestWeixinContentDedup:

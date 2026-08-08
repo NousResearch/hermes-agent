@@ -2337,7 +2337,14 @@ button[data-slot='aui_msg-reactions'] svg {
   border-radius: 0.75rem 0.75rem 0 0;
   /* No fill of its own — the sheet is its own layer behind this one
      ([data-hud-glass]), so it can be sized to the transcript while this box
-     stays the full window for the drag region and the scroll container. */
+     stays the full window for the drag region and the scroll container.
+
+     The box stays full-window; the part of it that answers the cursor must
+     not, or an engaged HUD swallows every click in the empty space above a
+     short transcript — the whole window on a fresh thread. Hit-testing honours
+     clip-path, so clipping to the sheet bounds the surface the same way #81920
+     bounded the frost. */
+  clip-path: inset(calc(100% - min(100%, var(--hud-band-height, 0px))) 0 0 0);
   background: transparent !important;
   /* Three opacity states: gone at rest, half strength when a turn is recent or
      you've just let go of the composer (there to glance at, not to demand
@@ -2430,7 +2437,18 @@ button[data-slot='aui_msg-reactions'] svg {
   border-radius: 0 0 0.75rem 0.75rem;
 }
 
-[data-hud-shell] [data-slot='composer-bounds'] {
+/* WHAT ANSWERS THE CURSOR — and, because `useHudClickThrough` hands the window
+   to the desktop wherever the document reports nothing under the mouse, what
+   the HUD occupies as far as the rest of the screen is concerned.
+
+   Default to none and let surfaces opt in. The HUD is mostly scaffolding — the
+   shell, the chat surface, the routes wrapper — all full-window, all invisible,
+   and all hit-testable, so the window came back "something is here" for every
+   point in its rectangle and ate clicks meant for the app behind it. Written
+   this way round because that scaffolding is not a list anyone maintains: one
+   more wrapper between the shell and the bar would quietly restore the dead
+   rectangle, whereas a control that forgets to opt in is visibly dead. */
+[data-hud-shell] {
   pointer-events: none;
 }
 
@@ -2565,6 +2583,7 @@ button[data-slot='aui_msg-reactions'] svg {
 
 [data-hud-shell][data-hud-edge='top'] [data-slot='composer-bounds'] {
   border-radius: 0 0 0.75rem 0.75rem;
+  clip-path: inset(0 0 calc(100% - min(100%, var(--hud-band-height, 0px))) 0);
 }
 
 /* Flipped, the bar is at the TOP, so the clearance has to be too — the app's
@@ -2593,6 +2612,9 @@ button[data-slot='aui_msg-reactions'] svg {
   height: 2rem;
   z-index: 10;
   -webkit-app-region: drag;
+  /* Blank to the eye, but this is the grab handle: a strip the window ignores
+     is a strip you cannot drag the HUD by. */
+  pointer-events: auto;
 }
 
 /* Tighten the thread on every side. The docked chat's gutters (px-6 py-8 plus
@@ -2650,6 +2672,9 @@ button[data-slot='aui_msg-reactions'] svg {
    controls carve themselves back out (a drag region eats their clicks too). */
 [data-hud-shell] [data-slot='composer-dock'] {
   -webkit-app-region: drag;
+  /* The one surface that is always there, so the one that always takes the
+     mouse — everything else in the shell earns it by being on screen. */
+  pointer-events: auto;
 }
 
 /* Focusables, not a list of the controls that happen to be in the bar today —

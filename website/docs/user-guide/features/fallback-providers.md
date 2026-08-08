@@ -384,7 +384,7 @@ If no provider is available for compression, Hermes drops middle conversation tu
 
 ## Delegation Provider Override
 
-Subagents spawned by `delegate_task` inherit the parent agent's primary fallback chain. You can still route subagents to a different primary provider:model pair for cost optimization:
+Subagents spawned by `delegate_task` inherit the parent agent's primary fallback chain. If the parent has no fallback chain, the subagent has no fallback providers. You can still route subagents to a different primary provider:model pair for cost optimization:
 
 ```yaml
 delegation:

@@ -103,7 +103,13 @@ class CLIAgentSetupMixin:
             # doesn't reject the request and local servers just ignore it.
             _source = runtime.get("source", "")
             _has_custom_base = isinstance(base_url, str) and base_url and "openrouter.ai" not in base_url
-            if _has_custom_base:
+            # auth_type="none" providers: genuinely unauthenticated.
+            # Leave api_key="" so the SDK omits Authorization.
+            from hermes_cli.auth import PROVIDER_REGISTRY as _pr_mixin
+            _noauth_pconfig = _pr_mixin.get(resolved_provider)
+            if _noauth_pconfig and _noauth_pconfig.auth_type == "none":
+                api_key = ""
+            elif _has_custom_base:
                 api_key = "no-key-required"
                 logger.debug(
                     "No API key for custom endpoint %s (source=%s), "

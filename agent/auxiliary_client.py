@@ -6250,7 +6250,7 @@ def resolve_provider_client(
             logger.debug("resolve_provider_client: unknown provider %r", provider)
         return None, None
 
-    if pconfig.auth_type == "api_key":
+    if pconfig.auth_type in ("api_key", "none"):
         if provider == "anthropic":
             client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
             if client is None:
@@ -6261,11 +6261,16 @@ def resolve_provider_client(
 
         creds = resolve_api_key_provider_credentials(provider)
         api_key = str(creds.get("api_key", "")).strip()
+        # auth_type="none": the endpoint rejects any Authorization header.
+        # Drop explicit keys (e.g. from fallback_model entries) — the
+        # credential resolver already forces api_key="".
+        if pconfig.auth_type == "none":
+            api_key = ""
         # Honour an explicit api_key override (e.g. from a fallback_model entry
         # or a custom_providers entry) so callers that pass an explicit
         # credential can authenticate against endpoints where no built-in
         # credential is registered for this provider alias.
-        if explicit_api_key:
+        elif explicit_api_key:
             api_key = explicit_api_key.strip() or api_key
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
         if explicit_base_url:
@@ -6284,13 +6289,16 @@ def resolve_provider_client(
             except Exception:
                 pass
         if not api_key:
-            tried_sources = list(pconfig.api_key_env_vars)
-            if provider == "copilot":
-                tried_sources.append("gh auth token")
-            logger.debug("resolve_provider_client: provider %s has no API "
-                         "key configured (tried: %s)",
-                         provider, ", ".join(tried_sources))
-            return None, None
+            # auth_type="none" providers: build client with api_key=""
+            # so the SDK omits Authorization.
+            if pconfig.auth_type != "none":
+                tried_sources = list(pconfig.api_key_env_vars)
+                if provider == "copilot":
+                    tried_sources.append("gh auth token")
+                logger.debug("resolve_provider_client: provider %s has no API "
+                             "key configured (tried: %s)",
+                             provider, ", ".join(tried_sources))
+                return None, None
 
         base_url = _to_openai_base_url(raw_base_url)
         # Honour an explicit base_url override from the caller — used when a

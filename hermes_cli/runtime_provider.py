@@ -1599,7 +1599,7 @@ def _resolve_explicit_runtime(
         )
 
     pconfig = PROVIDER_REGISTRY.get(provider)
-    if pconfig and pconfig.auth_type == "api_key":
+    if pconfig and pconfig.auth_type in ("api_key", "none"):
         env_url = ""
         if pconfig.base_url_env_var:
             env_url = _getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
@@ -1623,6 +1623,11 @@ def _resolve_explicit_runtime(
                 base_url = creds.get("base_url", "").rstrip("/")
                 if provider == "actual":
                     base_url = normalize_actual_base_url(base_url)
+
+        # auth_type="none": the endpoint rejects any Authorization header.
+        # Drop explicit/config keys the same way the credential resolver does.
+        if pconfig.auth_type == "none":
+            api_key = ""
 
         api_mode = "chat_completions"
         if provider == "copilot":
@@ -2184,9 +2189,9 @@ def resolve_runtime_provider(
             runtime["guardrail_config"] = guardrail_config
         return runtime
 
-    # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
+    # API-key and no-auth providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN, free tiers)
     pconfig = PROVIDER_REGISTRY.get(provider)
-    if pconfig and pconfig.auth_type == "api_key":
+    if pconfig and pconfig.auth_type in ("api_key", "none"):
         creds = resolve_api_key_provider_credentials(provider)
         # Actual Computer: a loopback base_url configured in model_cfg (not
         # just env) selects the daemon's local offline API, which requires no
@@ -2210,7 +2215,7 @@ def resolve_runtime_provider(
         # resolution so callers surface the missing credential (or consult only
         # an explicitly configured fallback chain). LM Studio's no-auth path
         # supplies a non-empty placeholder in the credential resolver above.
-        if not has_usable_secret(creds.get("api_key")):
+        if not has_usable_secret(creds.get("api_key")) and pconfig.auth_type != "none":
             env_names = ", ".join(pconfig.api_key_env_vars)
             hint = f" Set {env_names}." if env_names else ""
             raise AuthError(

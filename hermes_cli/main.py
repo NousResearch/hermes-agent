@@ -3033,16 +3033,19 @@ def cmd_model(args):
 
 
 def _is_profile_api_key_provider(provider_id: str) -> bool:
-    """Return True when provider_id maps to a profile with auth_type='api_key'.
+    """Return True when provider_id maps to a profile with auth_type in
+    ("api_key", "none").
 
     Used as a catch-all in select_provider_and_model() so that new providers
     declared in plugins/model-providers/<name>/ automatically dispatch to _model_flow_api_key_provider
-    without requiring an explicit elif branch here.
+    without requiring an explicit elif branch here. auth_type="none" providers
+    use the same flow (it skips the API-key prompt and runs fetch_models with
+    an empty key).
     """
     try:
         from providers import get_provider_profile
         _p = get_provider_profile(provider_id)
-        return _p is not None and _p.auth_type == "api_key"
+        return _p is not None and _p.auth_type in ("api_key", "none")
     except Exception:
         return False
 

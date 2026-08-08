@@ -2712,17 +2712,29 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
+    # No-auth providers (auth_type="none"): skip the API-key prompt — the
+    # endpoint rejects Authorization entirely, so there is no key to enter.
+    # Credential resolution already forces api_key="".
+    is_noauth = pconfig.auth_type == "none"
+
     # Check / prompt for API key
     existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
-    existing_key, abort = _prompt_api_key(
-        pconfig,
-        existing_key,
-        provider_id=provider_id,
-        existing_source=existing_source,
-    )
-    if abort:
-        return
+    if is_noauth:
+        # auth_type="none": never send a credential even if a similarly-named
+        # env var exists — the endpoint rejects any Authorization header.
+        existing_key = ""
+        existing_source = ""
+
+    if not is_noauth:
+        existing_key, abort = _prompt_api_key(
+            pconfig,
+            existing_key,
+            provider_id=provider_id,
+            existing_source=existing_source,
+        )
+        if abort:
+            return
 
     # Gemini free-tier gate: free-tier daily quotas (<= 250 RPD for Flash)
     # are exhausted in a handful of agent turns, so refuse to wire up the

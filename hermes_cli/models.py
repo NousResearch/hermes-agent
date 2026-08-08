@@ -3013,7 +3013,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         from hermes_cli.auth import resolve_api_key_provider_credentials
 
         _p = get_provider_profile(normalized)
-        if _p and _p.auth_type == "api_key" and _p.base_url:
+        if _p and _p.auth_type in ("api_key", "none") and _p.base_url:
             try:
                 creds = resolve_api_key_provider_credentials(normalized)
                 api_key = str(creds.get("api_key") or "").strip()
@@ -3022,7 +3022,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 api_key, base_url = "", _p.base_url
             if not base_url:
                 base_url = _p.base_url
-            if api_key:
+            if api_key or _p.auth_type == "none":
                 live = _p.fetch_models(api_key=api_key, base_url=base_url or None)
                 if live:
                     # Merge static curated list with live API results so

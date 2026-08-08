@@ -98,7 +98,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `env_vars` | `tuple[str, ...]` | API-key env vars in priority order; a final `*_BASE_URL` entry is used as the user base-URL override |
 | `base_url` | str | Default inference endpoint |
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
-| `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
+| `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` \| `none` |
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails |
 | `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`) |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
@@ -199,8 +199,26 @@ Set `profile.api_mode` to match the default your provider ships — it acts as a
 | `copilot` | GitHub Copilot token refresh cycle | `copilot` plugin only |
 | `aws_sdk` | AWS SDK credential chain (IAM role, profile, env) | `bedrock` plugin only |
 | `external_process` | Auth handled by a subprocess the agent spawns | `copilot-acp` plugin only |
+| `none` | Genuinely unauthenticated endpoint — no API key is ever sent (many free tiers reject `Authorization` headers with HTTP 401) | Free-tier / no-auth plugins |
 
-`auth_type` gates which codepaths treat your provider as a "simple api-key provider" — if it's not `api_key`, the PluginManager still records the manifest but Hermes' CLI-level automation (doctor checks, `--provider` flag, setup wizard delegation) may skip over it.
+`auth_type` gates which codepaths treat your provider as a "simple api-key provider" — `api_key` and `none` both route through the key credential paths (doctor checks, `--provider` flag, setup wizard delegation); other values skip those paths but the PluginManager still records the manifest.
+
+### `auth_type="none"` (no-auth providers)
+
+Use this when the endpoint needs **no authentication at all** — some free tiers return HTTP 401 for *any* `Authorization` header, even a valid-looking one:
+
+```python
+ProviderProfile(
+    name="my-free-provider",
+    base_url="https://api.free-tier.example.com/v1",
+    auth_type="none",
+)
+```
+
+- `env_vars` is optional — no env var is needed (and none is ever sent as a Bearer token). A registered `none` profile shows as **configured** in `hermes doctor`.
+- Credential resolution returns `api_key=""` in every path — resolver, runtime, auxiliary client, and CLI bootstrap — and the OpenAI SDK omits the `Authorization` header for an empty key.
+- `hermes model` skips the API-key prompt and `fetch_models()` runs with the empty key, so the picker still shows live models.
+- `fallback_models` is still used as the offline catalog when the live fetch fails.
 
 ## Discovery timing
 
@@ -210,7 +228,7 @@ Provider discovery is **lazy** — triggered by the first `get_provider_profile(
 hermes doctor
 ```
 
-— a successful `auth_type="api_key"` profile appears under the Provider Connectivity section with a `/models` probe.
+— a successful `auth_type="api_key"` (or `"none"`) profile appears under the Provider Connectivity section with a `/models` probe.
 
 For programmatic inspection:
 

@@ -514,7 +514,14 @@ try:
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
             continue
-        if _pp.auth_type != "api_key" or not _pp.env_vars:
+        if _pp.auth_type not in ("api_key", "none"):
+            continue
+        # Keep the env_vars requirement for key-requiring plugins: an api_key
+        # profile without env vars previously stayed out of PROVIDER_REGISTRY
+        # and resolved through the generic/custom endpoint path. Registering it
+        # now would make runtime resolution raise "No usable credentials found"
+        # (empty env var list) instead of falling back.
+        if _pp.auth_type == "api_key" and not _pp.env_vars:
             continue
         # Skip providers that need custom token resolution or are special-cased
         # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
@@ -523,14 +530,18 @@ try:
         # that relies on `openrouter not in PROVIDER_REGISTRY`).
         if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
             continue
-        _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
-        _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
+        _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL")) if _pp.env_vars else ()
+        _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None) if _pp.env_vars else None
+        # auth_type="none": never surface env vars as key sources — the
+        # credential resolver forces api_key="" regardless, and the doctor
+        # would otherwise report an env-var key that is never sent.
+        _key_vars_for_registry = () if _pp.auth_type == "none" else (_api_key_vars or _pp.env_vars)
         PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
             id=_pp.name,
             name=_pp.display_name or _pp.name,
-            auth_type="api_key",
+            auth_type=_pp.auth_type,
             inference_base_url=_pp.base_url,
-            api_key_env_vars=_api_key_vars or _pp.env_vars,
+            api_key_env_vars=_key_vars_for_registry,
             base_url_env_var=_base_url_var or "",
         )
         # Also register aliases so resolve_provider() resolves them
@@ -6963,7 +6974,7 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "api_key":
+    if not pconfig or pconfig.auth_type not in ("api_key", "none"):
         return {"configured": False}
 
     api_key = ""
@@ -6990,13 +7001,14 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
         and is_actual_local_base_url(base_url)
     )
 
+    noauth_configured = pconfig.auth_type == "none"
     return {
-        "configured": bool(api_key) or actual_local_noauth,
+        "configured": bool(api_key) or actual_local_noauth or noauth_configured,
         "provider": provider_id,
         "name": pconfig.name,
         "key_source": key_source or ("local-offline" if actual_local_noauth else ""),
         "base_url": base_url,
-        "logged_in": bool(api_key) or actual_local_noauth,  # compat with OAuth status shape
+        "logged_in": bool(api_key) or actual_local_noauth or noauth_configured,
     }
 
 
@@ -7148,7 +7160,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     Returns dict with: provider, api_key, base_url, source.
     """
     pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if not pconfig or pconfig.auth_type != "api_key":
+    if not pconfig or pconfig.auth_type not in ("api_key", "none"):
         raise AuthError(
             f"Provider '{provider_id}' is not an API-key provider.",
             provider=provider_id,
@@ -7165,6 +7177,14 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if not api_key and provider_id == "lmstudio":
         api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
         key_source = key_source or "default"
+
+    # auth_type="none" providers: genuinely unauthenticated endpoints.
+    # Force api_key="" regardless of env vars / explicit keys / pool —
+    # some free tiers reject Authorization headers entirely (HTTP 401).
+    # The OpenAI SDK omits the header for api_key="".
+    if pconfig.auth_type == "none":
+        api_key = ""
+        key_source = "no-auth"
 
     env_url = ""
     if pconfig.base_url_env_var:

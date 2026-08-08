@@ -53,7 +53,11 @@ class ProviderProfile:
     env_vars: tuple = ()
     base_url: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
-    auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
+    # api_key|oauth_device_code|oauth_external|copilot|aws_sdk|none
+    # "none" = genuinely unauthenticated endpoint (free tiers that reject
+    # Authorization headers entirely). Credential resolution returns
+    # api_key="" and the SDK omits the header.
+    auth_type: str = "api_key"
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
 
     # ── Vision support ────────────────────────────────────────

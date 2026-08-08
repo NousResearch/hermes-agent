@@ -3558,7 +3558,14 @@ def stream_tts_to_speaker(
                             "mid-sentence) — partial audio only"
                         )
                         break
-                    chunk_queue.put(chunk, timeout=30.0)
+                    while not stop_event.is_set():
+                        try:
+                            chunk_queue.put(chunk, timeout=0.1)
+                            break
+                        except queue.Full:
+                            continue
+                    if stop_event.is_set():
+                        break
             except Exception as exc:
                 logger.warning(
                     "TTS CUT: streaming TTS prefetch failed mid-sentence "
@@ -3566,8 +3573,31 @@ def stream_tts_to_speaker(
                     exc,
                 )
             finally:
-                chunk_queue.put(None)  # sentinel: no more chunks
+                # On barge-in the playback worker abandons queued audio.  Make
+                # room for the sentinel instead of stranding this producer on
+                # a full bounded queue forever.
+                while True:
+                    try:
+                        chunk_queue.put(None, timeout=0.1)
+                        break
+                    except queue.Full:
+                        if stop_event.is_set():
+                            try:
+                                chunk_queue.get_nowait()
+                            except queue.Empty:
+                                pass
                 _prefetch_sem.release()  # free a prefetch slot
+
+        def _next_chunk_or_stop(
+            chunk_queue: "queue.Queue[Optional[bytes]]",
+        ) -> Optional[bytes]:
+            """Wait for one chunk while keeping barge-in responsive."""
+            while not stop_event.is_set():
+                try:
+                    return chunk_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+            return None
 
         def _reinit_output_stream():
             """Close the broken PortAudio stream and try to create a fresh one."""
@@ -3618,7 +3648,7 @@ def stream_tts_to_speaker(
                         if _current_stream is None:
                             _chunks = []
                             while True:
-                                chunk = chunk_queue.get()
+                                chunk = _next_chunk_or_stop(chunk_queue)
                                 if chunk is None:
                                     break
                                 _chunks.append(chunk)
@@ -3628,7 +3658,7 @@ def stream_tts_to_speaker(
                             continue
                         _pcm_leftover = b""
                         while True:
-                            chunk = chunk_queue.get()
+                            chunk = _next_chunk_or_stop(chunk_queue)
                             if chunk is None:
                                 break
                             if stop_event.is_set():
@@ -3691,7 +3721,7 @@ def stream_tts_to_speaker(
                         continue
                     _chunks = []
                     while True:
-                        chunk = chunk_queue.get()
+                        chunk = _next_chunk_or_stop(chunk_queue)
                         if chunk is None:
                             break
                         _chunks.append(chunk)
@@ -3707,7 +3737,14 @@ def stream_tts_to_speaker(
             except Exception as exc:
                 logger.warning("Streaming TTS synthesis failed: %s", exc)
                 return
-            _prefetch_sem.acquire()
+            while not stop_event.is_set():
+                if _prefetch_sem.acquire(timeout=0.1):
+                    break
+            else:
+                return
+            if stop_event.is_set():
+                _prefetch_sem.release()
+                return
             chunk_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=_CHUNK_QUEUE_MAX)
             _audio_queue.put(chunk_queue)
             t = threading.Thread(
@@ -3849,8 +3886,13 @@ def stream_tts_to_speaker(
         if streamer is not None and _worker_thread is not None:
             _audio_queue.put(None)
             _worker_thread.join(timeout=300.0)
-        for t in _prefetch_threads:
-            t.join(timeout=10.0)
+        # A provider iterator may be blocked inside network I/O and Python
+        # cannot cancel that thread.  Normal completion still drains every
+        # prefetch before signalling done; barge-in must not wedge the next
+        # voice turn waiting for an upstream request that stopped yielding.
+        if not stop_event.is_set():
+            for t in _prefetch_threads:
+                t.join(timeout=10.0)
         # Always close the audio output stream to avoid locking the device
         if output_stream is not None:
             try:

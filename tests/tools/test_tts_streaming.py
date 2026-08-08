@@ -605,6 +605,61 @@ def test_hybrid_done_event_waits_for_prefetch(monkeypatch):
     )
 
 
+def test_hybrid_interrupt_unblocks_stalled_prefetch_pipeline(monkeypatch):
+    """Barge-in must release capacity and playback waits on stalled streams."""
+    from tools import tts_tool
+
+    three_prefetches_started = threading.Event()
+    release_prefetches = threading.Event()
+    started = 0
+    started_lock = threading.Lock()
+
+    class _Stalled(ts.StreamingTTSProvider):
+        sample_rate = 24000
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            nonlocal started
+            with started_lock:
+                started += 1
+                if started == 3:
+                    three_prefetches_started.set()
+            release_prefetches.wait(timeout=30.0)
+            yield b""
+
+    sd, out = _sd_mock()
+    q = _drain_queue([
+        "First sentence stalls here. ",
+        "Second sentence stalls here. ",
+        "Third sentence stalls here. ",
+        "Fourth sentence waits for capacity. ",
+    ])
+    stop, done = threading.Event(), threading.Event()
+
+    with patch("tools.tts_streaming.resolve_streaming_provider",
+               return_value=_Stalled({}, {})), \
+         patch.object(tts_tool, "_import_sounddevice", return_value=sd), \
+         patch("platform.system", return_value="Linux"):
+        consumer = threading.Thread(
+            target=tts_tool.stream_tts_to_speaker,
+            args=(q, stop, done),
+            daemon=True,
+        )
+        consumer.start()
+        assert three_prefetches_started.wait(timeout=2.0)
+        try:
+            stop.set()
+            assert done.wait(timeout=1.0), (
+                "TTS interruption remained blocked on stalled prefetch requests"
+            )
+        finally:
+            release_prefetches.set()
+            consumer.join(timeout=2.0)
+
+
 def test_hybrid_single_sentence_still_works(monkeypatch):
     """A single-sentence reply should stream immediately with no batch."""
     from tools import tts_tool

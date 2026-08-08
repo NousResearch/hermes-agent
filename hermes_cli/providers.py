@@ -426,6 +426,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "bedrock": "AWS Bedrock",
     "vertex": "Google Vertex AI",
     "ollama-cloud": "Ollama Cloud",
+    "xai": "xAI",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 

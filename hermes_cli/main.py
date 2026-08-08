@@ -10209,6 +10209,72 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+# ── Parent-death watchdog for the desktop-spawned `serve` backend ─────────
+# Desktop Electron spawns this backend and tears it down in `before-quit`
+# (SIGTERM, then forceKillProcessTree over the primary and the pool). That
+# teardown is correct but structurally cannot cover a force-quit / SIGKILL /
+# fatal GPU abort — main.ts says so itself ("FATAL GPU aborts skip
+# before-quit"). macOS has no PR_SET_PDEATHSIG (documented in
+# tools/mcp_stdio_watchdog.py), so the kernel reparents us to pid 1 rather
+# than reaping us and we keep our 127.0.0.1 LISTEN socket and ~100 MB
+# forever. Three such orphans accumulated in one 3-minute restart burst.
+# No parent-side fix can close this — the parent's code is exactly what did
+# not run — so the child reaps itself, as tui_gateway/slash_worker.py does.
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env knob, falling back to *default* on absent/malformed
+    values. A bare ``float(os.environ.get(...))`` would raise ValueError at
+    import time on a typo (e.g. ``HERMES_SERVE_WATCHDOG_POLL_S=2s``) and take
+    down every `hermes` invocation, not just the watchdog."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+# Env-overridable so the integration test can drive sub-second timing.
+_SERVE_WATCHDOG_POLL_S = max(0.05, _env_float("HERMES_SERVE_WATCHDOG_POLL_S", 2.0))
+
+
+def _serve_is_orphaned(original_ppid, getppid=os.getppid) -> bool:
+    """Return whether this backend no longer has its original POSIX parent."""
+    return getppid() != original_ppid
+
+
+def _should_start_serve_watchdog(headless_backend, env, os_name) -> bool:
+    """Gate the watchdog to the one launch shape that can leak.
+
+    - ``headless_backend`` — cmd_dashboard backs BOTH `dashboard` and `serve`;
+      a human's foreground `hermes dashboard` must never self-reap.
+    - ``HERMES_DESKTOP=1`` — only the desktop's own backend is in scope. A
+      deliberate ``nohup hermes serve &`` legitimately reparents to pid 1 when
+      its shell exits, and killing that would be a regression, not a fix.
+    - POSIX — the named-profile re-exec below is ``os.execvpe`` here, which
+      preserves pid/ppid so the recorded value stays valid; on Windows it is
+      ``subprocess.Popen``, where it would not. Same gate tools/mcp_tool.py
+      uses for its watchdog wrap.
+    """
+    return bool(headless_backend) and env.get("HERMES_DESKTOP") == "1" and os_name == "posix"
+
+
+def _start_serve_parent_death_watchdog(original_ppid) -> None:
+    def _loop():
+        while not _serve_is_orphaned(original_ppid):
+            _time.sleep(_SERVE_WATCHDOG_POLL_S)
+        # os._exit, not sys.exit: uvicorn's loop owns the main thread and would
+        # swallow a SystemExit raised here. The kernel releases the LISTEN
+        # socket either way, and a backend whose parent is gone has no shutdown
+        # work worth flushing.
+        os._exit(0)
+
+    threading.Thread(
+        target=_loop, name="serve-parent-death-watchdog", daemon=True
+    ).start()
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -10359,6 +10425,12 @@ def cmd_dashboard(args):
             sys.exit(proc.wait())
         else:
             os.execvpe(sys.executable, reexec_argv, env)
+
+    # Past the re-exec, so the ppid we record is the one we will actually be
+    # orphaned from. os.execvpe above preserves pid/ppid; the Windows branch
+    # spawns a fresh process instead, which is why the gate is POSIX-only.
+    if _should_start_serve_watchdog(_headless_backend, os.environ, os.name):
+        _start_serve_parent_death_watchdog(os.getppid())
 
     if _token_file:
         _ssh_session_token = _read_ssh_session_token_file(_token_file)

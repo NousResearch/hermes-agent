@@ -144,15 +144,16 @@ describe('resolveNewSessionCwd', () => {
     expect(resolveNewSessionCwd()).toBe('/home/user/configured')
   })
 
-  it('inherits the focused session workspace when not drilled into a project', () => {
-    // Simulate a primary session whose stored row carries a project cwd —
-    // the common case: you're in a chat that has a pwd, hit ⌘N/⌘T, and
-    // expect the new draft to stay in that project without sidebar drill-in.
+  it('does not inherit the focused session workspace — new chat uses the configured default', () => {
+    // Regression for #71873 / #80213: after a restart the focused session is
+    // usually the just-resumed one, whose stored cwd can be a stale fallback
+    // (e.g. the user's home dir on Windows). A new chat must NOT land there —
+    // it falls through to the configured default project dir.
     $selectedStoredSessionId.set('sess-a')
     $sessions.set([
       {
         archived: false,
-        cwd: '/Users/me/www/hermes-agent',
+        cwd: 'C:\\Users\\sonny',
         ended_at: null,
         id: 'sess-a',
         input_tokens: 0,
@@ -166,7 +167,7 @@ describe('resolveNewSessionCwd', () => {
       } as never
     ])
 
-    expect(resolveNewSessionCwd()).toBe('/Users/me/www/hermes-agent')
+    expect(resolveNewSessionCwd()).toBe('/home/user/configured')
   })
 
   it('does not re-attach a remembered cwd when the focused session is detached', () => {

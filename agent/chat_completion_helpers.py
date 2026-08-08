@@ -2067,6 +2067,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # host the same way determine_api_mode() and _detect_api_mode_for_url()
             # do on the primary path. (#32243, #49247)
             fb_api_mode = "anthropic_messages"
+        elif (
+            base_url_hostname(fb_base_url) == "api.kimi.com"
+            and "/coding" in fb_base_url.lower()
+        ):
+            # Kimi Code's api.kimi.com/coding endpoint speaks Anthropic
+            # Messages only — same detection as _detect_api_mode_for_url()
+            # on the primary path. (#77256)
+            fb_api_mode = "anthropic_messages"
         elif _fb_is_azure:
             # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
             # support the Responses API. Stay on chat_completions.

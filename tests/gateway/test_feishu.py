@@ -2301,6 +2301,58 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         self.assertNotIn("[Mentioned:", event.text)
         self.assertTrue(event.text.startswith("/model"))
 
+    def test_at_all_slash_message_becomes_command(self):
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_all /new"}),
+            message_type="text",
+            message_id="m_at_all_command",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m_at_all_command",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.message_type.value, "command")
+        self.assertEqual(event.text, "/new")
+
+    def test_at_all_prose_strips_edge_mention_but_stays_text(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_all please /new"}),
+            message_type="text",
+            message_id="m_at_all_prose",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m_at_all_prose",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.message_type, MessageType.TEXT)
+        self.assertEqual(event.text, "[Mentioned: @all]\n\nplease /new")
+
 
 class TestFeishuFetchMessageText(unittest.TestCase):
     def _build_adapter(self):

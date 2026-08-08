@@ -4863,6 +4863,20 @@ async function writeComposerImage(buffer, ext = '.png') {
   return filePath
 }
 
+// Large plain-text pastes are persisted as .txt files so the composer can
+// show them as an attachment chip instead of flooding the input (ChatGPT
+// Work-style large-paste handling). Mirrors writeComposerImage above.
+async function writeComposerPaste(text) {
+  const dir = path.join(app.getPath('userData'), 'composer-pastes')
+  await fs.promises.mkdir(dir, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+  const random = crypto.randomBytes(3).toString('hex')
+  const filePath = path.join(dir, `pasted_content_${stamp}_${random}.txt`)
+  await fs.promises.writeFile(filePath, text, 'utf8')
+
+  return filePath
+}
+
 function previewLabelForUrl(url) {
   return `${url.host}${url.pathname === '/' ? '' : url.pathname}`
 }
@@ -10547,6 +10561,16 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
   const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
 
   return writeComposerImage(buffer, payload?.ext || '.png')
+})
+
+ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
+  const text = typeof payload?.text === 'string' ? payload.text : ''
+
+  if (!text) {
+    throw new Error('savePastedText: missing text')
+  }
+
+  return writeComposerPaste(text)
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {

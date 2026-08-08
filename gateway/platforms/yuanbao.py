@@ -4739,7 +4739,11 @@ class MessageSender:
 
     @staticmethod
     def strip_cron_wrapper(content: str) -> str:
-        """Strip scheduler cron header/footer wrapper for cleaner Yuanbao output."""
+        """Strip the legacy English cron wrapper for direct callers.
+
+        The scheduler now supplies Yuanbao with the canonical unwrapped body,
+        so localized delivery does not depend on parsing translated copy.
+        """
         if not content.startswith("Cronjob Response: "):
             return content
 

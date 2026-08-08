@@ -258,16 +258,18 @@ class TestDeliverResultWrapping:
         )
         return media_file.resolve()
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
+    def test_delivery_wraps_content_with_header_and_footer(self, monkeypatch):
         """Delivered content should include task name header and agent-invisible note."""
         from gateway.config import Platform
 
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"display": {"language": "en"}}), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
             job = {
                 "id": "test-job",
@@ -284,7 +286,163 @@ class TestDeliverResultWrapping:
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
+        assert sent_content == (
+            "Cronjob Response: daily-report\n"
+            "(job_id: test-job)\n"
+            "-------------\n\n"
+            "Here is today's summary.\n\n"
+            "To stop or manage this job, send me a new message "
+            '(e.g. "stop reminder daily-report").'
+        )
 
+    def test_delivery_uses_job_id_when_no_name(self, monkeypatch):
+        """When a job has no name, the wrapper should fall back to job id."""
+        from gateway.config import Platform
+
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"display": {"language": "en"}}), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "abc-123",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Output.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: abc-123" in sent_content
+
+    def test_delivery_localizes_wrapper_from_config(self, monkeypatch):
+        from gateway.config import Platform
+
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"display": {"language": "zh"}}), \
+             patch(
+                 "tools.send_message_tool._send_to_platform",
+                 new=AsyncMock(return_value={"success": True}),
+             ) as send_mock:
+            _deliver_result(
+                {
+                    "id": "test-job",
+                    "name": "daily-report",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "123"},
+                },
+                "Here is today's summary.",
+            )
+
+        sent_content = (
+            send_mock.call_args.kwargs.get("content")
+            or send_mock.call_args[0][-1]
+        )
+        assert "定时任务响应：daily-report" in sent_content
+        assert "如需停止或管理这个任务" in sent_content
+        assert "Cronjob Response" not in sent_content
+
+    def test_language_env_override_wins_over_config(self, monkeypatch):
+        from gateway.config import Platform
+
+        monkeypatch.setenv("HERMES_LANGUAGE", "en")
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"display": {"language": "zh"}}), \
+             patch(
+                 "tools.send_message_tool._send_to_platform",
+                 new=AsyncMock(return_value={"success": True}),
+             ) as send_mock:
+            _deliver_result(
+                {
+                    "id": "test-job",
+                    "name": "daily-report",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "123"},
+                },
+                "Output.",
+            )
+
+        sent_content = (
+            send_mock.call_args.kwargs.get("content")
+            or send_mock.call_args[0][-1]
+        )
+        assert "Cronjob Response: daily-report" in sent_content
+        assert "定时任务响应" not in sent_content
+
+    def test_delivery_localizes_arabic_wrapper(self, monkeypatch):
+        from gateway.config import Platform
+
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"display": {"language": "ar"}}), \
+             patch(
+                 "tools.send_message_tool._send_to_platform",
+                 new=AsyncMock(return_value={"success": True}),
+             ) as send_mock:
+            _deliver_result(
+                {
+                    "id": "test-job",
+                    "name": "daily-report",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "123"},
+                },
+                "ملخص اليوم.",
+            )
+
+        sent_content = send_mock.call_args[0][3]
+        assert "استجابة المهمة المجدولة: daily-report" in sent_content
+        assert "لإيقاف هذه المهمة أو إدارتها" in sent_content
+        assert "Cronjob Response" not in sent_content
+
+    def test_yuanbao_receives_unwrapped_non_english_content(self, monkeypatch):
+        """Yuanbao's clean-body contract must not parse translated wrappers."""
+        from gateway.config import Platform
+
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.YUANBAO: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"display": {"language": "zh"}}), \
+             patch(
+                 "tools.send_message_tool._send_to_platform",
+                 new=AsyncMock(return_value={"success": True}),
+             ) as send_mock:
+            _deliver_result(
+                {
+                    "id": "test-job",
+                    "name": "daily-report",
+                    "deliver": "origin",
+                    "origin": {"platform": "yuanbao", "chat_id": "direct:user"},
+                },
+                "今天的摘要。",
+            )
+
+        sent_content = send_mock.call_args[0][3]
+        assert sent_content == "今天的摘要。"
+        assert "定时任务响应" not in sent_content
+        assert "Cronjob Response" not in sent_content
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
         """Persisted Slack home survives restart without native Slack config."""
@@ -1974,5 +2132,4 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
 

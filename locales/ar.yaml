@@ -440,3 +440,7 @@ gateway:
     session_db_unavailable_prefix: "قاعدة بيانات الجلسات غير متاحة"
     session_not_found:           "لم يُعثر على الجلسة في قاعدة البيانات."
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "استجابة المهمة المجدولة: {task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\nلإيقاف هذه المهمة أو إدارتها، أرسل لي رسالة جديدة (مثال: \"أوقف التذكير {task_name}\")."

@@ -6603,7 +6603,18 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="text-enqueue")
             return
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        latest_message_id = event.message_id
         super()._enqueue_text_event(event)
+        # Advance reply anchor to the latest message so the bot replies to
+        # the most recent user message when stacked prompts are batched (the
+        # shared base merge only appends text/media; it never advances the
+        # anchor on its own).
+        if existing is not None and latest_message_id:
+            merged = self._pending_text_batches.get(key)
+            if merged is not None:
+                merged.message_id = latest_message_id
         self._accept_update()
 
     async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None) -> None:

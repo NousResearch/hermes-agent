@@ -35,6 +35,7 @@ const REPO_ROOT = path.resolve(__dirname, '..')
 const ELECTRON_DIR = path.join(REPO_ROOT, 'apps', 'desktop', 'electron')
 const MAIN_PLIST = path.join(ELECTRON_DIR, 'entitlements.mac.plist')
 const INHERIT_PLIST = path.join(ELECTRON_DIR, 'entitlements.mac.inherit.plist')
+const DESKTOP_PACKAGE_JSON = path.join(REPO_ROOT, 'apps', 'desktop', 'package.json')
 
 const DEVICE_PREFIX = 'com.apple.security.device.'
 
@@ -77,6 +78,31 @@ test('every device.* entitlement on the main app is also inherited', () => {
       `entitlements.mac.inherit.plist: ${JSON.stringify(missing)}. ` +
       'Helper/Setup processes inherit the latter under hardenedRuntime, so ' +
       'any device access the app needs must be listed in both (#37718).'
+  )
+})
+
+test('desktop package declares Calendar privacy descriptions', () => {
+  const packageJson = JSON.parse(fs.readFileSync(DESKTOP_PACKAGE_JSON, 'utf-8')) as {
+    build?: { mac?: { extendInfo?: Record<string, unknown> } }
+  }
+
+  const extendInfo = packageJson.build?.mac?.extendInfo ?? {}
+
+  const required = [
+    'NSCalendarsFullAccessUsageDescription',
+    'NSCalendarsUsageDescription',
+  ] as const
+
+  const missing = required.filter((key) => {
+    const value = extendInfo[key]
+
+    return typeof value !== 'string' || value.trim().length === 0
+  })
+
+  assert.deepEqual(
+    missing,
+    [],
+    `missing non-empty macOS Calendar privacy descriptions: ${JSON.stringify(missing)}`
   )
 })
 

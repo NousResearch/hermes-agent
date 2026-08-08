@@ -576,22 +576,40 @@ class TestTeamsAttachmentClassification:
         assert event.media_types == ["application/pdf"]
 
     @pytest.mark.anyio
-    async def test_mixed_image_and_document_prefers_document(self):
+    async def test_image_attachment_uses_authenticated_fetch_before_caching(self, monkeypatch):
+        """Bot Framework image URLs require an auth token; never use the anonymous URL helper."""
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n fake")
+        monkeypatch.setattr(
+            _teams_mod, "cache_image_from_bytes", lambda *_a, **_k: "/tmp/img.png", raising=False
+        )
+        # The adapter must not regress to the anonymous URL helper.
+        assert not hasattr(_teams_mod, "cache_image_from_url")
+
+        await adapter._on_message(self._make_ctx(self._make_activity([self._image_attachment()])))
+
+        adapter._fetch_attachment_bytes.assert_awaited_once_with("https://smba.example.com/img.png")
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/img.png"]
+
+    @pytest.mark.anyio
+    async def test_mixed_image_and_document_prefers_document(self, monkeypatch):
         from gateway.platforms.base import MessageType
 
         adapter = self._make_adapter()
         adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
+        monkeypatch.setattr(
+            _teams_mod, "cache_image_from_bytes", lambda *_a, **_k: "/tmp/img.png", raising=False
+        )
 
-        async def fake_cache_image(url, *a, **kw):
-            return "/tmp/img.png"
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(_teams_mod, "cache_image_from_url", fake_cache_image)
-            activity = self._make_activity([
-                self._image_attachment(),
-                self._file_download_attachment(),
-            ])
-            await adapter._on_message(self._make_ctx(activity))
+        activity = self._make_activity([
+            self._image_attachment(),
+            self._file_download_attachment(),
+        ])
+        await adapter._on_message(self._make_ctx(activity))
 
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.DOCUMENT

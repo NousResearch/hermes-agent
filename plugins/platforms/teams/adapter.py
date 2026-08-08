@@ -31,7 +31,7 @@ import os
 import sys
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 # httpx is imported lazily — only the ``_write_summary_via_incoming_webhook``
 # code path actually constructs an ``AsyncClient``. Top-level import here
@@ -89,7 +89,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    cache_image_from_url,
+    cache_image_from_bytes,
     cache_media_bytes,
 )
 
@@ -149,6 +149,23 @@ def _coerce_port(value: Any, *, default: int = _DEFAULT_PORT) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+_IMAGE_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+
+def _image_extension(content_type: str, filename: str = "") -> str:
+    """Choose a safe cache extension from a declared MIME type or filename."""
+    normalized = (content_type or "").split(";", 1)[0].strip().lower()
+    if normalized in _IMAGE_EXTENSIONS:
+        return _IMAGE_EXTENSIONS[normalized]
+    suffix = os.path.splitext(filename or "")[1].lower()
+    return suffix if suffix in set(_IMAGE_EXTENSIONS.values()) else ".jpg"
 
 
 class _StaticAccessTokenProvider:
@@ -871,12 +888,12 @@ class TeamsAdapter(BasePlatformAdapter):
         logger.info("[teams] Disconnected")
 
     async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
-        """Download attachment bytes with SSRF protection.
+        """Download attachment bytes with SSRF protection and Bot Framework auth.
 
-        Teams file attachments carry pre-authenticated SharePoint download
-        URLs (no extra auth header needed). Validates the URL against the
-        SSRF guard and follows redirects through the shared redirect guard,
-        matching the cache_*_from_url helpers in gateway.platforms.base.
+        Teams file attachments use pre-authenticated SharePoint URLs, while
+        Bot Framework media URLs (``smba.trafficmanager.net``) require the
+        bot's current access token.  Both paths keep the shared SSRF and
+        redirect protections before the request is made.
         """
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         from gateway.platforms.base import _ssrf_redirect_guard
@@ -884,15 +901,23 @@ class TeamsAdapter(BasePlatformAdapter):
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
 
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
+        host = (urlparse(url).hostname or "").lower()
+        if host == "smba.trafficmanager.net" or host.endswith(".trafficmanager.net"):
+            if not self._app:
+                raise RuntimeError("Teams bot app is unavailable for attachment authentication")
+            token = await self._app._get_bot_token()
+            token_value = str(token or "").strip()
+            if not token_value:
+                raise RuntimeError("Teams bot token is unavailable for attachment authentication")
+            headers["Authorization"] = f"Bearer {token_value}"
+
         async with create_ssrf_safe_async_client(
             timeout=timeout,
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
-            )
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             return response.content
 
@@ -996,7 +1021,11 @@ class TeamsAdapter(BasePlatformAdapter):
 
             if content_url and content_type.startswith("image/"):
                 try:
-                    cached = await cache_image_from_url(content_url)
+                    # Bot Framework image URLs (smba.trafficmanager.net) are
+                    # protected resources. Fetch through the adapter helper so
+                    # it can attach the bot token; anonymous URL caching gets 401.
+                    data = await self._fetch_attachment_bytes(content_url)
+                    cached = cache_image_from_bytes(data, _image_extension(content_type, att_name))
                     if cached:
                         media_urls.append(cached)
                         media_types.append(content_type)

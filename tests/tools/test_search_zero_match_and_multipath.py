@@ -95,6 +95,16 @@ class TestMultiPathRecovery:
         assert "a.py" in blob
 
 
+class TestFilesTargetPatternRecovery:
+    def test_dot_pattern_lists_files_with_warning(self, proj):
+        r = json.loads(search_tool(".", path=str(proj / "proj"), target="files", task_id="t-files-dot"))
+        assert "error" not in r
+        assert r["total_count"] >= 2
+        blob = json.dumps(r)
+        assert "a.py" in blob and "b.py" in blob
+        assert "Interpreted file-search pattern '.' as '*'" in r.get("warning", "")
+
+
 class TestZeroMatchProbeEngineParity:
     """The hint must be attached on BOTH search engines' code paths.
 

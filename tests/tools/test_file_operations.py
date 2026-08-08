@@ -466,6 +466,25 @@ class TestSearchFilesFallbackHiddenPaths:
         assert result.error is None
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
 
+    def test_dot_pattern_falls_back_to_all_files(self, tmp_path, monkeypatch):
+        root = tmp_path / "repo"
+        root.mkdir()
+        visible_file = root / "agent.log"
+        visible_nested_file = root / "nested" / "visible.log"
+        hidden_dir_file = root / ".hidden" / "secret.log"
+
+        for p in [visible_file, visible_nested_file, hidden_dir_file]:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files(".", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+        assert "Interpreted file-search pattern '.' as '*'" in (result.warning or "")
+
 
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):

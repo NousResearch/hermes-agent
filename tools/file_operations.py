@@ -2409,11 +2409,12 @@ class ShellFileOperations(FileOperations):
 
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
+        normalized_pattern, pattern_warning = self._normalize_file_search_pattern(pattern)
         # Auto-prepend **/ for recursive search if not already present
-        if not pattern.startswith('**/') and '/' not in pattern:
-            search_pattern = pattern
+        if not normalized_pattern.startswith('**/') and '/' not in normalized_pattern:
+            search_pattern = normalized_pattern
         else:
-            search_pattern = pattern.split('/')[-1]
+            search_pattern = normalized_pattern.split('/')[-1]
 
         search_root = Path(path)
         has_hidden_path_ancestor = any(
@@ -2425,7 +2426,12 @@ class ShellFileOperations(FileOperations):
         # default, and has parallel directory traversal (~200x faster than
         # find on wide trees).  Mirrors _search_content which already uses rg.
         if self._has_command('rg'):
-            return self._search_files_rg(search_pattern, path, limit, offset)
+            result = self._search_files_rg(search_pattern, path, limit, offset)
+            if pattern_warning:
+                result.warning = (
+                    pattern_warning if not result.warning else f"{result.warning} {pattern_warning}"
+                )
+            return result
 
         # Fallback: find (slower, no .gitignore awareness)
         if not self._has_command('find'):
@@ -2491,7 +2497,18 @@ class ShellFileOperations(FileOperations):
             total_count=len(files),
             truncated=bool(limit_reason),
             limit_reason=limit_reason,
+            warning=pattern_warning,
         )
+
+    def _normalize_file_search_pattern(self, pattern: str) -> tuple[str, Optional[str]]:
+        """Recover common "list files here" shorthands for ``target='files'``."""
+        raw = (pattern or "").strip()
+        if raw in {".", "./", ".\\"}:
+            return (
+                "*",
+                "Interpreted file-search pattern '.' as '*' to list files in the target path.",
+            )
+        return pattern, None
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name using ripgrep's --files mode.

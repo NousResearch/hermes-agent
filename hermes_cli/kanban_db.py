@@ -3123,13 +3123,43 @@ def create_task(
     # insert, at which point both rows exist but the next lookup stabilises.
     if idempotency_key:
         row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
+            "SELECT id, status FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
             "ORDER BY created_at DESC LIMIT 1",
             (idempotency_key,),
         ).fetchone()
         if row:
-            return row["id"]
+            existing_id = row["id"]
+            if initial_status == "blocked" and row["status"] == "blocked":
+                # Idempotent retries are semantically still create_task(...),
+                # but old rows may have been created before create-time blocked
+                # rows emitted sticky block events. Repair only the narrow
+                # same-contract case: caller again asks for initial blocked and
+                # the reused row is still blocked. This preserves circuit-
+                # breaker/direct-DB blocked rows unless the caller explicitly
+                # reuses the create-time blocked contract via idempotency_key.
+                with write_txn(conn):
+                    current = conn.execute(
+                        "SELECT status FROM tasks "
+                        "WHERE id = ? AND status != 'archived'",
+                        (existing_id,),
+                    ).fetchone()
+                    if (
+                        current
+                        and current["status"] == "blocked"
+                        and not _has_sticky_block(conn, existing_id)
+                    ):
+                        _append_event(
+                            conn,
+                            existing_id,
+                            "blocked",
+                            {
+                                "reason": "initial_status=blocked:idempotency_reuse_backfill",
+                                "kind": None,
+                                "recurrences": 1,
+                            },
+                        )
+            return existing_id
 
     now = int(time.time())
 
@@ -3270,6 +3300,31 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if task_status == "blocked":
+                    # ``initial_status='blocked'`` is advertised as a way to
+                    # create rows that require human/operator action before any
+                    # dispatch. ``recompute_ready`` distinguishes sticky
+                    # operator blocks from auto-recoverable circuit-breaker
+                    # blocks by the latest blocked/unblocked event, so a
+                    # create-time blocked row must emit the same durable marker
+                    # as an explicit ``kanban block`` call. Without this event,
+                    # the next dispatcher tick can promote a parent-free
+                    # create-time blocked task to ready and select it.
+                    #
+                    # Keep this before parent notification inheritance: inherited
+                    # parent-chat subscriptions start at the child's current
+                    # event cursor, and create-time block markers are not future
+                    # child events that should notify the parent after creation.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "initial_status=blocked",
+                            "kind": None,
+                            "recurrences": 1,
+                        },
+                    )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:

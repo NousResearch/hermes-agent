@@ -132,10 +132,91 @@ def test_discord_toolsets_do_not_leak_to_other_platforms():
     assert "discord_admin" not in enabled
 
 
+def test_get_platform_tools_x_search_off_when_no_xai_credentials(monkeypatch):
+    """Without any xAI credentials, x_search stays off — preserves the
+    "don't ship the schema to users who can't use it" default."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: False
+    )
+
+    cli_enabled = _get_platform_tools({}, "cli")
+    assert "x_search" not in cli_enabled
 
 
+def test_get_platform_tools_x_search_respects_explicit_config(monkeypatch):
+    """Once the user has saved an explicit toolset list via `hermes tools`,
+    that list is authoritative — x_search auto-enable does NOT fire even
+    when xAI creds exist. The saved list represents deliberate choices."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: True
+    )
+
+    # User explicitly opted into spotify but not x_search via `hermes tools`.
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "spotify"]}}
+    enabled = _get_platform_tools(config, "cli")
+    assert "x_search" not in enabled
+    assert "spotify" in enabled
 
 
+def test_x_search_stays_disabled_on_stripped_down_profile(monkeypatch):
+    """Regression for #68001.
+
+    Building a minimal reviewer profile by disabling every configurable
+    toolset leaves a saved list with no configurable keys in it. The resolver
+    treated that as "the user never configured anything" and let the
+    xAI-credential auto-enable fire, so ``x_search`` came back on the next
+    ``tools list`` despite having just been disabled.
+
+    Disabling x_search alongside a still-populated selection already worked
+    (the saved list keeps other configurable keys); this covers the
+    stripped-down profile the reporter was building.
+    """
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: True
+    )
+
+    config = {}
+    assert "x_search" in _get_platform_tools(config, "cli"), (
+        "precondition: auto-enable fires for an unconfigured profile"
+    )
+
+    all_configurable = [key for key, _, _ in CONFIGURABLE_TOOLSETS]
+    _apply_toolset_change(config, "cli", all_configurable, "disable")
+
+    assert "x_search" not in _get_platform_tools(config, "cli"), (
+        "x_search re-enabled by credential discovery after an explicit disable"
+    )
+
+
+def test_x_search_not_resurrected_on_empty_toolset_list(monkeypatch):
+    """#68001: an explicitly saved empty list is a deliberate no-tools profile.
+
+    Credential-based auto-enable must not inject a toolset into it — otherwise
+    a read-only reviewer profile can't be expressed at the profile level.
+    """
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: True
+    )
+
+    enabled = _get_platform_tools({"platform_toolsets": {"cli": []}}, "cli")
+    assert "x_search" not in enabled
+
+
+def test_x_search_auto_enable_still_fires_without_saved_list(monkeypatch):
+    """The narrowing must not break the original auto-enable: a platform with
+    no saved toolset list still picks x_search up from xAI credentials."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: True
+    )
+
+    # Another platform's saved list must not suppress this one.
+    config = {"platform_toolsets": {"telegram": []}}
+    assert "x_search" in _get_platform_tools(config, "cli")
 
 
 def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):

@@ -49,7 +49,7 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 
 ## 界面布局
 
-<img className="docs-terminal-figure" src="/img/docs/cli-layout.svg" alt="Hermes CLI 布局的风格化预览，展示了横幅、对话区域和固定输入提示符。" />
+<img className="docs-terminal-figure" src="/docs/img/docs/cli-layout.svg" alt="Hermes CLI 布局的风格化预览，展示了横幅、对话区域和固定输入提示符。" />
 <p className="docs-figure-caption">Hermes CLI 横幅、对话流和固定输入提示符，以稳定的文档图示形式呈现，而非脆弱的文字艺术。</p>
 
 欢迎横幅一目了然地显示当前模型、终端后端、工作目录、可用工具和已安装的 skill。

@@ -124,6 +124,53 @@ def _private_page_guard_error(blocked_url: str, method: str) -> str:
     )
 
 
+def _private_address_from_candidates(*candidates: Any) -> Optional[str]:
+    """Return the first private/always-blocked URL-or-origin among candidates."""
+    from tools import browser_tool as bt  # type: ignore[import-not-found]
+
+    for raw in candidates:
+        candidate = str(raw or "").strip()
+        if not candidate:
+            continue
+        if bt._is_always_blocked_url(candidate) or not bt._is_safe_url(candidate):  # type: ignore[attr-defined]
+            return candidate
+    return None
+
+
+def _browser_cdp_selected_frame_private_guard(
+    *,
+    task_id: str,
+    method: str,
+    frame_info: Dict[str, Any],
+) -> Optional[str]:
+    """Block page-content CDP calls against a private selected OOPIF frame.
+
+    Top-level ``_current_page_private_url`` is not enough for ``frame_id``
+    routing: a public parent can embed a private OOPIF, and the supervisor
+    dispatches into that child session independently. Navigation/inspection
+    allowlisted methods still pass so the model can leave or inspect tabs.
+    """
+    try:
+        from tools import browser_tool as bt  # type: ignore[import-not-found]
+
+        if not bt._eval_ssrf_guard_active(task_id):  # type: ignore[attr-defined]
+            return None
+        if method in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:
+            return None
+        blocked = _private_address_from_candidates(
+            frame_info.get("url"),
+            frame_info.get("origin"),
+        )
+        if blocked:
+            return _private_page_guard_error(blocked, method)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "browser_cdp: selected-frame private-page guard probe failed: %s",
+            exc,
+        )
+    return None
+
+
 def _browser_cdp_private_guard(
     *,
     task_id: str,
@@ -336,6 +383,17 @@ def _browser_cdp_via_supervisor(
             f"frame_id {frame_id!r} not found in supervisor state. "
             f"Call browser_snapshot to see current frame_tree."
         )
+
+    # Validate the selected frame (frame_tree hit or raw _frames fallback)
+    # before any child-session dispatch. A public top-level page can embed a
+    # private OOPIF; top-page probing alone would miss that boundary.
+    blocked_frame = _browser_cdp_selected_frame_private_guard(
+        task_id=task_id,
+        method=method,
+        frame_info=frame_info,
+    )
+    if blocked_frame:
+        return blocked_frame
 
     child_sid = frame_info.get("session_id")
     if not child_sid:

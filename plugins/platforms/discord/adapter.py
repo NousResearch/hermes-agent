@@ -6843,6 +6843,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 return thread
             except Exception as direct_error:
                 last_direct_error = direct_error
+                # The API call may have succeeded on Discord's side but the
+                # response was lost (timeout, connection reset).  Check if a
+                # thread was already created before falling back to the seed
+                # message path, which would create a duplicate (#73032).
+                existing_thread = getattr(message, "thread", None)
+                if existing_thread is not None:
+                    try:
+                        setattr(existing_thread, "_hermes_auto_thread_initial_name", thread_name)
+                    except Exception:
+                        pass
+                    logger.debug(
+                        "[%s] create_thread raised but thread already exists — "
+                        "reusing instead of creating fallback (error: %s)",
+                        self.name, direct_error,
+                    )
+                    return existing_thread
                 try:
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"

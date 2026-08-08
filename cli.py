@@ -8231,6 +8231,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             api_key=_reset_result.api_key,
                             base_url=_reset_result.base_url,
                             api_mode=_reset_result.api_mode,
+                            auth_header=getattr(_reset_result, 'auth_header', ''),
                         )
                     self.model = _reset_result.new_model
                     self.provider = _reset_result.target_provider
@@ -9188,6 +9189,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    auth_header=getattr(result, 'auth_header', ''),
                 )
             except Exception as exc:
                 # The agent rolled itself back to the old working model/client.
@@ -9532,6 +9534,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    auth_header=getattr(result, 'auth_header', ''),
                 )
             except Exception as exc:
                 # Agent rolled itself back; roll the CLI back too and abort so a

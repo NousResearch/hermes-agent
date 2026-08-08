@@ -1219,6 +1219,22 @@ class TestWebServerEndpoints:
 
 
 
+
+    def test_get_env_vars_non_password_fields_unredacted(self):
+        from hermes_cli.config import save_env_value
+        save_env_value("GOOGLE_VERTEX_PROJECT", "magnetic-flare-495120-r5")
+        save_env_value("GOOGLE_VERTEX_API_KEY", "secret_key_12345")
+        save_env_value("OPENAI_BASE_URL", "https://user:pass@proxy.example.com/v1")
+        data = self.client.get("/api/env").json()
+        assert data["GOOGLE_VERTEX_PROJECT"]["is_password"] is False
+        assert data["GOOGLE_VERTEX_PROJECT"]["redacted_value"] == "magnetic-flare-495120-r5"
+        assert data["GOOGLE_VERTEX_API_KEY"]["is_password"] is True
+        assert data["GOOGLE_VERTEX_API_KEY"]["redacted_value"] != "secret_key_12345"
+        # Regression: the allowlist is explicit — a non-vertex non-password var
+        # (base-URL override with userinfo) must stay redacted, not leak.
+        assert data["OPENAI_BASE_URL"]["is_password"] is False
+        assert data["OPENAI_BASE_URL"]["redacted_value"] != "https://user:pass@proxy.example.com/v1"
+
     def test_model_set_maps_unknown_vendor_to_aggregator(self, monkeypatch):
         """A bare vendor name from analytics rows (no billing_provider) is not
         a Hermes provider — keep the user's aggregator instead of writing a

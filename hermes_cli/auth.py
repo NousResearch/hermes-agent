@@ -493,7 +493,10 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         # request from project_id + region (agent/vertex_adapter.py's
         # build_vertex_base_url), not a fixed host like the other entries.
         inference_base_url="",
-        api_key_env_vars=(),  # OAuth2 (service-account JSON / ADC), not a key
+        # Express Mode API key (GOOGLE_VERTEX_API_KEY) or OAuth2 service-account
+        # JSON / ADC. Declared here so env seeding and the explicit-config gate
+        # (model picker) recognize the Express Mode key path.
+        api_key_env_vars=("GOOGLE_VERTEX_API_KEY",),
         base_url_env_var="",
     ),
     "azure-foundry": ProviderConfig(
@@ -1526,6 +1529,15 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
         return True
     if normalized.startswith("custom:"):
         return True
+    # Provider plugin profiles (e.g. vertex, bedrock) don't appear in
+    # the auth.py PROVIDER_REGISTRY, so resolve_provider fails. Check
+    # the provider plugin system as a fallback.
+    try:
+        from providers import get_provider_profile
+        if get_provider_profile(normalized) is not None:
+            return True
+    except Exception:
+        pass
     try:
         resolve_provider(normalized)
     except AuthError:
@@ -1858,7 +1870,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     if pconfig is None:
         from hermes_cli.providers import get_provider
         pconfig = get_provider(normalized)
-    if pconfig and pconfig.auth_type == "api_key":
+    if pconfig and pconfig.api_key_env_vars:
         for env_var in pconfig.api_key_env_vars:
             if env_var in _IMPLICIT_ENV_VARS:
                 continue

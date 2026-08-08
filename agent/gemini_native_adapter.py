@@ -60,11 +60,15 @@ def bare_gemini_model_id(model: str) -> str:
 
 
 def is_native_gemini_base_url(base_url: str) -> bool:
-    """Return True when the endpoint speaks Gemini's native REST API."""
+    """Return True when the endpoint speaks Gemini's native REST API.
+
+    Accepts both Google AI Studio (generativelanguage.googleapis.com) and
+    Vertex AI (aiplatform.googleapis.com) native endpoints.
+    """
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
         return False
-    if "generativelanguage.googleapis.com" not in normalized:
+    if "generativelanguage.googleapis.com" not in normalized and "aiplatform.googleapis.com" not in normalized:
         return False
     return not normalized.endswith("/openai")
 

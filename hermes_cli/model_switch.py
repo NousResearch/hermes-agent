@@ -475,6 +475,7 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    auth_header: str = ""
 
 
 @dataclass(frozen=True)
@@ -1602,6 +1603,7 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    auth_header = ""
 
     if provider_changed or explicit_provider:
         import os
@@ -1636,10 +1638,12 @@ def switch_model(
                 api_key = runtime.get("api_key", "") or _ukey
                 base_url = runtime.get("base_url", "") or _user_pdef.base_url
                 api_mode = runtime.get("api_mode", "")
+                auth_header = runtime.get("auth_header", "")
             except Exception:
                 api_key = _ukey
                 base_url = _user_pdef.base_url
                 api_mode = ""
+                auth_header = ""
         elif target_provider == "custom" and current_base_url:
             api_key = current_api_key
             base_url = current_base_url
@@ -1653,6 +1657,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
+                auth_header = runtime.get("auth_header", "")
             except Exception as e:
                 return ModelSwitchResult(
                     success=False,
@@ -1677,6 +1682,7 @@ def switch_model(
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
+            auth_header = runtime.get("auth_header", "")
         except Exception:
             pass
 
@@ -1850,6 +1856,7 @@ def switch_model(
         capabilities=capabilities,
         model_info=model_info,
         is_global=is_global,
+        auth_header=auth_header,
     )
 
 
@@ -2200,7 +2207,8 @@ def list_authenticated_providers(
         pconfig = PROVIDER_REGISTRY.get(hermes_id)
         # Skip non-API-key auth providers here — they are handled in
         # section 2 (HERMES_OVERLAYS) with proper auth store checking.
-        if pconfig and pconfig.auth_type != "api_key":
+        # Exception: auth_type="vertex" is handled inline below.
+        if pconfig and pconfig.auth_type not in ("api_key", "vertex"):
             continue
         # models.dev catalogs include providers Hermes may not route yet.
         # Gate on runtime capability rather than registry membership: special
@@ -2208,15 +2216,27 @@ def list_authenticated_providers(
         from hermes_cli.auth import is_runtime_provider_routable
         if not is_runtime_provider_routable(hermes_id):
             continue
-        if pconfig and pconfig.api_key_env_vars:
+        env_vars: list[str] = []
+        if pconfig and pconfig.auth_type == "vertex":
+            # Vertex uses has_vertex_api_key() — no standard env-var check
+            pass
+        elif pconfig and pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
         else:
             env_vars = pdata.get("env", [])
             if not isinstance(env_vars, list):
                 continue
 
-        # Check if any env var is set
-        has_creds = any(os.environ.get(ev) for ev in env_vars)
+        # Check if any env var is set (or Vertex API key is present)
+        has_creds = False
+        if hermes_id == "vertex":
+            try:
+                from agent.vertex_adapter import has_vertex_api_key
+                has_creds = has_vertex_api_key()
+            except Exception:
+                has_creds = False
+        else:
+            has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store

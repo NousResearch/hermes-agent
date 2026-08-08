@@ -326,6 +326,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.6-flash",
         "gemini-3.1-flash-lite-preview",
     ],
+    "vertex": [
+        "google/gemini-3.6-flash",
+        "google/gemini-3.5-flash",
+    ],
     "zai": [
         "glm-5.2",
         "glm-5.1",
@@ -594,16 +598,18 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Model IDs use the "google/" publisher prefix Vertex's openapi
     # endpoint expects (see hermes_cli/model_setup_flows.py).
     # Entries validated live against a GCP project (global region,
-    # HTTP 200) as of 2026-07-21 (PR #68767).
+    # HTTP 200) as of 2026-07-21 (PR #68767); gemini-3.6-flash and
+    # gemini-3.5-flash were additionally verified via Express Mode
+    # API key in this PR.
     "vertex": [
-        "google/gemini-3.1-pro-preview",
-        "google/gemini-3-pro-preview",
         "google/gemini-3.6-flash",
         "google/gemini-3.5-flash",
         "google/gemini-3.5-flash-lite",
-        "google/gemini-3-flash-preview",
+        "google/gemini-3.1-pro-preview",
         "google/gemini-3.1-flash-lite-preview",
         "google/gemini-3.1-flash-lite",
+        "google/gemini-3-flash-preview",
+        "google/gemini-3-pro-preview",
     ],
     "novita": [
         "moonshotai/kimi-k2.5",
@@ -1132,7 +1138,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
-    ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
+    ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; API key or OAuth2/ADC, GCP billing/quotas)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, coder, direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI Grok (Direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),

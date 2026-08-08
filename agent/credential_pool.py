@@ -2930,7 +2930,10 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         return changed, active_sources
 
     pconfig = PROVIDER_REGISTRY.get(provider)
-    if not pconfig or pconfig.auth_type != AUTH_TYPE_API_KEY:
+    if not pconfig or not pconfig.api_key_env_vars:
+        # No env-key vars declared → nothing to seed. Gate on the declared
+        # vars rather than auth_type so special auth types that still use an
+        # API key (e.g. Vertex Express Mode, auth_type="vertex") seed too.
         return changed, active_sources
 
     env_url = ""

@@ -208,6 +208,14 @@ def _openai_http_client_kwargs(
     return {"http_client": client}
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
+    # Gemini/Vertex native API uses GeminiNativeClient instead of OpenAI SDK
+    try:
+        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+
+        if is_native_gemini_base_url(base_url):
+            return GeminiNativeClient(api_key=api_key, base_url=base_url, **kwargs)
+    except Exception:
+        pass
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
     # Hermes owns auxiliary retry + provider/model fallback policy (the
     # same-provider transient retry in call_llm plus the except-chain
@@ -6230,6 +6238,29 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── Vertex AI (supports Express Mode API key AND OAuth2 / ADC) ─────
+    if provider in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
+        try:
+            from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+
+            if has_vertex_credentials():
+                token_or_key, base_url, auth_header = get_vertex_config()
+                if token_or_key and base_url:
+                    default_model = _get_aux_model_for_provider(provider) or "google/gemini-3.6-flash"
+                    final_model = _normalize_resolved_model(model or default_model, provider)
+                    client = _create_openai_client(
+                        api_key=token_or_key,
+                        base_url=base_url,
+                        **({"default_headers": {"x-goog-api-key": token_or_key}}
+                           if auth_header == "x-goog-api-key" else {}),
+                    )
+                    if client is not None:
+                        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+                        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                                else (client, final_model))
+        except Exception as exc:
+            logger.warning("resolve_provider_client: vertex client creation failed: %s", exc)
+
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:
         from hermes_cli.auth import (
@@ -6432,17 +6463,29 @@ def resolve_provider_client(
                          "no GCP credentials found")
             return None, None
 
-        token, base_url = get_vertex_config()
-        if not token or not base_url:
+        from agent.vertex_adapter import (
+            get_vertex_config,
+            has_vertex_api_key,
+        )
+
+        token_or_key, base_url, auth_header = get_vertex_config()
+        if not token_or_key or not base_url:
             logger.warning("resolve_provider_client: vertex requested but "
                            "could not mint token / resolve project")
             return None, None
 
-        default_model = "google/gemini-3-flash-preview"
+        default_model = _get_aux_model_for_provider(provider) or "gemini-3.5-flash"
         final_model = _normalize_resolved_model(model or default_model, provider)
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=token, base_url=base_url)
+            # Route through _create_openai_client which auto-detects native
+            # Vertex URLs and creates a GeminiNativeClient (which handles
+            # x-goog-api-key auth and the native generateContent format).
+            client = _create_openai_client(
+                api_key=token_or_key,
+                base_url=base_url,
+                **({"default_headers": {"x-goog-api-key": token_or_key}}
+                   if auth_header == "x-goog-api-key" else {}),
+            )
         except Exception as exc:
             logger.warning("resolve_provider_client: cannot create Vertex "
                            "client: %s", exc)

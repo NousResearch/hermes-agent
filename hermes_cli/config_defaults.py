@@ -3261,12 +3261,32 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "GOOGLE_VERTEX_API_KEY": {
+        "description": "Vertex AI API key (Express Mode)",
+        "prompt": "Vertex AI API key",
+        "url": "https://console.cloud.google.com/apis/credentials",
+        "password": True,
+        "category": "provider",
+        "advanced": False,
+    },
+    "GOOGLE_VERTEX_PROJECT": {
+        "description": "GCP Project ID",
+        "prompt": "GCP Project ID",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GOOGLE_VERTEX_LOCATION": {
+        "description": "GCP Region / Location",
+        "prompt": "GCP Region (e.g. us-central1)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "VERTEX_CREDENTIALS_PATH": {
-        "description": "Path to a Google Cloud service account JSON for Vertex AI (Gemini). "
-                       "Vertex uses OAuth2, not a static API key — this points at the "
-                       "credentials Hermes mints short-lived tokens from. Falls back to "
-                       "GOOGLE_APPLICATION_CREDENTIALS, then to ADC (gcloud auth "
-                       "application-default login). Set project/region under vertex: in config.yaml.",
+        "description": "Service Account JSON path (OAuth2 fallback)",
         "prompt": "Vertex service account JSON path (leave empty to use ADC / GOOGLE_APPLICATION_CREDENTIALS)",
         "url": "https://cloud.google.com/iam/docs/keys-create-delete",
         "password": False,

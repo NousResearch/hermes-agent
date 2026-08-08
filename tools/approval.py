@@ -4527,6 +4527,22 @@ def request_elicitation_consent(
 
     # CLI / TUI path. allow_permanent=False because elicitation is a
     # per-call confirmation — there is no pattern to remember.
+    #
+    # Fires the same pre/post approval hooks as the gateway branch above
+    # (via _await_gateway_decision) and every other prompt_dangerous_approval
+    # call site (check_all_command_guards, check_execute_code_guard) — this
+    # branch was the one CLI/TUI approval surface not wired into
+    # TOOL_APPROVAL_METRIC, making every MCP elicitation answered outside a
+    # gateway session invisible to approval observability.
+    cli_hook_payload = {
+        "command": message,
+        "description": description,
+        "pattern_key": "mcp_elicitation",
+        "pattern_keys": ["mcp_elicitation"],
+        "session_key": session_key,
+        "surface": surface,
+    }
+    _fire_approval_hook("pre_approval_request", **cli_hook_payload)
     try:
         choice = prompt_dangerous_approval(
             message,
@@ -4538,7 +4554,13 @@ def request_elicitation_consent(
         logger.error(
             "Elicitation CLI prompt failed: %s", exc, exc_info=True,
         )
+        _fire_approval_hook(
+            "post_approval_response", **cli_hook_payload, choice="error",
+        )
         return "decline"
+    _fire_approval_hook(
+        "post_approval_response", **cli_hook_payload, choice=choice,
+    )
 
     if choice in ("once", "session", "always"):
         return "accept"

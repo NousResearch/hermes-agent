@@ -216,24 +216,30 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                 session = session_or_response
 
         # Stream response back. Headers first, then chunked body.
-        resp = web.StreamResponse(
-            status=upstream_resp.status,
-            headers=_filter_response_headers(upstream_resp.headers),
-        )
-        await resp.prepare(request)
-
+        # IMPORTANT: StreamResponse construction and prepare() must live
+        # inside the try block. If prepare() raises (e.g. the client
+        # disconnected before headers were flushed) we still hold an open
+        # upstream session and response that must be released — otherwise
+        # we leak sockets on every interrupted request.
         try:
-            async for chunk in upstream_resp.content.iter_any():
-                if chunk:
-                    await resp.write(chunk)
-        except (aiohttp.ClientError, asyncio.CancelledError) as exc:
-            logger.warning("proxy: streaming interrupted: %s", exc)
+            resp = web.StreamResponse(
+                status=upstream_resp.status,
+                headers=_filter_response_headers(upstream_resp.headers),
+            )
+            await resp.prepare(request)
+
+            try:
+                async for chunk in upstream_resp.content.iter_any():
+                    if chunk:
+                        await resp.write(chunk)
+            except (aiohttp.ClientError, asyncio.CancelledError) as exc:
+                logger.warning("proxy: streaming interrupted: %s", exc)
+
+            await resp.write_eof()
+            return resp
         finally:
             upstream_resp.release()
             await session.close()
-
-        await resp.write_eof()
-        return resp
 
     # /health doesn't go through the upstream
     app.router.add_get("/health", handle_health)

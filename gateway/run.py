@@ -7868,6 +7868,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             overflow.insert(0, next_queued)
         return pending_event
 
+    def _requeue_event_at_front(
+        self,
+        session_key: str,
+        event: "MessageEvent",
+        adapter: Any,
+    ) -> None:
+        """Restore *event* at the head without dropping a staged next turn.
+
+        The recursion cap can fire after the drain consumed the current head
+        and ``_promote_queued_event`` staged the next FIFO item in the adapter
+        slot.  Replacing that slot loses the staged item.  Move it back to the
+        front of overflow before restoring the current event as the head.
+        """
+        if adapter is None:
+            return
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if pending_slot is None:
+            return
+        staged = pending_slot.get(session_key)
+        if staged is not None:
+            self._session_state(session_key).conversation.queued_events.insert(
+                0, staged
+            )
+        pending_slot[session_key] = event
+
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
         _q_state = self._peek_session_state(session_key)
@@ -26207,7 +26232,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     adapter = self._adapter_for_source(source)
                     if adapter and pending_event:
-                        merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                        self._requeue_event_at_front(session_key, pending_event, adapter)
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
                     return result_holder[0] or {"final_response": response, "messages": history}

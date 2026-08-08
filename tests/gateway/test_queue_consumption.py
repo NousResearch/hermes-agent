@@ -169,6 +169,54 @@ class TestQueueConsumptionAfterCompletion:
         # gets the next-in-line item.
         assert adapter._pending_messages[session_key].text == "Q2"
 
+    def test_recursion_cap_requeue_preserves_staged_fifo_head(self):
+        """Requeueing the current item must not overwrite the promoted next item."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._queued_events = {}
+        adapter = _StubAdapter()
+        session_key = "discord:thread:coffee"
+
+        for text in ("Q1", "Q2", "Q3"):
+            runner._enqueue_fifo(
+                session_key,
+                MessageEvent(
+                    text=text,
+                    message_type=MessageType.TEXT,
+                    source=MagicMock(),
+                    message_id=f"q-{text}",
+                ),
+                adapter,
+            )
+
+        # Drain Q1 and promote Q2 into the slot; Q3 remains in overflow.
+        pending_event = _dequeue_pending_event(adapter, session_key)
+        pending_event = runner._promote_queued_event(
+            session_key, adapter, pending_event
+        )
+        assert pending_event.text == "Q1"
+        assert adapter._pending_messages[session_key].text == "Q2"
+        assert [event.text for event in runner._queued_events[session_key]] == [
+            "Q3"
+        ]
+
+        # The recursion cap restores Q1 without losing or reordering Q2/Q3.
+        runner._requeue_event_at_front(session_key, pending_event, adapter)
+        assert adapter._pending_messages[session_key].text == "Q1"
+        assert [event.text for event in runner._queued_events[session_key]] == [
+            "Q2",
+            "Q3",
+        ]
+
+        drained = []
+        for _ in range(3):
+            event = _dequeue_pending_event(adapter, session_key)
+            event = runner._promote_queued_event(session_key, adapter, event)
+            drained.append(event.text)
+        assert drained == ["Q1", "Q2", "Q3"]
+        assert runner._queue_depth(session_key, adapter=adapter) == 0
+
 
 class TestBusyInputModeQueueFifo:
     """Regression coverage for issue #28503.

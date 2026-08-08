@@ -6485,6 +6485,29 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+class _MissingWorkspaceError(FileNotFoundError):
+    pass
+
+
+def _registered_worktree_for_branch(repo_root: Path, branch_name: str) -> Optional[Path]:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    worktree = None
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            worktree = Path(line.removeprefix("worktree "))
+        elif line == f"branch refs/heads/{branch_name}":
+            return worktree
+    return None
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
@@ -6495,7 +6518,18 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
             return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
-        cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
+        force = []
+        registered = _registered_worktree_for_branch(repo_root, branch_name)
+        if (
+            not target.exists()
+            and registered is not None
+            and registered.resolve(strict=False) == target.resolve(strict=False)
+        ):
+            force = ["--force"]
+        cmd = [
+            "git", "-C", str(repo_root), "worktree", "add", *force,
+            str(target), branch_name,
+        ]
     else:
         cmd = [
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
@@ -6596,6 +6630,8 @@ def _resolve_worktree_workspace(
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
     if repo_root is None:
+        if not requested.exists():
+            raise _MissingWorkspaceError(f"missing workspace path: {requested}")
         raise ValueError(
             f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
             "and does not point at a git repo root"
@@ -6827,7 +6863,7 @@ class DispatchResult:
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
-    """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    """Task ids auto-blocked by workspace preflight or the spawn circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -8640,6 +8676,15 @@ def _dispatch_once_locked(
                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)
+        except _MissingWorkspaceError as exc:
+            if block_task(
+                conn,
+                claimed.id,
+                reason=str(exc),
+                expected_run_id=claimed.current_run_id,
+            ):
+                result.auto_blocked.append(claimed.id)
+            continue
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -8732,6 +8777,15 @@ def _dispatch_once_locked(
                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)
+        except _MissingWorkspaceError as exc:
+            if block_task(
+                conn,
+                claimed.id,
+                reason=str(exc),
+                expected_run_id=claimed.current_run_id,
+            ):
+                result.auto_blocked.append(claimed.id)
+            continue
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",

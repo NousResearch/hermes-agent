@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -86,6 +87,7 @@ import logging
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
@@ -133,6 +135,266 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+_NOT_BEFORE_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})T"
+    r"(?P<time>\d{2}:\d{2}:\d{2})"
+    r"(?P<fraction>\.\d+)?"
+    r"(?P<zone>Z|[+-]\d{2}:\d{2})$"
+)
+
+
+def normalize_not_before(value: Optional[str]) -> Optional[str]:
+    """Validate and canonicalise an optional not-before instant.
+
+    Accepted values are explicit timezone-aware ISO8601 date-times with
+    seconds and either ``Z`` or a numeric ``±HH:MM`` offset. Values are stored
+    as UTC with a trailing ``Z``. Fractional-second digits are kept verbatim,
+    including precision beyond Python's microsecond resolution, so
+    normalisation can never move a safety gate earlier than the supplied
+    instant.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(
+            "not_before must be a timezone-aware ISO8601 instant, "
+            "for example 2026-08-08T11:26:00Z"
+        )
+    candidate = value.strip()
+    match = _NOT_BEFORE_RE.fullmatch(candidate)
+    if match is None:
+        raise ValueError(
+            "not_before must be a timezone-aware ISO8601 instant, "
+            "for example 2026-08-08T11:26:00Z"
+        )
+
+    zone = match.group("zone")
+    parse_zone = "+00:00" if zone == "Z" else zone
+    try:
+        aware = datetime.fromisoformat(
+            f"{match.group('date')}T{match.group('time')}{parse_zone}"
+        )
+        if aware.tzinfo is None or aware.utcoffset() is None:
+            raise ValueError("timezone required")
+        utc = aware.astimezone(timezone.utc)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(
+            "not_before must be a valid timezone-aware ISO8601 instant, "
+            "for example 2026-08-08T11:26:00Z"
+        ) from exc
+
+    fraction = match.group("fraction") or ""
+    return (
+        f"{utc.year:04d}-{utc.month:02d}-{utc.day:02d}T"
+        f"{utc.hour:02d}:{utc.minute:02d}:{utc.second:02d}{fraction}Z"
+    )
+
+
+_NOT_BEFORE_OVERRIDE_SEAL = object()
+
+
+@dataclass(frozen=True)
+class HumanNotBeforeOverride:
+    """Sealed capability issued by an already-authenticated human surface.
+
+    Agent-facing Kanban tools intentionally have no way to construct or pass
+    this object.  A trusted CLI/dashboard surface must authenticate its human,
+    call :func:`authenticated_human_not_before_override`, and pass the returned
+    capability directly to the guarded DB operation.  Every accepted use is
+    recorded on the task event stream.
+    """
+
+    actor: str
+    reason: str
+    authenticated_by: str
+    _seal: object = field(repr=False, compare=False)
+
+
+def authenticated_human_not_before_override(
+    *, actor: str, reason: str, authenticated_by: str
+) -> HumanNotBeforeOverride:
+    """Mint a not-before override after the caller authenticated a human.
+
+    This is a capability boundary, not an authentication mechanism.  Callers
+    must pass a non-empty identity and authentication provenance (for example
+    ``local_tty_os_user`` or ``gateway_api_key``).  The worker tool schema does
+    not expose this factory or the capability, so an agent cannot request an
+    override through ``kanban_complete``/``kanban_create``.
+    """
+    actor = str(actor or "").strip()
+    reason = str(reason or "").strip()
+    authenticated_by = str(authenticated_by or "").strip()
+    if not actor or not reason or not authenticated_by:
+        raise ValueError(
+            "human not-before override requires actor, reason, and authenticated_by"
+        )
+    return HumanNotBeforeOverride(
+        actor=actor,
+        reason=reason,
+        authenticated_by=authenticated_by,
+        _seal=_NOT_BEFORE_OVERRIDE_SEAL,
+    )
+
+
+class NotBeforeViolation(RuntimeError):
+    """Raised when an operation is attempted before a task's release time."""
+
+    def __init__(self, task_id: str, operation: str, not_before: str):
+        self.task_id = task_id
+        self.operation = operation
+        self.not_before = not_before
+        super().__init__(
+            f"{operation} blocked for {task_id}: not_before={not_before} has not elapsed"
+        )
+
+
+def _not_before_deadline(value: str) -> Decimal:
+    """Return a canonical not-before instant as exact epoch seconds."""
+    canonical = normalize_not_before(value)
+    if canonical is None:  # pragma: no cover - caller rejects None
+        raise ValueError("not_before is required")
+    match = _NOT_BEFORE_RE.fullmatch(canonical)
+    if match is None:  # pragma: no cover - normalize_not_before already checked
+        raise ValueError(f"invalid canonical not_before: {canonical!r}")
+    base = datetime.fromisoformat(
+        f"{match.group('date')}T{match.group('time')}+00:00"
+    )
+    fraction = Decimal(match.group("fraction") or "0")
+    return Decimal(int(base.timestamp())) + fraction
+
+
+def not_before_pending(value: Optional[str], *, now: Optional[float] = None) -> bool:
+    """Return whether ``value`` is a future not-before instant."""
+    if not value:
+        return False
+    current = Decimal(str(time.time() if now is None else now))
+    try:
+        return current < _not_before_deadline(value)
+    except (InvalidOperation, ValueError):
+        # Invalid persisted gates fail closed.  New writes are normalized, but
+        # direct/legacy SQL must never turn malformed safety metadata into an
+        # early release.
+        return True
+
+
+def _valid_not_before_override(
+    override: Optional[HumanNotBeforeOverride],
+) -> bool:
+    return bool(
+        isinstance(override, HumanNotBeforeOverride)
+        and override._seal is _NOT_BEFORE_OVERRIDE_SEAL
+        and override.actor.strip()
+        and override.reason.strip()
+        and override.authenticated_by.strip()
+    )
+
+
+def _append_not_before_block_once(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    operation: str,
+    not_before: str,
+) -> None:
+    """Record one stable diagnostic per operation/deadline without tick spam."""
+    prior = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'not_before_blocked' "
+        "ORDER BY id DESC LIMIT 20",
+        (task_id,),
+    ).fetchall()
+    for event in prior:
+        try:
+            payload = json.loads(event["payload"] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if (
+            payload.get("operation") == operation
+            and payload.get("not_before") == not_before
+        ):
+            return
+    _append_event(
+        conn,
+        task_id,
+        "not_before_blocked",
+        {
+            "operation": operation,
+            "not_before": not_before,
+            "diagnostic": "attempted_before_release",
+        },
+        run_id=_current_run_id(conn, task_id),
+    )
+
+
+def _not_before_blocks(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    operation: str,
+    override: Optional[HumanNotBeforeOverride] = None,
+    now: Optional[float] = None,
+) -> Optional[str]:
+    """Transactional guard. Return the blocking deadline, else ``None``."""
+    row = conn.execute(
+        "SELECT not_before FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None or not row["not_before"]:
+        return None
+    not_before = str(row["not_before"])
+    if not not_before_pending(not_before, now=now):
+        return None
+    if _valid_not_before_override(override):
+        assert isinstance(override, HumanNotBeforeOverride)
+        _append_event(
+            conn,
+            task_id,
+            "not_before_overridden",
+            {
+                "operation": operation,
+                "not_before": not_before,
+                "actor": override.actor,
+                "reason": override.reason,
+                "authenticated_by": override.authenticated_by,
+            },
+            run_id=_current_run_id(conn, task_id),
+        )
+        return None
+    _append_not_before_block_once(
+        conn,
+        task_id,
+        operation=operation,
+        not_before=not_before,
+    )
+    return not_before
+
+
+def enforce_not_before(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    operation: str,
+    override: Optional[HumanNotBeforeOverride] = None,
+    now: Optional[float] = None,
+    raise_on_block: bool = False,
+) -> bool:
+    """Enforce and audit a task's not-before gate.
+
+    Returns ``True`` when the operation may proceed.  A rejection writes only
+    an internal diagnostic event; task/run state and provider systems remain
+    untouched.
+    """
+    with write_txn(conn):
+        deadline = _not_before_blocks(
+            conn,
+            task_id,
+            operation=operation,
+            override=override,
+            now=now,
+        )
+    if deadline and raise_on_block:
+        raise NotBeforeViolation(task_id, operation, deadline)
+    return deadline is None
 
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
@@ -993,6 +1255,9 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Optional machine-readable safety gate. Stored canonically as an explicit
+    # UTC instant and enforced across promotion, claim, completion, and tools.
+    not_before: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1024,6 +1289,7 @@ class Task:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
+            not_before=row["not_before"] if "not_before" in keys else None,
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
@@ -1262,6 +1528,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
     session_id           TEXT,
+    -- Optional machine-enforced safety gate. Canonical timezone-aware ISO8601
+    -- UTC instant; NULL preserves legacy immediate-dispatch behavior.
+    not_before           TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -2458,6 +2727,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "not_before" not in cols:
+        # Optional machine-enforced scheduling gate. Existing tasks remain
+        # ungated (NULL) for backwards compatibility.
+        _add_column_if_missing(conn, "tasks", "not_before", "not_before TEXT")
+
     if "block_kind" not in cols:
         # Typed block reason (VALID_BLOCK_KINDS) or NULL for legacy/un-typed
         # blocks. Existing blocked rows get NULL, which is treated as a
@@ -2903,6 +3177,7 @@ def create_task(
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    not_before: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
@@ -2949,6 +3224,7 @@ def create_task(
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    not_before = normalize_not_before(not_before)
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)
@@ -3183,6 +3459,14 @@ def create_task(
                         ).fetchall()
                         if any(r["status"] != "done" for r in rows):
                             task_status = "todo"
+                # A future release is a machine gate, not merely display
+                # metadata.  Park it outside the dispatchable queue until the
+                # dependency resolver observes that the deadline elapsed.
+                if (
+                    task_status in ("ready", "todo")
+                    and not_before_pending(not_before, now=now)
+                ):
+                    task_status = "scheduled"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
                 if triage and parents:
@@ -3217,8 +3501,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, not_before
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3244,6 +3528,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        not_before,
                     ),
                 )
                 for pid in parents:
@@ -3268,6 +3553,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "not_before": not_before,
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -4047,6 +4333,8 @@ def _synthesize_ended_run(
     summary: Optional[str] = None,
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
+    not_before_override: Optional[HumanNotBeforeOverride] = None,
+    not_before_checked: bool = False,
 ) -> int:
     """Insert a zero-duration, already-closed run row.
 
@@ -4064,6 +4352,15 @@ def _synthesize_ended_run(
     function does NOT touch the tasks row.
     """
     now = int(time.time())
+    if outcome == "completed" and not not_before_checked:
+        if _not_before_blocks(
+            conn,
+            task_id,
+            operation="synthetic_evidence_creation",
+            override=not_before_override,
+            now=now,
+        ):
+            return 0
     trow = conn.execute(
         "SELECT assignee, current_step_key FROM tasks WHERE id = ?",
         (task_id,),
@@ -4168,8 +4465,8 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
-            "FROM tasks WHERE status IN ('todo', 'blocked')"
+            "SELECT id, status, consecutive_failures, max_retries, not_before "
+            "FROM tasks WHERE status IN ('todo', 'scheduled', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
@@ -4180,6 +4477,11 @@ def recompute_ready(
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
                 continue
+            # Legacy scheduled rows without a timestamp remain explicitly
+            # parked until unblock_task. Timestamped rows auto-release only
+            # after the machine-readable deadline.
+            if cur_status == "scheduled" and not row["not_before"]:
+                continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
@@ -4187,6 +4489,12 @@ def recompute_ready(
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
+                if _not_before_blocks(
+                    conn,
+                    task_id,
+                    operation="dependency_resolver",
+                ):
+                    continue
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -4211,7 +4519,8 @@ def recompute_ready(
                     )
                 else:
                     conn.execute(
-                        "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
+                        "UPDATE tasks SET status = 'ready' "
+                        "WHERE id = ? AND status IN ('todo', 'scheduled')",
                         (task_id,),
                     )
                 _append_event(conn, task_id, "promoted", None)
@@ -4229,6 +4538,7 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    not_before_override: Optional[HumanNotBeforeOverride] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -4239,6 +4549,23 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if _not_before_blocks(
+            conn,
+            task_id,
+            operation="claim",
+            override=not_before_override,
+            now=now,
+        ):
+            return None
+        if _valid_not_before_override(not_before_override):
+            # A successful human-authorized claim must also let that worker's
+            # tool-execution backstop run. Clear only on the same claimable row;
+            # a stale override against another status changes nothing.
+            conn.execute(
+                "UPDATE tasks SET not_before = NULL "
+                "WHERE id = ? AND status = 'ready' AND claim_lock IS NULL",
+                (task_id,),
+            )
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -4351,6 +4678,7 @@ def claim_review_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    not_before_override: Optional[HumanNotBeforeOverride] = None,
 ) -> Optional[Task]:
     """Atomically transition ``review -> running``.
 
@@ -4368,6 +4696,20 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if _not_before_blocks(
+            conn,
+            task_id,
+            operation="claim_review",
+            override=not_before_override,
+            now=now,
+        ):
+            return None
+        if _valid_not_before_override(not_before_override):
+            conn.execute(
+                "UPDATE tasks SET not_before = NULL "
+                "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
+                (task_id,),
+            )
         cur = conn.execute(
             """
             UPDATE tasks
@@ -4842,6 +5184,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    not_before_override: Optional[HumanNotBeforeOverride] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4872,6 +5215,20 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+
+    # This must be the first completion write. In particular it precedes
+    # artifact staging, synthetic-run evidence, dependent promotion, cleanup,
+    # and lifecycle hooks, so a rejected drain/root-drain/direct completion has
+    # no side effect beyond its diagnostic event.
+    with write_txn(conn):
+        if _not_before_blocks(
+            conn,
+            task_id,
+            operation="complete",
+            override=not_before_override,
+            now=now,
+        ):
+            return False
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -4969,6 +5326,7 @@ def complete_task(
                 outcome="completed",
                 summary=summary if summary is not None else result,
                 metadata=metadata,
+                not_before_checked=True,
             )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
@@ -5836,6 +6194,7 @@ def promote_task(
     reason: Optional[str] = None,
     force: bool = False,
     dry_run: bool = False,
+    not_before_override: Optional[HumanNotBeforeOverride] = None,
 ) -> tuple[bool, Optional[str]]:
     """Manually promote a `todo` or `blocked` task to `ready`.
 
@@ -5848,16 +6207,16 @@ def promote_task(
     promotion would succeed without mutating state.
     """
     row = conn.execute(
-        "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        "SELECT status, not_before FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
     if row is None:
         return False, f"task {task_id} not found"
 
     cur_status = row["status"]
-    if cur_status not in ("todo", "blocked"):
+    if cur_status not in ("todo", "scheduled", "blocked"):
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
+            f"'todo', 'scheduled', or 'blocked'"
         )
 
     if not force:
@@ -5878,13 +6237,39 @@ def promote_task(
             )
 
     if dry_run:
+        if row is not None:
+            gate = conn.execute(
+                "SELECT not_before FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if gate and not_before_pending(gate["not_before"]):
+                return False, (
+                    f"not-before deadline has not elapsed: {gate['not_before']}"
+                )
         return True, None
+
+    if not enforce_not_before(
+        conn,
+        task_id,
+        operation="manual_promotion",
+        override=not_before_override,
+    ):
+        gate = conn.execute(
+            "SELECT not_before FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        return False, (
+            f"not-before deadline has not elapsed: {gate['not_before']}"
+            if gate else "not-before deadline has not elapsed"
+        )
 
     with write_txn(conn):
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')",
-            (task_id,),
+            "UPDATE tasks SET status = 'ready', not_before = ? "
+            "WHERE id = ? AND status IN ('todo', 'scheduled', 'blocked')",
+            (
+                None if _valid_not_before_override(not_before_override)
+                else row["not_before"] if "not_before" in row.keys() else None,
+                task_id,
+            ),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
@@ -5898,7 +6283,12 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    not_before_override: Optional[HumanNotBeforeOverride] = None,
+) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
@@ -5910,6 +6300,20 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     now = int(time.time())
     with write_txn(conn):
+        if _not_before_blocks(
+            conn,
+            task_id,
+            operation="unblock",
+            override=not_before_override,
+            now=now,
+        ):
+            return False
+        if _valid_not_before_override(not_before_override):
+            conn.execute(
+                "UPDATE tasks SET not_before = NULL "
+                "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+                (task_id,),
+            )
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
@@ -6802,7 +7206,9 @@ class DispatchResult:
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids skipped because they have no assignee at all.
-    Operator-actionable — usually a misfiled task waiting for routing."""
+    operator-actionable — usually a misfiled task waiting for routing."""
+    skipped_not_before: list[str] = field(default_factory=list)
+    """Task ids held before their machine-enforced release timestamp."""
     auto_assigned_default: list[str] = field(default_factory=list)
     """Task ids that were unassigned in the DB and had
     ``kanban.default_assignee`` applied this tick before spawning (#27145).
@@ -8253,7 +8659,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     the warning still fires in degraded environments.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT id, assignee, not_before FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
@@ -8263,9 +8669,12 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
         from hermes_cli.profiles import profile_exists  # local import: avoids cycle
     except Exception:
         # Can't introspect — assume spawnable, preserve legacy behavior.
-        return True
+        return any(not not_before_pending(row["not_before"]) for row in rows)
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if (
+            not not_before_pending(row["not_before"])
+            and profile_exists(row["assignee"])
+        ):
             return True
     return False
 
@@ -8279,7 +8688,7 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     should have spawned a review agent.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT id, assignee, not_before FROM tasks "
         "WHERE status = 'review' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
@@ -8288,9 +8697,12 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     try:
         from hermes_cli.profiles import profile_exists  # local import: avoids cycle
     except Exception:
-        return True
+        return any(not not_before_pending(row["not_before"]) for row in rows)
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if (
+            not not_before_pending(row["not_before"])
+            and profile_exists(row["assignee"])
+        ):
             return True
     return False
 
@@ -8461,7 +8873,7 @@ def _dispatch_once_locked(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, not_before FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -8519,6 +8931,15 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
+        if not_before_pending(row["not_before"]):
+            if not dry_run:
+                enforce_not_before(
+                    conn,
+                    row["id"],
+                    operation="dispatcher",
+                )
+            result.skipped_not_before.append(row["id"])
+            continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
@@ -9388,6 +9809,8 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
     lines.append(f"Status:   {task.status}")
+    if task.not_before:
+        lines.append(f"Not before: {task.not_before}")
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")

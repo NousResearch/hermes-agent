@@ -479,6 +479,54 @@ def _managed_values(
     )
 
 
+def _kanban_not_before_tool_block(function_name: str) -> str | None:
+    """Fail closed before any worker tool/middleware can create side effects.
+
+    The dispatcher pins both the task id and DB path into every Kanban worker's
+    environment. A manually-spawned process, or a running task retroactively
+    gated, therefore still cannot reach terminal/browser/provider tools before
+    release. Rejections are audited by ``kanban_db``.
+    """
+    task_id = (os.getenv("HERMES_KANBAN_TASK") or "").strip()
+    pinned_db = (os.getenv("HERMES_KANBAN_DB") or "").strip()
+    if not task_id or not pinned_db:
+        return None
+    try:
+        from hermes_cli import kanban_db as kb
+
+        with kb.connect_closing() as conn:
+            task = kb.get_task(conn, task_id)
+            if task is None:
+                raise RuntimeError("Kanban task is absent from the pinned board")
+            if not task.not_before or not kb.not_before_pending(task.not_before):
+                return None
+            allowed = kb.enforce_not_before(
+                conn,
+                task_id,
+                operation=f"side_effect_execution:{function_name}",
+            )
+            if allowed:
+                return None
+            deadline = task.not_before
+        return (
+            f"tool execution blocked for Kanban task {task_id}: "
+            f"not-before deadline {deadline} has not elapsed"
+        )
+    except Exception as exc:
+        # With a Kanban task identity present, unreadable guard state is not
+        # permission to mutate providers. This is intentionally fail-closed.
+        logger.error(
+            "Kanban not-before preflight failed for task %s tool %s: %s",
+            task_id,
+            function_name,
+            exc,
+        )
+        return (
+            f"tool execution blocked for Kanban task {task_id}: "
+            "not-before safety preflight could not be verified"
+        )
+
+
 def _run_agent_tool_execution_middleware(
     agent,
     *,
@@ -494,6 +542,16 @@ def _run_agent_tool_execution_middleware(
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
 ) -> _ManagedToolResult:
     """Run Relay rewrites before Hermes policy and dispatch exactly once."""
+    not_before_block = _kanban_not_before_tool_block(function_name)
+    if not_before_block is not None:
+        return _ManagedToolResult(
+            result=json.dumps({"error": not_before_block}, ensure_ascii=False),
+            args=function_args,
+            middleware_trace=(middleware_trace or []),
+            blocked=True,
+            dispatched=False,
+        )
+
     from agent import relay_tools
     from hermes_cli.middleware import (
         apply_tool_request_middleware,

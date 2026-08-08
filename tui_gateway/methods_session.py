@@ -3132,7 +3132,19 @@ def _(rid, params: dict) -> dict:
 @method("spawn_tree.list")
 def _(rid, params: dict) -> dict:
     session_id = str(params.get("session_id") or "").strip()
-    limit = int(params.get("limit") or 50)
+    # Don't use ``or 50`` — falsy ``0`` must clamp to 1, not silently jump
+    # back to the default page size. Cap so a hostile/buggy client can't
+    # force returning huge payload lists, and so negative limits can't flip
+    # Python ``entries[:limit]`` into "return almost everything" semantics.
+    try:
+        raw_limit = params.get("limit", 50)
+        if raw_limit is None or raw_limit == "":
+            limit = 50
+        else:
+            limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 500))
     cross_session = bool(params.get("cross_session"))
 
     if cross_session:

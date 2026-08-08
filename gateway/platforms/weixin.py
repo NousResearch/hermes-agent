@@ -405,9 +405,32 @@ async def _api_post(
     payload: Dict[str, Any],
     token: Optional[str],
     timeout_ms: int,
+    use_client_timeout: bool = False,
 ) -> Dict[str, Any]:
     body = _json_dumps({**payload, "base_info": _base_info()})
     url = f"{base_url.rstrip('/')}/{endpoint}"
+    if use_client_timeout:
+        # getUpdates() long-polls and times out on every idle cycle by
+        # design (no new messages), not as an error path. Cancelling that
+        # in-flight request from the *outside* via asyncio.wait_for() does
+        # not reliably release the underlying connection back to aiohttp's
+        # connector — especially when tunnelled through an HTTP/HTTPS proxy
+        # (e.g. the macOS system proxy picked up via trust_env=True) — so
+        # every idle poll cycle leaked one proxied TCP socket until the
+        # process ran out of file descriptors (#79889). aiohttp's own
+        # ClientTimeout enforces the timeout from *inside* the request's
+        # lifecycle, which does reliably close/release the connection.
+        # Safe here because this path only ever runs inside
+        # self._poll_task, a real asyncio Task — the cron/send path below
+        # still needs the asyncio.wait_for() workaround (see its comment).
+        client_timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
+        async with session.post(
+            url, data=body, headers=_headers(token, body), timeout=client_timeout
+        ) as response:
+            raw = await response.text()
+            if not response.ok:
+                raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
+            return json.loads(raw)
     # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
     # "Timeout context manager should be used inside a task" errors when
     # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
@@ -460,6 +483,7 @@ async def _get_updates(
             payload={"get_updates_buf": sync_buf},
             token=token,
             timeout_ms=timeout_ms,
+            use_client_timeout=True,
         )
     except asyncio.TimeoutError:
         return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}

@@ -588,6 +588,30 @@ class _StubResponse:
         return self._body
 
 
+class _StubRequestCM:
+    """Wraps a ``_StubResponse``, honoring an aiohttp ``timeout=`` kwarg.
+
+    Real aiohttp enforces ``ClientTimeout`` from *inside* the request's own
+    lifecycle (see #79889); this mirrors that by raising
+    ``asyncio.TimeoutError`` on ``__aenter__`` when the response's configured
+    ``delay`` would exceed the given timeout, instead of actually sleeping.
+    """
+
+    def __init__(self, response, kwargs):
+        self._response = response
+        self._kwargs = kwargs
+
+    async def __aenter__(self):
+        timeout = self._kwargs.get("timeout")
+        total = getattr(timeout, "total", None) if timeout is not None else None
+        if total is not None and self._response._delay > total:
+            raise asyncio.TimeoutError()
+        return await self._response.__aenter__()
+
+    async def __aexit__(self, *exc):
+        return await self._response.__aexit__(*exc)
+
+
 class _StubSession:
     """Records request kwargs and returns a configurable async-CM response.
 
@@ -603,11 +627,11 @@ class _StubSession:
 
     def post(self, url, **kwargs):
         self.post_calls.append((url, kwargs))
-        return self._response
+        return _StubRequestCM(self._response, kwargs)
 
     def get(self, url, **kwargs):
         self.get_calls.append((url, kwargs))
-        return self._response
+        return _StubRequestCM(self._response, kwargs)
 
 
 class TestWeixinApiTimeout:
@@ -644,6 +668,27 @@ class TestWeixinApiTimeout:
             )
         )
         assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}
+
+    def test_get_updates_uses_native_client_timeout(self):
+        # Regression guard for #79889: getUpdates() times out on every idle
+        # long-poll cycle by design, and asyncio.wait_for()-driven external
+        # cancellation doesn't reliably release a proxied connection back to
+        # aiohttp's connector. getUpdates() must therefore let aiohttp's own
+        # ClientTimeout enforce the deadline (use_client_timeout=True) so the
+        # library's own cleanup path releases the connection instead.
+        session = _StubSession(_StubResponse(body='{"ret": 0}'))
+        asyncio.run(
+            weixin._get_updates(
+                session,
+                base_url="https://weixin.example.com",
+                token="tok",
+                sync_buf="buf-123",
+                timeout_ms=5000,
+            )
+        )
+        [(_url, kwargs)] = session.post_calls
+        assert isinstance(kwargs.get("timeout"), weixin.aiohttp.ClientTimeout)
+        assert kwargs["timeout"].total == 5.0
 
 
 class TestWeixinVoiceAlwaysDownloaded:

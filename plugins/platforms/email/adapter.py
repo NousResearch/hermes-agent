@@ -638,7 +638,15 @@ class EmailAdapter(BasePlatformAdapter):
                     self._seen_uids.add(uid)
             # Keep only the most recent UIDs to prevent unbounded growth
             self._trim_seen_uids()
-            imap.logout()
+            try:
+                imap.logout()
+            except Exception:
+                # See _fetch_new_messages() for why logout() can raise before
+                # closing the socket (#79889) — force the close here too.
+                try:
+                    imap.shutdown()
+                except Exception:
+                    pass
             logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
@@ -650,7 +658,10 @@ class EmailAdapter(BasePlatformAdapter):
             try:
                 smtp.login(self._address, self._password)
             finally:
-                smtp.quit()
+                try:
+                    smtp.quit()
+                except Exception:
+                    smtp.close()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
             logger.error("[Email] SMTP connection failed: %s", e)
@@ -785,7 +796,19 @@ class EmailAdapter(BasePlatformAdapter):
                 try:
                     imap.logout()
                 except Exception:
-                    pass
+                    # imaplib.IMAP4.logout() only closes the socket (via its
+                    # internal shutdown()) *after* the LOGOUT command
+                    # round-trip succeeds — any exception during that
+                    # round-trip (timeout, reset, a flaky proxy/VPN hop, all
+                    # more common on macOS corporate networks) propagates
+                    # out before shutdown() runs, leaking the underlying fd.
+                    # This poller runs every EMAIL_POLL_INTERVAL, so each
+                    # failed logout permanently leaked one fd until the
+                    # process ran out of them (#79889). Force the close.
+                    try:
+                        imap.shutdown()
+                    except Exception:
+                        pass
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
         return results

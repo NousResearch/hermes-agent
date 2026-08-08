@@ -805,6 +805,57 @@ def _maybe_warn_line_oriented_newline_pattern(result: SearchResult, pattern: str
     return result
 
 
+def _ere_translate_digit_classes(pattern: str) -> str:
+    """Rewrite ``\\d``/``\\D`` into POSIX classes for the ``grep -E`` engine.
+
+    ripgrep's Rust regex accepts the Perl shorthand classes; POSIX ERE does
+    not. GNU grep supports ``\\s``, ``\\S``, ``\\w``, ``\\W`` and ``\\b`` as
+    extensions, but **not** ``\\d``/``\\D`` — it reads the backslash as a
+    literal, so ``\\d+`` silently matches runs of the letter ``d`` instead of
+    digits: both false hits and missed hits, with no error. Translating keeps
+    the fallback engine answering the same question rg does.
+
+    Left alone: an escaped backslash (``\\\\d`` is a literal backslash then
+    ``d``) and anything inside a bracket expression, where ``[\\d]`` already
+    means the set ``{\\, d}`` in ERE and rewriting would change it.
+    """
+    if not pattern or "\\" not in pattern:
+        return pattern
+    out: list[str] = []
+    i = 0
+    in_bracket = False
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if in_bracket:
+            # A ']' closes the set unless it is the very first member.
+            if ch == "]" and out and out[-1] != "[" and not (
+                out[-1] == "^" and len(out) >= 2 and out[-2] == "["
+            ):
+                in_bracket = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            nxt = pattern[i + 1]
+            if nxt == "d":
+                out.append("[[:digit:]]")
+            elif nxt == "D":
+                out.append("[^[:digit:]]")
+            else:
+                # Any other escape (including \\) passes through untouched,
+                # consuming both characters so \\d stays literal.
+                out.append(ch)
+                out.append(nxt)
+            i += 2
+            continue
+        if ch == "[":
+            in_bracket = True
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 class ShellFileOperations(FileOperations):
     """
     File operations implemented via shell commands.
@@ -2742,9 +2793,9 @@ class ShellFileOperations(FileOperations):
             cmd_parts.append("-c")
         
         # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        cmd_parts.append(self._escape_shell_arg(_ere_translate_digit_classes(pattern)))
         cmd_parts.append(self._escape_shell_arg(path))
-        
+
         # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])

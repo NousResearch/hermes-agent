@@ -97,6 +97,7 @@ CreateMessageRequest = None  # type: ignore[assignment]
 CreateMessageRequestBody = None  # type: ignore[assignment]
 GetChatRequest = None  # type: ignore[assignment]
 GetMessageRequest = None  # type: ignore[assignment]
+ListMessageRequest = None  # type: ignore[assignment]
 GetMessageResourceRequest = None  # type: ignore[assignment]
 P2ImMessageMessageReadV1 = None  # type: ignore[assignment]
 ReplyMessageRequest = None  # type: ignore[assignment]
@@ -1400,7 +1401,7 @@ def _load_lark_oapi() -> bool:
                 CreateFileRequest, CreateFileRequestBody,
                 CreateImageRequest, CreateImageRequestBody,
                 CreateMessageRequest, CreateMessageRequestBody,
-                GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
+                GetChatRequest, GetMessageRequest, ListMessageRequest, GetMessageResourceRequest,
                 P2ImMessageMessageReadV1,
                 ReplyMessageRequest, ReplyMessageRequestBody,
                 UpdateMessageRequest, UpdateMessageRequestBody,
@@ -1427,6 +1428,7 @@ def _load_lark_oapi() -> bool:
             "CreateMessageRequestBody": CreateMessageRequestBody,
             "GetChatRequest": GetChatRequest,
             "GetMessageRequest": GetMessageRequest,
+            "ListMessageRequest": ListMessageRequest,
             "GetMessageResourceRequest": GetMessageResourceRequest,
             "P2ImMessageMessageReadV1": P2ImMessageMessageReadV1,
             "ReplyMessageRequest": ReplyMessageRequest,
@@ -2458,6 +2460,165 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Failed to get chat info for %s", chat_id, exc_info=True)
             return fallback
 
+    # =========================================================================
+    # History backfill (modeled on Discord adapter pattern)
+    # =========================================================================
+
+    def _feishu_history_backfill(self) -> bool:
+        """Return whether history backfill is enabled when @mentioned."""
+        _config = getattr(self, "config", None)
+        if _config is None:
+            return True  # default
+        configured = _config.extra.get("history_backfill")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return True  # default on, matching Discord
+
+    def _feishu_history_backfill_limit(self) -> int:
+        """Return max messages to scan backwards for context."""
+        _config = getattr(self, "config", None)
+        if _config is None:
+            return 50  # default
+        configured = _config.extra.get("history_backfill_limit")
+        if configured is not None:
+            try:
+                return int(configured)
+            except (ValueError, TypeError):
+                pass
+        return 50  # default 50, matching Discord
+
+    async def _fetch_feishu_channel_context(
+        self, chat_id: str, before_message_id: str,
+    ) -> str:
+        """Fetch recent chat messages for conversational context.
+
+        Scans backwards from *before_message_id* and collects messages until
+        it hits a message sent by this bot (the natural partition point between
+        bot turns) or reaches the backfill limit. Handles pagination for
+        configured limits larger than 50.
+
+        Returns a formatted block::
+
+            [Recent channel messages]
+            [sender1] message content
+            [sender2] message content
+
+        Returns empty string if no context available.
+        """
+        limit = self._feishu_history_backfill_limit()
+        if limit <= 0:
+            return ""
+
+        try:
+            collected: List[str] = []
+            page_token: Optional[str] = None
+            partition_hit = False
+
+            for _ in range(20):  # safety cap — 20 pages max
+                if len(collected) >= limit:
+                    break
+
+                builder = (
+                    ListMessageRequest.builder()
+                    .container_id_type("chat")
+                    .container_id(chat_id)
+                    .page_size(min(limit - len(collected), 50))
+                    .sort_type("ByCreateTimeDesc")
+                )
+                if page_token:
+                    builder.page_token(page_token)
+
+                response = await self._run_blocking(
+                    self._client.im.v1.message.list, builder.build()
+                )
+                if not response or not getattr(response, "success", lambda: False)():
+                    break
+
+                data = getattr(response, "data", None)
+                if not data:
+                    break
+
+                items = getattr(data, "items", None) or []
+                if not items:
+                    break
+
+                for msg in items:
+                    msg_id = str(getattr(msg, "message_id", "") or "")
+                    if not msg_id or msg_id == before_message_id:
+                        continue
+
+                    # Stop at our own message — partition point.
+                    sender = getattr(msg, "sender", None)
+                    sender_type = str(getattr(sender, "sender_type", "") or "")
+                    sender_id = str(getattr(sender, "id", "") or "")
+                    if sender_type == "app" and sender_id == self._app_id:
+                        partition_hit = True  # earlier messages belong to previous bot turn
+                        break
+
+                    if len(collected) >= limit:
+                        break
+
+                    # Extract text content.
+                    msg_type = str(getattr(msg, "msg_type", "") or "")
+                    body = getattr(msg, "body", None)
+                    raw_content = str(getattr(body, "content", "") or "")
+                    if not raw_content:
+                        continue
+                    if msg_type == "text":
+                        try:
+                            parsed = json.loads(raw_content)
+                            raw_content = str(parsed.get("text", raw_content))
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    elif msg_type in ("image", "file", "audio", "video"):
+                        raw_content = f"({msg_type})"
+                    elif msg_type == "post":
+                        raw_content = "(rich text)"
+                    else:
+                        continue
+
+                    # Skip self-mention placeholder suffix like @_user_123.
+                    raw_content = _MENTION_RE.sub("", raw_content).strip()
+                    if not raw_content:
+                        # Only media with no caption.
+                        if msg_type in ("image", "file", "audio", "video"):
+                            raw_content = f"({msg_type})"
+                        else:
+                            continue
+
+                    # Format sender name.
+                    sender_display = (
+                        sender_id.split("_")[-1][:8]
+                        if "_" in sender_id
+                        else sender_id[:12]
+                    )
+                    collected.append(f"[{sender_display}] {raw_content}")
+
+                if partition_hit or not getattr(data, "has_more", False):
+                    break
+                next_token = getattr(data, "page_token", None) or ""
+                if not next_token:
+                    break
+                page_token = next_token
+
+            if not collected:
+                return ""
+
+            # Reverse to chronological order (API returned newest-first).
+            collected.reverse()
+            context = "[Recent channel messages]\n" + "\n".join(collected)
+            logger.debug(
+                "[Feishu] Backfill fetched %d messages for %s",
+                len(collected), chat_id,
+            )
+            return context
+
+        except Exception:
+            logger.debug("[Feishu] Failed to fetch channel context", exc_info=True)
+            return ""
+
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
         return content.strip()
@@ -3383,9 +3544,21 @@ class FeishuAdapter(BasePlatformAdapter):
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=thread_id,
-            user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
+            user_id_alt=sender_profile["user_id_alt"],
         )
+
+        # ── History backfill: when relevant, fetch recent channel context ──
+        backfill_text: Optional[str] = None
+        if chat_type != "p2p" and self._feishu_history_backfill():
+            # Free-response groups (require_mention=false) always get
+            # backfill; mention-gated groups only get it when @mentioned.
+            needs_mention = self._require_mention_for(chat_id)
+            if not needs_mention or self._mentions_self(message):
+                backfill_text = await self._fetch_feishu_channel_context(
+                    chat_id, message_id
+                )
+
         normalized = MessageEvent(
             text=text,
             message_type=inbound_type,
@@ -3397,6 +3570,7 @@ class FeishuAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
+            channel_context=backfill_text,
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
@@ -4392,10 +4566,11 @@ class FeishuAdapter(BasePlatformAdapter):
         return None
 
     def _require_mention_for(self, chat_id: str) -> bool:
-        rule = self._group_rules.get(chat_id) if chat_id else None
+        _group_rules = getattr(self, '_group_rules', {}) or {}
+        rule = _group_rules.get(chat_id) if chat_id else None
         if rule and rule.require_mention is not None:
             return rule.require_mention
-        return self._require_mention
+        return getattr(self, '_require_mention', True)
 
     # --- Group policy ---------------------------------------------------------
 

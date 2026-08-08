@@ -39,7 +39,9 @@ jobs:
       # ── Node ───────────────────────────────────────────────────────────
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 26
+          # Electron's Playwright harness is verified on Node 22.  Keep the
+          # npm 12 install below so workspace resolution matches the rest of CI.
+          node-version: 22
           cache: npm
 
       - name: grab npm 12

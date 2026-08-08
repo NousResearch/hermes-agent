@@ -100,6 +100,18 @@ discord:
 
 The old `liveness_interval_seconds` and `liveness_failure_threshold` names remain compatibility aliases only; they no longer mean REST probing.
 
+### Voice turn detection
+
+When Hermes listens in a voice channel, it ends an utterance after two seconds of silence and ignores speech shorter than half a second. You can tune both durations in `config.yaml`:
+
+```yaml
+discord:
+  voice_silence_seconds: 2.0
+  voice_min_speech_seconds: 0.5
+```
+
+Both values must be finite positive numbers. Missing or invalid values retain the defaults above.
+
 ## Step 1: Create a Discord Application
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and sign in with your Discord account.

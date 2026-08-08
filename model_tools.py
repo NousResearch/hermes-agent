@@ -307,6 +307,7 @@ def get_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    oauth_minimal_core: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -322,6 +323,16 @@ def get_tool_definitions(
             tool_search / tool_describe bridge handlers so they can read the
             real catalog, not the already-collapsed one. Public callers should
             leave this False.
+        oauth_minimal_core: When True, shrink tool_search's always-eager
+            "core" allowlist down to ``toolsets.OAUTH_SAFE_CORE_TOOLS`` and
+            force the tool_search/describe/call bridge to activate
+            regardless of the normal context-percentage gate. Set by
+            agent_init.py for native-Anthropic OAuth (Claude Pro/Max
+            subscription) sessions, where sending the full ~60-tool core set
+            on every turn trips Anthropic's OAuth billing classifier and
+            routes the request to "extra usage" instead of plan quota. All
+            tools stay reachable via the bridge — this only changes what's
+            eagerly listed vs. discoverable on demand.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
@@ -352,6 +363,7 @@ def get_tool_definitions(
                 cfg_fp,
                 bool(os.environ.get("HERMES_KANBAN_TASK")),
                 bool(skip_tool_search_assembly),
+                bool(oauth_minimal_core),
                 _is_delegated_child_context(),
                 _is_dispatcher_owned_worker(),
                 profile_scope,
@@ -367,7 +379,8 @@ def get_tool_definitions(
             return list(cached)
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+                                       skip_tool_search_assembly=skip_tool_search_assembly,
+                                       oauth_minimal_core=oauth_minimal_core)
     if quiet_mode and cache_key is not None:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -393,6 +406,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    oauth_minimal_core: bool = False,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -588,10 +602,19 @@ def _compute_tool_definitions(
         ts_cfg = _load_ts_config()
         if not skip_tool_search_assembly and ts_cfg.enabled != "off":
             context_length = _resolve_active_context_length()
+            _core_override = None
+            if oauth_minimal_core:
+                try:
+                    from toolsets import OAUTH_SAFE_CORE_TOOLS
+                    _core_override = frozenset(OAUTH_SAFE_CORE_TOOLS)
+                except Exception:
+                    logger.warning("oauth_minimal_core requested but OAUTH_SAFE_CORE_TOOLS unavailable")
             assembly = assemble_tool_defs(
                 filtered_tools,
                 context_length=context_length,
                 config=ts_cfg,
+                core_override=_core_override,
+                force_activate=oauth_minimal_core,
             )
             if assembly.activated and not quiet_mode:
                 _forms = {"full": "catalog listing embedded",

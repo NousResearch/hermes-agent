@@ -1999,6 +1999,7 @@ def _maybe_wrap_anthropic(
     api_key: str,
     base_url: str,
     api_mode: Optional[str] = None,
+    is_oauth: bool = False,
 ) -> Any:
     """Rewrap a plain OpenAI client in ``AnthropicAuxiliaryClient`` when
     the endpoint actually speaks Anthropic Messages.
@@ -2073,7 +2074,7 @@ def _maybe_wrap_anthropic(
         model, base_url[:60] if base_url else "", api_mode or "auto-detected",
     )
     return AnthropicAuxiliaryClient(
-        real_client, model, api_key, base_url, is_oauth=False,
+        real_client, model, api_key, base_url, is_oauth=is_oauth,
     )
 
 

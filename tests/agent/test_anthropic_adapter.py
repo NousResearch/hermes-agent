@@ -1882,3 +1882,206 @@ class TestFinalPayloadHasNoBlankTextBlocks:
         )
         image_blocks = [b for b in tool_result_block["content"] if b.get("type") == "image"]
         assert len(image_blocks) == 1
+
+
+# ---------------------------------------------------------------------------
+# OAuth billing-classifier sanitization (GH-25255, GH-25256)
+# ---------------------------------------------------------------------------
+#
+# Anthropic runs a billing classifier on subscription/OAuth traffic.  If it
+# detects a third-party-app fingerprint anywhere in the request — system prompt
+# text, tool names, tool descriptions, tool_choice names — it routes the request
+# to the extra-usage billing lane instead of the plan.  Since extra-usage
+# balance is typically zero, the user gets an opaque HTTP 400.
+#
+# The OAuth transforms in build_anthropic_kwargs must scrub ALL such
+# fingerprints, not just the four originally covered.
+
+
+class TestOAuthSanitization:
+    """Verify that build_anthropic_kwargs scrubs all Hermes/Nous fingerprints
+    when is_oauth=True so Anthropic's billing classifier routes the request
+    onto the subscription plan, not the extra-usage lane."""
+
+    def _build(self, tools=None, messages=None, system=None, tool_choice=None, is_oauth=True):
+        return build_anthropic_kwargs(
+            model="claude-opus-4-8",
+            messages=messages or [{"role": "user", "content": "hello"}],
+            tools=tools,
+            max_tokens=4096,
+            reasoning_config=None,
+            tool_choice=tool_choice,
+            is_oauth=is_oauth,
+            preserve_dots=False,
+            context_length=None,
+            base_url=None,
+            fast_mode=False,
+            drop_context_1m_beta=False,
+        )
+
+    def _system_text(self, kwargs):
+        system = kwargs.get("system")
+        if not system:
+            return ""
+        if isinstance(system, str):
+            return system.lower()
+        if isinstance(system, list):
+            return " ".join(
+                b.get("text", "")
+                for b in system
+                if isinstance(b, dict) and b.get("type") == "text"
+            ).lower()
+        return ""
+
+    # -- system prompt -------------------------------------------------------
+
+    def test_system_prefix_is_claude_code_identity(self):
+        kwargs = self._build()
+        system = kwargs["system"]
+        assert system[0]["text"] == "You are Claude Code, Anthropic's official CLI for Claude."
+
+    def test_system_prompt_no_hermes_or_nous(self):
+        """The full system prompt must not contain any Hermes/Nous fingerprints."""
+        kwargs = self._build()
+        text = self._system_text(kwargs)
+        assert "hermes" not in text, "system prompt still contains 'hermes'"
+        assert "nous" not in text, "system prompt still contains 'nous'"
+
+    def test_non_oauth_leaves_system_prompt_untouched(self):
+        """When is_oauth=False, the system prompt is NOT sanitized."""
+        messages = [
+            {"role": "system", "content": "You are Hermes Agent, created by Nous Research."},
+            {"role": "user", "content": "hello"},
+        ]
+        kwargs = self._build(messages=messages, is_oauth=False)
+        text = self._system_text(kwargs)
+        assert "hermes" in text
+        assert "nous" in text
+
+    # -- tool names ----------------------------------------------------------
+
+    def test_bare_tool_name_normalized_to_mcp_double_underscore(self):
+        tools = [
+            {"name": "read_file", "function": {
+                "name": "read_file", "description": "Read a file.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kwargs = self._build(tools=tools)
+        assert kwargs["tools"][0]["name"] == "mcp__read_file"
+
+    def test_single_underscore_mcp_tool_name_promoted(self):
+        tools = [
+            {"name": "mcp_linear_get_issue", "function": {
+                "name": "mcp_linear_get_issue", "description": "Query Linear.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kwargs = self._build(tools=tools)
+        # Should become mcp__linear_get_issue, NOT stay single-underscore
+        assert kwargs["tools"][0]["name"] == "mcp__linear_get_issue"
+
+    def test_already_double_underscore_not_doubled(self):
+        tools = [
+            {"name": "mcp__already_double", "function": {
+                "name": "mcp__already_double", "description": "Already double.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kwargs = self._build(tools=tools)
+        assert kwargs["tools"][0]["name"] == "mcp__already_double"
+
+    # -- tool descriptions ---------------------------------------------------
+
+    def test_tool_descriptions_have_hermes_sanitized(self):
+        tools = [
+            {"name": "browser_screenshot", "function": {
+                "name": "browser_screenshot",
+                "description": "When your active model has native vision, "
+                              "otherwise Hermes falls back to an auxiliary "
+                              "vision model. Powered by Nous Research.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kwargs = self._build(tools=tools)
+        desc = kwargs["tools"][0]["description"].lower()
+        assert "hermes" not in desc
+        assert "nous" not in desc
+        assert "anthropic" in desc  # "Nous Research" -> "Anthropic"
+
+    def test_tool_descriptions_not_sanitized_when_not_oauth(self):
+        tools = [
+            {"name": "read_file", "function": {
+                "name": "read_file",
+                "description": "Read a file via Hermes.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kwargs = self._build(tools=tools, is_oauth=False)
+        assert "hermes" in kwargs["tools"][0]["description"].lower()
+
+    # -- tool_choice normalization -------------------------------------------
+
+    def test_tool_choice_name_normalized(self):
+        """A specific tool_choice name must be normalized to the OAuth wire form."""
+        tools = [
+            {"name": "read_file", "function": {
+                "name": "read_file", "description": "Read a file.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kwargs = self._build(tools=tools, tool_choice="read_file")
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp__read_file"}
+
+    def test_tool_choice_mcp_single_underscore_normalized(self):
+        tools = [
+            {"name": "mcp_linear_get_issue", "function": {
+                "name": "mcp_linear_get_issue", "description": "Query.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kwargs = self._build(tools=tools, tool_choice="mcp_linear_get_issue")
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp__linear_get_issue"}
+
+    def test_tool_choice_auto_not_mangled(self):
+        tools = [
+            {"name": "read_file", "function": {
+                "name": "read_file", "description": "Read a file.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kwargs = self._build(tools=tools, tool_choice="auto")
+        assert kwargs["tool_choice"] == {"type": "auto"}
+
+    def test_tool_choice_required_not_mangled(self):
+        tools = [
+            {"name": "read_file", "function": {
+                "name": "read_file", "description": "Read a file.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kwargs = self._build(tools=tools, tool_choice="required")
+        assert kwargs["tool_choice"] == {"type": "any"}
+
+    # -- message history (replayed tool_use blocks) ------------------------
+
+    def test_replayed_tool_use_names_normalized(self):
+        """Tool use names in replayed message history must also be normalized."""
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+        ]
+        kwargs = self._build(messages=messages)
+        for msg in kwargs["messages"]:
+            if isinstance(msg.get("content"), list):
+                for block in msg["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        assert block["name"].startswith("mcp__"), f"tool_use name not normalized: {block['name']}"
+
+    # -- no-op for non-OAuth ------------------------------------------------
+
+    def test_non_oauth_does_not_normalize_tool_names(self):
+        tools = [
+            {"name": "read_file", "function": {
+                "name": "read_file", "description": "Read a file.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kwargs = self._build(tools=tools, is_oauth=False)
+        assert kwargs["tools"][0]["name"] == "read_file"
+        # tool_choice=None maps to {"type": "auto"} in the Anthropic kwargs,
+        # but the NAME is not normalized when is_oauth=False — verify that
+        # a specific name stays bare.
+        kwargs_specific = self._build(tools=tools, tool_choice="read_file", is_oauth=False)
+        assert kwargs_specific["tool_choice"] == {"type": "tool", "name": "read_file"}

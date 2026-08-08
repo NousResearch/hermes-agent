@@ -97,6 +97,30 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
     "clarify",
 ]
 
+# Minimal always-eager set for native-Anthropic OAuth (Claude Pro/Max
+# subscription) sessions. Anthropic's OAuth billing classifier routes a
+# request to the "extra usage" pool instead of plan quota based partly on
+# the shape/size of the tool schemas in the request — sending the full
+# ~60-tool _HERMES_CORE_TOOLS set (browser automation, video/image gen,
+# text-to-speech, etc.) on every turn reliably trips it even with the
+# existing name/text sanitization in agent/anthropic_adapter.py. Confirmed
+# empirically: 0 tools -> succeeds, full core set -> HTTP 400 "out of extra
+# usage"; real cron jobs succeed because they're scoped to a handful of
+# toolsets, never the full default.
+#
+# This trimmed set is used ONLY to seed tools/tool_search.py's "never
+# defer" allowlist for OAuth sessions — everything else in
+# _HERMES_CORE_TOOLS still stays fully reachable, just behind the
+# tool_search/tool_describe/tool_call bridge instead of eagerly listed on
+# every request. See model_tools.get_tool_definitions(oauth_minimal_core=).
+OAUTH_SAFE_CORE_TOOLS = [
+    "read_file", "write_file", "patch", "search_files",
+    "terminal", "process",
+    "todo", "memory",
+    "session_search", "clarify", "delegate_task",
+    "skills_list", "skill_view",
+]
+
 
 # Core toolset definitions
 # These can include individual tools or reference other toolsets

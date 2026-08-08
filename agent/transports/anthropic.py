@@ -60,7 +60,23 @@ class AnthropicTransport(ProviderTransport):
             fast_mode: bool
             drop_context_1m_beta: bool
         """
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.anthropic_adapter import build_anthropic_kwargs, _is_oauth_token
+
+        # Detect if this client was built from an OAuth token.
+        # Check three sources of truth in order of preference:
+        # 1. Explicit is_oauth in params (set by agent initialization)
+        # 2. Marker added to client at creation time (_hermes_is_oauth)
+        # 3. Auto-detect from the client's auth_token if available
+        is_oauth = params.get("is_oauth")
+        if is_oauth is None:
+            # Check if the client was marked as OAuth when created
+            is_oauth = getattr(self.client, "_hermes_is_oauth", False)
+        if not is_oauth:
+            # Last resort: check if the client's auth_token looks like OAuth
+            # (This handles cases where the marker wasn't set)
+            auth_token = getattr(self.client, "auth_token", None) or getattr(self.client, "_auth_token", None)
+            if auth_token and isinstance(auth_token, str):
+                is_oauth = _is_oauth_token(auth_token)
 
         return build_anthropic_kwargs(
             model=model,
@@ -69,7 +85,7 @@ class AnthropicTransport(ProviderTransport):
             max_tokens=params.get("max_tokens", 16384),
             reasoning_config=params.get("reasoning_config"),
             tool_choice=params.get("tool_choice"),
-            is_oauth=params.get("is_oauth", False),
+            is_oauth=is_oauth,
             preserve_dots=params.get("preserve_dots", False),
             context_length=params.get("context_length"),
             base_url=params.get("base_url"),

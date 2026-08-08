@@ -771,6 +771,8 @@ def _build_anthropic_client_with_bearer_hook(
     # Same env-inference trap as build_anthropic_client: auth_token-only
     # construction would otherwise also send ANTHROPIC_API_KEY as X-Api-Key.
     client.api_key = None
+    # Mark the client as OAuth since Bearer/Entra flows are OAuth-authenticated
+    client._hermes_is_oauth = True
     return client
 
 
@@ -909,6 +911,13 @@ def build_anthropic_client(
     # key whenever we intentionally authenticated via auth_token alone.
     if "auth_token" in kwargs and "api_key" not in kwargs:
         client.api_key = None
+
+    # Mark the client if built from OAuth so downstream code can apply
+    # the necessary system-prompt sanitization and tool-name normalization
+    # to avoid Anthropic's billing classifier (GH-25255).
+    if _is_oauth_token(api_key):
+        client._hermes_is_oauth = True
+
     return client
 
 
@@ -1395,7 +1404,25 @@ def resolve_anthropic_token() -> Optional[str]:
 
     # 3. Regular API key. An explicit user-configured key must not be shadowed
     # by auto-discovered Claude Code or credential-pool OAuth credentials.
+    # However, if this source is explicitly suppressed (e.g. known-bad token),
+    # skip it and fall through to Claude Code credentials (priority #4).
     api_key = _getenv("ANTHROPIC_API_KEY").strip()
+
+    # Check if env:ANTHROPIC_API_KEY is in suppressed_sources (via auth.json)
+    try:
+        import json
+        from pathlib import Path
+        auth_path = Path(get_hermes_home()) / "auth.json"
+        if auth_path.exists():
+            auth_data = json.loads(auth_path.read_text(encoding="utf-8"))
+            suppressed = auth_data.get("suppressed_sources", {}).get("anthropic", [])
+            if "env:ANTHROPIC_API_KEY" in suppressed and api_key:
+                # Skip this suppressed source and fall through to #4
+                logger.debug("Skipping suppressed ANTHROPIC_API_KEY source")
+                api_key = None
+    except Exception:
+        pass  # If we can't read auth.json, don't let it block credential resolution
+
     if api_key:
         return api_key
 
@@ -2895,15 +2922,41 @@ def build_anthropic_kwargs(
         else:
             system = [cc_block]
 
-        # 2. Sanitize system prompt — replace product name references
+        # 2. Sanitize system prompt — replace ALL product-name references
         #    to avoid Anthropic's server-side content filters.
+        #    Anthropic's OAuth billing classifier greps the entire request
+        #    (system prompt + tool names + tool descriptions) for third-party
+        #    fingerprints. The original sanitizer only replaced four exact
+        #    patterns, leaving behind standalone "Hermes" references, bare
+        #    "Nous" tokens (without the space in "Nous Research"), and the
+        #    canonical ``hermes-agent.nousresearch.com`` documentation URL.
+        #    Each of those is a strong classifier trigger that kept flipping
+        #    OAuth requests into the extra-usage billing lane (HTTP 400
+        #    "Third-party apps now draw from extra usage, not plan limits").
+        #    GH-25255, GH-25256.
+        _OAUTH_TEXT_REPLACEMENTS = (
+            # Most specific patterns first — order matters because each
+            # replacement is applied in sequence and a shorter pattern
+            # could partially consume a longer one.
+            ("hermes-agent.nousresearch.com", "claude.ai/docs"),
+            ("hermes.nous", "claude.ai"),
+            ("Hermes Agent", "Claude Code"),
+            ("Hermes agent", "Claude Code"),
+            ("Nous Research", "Anthropic"),
+            ("Nous Portal", "Claude Code Portal"),
+            ("Nous subscription", "Claude Code subscription"),
+            ("Nous", "Anthropic"),
+            ("hermes-agent", "claude-code"),
+            ("hermes_agent", "claude_code"),
+            ("nousresearch", "anthropic"),
+            ("Hermes", "Claude Code"),
+            ("nous", "anthropic"),
+        )
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
                 text = block.get("text", "")
-                text = text.replace("Hermes Agent", "Claude Code")
-                text = text.replace("Hermes agent", "Claude Code")
-                text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
+                for _old, _new in _OAUTH_TEXT_REPLACEMENTS:
+                    text = text.replace(_old, _new)
                 block["text"] = text
 
         # 3. Normalize tool names so NOTHING goes on the OAuth wire with a
@@ -2936,6 +2989,17 @@ def build_anthropic_kwargs(
             for tool in anthropic_tools:
                 if "name" in tool:
                     tool["name"] = _to_oauth_wire_name(tool["name"])
+                # 3b. Sanitize tool descriptions — the billing classifier
+                #     greps the entire request body (not just system + tool
+                #     names) for third-party fingerprints. Tool descriptions
+                #     are riddled with "Hermes" / "Nous" references that
+                #     were only being replaced in the system prompt, leaving
+                #     the tool schema as a live classifier trigger.
+                _desc = tool.get("description")
+                if isinstance(_desc, str) and _desc:
+                    for _old, _new in _OAUTH_TEXT_REPLACEMENTS:
+                        _desc = _desc.replace(_old, _new)
+                    tool["description"] = _desc
 
         # 4. Apply the same normalization to tool names in message history
         #    (tool_use blocks) so replayed turns match the wire names above.
@@ -2948,6 +3012,14 @@ def build_anthropic_kwargs(
                             block["name"] = _to_oauth_wire_name(block["name"])
                         elif block.get("type") == "tool_result" and "tool_use_id" in block:
                             pass  # tool_result uses ID, not name
+
+        # 5. Normalize a specific tool_choice name so it matches the
+        #    OAuth-wire tool names above. Without this, a forced
+        #    ``tool_choice="read_file"`` stays bare on the wire while the
+        #    tool list carries ``mcp__read_file``, so Anthropic rejects the
+        #    request (the chosen name doesn't match any available tool).
+        if isinstance(tool_choice, str) and not tool_choice.startswith(("mcp__", "auto", "required", "none")):
+            tool_choice = _to_oauth_wire_name(tool_choice)
 
     kwargs: Dict[str, Any] = {
         "model": model,

@@ -188,12 +188,21 @@ def load_config() -> ToolSearchConfig:
 # ---------------------------------------------------------------------------
 
 
-def _core_tool_names() -> frozenset[str]:
+def _core_tool_names(core_override: Optional[frozenset] = None) -> frozenset[str]:
     """Return the set of tool names that must NEVER be deferred.
+
+    ``core_override``, when given, replaces the default
+    ``toolsets._HERMES_CORE_TOOLS`` set entirely — used by native-Anthropic
+    OAuth sessions to shrink the always-eager set to
+    ``toolsets.OAUTH_SAFE_CORE_TOOLS`` so the rest of the normal core set
+    (browser automation, image/video gen, etc.) becomes deferrable like any
+    other tool. See the docstring on ``OAUTH_SAFE_CORE_TOOLS``.
 
     Imported lazily because ``toolsets`` imports from ``tools.registry``
     and we don't want a hard cycle.
     """
+    if core_override is not None:
+        return frozenset(core_override)
     try:
         from toolsets import _HERMES_CORE_TOOLS
         return frozenset(_HERMES_CORE_TOOLS)
@@ -201,17 +210,18 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-def is_deferrable_tool_name(name: str) -> bool:
+def is_deferrable_tool_name(name: str, core_override: Optional[frozenset] = None) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
     A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
-    even when their toolset is technically plugin-provided (this protects
-    against accidental shadowing).
+    OR it is not in the active core set (``_HERMES_CORE_TOOLS`` normally,
+    or ``core_override`` when the caller supplies a narrower allowlist).
+    Core tools are never deferred even when their toolset is technically
+    plugin-provided (this protects against accidental shadowing).
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
-    if name in _core_tool_names():
+    if name in _core_tool_names(core_override):
         return False
     # Check registry toolset for MCP prefix.
     try:
@@ -227,12 +237,16 @@ def is_deferrable_tool_name(name: str) -> bool:
         return False
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(
+    tool_defs: List[Dict[str, Any]],
+    core_override: Optional[frozenset] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
     every core tool, plus any tool we can't classify. ``deferrable`` is the
-    candidate set for catalog entry.
+    candidate set for catalog entry. ``core_override`` narrows what counts
+    as "core" — see ``is_deferrable_tool_name``.
     """
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
@@ -243,7 +257,7 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
             continue
-        if is_deferrable_tool_name(name):
+        if is_deferrable_tool_name(name, core_override):
             deferrable.append(td)
         else:
             visible.append(td)
@@ -774,13 +788,23 @@ def assemble_tool_defs(
     *,
     context_length: Optional[int] = None,
     config: Optional[ToolSearchConfig] = None,
+    core_override: Optional[frozenset] = None,
+    force_activate: bool = False,
 ) -> AssemblyResult:
     """Return the tool-defs list the model should actually see.
 
     When tool search is inactive (off, no deferrable tools, or below
     threshold), this is a passthrough. When active, MCP and plugin tools
     are stripped from the visible list and replaced with the three bridge
-    tools. Core tools are *never* deferred regardless of config.
+    tools. Core tools are *never* deferred regardless of config — unless
+    ``core_override`` narrows what counts as core (see
+    ``toolsets.OAUTH_SAFE_CORE_TOOLS``).
+
+    ``force_activate``, when True, bypasses the normal context-percentage
+    activation gate (``should_activate``) — used for native-Anthropic OAuth
+    sessions where the goal is staying under Anthropic's billing-classifier
+    tool-schema footprint, not saving context budget, so activation must not
+    depend on how large the model's context window happens to be.
 
     Idempotent: calling with bridge tools already in the input is a no-op
     (they classify as non-core/non-deferrable but their names are reserved,
@@ -794,12 +818,12 @@ def assemble_tool_defs(
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    visible, deferrable = classify_tools(incoming, core_override)
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
-    if not should_activate(config, deferrable_tokens, context_length):
+    if not force_activate and not should_activate(config, deferrable_tokens, context_length):
         return AssemblyResult(
             tool_defs=incoming,
             activated=False,

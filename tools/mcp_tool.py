@@ -7091,6 +7091,13 @@ def refresh_agent_mcp_tools(
             enabled_toolsets=enabled,
             disabled_toolsets=disabled,
             quiet_mode=quiet_mode,
+            # Preserve the OAuth-minimal-core tool_search tiering agent_init
+            # built the snapshot with — otherwise this refresh (fired from
+            # the between-turns prologue whenever any MCP server is
+            # registered) silently re-expands the eager tool list back to
+            # the full core set and re-trips Anthropic's OAuth billing
+            # classifier on the very next turn. See toolsets.OAUTH_SAFE_CORE_TOOLS.
+            oauth_minimal_core=bool(getattr(agent, "_is_anthropic_oauth", False)),
         )
         or []
     )

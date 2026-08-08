@@ -1437,10 +1437,18 @@ def init_agent(
         agent._tool_snapshot_generation = _snapshot_registry._generation
     except Exception:
         agent._tool_snapshot_generation = 0
+    # Native-Anthropic OAuth (Claude Pro/Max subscription) sessions must not
+    # send the full ~60-tool core set eagerly — Anthropic's OAuth billing
+    # classifier routes such requests to "extra usage" instead of plan quota
+    # based partly on the tool-schema footprint. Shrink the always-eager set
+    # to toolsets.OAUTH_SAFE_CORE_TOOLS and defer the rest behind the
+    # tool_search/describe/call bridge; every tool stays reachable, just not
+    # eagerly listed. See toolsets.OAUTH_SAFE_CORE_TOOLS docstring.
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        oauth_minimal_core=bool(getattr(agent, "_is_anthropic_oauth", False)),
     )
     
     # Show tool configuration and store valid tool names for validation

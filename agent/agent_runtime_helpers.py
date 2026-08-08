@@ -3480,6 +3480,134 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 
+def _turn_has_pending_background_work(messages: List[Dict[str, Any]]) -> bool:
+    """Return whether this turn intentionally handed work to an async rail."""
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        payload = msg.get("content")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                continue
+        if not isinstance(payload, dict):
+            continue
+        if (
+            payload.get("output") == "Background process started"
+            and payload.get("notify_on_complete") is True
+        ):
+            return True
+        if payload.get("status") == "dispatched" and payload.get("mode") == "background":
+            return True
+    return False
+
+
+def _messages_in_current_turn(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return the current user turn, never historical tool rows."""
+    turn_messages = list(messages or [])
+    for index in range(len(turn_messages) - 1, -1, -1):
+        if isinstance(turn_messages[index], dict) and turn_messages[index].get("role") == "user":
+            return turn_messages[index:]
+    return turn_messages
+
+
+def todo_completion_continuation_enabled(agent) -> bool:
+    """Whether an active TodoStore may keep a foreground turn alive."""
+    mode = getattr(agent, "_todo_completion_continuation", True)
+    if mode is False:
+        return False
+    if isinstance(mode, str) and mode.strip().lower() in {"false", "never", "no", "off"}:
+        return False
+    return True
+
+
+def _active_todo_items(agent) -> List[Dict[str, Any]]:
+    """Read pending/in-progress todos defensively from the session store."""
+    store = getattr(agent, "_todo_store", None)
+    read = getattr(store, "read", None)
+    if not callable(read):
+        return []
+    try:
+        items = read()
+    except Exception:
+        _ra().logger.debug("Could not read TodoStore for stop guard", exc_info=True)
+        return []
+    if not isinstance(items, list):
+        return []
+    return [
+        item for item in items
+        if isinstance(item, dict) and item.get("status") in {"pending", "in_progress"}
+    ]
+
+
+def _response_explicitly_waits_for_user(assistant_content: str) -> bool:
+    """Return True for a concrete user decision/permission request."""
+    text = (assistant_content or "").strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:need|require|await|waiting for)\s+(?:your|the user'?s)\s+"
+            r"(?:approval|permission|input|confirmation|choice|decision|credentials?)\b",
+            text,
+        )
+        or re.search(r"\bplease\s+(?:provide|confirm|choose|approve)\b", text)
+        or re.search(
+            r"(?:需要|等待|请)(?:你|您|用户)(?:的)?"
+            r"(?:批准|授权|许可|确认|输入|选择|决定|凭证)",
+            text,
+        )
+        or re.search(r"请(?:提供|确认|选择|批准|授权)", text)
+    )
+
+
+def should_continue_for_active_todos(
+    agent,
+    assistant_content: str,
+    messages: List[Dict[str, Any]],
+) -> bool:
+    """Keep an unfinished foreground todo plan from silently ending."""
+    if not todo_completion_continuation_enabled(agent):
+        return False
+    if _turn_has_pending_background_work(_messages_in_current_turn(messages)):
+        return False
+    if _response_explicitly_waits_for_user(assistant_content):
+        return False
+    return bool(_active_todo_items(agent))
+
+
+def build_todo_completion_nudge(agent) -> str:
+    """Build the internal continuation instruction for active todos."""
+    active = _active_todo_items(agent)
+    labels = ", ".join(str(item.get("id", "?")) for item in active[:6])
+    if len(active) > 6:
+        labels += ", …"
+    return (
+        "[System: Your active task list is not complete"
+        + (f" ({labels})" if labels else "")
+        + ". Continue now: execute the next required tool call and update the "
+          "todo status when work is done. Do not stop after merely stating a "
+          "plan. If you truly need the user's approval, input, credentials, or "
+          "a decision, ask that concrete question instead.]"
+    )
+
+
+def build_todo_completion_exhausted_message(agent) -> str:
+    """Explain a bounded continuation failure without claiming task success."""
+    active = _active_todo_items(agent)
+    labels = ", ".join(str(item.get("id", "?")) for item in active[:6])
+    if len(active) > 6:
+        labels += ", …"
+    return (
+        "⚠️ Task remains incomplete"
+        + (f" ({labels})" if labels else "")
+        + ". Hermes reached its automatic continuation limit without resolving "
+          "the active todo items. Please continue the task or provide the "
+          "missing approval/input."
+    )
+
+
 def looks_like_codex_intermediate_ack(
     agent,
     user_message: Any,
@@ -4077,6 +4205,10 @@ __all__ = [
     "repair_tool_call",
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
+    "todo_completion_continuation_enabled",
+    "should_continue_for_active_todos",
+    "build_todo_completion_nudge",
+    "build_todo_completion_exhausted_message",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
     "extract_api_error_context",

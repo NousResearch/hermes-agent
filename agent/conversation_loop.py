@@ -1497,6 +1497,7 @@ def run_conversation(
     interrupted = False
     failed = False
     codex_ack_continuations = 0
+    todo_completion_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
@@ -7260,8 +7261,58 @@ def run_conversation(
                             _frag.pop("_length_continuation_nudge", None)
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
-                
+
+                # Hermes-owned todo state is a stronger completion signal than
+                # model wording.  Keep the turn alive while any pending or
+                # in-progress item remains, with explicit exceptions for
+                # notified background work and concrete user-input requests.
+                from agent.agent_runtime_helpers import (
+                    build_todo_completion_exhausted_message,
+                    build_todo_completion_nudge,
+                    should_continue_for_active_todos,
+                )
+
+                _todo_stop_exhausted = False
+                _todo_should_continue = (
+                    bool(agent.valid_tool_names)
+                    and should_continue_for_active_todos(agent, final_response, messages)
+                )
+                if _todo_should_continue and todo_completion_continuations < 3:
+                    todo_completion_continuations += 1
+                    interim_msg = agent._build_assistant_message(
+                        assistant_message, "todo_completion_required"
+                    )
+                    messages.append(interim_msg)
+                    agent._emit_interim_assistant_message(interim_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": build_todo_completion_nudge(agent),
+                        "_todo_completion_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    logger.info(
+                        "active todo stop guard issued (attempt %d/3)",
+                        todo_completion_continuations,
+                    )
+                    agent._emit_status(
+                        "↻ Active task list is incomplete — continuing work "
+                        f"({todo_completion_continuations}/3)"
+                    )
+                    final_response = None
+                    continue
+                if _todo_should_continue:
+                    _todo_stop_exhausted = True
+                    final_response = build_todo_completion_exhausted_message(agent)
+                    _turn_exit_reason = "todo_completion_exhausted"
+                    agent._emit_status(
+                        "⚠️ Active task list is still incomplete after 3 "
+                        "automatic continuation attempts"
+                    )
+
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                if _todo_stop_exhausted:
+                    final_msg["content"] = final_response
+                    final_msg["finish_reason"] = "todo_completion_exhausted"
 
                 # ── Dropped tool-call recovery (copilot/Claude) ────────
                 # Some providers (observed: claude-opus-4.8 / claude-sonnet-4.5
@@ -7511,7 +7562,8 @@ def run_conversation(
 
                 messages.append(final_msg)
                 
-                _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+                if _turn_exit_reason != "todo_completion_exhausted":
+                    _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                 break

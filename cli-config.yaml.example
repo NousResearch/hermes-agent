@@ -833,6 +833,11 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # Do not silently finalize a foreground turn while Hermes' TodoStore still
+  # has pending or in-progress work. Background notifications and direct
+  # user-approval/input requests remain valid pauses. Default: true.
+  # todo_completion_continuation: true
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

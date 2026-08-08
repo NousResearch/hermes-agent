@@ -1805,6 +1805,14 @@ def init_agent(
     # conversation loop's intent-ack block.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
 
+    # Keep a foreground turn alive while Hermes-owned TodoStore state still
+    # contains pending/in-progress work.  This is provider- and api-mode
+    # independent; background notifications and explicit user-input requests
+    # are handled as intentional pauses by the conversation-loop gate.
+    agent._todo_completion_continuation = _agent_section.get(
+        "todo_completion_continuation", True
+    )
+
     # Universal task-completion guidance toggle.  Default True.  Surfaced
     # as a separate flag from tool_use_enforcement because the guidance
     # applies to ALL models, not just the model families enforcement

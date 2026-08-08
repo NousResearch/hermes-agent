@@ -405,3 +405,78 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestPerCommandWorkdirIsNotSessionScoped:
+    """``workdir=`` is documented as a PER-COMMAND cwd (terminal_tool.py).
+
+    ``execute()`` tracks the directory a command finished in so a plain ``cd``
+    moves the session. A command that was explicitly pointed elsewhere must not
+    move it: terminal_tool dual-writes ``env.cwd`` into the durable per-session
+    record, so a single ``workdir=`` otherwise relocates the session for good
+    (and the desktop session row follows it). See #73683.
+    """
+
+    @staticmethod
+    def _env_emitting_cwd(env, final_cwd):
+        """Point ``env._run_bash`` at a process whose output carries the marker."""
+        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+            mock = MagicMock()
+            mock.poll.return_value = 0
+            mock.returncode = 0
+            mock.stdout = iter([
+                "command output\n",
+                f"{env._cwd_marker}{final_cwd}{env._cwd_marker}\n",
+            ])
+            return mock
+
+        env._run_bash = mock_run_bash
+
+    def test_explicit_cwd_does_not_move_the_session(self):
+        env = _TestableEnv(cwd="/home/me/project")
+        self._env_emitting_cwd(env, "/tmp")
+
+        result = env.execute("pwd", cwd="/tmp")
+
+        assert env.cwd == "/home/me/project", (
+            "a per-command workdir must not become the session's cwd"
+        )
+        # The marker is still stripped from what the model sees.
+        assert env._cwd_marker not in result.get("output", "")
+
+    def test_cd_without_explicit_cwd_still_moves_the_session(self):
+        env = _TestableEnv(cwd="/home/me/project")
+        self._env_emitting_cwd(env, "/tmp")
+
+        env.execute("cd /tmp && pwd")
+
+        assert env.cwd == "/tmp", "an in-command cd must still update the session"
+
+    def test_later_commands_run_in_the_original_directory(self):
+        """The reporter's step 3: a plain command after a workdir= one-off."""
+        env = _TestableEnv(cwd="/home/me/project")
+        wrapped_with = []
+        real_wrap = env._wrap_command
+
+        def spy_wrap(command, cwd):
+            wrapped_with.append(cwd)
+            return real_wrap(command, cwd)
+
+        env._wrap_command = spy_wrap
+
+        # Like a real shell: the command reports the directory it ran in.
+        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+            mock = MagicMock()
+            mock.poll.return_value = 0
+            mock.returncode = 0
+            marker = env._cwd_marker
+            mock.stdout = iter([f"{marker}{wrapped_with[-1]}{marker}\n"])
+            return mock
+
+        env._run_bash = mock_run_bash
+
+        env.execute("pwd")                 # 1. session home
+        env.execute("pwd", cwd="/tmp")     # 2. one-off override
+        env.execute("pwd")                 # 3. must be home again
+
+        assert wrapped_with == ["/home/me/project", "/tmp", "/home/me/project"]

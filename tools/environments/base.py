@@ -1371,7 +1371,21 @@ class BaseEnvironment(ABC):
         result = self._wait_for_process(
             proc, timeout=effective_timeout, bounded_capture=bounded_capture
         )
+        # Track where the command finished so a plain ``cd`` moves the session
+        # — but a command that was explicitly pointed somewhere else is a
+        # PER-COMMAND override (terminal_tool's documented ``workdir=``), so it
+        # must not become the session's cwd. terminal_tool dual-writes
+        # ``env.cwd`` into the durable per-session record, so without this a
+        # single ``workdir=`` relocates the session permanently (#73683).
+        # _update_cwd still runs: it also strips the cwd marker from the
+        # output the model sees, and subclasses hook their own normalization
+        # into it — only the resulting session move is undone here.
+        # ``cwd`` defaults to "" — use the same truthiness test that selected
+        # ``effective_cwd`` above so an omitted argument keeps tracking.
+        _cwd_before_update = self.cwd
         self._update_cwd(result)
+        if cwd:
+            self.cwd = _cwd_before_update
 
         return result
 

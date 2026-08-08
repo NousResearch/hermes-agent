@@ -2373,6 +2373,41 @@ describe('usePromptActions restoreToMessage', () => {
     )
     expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
   })
+
+  it('excludes display kinds when restoring a checkpoint', async () => {
+    $messages.set([
+      { id: 'u1', role: 'user', parts: [textPart('first prompt')] },
+      { id: 'a1', role: 'assistant', parts: [textPart('first answer')] },
+      { id: 'skill', role: 'user', parts: [textPart('expanded skill')], displayKind: 'skill_invocation' },
+      { id: 'auto', role: 'user', parts: [textPart('automatic continuation')], displayKind: 'auto_continue' },
+      { id: 'u2', role: 'user', parts: [textPart('last prompt')] }
+    ])
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={$messages.get()}
+      />
+    )
+
+    // The stale UI ordinal counts the two display-kind rows as users (3), but
+    // the gateway-valid ordinal for the last real turn is 1.
+    await handle!.restoreToMessage('u2', { text: 'last prompt', userOrdinal: 3 })
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'last prompt',
+        truncate_before_user_ordinal: 1
+      },
+      1_800_000
+    )
+  })
 })
 
 describe('usePromptActions file attachment sync', () => {

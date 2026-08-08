@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import type { ChatMessage } from '@/lib/chat-messages'
 import type { ComposerAttachment } from '@/store/composer'
 
 import {
@@ -9,7 +10,8 @@ import {
   messageCreatedAt,
   optimisticAttachmentRef,
   parseCommandDispatch,
-  parseSlashCommand
+  parseSlashCommand,
+  toRuntimeMessage
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
@@ -198,5 +200,21 @@ describe('messageCreatedAt', () => {
   it('treats a zero / non-finite timestamp as absent', () => {
     expect(messageCreatedAt({ timestamp: 0 }, NOW).getTime()).toBe(NOW)
     expect(messageCreatedAt({ timestamp: Number.NaN }, NOW).getTime()).toBe(NOW)
+  })
+})
+
+describe('toRuntimeMessage', () => {
+  it('carries displayKind through assistant-ui metadata', () => {
+    const message = {
+      id: 'skill-turn',
+      role: 'user',
+      parts: [{ type: 'text', text: 'expanded skill invocation' }],
+      displayKind: 'skill_invocation'
+    } as ChatMessage
+
+    const runtime = toRuntimeMessage(message)
+    const custom = runtime.metadata?.custom as { displayKind?: string }
+
+    expect(custom.displayKind).toBe('skill_invocation')
   })
 })

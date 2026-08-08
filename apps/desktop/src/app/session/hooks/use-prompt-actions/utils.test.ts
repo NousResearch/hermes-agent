@@ -342,18 +342,20 @@ describe('appendText', () => {
 
 describe('visible user ordinals', () => {
   const messages = [
-    { role: 'user', hidden: false },
+    { role: 'user', hidden: false, displayKind: null },
     { role: 'assistant' },
-    { role: 'user', hidden: true },
-    { role: 'user', hidden: false }
+    { role: 'user', hidden: true, displayKind: null },
+    { role: 'user', hidden: false, displayKind: 'skill_invocation' },
+    { role: 'user', hidden: false, displayKind: 'auto_continue' },
+    { role: 'user', hidden: false, displayKind: null }
   ] as ChatMessage[]
 
-  it('counts visible user messages before an index', () => {
+  it('counts real user messages before an index, excluding display kinds', () => {
     expect(visibleUserOrdinal(messages, messages.length)).toBe(2)
   })
 
-  it('maps an ordinal back to a message index, skipping hidden', () => {
-    expect(visibleUserIndexAtOrdinal(messages, 1)).toBe(3)
+  it('maps an ordinal back to a real user message, skipping hidden and display kinds', () => {
+    expect(visibleUserIndexAtOrdinal(messages, 1)).toBe(5)
     expect(visibleUserIndexAtOrdinal(messages, 5)).toBe(-1)
   })
 })

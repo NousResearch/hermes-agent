@@ -495,8 +495,12 @@ export function appendText(message: AppendMessage): string {
     .trim()
 }
 
+export function isRealUserMessage(message: Pick<ChatMessage, 'displayKind' | 'hidden' | 'role'>): boolean {
+  return message.role === 'user' && !message.hidden && !message.displayKind
+}
+
 export function visibleUserOrdinal(messages: readonly ChatMessage[], end: number): number {
-  return messages.slice(0, end).filter(m => m.role === 'user' && !m.hidden).length
+  return messages.slice(0, end).filter(isRealUserMessage).length
 }
 
 export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targetOrdinal: number): number {
@@ -505,7 +509,7 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]
 
-    if (message.role !== 'user' || message.hidden) {
+    if (!isRealUserMessage(message)) {
       continue
     }
 

@@ -394,6 +394,8 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
     ...(message.reactions?.length ? { reactions: message.reactions } : {})
   }
 
+  const displayKindMeta = message.displayKind ? { displayKind: message.displayKind } : {}
+
   if (role === 'user') {
     return {
       id: message.id,
@@ -401,7 +403,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta } }
+      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta, ...displayKindMeta } }
     } as ThreadMessage
   }
 
@@ -413,7 +415,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       role,
       content: [textPart(text)],
       createdAt,
-      metadata: { custom: {} }
+      metadata: { custom: displayKindMeta }
     } as ThreadMessage
   }
 
@@ -433,7 +435,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       unstable_data: [],
       steps: [],
       // Carries ChatMessage.interim to AssistantMessage's footer gate.
-      custom: { ...(message.interim ? { interim: true } : {}), ...reactionMeta }
+      custom: { ...(message.interim ? { interim: true } : {}), ...reactionMeta, ...displayKindMeta }
     }
   } as ThreadMessage
 }

@@ -310,6 +310,26 @@ describe('toChatMessages', () => {
       'background agent work finished',
       'resumed interrupted turn'
     ])
+    expect(messages.map(message => message.displayKind)).toEqual([
+      null,
+      null,
+      'model_switch',
+      'async_delegation_complete',
+      'auto_continue'
+    ])
+  })
+
+  it('preserves an unknown user display kind for ordinal computation', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: 'expanded skill invocation',
+        display_kind: 'skill_invocation',
+        timestamp: 1
+      }
+    ])
+
+    expect(message).toMatchObject({ role: 'user', displayKind: 'skill_invocation' })
   })
 
   // A backend older than this app serves display_metadata as unparsed JSON

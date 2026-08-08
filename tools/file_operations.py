@@ -1071,7 +1071,18 @@ class ShellFileOperations(FileOperations):
         """
         from tools.environments.local import _bash_safe_path
 
-        arg = _bash_safe_path(arg)
+        return self._escape_shell_literal(_bash_safe_path(arg))
+
+    @staticmethod
+    def _escape_shell_literal(arg: str) -> str:
+        """Quote *arg* for the shell WITHOUT any path translation.
+
+        For arguments that are not paths — a search regex, a glob filter —
+        where a backslash is syntax rather than a separator.
+        ``_escape_shell_arg`` rewrites every backslash to ``/`` on Windows
+        via ``_bash_safe_path``, which is what ``C:\\Users\\x`` needs and
+        what turns ``\\d+`` into ``/d+``.
+        """
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
@@ -2460,10 +2471,10 @@ class ShellFileOperations(FileOperations):
         """
         if not self._has_command('rg'):
             return None
-        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        glob_expr = f" --glob {self._escape_shell_literal(file_glob)}" if file_glob else ""
         probe = self._exec(
             f"rg -i --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"{self._escape_shell_literal(pattern)} {self._escape_shell_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -2485,7 +2496,7 @@ class ShellFileOperations(FileOperations):
         # missing from results).
         hidden = self._exec(
             f"rg --hidden --no-ignore --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"{self._escape_shell_literal(pattern)} {self._escape_shell_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -2505,7 +2516,7 @@ class ShellFileOperations(FileOperations):
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
                 f"rg -F --count-matches{glob_expr} "
-                f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+                f"{self._escape_shell_literal(pattern)} {self._escape_shell_arg(path)} "
                 f"2>/dev/null | head -50",
                 timeout=30,
             )
@@ -2712,7 +2723,7 @@ class ShellFileOperations(FileOperations):
         
         # Add file glob filter (must be quoted to prevent shell expansion)
         if file_glob:
-            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+            cmd_parts.extend(["--glob", self._escape_shell_literal(file_glob)])
         
         # Output mode handling
         if output_mode == "files_only":
@@ -2721,7 +2732,7 @@ class ShellFileOperations(FileOperations):
             cmd_parts.append("-c")  # Count per file
         
         # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        cmd_parts.append(self._escape_shell_literal(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
         # Fetch extra rows so we can report the true total before slicing.
@@ -2848,7 +2859,7 @@ class ShellFileOperations(FileOperations):
         
         # Add file pattern filter (must be quoted to prevent shell expansion)
         if file_glob:
-            cmd_parts.extend(["--include", self._escape_shell_arg(file_glob)])
+            cmd_parts.extend(["--include", self._escape_shell_literal(file_glob)])
         
         # Output mode handling
         if output_mode == "files_only":
@@ -2857,7 +2868,7 @@ class ShellFileOperations(FileOperations):
             cmd_parts.append("-c")
         
         # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        cmd_parts.append(self._escape_shell_literal(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
         # Fetch generously so we can compute total before slicing

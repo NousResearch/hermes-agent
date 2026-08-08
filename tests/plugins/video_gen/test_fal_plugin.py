@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
 
 from agent import video_gen_registry
@@ -544,10 +546,60 @@ class TestUpscalePass:
         from plugins.video_gen import fal as fal_plugin
         from plugins.video_gen.fal import FALVideoGenProvider
 
-        monkeypatch.setattr(fal_plugin, "_upscale_video", lambda url: None)
+        monkeypatch.setattr(
+            fal_plugin,
+            "_upscale_video",
+            lambda url, source_request_id=None: None,
+        )
         result = FALVideoGenProvider().generate(
             "a dog", model="pixverse-v6", upscale=True,
         )
         assert result["success"] is True
         assert result["video"] == "https://fake/native.mp4"
         assert result["upscaled"] is False
+
+    def test_managed_upscale_binds_the_source_request(self, monkeypatch):
+        from plugins.video_gen import fal as fal_plugin
+
+        captured = {}
+
+        class FakeHandle:
+            def get(self):
+                return {"video": {"url": "https://fake/upscaled.mp4"}}
+
+        monkeypatch.setattr(
+            fal_plugin,
+            "_resolve_managed_fal_video_gateway",
+            lambda: object(),
+        )
+        monkeypatch.setattr(
+            fal_plugin,
+            "_submit_fal_video_request",
+            lambda endpoint, arguments: (
+                captured.update(endpoint=endpoint, arguments=arguments)
+                or FakeHandle()
+            ),
+        )
+
+        assert (
+            fal_plugin._upscale_video(
+                "https://fake/native.mp4",
+                "source-request-1",
+            )
+            == "https://fake/upscaled.mp4"
+        )
+        assert captured["arguments"]["source_request_id"] == "source-request-1"
+
+    def test_managed_upscale_without_source_request_falls_back(self, monkeypatch):
+        from plugins.video_gen import fal as fal_plugin
+
+        submit = Mock()
+        monkeypatch.setattr(
+            fal_plugin,
+            "_resolve_managed_fal_video_gateway",
+            lambda: object(),
+        )
+        monkeypatch.setattr(fal_plugin, "_submit_fal_video_request", submit)
+
+        assert fal_plugin._upscale_video("https://fake/native.mp4") is None
+        submit.assert_not_called()

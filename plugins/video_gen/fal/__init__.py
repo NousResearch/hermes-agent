@@ -617,7 +617,10 @@ UPSCALER_ENDPOINT = "fal-ai/seedvr/upscale/video"
 UPSCALER_FACTOR = 2
 
 
-def _upscale_video(video_url: str) -> Optional[str]:
+def _upscale_video(
+    video_url: str,
+    source_request_id: Optional[str] = None,
+) -> Optional[str]:
     """Upscale a generated video via SeedVR2; return the new URL or None.
 
     Best-effort: any failure logs and returns ``None`` so the caller falls
@@ -626,11 +629,16 @@ def _upscale_video(video_url: str) -> Optional[str]:
     """
     try:
         logger.info("Upscaling video with SeedVR2 (%dx)...", UPSCALER_FACTOR)
-        handle = _submit_fal_video_request(UPSCALER_ENDPOINT, {
+        arguments: Dict[str, Any] = {
             "video_url": video_url,
             "upscale_mode": "factor",
             "upscale_factor": UPSCALER_FACTOR,
-        })
+        }
+        if _resolve_managed_fal_video_gateway() is not None:
+            if not source_request_id:
+                raise RuntimeError("Managed SeedVR upscale requires the source FAL request id")
+            arguments["source_request_id"] = source_request_id
+        handle = _submit_fal_video_request(UPSCALER_ENDPOINT, arguments)
         result = handle.get()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Video upscale failed: %s", exc)
@@ -832,6 +840,7 @@ class FALVideoGenProvider(VideoGenProvider):
 
         try:
             handle = _submit_fal_video_request(endpoint, payload)
+            source_request_id = getattr(handle, "request_id", None)
             result = handle.get()
         except Exception as exc:
             logger.warning(
@@ -864,7 +873,7 @@ class FALVideoGenProvider(VideoGenProvider):
         # video rather than failing the generation.
         upscaled = False
         if upscale:
-            upscaled_url = _upscale_video(url)
+            upscaled_url = _upscale_video(url, source_request_id)
             if upscaled_url:
                 url = upscaled_url
                 upscaled = True

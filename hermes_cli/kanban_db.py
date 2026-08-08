@@ -4235,6 +4235,11 @@ def claim_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
     """
+    # Enforce terminal-timeout teardown at the claim boundary, not only in
+    # auto-dispatch. Interactive/control-plane claimers use this same API and
+    # must not start a second writer while the previous worker is still alive.
+    if _terminate_terminal_timeout_worker_before_respawn(conn, task_id) is not None:
+        return None
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -6836,9 +6841,11 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """Tasks skipped by the respawn guard, as ``(task_id, reason)`` pairs.
 
-    Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
-    ``"recent_success"`` (completed run within guard window),
-    ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    Reasons include ``"blocker_auth"`` (quota/auth error — also
+    auto-blocked), ``"recent_success"`` (completed run within guard window),
+    ``"active_pr"`` (GitHub PR URL in a recent comment), and
+    ``"timed_out_worker_*"`` (a terminal timeout's host worker has not been
+    safely reaped yet)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
@@ -7094,6 +7101,219 @@ def _worker_survived_termination(termination: dict) -> bool:
         and termination.get("host_local")
         and not termination.get("terminated")
     )
+
+
+def _worker_process_start_time(pid: int) -> Optional[int]:
+    """Return the PID-reuse fingerprint used by gateway process guards."""
+    try:
+        from gateway.status import get_process_start_time
+        return get_process_start_time(int(pid))
+    except Exception:
+        return None
+
+
+def _terminate_identified_worker(
+    pid: int,
+    claimer: str,
+    expected_started_at: int,
+) -> dict[str, Any]:
+    """Terminate one proven host-local process without crossing PID reuse.
+
+    Recheck the process-start fingerprint before every signal and throughout
+    the grace period so a recycled PID cannot receive this worker's SIGKILL.
+    """
+    import signal
+
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    result: dict[str, Any] = {
+        "pid": int(pid),
+        "claimer": str(claimer),
+        "host_local": str(claimer).startswith(host_prefix),
+        "termination_attempted": False,
+        "terminated": False,
+    }
+    if not result["host_local"]:
+        return result
+
+    def same_live_process() -> Optional[bool]:
+        if not _pid_alive(pid):
+            return False
+        current_started_at = _worker_process_start_time(pid)
+        if current_started_at is None:
+            return None
+        return int(current_started_at) == int(expected_started_at)
+
+    identity = same_live_process()
+    if identity is False:
+        result["terminated"] = True
+        return result
+    if identity is None:
+        result["identity_unverified"] = True
+        return result
+
+    result["termination_attempted"] = True
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        result["terminated"] = True
+        return result
+    except (PermissionError, OSError) as exc:
+        result["termination_error"] = type(exc).__name__
+        return result
+
+    for _ in range(10):
+        time.sleep(0.5)
+        identity = same_live_process()
+        if identity is False:
+            result["terminated"] = True
+            return result
+        if identity is None:
+            result["identity_unverified"] = True
+            return result
+
+    # Revalidate immediately before escalation. A process that now has a
+    # different start fingerprint is a recycled PID, not our worker.
+    identity = same_live_process()
+    if identity is False:
+        result["terminated"] = True
+        return result
+    if identity is None:
+        result["identity_unverified"] = True
+        return result
+    try:
+        # Windows has no SIGKILL; Python maps SIGTERM to TerminateProcess there.
+        force_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+        os.kill(pid, force_signal)
+    except ProcessLookupError:
+        result["terminated"] = True
+        return result
+    except (PermissionError, OSError) as exc:
+        result["termination_error"] = type(exc).__name__
+        return result
+
+    for _ in range(4):
+        time.sleep(0.25)
+        identity = same_live_process()
+        if identity is False:
+            result["terminated"] = True
+            return result
+        if identity is None:
+            result["identity_unverified"] = True
+            return result
+    return result
+
+
+def _terminal_timeout_worker_identity(row: sqlite3.Row) -> Optional[dict[str, Any]]:
+    """Capture enough identity to reap a worker after it closes its own run.
+
+    Iteration-budget exhaustion is recorded from inside the worker process.
+    That transaction must release the task lease, but the Python process can
+    remain alive briefly (or hang during shutdown).  Persisting the PID,
+    claimer, and process start fingerprint on the closed run lets the next
+    dispatcher tick prove it is still looking at the same host-local process
+    before signalling it.
+    """
+    pid = row["worker_pid"]
+    claimer = row["claim_lock"]
+    if not pid or int(pid) <= 0 or not claimer:
+        return None
+    return {
+        "pid": int(pid),
+        "claimer": str(claimer),
+        "process_started_at": _worker_process_start_time(int(pid)),
+    }
+
+
+def _terminate_terminal_timeout_worker_before_respawn(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Reap a live worker from the latest terminal timeout before retrying.
+
+    Returns a respawn-guard reason when the original worker cannot be proven
+    gone. Host-local workers are fingerprinted and terminated before retry;
+    remote claimers fail closed because their PID cannot be interpreted from
+    this host's process namespace. A dead worker, a recycled host-local PID,
+    or a timeout run produced by the dispatcher's max-runtime path falls
+    through to the normal claim path.
+    """
+    row = conn.execute(
+        "SELECT outcome, metadata FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None or not row["metadata"]:
+        return None
+    try:
+        metadata = json.loads(row["metadata"])
+    except (TypeError, ValueError):
+        return None
+    is_timeout_run = row["outcome"] == "timed_out" or (
+        row["outcome"] == "gave_up"
+        and metadata.get("trigger_outcome") == "timed_out"
+    )
+    if not is_timeout_run:
+        return None
+    identity = metadata.get("terminal_worker")
+    if not isinstance(identity, dict):
+        return None
+    try:
+        pid = int(identity["pid"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    claimer = identity.get("claimer")
+    if not claimer:
+        return None
+
+    # Claim locks are host-qualified (``host:pid``). A numeric PID from a
+    # different host has no meaning in this process namespace: probing it could
+    # mistake an unrelated local process for the timed-out remote worker, while
+    # allowing the retry could create the same concurrent-writer race remotely.
+    # Keep the task ready and let the originating host prove/terminate its own
+    # worker before any claimant starts a replacement.
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    if not str(claimer).startswith(host_prefix):
+        return "timed_out_worker_remote_unverified"
+
+    expected_started_at = identity.get("process_started_at")
+    if expected_started_at is None:
+        # Without the start fingerprint, a live numeric PID may already have
+        # been recycled. Fail closed instead of signalling an unproven process
+        # or starting a concurrent retry beside the original worker.
+        if _pid_alive(pid):
+            return "timed_out_worker_identity_unverified"
+        return None
+
+    current_started_at = _worker_process_start_time(pid)
+    if current_started_at is None:
+        # A missing current fingerprint normally means the original PID is
+        # already gone. If it still appears alive, keep the retry gated.
+        if _pid_alive(pid):
+            return "timed_out_worker_identity_unverified"
+        return None
+    if int(current_started_at) != int(expected_started_at):
+        # PID was recycled after the timed-out worker exited. Never signal
+        # the new process; the old writer is already gone.
+        return None
+
+    termination = _terminate_identified_worker(
+        pid,
+        str(claimer),
+        int(expected_started_at),
+    )
+    if termination.get("identity_unverified"):
+        return "timed_out_worker_identity_unverified"
+    if _worker_survived_termination(termination):
+        return "timed_out_worker_alive"
+    if (
+        termination.get("host_local")
+        and not termination.get("termination_attempted")
+        and not termination.get("terminated")
+        and _pid_alive(pid)
+    ):
+        return "timed_out_worker_termination_unavailable"
+    return None
 
 
 def _defer_reclaim_for_live_worker(
@@ -7890,6 +8110,8 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
     and maybe trip the circuit breaker.
@@ -7904,10 +8126,12 @@ def _record_task_failure(
 
     Modes:
 
-    * ``release_claim=True, end_run=True`` — spawn-failure path.
-      Caller has a running task with an open run; this transitions
-      it back to ``ready`` (or ``blocked`` when the breaker trips),
-      releases the claim, and closes the run with ``outcome=<outcome>``.
+    * ``release_claim=True, end_run=True`` — active-run terminal path.
+      Spawn failures and worker-side iteration timeouts use this mode. Caller
+      has a running task with an open run; this transitions it back to
+      ``ready`` (or ``blocked`` when the breaker trips), releases the claim,
+      and closes the run with ``outcome=<outcome>``. Worker-side timeouts also
+      persist the host process identity so dispatch can reap it before retry.
 
     * ``release_claim=False, end_run=False`` — timeout/crash path.
       Caller has ALREADY flipped the task to ``ready`` and closed the
@@ -7939,12 +8163,29 @@ def _record_task_failure(
     blocked = False
     with write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status, max_retries "
+            "SELECT consecutive_failures, status, max_retries, "
+            "worker_pid, claim_lock, current_run_id "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
             return False
+        if (
+            expected_run_id is not None
+            and row["current_run_id"] != int(expected_run_id)
+        ):
+            return False
+        if (
+            expected_claim_lock is not None
+            and row["claim_lock"] != expected_claim_lock
+        ):
+            return False
         failures = int(row["consecutive_failures"]) + 1
+        failure_payload_extra = dict(event_payload_extra or {})
+        terminal_worker = None
+        if outcome == "timed_out" and release_claim and end_run:
+            terminal_worker = _terminal_timeout_worker_identity(row)
+            if terminal_worker is not None:
+                failure_payload_extra["terminal_worker"] = terminal_worker
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
@@ -7981,17 +8222,20 @@ def _record_task_failure(
                 )
             run_id = None
             if end_run:
-                # Only the spawn path has an open run to close.
+                # Active-run terminal paths still have an open run to close.
+                run_metadata: dict[str, Any] = {
+                    "failures": failures,
+                    "trigger_outcome": outcome,
+                    "effective_limit": effective_limit,
+                    "limit_source": limit_source,
+                }
+                if terminal_worker is not None:
+                    run_metadata["terminal_worker"] = terminal_worker
                 run_id = _end_run(
                     conn, task_id,
                     outcome="gave_up", status="gave_up",
                     error=error[:500],
-                    metadata={
-                        "failures": failures,
-                        "trigger_outcome": outcome,
-                        "effective_limit": effective_limit,
-                        "limit_source": limit_source,
-                    },
+                    metadata=run_metadata,
                 )
             payload = {
                 "failures": failures,
@@ -8000,8 +8244,8 @@ def _record_task_failure(
                 "error": error[:500],
                 "trigger_outcome": outcome,
             }
-            if event_payload_extra:
-                payload.update(event_payload_extra)
+            if failure_payload_extra:
+                payload.update(failure_payload_extra)
             _append_event(
                 conn, task_id, "gave_up", payload, run_id=run_id,
             )
@@ -8009,7 +8253,7 @@ def _record_task_failure(
         else:
             # Below threshold.
             if release_claim:
-                # Spawn path: transition running → ready + clear claim.
+                # Active-run terminal path: running → ready + clear claim.
                 conn.execute(
                     "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
@@ -8026,16 +8270,22 @@ def _record_task_failure(
                     (failures, error[:500], task_id),
                 )
             if end_run:
-                # Spawn path: close the open run with outcome.
+                # Active-run terminal path: close the open run with outcome.
+                run_metadata: dict[str, Any] = {"failures": failures}
+                if terminal_worker is not None:
+                    run_metadata["terminal_worker"] = terminal_worker
                 run_id = _end_run(
                     conn, task_id,
                     outcome=outcome, status=outcome,
                     error=error[:500],
-                    metadata={"failures": failures},
+                    metadata=run_metadata,
                 )
+                event_payload = {"error": error[:500], "failures": failures}
+                if failure_payload_extra:
+                    event_payload.update(failure_payload_extra)
                 _append_event(
                     conn, task_id, outcome,
-                    {"error": error[:500], "failures": failures},
+                    event_payload,
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
@@ -8599,6 +8849,23 @@ def _dispatch_once_locked(
                     (row["id"], row_assignee, current)
                 )
                 continue
+        # A worker can terminally time itself out while its host process is
+        # still unwinding. Reap that exact process (PID + start fingerprint)
+        # before claiming the retry, otherwise two attempts can write the same
+        # workspace concurrently.
+        timeout_worker_guard = None
+        if not dry_run:
+            timeout_worker_guard = _terminate_terminal_timeout_worker_before_respawn(
+                conn, row["id"],
+            )
+        if timeout_worker_guard is not None:
+            result.respawn_guarded.append((row["id"], timeout_worker_guard))
+            with write_txn(conn):
+                _append_event(
+                    conn, row["id"], "respawn_guarded",
+                    {"reason": timeout_worker_guard},
+                )
+            continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so

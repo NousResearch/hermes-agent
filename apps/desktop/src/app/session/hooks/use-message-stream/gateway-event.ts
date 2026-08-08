@@ -724,7 +724,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             ? `◇ MoA refs ${payload.refs_done}/${payload.refs_total} — ${label}\n`
             : `◇ MoA refs ${payload.refs_done}/${payload.refs_total}\n`
 
-          appendReasoningDelta(sessionId, line, payload.refs_done <= 1)
+          appendReasoningDelta(
+            sessionId,
+            line,
+            payload.state === 'waiting' || payload.refs_done <= 1
+          )
           flushQueuedDeltas(sessionId)
         }
 

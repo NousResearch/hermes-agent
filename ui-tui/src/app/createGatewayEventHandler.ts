@@ -1075,7 +1075,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // reference completes ("MoA: refs 2/3"), so the user sees movement
         // during the (potentially long) reference phase without transcript spam.
         if (typeof ev.payload?.refs_done === 'number' && typeof ev.payload?.refs_total === 'number') {
-          turnController.pushActivity(`MoA: refs ${ev.payload.refs_done}/${ev.payload.refs_total}`, 'info', 'MoA')
+          const waitingLabel = ev.payload.state === 'waiting' ? String(ev.payload.label ?? '').trim() : ''
+          const suffix = waitingLabel ? ` — ${waitingLabel}` : ''
+
+          turnController.pushActivity(
+            `MoA: refs ${ev.payload.refs_done}/${ev.payload.refs_total}${suffix}`,
+            'info',
+            'MoA'
+          )
         }
 
         return

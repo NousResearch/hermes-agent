@@ -75,6 +75,24 @@ describe('moa.progress / moa.phase activity surface', () => {
     expect(texts).not.toContain('MoA: refs 1/3')
   })
 
+  it('shows the pending advisor and elapsed time on waiting heartbeats', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: {
+        elapsed_seconds: 45,
+        label: 'waiting on kimi-coding:kimi-k3 · 45s',
+        refs_done: 0,
+        refs_total: 1,
+        state: 'waiting'
+      },
+      type: 'moa.progress'
+    } as any)
+
+    expect(activityTexts()).toContain('MoA: refs 0/1 — waiting on kimi-coding:kimi-k3 · 45s')
+  })
+
   it('swaps the progress line for aggregator copy on moa.phase', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 

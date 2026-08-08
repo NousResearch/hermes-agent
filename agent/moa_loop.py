@@ -780,6 +780,7 @@ def _run_references_parallel(
     temperature: float | None = None,
     max_tokens: int | None = None,
     progress_callback: Any = None,
+    heartbeat_callback: Any = None,
     reference_timeout: float | None = None,
     agent: Any = None,
     late_accounting_sink: Any = None,
@@ -793,10 +794,12 @@ def _run_references_parallel(
     another MoA preset are skipped here (recursion guard) with a labelled note.
 
     If ``progress_callback`` is provided it is invoked as each reference
-    completes: ``progress_callback(refs_done, refs_total, label)``. The total
-    matches ``len(reference_models)`` so listeners can render a status-bar
-    progress like ``MOA: 2/3 refs done``. Best-effort — failures are logged
-    but never break the fan-out (display must never block a turn).
+    completes: ``progress_callback(refs_done, refs_total, label)``. When
+    ``heartbeat_callback`` is provided, it fires immediately after dispatch and
+    once per pending poll as ``heartbeat_callback(refs_done, refs_total,
+    pending_labels, elapsed_seconds)``. This keeps a slow advisor visibly alive
+    before any result exists without changing the established completion
+    callback contract. Both hooks are best-effort and display-only.
 
     Each element is ``(label, text, accounting)`` where accounting is a
     ``_RefAccounting`` object (zeroed for skipped/failed/interrupted
@@ -833,6 +836,7 @@ def _run_references_parallel(
 
     total = len(reference_models)
     completed = 0
+    fanout_started_at = time.monotonic()
     executor = ThreadPoolExecutor(max_workers=workers)
     interrupted = False
     # Per-fan-out context-length cache shared by every reference worker, so
@@ -866,10 +870,31 @@ def _run_references_parallel(
             ] = idx
 
         # Collect every reference before returning — the aggregator needs the
-        # complete set, so there is no early-exit / first-completed path
-        # here, other than a user interrupt. Progress callbacks fire as each
-        # reference completes so frontends can render "MOA: k/n refs done".
+        # complete set, so there is no early-exit / first-completed path here,
+        # other than a user interrupt. Completion progress keeps its established
+        # callback; a separate heartbeat hook announces dispatch immediately and
+        # refreshes liveness while any advisor remains pending.
         pending = set(futures)
+        completed = sum(result is not None for result in results)
+
+        def _emit_waiting_heartbeat(*, elapsed_seconds: float) -> None:
+            if heartbeat_callback is None or not pending:
+                return
+            pending_labels = [
+                _slot_label(reference_models[futures[future]])
+                for future in sorted(pending, key=lambda item: futures[item])
+            ]
+            try:
+                heartbeat_callback(
+                    completed,
+                    total,
+                    pending_labels,
+                    max(0.0, elapsed_seconds),
+                )
+            except Exception as exc:  # pragma: no cover - display must never break
+                logger.debug("MoA heartbeat_callback failed: %s", exc)
+
+        _emit_waiting_heartbeat(elapsed_seconds=0.0)
         while pending:
             done, pending = _futures_wait(pending, timeout=_REFERENCE_POLL_INTERVAL_S)
             for future in done:
@@ -887,6 +912,9 @@ def _run_references_parallel(
             if agent is not None and getattr(agent, "_interrupt_requested", False):
                 interrupted = True
                 break
+            _emit_waiting_heartbeat(
+                elapsed_seconds=time.monotonic() - fanout_started_at
+            )
 
         if interrupted:
             for future, idx in futures.items():
@@ -1513,9 +1541,10 @@ class MoAChatCompletions:
         #   reference_callback(event, **kwargs)
         # where event is one of:
         #   "moa.reference"   kwargs: index, count, label, text
-        #   "moa.progress"    kwargs: refs_done, refs_total, label
-        #                       (fired once per reference completion — drives
-        #                        status-bar progress like ``MOA: 2/3 refs done``)
+        #   "moa.progress"    kwargs: refs_done, refs_total, label, state,
+        #                        elapsed_seconds. Completion events preserve the
+        #                        historic model label; waiting events begin at
+        #                        dispatch and heartbeat while advisors are pending.
         #   "moa.phase"       kwargs: phase, refs_done, refs_total, aggregator
         #                       (fired on phase transitions, currently
         #                        phase="aggregator" right before the aggregator
@@ -2066,6 +2095,27 @@ class MoAChatCompletions:
                     refs_done=done,
                     refs_total=total,
                     label=label,
+                    state="completed",
+                )
+
+            def _heartbeat(
+                done: int,
+                total: int,
+                pending_labels: list[str],
+                elapsed_seconds: float,
+            ) -> None:
+                elapsed = max(0, int(elapsed_seconds))
+                if len(pending_labels) == 1:
+                    subject = pending_labels[0]
+                else:
+                    subject = f"{len(pending_labels)} advisors"
+                self._emit(
+                    "moa.progress",
+                    refs_done=done,
+                    refs_total=total,
+                    label=f"waiting on {subject} · {elapsed}s",
+                    state="waiting",
+                    elapsed_seconds=elapsed,
                 )
 
             reference_outputs = _run_references_parallel(
@@ -2074,6 +2124,7 @@ class MoAChatCompletions:
                 temperature=temperature,
                 max_tokens=reference_max_tokens,
                 progress_callback=_progress,
+                heartbeat_callback=_heartbeat,
                 reference_timeout=reference_timeout,
                 agent=self._agent,
                 late_accounting_sink=self._record_late_reference_accounting,
@@ -2325,8 +2376,9 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
                     moa_count=count,
                 )
             elif event == "moa.progress":
-                # Per-reference completion. Frontends render this as a
-                # status-bar progress indicator like ``MOA: N/M refs done``.
+                # Completion and waiting-heartbeat events share one stable
+                # progress surface. Waiting metadata lets clients replace the
+                # live line instead of appending transcript noise.
                 cb(
                     "moa.progress",
                     str(kwargs.get("label") or ""),
@@ -2334,6 +2386,8 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
                     None,
                     moa_refs_done=kwargs.get("refs_done"),
                     moa_refs_total=kwargs.get("refs_total"),
+                    moa_progress_state=kwargs.get("state"),
+                    moa_elapsed_seconds=kwargs.get("elapsed_seconds"),
                 )
             elif event == "moa.phase":
                 # Phase transition (currently only ``phase="aggregator"``

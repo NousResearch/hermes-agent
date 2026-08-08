@@ -70,3 +70,27 @@ def test_moa_reference_relayed_with_label_and_index(server, emits):
     assert payload["count"] == 2
 
 
+def test_moa_waiting_progress_relayed_with_state_and_elapsed(server, emits):
+    server._on_tool_progress(
+        "sid-1",
+        "moa.progress",
+        "waiting on openrouter:openai/gpt-5.5 · 15s",
+        None,
+        None,
+        moa_refs_done=0,
+        moa_refs_total=1,
+        moa_progress_state="waiting",
+        moa_elapsed_seconds=15,
+    )
+
+    assert len(emits) == 1
+    event, sid, payload = emits[0]
+    assert event == "moa.progress"
+    assert sid == "sid-1"
+    assert payload == {
+        "elapsed_seconds": 15,
+        "label": "waiting on openrouter:openai/gpt-5.5 · 15s",
+        "refs_done": 0,
+        "refs_total": 1,
+        "state": "waiting",
+    }

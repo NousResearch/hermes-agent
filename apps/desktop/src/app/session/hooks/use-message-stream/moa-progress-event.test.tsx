@@ -81,6 +81,30 @@ describe('useMessageStream moa.progress / moa.phase surfacing', () => {
     expect(text).toContain('MoA refs 2/3 — model-b')
   })
 
+  it('replaces a waiting heartbeat instead of appending transcript noise', async () => {
+    await mountStream()
+
+    emit('message.start')
+    emit('moa.progress', {
+      elapsed_seconds: 5,
+      label: 'waiting on model-c · 5s',
+      refs_done: 2,
+      refs_total: 3,
+      state: 'waiting'
+    })
+    emit('moa.progress', {
+      elapsed_seconds: 10,
+      label: 'waiting on model-c · 10s',
+      refs_done: 2,
+      refs_total: 3,
+      state: 'waiting'
+    })
+
+    const text = reasoningText()
+    expect(text).toContain('MoA refs 2/3 — waiting on model-c · 10s')
+    expect(text).not.toContain('waiting on model-c · 5s')
+  })
+
   it('restarts the progress block on the first ref of a new fan-out', async () => {
     await mountStream()
 

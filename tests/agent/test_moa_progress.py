@@ -19,6 +19,8 @@ real provider.
 
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -70,6 +72,64 @@ def _collect_emits(facade):
     return captured
 
 
+def test_moa_progress_emits_dispatch_and_waiting_heartbeats(moa_config, monkeypatch):
+    """A slow advisor is visible immediately and remains visibly alive."""
+    from agent import moa_loop
+
+    release = threading.Event()
+
+    def slow_call_llm(**kwargs):
+        if kwargs.get("task") == "moa_reference":
+            release.wait(timeout=2)
+            return _response("advice")
+        return _response("acted")
+
+    monkeypatch.setattr(moa_loop, "call_llm", slow_call_llm)
+    monkeypatch.setattr(moa_loop, "_REFERENCE_POLL_INTERVAL_S", 0.02)
+
+    facade = moa_loop.MoAChatCompletions("closed")
+    captured = _collect_emits(facade)
+    worker = threading.Thread(
+        target=lambda: facade.create(
+            model="closed",
+            messages=[{"role": "user", "content": "pressure-test this"}],
+        )
+    )
+    worker.start()
+
+    try:
+        deadline = time.monotonic() + 1
+        waiting = []
+        while time.monotonic() < deadline:
+            waiting = [
+                kwargs
+                for event, kwargs in captured
+                if event == "moa.progress" and kwargs.get("state") == "waiting"
+            ]
+            if len(waiting) >= 2:
+                break
+            time.sleep(0.01)
+
+        assert waiting, "the fan-out must announce itself before an advisor completes"
+        assert waiting[0]["refs_done"] == 0
+        assert waiting[0]["refs_total"] == 3
+        assert waiting[0]["elapsed_seconds"] == 0
+        assert waiting[0]["label"].startswith("waiting on 3 advisors")
+        assert len(waiting) >= 2, (
+            "a still-pending fan-out must emit a periodic liveness heartbeat"
+        )
+        assert not any(event == "moa.reference" for event, _ in captured)
+    finally:
+        release.set()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    completed = [
+        kwargs
+        for event, kwargs in captured
+        if event == "moa.progress" and kwargs.get("state") == "completed"
+    ]
+    assert [item["refs_done"] for item in completed] == [1, 2, 3]
 
 
 def test_moa_phase_transitions_to_aggregator(moa_config, monkeypatch):

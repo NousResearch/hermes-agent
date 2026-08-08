@@ -662,7 +662,13 @@ export type GatewayEvent =
     }
   | { payload?: { aggregator?: string }; session_id?: string; type: 'moa.aggregating' }
   | {
-      payload?: { label?: string; refs_done?: number; refs_total?: number }
+      payload?: {
+        elapsed_seconds?: number
+        label?: string
+        refs_done?: number
+        refs_total?: number
+        state?: 'completed' | 'waiting'
+      }
       session_id?: string
       type: 'moa.progress'
     }

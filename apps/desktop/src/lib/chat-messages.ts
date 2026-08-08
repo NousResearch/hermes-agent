@@ -109,6 +109,8 @@ export type GatewayEventPayload = {
   // moa.progress / moa.phase (Mixture of Agents fan-out progress relay)
   refs_done?: number
   refs_total?: number
+  state?: 'completed' | 'waiting'
+  elapsed_seconds?: number
   phase?: string
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.

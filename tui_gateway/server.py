@@ -5529,15 +5529,18 @@ def _on_tool_progress(
         refs_total = _kwargs.get("moa_refs_total")
         if refs_done is None or refs_total is None:
             return
-        _emit(
-            "moa.progress",
-            sid,
-            {
-                "label": str(name or ""),
-                "refs_done": int(refs_done),
-                "refs_total": int(refs_total),
-            },
-        )
+        progress_payload: dict[str, object] = {
+            "label": str(name or ""),
+            "refs_done": int(refs_done),
+            "refs_total": int(refs_total),
+        }
+        progress_state = _kwargs.get("moa_progress_state")
+        elapsed_seconds = _kwargs.get("moa_elapsed_seconds")
+        if progress_state is not None:
+            progress_payload["state"] = str(progress_state)
+        if elapsed_seconds is not None:
+            progress_payload["elapsed_seconds"] = int(elapsed_seconds)
+        _emit("moa.progress", sid, progress_payload)
         return
     if event_type == "moa.phase":
         # Phase transition — currently only ``phase="aggregator"`` fires once

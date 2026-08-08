@@ -1225,8 +1225,9 @@ def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
 
 def clear_session_cwd(session_key: str) -> None:
     """Drop a session's cwd record (session teardown)."""
+    key = str(session_key or "default")
     with _session_cwd_lock:
-        _session_cwd.pop(session_key, None)
+        _session_cwd.pop(key, None)
 
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -1257,16 +1258,18 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         # A registered workspace cwd IS the session's working directory until
         # a `cd` changes it.
         record_session_cwd(task_id, new_cwd)
-        # The live env is cached under the raw task_id for per-session surfaces
-        # (ACP/gateway/dashboard) and under the collapsed container id for
-        # isolation-keyed rollouts. Try the raw id first, then the container id,
-        # so a CWD-only override (which collapses to "default") still finds and
-        # updates the originating session's env.
+        # For a per-task (non-default) container the env is truly isolated;
+        # update its cwd so env-side seeding stays consistent.  For the
+        # shared default container, the session record (already written
+        # above) is the single source of truth — mutating env.cwd would
+        # leak one session's cwd into every other session sharing the
+        # container.
         container_id = _resolve_container_task_id(task_id)
-        with _env_lock:
-            env = _active_environments.get(task_id) or _active_environments.get(container_id)
-        if env is not None and getattr(env, "cwd", None) is not None:
-            env.cwd = new_cwd
+        if container_id != "default":
+            with _env_lock:
+                env = _active_environments.get(container_id)
+            if env is not None and getattr(env, "cwd", None) is not None:
+                env.cwd = new_cwd
 
 
 def clear_task_env_overrides(task_id: str):

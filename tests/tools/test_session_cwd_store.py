@@ -141,6 +141,38 @@ class TestFileToolsReadTheRecord:
         assert not str(resolved).startswith(str(wt_b))
 
 
+    def test_clear_normalizes_falsy_key_like_record_does(self):
+        """clear_session_cwd must normalize None/empty to 'default' so
+        clear_task_env_overrides actually removes the record it wrote."""
+        tt.record_session_cwd(None, "/wt/default")
+        assert tt.get_session_cwd(None) == "/wt/default"
+        tt.clear_session_cwd(None)
+        assert tt.get_session_cwd(None) is None
+
+        tt.record_session_cwd("", "/wt/empty")
+        assert tt.get_session_cwd("") == "/wt/empty"
+        tt.clear_session_cwd("")
+        assert tt.get_session_cwd("") is None
+
+
+    def test_env_cwd_not_mutated_for_shared_default_container(self, monkeypatch):
+        """register_task_env_overrides must not mutate env.cwd when the
+        container is shared (default). The session record is the source of
+        truth; mutating the shared env leaks one session's cwd to others."""
+        class _Env:
+            cwd = "/shared/default"
+
+        shared_env = _Env()
+        monkeypatch.setattr(tt, "_active_environments", {"default": shared_env})
+        monkeypatch.setattr(tt, "_task_env_overrides", {})
+
+        tt.register_task_env_overrides("sess-a", {"cwd": "/wt/a"})
+        # Session record must be written.
+        assert tt.get_session_cwd("sess-a") == "/wt/a"
+        # The shared env's cwd must NOT be mutated.
+        assert shared_env.cwd == "/shared/default"
+
+
 class TestDelegateSeedsChildRecord:
     def test_child_record_seeded_from_parent_then_isolated(self):
         tt.record_session_cwd("parent-task", "/parent/worktree")

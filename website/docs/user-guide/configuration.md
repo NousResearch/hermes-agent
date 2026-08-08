@@ -2256,6 +2256,25 @@ approvals:
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
 
+### Runs with nobody present
+
+Every mode above assumes someone can answer. Two keys cover the runs where nobody can:
+
+```yaml
+approvals:
+  cron_mode: deny                 # deny | approve — cron jobs
+  noninteractive_mode: approve    # deny | approve — other headless runs
+```
+
+| Key | Default | Applies to |
+|---|---|---|
+| `cron_mode` | `deny` | Scheduled jobs (`HERMES_CRON_SESSION`). |
+| `noninteractive_mode` | `approve` | Any other run with no interactive CLI and no gateway: a scripted invocation, hermes-agent embedded as a library, a test harness, a dispatched kanban worker. |
+
+`noninteractive_mode` defaults to `approve` because that is the historical behaviour — everything below the hardline floor is auto-approved when nobody is present. Set it to `deny` to block instead. It is opt-in so that upgrading does not start blocking a running deployment.
+
+Both are evaluated after the hardline floor and `approvals.deny`, which block regardless of either setting, and neither affects sessions where a user or gateway *is* reachable.
+
 :::warning
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::

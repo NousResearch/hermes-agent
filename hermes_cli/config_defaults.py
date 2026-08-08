@@ -2079,6 +2079,13 @@ DEFAULT_CONFIG = {
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
     #
+    # noninteractive_mode — the same choice for a run that is headless but NOT
+    # cron: a scripted invocation, hermes-agent embedded as a library, a test
+    # harness, a dispatched kanban worker. That path has always auto-approved
+    # everything below the hardline floor with nobody present to answer.
+    #   approve — keep that behaviour (default, so an upgrade changes nothing)
+    #   deny    — block instead; operators opt in
+    #
     # timeout — seconds to wait for the user's approve/deny before failing
     # closed (deny). Shared by the CLI prompt and gateway/messaging waits.
     # Messaging approvals arrive as a push notification the user may not see
@@ -2088,6 +2095,7 @@ DEFAULT_CONFIG = {
         "mode": "smart",
         "timeout": 300,
         "cron_mode": "deny",
+        "noninteractive_mode": "approve",
         # Operator-customizable policy text for smart approvals. When
         # non-empty, this is appended to the smart-approval guardian's
         # SYSTEM prompt (trusted channel) as additional rules — e.g.

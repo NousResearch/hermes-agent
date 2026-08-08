@@ -12,7 +12,7 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 | `terminal` | `backend` (local/docker/ssh/modal/daytona/singularity), `cwd`, `timeout` (180) |
 | `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
 | `display` | `skin`, `interface` (cli/tui), `language`, `show_reasoning`, `show_cost`, `pet` |
-| `approvals` | `mode` (smart/manual/off), `timeout`, `cron_mode` |
+| `approvals` | `mode` (smart/manual/off), `timeout`, `cron_mode`, `noninteractive_mode` |
 | `stt` | `enabled`, `provider` (local/groq/openai/mistral/elevenlabs/deepinfra) |
 | `tts` | `provider` (edge/elevenlabs/openai/minimax/mistral/neutts/gemini/piper/kittentts/deepinfra/xai) |
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider`, `write_approval` |

@@ -1272,39 +1272,6 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
-    # -- send_message enricher registration ---------------------------------
-
-    def register_send_message_enricher(
-        self,
-        platform_name: str,
-        handler: Callable,
-        schema_fragment: dict | None = None,
-    ) -> None:
-        """Register a send_message enricher for a plugin messaging platform.
-
-        Lets plugin platforms extend ``send_message`` with custom target
-        prefixes, schema fields, and send handlers without modifying core code.
-
-        Args:
-            platform_name: Platform key used in target strings
-                (e.g. ``"myplatform"`` → ``myplatform:chat_id``).
-            handler: Callable receiving ``(args, chat_id, platform_name, pconfig)``
-                and returning a dict like ``{"success": True, "message_id": "..."}``
-                or ``{"error": "..."}``. May be ``async def`` or a regular
-                function — the dispatcher detects coroutine functions via
-                ``inspect.iscoroutinefunction`` and awaits as needed.
-            schema_fragment: Optional dict of JSON-schema properties to merge
-                into ``send_message``'s parameter schema so the LLM sees the
-                custom fields.
-        """
-        from tools.send_message_tool import register_send_message_enricher as _register_enricher
-        _register_enricher(platform_name, handler, schema_fragment=schema_fragment)
-        logger.debug(
-            "Plugin %s registered send_message enricher: %s",
-            self.manifest.name,
-            platform_name,
-        )
-
     # -- platform adapter registration ---------------------------------------
 
     def register_platform(
@@ -1691,6 +1658,14 @@ class PluginManager:
             self._discovered = True
             return
         if force:
+            # Remove concrete and deferred platform registrations before
+            # clearing ownership metadata. Otherwise disabled plugins (or a
+            # profile switch in a long-lived process) leak their parser or
+            # send handler into the next discovery pass.
+            from gateway.platform_registry import platform_registry
+
+            for platform_name in tuple(self._plugin_platform_names):
+                platform_registry.unregister(platform_name)
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()

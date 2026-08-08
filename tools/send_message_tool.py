@@ -11,7 +11,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Awaitable, Callable
+
 
 from agent.redact import redact_sensitive_text
 from agent.secret_scope import get_secret
@@ -86,52 +86,11 @@ _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {
 _TELEGRAM_CAPTION_LIMIT = 1024
 _DEFAULT_CAPTION_LIMIT = 4096
 
-# ---------------------------------------------------------------------------
-# Plugin enricher registry for send_message
-# ---------------------------------------------------------------------------
+def prepare_send_message_platforms() -> None:
+    """Load enabled standalone plugins before tool schemas/cache keys are built."""
+    from hermes_cli.plugins import discover_plugins
 
-SendMessageEnricher = Callable[[dict, str, str, Any], Awaitable[dict] | dict]
-"""Callable receiving (args, chat_id, platform_name, pconfig) -> dict result.
-
-May be sync or async — the dispatcher detects coroutine functions via
-``inspect.iscoroutinefunction`` and awaits as needed.
-"""
-
-_SEND_MESSAGE_ENRICHERS: dict[str, SendMessageEnricher] = {}
-"""platform_name -> enricher handler."""
-
-_SEND_MESSAGE_SCHEMA_FRAGMENTS: dict[str, dict] = {}
-"""platform_name -> schema fragment dict (JSON Schema properties)."""
-
-
-def register_send_message_enricher(
-    platform_name: str,
-    handler: SendMessageEnricher,
-    schema_fragment: dict | None = None,
-) -> None:
-    """Register a platform-specific enricher for the send_message tool.
-
-    Enrichers let plugin platforms extend send_message with custom target
-    parsing, schema fields, and send logic without modifying core code.
-    """
-    _SEND_MESSAGE_ENRICHERS[platform_name] = handler
-    if schema_fragment:
-        _SEND_MESSAGE_SCHEMA_FRAGMENTS[platform_name] = schema_fragment
-
-
-def get_send_message_schema() -> dict:
-    """Return a fresh copy of the send_message schema with plugin fragments merged.
-
-    Fragments are assembled on demand so deferred plugin registration never
-    mutates the shared ``SEND_MESSAGE_SCHEMA`` dict. Callers that need the
-    current wire schema (e.g. tool-search builders, MCP catalogues) should use
-    this instead of reading ``SEND_MESSAGE_SCHEMA`` directly.
-    """
-    import copy
-    schema = copy.deepcopy(SEND_MESSAGE_SCHEMA)
-    for fragment in _SEND_MESSAGE_SCHEMA_FRAGMENTS.values():
-        schema["parameters"]["properties"].update(fragment)
-    return schema
+    discover_plugins()
 
 
 def _media_caption_split(text, media_files, *, max_caption_len):
@@ -335,18 +294,13 @@ def _handle_react(args, remove=False):
     platform_name = parts[0].strip().lower()
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
+    prepare_send_message_platforms()
     if target_ref:
-        chat_id, _thread_id, _ = _parse_target_ref(platform_name, target_ref)
-        if not chat_id:
-            try:
-                from gateway.channel_directory import resolve_channel_name
-                resolved = resolve_channel_name(platform_name, target_ref)
-            except Exception:
-                resolved = None
-            # Opaque platform-native ids (e.g. photon space GUIDs like
-            # 'any;-;+1555...') match no parser pattern and no directory
-            # entry — pass them through verbatim; the adapter validates.
-            chat_id = resolved or target_ref
+        chat_id, _thread_id, resolution_error = resolve_send_target(
+            platform_name, target_ref
+        )
+        if resolution_error:
+            return tool_error(resolution_error)
 
     try:
         from gateway.config import Platform, load_gateway_config
@@ -416,52 +370,13 @@ def _handle_send(args):
     chat_id = None
     thread_id = None
 
+    prepare_send_message_platforms()
     if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
-    else:
-        is_explicit = False
-
-    # Resolve human-friendly channel names to numeric IDs
-    if target_ref and not is_explicit:
-        resolution_failed = False
-        try:
-            from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_name, target_ref)
-            if resolved:
-                parsed_chat_id, parsed_thread_id, _ = _parse_target_ref(
-                    platform_name, resolved
-                )
-                # Directory entries are trusted platform IDs.  Preserve an
-                # opaque plugin ID even when no built-in parser recognizes it.
-                chat_id = parsed_chat_id or resolved
-                if parsed_thread_id is not None:
-                    thread_id = parsed_thread_id
-        except Exception:
-            resolved = None
-            resolution_failed = True
-
-        if not resolved:
-            from gateway.config import Platform
-            from gateway.platform_registry import platform_registry
-            from hermes_cli.plugins import discover_plugins
-
-            discover_plugins()
-            entry = platform_registry.get(platform_name)
-            is_builtin = platform_name in {member.value for member in Platform}
-            if entry is not None and entry.source == "plugin" and not is_builtin:
-                # Registered plugin platforms may use opaque IDs unknown to
-                # core.  Their adapter owns final target validation.
-                chat_id = target_ref
-            elif resolution_failed:
-                return tool_error(
-                    f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Try using a numeric channel ID instead."
-                )
-            else:
-                return tool_error(
-                    f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
-                )
+        chat_id, thread_id, resolution_error = resolve_send_target(
+            platform_name, target_ref
+        )
+        if resolution_error:
+            return tool_error(resolution_error)
 
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -473,15 +388,18 @@ def _handle_send(args):
     except Exception as e:
         return json.dumps(_error(f"Failed to load gateway config: {e}"))
 
-    # Accept any platform name — built-in names resolve to their enum
-    # member, plugin platform names create dynamic members via _missing_().
+    from gateway.platform_registry import platform_registry
+
+    entry = platform_registry.get(platform_name)
+    is_builtin = platform_name in {member.value for member in Platform}
+    if not is_builtin and entry is None:
+        return tool_error(
+            f"Unknown or unregistered plugin platform: {platform_name}"
+        )
     try:
         platform = Platform(platform_name)
     except (ValueError, KeyError):
-        if platform_name in _SEND_MESSAGE_ENRICHERS:
-            platform = platform_name
-        else:
-            return tool_error(f"Unknown platform: {platform_name}")
+        return tool_error(f"Unknown platform: {platform_name}")
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
@@ -562,16 +480,22 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
+        send_kwargs = {
+            "thread_id": thread_id,
+            "media_files": media_files,
+            "force_document": force_document_attachments,
+        }
+        # Preserve the exact built-in call contract; only custom handlers need
+        # the complete typed request.
+        if entry is not None and entry.send_message_handler is not None:
+            send_kwargs["args"] = args
         result = _run_async(
             _send_to_platform(
                 platform,
                 pconfig,
                 chat_id,
                 cleaned_message,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document_attachments,
-                args=args,
+                **send_kwargs,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -694,26 +618,116 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
 
-    # Plugin platforms may register a custom target parser via PlatformEntry.
-    # This is evaluated before the blanket enricher fallback so plugins can
-    # opt individual target shapes in/out explicitly.
-    try:
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(platform_name)
-        if entry is not None and entry.parse_target_ref_fn is not None:
-            parsed = entry.parse_target_ref_fn(target_ref)
-            if parsed is not None:
-                chat_id, thread_id = parsed
-                return chat_id, thread_id, True
-    except Exception:
-        pass
-
-    # Plugin-enriched platforms (legacy blanket fallback)
-    if platform_name in _SEND_MESSAGE_ENRICHERS:
-        if target_ref:
-            return target_ref, None, True
-        return None, None, False
     return None, None, False
+
+
+def resolve_send_target(
+    platform_name: str, target_ref: str
+) -> tuple[str | None, str | None, str | None]:
+    """Resolve one send target identically for model/CLI/cron surfaces.
+
+    Channel-directory IDs are trusted. Plugin platforms must explicitly parse
+    native target syntax; unresolved strings never receive an opaque fallback.
+    The optional validator is the final authority over parser-normalized and
+    directory-resolved IDs.
+    """
+    from gateway.config import Platform
+    from gateway.platform_registry import platform_registry
+
+    entry = platform_registry.get(platform_name)
+
+    def _validate(candidate: str) -> str | None:
+        if entry is None or entry.validate_target_ref_fn is None:
+            return None
+        try:
+            verdict = entry.validate_target_ref_fn(candidate)
+        except Exception:
+            logger.debug(
+                "Plugin target validator failed for %s", platform_name, exc_info=True
+            )
+            return f"Target validator failed for platform '{platform_name}'"
+        if verdict is True:
+            return None
+        if isinstance(verdict, str) and verdict:
+            return f"Invalid target '{target_ref}' on {platform_name}: {verdict}"
+        return f"Invalid target '{target_ref}' on {platform_name}"
+
+    if entry is not None and entry.parse_target_ref_fn is not None:
+        try:
+            parsed = entry.parse_target_ref_fn(target_ref)
+        except Exception:
+            logger.debug(
+                "Plugin target parser failed for %s", platform_name, exc_info=True
+            )
+            return None, None, f"Target parser failed for platform '{platform_name}'"
+        if parsed is not None:
+            if (
+                not isinstance(parsed, tuple)
+                or len(parsed) != 2
+                or not isinstance(parsed[0], str)
+                or not parsed[0]
+                or (parsed[1] is not None and not isinstance(parsed[1], str))
+            ):
+                return (
+                    None,
+                    None,
+                    f"Target parser for platform '{platform_name}' returned an invalid result",
+                )
+            parsed_chat_id, parsed_thread_id = parsed
+            error = _validate(parsed_chat_id)
+            return (None, None, error) if error else (
+                parsed_chat_id,
+                parsed_thread_id,
+                None,
+            )
+
+    parsed_chat_id, parsed_thread_id, explicit = _parse_target_ref(
+        platform_name, target_ref
+    )
+    if explicit and parsed_chat_id is not None:
+        error = _validate(parsed_chat_id)
+        return (None, None, error) if error else (
+            parsed_chat_id,
+            parsed_thread_id,
+            None,
+        )
+
+    resolution_failed = False
+    try:
+        from gateway.channel_directory import resolve_channel_name
+
+        resolved = resolve_channel_name(platform_name, target_ref)
+    except Exception:
+        resolved = None
+        resolution_failed = True
+    if resolved:
+        parsed_chat_id, parsed_thread_id, _ = _parse_target_ref(
+            platform_name, resolved
+        )
+        chat_id = parsed_chat_id or resolved
+        error = _validate(chat_id)
+        return (None, None, error) if error else (
+            chat_id,
+            parsed_thread_id,
+            None,
+        )
+
+    is_builtin = platform_name in {member.value for member in Platform}
+    if entry is None and not is_builtin:
+        return None, None, f"Unknown or unregistered plugin platform: {platform_name}"
+    if entry is not None and entry.source == "plugin" and not is_builtin:
+        return (
+            None,
+            None,
+            f"Could not resolve '{target_ref}' on {platform_name}. "
+            "The plugin parser did not recognize it and no channel-directory entry matched.",
+        )
+    hint = (
+        "Try using a numeric channel ID instead."
+        if resolution_failed
+        else "Use send_message(action='list') to see available targets."
+    )
+    return None, None, f"Could not resolve '{target_ref}' on {platform_name}. {hint}"
 
 
 def _describe_media_for_mirror(media_files):
@@ -1239,19 +1253,20 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
         else:
-            enricher = _SEND_MESSAGE_ENRICHERS.get(platform_name)
-            if enricher:
-                if args is None:
-                    args = {}
+            from gateway.platform_registry import platform_registry
+
+            entry = platform_registry.get(platform_name)
+            handler = entry.send_message_handler if entry is not None else None
+            if handler is not None:
                 try:
                     import inspect
-                    if inspect.iscoroutinefunction(enricher):
-                        result = await enricher(args, chat_id, platform_name, pconfig)
-                    else:
-                        result = enricher(args, chat_id, platform_name, pconfig)
+
+                    result = handler(args or {}, chat_id, platform_name, pconfig)
+                    if inspect.isawaitable(result):
+                        result = await result
                     return result
                 except Exception as e:
-                    return {"error": f"Enricher send failed: {e}"}
+                    return {"error": f"Plugin send_message handler failed: {e}"}
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
             result = await _send_via_adapter(

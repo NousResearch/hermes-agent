@@ -62,7 +62,6 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
         thread_id=None,
         media_files=[],
         force_document=False,
-        args={"action": "send", "target": "whatsapp:120363408391911677@g.us", "message": "hello group"},
     )
 
 
@@ -117,11 +116,10 @@ def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
         thread_id=None,
         media_files=[],
         force_document=False,
-        args={"action": "send", "target": f"{platform_name}:Friendly name", "message": "hello"},
     )
 
 
-def test_unresolved_opaque_plugin_target_passes_through_verbatim() -> None:
+def test_unresolved_plugin_target_requires_explicit_parser() -> None:
     from gateway.platform_registry import PlatformEntry, platform_registry
 
     platform_name = "opaque-verbatim-test"
@@ -171,18 +169,12 @@ def test_unresolved_opaque_plugin_target_passes_through_verbatim() -> None:
     finally:
         platform_registry.unregister(platform_name)
 
-    assert result["success"] is True
+    assert result == {
+        "error": f"Could not resolve 'dm:panyaozhen' on {platform_name}. "
+        "The plugin parser did not recognize it and no channel-directory entry matched."
+    }
     discover_mock.assert_called_once_with()
-    send_mock.assert_awaited_once_with(
-        platform,
-        pconfig,
-        "dm:panyaozhen",
-        "hello",
-        thread_id=None,
-        media_files=[],
-        force_document=False,
-        args={"action": "send", "target": f"{platform_name}:dm:panyaozhen", "message": "hello"},
-    )
+    send_mock.assert_not_awaited()
 
 
 def test_unresolved_builtin_target_keeps_directory_error() -> None:

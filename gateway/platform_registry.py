@@ -173,9 +173,19 @@ class PlatformEntry:
     # Signature:
     #     (target_ref: str) -> Optional[tuple[str, Optional[str]]]
     #
-    # If the callable returns None the target proceeds to the usual directory
-    # resolution / verbatim fallback path.
+    # If the callable returns None the target proceeds to channel-directory
+    # resolution. No opaque fallback is applied.
     parse_target_ref_fn: Optional[Callable[[str], Optional[tuple[str, Optional[str]]]]] = None
+
+    # Optional validation applied after parsing/normalization or
+    # channel-directory resolution. Return True to accept, False to reject, or
+    # a non-empty string to reject with that diagnostic.
+    validate_target_ref_fn: Optional[Callable[[str], bool | str]] = None
+
+    # Optional whole-request handler for custom platform delivery. Receives
+    # (args, normalized_chat_id, platform_name, pconfig) and may be sync/async.
+    # Prefer standalone_sender_fn when the standard send contract is enough.
+    send_message_handler: Optional[Callable[[dict, str, str, Any], Any]] = None
 
     # ── Standalone (out-of-process) sending ──
     # Optional: async coroutine that delivers a message without a live
@@ -286,7 +296,8 @@ class PlatformRegistry:
     def unregister(self, name: str) -> bool:
         """Remove a platform entry.  Returns True if it existed."""
         self._deferred.pop(name, None)
-        return self._entries.pop(name, None) is not None
+        removed = self._entries.pop(name, None) is not None
+        return removed
 
     def get(self, name: str) -> Optional[PlatformEntry]:
         """Look up a platform entry by name."""

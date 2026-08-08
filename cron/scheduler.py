@@ -1363,28 +1363,22 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
 
-        from tools.send_message_tool import _parse_target_ref
+        from tools.send_message_tool import (
+            prepare_send_message_platforms,
+            resolve_send_target,
+        )
 
-        parsed_chat_id, parsed_thread_id, is_explicit = _parse_target_ref(platform_key, rest)
-        if is_explicit:
-            chat_id, thread_id = parsed_chat_id, parsed_thread_id
-        else:
-            chat_id, thread_id = rest, None
-
-        # Resolve human-friendly labels like "Alice (dm)" to real IDs.
-        try:
-            from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_key, chat_id)
-            if resolved:
-                parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
-                if resolved_is_explicit:
-                    chat_id = parsed_chat_id
-                    if parsed_thread_id is not None:
-                        thread_id = parsed_thread_id
-                else:
-                    chat_id = resolved
-        except Exception:
-            pass
+        prepare_send_message_platforms()
+        chat_id, thread_id, resolution_error = resolve_send_target(
+            platform_key, rest
+        )
+        if resolution_error:
+            logger.warning(
+                "Invalid cron delivery target '%s': %s",
+                deliver_value,
+                resolution_error,
+            )
+            return None
 
         if (
             thread_id is None

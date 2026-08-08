@@ -397,12 +397,24 @@ class TestTranscribeLocalExtended:
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None), \
-             patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
+             patch("tools.transcription_tools._load_stt_config", return_value=fake_config), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=True):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
         mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
+
+    def test_apple_silicon_auto_config_still_forces_cpu_int8(self):
+        """Apple Silicon safety still overrides unsafe device autodetection."""
+        mock_whisper_cls = MagicMock()
+
+        with patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=True):
+            from tools.transcription_tools import _load_local_whisper_model
+            _load_local_whisper_model("base", device="auto", compute_type="auto")
+
+        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="int8")
 
 
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):

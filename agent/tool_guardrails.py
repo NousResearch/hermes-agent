@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
+
+_DIGITS_RE = re.compile(r"\d+")
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -280,6 +283,12 @@ class ToolCallGuardrailController:
     def reset_for_turn(self) -> None:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
+        # tool_name -> (failure_fingerprint, consecutive_count). The halt
+        # streak only accumulates while consecutive failures share the same
+        # error fingerprint; a failure with a *different* error resets the
+        # streak, because exploring different paths that fail for different
+        # reasons is not a retry loop.
+        self._same_tool_failure_streaks: dict[str, tuple[str, int]] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
         # Per-turn runaway-loop cap counters. Reset every turn (this method
@@ -368,16 +377,26 @@ class ToolCallGuardrailController:
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
 
-            if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
+            fingerprint = _failure_signature(tool_name, result)
+            previous_streak = self._same_tool_failure_streaks.get(tool_name)
+            if previous_streak is not None and previous_streak[0] == fingerprint:
+                streak = previous_streak[1] + 1
+            else:
+                streak = 1
+            self._same_tool_failure_streaks[tool_name] = (fingerprint, streak)
+
+            if self.config.hard_stop_enabled and streak >= self.config.same_tool_failure_halt_after:
                 decision = ToolGuardrailDecision(
                     action="halt",
                     code="same_tool_failure_halt",
                     message=(
-                        f"Stopped {tool_name}: it failed {same_count} times this turn. "
-                        "Stop retrying the same failing tool path and choose a different approach."
+                        f"Stopped {tool_name}: it failed {streak} times in a row "
+                        f"with the same underlying error ({same_count} failures "
+                        "total this turn). Stop retrying this failing path and "
+                        "choose a different approach."
                     ),
                     tool_name=tool_name,
-                    count=same_count,
+                    count=streak,
                     signature=signature,
                 )
                 self._halt_decision = decision
@@ -411,6 +430,7 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+        self._same_tool_failure_streaks.pop(tool_name, None)
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
@@ -552,6 +572,51 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
 
 def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return args if isinstance(args, Mapping) else {}
+
+
+def _failure_signature(tool_name: str, result: str | None) -> str:
+    """Stable fingerprint of *why* a tool call failed.
+
+    Keys the same-tool failure streak so three exploratory calls that fail
+    for three different reasons don't read as a retry loop, while retries
+    that keep hitting the same wall (even with tweaked arguments) still
+    accumulate toward the halt threshold.
+
+    Digit runs and path-like tokens are normalized away so cosmetic
+    differences (line numbers, tmp dirs, changing filenames) don't fragment
+    an otherwise identical error.
+    """
+    if result is None:
+        return "none"
+    data = safe_json_loads(result)
+    text = ""
+    if isinstance(data, dict):
+        if tool_name == "terminal":
+            output = str(data.get("output") or "")
+            tail = ""
+            for line in reversed(output.splitlines()):
+                if line.strip():
+                    tail = line.strip()
+                    break
+            text = f"terminal:{data.get('exit_code')}:{tail}"
+        else:
+            error = data.get("error")
+            if isinstance(error, str) and error:
+                text = f"error:{error}"
+    if not text:
+        text = f"raw:{result or ''}"
+    return _sha256(_normalize_error_text(text))
+
+
+def _normalize_error_text(text: str) -> str:
+    tokens = []
+    for token in text.lower().split():
+        if "/" in token or "\\" in token:
+            tokens.append("<path>")
+            continue
+        token = _DIGITS_RE.sub("#", token)
+        tokens.append(token)
+    return " ".join(tokens)[:300]
 
 
 def _result_hash(result: str | None) -> str:

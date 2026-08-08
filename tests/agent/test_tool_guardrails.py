@@ -131,6 +131,105 @@ def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_succes
         assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
 
 
+# ── same_tool_failure_halt keyed by error fingerprint ──────────────────────
+
+
+def _halt_config(halt_after: int = 3) -> ToolCallGuardrailConfig:
+    return ToolCallGuardrailConfig(
+        warnings_enabled=False,
+        hard_stop_enabled=True,
+        exact_failure_block_after=99,
+        same_tool_failure_halt_after=halt_after,
+        no_progress_block_after=99,
+    )
+
+
+def test_same_tool_distinct_errors_do_not_halt():
+    """Exploratory calls that fail for different reasons are not a retry loop."""
+    controller = ToolCallGuardrailController(_halt_config(halt_after=3))
+
+    errors = [
+        '{"exit_code": 1, "output": "bash: foo: command not found"}',
+        '{"exit_code": 2, "output": "ls: /missing: No such file or directory"}',
+        '{"exit_code": 126, "output": "bash: ./run.sh: Permission denied"}',
+        '{"exit_code": 1, "output": "curl: (6) Could not resolve host: x"}',
+    ]
+    decisions = [
+        controller.after_call("terminal", {"command": f"cmd{i}"}, err, failed=True)
+        for i, err in enumerate(errors)
+    ]
+
+    assert all(d.action == "allow" for d in decisions)
+    assert controller.halt_decision is None
+
+
+def test_same_tool_same_error_different_args_still_halts():
+    """Retrying with tweaked args but hitting the same wall IS a loop."""
+    controller = ToolCallGuardrailController(_halt_config(halt_after=3))
+
+    result = '{"exit_code": 1, "output": "curl: (6) Could not resolve host: internal.api"}'
+    decisions = [
+        controller.after_call("terminal", {"command": f"curl attempt{i}"}, result, failed=True)
+        for i in range(3)
+    ]
+
+    assert decisions[0].action == "allow"
+    assert decisions[1].action == "allow"
+    assert decisions[2].action == "halt"
+    assert decisions[2].code == "same_tool_failure_halt"
+    assert decisions[2].count == 3
+    assert "same underlying error" in decisions[2].message
+    assert "4 failures total" not in decisions[2].message
+    assert controller.halt_decision is not None
+
+
+def test_error_change_mid_sequence_resets_halt_streak():
+    controller = ToolCallGuardrailController(_halt_config(halt_after=3))
+
+    err_a = '{"error": "File not found: /a"}'
+    err_b = '{"error": "Permission denied"}'
+
+    assert controller.after_call("read_file", {"path": "/a"}, err_a, failed=True).action == "allow"
+    assert controller.after_call("read_file", {"path": "/a"}, err_a, failed=True).action == "allow"
+    # Error changes -> streak resets instead of reaching 3.
+    assert controller.after_call("read_file", {"path": "/a"}, err_b, failed=True).action == "allow"
+    assert controller.after_call("read_file", {"path": "/a"}, err_b, failed=True).action == "allow"
+    assert controller.halt_decision is None
+    # Third consecutive same-error failure now halts.
+    decision = controller.after_call("read_file", {"path": "/a"}, err_b, failed=True)
+    assert decision.action == "halt"
+    assert decision.code == "same_tool_failure_halt"
+
+
+def test_error_fingerprint_normalizes_paths_and_numbers():
+    """Same error class with different paths/line numbers shares a fingerprint."""
+    controller = ToolCallGuardrailController(_halt_config(halt_after=3))
+
+    variants = [
+        '{"exit_code": 1, "output": "Error at line 12 in /tmp/work/a.py: boom"}',
+        '{"exit_code": 1, "output": "Error at line 98 in /tmp/other/b.py: boom"}',
+        '{"exit_code": 1, "output": "Error at line 3 in /var/tmp/c.py: boom"}',
+    ]
+    decisions = [
+        controller.after_call("terminal", {"command": f"run{i}"}, v, failed=True)
+        for i, v in enumerate(variants)
+    ]
+
+    assert decisions[2].action == "halt"
+    assert decisions[2].code == "same_tool_failure_halt"
+
+
+def test_success_between_failures_resets_halt_streak():
+    controller = ToolCallGuardrailController(_halt_config(halt_after=2))
+
+    err = '{"error": "boom"}'
+    assert controller.after_call("memory", {"action": "add"}, err, failed=True).action == "allow"
+    assert controller.after_call("memory", {"action": "add"}, "ok", failed=False).action == "allow"
+    assert controller.after_call("memory", {"action": "add"}, err, failed=True).action == "allow"
+    assert controller.halt_decision is None
+    assert controller.after_call("memory", {"action": "add"}, err, failed=True).action == "halt"
+
+
 
 
 

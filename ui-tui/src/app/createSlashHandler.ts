@@ -117,10 +117,14 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       // projection and goes through unchanged. No client-side fallback here:
       // the TUI spawns its gateway from this same checkout, so the two can't
       // version-skew (unlike the desktop, which can meet an older backend).
-      const sendDispatch = (display: string | undefined, message: string) => {
+      const sendDispatch = (display: string | undefined, message: string, displayKind?: string) => {
         const shown = display?.trim()
 
-        return shown ? send(message, true, shown) : send(message)
+        if (!shown) {
+          return send(message)
+        }
+
+        return displayKind ? send(message, true, shown, displayKind) : send(message, true, shown)
       }
 
       if (d.type === 'skill') {
@@ -134,7 +138,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           sys(d.notice)
         }
 
-        return d.message?.trim() ? sendDispatch(d.display, d.message) : sys(`/${parsed.name}: empty message`)
+        return d.message?.trim()
+          ? sendDispatch(d.display, d.message, d.display_kind)
+          : sys(`/${parsed.name}: empty message`)
       }
 
       if (d.type === 'prefill') {

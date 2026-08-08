@@ -184,7 +184,9 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
     adapter = _PendingVoiceAdapter()
     runner = _run_agent_runner(adapter)
     source = _source()
-    session_key = "telegram:dm:12345"
+    session_key = runner._session_key_for_source(source)
+    adapter_key = adapter.session_key_for_source(source)
+    assert session_key != adapter_key
     event = MessageEvent(
         text="",
         message_type=MessageType.VOICE,
@@ -192,9 +194,9 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
         media_urls=["/tmp/telegram-pending-voice.ogg"],
         media_types=["audio/ogg"],
     )
-    adapter._pending_messages[session_key] = event
-    adapter._active_sessions[session_key] = asyncio.Event()
-    adapter._active_sessions[session_key].set()
+    adapter._pending_messages[adapter_key] = event
+    adapter._active_sessions[adapter_key] = asyncio.Event()
+    adapter._active_sessions[adapter_key].set()
     _PendingVoiceAgent.messages = []
 
     with (

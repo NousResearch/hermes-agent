@@ -286,6 +286,31 @@ class TestHistoryDisplay:
         assert "A" * 250 in output
         assert "A" * 250 + "..." not in output
 
+    def test_history_projects_goal_continuations_without_model_scaffolding(self, capsys):
+        cli = _make_cli()
+        canonical = "[Continuing toward your standing goal]\nGoal: finish safely"
+        cli.conversation_history = [
+            {
+                "role": "user",
+                "content": canonical,
+                "display_kind": "goal_resume",
+                "display_metadata": {"display_text": "/goal resume"},
+            },
+            {
+                "role": "user",
+                "content": canonical,
+                "display_kind": "goal_continue",
+                "display_metadata": {"display_text": "Continuing standing goal…"},
+            },
+        ]
+
+        cli.show_history()
+        output = capsys.readouterr().out
+
+        assert "/goal resume" in output
+        assert "Continuing standing goal…" in output
+        assert canonical not in output
+
 
     def test_resume_without_target_lists_recent_sessions(self, capsys):
         cli = _make_cli()

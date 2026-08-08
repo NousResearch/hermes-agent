@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +31,19 @@ class FakeAdapter:
 
     def register_post_delivery_callback(self, session_key, callback, *, generation=None):
         self.callbacks[session_key] = (generation, callback)
+
+    def pop_post_delivery_callback(self, session_key, *, generation=None):
+        entry = self.callbacks.get(session_key)
+        if entry is None:
+            return None
+        entry_generation, callback = entry
+        if generation is not None and entry_generation != generation:
+            return None
+        self.callbacks.pop(session_key, None)
+        return callback
+
+    def session_key_for_source(self, source):
+        return f"{source.platform.value}:{source.chat_id}:{source.thread_id or ''}"
 
 
 def _goal_continuation_event(source, goal="finish the task"):
@@ -78,5 +92,59 @@ async def test_goal_status_notice_defers_until_post_delivery_callback():
             "metadata": {"thread_id": "thread-123"},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_secondary_profile_goal_status_callback_uses_adapter_session_key():
+    """The adapter completion boundary must own callbacks under its local key."""
+    runner = GatewayRunner.__new__(GatewayRunner)
+    adapter = FakeAdapter()
+    runner.adapters = {}
+    setattr(
+        runner,
+        "_profile_adapters",
+        {"named": {Platform.DISCORD: adapter}},
+    )
+    setattr(
+        runner,
+        "config",
+        SimpleNamespace(
+            group_sessions_per_user=True,
+            thread_sessions_per_user=False,
+            multiplex_profiles=True,
+        ),
+    )
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="parent-channel",
+        thread_id="thread-123",
+        user_id="user-1",
+        profile="named",
+    )
+    state_key = runner._session_key_for_source(source)
+    adapter_key = adapter.session_key_for_source(source)
+    assert state_key != adapter_key
+
+    active = SimpleNamespace(_hermes_run_generation=7)
+    adapter._active_sessions[adapter_key] = active
+
+    await runner._defer_goal_status_notice_after_delivery(
+        source, "✓ Goal achieved: done"
+    )
+
+    assert set(adapter.callbacks) == {adapter_key}
+    assert state_key not in adapter.callbacks
+    generation, _ = adapter.callbacks[adapter_key]
+    assert generation == 7
+
+    callback = adapter.pop_post_delivery_callback(adapter_key, generation=7)
+    assert callable(callback)
+    result = callback()
+    if inspect.isawaitable(result):
+        await result
+
+    assert adapter.callbacks == {}
+    assert [call["content"] for call in adapter.calls] == ["✓ Goal achieved: done"]
 
 

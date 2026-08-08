@@ -290,7 +290,13 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
 
     case 'send':
       return typeof row.message === 'string'
-        ? { type: 'send', message: row.message, notice: str(row.notice), display: str(row.display) }
+        ? {
+            type: 'send',
+            message: row.message,
+            notice: str(row.notice),
+            display: str(row.display),
+            display_kind: str(row.display_kind)
+          }
         : null
 
     case 'prefill':

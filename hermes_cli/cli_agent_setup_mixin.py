@@ -745,7 +745,13 @@ class CLIAgentSetupMixin:
         last ``MAX_DISPLAY_EXCHANGES`` user/assistant exchanges and shows
         an indicator for earlier hidden messages.
         """
-        from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
+        from cli import (
+            CLI_CONFIG,
+            _record_output_history_entry,
+            _strip_reasoning_tags,
+            _suspend_output_history,
+        )
+        from hermes_cli.history_projection import project_history_message_content
         from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
         display_history = getattr(self, "_resume_display_history", self.conversation_history)
         if not display_history:
@@ -770,7 +776,11 @@ class CLIAgentSetupMixin:
         for msg in display_history:
             role = msg.get("role", "")
             display_kind = msg.get("display_kind")
-            content = msg.get("content")
+            content = (
+                project_history_message_content(msg)
+                if role == "user"
+                else msg.get("content")
+            )
             tool_calls = msg.get("tool_calls") or []
 
             if display_kind == "hidden":

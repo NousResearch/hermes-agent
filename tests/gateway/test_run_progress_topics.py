@@ -12,7 +12,7 @@ import pytest
 import gateway.platforms.base as base_platform
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -830,6 +830,23 @@ class QueuedFailedEmptyAgent:
         }
 
 
+class InterruptDepthAgent:
+    """Records turns so the recursion-cap fallback can be asserted end to end."""
+
+    messages = []
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).messages.append(message)
+        return {
+            "final_response": f"processed {message}",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class BackgroundReviewAgent:
     def __init__(self, **kwargs):
         self.background_review_callback = kwargs.get("background_review_callback")
@@ -926,6 +943,85 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_interrupt_depth_cap_requeues_under_secondary_adapter_key(monkeypatch, tmp_path):
+    """The fourth recursive follow-up must return to the transport-owned slot."""
+    fake_dotenv = types.ModuleType("dotenv")
+    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    InterruptDepthAgent.messages = []
+    fake_run_agent = types.ModuleType("run_agent")
+    setattr(fake_run_agent, "AIAgent", InterruptDepthAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    runner.config.multiplex_profiles = True
+    runner._profile_adapters = {"coder": {Platform.DISCORD: adapter}}
+    runner._active_profile_name = lambda: "default"
+    runner.__dict__["_resolve_profile_home_for_source"] = lambda source: tmp_path
+    runner.session_store._generate_session_key = lambda source: build_session_key(
+        source,
+        group_sessions_per_user=False,
+        thread_sessions_per_user=False,
+        profile=source.profile,
+    )
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="chat-depth-chain",
+        chat_type="channel",
+        user_id="user-depth-chain",
+        profile="coder",
+    )
+    adapter_session_key = adapter.session_key_for_source(source)
+    session_key = runner._session_key_for_source(source)
+    assert adapter_session_key != session_key
+    interrupt_event = asyncio.Event()
+    interrupt_event.set()
+    adapter._active_sessions[adapter_session_key] = interrupt_event
+
+    for index in range(1, 5):
+        runner._enqueue_fifo(
+            session_key,
+            MessageEvent(
+                text=f"followup-{index}",
+                message_type=MessageType.TEXT,
+                source=source,
+            ),
+            adapter,
+            adapter_session_key=adapter_session_key,
+        )
+
+    result = await runner._run_agent(
+        message="initial",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-depth-chain",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "processed followup-3"
+    assert InterruptDepthAgent.messages == [
+        "initial",
+        "followup-1",
+        "followup-2",
+        "followup-3",
+    ]
+    remaining = adapter.get_pending_message(adapter_session_key)
+    assert remaining is not None
+    assert remaining.text == "followup-4"
+    assert adapter.get_pending_message(session_key) is None
+    assert runner._session_state(session_key).conversation.queued_events == []
+    assert interrupt_event.is_set() is False
 
 
 @pytest.mark.asyncio

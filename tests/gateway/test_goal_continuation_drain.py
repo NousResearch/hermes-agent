@@ -199,3 +199,69 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
     assert adapter._pending_messages[adapter_key].text.startswith(
         "[Continuing toward your standing goal]"
     )
+
+
+@pytest.mark.asyncio
+async def test_runner_goal_hook_uses_transport_key_for_multiplexed_profile(hermes_home):
+    """Profile-qualified goal state must still enqueue into the adapter key."""
+    from datetime import datetime
+    from unittest.mock import MagicMock, patch
+    import uuid
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionEntry
+    from hermes_cli.goals import GoalManager
+
+    src = SessionSource(
+        platform=Platform.SLACK,
+        user_id="U1",
+        chat_id="C1",
+        user_name="tester",
+        chat_type="channel",
+        thread_id="1718600000.000100",
+        profile="coder",
+    )
+    adapter_key = build_session_key(src)
+    state_key = build_session_key(src, profile="coder")
+    assert adapter_key != state_key
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")},
+    )
+    runner._queued_events = {}
+    session_entry = SessionEntry(
+        session_key=state_key,
+        session_id=f"goal-sess-{uuid.uuid4().hex[:8]}",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.SLACK,
+        chat_type="channel",
+    )
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store._generate_session_key.return_value = state_key
+
+    adapter = _DrainProbeAdapter()
+    runner.adapters = {}
+    runner._profile_adapters = {"coder": {Platform.SLACK: adapter}}
+    runner._active_profile_name = lambda: "default"
+
+    GoalManager(session_entry.session_id).set("ship it")
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("continue", "still needs work", False, None, False),
+    ):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="partial progress",
+        )
+
+    assert adapter_key in adapter._pending_messages
+    assert state_key not in adapter._pending_messages
+    assert adapter._pending_messages[adapter_key].text.startswith(
+        "[Continuing toward your standing goal]"
+    )

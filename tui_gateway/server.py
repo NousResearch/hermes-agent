@@ -1668,6 +1668,9 @@ def _compute_host_turn_frame(
     text: Any,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    *,
+    display_kind: str | None = None,
+    display_metadata: dict | None = None,
 ) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
@@ -1677,7 +1680,7 @@ def _compute_host_turn_frame(
             if image_paths is not None
             else list(session.get("attached_images", []))
         )
-    return {
+    frame = {
         "type": "turn.start",
         "sid": sid,
         "request_id": rid,
@@ -1695,6 +1698,10 @@ def _compute_host_turn_frame(
         "attached_images": attached_images,
         "queued_prompt_generation": queued_prompt_generation,
     }
+    if display_kind:
+        frame["display_kind"] = display_kind
+        frame["display_metadata"] = display_metadata
+    return frame
 
 
 def _metadata_mirror(session: dict | None) -> dict:
@@ -1771,6 +1778,9 @@ def _submit_prompt_to_compute_host(
     text: Any,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    *,
+    display_kind: str | None = None,
+    display_metadata: dict | None = None,
 ) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(
@@ -1780,6 +1790,8 @@ def _submit_prompt_to_compute_host(
         text,
         image_paths=image_paths,
         queued_prompt_generation=queued_prompt_generation,
+        display_kind=display_kind,
+        display_metadata=display_metadata,
     )
 
     def _complete(done: dict) -> None:
@@ -7144,13 +7156,18 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if m.get("_row_id") is not None:
             msg["row_id"] = m["_row_id"]
         if role == "user":
-            invocation = _skill_scaffold_projection(content_text)
-            if invocation:
-                # Show the invocation, never the expanded skill body. The raw
-                # payload stays server-side: a rewind/regenerate re-sends the
-                # turn by ordinal, so no client needs it.
-                msg["text"] = invocation
-                msg["display_kind"] = "skill_invocation"
+            if m.get("display_kind") == "goal_resume":
+                msg["text"] = "/goal resume"
+            elif m.get("display_kind") == "goal_continue":
+                msg["text"] = "Continuing standing goal…"
+            else:
+                invocation = _skill_scaffold_projection(content_text)
+                if invocation:
+                    # Show the invocation, never the expanded skill body. The raw
+                    # payload stays server-side: a rewind/regenerate re-sends the
+                    # turn by ordinal, so no client needs it.
+                    msg["text"] = invocation
+                    msg["display_kind"] = "skill_invocation"
         if role == "assistant":
             for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
@@ -7465,36 +7482,77 @@ def _enqueue_prompt(
     text: Any,
     transport: Any,
     image_paths: list[str] | None = None,
+    *,
+    display_kind: str | None = None,
+    display_metadata: dict | None = None,
 ) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
     Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). Text-only
-    arrivals share a slot and merge losslessly (mirroring the consecutive-user
-    merge in ``repair_message_sequence``). Image-bearing submissions stay as
-    separate envelopes, so their attachment ownership and chronology survive.
-    ``transport`` is pinned so the drained turn streams back to the client that
-    sent it even if the session transport is rebound meanwhile.
+    arrivals share a slot and merge losslessly; image-bearing submissions stay as
+    separate envelopes, so attachment ownership and chronology survive. Synthetic
+    goal continuations never displace an older real-user prompt.
     """
     image_paths = list(image_paths or [])
     queued = {"text": text, "transport": transport}
     if image_paths:
         queued["image_paths"] = image_paths
+    if display_kind:
+        queued["display_kind"] = display_kind
+        queued["display_metadata"] = display_metadata
+
     existing = session.get("queued_prompt")
-    if (
-        existing
-        and isinstance(existing.get("text"), str)
-        and isinstance(text, str)
-        and not existing.get("image_paths")
-        and not image_paths
-        and not session.get("queued_prompts")
-    ):
-        prev = existing["text"]
-        existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
-        return
     if existing:
+        existing_kind = existing.get("display_kind")
+        if display_kind in {"goal_resume", "goal_continue"}:
+            return
+        if existing_kind in {"goal_resume", "goal_continue"}:
+            session["queued_prompt"] = queued
+            return
+        if (
+            isinstance(existing.get("text"), str)
+            and isinstance(text, str)
+            and not existing.get("image_paths")
+            and not image_paths
+            and not session.get("queued_prompts")
+        ):
+            prev = existing["text"]
+            existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
+            return
         session.setdefault("queued_prompts", []).append(queued)
         return
     session["queued_prompt"] = queued
+
+
+def _clear_queued_goal_continuations(session: dict) -> bool:
+    """Drop only synthetic goal work from the TUI's next-turn slot."""
+    with session["history_lock"]:
+        queued = session.get("queued_prompt")
+        if not isinstance(queued, dict):
+            return False
+        text = _coerce_message_text(queued.get("text"))
+        if queued.get("display_kind") not in {"goal_resume", "goal_continue"} and not text.startswith(
+            "[Continuing toward your standing goal]\nGoal:"
+        ):
+            return False
+        session["queued_prompt"] = None
+        return True
+
+
+def _goal_continuation_active(session: dict, prompt: Any = None) -> bool:
+    """Best-effort fresh state check before running synthetic goal work."""
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return False
+    try:
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id=session_key)
+        return mgr.is_active() and (
+            prompt is None or mgr.next_continuation_prompt() == prompt
+        )
+    except Exception:
+        return False
 
 
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
@@ -7533,7 +7591,15 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
 
 
 def _handle_busy_submit(
-    rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    queued: bool = False,
+    *,
+    display_kind: str | None = None,
+    display_metadata: dict | None = None,
 ) -> dict | None:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
@@ -7554,7 +7620,11 @@ def _handle_busy_submit(
     unwinding the turn) redirected the live turn with next-turn text — queue
     semantics betrayed by a millisecond race the user can't see.
     """
-    mode = "queue" if queued else _load_busy_input_mode()
+    mode = (
+        "queue"
+        if queued or display_kind in {"goal_resume", "goal_continue"}
+        else _load_busy_input_mode()
+    )
     agent = session.get("agent")
     with session["history_lock"]:
         if not session.get("running"):
@@ -7606,7 +7676,14 @@ def _handle_busy_submit(
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        _enqueue_prompt(session, text, transport, image_paths=image_paths)
+        _enqueue_prompt(
+            session,
+            text,
+            transport,
+            image_paths=image_paths,
+            display_kind=display_kind,
+            display_metadata=display_metadata,
+        )
         session["last_active"] = time.time()
 
     # Attachments need a separate model invocation. Queue them without
@@ -7635,27 +7712,41 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         session["running"] = True
         if queued.get("transport") is not None:
             session["transport"] = queued["transport"]
+
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
             session["running"] = False
             return True
+
+    queued_text = _coerce_message_text(queued.get("text"))
+    is_goal_continuation = queued.get("display_kind") in {
+        "goal_resume",
+        "goal_continue",
+    } or queued_text.startswith("[Continuing toward your standing goal]\nGoal:")
+    if is_goal_continuation and not _goal_continuation_active(session, queued.get("text")):
+        with session["history_lock"]:
+            session["running"] = False
+            _clear_inflight_turn(session)
+        return False
+
+    dispatch_kwargs: dict[str, Any] = {"queued_prompt_generation": queue_generation}
+    if queued.get("image_paths"):
+        dispatch_kwargs["image_paths"] = queued["image_paths"]
+    if queued.get("display_kind"):
+        dispatch_kwargs["display_kind"] = queued.get("display_kind")
+        dispatch_kwargs["display_metadata"] = queued.get("display_metadata")
+
     dispatch_failed = False
     try:
         if use_compute_host:
-            if queued.get("image_paths"):
-                resp = _submit_prompt_to_compute_host(
-                    rid,
-                    sid,
-                    session,
-                    queued["text"],
-                    image_paths=queued["image_paths"],
-                    queued_prompt_generation=queue_generation,
-                )
-            else:
-                resp = _submit_prompt_to_compute_host(
-                    rid, sid, session, queued["text"], queued_prompt_generation=queue_generation
-                )
+            resp = _submit_prompt_to_compute_host(
+                rid,
+                sid,
+                session,
+                queued["text"],
+                **dispatch_kwargs,
+            )
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
                 with session["history_lock"]:
@@ -7664,23 +7755,13 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                 _emit("error", sid, {"message": message})
                 dispatch_failed = True
         else:
-            if queued.get("image_paths"):
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    queued["text"],
-                    image_paths=queued["image_paths"],
-                    queued_prompt_generation=queue_generation,
-                )
-            else:
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    queued["text"],
-                    queued_prompt_generation=queue_generation,
-                )
+            _run_prompt_submit(
+                rid,
+                sid,
+                session,
+                queued["text"],
+                **dispatch_kwargs,
+            )
     except Exception as exc:
         print(
             f"[tui_gateway] queued prompt dispatch failed: "
@@ -7793,7 +7874,13 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
     queued = session.get("queued_prompt")
     if not isinstance(queued, dict):
         return None
-    user = _inflight_text(queued.get("text"))
+    display_kind = queued.get("display_kind")
+    if display_kind == "goal_resume":
+        user = "/goal resume"
+    elif display_kind == "goal_continue":
+        user = "Continuing standing goal…"
+    else:
+        user = _inflight_text(queued.get("text"))
     return {"user": user} if user else None
 
 
@@ -9524,6 +9611,13 @@ def _run_prompt_submit(
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
 ) -> None:
+    if display_kind in {"goal_resume", "goal_continue"} and not _goal_continuation_active(
+        session, text
+    ):
+        with session["history_lock"]:
+            session["running"] = False
+            _clear_inflight_turn(session)
+        return
     with session["history_lock"]:
         if (
             queued_prompt_generation is not None
@@ -10312,7 +10406,14 @@ def _run_prompt_submit(
                 session["running"] = True
             try:
                 _emit("message.start", sid)
-                _run_prompt_submit(rid, sid, session, goal_followup)
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    goal_followup,
+                    display_kind="goal_continue",
+                    display_metadata={"display_text": "Continuing standing goal…"},
+                )
             except Exception as _cont_exc:
                 print(
                     f"[tui_gateway] goal continuation dispatch failed: "

@@ -327,3 +327,69 @@ class TestPostStopInterruptSwallow:
             "Cached agent with a set interrupt flag must be evicted on /stop "
             "so the flag cannot kill the session's next message (#44212)"
         )
+
+
+@pytest.mark.asyncio
+async def test_interrupt_and_clear_secondary_profile_uses_adapter_session_key():
+    """Adapter-owned interrupt and pending state use the transport namespace."""
+    from gateway.run import GatewayRunner, _INTERRUPT_REASON_STOP
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="cleanup-chat",
+        chat_type="channel",
+        user_id="cleanup-user",
+        profile="coder",
+    )
+    adapter = _DummyAdapter(Platform.DISCORD)
+    adapter_session_key = adapter.session_key_for_source(source)
+    session_key = build_session_key(source, profile="coder")
+    assert adapter_session_key != session_key
+
+    interrupt_event = asyncio.Event()
+    adapter._active_sessions[adapter_session_key] = interrupt_event
+    adapter._pending_messages[adapter_session_key] = MessageEvent(
+        text="older user input",
+        source=source,
+    )
+
+    runner = object.__new__(GatewayRunner)
+    invalidated = []
+    released = []
+    evicted = []
+
+    def _adapter_for_source(source):
+        return adapter
+
+    def _thread_metadata_for_source(source, reply_to_message_id=None):
+        return {}
+
+    def _invalidate_session_run_generation(session_key, *, reason=""):
+        invalidated.append((session_key, reason))
+        return 1
+
+    def _release_running_agent_state(session_key, *, run_generation=None):
+        released.append(session_key)
+        return True
+
+    def _evict_cached_agent(session_key):
+        evicted.append(session_key)
+
+    runner._adapter_for_source = _adapter_for_source
+    runner._thread_metadata_for_source = _thread_metadata_for_source
+    runner._invalidate_session_run_generation = _invalidate_session_run_generation
+    runner._release_running_agent_state = _release_running_agent_state
+    runner._evict_cached_agent = _evict_cached_agent
+
+    await runner._interrupt_and_clear_session(
+        session_key,
+        source,
+        interrupt_reason=_INTERRUPT_REASON_STOP,
+        invalidation_reason="stop_command",
+    )
+
+    assert interrupt_event.is_set() is True
+    assert adapter.get_pending_message(adapter_session_key) is None
+    assert invalidated == [(session_key, "stop_command")]
+    assert released == [session_key]
+    assert evicted == [session_key]

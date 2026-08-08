@@ -105,6 +105,61 @@ def test_goal_bare_shows_status_when_none_set(server, session):
     assert "No active goal" in r["result"]["output"]
 
 
+def test_goal_resume_after_budget_exhaustion_dispatches_next_turn(server, session):
+    """Desktop /goal resume must restart work without another user message."""
+    from hermes_cli import goals
+
+    sid, session_key, _ = session
+    mgr = goals.GoalManager(session_id=session_key, default_max_turns=1)
+    mgr.set("finish the release")
+
+    with patch.object(
+        goals,
+        "judge_goal",
+        return_value=("continue", "more work remains", False, None, False),
+    ):
+        decision = mgr.evaluate_after_turn("I still need to verify the release")
+
+    assert decision["status"] == "paused"
+    assert mgr.state is not None
+    assert mgr.state.turns_used == 1
+    assert mgr.state.paused_reason == "turn budget exhausted (1/1)"
+
+    response = _call(
+        server, "command.dispatch", name="goal", arg="resume", session_id=sid
+    )
+
+    assert response["result"]["type"] == "send"
+    assert "Goal resumed: finish the release" in response["result"]["notice"]
+    assert response["result"]["display"] == "/goal resume"
+    assert response["result"]["display_kind"] == "goal_resume"
+    assert server._sessions[sid]["_pending_goal_resume_projection"] == response["result"]["message"]
+    assert (
+        response["result"]["message"]
+        == goals.GoalManager(session_key).next_continuation_prompt()
+    )
+    resumed = goals.GoalManager(session_key).state
+    assert resumed is not None
+    assert resumed.status == "active"
+    assert resumed.turns_used == 0
+
+    server._sessions[sid]["running"] = True
+    queued = _call(
+        server,
+        "prompt.submit",
+        session_id=sid,
+        text=response["result"]["message"],
+        display_kind="goal_resume",
+    )
+    assert queued["result"]["status"] == "queued"
+    assert server._sessions[sid]["queued_prompt"]["display_kind"] == "goal_resume"
+    assert "_pending_goal_resume_projection" not in server._sessions[sid]
+
+    pause = _call(server, "command.dispatch", name="goal", arg="pause", session_id=sid)
+    assert pause["result"]["type"] == "exec"
+    assert server._sessions[sid]["queued_prompt"] is None
+
+
 # ── slash.exec /goal routing ──────────────────────────────────────────
 
 

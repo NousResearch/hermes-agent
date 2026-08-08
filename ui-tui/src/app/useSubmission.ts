@@ -79,10 +79,20 @@ export function useSubmission(opts: UseSubmissionOptions) {
   }, [composerState.input, composerState.inputBuf])
 
   const send = useCallback(
-    (text: string, showUserMessage = true, displayText?: string, expandOverride?: (value: string) => string) => {
+    (
+      text: string,
+      showUserMessage = true,
+      displayText?: string,
+      displayKindOrExpandOverride?: string | ((value: string) => string),
+      expandOverride?: (value: string) => string
+    ) => {
       // Read tokens off the ref, not render state: a paste immediately followed
       // by Enter submits before React has re-rendered with the new token.
-      const expand = expandOverride ?? expandTokens(composerRefs.tokensRef.current)
+      const displayKind = typeof displayKindOrExpandOverride === 'string' ? displayKindOrExpandOverride : undefined
+      const expand =
+        typeof displayKindOrExpandOverride === 'function'
+          ? displayKindOrExpandOverride
+          : expandOverride ?? expandTokens(composerRefs.tokensRef.current)
 
       submitPrompt(
         text,
@@ -95,7 +105,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
           sys
         },
         showUserMessage,
-        displayText
+        displayText,
+        displayKind
       )
     },
     [appendMessage, composerActions, composerRefs, gw, setLastUserMsg, sys]

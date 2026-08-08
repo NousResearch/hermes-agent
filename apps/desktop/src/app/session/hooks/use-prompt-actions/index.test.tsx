@@ -392,6 +392,54 @@ describe('usePromptActions slash session targeting', () => {
     expect(calls[1]?.params).toEqual({ command: 'goal status', session_id: RECOVERED_SESSION_ID })
   })
 
+  it('persists /goal resume projection while submitting the canonical prompt', async () => {
+    setSessions(() => [sessionInfo()])
+    const canonical = '[Continuing toward your standing goal]\nGoal: finish safely'
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const seeds: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          message: canonical,
+          notice: '▶ Goal resumed: finish safely',
+          display: '/goal resume',
+          display_kind: 'goal_resume'
+        } as never
+      }
+
+      return { status: 'streaming' } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={{ current: true }}
+        onReady={h => (handle = h)}
+        onSeedState={state => seeds.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal resume')
+
+    await waitFor(() => {
+      expect(calls.some(call => call.method === 'prompt.submit')).toBe(true)
+    })
+    expect(calls.find(call => call.method === 'prompt.submit')?.params).toMatchObject({
+      session_id: RUNTIME_SESSION_ID,
+      text: canonical,
+      display_kind: 'goal_resume'
+    })
+    const rendered = renderedSeedTexts(seeds).join('\n')
+    expect(rendered).toContain('/goal resume')
+    expect(rendered).not.toContain('Continuing toward your standing goal')
+  })
+
   it('does not fork the chat when the routed session cannot be rebound', async () => {
     const calls: string[] = []
     const createBackendSessionForSend = vi.fn(async () => 'rt-brand-new-WRONG')

@@ -787,25 +787,31 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
+            session.pop("_pending_goal_resume_projection", None)
+            globals()["_clear_queued_goal_continuations"](session)
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
             return _ok(rid, {"type": "exec", "output": out})
         if lower == "resume":
             state = mgr.resume()
             if state is None:
                 return _ok(rid, {"type": "exec", "output": "No goal to resume."})
+            prompt = mgr.next_continuation_prompt() or state.goal
+            session["_pending_goal_resume_projection"] = prompt
             return _ok(
                 rid,
                 {
-                    "type": "exec",
-                    "output": (
-                        f"▶ Goal resumed: {state.goal}\n"
-                        "Send any message to continue, or wait — I'll take the next step on the next turn."
-                    ),
+                    "type": "send",
+                    "notice": f"▶ Goal resumed: {state.goal}",
+                    "message": prompt,
+                    "display": "/goal resume",
+                    "display_kind": "goal_resume",
                 },
             )
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()
+            session.pop("_pending_goal_resume_projection", None)
+            globals()["_clear_queued_goal_continuations"](session)
             return _ok(
                 rid,
                 {
@@ -817,6 +823,8 @@ def _(rid, params: dict) -> dict:
         # Otherwise — treat the remaining text as the new goal.
         try:
             state = mgr.set(arg)
+            session.pop("_pending_goal_resume_projection", None)
+            globals()["_clear_queued_goal_continuations"](session)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 

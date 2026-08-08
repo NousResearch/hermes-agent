@@ -150,6 +150,30 @@ class TestDisplayResumedHistory:
         assert "You:" not in output
         assert "opaque" not in output
 
+    def test_goal_continuations_use_durable_projection(self):
+        cli = _make_cli()
+        canonical = "[Continuing toward your standing goal]\nGoal: finish safely"
+        cli.conversation_history = [
+            {
+                "role": "user",
+                "content": canonical,
+                "display_kind": "goal_resume",
+                "display_metadata": {"display_text": "/goal resume"},
+            },
+            {
+                "role": "user",
+                "content": canonical,
+                "display_kind": "goal_continue",
+                "display_metadata": {"display_text": "Continuing standing goal…"},
+            },
+        ]
+
+        output = self._capture_display(cli)
+
+        assert "/goal resume" in output
+        assert "Continuing standing goal…" in output
+        assert canonical not in output
+
 
 
     def test_tool_only_message_skipped_by_default(self):

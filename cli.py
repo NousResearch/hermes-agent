@@ -52,7 +52,7 @@ os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
-from hermes_cli.cli_commands_mixin import CLICommandsMixin
+from hermes_cli.cli_commands_mixin import CLICommandsMixin, PendingInputProjection
 from hermes_cli.cli_billing_mixin import CLIBillingMixin
 from agent.interrupt_compat import request_hard_interrupt
 
@@ -4222,6 +4222,13 @@ class _VoiceInputMessage:
         return self.text
 
 
+def _unwrap_pending_input_projection(value):
+    """Return model input plus any durable user-visible projection."""
+    if isinstance(value, PendingInputProjection):
+        return value.text, value.display_kind, value.display_text
+    return value, None, None
+
+
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     """
     Interactive CLI for the Hermes Agent.
@@ -7960,6 +7967,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def show_history(self):
         """Display conversation history."""
+        from hermes_cli.history_projection import project_history_message_content
+
         if not self.conversation_history:
             if not self._show_recent_sessions(reason="history"):
                 _cli_visible_print("(._.) No conversation history yet.")
@@ -8013,7 +8022,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             flush_tool_summary()
             visible_index += 1
 
-            content = msg.get("content")
+            content = (
+                project_history_message_content(msg)
+                if role == "user"
+                else msg.get("content")
+            )
             content_text = "" if content is None else str(content)
 
             if role == "user":
@@ -10679,6 +10692,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._heartbeat_watchdog_started = False
 
         threading.Thread(target=_loop, daemon=True, name="heartbeat-watchdog").start()
+    def _goal_continuation_is_current(self, prompt: str) -> bool:
+        """Reject queued goal work after pause, clear, or replacement."""
+        mgr = self._get_goal_manager()
+        return bool(
+            mgr is not None
+            and mgr.is_active()
+            and mgr.next_continuation_prompt() == prompt
+        )
+
 
 
 
@@ -10878,7 +10900,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             prompt = decision.get("continuation_prompt")
             if prompt:
                 try:
-                    self._pending_input.put(prompt)
+                    self._pending_input.put(
+                        PendingInputProjection(
+                            prompt,
+                            "Continuing standing goal…",
+                            "goal_continue",
+                        )
+                    )
                 except Exception as exc:
                     logging.debug("goal continuation enqueue failed: %s", exc)
 
@@ -13750,7 +13778,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
+    def chat(
+        self,
+        message,
+        images: list | None = None,
+        voice_input: bool = False,
+        display_kind: str | None = None,
+        display_text: str | None = None,
+    ) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -13767,6 +13802,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             images: Optional list of Path objects for attached images
             voice_input: True when the message came from voice transcription
                 (gates the concise voice-response prefix, #65827)
+            display_kind: Optional durable display projection type.
+            display_text: Optional text shown instead of model-facing content.
             
         Returns:
             The agent's response, or None on error
@@ -13908,6 +13945,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             agent._persist_user_message_override = None
             agent._persist_user_message_timestamp = None
             staged_user_message = {"role": "user", "content": message}
+            if display_kind:
+                staged_user_message["display_kind"] = display_kind
+                if display_text:
+                    staged_user_message["display_metadata"] = {
+                        "display_text": display_text
+                    }
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 
@@ -14092,13 +14135,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
                 self._pending_one_turn_model_restore = None
                 try:
+                    _run_kwargs = {
+                        "conversation_history": self.conversation_history[:-1],
+                        "stream_callback": stream_callback,
+                        "task_id": self.session_id,
+                        "persist_user_message": _persist_clean_user_message,
+                        "moa_config": _moa_cfg,
+                    }
+                    if display_kind:
+                        _run_kwargs["persist_user_display_kind"] = display_kind
+                        _run_kwargs["persist_user_display_metadata"] = (
+                            {"display_text": display_text} if display_text else None
+                        )
                     result = self.agent.run_conversation(
                         user_message=agent_message,
-                        conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
-                        stream_callback=stream_callback,
-                        task_id=self.session_id,
-                        persist_user_message=_persist_clean_user_message,
-                        moa_config=_moa_cfg,
+                        **_run_kwargs,
                     )
                     if getattr(self, "_pending_moa_disable_after_turn", False):
                         _restore = getattr(self, "_pending_moa_restore_model", None) or {}
@@ -17447,11 +17498,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 pass
                         continue
 
+                    user_input, display_kind, display_text = (
+                        _unwrap_pending_input_projection(user_input)
+                    )
+                    if (
+                        display_kind in {"goal_resume", "goal_continue"}
+                        and isinstance(user_input, str)
+                        and not self._goal_continuation_is_current(user_input)
+                    ):
+                        continue
+
                     # Voice-transcribed messages arrive wrapped in a sentinel
                     # so only genuine STT output gets the voice prefix (#65827).
-                    is_voice_input = isinstance(user_input, _VoiceInputMessage)
-                    if is_voice_input:
+                    if isinstance(user_input, _VoiceInputMessage):
+                        is_voice_input = True
                         user_input = user_input.text
+                    else:
+                        is_voice_input = False
 
                     if not user_input:
                         continue
@@ -17551,7 +17614,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if paste_refs:
                         user_input = self._expand_paste_references(user_input)
                     print()
-                    self._print_user_message_preview(user_input)
+                    self._print_user_message_preview(display_text or user_input)
                     
                     # Show image attachment count
                     if submit_images:
@@ -17567,7 +17630,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None, voice_input=is_voice_input)
+                        self.chat(
+                            user_input,
+                            images=submit_images or None,
+                            voice_input=is_voice_input,
+                            display_kind=display_kind,
+                            display_text=display_text,
+                        )
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

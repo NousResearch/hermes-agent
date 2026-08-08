@@ -16,20 +16,20 @@ function makeDeferredGateway() {
 
   const calls: string[] = []
 
-  const gw = {
-    request: vi.fn((method: string) => {
-      calls.push(method)
+  const request = vi.fn((method: string) => {
+    calls.push(method)
 
-      if (method === 'input.detect_drop') {
-        return dropPromise
-      }
+    if (method === 'input.detect_drop') {
+      return dropPromise
+    }
 
-      // prompt.submit et al: resolve immediately with a success shape.
-      return Promise.resolve({ status: 'streaming' })
-    })
-  } as unknown as GatewayClient
+    // prompt.submit et al: resolve immediately with a success shape.
+    return Promise.resolve({ status: 'streaming' })
+  })
 
-  return { calls, gw, resolveDrop: (v: unknown = { matched: false }) => resolveDrop(v) }
+  const gw = { request } as unknown as GatewayClient
+
+  return { calls, gw, request, resolveDrop: (v: unknown = { matched: false }) => resolveDrop(v) }
 }
 
 function makeDeps(gw: GatewayClient, over: Partial<SubmitPromptDeps> = {}): SubmitPromptDeps {
@@ -107,6 +107,22 @@ describe('submissionCore.submitPrompt — synchronous busy (queue-race fix)', ()
     await Promise.resolve()
 
     expect(calls).toContain('prompt.submit')
+  })
+
+  it('carries a durable goal display kind with the canonical model prompt', async () => {
+    const { gw, request, resolveDrop } = makeDeferredGateway()
+    const canonical = '[Continuing toward your standing goal]\nGoal: finish safely'
+
+    submitPrompt(canonical, makeDeps(gw), true, '/goal resume', 'goal_resume')
+    resolveDrop({ matched: false })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(request).toHaveBeenCalledWith('prompt.submit', {
+      session_id: 'sess-1',
+      text: canonical,
+      display_kind: 'goal_resume'
+    })
   })
 })
 

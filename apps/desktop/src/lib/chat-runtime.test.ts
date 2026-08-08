@@ -104,6 +104,21 @@ describe('parseCommandDispatch', () => {
     })
   })
 
+  it('keeps the durable display kind on a goal-resume send', () => {
+    expect(
+      parseCommandDispatch({
+        type: 'send',
+        message: '[Continuing toward your standing goal]\nGoal: finish safely',
+        display: '/goal resume',
+        display_kind: 'goal_resume'
+      })
+    ).toMatchObject({
+      type: 'send',
+      display: '/goal resume',
+      display_kind: 'goal_resume'
+    })
+  })
+
   it('parses a prefill directive with its notice (e.g. /undo)', () => {
     const parsed = parseCommandDispatch({ type: 'prefill', notice: 'backed up 1 turn', message: 'edit me' })
 

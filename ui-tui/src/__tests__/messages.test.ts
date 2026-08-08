@@ -84,6 +84,23 @@ describe('toTranscriptMessages', () => {
     expect(result[0]?.kind).toBe('event')
     expect(result[0]?.text).toBe('background agent work finished')
   })
+
+  it('never renders canonical goal continuation prompts after reload', () => {
+    const canonical = '[Continuing toward your standing goal]\nGoal: finish safely'
+
+    const result = toTranscriptMessages([
+      { role: 'user', text: canonical, display_kind: 'goal_resume' },
+      { role: 'assistant', text: 'first step' },
+      { role: 'user', text: canonical, display_kind: 'goal_continue' }
+    ])
+
+    expect(result.map(msg => [msg.kind, msg.role, msg.text])).toEqual([
+      [undefined, 'user', '/goal resume'],
+      [undefined, 'assistant', 'first step'],
+      ['event', 'system', 'continuing standing goal']
+    ])
+    expect(result.some(msg => msg.text.includes('Continuing toward your standing goal'))).toBe(false)
+  })
 })
 
 describe('MessageLine', () => {

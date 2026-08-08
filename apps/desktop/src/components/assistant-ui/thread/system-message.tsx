@@ -8,12 +8,31 @@ import { cn } from '@/lib/utils'
 
 const SLASH_STATUS_RE = /^slash:(?<command>\/[^\n]+)\n(?<output>[\s\S]*)$/
 const STEER_NOTE_RE = /^steer:(?<text>[\s\S]+)$/
+const SELF_IMPROVEMENT_RE = /^💾\s+(?<text>Self-improvement review:[\s\S]+)$/
+
+export const parseSelfImprovementReview = (text: string): string | null =>
+  text.match(SELF_IMPROVEMENT_RE)?.groups?.text.trim() ?? null
 
 export const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
 
   if (!text) {
     return null
+  }
+
+  const selfImprovementReview = parseSelfImprovementReview(text)
+
+  if (selfImprovementReview) {
+    return (
+      <MessagePrimitive.Root
+        className="flex max-w-[min(86%,44rem)] items-start gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/55"
+        data-role="system"
+        data-slot="aui_system-message-root"
+      >
+        <Codicon className="mt-1 shrink-0 text-muted-foreground/50" name="save" size="0.75rem" />
+        <span className="whitespace-pre-wrap">{selfImprovementReview}</span>
+      </MessagePrimitive.Root>
+    )
   }
 
   const steerNote = text.match(STEER_NOTE_RE)

@@ -212,7 +212,7 @@ def test_deduplication_prunes_older_duplicate_tool_output():
         {"role": "tool", "tool_call_id": "b", "content": "new output"},
     ]
 
-    engine._apply_deduplication(messages)
+    engine._apply_deduplication(messages, set())
 
     assert "duplicate tool output removed" in messages[1]["content"]
     assert messages[3]["content"] == "new output"
@@ -227,7 +227,7 @@ def test_deduplication_respects_protected_tools():
         {"role": "tool", "tool_call_id": "b", "content": "new output"},
     ]
 
-    engine._apply_deduplication(messages)
+    engine._apply_deduplication(messages, set())
 
     assert messages[1]["content"] == "old output"
 
@@ -240,7 +240,7 @@ def test_purge_errors_preserves_error_summary():
         {"role": "user", "content": "next"},
     ]
 
-    engine._apply_purge_errors(messages)
+    engine._apply_purge_errors(messages, set())
 
     assert "old failed tool output pruned" in messages[1]["content"]
     assert "ERROR: failed" in messages[1]["content"]
@@ -259,7 +259,7 @@ def test_turn_protection_prevents_dedup_pruning_recent_messages():
         {"role": "tool", "tool_call_id": "b", "content": "new output"},
     ]
 
-    engine._apply_deduplication(messages)
+    engine._apply_deduplication(messages, set())
 
     assert messages[1]["content"] == ""
     assert messages[2]["content"] == "old output"

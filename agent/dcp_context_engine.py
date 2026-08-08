@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import re
@@ -18,9 +17,19 @@ from agent.dcp_config import (
     resolve_model_limit,
 )
 from agent.dcp_state import CompressionBlock, DCPSessionState
-from agent.model_metadata import estimate_messages_tokens_rough
 
 _ERROR_RE = re.compile(r"\b(error|exception|traceback|failed|failure|timed out|timeout)\b", re.I)
+
+_DCP_SYSTEM_EXTENSION = (
+    "DCP context management is active. Message refs look like m0001; "
+    "compressed blocks look like b1. Use the compress tool when older work "
+    "is complete or stale. Preserve concrete file paths, commands, errors, "
+    "test results, decisions, constraints, and open questions. Do not compress "
+    "the active task or very recent user turns."
+)
+
+# Maximum deactivated blocks to retain; older ones are evicted to bound memory.
+_MAX_INACTIVE_BLOCKS = 50
 
 
 class DCPContextEngine(ContextEngine):
@@ -50,6 +59,10 @@ class DCPContextEngine(ContextEngine):
         self.compression_count = 0
         self.threshold_tokens = self._min_limit()
         self.state = DCPSessionState()
+        # Cache for message signatures keyed by id(msg) — invalidated when
+        # the canonical message list changes.  Avoids re-hashing the same
+        # dicts on every API call.
+        self._sig_cache: dict[int, str] = {}
 
     @property
     def name(self) -> str:
@@ -62,7 +75,6 @@ class DCPContextEngine(ContextEngine):
         self.state.last_prompt_tokens = self.last_prompt_tokens
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
-        # DCP is normally model-guided through the compress tool, not host-driven.
         return False
 
     def should_compress_preflight(self, messages: list[dict[str, Any]]) -> bool:
@@ -78,7 +90,6 @@ class DCPContextEngine(ContextEngine):
         current_tokens: int = None,
         focus_topic: str = None,
     ) -> list[dict[str, Any]]:
-        # Manual /compress fallback: record a pending nudge and leave transcript intact.
         if focus_topic:
             self.state.manual_mode = "compress-pending"
             self.state.pending_manual_focus = focus_topic
@@ -97,6 +108,7 @@ class DCPContextEngine(ContextEngine):
     def on_session_reset(self) -> None:
         super().on_session_reset()
         self.state = DCPSessionState(session_id=self.state.session_id)
+        self._sig_cache.clear()
 
     def update_model(
         self,
@@ -105,6 +117,7 @@ class DCPContextEngine(ContextEngine):
         base_url: str = "",
         api_key: str = "",
         provider: str = "",
+        api_mode: str = "",
     ) -> None:
         self.model = model or self.model
         self.provider = provider or self.provider
@@ -114,9 +127,7 @@ class DCPContextEngine(ContextEngine):
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         if not self.config.enabled or self.config.compress.permission == "deny":
             return []
-        if self.config.compress.mode == "message":
-            return [self._message_tool_schema()]
-        return [self._range_tool_schema()]
+        return [self._compress_tool_schema()]
 
     def handle_tool_call(self, name: str, args: dict[str, Any], **kwargs: Any) -> str:
         if name != "compress":
@@ -125,11 +136,8 @@ class DCPContextEngine(ContextEngine):
         if not isinstance(messages, list):
             return json.dumps({"ok": False, "error": "compress requires current messages"})
         try:
-            if self.config.compress.mode == "message":
-                result = self._handle_message_compress(args, messages)
-            else:
-                result = self._handle_range_compress(args, messages)
-        except Exception as exc:  # fail loudly to the model, not to the agent loop
+            result = self._handle_compress(args, messages)
+        except Exception as exc:
             return json.dumps({"ok": False, "error": str(exc)})
         return json.dumps(result)
 
@@ -151,21 +159,35 @@ class DCPContextEngine(ContextEngine):
         self.model = model or self.model
         self.provider = provider or self.provider
         self.state.session_id = session_id or self.state.session_id
+
+        # Build / refresh refs from canonical messages.  This also updates
+        # turn counters and message-since-last-user tracking.
         self._ensure_refs(canonical_messages)
 
-        transformed = copy.deepcopy(api_messages)
-        ref_by_api_index = self._match_api_messages_to_refs(transformed, canonical_messages)
-        self._annotate_refs(transformed, ref_by_api_index)
-        self._apply_blocks(transformed, ref_by_api_index)
+        # Match API messages to refs by content signature.  We use a
+        # role+content-based signature that excludes tool_calls (whose JSON
+        # may have been re-serialised by _canonicalize_api_tool_calls between
+        # the canonical list and the API copy) so that assistant tool-calling
+        # messages still match.
+        ref_by_api_index = self._match_api_messages_to_refs(api_messages, canonical_messages)
+
+        # Shallow-copy the list and structurally clone messages we will
+        # mutate.  This avoids the O(n) cost of copy.deepcopy on every call
+        # while still protecting the caller's message dicts.
+        transformed = list(api_messages)
+        mutated: set[int] = set()
+
+        self._annotate_refs(transformed, ref_by_api_index, mutated)
+        self._apply_blocks(transformed, ref_by_api_index, mutated)
 
         if self._automatic_strategies_enabled():
             if self.config.deduplication.enabled:
-                self._apply_deduplication(transformed)
+                self._apply_deduplication(transformed, mutated)
             if self.config.purge_errors.enabled:
-                self._apply_purge_errors(transformed)
+                self._apply_purge_errors(transformed, mutated)
 
-        self._inject_system_extension(transformed)
-        self._inject_nudge(transformed, api_call_count=api_call_count)
+        self._inject_system_extension(transformed, mutated)
+        self._inject_nudge(transformed, api_call_count=api_call_count, mutated=mutated)
         return transformed
 
     def get_status(self) -> dict[str, Any]:
@@ -181,16 +203,36 @@ class DCPContextEngine(ContextEngine):
             "compress_permission": self.config.compress.permission,
         }
 
-    # -- Tool schemas -----------------------------------------------------
+    # -- Tool schema ------------------------------------------------------
 
-    def _range_tool_schema(self) -> dict[str, Any]:
-        return {
-            "name": "compress",
-            "description": (
+    def _compress_tool_schema(self) -> dict[str, Any]:
+        is_message_mode = self.config.compress.mode == "message"
+        if is_message_mode:
+            item_properties = {
+                "messageId": {"type": "string", "description": "Message ref, e.g. m0042."},
+                "topic": {"type": "string", "description": "Short label for this message."},
+                "summary": {"type": "string", "description": "Complete technical summary replacing this message."},
+            }
+            item_required = ["messageId", "topic", "summary"]
+            description = (
+                "Compress individual high-volume messages by ref. Preserve concrete "
+                "technical facts, file paths, commands, decisions, errors, and open questions."
+            )
+        else:
+            item_properties = {
+                "startId": {"type": "string", "description": "Starting message or block ref, e.g. m0004 or b2."},
+                "endId": {"type": "string", "description": "Ending message or block ref, e.g. m0018 or b3."},
+                "summary": {"type": "string", "description": "Complete technical summary replacing the range."},
+            }
+            item_required = ["startId", "endId", "summary"]
+            description = (
                 "Compress completed, stale context ranges by message/block ref. "
                 "Use this when prior work is closed and a concise technical summary "
                 "will preserve the useful state. Do not compress the active task."
-            ),
+            )
+        return {
+            "name": "compress",
+            "description": description,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -199,40 +241,8 @@ class DCPContextEngine(ContextEngine):
                         "type": "array",
                         "items": {
                             "type": "object",
-                            "properties": {
-                                "startId": {"type": "string", "description": "Starting message or block ref, e.g. m0004 or b2."},
-                                "endId": {"type": "string", "description": "Ending message or block ref, e.g. m0018 or b3."},
-                                "summary": {"type": "string", "description": "Complete technical summary replacing the range."},
-                            },
-                            "required": ["startId", "endId", "summary"],
-                        },
-                    },
-                },
-                "required": ["topic", "content"],
-            },
-        }
-
-    def _message_tool_schema(self) -> dict[str, Any]:
-        return {
-            "name": "compress",
-            "description": (
-                "Compress individual high-volume messages by ref. Preserve concrete "
-                "technical facts, file paths, commands, decisions, errors, and open questions."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "topic": {"type": "string", "description": "Short label for this compression batch."},
-                    "content": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "messageId": {"type": "string", "description": "Message ref, e.g. m0042."},
-                                "topic": {"type": "string", "description": "Short label for this message."},
-                                "summary": {"type": "string", "description": "Complete technical summary replacing this message."},
-                            },
-                            "required": ["messageId", "topic", "summary"],
+                            "properties": item_properties,
+                            "required": item_required,
                         },
                     },
                 },
@@ -242,106 +252,94 @@ class DCPContextEngine(ContextEngine):
 
     # -- Tool handling ----------------------------------------------------
 
-    def _handle_range_compress(self, args: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def _handle_compress(self, args: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
         self._ensure_refs(messages)
         topic = self._require_str(args, "topic")
         content = args.get("content")
         if not isinstance(content, list) or not content:
             raise ValueError("compress.content must be a non-empty array")
 
+        is_message_mode = self.config.compress.mode == "message"
         created: list[int] = []
         deactivated: list[int] = []
         run_id = self.state.new_run_id()
+
         for item in content:
             if not isinstance(item, dict):
-                raise ValueError("Each compression range must be an object")
-            start_ref = self._require_str(item, "startId")
-            end_ref = self._require_str(item, "endId")
+                raise ValueError("Each compression entry must be an object")
             summary = self._require_str(item, "summary")
-            message_refs, included_blocks = self._resolve_range(start_ref, end_ref)
-            if not message_refs:
-                raise ValueError(f"Range {start_ref}-{end_ref} does not cover any messages")
-            block_id = self.state.new_block_id()
-            consumed_blocks: list[int] = []
-            for included in included_blocks:
-                block = self.state.blocks_by_id.get(included)
-                if block and block.active:
-                    block.active = False
-                    block.deactivated_at = time.time()
-                    block.deactivated_by_block_id = block_id
-                    self.state.active_block_ids.discard(included)
-                    consumed_blocks.append(included)
-                    deactivated.append(included)
-            block = CompressionBlock(
-                block_id=block_id,
-                run_id=run_id,
-                mode="range",
-                topic=topic,
-                summary=self._augment_summary(summary, message_refs),
-                start_ref=start_ref,
-                end_ref=end_ref,
-                message_refs=message_refs,
-                included_block_ids=included_blocks,
-                consumed_block_ids=consumed_blocks,
-                created_at=time.time(),
-            )
-            self.state.blocks_by_id[block_id] = block
-            self.state.active_block_ids.add(block_id)
-            created.append(block_id)
+
+            if is_message_mode:
+                ref = self._require_str(item, "messageId")
+                if ref not in self.state.index_by_ref:
+                    raise ValueError(f"Unknown message ref: {ref}")
+                item_topic = item.get("topic") if isinstance(item.get("topic"), str) else topic
+                message_refs = [ref]
+                included_blocks: list[int] = []
+                block = CompressionBlock(
+                    block_id=self.state.new_block_id(),
+                    run_id=run_id,
+                    mode="message",
+                    topic=item_topic,
+                    summary=self._augment_summary(summary, message_refs),
+                    message_refs=message_refs,
+                    included_block_ids=[],
+                    consumed_block_ids=[],
+                    created_at=time.time(),
+                )
+            else:
+                start_ref = self._require_str(item, "startId")
+                end_ref = self._require_str(item, "endId")
+                message_refs, included_blocks = self._resolve_range(start_ref, end_ref)
+                if not message_refs:
+                    raise ValueError(f"Range {start_ref}-{end_ref} does not cover any messages")
+                item_topic = topic
+                consumed_blocks: list[int] = []
+                block_id = self.state.new_block_id()
+                for included in included_blocks:
+                    old = self.state.blocks_by_id.get(included)
+                    if old and old.active:
+                        old.active = False
+                        old.deactivated_at = time.time()
+                        old.deactivated_by_block_id = block_id
+                        self.state.active_block_ids.discard(included)
+                        consumed_blocks.append(included)
+                        deactivated.append(included)
+                block = CompressionBlock(
+                    block_id=block_id,
+                    run_id=run_id,
+                    mode="range",
+                    topic=item_topic,
+                    summary=self._augment_summary(summary, message_refs),
+                    start_ref=start_ref,
+                    end_ref=end_ref,
+                    message_refs=message_refs,
+                    included_block_ids=included_blocks,
+                    consumed_block_ids=consumed_blocks,
+                    created_at=time.time(),
+                )
+
+            self.state.blocks_by_id[block.block_id] = block
+            self.state.active_block_ids.add(block.block_id)
+            created.append(block.block_id)
 
         self.compression_count += len(created)
         self.state.turns_since_last_compress = 0
+        self._evict_inactive_blocks()
+        mode = "message" if is_message_mode else "range"
         return {
             "ok": True,
-            "mode": "range",
+            "mode": mode,
             "created_blocks": created,
             "deactivated_blocks": deactivated,
             "active_blocks": sorted(self.state.active_block_ids),
-            "message": f"Compressed {len(created)} range(s) into {', '.join(f'b{i}' for i in created)}.",
-        }
-
-    def _handle_message_compress(self, args: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
-        self._ensure_refs(messages)
-        batch_topic = self._require_str(args, "topic")
-        content = args.get("content")
-        if not isinstance(content, list) or not content:
-            raise ValueError("compress.content must be a non-empty array")
-        created: list[int] = []
-        run_id = self.state.new_run_id()
-        for item in content:
-            if not isinstance(item, dict):
-                raise ValueError("Each compressed message must be an object")
-            ref = self._require_str(item, "messageId")
-            if ref not in self.state.index_by_ref:
-                raise ValueError(f"Unknown message ref: {ref}")
-            topic = item.get("topic") if isinstance(item.get("topic"), str) else batch_topic
-            summary = self._require_str(item, "summary")
-            block_id = self.state.new_block_id()
-            block = CompressionBlock(
-                block_id=block_id,
-                run_id=run_id,
-                mode="message",
-                topic=topic,
-                summary=self._augment_summary(summary, [ref]),
-                message_refs=[ref],
-                created_at=time.time(),
-            )
-            self.state.blocks_by_id[block_id] = block
-            self.state.active_block_ids.add(block_id)
-            created.append(block_id)
-        self.compression_count += len(created)
-        self.state.turns_since_last_compress = 0
-        return {
-            "ok": True,
-            "mode": "message",
-            "created_blocks": created,
-            "active_blocks": sorted(self.state.active_block_ids),
-            "message": f"Compressed {len(created)} message(s) into {', '.join(f'b{i}' for i in created)}.",
+            "message": f"Compressed {len(created)} {mode}(s) into {', '.join(f'b{i}' for i in created)}.",
         }
 
     # -- Transforms -------------------------------------------------------
 
     def _ensure_refs(self, messages: list[dict[str, Any]]) -> None:
+        self._sig_cache.clear()
         self.state.index_by_ref.clear()
         for idx, msg in enumerate(messages):
             key = self._message_key(msg, idx)
@@ -364,27 +362,38 @@ class DCPContextEngine(ContextEngine):
         api_messages: list[dict[str, Any]],
         canonical_messages: list[dict[str, Any]],
     ) -> dict[int, str]:
-        self._ensure_refs(canonical_messages)
-        refs_by_key: dict[str, deque[str]] = defaultdict(deque)
+        # Build a mapping from content signature (role + content only,
+        # NOT tool_calls) to a deque of refs.  We exclude tool_calls from
+        # the signature because _canonicalize_api_tool_calls may have
+        # re-serialised tool-call argument JSON with sort_keys=True on the
+        # API copy, producing a different hash than the canonical message.
+        refs_by_sig: dict[str, deque[str]] = defaultdict(deque)
         for idx, msg in enumerate(canonical_messages):
             key = self._message_key(msg, idx)
             ref = self.state.ref_by_message_key.get(key)
             if ref:
-                refs_by_key[self._message_signature(msg)].append(ref)
+                refs_by_sig[self._content_signature(msg)].append(ref)
 
         out: dict[int, str] = {}
         for api_idx, msg in enumerate(api_messages):
             if msg.get("role") == "system":
                 continue
-            sig = self._message_signature(msg)
-            queue = refs_by_key.get(sig)
+            sig = self._content_signature(msg)
+            queue = refs_by_sig.get(sig)
             if queue:
                 out[api_idx] = queue.popleft()
         return out
 
-    def _annotate_refs(self, messages: list[dict[str, Any]], ref_by_api_index: dict[int, str]) -> None:
+    def _clone_if_needed(self, messages: list[dict[str, Any]], idx: int, mutated: set[int]) -> dict[str, Any]:
+        """Clone a message dict before mutating it (copy-on-write)."""
+        if idx not in mutated:
+            messages[idx] = dict(messages[idx])
+            mutated.add(idx)
+        return messages[idx]
+
+    def _annotate_refs(self, messages: list[dict[str, Any]], ref_by_api_index: dict[int, str], mutated: set[int]) -> None:
         for idx, ref in ref_by_api_index.items():
-            msg = messages[idx]
+            msg = self._clone_if_needed(messages, idx, mutated)
             content = msg.get("content")
             marker = f'<dcp-ref id="{ref}" />'
             if isinstance(content, str):
@@ -393,7 +402,7 @@ class DCPContextEngine(ContextEngine):
             elif isinstance(content, list):
                 msg["content"] = content + [{"type": "text", "text": marker}]
 
-    def _apply_blocks(self, messages: list[dict[str, Any]], ref_by_api_index: dict[int, str]) -> None:
+    def _apply_blocks(self, messages: list[dict[str, Any]], ref_by_api_index: dict[int, str], mutated: set[int]) -> None:
         ref_to_api_index = {ref: idx for idx, ref in ref_by_api_index.items()}
         for block in self.state.active_blocks():
             covered = [ref for ref in block.message_refs if ref in ref_to_api_index]
@@ -401,14 +410,14 @@ class DCPContextEngine(ContextEngine):
                 continue
             anchor_ref = covered[0]
             anchor_idx = ref_to_api_index[anchor_ref]
-            anchor = messages[anchor_idx]
+            anchor = self._clone_if_needed(messages, anchor_idx, mutated)
             anchor["content"] = self._block_summary_text(block)
             for ref in covered[1:]:
                 idx = ref_to_api_index[ref]
-                msg = messages[idx]
+                msg = self._clone_if_needed(messages, idx, mutated)
                 msg["content"] = f"[DCP: content moved into compressed block {block.ref}.]"
 
-    def _apply_deduplication(self, messages: list[dict[str, Any]]) -> None:
+    def _apply_deduplication(self, messages: list[dict[str, Any]], mutated: set[int]) -> None:
         protected = DCP_DEFAULT_PROTECTED_TOOLS | self.config.deduplication.protected_tools
         latest_by_sig: dict[str, int] = {}
         result_by_call_id: dict[str, int] = {}
@@ -435,9 +444,10 @@ class DCPContextEngine(ContextEngine):
                 continue
             result_idx = result_by_call_id.get(call_id)
             if result_idx is not None and result_idx not in protected_indices:
-                messages[result_idx]["content"] = "[DCP: duplicate tool output removed. Same tool and arguments were called again later.]"
+                msg = self._clone_if_needed(messages, result_idx, mutated)
+                msg["content"] = "[DCP: duplicate tool output removed. Same tool and arguments were called again later.]"
 
-    def _apply_purge_errors(self, messages: list[dict[str, Any]]) -> None:
+    def _apply_purge_errors(self, messages: list[dict[str, Any]], mutated: set[int]) -> None:
         protected = DCP_DEFAULT_PROTECTED_TOOLS | self.config.purge_errors.protected_tools
         keep_tail = max(0, self.config.purge_errors.turns * 2)
         cutoff = max(0, len(messages) - keep_tail)
@@ -461,29 +471,30 @@ class DCPContextEngine(ContextEngine):
             content = msg.get("content")
             if isinstance(content, str) and len(content) > 240 and _ERROR_RE.search(content):
                 first_line = content.strip().splitlines()[0][:240]
-                msg["content"] = f"[DCP: old failed tool output pruned after {self.config.purge_errors.turns} turns. Error preserved: {first_line}]"
+                cloned = self._clone_if_needed(messages, idx, mutated)
+                cloned["content"] = f"[DCP: old failed tool output pruned after {self.config.purge_errors.turns} turns. Error preserved: {first_line}]"
 
-    def _inject_system_extension(self, messages: list[dict[str, Any]]) -> None:
+    def _inject_system_extension(self, messages: list[dict[str, Any]], mutated: set[int]) -> None:
         if self.config.compress.permission == "deny":
             return
-        extension = (
-            "DCP context management is active. Message refs look like m0001; "
-            "compressed blocks look like b1. Use the compress tool when older work "
-            "is complete or stale. Preserve concrete file paths, commands, errors, "
-            "test results, decisions, constraints, and open questions. Do not compress "
-            "the active task or very recent user turns."
-        )
         if messages and messages[0].get("role") == "system" and isinstance(messages[0].get("content"), str):
-            if "DCP context management is active" not in messages[0]["content"]:
-                messages[0]["content"] = f"{messages[0]['content']}\n\n{extension}"
+            if _DCP_SYSTEM_EXTENSION not in messages[0]["content"]:
+                msg = self._clone_if_needed(messages, 0, mutated)
+                msg["content"] = f"{msg['content']}\n\n{_DCP_SYSTEM_EXTENSION}"
 
-    def _inject_nudge(self, messages: list[dict[str, Any]], *, api_call_count: int) -> None:
-        prompt_tokens = estimate_messages_tokens_rough(messages)
+    def _inject_nudge(self, messages: list[dict[str, Any]], *, api_call_count: int, mutated: set[int]) -> None:
+        # Use the provider-reported token count from the last response if
+        # available — avoids re-estimating tokens on every API call.
+        prompt_tokens = self.last_prompt_tokens
         max_limit = self._max_limit()
         min_limit = self._min_limit()
         nudge: str | None = None
         if max_limit and prompt_tokens >= max_limit:
-            force = "Before continuing, call compress on any completed range if safe." if self.config.compress.nudge_force == "strong" else "Consider calling compress on completed older ranges before continuing."
+            force = (
+                "Before continuing, call compress on any completed range if safe."
+                if self.config.compress.nudge_force == "strong"
+                else "Consider calling compress on completed older ranges before continuing."
+            )
             nudge = f"DCP context pressure is high (~{prompt_tokens:,} tokens). {force}"
         elif min_limit and prompt_tokens >= min_limit and self.state.turns_since_last_compress >= self.config.compress.nudge_frequency:
             nudge = "DCP: context is growing. If an older topic is complete, use compress with the visible refs."
@@ -497,27 +508,39 @@ class DCPContextEngine(ContextEngine):
 
         if not nudge:
             return
-        for msg in reversed(messages):
+        # Only inject into user messages — never into tool results or
+        # assistant messages, which could violate provider message semantics.
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
             if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                msg["content"] = f"{msg['content']}\n\n<dcp-nudge>{nudge}</dcp-nudge>"
+                cloned = self._clone_if_needed(messages, idx, mutated)
+                cloned["content"] = f"{cloned['content']}\n\n<dcp-nudge>{nudge}</dcp-nudge>"
                 return
-        if messages and isinstance(messages[-1].get("content"), str):
-            messages[-1]["content"] = f"{messages[-1]['content']}\n\n<dcp-nudge>{nudge}</dcp-nudge>"
 
     # -- Helpers ----------------------------------------------------------
 
     def _message_key(self, msg: dict[str, Any], idx: int) -> str:
-        return f"{idx}:{self._message_signature(msg)}"
+        return f"{idx}:{self._content_signature(msg)}"
 
-    def _message_signature(self, msg: dict[str, Any]) -> str:
+    def _content_signature(self, msg: dict[str, Any]) -> str:
+        """Signature based on role + content only.
+
+        Excludes tool_calls and tool_call_id because the API copy may have
+        been re-serialised (sorted JSON keys) by _canonicalize_api_tool_calls,
+        which would produce a different hash than the canonical message.
+        """
+        cache_key = id(msg)
+        cached = self._sig_cache.get(cache_key)
+        if cached is not None:
+            return cached
         clean = {
             "role": msg.get("role"),
             "content": msg.get("content"),
-            "tool_call_id": msg.get("tool_call_id"),
-            "tool_calls": msg.get("tool_calls"),
         }
         raw = json.dumps(clean, sort_keys=True, default=str, separators=(",", ":"))
-        return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
+        sig = hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
+        self._sig_cache[cache_key] = sig
+        return sig
 
     def _require_str(self, args: dict[str, Any], key: str) -> str:
         value = args.get(key)
@@ -604,6 +627,15 @@ class DCPContextEngine(ContextEngine):
             return set()
         start = user_indices[-self.config.turn_protection.turns] if len(user_indices) >= self.config.turn_protection.turns else user_indices[0]
         return set(range(start, len(messages)))
+
+    def _evict_inactive_blocks(self) -> None:
+        """Bound memory by evicting old deactivated blocks."""
+        inactive = sorted(
+            (bid for bid, b in self.state.blocks_by_id.items() if not b.active),
+            key=lambda bid: self.state.blocks_by_id[bid].deactivated_at or 0,
+        )
+        for bid in inactive[_MAX_INACTIVE_BLOCKS:]:
+            del self.state.blocks_by_id[bid]
 
     def _min_limit(self) -> int:
         return resolve_model_limit(

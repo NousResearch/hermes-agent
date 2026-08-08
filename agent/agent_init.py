@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.dcp_context_engine import DCPContextEngine
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
 from agent.session_activity import ActivityProvenance
@@ -2411,7 +2412,14 @@ def init_agent(
     except Exception:
         pass
 
-    if _engine_name != "compressor":
+    if _engine_name == "dcp":
+        _selected_engine = DCPContextEngine(
+            config=_ctx_cfg.get("dcp", {}) if isinstance(_ctx_cfg, dict) else {},
+            model=agent.model,
+            provider=agent.provider,
+            quiet_mode=agent.quiet_mode,
+        )
+    elif _engine_name != "compressor":
         # Try loading from plugins/context_engine/<name>/
         try:
             from plugins.context_engine import load_context_engine

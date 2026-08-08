@@ -1665,6 +1665,32 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        # DCP context engine config — only active when engine == "dcp".
+        "dcp": {
+            "enabled": True,
+            "compress": {
+                "mode": "range",
+                "permission": "allow",
+                "maxContextLimit": 100000,
+                "minContextLimit": 50000,
+                "nudgeFrequency": 5,
+                "iterationNudgeThreshold": 15,
+                "nudgeForce": "soft",
+            },
+            "strategies": {
+                "deduplication": {
+                    "enabled": True,
+                },
+                "purgeErrors": {
+                    "enabled": True,
+                    "turns": 4,
+                },
+            },
+            "turnProtection": {
+                "enabled": False,
+                "turns": 4,
+            },
+        },
         # Return freed glibc allocator pages after long-running agent/TUI
         # cleanup boundaries. Unsupported platforms are safe no-ops.
         "memory_trim": {

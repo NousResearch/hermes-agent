@@ -1981,6 +1981,34 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
+        # Let the active context engine transform the API-call copy.
+        # DCP uses this to add refs, compression block placeholders, and
+        # nudges without mutating the canonical messages transcript.
+        # Runs after sanitization/normalization so the transform sees the
+        # final wire shape, and before prompt-cache marker placement so
+        # caching logic sees the actual outgoing request.
+        _ctx_engine = getattr(agent, "context_compressor", None)
+        if _ctx_engine is not None:
+            _transform_hook = getattr(_ctx_engine, "transform_api_messages", None)
+            if callable(_transform_hook):
+                try:
+                    api_messages = _transform_hook(
+                        api_messages,
+                        canonical_messages=messages,
+                        system_prompt=effective_system,
+                        tools=agent.tools,
+                        api_call_count=api_call_count,
+                        model=agent.model,
+                        provider=agent.provider,
+                        session_id=agent.session_id,
+                    )
+                except Exception as _ctx_err:
+                    request_logger.warning(
+                        "Context engine transform_api_messages failed (session=%s): %s",
+                        getattr(agent, "session_id", None) or "-",
+                        _ctx_err,
+                    )
+
         # NOTE (empty-content class fix): no send-time pad loop here.  The
         # single owner for "never send a turn strict wire validation rejects
         # as empty" is ``repair_empty_non_final_messages``, which runs inside

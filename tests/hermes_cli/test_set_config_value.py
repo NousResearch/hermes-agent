@@ -493,6 +493,17 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        # display keys resolved by gateway/display_config rather than
+        # DEFAULT_CONFIG: the runtime reads these, so the validator must
+        # not warn on them.
+        "display.tool_progress",
+        "display.long_running_notifications",
+        "display.busy_ack_detail",
+        "display.cleanup_progress",
+        "display.live_status",
+        # ...while keys with a DEFAULT_CONFIG seed keep passing too.
+        "display.tool_progress_command",
+        "display.tool_progress_grouping",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
@@ -503,6 +514,10 @@ class TestValidateConfigKey:
         ("gateway.discord.gateway_restart_notification", None),  # no close suggestion
         ("disco", "discord"),
         ("agent.max_turn", "agent.max_turns"),
+        # Typo of a gateway-resolved display key must suggest the real key
+        # (the old candidate set sent display.tool_progress users to
+        # display.tool_progress_command).
+        ("display.tool_progres", "display.tool_progress"),
     ])
     def test_unknown_keys_with_suggestion(self, key, expected_in_suggestion):
         from hermes_cli.config import _validate_config_key

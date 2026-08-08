@@ -4748,6 +4748,26 @@ def _suggest_closest_key(key: str, candidates: set[str], cutoff: float = 0.6) ->
     return matches[0] if matches else None
 
 
+def _gateway_display_overrideable_keys() -> frozenset:
+    """Display keys resolved by the gateway display layer, not DEFAULT_CONFIG.
+
+    ``gateway/display_config.py`` keeps its own defaults
+    (``_GLOBAL_DEFAULTS`` / ``OVERRIDEABLE_KEYS``) for the settings that
+    support per-platform overrides — several of them (``tool_progress``,
+    ``long_running_notifications``, ``busy_ack_detail``, ...) are read at
+    runtime but have no seed in ``DEFAULT_CONFIG['display']``.  A plain
+    DEFAULT_CONFIG walk therefore flags them as unknown even though Hermes
+    reads them (e.g. ``hermes config set display.tool_progress verbose``
+    warned and suggested ``display.tool_progress_command``).
+    Fail-open: an import problem just disables the extra allowlist.
+    """
+    try:
+        from gateway.display_config import OVERRIDEABLE_KEYS
+        return OVERRIDEABLE_KEYS
+    except Exception:
+        return frozenset()
+
+
 def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     """Validate a dotted config-key path against the known schema.
 
@@ -4830,8 +4850,18 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
             # leaf with a dict, matching pre-existing behavior).
             return True, None
         if seg not in node:
+            # ``display.*`` has a second schema source: the gateway display
+            # resolver (see _gateway_display_overrideable_keys). Treat a hit
+            # there like a DEFAULT_CONFIG scalar leaf — the key is known,
+            # and anything deeper is handled by write-time coercion.
+            extra = (
+                _gateway_display_overrideable_keys()
+                if consumed == ["display"] else frozenset()
+            )
+            if seg in extra:
+                return True, None
             # Suggest the closest sibling at this depth.
-            sibling_suggestion = _suggest_closest_key(seg, set(node.keys()))
+            sibling_suggestion = _suggest_closest_key(seg, set(node.keys()) | set(extra))
             if sibling_suggestion is not None:
                 fixed_path = ".".join(consumed + [sibling_suggestion])
                 return False, fixed_path

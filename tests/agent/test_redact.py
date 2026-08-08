@@ -4,7 +4,13 @@ import logging
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import (
+    RedactingFormatter,
+    mask_secret,
+    redact_cdp_url,
+    redact_credential_url,
+    redact_sensitive_text,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -958,6 +964,26 @@ class TestFireworksToken:
         result = redact_sensitive_text(f"text {short} here", force=True)
         assert short in result
 
+
+
+class TestRedactCredentialUrl:
+    @pytest.mark.parametrize(
+        "parameter",
+        ["code", "signature", "x-amz-signature", "auth", "jwt", "session"],
+    )
+    def test_masks_established_sensitive_query_params(self, parameter):
+        url = f"https://endpoint.example/mcp?{parameter}=opaque-secret&scope=read"
+
+        out = redact_credential_url(url)
+
+        assert "opaque-secret" not in out
+        assert f"{parameter}=***" in out
+        assert "scope=read" in out
+
+    def test_uses_exact_query_name_matching(self):
+        url = "https://endpoint.example/mcp?session_id=visible&monkey=banana"
+
+        assert redact_credential_url(url) == url
 
 
 class TestRedactCdpUrl:

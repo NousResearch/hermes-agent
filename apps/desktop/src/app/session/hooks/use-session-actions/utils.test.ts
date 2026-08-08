@@ -682,6 +682,115 @@ describe('preserveLocalPendingTurnMessages', () => {
     )
   })
 
+  // Compression rewrites history, so the warm cache's settled `assistant-stream-*`
+  // rows with no local user anchor are stale and must not be re-appended after
+  // the authoritative rows. Neither the stream-id prefix nor `pending: false`
+  // alone establishes liveness once role ordinals stop aligning after compression.
+  it('does not append settled assistant-stream rows from a warm cache after compression', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: false }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: false }),
+      msg('assistant-stream-stale-3', 'assistant', 'compressed-away reply three', { pending: false })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, pollutedWarmCache)).toEqual(authoritative)
+  })
+
+  // Observed-order companion to the no-anchor case above: the warm cache holds
+  // the finished streamed rows BEFORE the newest local user (compression
+  // rewrote the transcript below the current turn). The authoritative
+  // transcript carries that same newest user and its committed reply, so only
+  // rows AFTER the newest local user can be a live tail — this pre-user stream
+  // history must not be re-appended after the authoritative rows.
+  it('does not append settled assistant-stream history that precedes the newest local user after compression', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: false }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: false }),
+      msg('user-inflight', 'user', 'the current prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, pollutedWarmCache)).toEqual(authoritative)
+  })
+
+  // The old implementation has already appended the stale settled stream rows
+  // after the authoritative rows, so the warm cache is permanently polluted.
+  // Re-running reconciliation must converge: when the newest local user is
+  // already the current authoritative turn and the authoritative transcript
+  // carries an assistant after it, these unmatched settled rows are leftovers
+  // of that earlier reconciliation, not the unique-copy sibling, and must not
+  // be re-appended.
+  it('does not re-append stale settled streams when the current turn is already authoritative', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const alreadyPolluted = [
+      ...authoritative,
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: false }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: false })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, alreadyPolluted)).toBe(authoritative)
+  })
+
+  // Live-stream rows can stay `pending: true` after a gateway disconnect even
+  // though the turn already committed — the renderer never saw message.complete
+  // (observed as "Connection error" then a resume). An extra stale stream row in
+  // the warm cache shifts the tail rows out of role-ordinal alignment with the
+  // authoritative transcript, so the dead still-pending rows fall through BOTH
+  // the ordinal pairing and the settled-only convergence gates, and get
+  // re-appended after the authoritative rows — the same reply rendered twice.
+  // The authoritative transcript already carries the user turn and its reply,
+  // so a still-pending unmatched stream row is a duplicate, not a live tail.
+  it('drops a still-pending stream row the authoritative turn already supersedes after ordinal shift', () => {
+    const authoritative = [
+      msg('1-user-stored', 'user', 'prompt one'),
+      msg('2-assistant-stored', 'assistant', 'reply one'),
+      msg('3-user-stored', 'user', 'prompt two'),
+      msg('4-assistant-stored', 'assistant', 'reply two')
+    ]
+
+    const disconnectedWarmCache = [
+      msg('1-user-stored', 'user', 'prompt one'),
+      msg('assistant-stream-stale', 'assistant', 'compressed-away reply', { pending: true }),
+      msg('2-assistant-stream', 'assistant', 'reply one', { pending: true }),
+      msg('3-user-stored', 'user', 'prompt two'),
+      msg('4-assistant-stream', 'assistant', 'reply two', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, disconnectedWarmCache)).toBe(authoritative)
+  })
+
+  // Same disconnect-residue class, pre-user variant: a still-pending stream row
+  // with no live local user anchor (or before the newest one) is compressed-away
+  // or stale history, never the in-flight tail — `pending: true` alone does not
+  // make it live once the authoritative transcript has moved past it.
+  it('drops a still-pending stream row that precedes the newest local user after ordinal shift', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const disconnectedWarmCache = [
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: true }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: true }),
+      msg('user-inflight', 'user', 'the current prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, disconnectedWarmCache)).toBe(authoritative)
+  })
+
   it('drops the live tail once the latest authoritative user has persisted it after compression', () => {
     const compressedAuthority = [
       msg('stored-user', 'user', 'the one genuinely in-flight prompt'),
@@ -1085,6 +1194,57 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserved).toHaveLength(4)
     expect(chatMessageText(preserved[1])).toBe('first answer')
     expect(preserved.filter(message => message.role === 'assistant')).toHaveLength(2)
+  })
+
+  // Stale optimistic user: the row was already committed (its exact text exists
+  // in the authoritative transcript), but the renderer's warm cache kept BOTH
+  // the committed row and the optimistic duplicate — so the duplicate's
+  // role-ordinal shifts past the committed user onto a LATER user (e.g. a
+  // background process notice), and neither the newest-user check nor ordinal
+  // pairing can see it anymore. It must still be dropped: its send time (from
+  // the optimistic id) matches the committed row's timestamp within the commit
+  // window.
+  it('drops a stale optimistic user row when ordinal pairing lands on a later user', () => {
+    const taskText = '任务：BM 设计卡批 2——D 卡'
+    const history = [msg('1-user-stored', 'user', 'earlier question')]
+    const committedTask = msg('2-user-stored', 'user', taskText, { timestamp: 1000 })
+    const laterUser = msg('3-user-stored', 'user', '[IMPORTANT: background process done]', { timestamp: 1010 })
+    const next = [...history, committedTask, laterUser]
+
+    // The warm cache already carries the committed row AND the optimistic
+    // duplicate — the duplicate pairs with the LATER user by ordinal now. Its
+    // optimistic id embeds the same send time as the committed row (1000 s).
+    const optimisticStale = msg('user-1000000-abc123', 'user', taskText)
+    const previous = [...history, committedTask, optimisticStale, laterUser]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).not.toContain('user-1000000-abc123')
+    expect(preserved.filter(message => chatMessageText(message).includes(taskText))).toHaveLength(1)
+  })
+
+  // A genuinely NEW re-send of the same text (e.g. the user re-sends an OLDER
+  // prompt after a disconnect — the earlier committed copy is minutes old and
+  // a later user message has since arrived) must NOT be suppressed by the
+  // stale-row guard: its send time is well outside the commit window of the
+  // older committed row, so it is preserved and rendered.
+  it('preserves a fresh re-send of the same text sent well after the committed copy', () => {
+    const promptText = 'retry this prompt'
+    const committedFirst = msg('1-user-stored', 'user', promptText, { timestamp: 1000 })
+    const committedSecond = msg('2-user-stored', 'user', 'something else', { timestamp: 1100 })
+    const next = [committedFirst, committedSecond]
+
+    // The user re-sends the OLDER prompt 5 minutes later — a fresh optimistic
+    // row whose send time (1300 s) is far outside the commit window, and whose
+    // text matches a non-latest user (so the pre-existing newest-user gate does
+    // not see it either).
+    const optimisticResend = msg('user-1300000-abc123', 'user', promptText)
+    const previous = [committedFirst, committedSecond, optimisticResend]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toContain('user-1300000-abc123')
+    expect(preserved.filter(message => chatMessageText(message).includes(promptText))).toHaveLength(2)
   })
 })
 

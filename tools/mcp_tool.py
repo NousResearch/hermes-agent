@@ -5342,6 +5342,23 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
             text_result = "\n".join(parts) if parts else ""
 
+            # Preserve embedded HTML resources from the MCP Apps extension
+            # so the desktop client can render them as visual cards. When a
+            # content block is a resource with mimeType text/html, the HTML
+            # text is already in text_result (via _render_mcp_resource_block),
+            # but we also capture it separately so the desktop can distinguish
+            # it from plain text and render it in an iframe.
+            embedded_html = ""
+            for block in (result.content or []):
+                if not hasattr(block, "resource") or block.resource is None:
+                    continue
+                resource = block.resource
+                if getattr(resource, "mimeType", None) == "text/html":
+                    html_text = getattr(resource, "text", None)
+                    if html_text and isinstance(html_text, str) and html_text.strip():
+                        embedded_html = html_text
+                        break
+
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
             # is machine-oriented (JSON metadata).  For an AI agent, content
@@ -5349,12 +5366,21 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
                 if text_result:
-                    return json.dumps({
+                    result_obj = {
                         "result": text_result,
                         "structuredContent": structured,
-                    }, ensure_ascii=False)
-                return json.dumps({"result": structured}, ensure_ascii=False)
-            return json.dumps({"result": text_result}, ensure_ascii=False)
+                    }
+                    if embedded_html:
+                        result_obj["_embedded_html"] = embedded_html
+                    return json.dumps(result_obj, ensure_ascii=False)
+                result_obj = {"result": structured}
+                if embedded_html:
+                    result_obj["_embedded_html"] = embedded_html
+                return json.dumps(result_obj, ensure_ascii=False)
+            result_obj = {"result": text_result}
+            if embedded_html:
+                result_obj["_embedded_html"] = embedded_html
+            return json.dumps(result_obj, ensure_ascii=False)
 
         def _call_once():
             return _run_on_mcp_loop(_call, timeout=tool_timeout)

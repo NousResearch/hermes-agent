@@ -52,6 +52,7 @@ import {
   clampForDisplay,
   cleanVisibleText,
   countDiffLineStats,
+  extractEmbeddedHtml,
   inlineDiffFromResult,
   isCardTool,
   isFileEditTool,
@@ -697,6 +698,31 @@ function ToolEntry({ part }: ToolEntryProps) {
                 )}
               </div>
             ))}
+          {(() => {
+            const embeddedHtml = extractEmbeddedHtml(result)
+            if (!embeddedHtml) return null
+            return (
+              <div className="mt-2 overflow-hidden rounded-lg border border-(--ui-stroke-secondary)" data-slot="tool-embedded-html">
+                {/*
+                 * Security: sandbox without any allow-* flags is the most
+                 * restrictive iframe policy. The embedded HTML from MCP
+                 * servers is untrusted content — it must not execute scripts,
+                 * access the parent DOM, submit forms, or make network
+                 * requests. MCP Apps cards are pure visual (inline CSS,
+                 * inline base64 images, no JavaScript). If a card needs
+                 * interactivity in the future, use sandbox="allow-scripts"
+                 * (never allow-same-origin together with allow-scripts,
+                 * as that combination lets the iframe escape its sandbox).
+                 */}
+                <iframe
+                  srcDoc={embeddedHtml}
+                  sandbox=""
+                  className="h-[240px] w-full border-0"
+                  style={{ minHeight: '200px', background: 'transparent' }}
+                />
+              </div>
+            )
+          })()}
           {toolViewMode === 'technical' && <ToolPayloadDisclosure args={part.args} result={part.result} />}
         </div>
       )}

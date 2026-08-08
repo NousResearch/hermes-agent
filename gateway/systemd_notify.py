@@ -57,6 +57,83 @@ def watchdog_interval_seconds() -> Optional[float]:
     return interval
 
 
+def _watchdog_pid_matches_current_process() -> bool:
+    """Reject a WATCHDOG_PID inherited from another process."""
+    raw_pid = os.environ.get("WATCHDOG_PID", "").strip()
+    if not raw_pid:
+        return True
+    try:
+        return int(raw_pid) == os.getpid()
+    except (TypeError, ValueError):
+        return False
+
+
+class SystemdStartupDeadline:
+    """Extend startup while a watchdog-enabled Type=notify unit initializes."""
+
+    def __init__(
+        self,
+        *,
+        config_enabled: bool = True,
+        interval_seconds: float = 30.0,
+        extend_seconds: int = 60,
+    ) -> None:
+        self._config_enabled = bool(config_enabled)
+        self._interval_seconds = max(0.01, float(interval_seconds))
+        self._extend_usec = max(1, int(extend_seconds * 1_000_000))
+        self._task: Optional[asyncio.Task[None]] = None
+
+    @property
+    def enabled(self) -> bool:
+        return (
+            self._config_enabled
+            and watchdog_interval_seconds() is not None
+            and _watchdog_pid_matches_current_process()
+        )
+
+    @property
+    def task(self) -> Optional[asyncio.Task[None]]:
+        return self._task
+
+    def start(self) -> bool:
+        """Start repeatedly extending systemd's startup deadline."""
+        if not self.enabled:
+            return False
+        if self._task is not None and not self._task.done():
+            return True
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        self._task = asyncio.create_task(
+            self._run(), name="hermes-systemd-startup-deadline"
+        )
+        return True
+
+    async def _run(self) -> None:
+        try:
+            while True:
+                notify(f"EXTEND_TIMEOUT_USEC={self._extend_usec}")
+                await asyncio.sleep(self._interval_seconds)
+        except asyncio.CancelledError:
+            return
+
+    async def stop(self) -> None:
+        """Cancel startup notifications without emitting runtime state."""
+        task = self._task
+        self._task = None
+        if task is None or task is asyncio.current_task():
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
+
 class SystemdWatchdog:
     """Feed systemd while the asyncio event loop continues to make progress."""
 

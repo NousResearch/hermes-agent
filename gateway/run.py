@@ -65,6 +65,7 @@ from agent.turn_context import (
 )
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.systemd_notify import SystemdStartupDeadline
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -26899,6 +26900,45 @@ def _shutdown_gateway_health_export(runner: Any) -> None:
         logger.debug("gateway health OTLP export shutdown failed", exc_info=True)
 
 
+async def _discover_mcp_and_start_runner(
+    runner: GatewayRunner,
+) -> tuple[bool, SystemdStartupDeadline]:
+    """Start the runner and keep its systemd startup deadline active."""
+    deadline = SystemdStartupDeadline(
+        config_enabled=runner.config.systemd_watchdog_seconds > 0
+    )
+    deadline.start()
+    try:
+        # Keep the event loop responsive while a configured MCP server is slow
+        # or unreachable. The deadline task can therefore continue notifying
+        # systemd throughout MCP discovery and sequential adapter startup.
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, discover_mcp_tools)
+        except Exception as exc:
+            logger.debug("MCP tool discovery failed: %s", exc)
+        success = await runner.start()
+    except BaseException:
+        await deadline.stop()
+        raise
+    if not success:
+        await deadline.stop()
+    return success, deadline
+
+
+async def _complete_systemd_startup(
+    deadline: SystemdStartupDeadline,
+    runner: GatewayRunner,
+) -> None:
+    """Stop deadline extension immediately before the runtime READY signal."""
+    await deadline.stop()
+    start_watchdog = getattr(runner, "_start_systemd_watchdog", None)
+    if callable(start_watchdog):
+        start_watchdog()
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -27343,22 +27383,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     _ensure_windows_gateway_venv_imports()
 
-    # MCP tool discovery — run in an executor so the asyncio event loop
-    # stays responsive even when a configured MCP server is slow or
-    # unreachable.  discover_mcp_tools() uses a blocking 120s wait
-    # internally; calling it from the loop thread would freeze platform
-    # heartbeats (Discord shard, Telegram polling) until it returned.
-    # See #16856.
+    # MCP discovery and adapter startup run under a renewable systemd startup
+    # deadline when the opt-in watchdog unit owns the notify environment.
     try:
-        from tools.mcp_tool import discover_mcp_tools
-        _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(None, discover_mcp_tools)
-    except Exception as e:
-        logger.debug("MCP tool discovery failed: %s", e)
-
-    # Start the gateway
-    try:
-        success = await runner.start()
+        (
+            success,
+            systemd_startup_deadline,
+        ) = await _discover_mcp_and_start_runner(runner)
     except BaseException:
         _shutdown_gateway_health_export(runner)
         raise
@@ -27376,6 +27407,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception:
         pass
     if runner.should_exit_cleanly:
+        await systemd_startup_deadline.stop()
         _shutdown_gateway_health_export(runner)
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
@@ -27390,6 +27422,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             raise SystemExit(runner.exit_code)
         return True
     if not runner._running:
+        await systemd_startup_deadline.stop()
         # Startup was intentionally aborted by restart/shutdown before entering
         # running mode; preserve that lifecycle path without starting cron.
         try:
@@ -27475,11 +27508,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     housekeeping_thread.start()
 
     # READY is emitted only after adapters, cron, and housekeeping have all
-    # reached their running boundary. Missing config/systemd runtime state
-    # leaves the watchdog disabled without changing gateway behavior.
-    start_watchdog = getattr(runner, "_start_systemd_watchdog", None)
-    if callable(start_watchdog):
-        start_watchdog()
+    # reached their running boundary. Stop startup extensions immediately
+    # before the runtime watchdog sends READY=1.
+    await _complete_systemd_startup(systemd_startup_deadline, runner)
 
     # Wait for shutdown
     await runner.wait_for_shutdown()

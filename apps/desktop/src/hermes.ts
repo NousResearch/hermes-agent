@@ -1305,33 +1305,33 @@ export function revokePairing(platform: string, userId: string): Promise<{ ok: b
 // shared JSON store the CLI/dashboard also drive. Enable mutates config and
 // best-effort restarts the gateway; subscription changes hot-reload.
 
-export function getWebhooks(): Promise<WebhooksResponse> {
+export function getWebhooks(profile?: null | string): Promise<WebhooksResponse> {
   return window.hermesDesktop.api<WebhooksResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/webhooks'
   })
 }
 
-export function enableWebhooks(): Promise<WebhookEnableResponse> {
+export function enableWebhooks(profile?: null | string): Promise<WebhookEnableResponse> {
   return window.hermesDesktop.api<WebhookEnableResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/webhooks/enable',
     method: 'POST'
   })
 }
 
-export function createWebhook(body: WebhookCreatePayload): Promise<WebhookCreateResponse> {
+export function createWebhook(body: WebhookCreatePayload, profile?: null | string): Promise<WebhookCreateResponse> {
   return window.hermesDesktop.api<WebhookCreateResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/webhooks',
     method: 'POST',
     body
   })
 }
 
-export function deleteWebhook(name: string): Promise<{ ok: boolean }> {
+export function deleteWebhook(name: string, profile?: null | string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/webhooks/${encodeURIComponent(name)}`,
     method: 'DELETE'
   })
@@ -1339,10 +1339,11 @@ export function deleteWebhook(name: string): Promise<{ ok: boolean }> {
 
 export function setWebhookEnabled(
   name: string,
-  enabled: boolean
+  enabled: boolean,
+  profile?: null | string
 ): Promise<{ enabled: boolean; name: string; ok: boolean }> {
   return window.hermesDesktop.api<{ enabled: boolean; name: string; ok: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/webhooks/${encodeURIComponent(name)}/enabled`,
     method: 'PUT',
     body: { enabled }
@@ -1651,9 +1652,9 @@ export function setModelAssignment(body: ModelAssignmentRequest): Promise<ModelA
   })
 }
 
-export function restartGateway(): Promise<ActionResponse> {
+export function restartGateway(profile?: null | string): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/gateway/restart',
     method: 'POST'
   })
@@ -1677,9 +1678,9 @@ export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResp
   })
 }
 
-export function getActionStatus(name: string, lines = 200): Promise<ActionStatusResponse> {
+export function getActionStatus(name: string, lines = 200, profile?: null | string): Promise<ActionStatusResponse> {
   return window.hermesDesktop.api<ActionStatusResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/actions/${encodeURIComponent(name)}/status?lines=${Math.max(1, lines)}`
   })
 }

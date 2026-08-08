@@ -155,6 +155,29 @@ _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _cfg_path = None
 _session_resume_lock = threading.Lock()
+
+def _coerce_session_id(value: Any) -> str:
+    """Coerce session_id to a safe, hashable lookup key.
+
+    JSON-RPC clients might send malformed types (e.g. list/dict) for
+    ``params.session_id``. Directly using that value in ``_sessions.get()``
+    would raise ``TypeError`` and can crash a handler.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return str(value)
+    except Exception:
+        return ""
+
+
+def _safe_session_get(session_id_value: Any) -> dict | None:
+    """Session lookup that never crashes on malformed session_id types."""
+    sid = _coerce_session_id(session_id_value)
+    return _sessions.get(sid)
+
 try:
     _slash_timeout = float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S") or "45")
 except (ValueError, TypeError):
@@ -2351,7 +2374,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
 
 def _sess_nowait(params, rid):
-    s = _sessions.get(params.get("session_id") or "")
+    s = _safe_session_get(params.get("session_id"))
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
 
 
@@ -2381,7 +2404,7 @@ def _completion_cwd(params: dict | None = None) -> str:
     params = params or {}
     raw = (
         params.get("cwd")
-        or _sessions.get(params.get("session_id") or "", {}).get("cwd")
+        or (_safe_session_get(params.get("session_id")) or {}).get("cwd")
         # A session bound to another profile resolves its workspace from THAT
         # profile's config before falling back to the launch profile's env var.
         or _profile_configured_cwd(_profile_home(params.get("profile")))
@@ -10672,7 +10695,7 @@ def _respond(rid, params, key, *, allow_expired=False):
 @method("config.set")
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
-    session = _sessions.get(params.get("session_id", ""))
+    session = _safe_session_get(params.get("session_id"))
 
     if key == "model":
         try:

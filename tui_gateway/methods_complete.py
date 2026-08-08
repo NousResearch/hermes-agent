@@ -359,7 +359,7 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.inventory import build_model_options_payload
 
-        session = _sessions.get(params.get("session_id", ""))
+        session = _safe_session_get(params.get("session_id"))
         agent = session.get("agent") if session else None
         # Layer agent-session state on top of disk config — once an agent
         # is spawned, IT owns the live provider/model/base_url. Empty
@@ -430,7 +430,7 @@ def _(rid, params: dict) -> dict:
         # surface stays in lock-step with model.options + dashboard
         # /api/model/options. picker_hints=True ensures the returned row
         # carries `authenticated` for the TUI frontend.
-        session = _sessions.get(params.get("session_id", ""))
+        session = _safe_session_get(params.get("session_id"))
         agent = session.get("agent") if session else None
         ctx = _model_picker_context(agent)
         payload = build_models_payload(

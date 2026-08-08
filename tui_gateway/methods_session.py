@@ -1188,7 +1188,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4030, "llm.oneshot requires a template or instructions/input")
 
     # Optional: inherit the live session's model (no error if absent).
-    session = _sessions.get(params.get("session_id") or "")
+    session = _safe_session_get(params.get("session_id"))
     main_runtime = _main_runtime_from_agent(session.get("agent")) if session else None
 
     try:

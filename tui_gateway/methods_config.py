@@ -215,7 +215,7 @@ def _(rid, params: dict) -> dict:
         )
     if key == "reasoning":
         cfg = _load_cfg()
-        session = _sessions.get(params.get("session_id", ""))
+        session = _safe_session_get(params.get("session_id"))
         reasoning_config = None
         if session is not None:
             if isinstance(session.get("create_reasoning_override"), dict):
@@ -249,7 +249,7 @@ def _(rid, params: dict) -> dict:
         # Prefer the session's live/pinned value — `config.set fast` is
         # session-scoped, so the global key may not reflect this chat. A
         # pre-build session keeps its pin in create_service_tier_override.
-        session = _sessions.get(params.get("session_id", ""))
+        session = _safe_session_get(params.get("session_id"))
         tier = None
         if session is not None:
             agent = session.get("agent")

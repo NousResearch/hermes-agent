@@ -1430,7 +1430,8 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
         message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "") or ""
         notifier_profile = (
-            get_session_env("HERMES_SESSION_PROFILE", "")
+            get_session_env("HERMES_SESSION_TRANSPORT_PROFILE", "")
+            or get_session_env("HERMES_SESSION_PROFILE", "")
             or os.environ.get("HERMES_PROFILE")
         )
         if not notifier_profile:

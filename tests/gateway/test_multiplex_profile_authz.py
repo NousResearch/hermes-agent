@@ -74,6 +74,71 @@ def test_active_profile_stamp_resolves_primary_adapter(monkeypatch):
     assert runner._authorization_adapter(Platform.WECOM, profile="dev") is default_adapter
 
 
+def test_session_context_records_primary_transport_owner_for_routed_runtime(monkeypatch):
+    """A runtime route must not relabel the bot that will send notifications."""
+    runner, default_adapter, _secondary_adapter = _make_multiplex_runner(monkeypatch)
+    runner._active_profile_name = lambda: "default"
+    source = SessionSource(
+        platform=Platform.WECOM,
+        user_id="allowed-user",
+        chat_id="routed-chat",
+        chat_type="dm",
+        profile="daily",
+    )
+    setattr(source, "_transport_adapter_ref", lambda: default_adapter)
+
+    assert runner._adapter_for_source(source) is default_adapter
+    assert runner._adapter_profile_for_source(source) == "default"
+
+    from gateway.session_context import clear_session_vars, get_session_env
+
+    tokens = runner._set_session_env(
+        SimpleNamespace(source=source, session_key="daily-routed-session")
+    )  # type: ignore[arg-type]
+    try:
+        assert get_session_env("HERMES_SESSION_PROFILE") == "daily"
+        assert get_session_env("HERMES_SESSION_TRANSPORT_PROFILE") == "default"
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_transport_owner_keeps_distinct_secondary_adapter_isolated(monkeypatch):
+    runner, default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)
+    runner._active_profile_name = lambda: "default"
+    source = SessionSource(
+        platform=Platform.WECOM,
+        user_id="allowed-user",
+        chat_id="coder-chat",
+        chat_type="dm",
+        profile="coder",
+    )
+    setattr(source, "_transport_adapter_ref", lambda: secondary_adapter)
+
+    assert runner._adapter_profile_for_source(source) == "coder"
+    assert runner._adapter_for_source(source) is secondary_adapter
+    assert runner._adapter_for_source(source) is not default_adapter
+
+
+def test_transport_owner_uses_active_profile_for_routed_relay(monkeypatch):
+    """The shared Relay socket belongs to the active gateway, not the runtime route."""
+    runner, _default_adapter, _secondary_adapter = _make_multiplex_runner(monkeypatch)
+    runner._active_profile_name = lambda: "default"
+    relay_adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters[Platform.RELAY] = relay_adapter  # type: ignore[assignment]
+    source = SessionSource(
+        platform=Platform.WECOM,
+        user_id="allowed-user",
+        chat_id="relay-chat",
+        chat_type="dm",
+        profile="daily",
+        delivered_via_upstream_relay=True,
+    )
+    setattr(source, "_transport_adapter_ref", lambda: relay_adapter)
+
+    assert runner._adapter_for_source(source) is relay_adapter
+    assert runner._adapter_profile_for_source(source) == "default"
+
+
 def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
     """Unauthorized-DM behavior must read the secondary adapter's dm_policy."""
     runner, _default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)

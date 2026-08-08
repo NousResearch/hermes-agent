@@ -2,6 +2,7 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
 
 from gateway.config import Platform
 from gateway.kanban_watchers import (
@@ -214,6 +215,54 @@ def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(
     assert len(_unseen_terminal_events_for(foreign_tid, "default-chat")) == 1
 
 
+@pytest.mark.parametrize("terminal_kind", ["completed", "blocked"])
+def test_routed_runtime_auto_subscription_uses_receiving_transport_profile(
+    tmp_path, monkeypatch, terminal_kind,
+):
+    """A shared bot delivers routed-runtime terminal events back to topic 2."""
+    db_path = tmp_path / f"routed-{terminal_kind}.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import kanban_tools
+
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title=terminal_kind, assignee="worker")
+        tokens = set_session_vars(
+            platform="telegram",
+            chat_id="shared-bot-chat",
+            chat_type="group",
+            thread_id="2",
+            profile="daily",
+            transport_profile="default",
+        )
+        try:
+            assert kanban_tools._maybe_auto_subscribe(conn, task_id) is True
+        finally:
+            clear_session_vars(tokens)
+
+        [subscription] = kb.list_notify_subs(conn, task_id)
+        assert subscription["notifier_profile"] == "default"
+        assert subscription["thread_id"] == "2"
+        if terminal_kind == "completed":
+            kb.complete_task(conn, task_id, summary="done through shared bot")
+        else:
+            kb.block_task(conn, task_id, reason="review needed", kind="needs_input")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._kanban_notifier_profile = "default"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert [delivery["chat_id"] for delivery in adapter.sent] == ["shared-bot-chat"]
+    assert adapter.sent[0]["metadata"]["thread_id"] == "2"
+    assert terminal_kind in adapter.sent[0]["text"]
+
+
 def test_legacy_subscription_requires_confirmed_dispatcher_lock_owner(
     tmp_path, monkeypatch,
 ):
@@ -289,6 +338,80 @@ class ReportedFailureAdapter:
         self.attempts += 1
         from gateway.platforms.base import SendResult
         return SendResult(success=False, error="Not connected")
+
+
+class RetryThenSuccessAdapter:
+    """Report one transport failure, then accept the retry."""
+
+    def __init__(self):
+        self.attempts = []
+
+    async def send(self, chat_id, text, metadata=None):
+        from gateway.platforms.base import SendResult
+
+        self.attempts.append({
+            "chat_id": chat_id,
+            "text": text,
+            "metadata": metadata or {},
+        })
+        if len(self.attempts) == 1:
+            return SendResult(success=False, error="temporary Telegram failure")
+        return SendResult(success=True, message_id="telegram-message-1")
+
+
+def test_notifier_retries_reported_failure_then_succeeds_in_topic(
+    tmp_path, monkeypatch,
+):
+    """A failed topic delivery stays retryable until Telegram accepts it."""
+    db_path = tmp_path / "reported-failure-retry.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="retry topic", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="-100123",
+            thread_id="2",
+        )
+        kb.complete_task(conn, tid, summary="done after retry")
+    finally:
+        conn.close()
+
+    adapter = RetryThenSuccessAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.attempts) == 1
+    assert adapter.attempts[0]["metadata"] == {"thread_id": "2"}
+    conn = kb.connect()
+    try:
+        assert len(kb.list_notify_subs(conn, tid)) == 1
+        _, events = kb.unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="-100123",
+            thread_id="2",
+            kinds=["completed", "blocked"],
+        )
+        assert [event.kind for event in events] == ["completed"]
+    finally:
+        conn.close()
+
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.attempts) == 2
+    assert adapter.attempts[1]["metadata"] == {"thread_id": "2"}
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()
 
 
 def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):

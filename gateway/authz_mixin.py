@@ -178,12 +178,30 @@ class GatewayAuthorizationMixin:
         return None
 
     def _adapter_profile_for_source(self, source: SessionSource) -> Optional[str]:
-        """Resolve the transport-owning profile for adapter policy lookups."""
-        adapter = self._registered_transport_adapter(source)
-        platform = getattr(source, "platform", None)
+        """Resolve the transport-owning profile for policy and delivery.
+
+        The primary adapter registry belongs to the active gateway profile,
+        even when ``source.profile`` names a different routed runtime. Returning
+        that owner explicitly lets notification subscriptions distinguish a
+        shared credential from a real secondary-profile bot.
+        """
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
+        adapter = (
+            self._adapter_for_source(source)
+            if via_relay
+            else self._registered_transport_adapter(source)
+        )
+        platform = Platform.RELAY if via_relay else getattr(source, "platform", None)
         if adapter is not None:
             if adapter is (getattr(self, "adapters", None) or {}).get(platform):
-                return None
+                active_profile_fn = getattr(self, "_active_profile_name", None)
+                if callable(active_profile_fn):
+                    try:
+                        active_profile = str(active_profile_fn() or "").strip()
+                        return active_profile or "default"
+                    except Exception:
+                        pass
+                return "default"
             for profile, profile_adapters in (
                 getattr(self, "_profile_adapters", None) or {}
             ).items():

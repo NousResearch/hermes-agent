@@ -474,6 +474,37 @@ class TestScopedLocks:
 
         assert not lock_path.exists()
 
+    def test_acquire_scoped_lock_self_reacquires_when_start_times_differ(
+        self, tmp_path, monkeypatch
+    ):
+        """Same PID with two known, differing start_time values must self-reacquire.
+
+        The on-disk record may carry a stale integer (from a previous run or a
+        psutil transient) while the live process now reports a different value.
+        Since the PID is ours, start_time equality is not required.
+        """
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "discord-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "start_time": 111,
+            "kind": "hermes-gateway",
+            "argv": ["hermes_cli/main.py", "gateway", "run", "--replace"],
+            "scope": "discord-bot-token",
+        }))
+
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 987654321)
+
+        acquired, existing = status.acquire_scoped_lock(
+            "discord-bot-token", "secret", metadata={"platform": "discord"}
+        )
+
+        assert acquired is True
+        assert existing["pid"] == os.getpid()
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert payload["start_time"] == 987654321
 
     def test_acquire_scoped_lock_race_second_acquirer_loses(self, tmp_path, monkeypatch):
         """Two racing starters both observe the same stale lock. The loser's

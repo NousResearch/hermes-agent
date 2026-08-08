@@ -27,6 +27,7 @@ gateway:
       enabled: true
       extra:
         relay_url: https://mycommunity.communities.buzz.xyz
+        attachment_hosts: []         # additional exact HTTPS host[:port] origins for inbound files
         channels:                  # channel UUIDs to watch (empty = all joined)
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
@@ -72,6 +73,7 @@ gateway:
       enabled: true
       extra:
         relay_url: https://mycommunity.communities.buzz.xyz
+        attachment_hosts: []         # additional exact HTTPS host[:port] origins for inbound files
         channels:                         # channel UUIDs to watch (empty = all joined)
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
@@ -106,6 +108,21 @@ gateway:
 By default the allow-list is empty, which means every community member who mentions the agent gets a response only if `BUZZ_ALLOW_ALL_USERS=true`; otherwise restrict access by listing npubs or hex pubkeys in `BUZZ_ALLOWED_USERS` (or `allowed_users` in config.yaml). Community membership itself is enforced by the relay — only members can post.
 
 Cron jobs and notifications (`deliver=buzz`) are delivered to the **home channel** — `BUZZ_HOME_CHANNEL` if set, otherwise the first watched channel — and work even when cron runs outside the gateway process.
+
+## Inbound attachments
+
+Buzz messages with native NIP-94 `imeta` tags can deliver images, audio,
+video, and documents to the agent. Hermes downloads attachments only after
+the message has passed self-echo, addressing, and sender authorization checks.
+Each file must use HTTPS and declare an exact byte size and SHA-256 digest;
+redirects, URL credentials, fragments, oversized payloads, and integrity
+mismatches are rejected.
+
+The relay's own HTTPS origin is trusted automatically. If a community stores
+media on another public origin, add its exact `host` or `host:port` to
+`attachment_hosts` under `gateway.platforms.buzz.extra`. Non-default ports
+must be listed explicitly. Protected media that requires authenticated
+retrieval through the Buzz CLI is not handled by this native public-URL path.
 
 ## Run the gateway
 

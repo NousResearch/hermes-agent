@@ -424,6 +424,96 @@ class TestSecretRedactionInDisplay:
         # Exact-match only — substrings like token_count must NOT be masked.
         assert out == cfg
 
+    def test_redact_config_value_masks_secret_suffixes_and_mcp_headers(self):
+        """MCP env suffixes and authorization headers are display secrets."""
+        from hermes_cli.config import redact_config_value
+
+        cfg = {
+            "env": {
+                "GITHUB_PERSONAL_ACCESS_TOKEN": "real-token",
+                "GITHUB_HOST": "https://api.github.com",
+            },
+            "headers": {"Authorization": "Bearer real-secret"},
+        }
+
+        out = redact_config_value(cfg)
+
+        assert "real-token" not in str(out)
+        assert "real-secret" not in str(out)
+        assert out["env"]["GITHUB_HOST"] == "https://api.github.com"
+
+    def test_config_get_redacts_secret_values_in_mcp_servers(self, _isolated_hermes_home, capsys):
+        """config get must not print MCP credentials in YAML output."""
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "mcp_servers:\n"
+            "  github:\n"
+            "    command: github-mcp-server\n"
+            "    env:\n"
+            "      GITHUB_PERSONAL_ACCESS_TOKEN: real-github-token\n"
+            "      GITHUB_HOST: https://api.github.com\n"
+        )
+
+        args = argparse.Namespace(config_command="get", key="mcp_servers", json=False)
+        config_command(args)
+
+        output = capsys.readouterr().out
+        assert "real-github-token" not in output
+        assert "GITHUB_HOST: https://api.github.com" in output
+
+    def test_config_get_json_redacts_nested_mcp_credentials(self, _isolated_hermes_home, capsys):
+        """--json must redact the same nested MCP credentials as YAML output."""
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "mcp_servers:\n"
+            "  proxmox:\n"
+            "    headers:\n"
+            "      Authorization: Bearer real-secret\n"
+        )
+
+        args = argparse.Namespace(config_command="get", key="mcp_servers", json=True)
+        config_command(args)
+
+        output = capsys.readouterr().out
+        assert "real-secret" not in output
+        assert "Authorization" in output
+
+    def test_config_get_redacts_recognizable_secret_under_custom_key(self, _isolated_hermes_home, capsys):
+        """Known token patterns are redacted even under non-secret keys."""
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "custom:\n"
+            "  value: ghp_abcdefghijklmnopqrstuvwxyz123456\n"
+        )
+
+        args = argparse.Namespace(config_command="get", key="custom", json=False)
+        config_command(args)
+
+        output = capsys.readouterr().out
+        assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in output
+
+    def test_config_get_redacts_env_secret_scalar(self, _isolated_hermes_home, capsys):
+        """Direct secret env-key reads must not print the resolved value."""
+        (_isolated_hermes_home / ".env").write_text("GITHUB_TOKEN=real-github-token\n")
+
+        args = argparse.Namespace(config_command="get", key="GITHUB_TOKEN", json=False)
+        config_command(args)
+
+        output = capsys.readouterr().out
+        assert "real-github-token" not in output
+
+    def test_config_get_redacts_even_when_runtime_redaction_is_disabled(self, _isolated_hermes_home, capsys):
+        """Config inspection remains safe when normal output redaction is off."""
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "mcp_servers:\n"
+            "  custom:\n"
+            "    env:\n"
+            "      CUSTOM_PASSWORD: short-password\n"
+        )
+        with patch.dict(os.environ, {"HERMES_REDACT_SECRETS": "false"}):
+            args = argparse.Namespace(config_command="get", key="mcp_servers", json=False)
+            config_command(args)
+
+        output = capsys.readouterr().out
+        assert "short-password" not in output
+
     def test_set_echo_masks_secret_value(self, _isolated_hermes_home, capsys):
         secret = "cfut_ANOTHERSECRET0987654321zyxwvu"
         set_config_value("model.api_key", secret)

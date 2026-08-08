@@ -211,6 +211,20 @@ _API_CALL_MODULES = frozenset({
 })
 
 
+def _moa_client_consumes_prepared_request(client: Any) -> bool:
+    """True when ``client`` is the in-process MoA facade.
+
+    ``_moa_prepared_request`` is a private handshake with
+    ``MoAChatCompletions.create``, and only that facade exposes ``prepare()``.
+    Every other chat-completions object raises TypeError on the unexpected
+    keyword — including the native OpenAI client that credential rotation,
+    provider fallback and dead-connection cleanup rebuild from
+    ``_client_kwargs`` while ``agent.provider`` stays ``"moa"``.
+    """
+    completions = getattr(getattr(client, "chat", None), "completions", None)
+    return callable(getattr(completions, "prepare", None))
+
+
 def _join_truncated_parts(parts: List[str]) -> str:
     """Join continuation fragments, adding a newline where two would glue together (#78577)."""
     joined = ""
@@ -2710,7 +2724,24 @@ def run_conversation(
                 # only after middleware, hooks, and debug dumps so none of them
                 # attempts to serialize it as part of the provider payload.
                 if _moa_prepared_request is not None and agent.provider == "moa":
-                    api_kwargs["_moa_prepared_request"] = _moa_prepared_request
+                    # Re-read the live client instead of trusting the one that
+                    # prepared the request above. Credential rotation, provider
+                    # fallback and dead-connection cleanup all rebuild
+                    # agent.client from _client_kwargs between attempts, and
+                    # pending_moa_prepared_request carries a prepared request
+                    # across exactly that boundary. The rebuilt client is a
+                    # native OpenAI client while provider stays "moa", so this
+                    # private key would reach the SDK as an unexpected keyword
+                    # — a non-retryable TypeError that kills every remaining
+                    # turn on the session.
+                    if _moa_client_consumes_prepared_request(agent.client):
+                        api_kwargs["_moa_prepared_request"] = _moa_prepared_request
+                    else:
+                        logger.warning(
+                            "MoA client replaced mid-turn (client=%s); sending the "
+                            "prepared prompt without the MoA handshake",
+                            type(agent.client).__name__,
+                        )
 
                 # Always prefer the streaming path — even without stream
                 # consumers.  Streaming gives us fine-grained health

@@ -187,3 +187,171 @@ class TestIssue78796NvidiaPrefixRepair:
             == "anthropic/claude-sonnet-4.6"
         )
 
+
+# ── Regression: issue #64787 — ``provider:model`` colon prefixes ───────
+
+# (provider, bare model, expected normalized result).  One row per provider
+# branch that repairs a redundant ``provider/`` prefix, so the colon form is
+# pinned everywhere the slash form already worked.
+_COLON_PREFIX_CASES = [
+    # _MATCHING_PREFIX_STRIP_PROVIDERS
+    ("xai", "grok-5", "grok-5"),
+    ("gemini", "gemini-3-pro", "gemini-3-pro"),
+    ("zai", "glm-5.1", "glm-5.1"),
+    ("minimax", "minimax-m2.7", "minimax-m2.7"),
+    ("minimax-oauth", "minimax-m2.7", "minimax-m2.7"),
+    ("minimax-cn", "minimax-m2.7", "minimax-m2.7"),
+    ("kimi-coding", "kimi-k2.5", "kimi-k2.5"),
+    ("kimi-coding-cn", "kimi-k2.5", "kimi-k2.5"),
+    ("alibaba", "qwen3-max", "qwen3-max"),
+    ("qwen-oauth", "qwen3-max", "qwen3-max"),
+    ("arcee", "trinity-2", "trinity-2"),
+    ("ollama-cloud", "qwen3", "qwen3"),
+    ("xiaomi", "mimo-v2.5-pro", "mimo-v2.5-pro"),
+    # _DOT_TO_HYPHEN_PROVIDERS
+    ("anthropic", "claude-opus-5", "claude-opus-5"),
+    # _STRIP_VENDOR_ONLY_PROVIDERS (+ the Copilot delegation ahead of it)
+    ("openai-codex", "gpt-5.6-sol", "gpt-5.6-sol"),
+    ("copilot", "gpt-5.4", "gpt-5.4"),
+    ("copilot-acp", "gpt-5.4", "gpt-5.4"),
+    # flat-namespace resellers
+    ("opencode-zen", "glm-5.1", "glm-5.1"),
+    ("opencode-go", "minimax-m2.7", "minimax-m2.7"),
+    # DeepSeek canonicalisation
+    ("deepseek", "deepseek-v4-pro", "deepseek-v4-pro"),
+    # _CATALOGUE_PREFIX_REPAIR_PROVIDERS.  The odd one out: here ``nvidia/``
+    # is the *canonical* prefix the API serves, not a redundant one, so both
+    # spellings settle on the catalogue entry rather than on a bare id.
+    (
+        "nvidia",
+        "nemotron-3-ultra-550b-a55b",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+    ),
+]
+
+
+class TestIssue64787ColonProviderPrefix:
+    """``provider:model`` must normalize exactly like ``provider/model``.
+
+    ``hermes chat -m openai-codex:gpt-5.6-sol`` stores the flag verbatim
+    (``cli.py`` -- only a ``moa:`` prefix is special-cased) and hands it
+    straight to ``normalize_model_for_provider``.  Because
+    ``_strip_matching_provider_prefix`` split on ``/`` only, the colon form
+    survived normalization and the provider API received the redundant
+    prefix.  Same reachable inputs: the Desktop model switch
+    (``hermes_cli/web_server.py``), ``/model`` (``hermes_cli/model_switch.py``)
+    and ``model.default`` in ``config.yaml``.
+    """
+
+    @pytest.mark.parametrize("provider,model,expected", _COLON_PREFIX_CASES)
+    def test_colon_prefix_is_stripped(self, provider, model, expected):
+        assert normalize_model_for_provider(f"{provider}:{model}", provider) == expected
+
+    @pytest.mark.parametrize("provider,model,expected", _COLON_PREFIX_CASES)
+    def test_slash_prefix_still_stripped(self, provider, model, expected):
+        """Invariant control: the pre-existing slash behaviour is unchanged."""
+        assert normalize_model_for_provider(f"{provider}/{model}", provider) == expected
+
+    def test_deepseek_colon_prefix_no_longer_downgrades_v_series(self):
+        """``deepseek:deepseek-v4-pro`` used to silently resolve to Flash.
+
+        ``_DEEPSEEK_V_SERIES_RE`` is anchored at ``^deepseek-v<digit>``, so a
+        surviving ``deepseek:`` prefix defeated the match and the unrecognised
+        remainder fell through to ``_normalize_for_deepseek``'s catch-all --
+        routing a user who explicitly picked V4 Pro to the cheaper V4 Flash
+        with no error.  (Before the 2026-07-24 alias retirement the same path
+        landed on ``deepseek-chat``/V3; the catch-all moved, the downgrade did
+        not.)
+        """
+        assert normalize_model_for_provider("deepseek:deepseek-v4-pro", "deepseek") == "deepseek-v4-pro"
+        # Control: the reasoner-keyword path is unaffected by prefix stripping.
+        assert normalize_model_for_provider("deepseek:deepseek-r1", "deepseek") == "deepseek-v4-flash"
+
+    def test_nvidia_colon_prefix_reaches_the_catalogue_repair(self):
+        """``nvidia:<bare>`` used to reach the API with the prefix attached.
+
+        ``_repair_prefix_from_catalogue`` short-circuits on ``/`` and then
+        compares the *whole* name against each catalogue entry's post-slash
+        suffix.  A colon-prefixed id has no slash, so it cleared the
+        short-circuit and then matched nothing — the one dispatch branch that
+        never stripped a matching prefix first, so ``nvidia:nemotron-…``
+        reached build.nvidia.com verbatim and drew the same content-free
+        ``404 page not found`` that #78796 set out to eliminate.
+        """
+        assert (
+            normalize_model_for_provider("nvidia:nemotron-3-super-120b-a12b", "nvidia")
+            == "nvidia/nemotron-3-super-120b-a12b"
+        )
+        # Alias-aware, like every other branch: ``nim`` resolves to ``nvidia``.
+        assert (
+            normalize_model_for_provider("nim:nemotron-3-super-120b-a12b", "nvidia")
+            == "nvidia/nemotron-3-super-120b-a12b"
+        )
+        # The repaired prefix is the catalogue's, not a hardcoded ``nvidia/``.
+        assert normalize_model_for_provider("nvidia:glm-5.2", "nvidia") == "z-ai/glm-5.2"
+
+    @pytest.mark.parametrize("model", [
+        # Slash form: the catalogue short-circuit is the only thing keeping a
+        # self-hosted id addressable, so stripping must NOT reach it.
+        "nvidia/my-local-nim-container",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "z-ai/glm-5.2",
+        # Bare unknown name: a lookup miss stays a miss.
+        "my-local-nim-container",
+        # A colon that is not a provider prefix is left for the catalogue to
+        # match verbatim, exactly as before.
+        "nemotron-3-ultra-550b-a55b:beta",
+    ])
+    def test_nvidia_non_colon_prefixed_forms_are_untouched(self, model):
+        """The #78796 pass-through guarantees survive the colon strip."""
+        assert normalize_model_for_provider(model, "nvidia") == model
+
+    def test_nvidia_colon_prefixed_unknown_name_stays_unrepaired(self):
+        """Strip the redundant prefix, but never invent a catalogue entry.
+
+        ``nvidia:my-local-nim`` names a self-hosted container behind the NVIDIA
+        provider id; the prefix is redundant, the model is not in the
+        catalogue, so the result is the bare id the local NIM actually serves.
+        """
+        assert (
+            normalize_model_for_provider("nvidia:my-local-nim", "nvidia")
+            == "my-local-nim"
+        )
+
+    def test_non_matching_colon_prefix_is_preserved(self):
+        """A colon that is not a matching provider prefix must survive.
+
+        ``llama3:8b`` is an Ollama tag, not a ``provider:model`` pair, so the
+        alias match guard must leave it alone.
+        """
+        assert normalize_model_for_provider("llama3:8b", "ollama-cloud") == "llama3:8b"
+        assert normalize_model_for_provider("kimi-k2.5:free", "opencode-zen") == "kimi-k2.5:free"
+        assert normalize_model_for_provider("openai:gpt-5.4", "xai") == "openai:gpt-5.4"
+
+    def test_custom_provider_colon_slug_is_preserved(self):
+        """``custom:<name>`` is a durable provider identity, not a prefix."""
+        assert normalize_model_for_provider("custom:my-model", "custom") == "custom:my-model"
+        # The slash form keeps its pre-existing meaning.
+        assert normalize_model_for_provider("custom/my-model", "custom") == "my-model"
+
+    def test_variant_suffix_after_slash_prefix_is_untouched(self):
+        """First-separator split: ``/`` wins when it comes before ``:``."""
+        assert (
+            normalize_model_for_provider("anthropic/claude-3.5-sonnet:beta", "openai-codex")
+            == "anthropic/claude-3.5-sonnet:beta"
+        )
+
+    def test_openai_vendor_prefix_on_codex_still_stripped(self):
+        """Regression guard for the existing openai-codex vendor carve-out."""
+        assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
+
+    @pytest.mark.parametrize("model,expected", [
+        ("openai-codex:gpt-5.6-sol", ("openai-codex", ":", "gpt-5.6-sol")),
+        ("anthropic/claude-3.5-sonnet:beta", ("anthropic", "/", "claude-3.5-sonnet:beta")),
+        ("openai-codex:anthropic/claude-opus-5", ("openai-codex", ":", "anthropic/claude-opus-5")),
+        ("gpt-5.4", ("gpt-5.4", "", "")),
+    ])
+    def test_split_provider_prefix_takes_first_separator(self, model, expected):
+        from hermes_cli.model_normalize import _split_provider_prefix
+
+        assert _split_provider_prefix(model) == expected

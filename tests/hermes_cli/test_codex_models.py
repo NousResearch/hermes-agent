@@ -179,3 +179,53 @@ class TestNormalizeModelForProvider:
         # Uses first from available list
         assert cli.model == "gpt-5.3-codex"
 
+
+
+# ── CLI-route regression: issue #64787 (``-m provider:model``) ─────────
+
+
+class TestColonProviderPrefixOnCLIRoute:
+    """End-to-end cover for ``hermes chat -m <provider>:<model>``.
+
+    ``parse_model_input()`` (which does split on the first colon) is NOT on
+    this path -- its only non-test caller is ``acp_adapter/server.py``.  The
+    CLI stores ``--model`` verbatim (only a ``moa:`` prefix is special-cased)
+    and hands it to ``_normalize_model_for_provider`` at agent startup, so the
+    redundant prefix reached the provider API until the shared normalizer
+    learned to split on ``:`` as well as ``/``.
+    """
+
+    def test_cli_stores_colon_model_verbatim(self):
+        """Guards the premise: nothing splits the colon before normalization."""
+        cli = _make_cli(model="openai-codex:gpt-5.6-sol")
+        assert cli.model == "openai-codex:gpt-5.6-sol"
+
+    def test_codex_colon_prefix_stripped_before_agent_startup(self):
+        cli = _make_cli(model="openai-codex:gpt-5.6-sol")
+        changed = cli._normalize_model_for_provider("openai-codex")
+        assert changed is True
+        assert cli.model == "gpt-5.6-sol"
+
+    def test_native_provider_colon_prefix_stripped_before_agent_startup(self):
+        cli = _make_cli(model="zai:glm-5.1")
+        changed = cli._normalize_model_for_provider("zai")
+        assert changed is True
+        assert cli.model == "glm-5.1"
+
+    def test_non_matching_colon_tag_is_left_alone(self):
+        """``llama3:8b`` is an Ollama tag, not a ``provider:model`` pair."""
+        cli = _make_cli(model="llama3:8b")
+        changed = cli._normalize_model_for_provider("ollama-cloud")
+        assert changed is False
+        assert cli.model == "llama3:8b"
+
+    def test_colon_prefix_does_not_select_the_provider(self):
+        """Scope decision: this normalizes the model string only.
+
+        Unlike ``moa:<preset>``, a ``<provider>:<model>`` string does not
+        switch the resolved provider -- that would be a routing change beyond
+        issue #64787 and is deliberately left for a separate PR.
+        """
+        cli = _make_cli(model="openai-codex:gpt-5.6-sol")
+        assert cli.provider == "auto"
+        assert cli.requested_provider == "auto"

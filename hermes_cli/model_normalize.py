@@ -253,12 +253,48 @@ def _normalize_provider_alias(provider_name: str) -> str:
         return raw
 
 
+# Separators that can introduce a provider prefix on a model identifier: the
+# aggregator-style ``provider/model`` slug and the ``provider:model``
+# shorthand users type at the CLI (``hermes chat -m openai-codex:gpt-5.6-sol``)
+# or store in ``model.default``.
+_PROVIDER_PREFIX_SEPARATORS: tuple[str, ...] = ("/", ":")
+
+
+def _split_provider_prefix(model_name: str) -> tuple[str, str, str]:
+    """Split off a provider prefix on whichever separator appears FIRST.
+
+    Returns ``(prefix, separator, remainder)``.  ``separator`` is ``""`` when
+    the name carries no provider prefix at all, in which case ``prefix`` is the
+    whole name and ``remainder`` is empty.
+
+    Taking the first separator is what keeps a variant suffix attached to the
+    model rather than being mistaken for a prefix boundary::
+
+        anthropic/claude-3.5-sonnet:beta -> ("anthropic", "/", "claude-3.5-sonnet:beta")
+        openai-codex:gpt-5.6-sol         -> ("openai-codex", ":", "gpt-5.6-sol")
+    """
+    index = -1
+    separator = ""
+    for candidate in _PROVIDER_PREFIX_SEPARATORS:
+        found = model_name.find(candidate)
+        if found != -1 and (index == -1 or found < index):
+            index = found
+            separator = candidate
+
+    if index == -1:
+        return model_name, "", ""
+    return model_name[:index], separator, model_name[index + 1:]
+
+
 def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> str:
-    """Strip ``provider/`` only when the prefix matches the target provider.
+    """Strip ``provider/`` or ``provider:`` when the prefix matches the target.
 
     This prevents arbitrary slash-bearing model IDs from being mangled on
     native providers while still repairing manual config values like
-    ``zai/glm-5.1`` for the ``zai`` provider.
+    ``zai/glm-5.1`` -- and the equivalent ``zai:glm-5.1`` colon shorthand --
+    for the ``zai`` provider.  Both separators go through the same
+    alias-aware match guard, so a prefix is only removed when it resolves to
+    the very provider that is about to receive the API call.
 
     ``custom`` is a generic bucket for arbitrary user-defined endpoints, not
     a vendor identity like ``zai``/``gemini``/``xai``. An alias that merely
@@ -266,18 +302,21 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
     does not mean a ``ollama/`` prefix is redundant -- it may be the actual
     routing prefix a proxy in front of the custom endpoint (e.g. LiteLLM)
     requires, as in ``ollama/glm-5.2``. Only a literal ``custom/`` prefix --
-    the bucket's own name -- is treated as redundant here.
+    the bucket's own name -- is treated as redundant here.  The colon form is
+    never stripped for ``custom`` at all: ``custom:<name>`` is a durable
+    custom-provider identity slug (see ``custom_provider_slug`` in
+    ``hermes_cli.providers``), not a redundant vendor prefix, so removing it
+    would erase which endpoint the user configured.
     """
-    if "/" not in model_name:
+    prefix, separator, remainder = _split_provider_prefix(model_name)
+    if not separator:
         return model_name
-
-    prefix, remainder = model_name.split("/", 1)
     if not prefix.strip() or not remainder.strip():
         return model_name
 
     normalized_target = _normalize_provider_alias(target_provider)
     if normalized_target == "custom":
-        if prefix.strip().lower() == "custom":
+        if separator == "/" and prefix.strip().lower() == "custom":
             return remainder.strip()
         return model_name
 
@@ -505,9 +544,13 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     #     resolve to bare ``minimax-m2.7`` / ``deepseek-v4-flash`` the API
     #     actually serves.  See PR reviewing opencode-go fallback 401s. ---
     if provider in {"opencode-zen", "opencode-go"}:
-        if "/" in name:
-            _, bare_after_slash = name.split("/", 1)
-            name = bare_after_slash.strip() or name
+        _, separator, bare_after_prefix = _split_provider_prefix(name)
+        if separator == "/":
+            name = bare_after_prefix.strip() or name
+        elif separator == ":":
+            # Colon prefixes stay matching-only: a bare ``kimi-k2.5:free``
+            # style variant tag is part of the model id, not a prefix.
+            name = _strip_matching_provider_prefix(name, provider)
         if provider == "opencode-zen" and name.lower().startswith("claude-"):
             return _dots_to_hyphens(name)
         return name
@@ -526,6 +569,13 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     #     dash-notation Claude IDs survive to the Copilot API and hit
     #     HTTP 400 "model_not_supported".  See issue #6879.
     if provider in {"copilot", "copilot-acp"}:
+        # ``normalize_copilot_model_id`` already resolves ``copilot/gpt-5.4``
+        # but not the ``copilot:gpt-5.4`` shorthand, and it returns the input
+        # unchanged rather than falsy -- so without stripping here first the
+        # colon form returns early and never reaches the generic fallback
+        # below.  Reuse the shared helper instead of re-parsing the prefix.
+        name = _strip_matching_provider_prefix(name, provider)
+
         try:
             from hermes_cli.models import normalize_copilot_model_id
 
@@ -566,6 +616,18 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     #     bare id that matches exactly one curated entry.  Unknown names (a
     #     local NIM container, a proxied model) pass through untouched. ---
     if provider in _CATALOGUE_PREFIX_REPAIR_PROVIDERS:
+        # ``_repair_prefix_from_catalogue`` returns early on any ``/``, which
+        # is what keeps a genuine ``nvidia/nemotron-…`` slug -- and a
+        # self-hosted ``nvidia/my-local-nim`` -- untouched.  A ``nvidia:``
+        # colon prefix carries no slash, so it skips that guard and is then
+        # compared *whole* against the catalogue's post-slash suffixes,
+        # matches nothing, and reaches the API with the prefix still
+        # attached.  Strip the matching prefix first, exactly as the four
+        # branches above do; the separator check is what preserves the
+        # slash form's pass-through.
+        _, separator, _ = _split_provider_prefix(name)
+        if separator == ":":
+            name = _strip_matching_provider_prefix(name, provider)
         return _repair_prefix_from_catalogue(name, provider)
 
     # --- Authoritative native providers: preserve user-facing slugs as-is ---

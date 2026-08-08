@@ -11,6 +11,16 @@ from typing import Callable
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
 
+_DELIVER_HELP = (
+    "Delivery target: origin, local, telegram, discord, signal, or "
+    "platform:chat_id[:thread_id]. Slack also accepts canonical "
+    "slack:<T-team_id>:<C/G/D-channel_id>[:<thread_ts>] and lowercase-friendly "
+    "names such as slack:engineering, slack:team-2024, and slack:e2e-testing. "
+    "Malformed colon-qualified T/E-prefixed refs and bare ID-looking T/E values "
+    "(9+ uppercase alphanumeric characters including a digit) fail closed; "
+    "ordinary names remain legacy targets."
+)
+
 
 def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     """Attach the ``cron`` subcommand (and its sub-actions) to ``subparsers``."""
@@ -36,7 +46,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument("--name", help="Optional human-friendly job name")
     cron_create.add_argument(
         "--deliver",
-        help="Delivery target: origin, local, telegram, discord, signal, or platform:chat_id",
+        help=_DELIVER_HELP,
     )
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     cron_create.add_argument(
@@ -114,7 +124,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--schedule", help="New schedule")
     cron_edit.add_argument("--prompt", help="New prompt/task instruction")
     cron_edit.add_argument("--name", help="New job name")
-    cron_edit.add_argument("--deliver", help="New delivery target")
+    cron_edit.add_argument("--deliver", help=_DELIVER_HELP)
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
     cron_edit.add_argument(
         "--skill",

@@ -198,6 +198,263 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_legacy_slack_channel_target_resolves_without_team_metadata(self):
+        """Legacy ``slack:<channel>`` resolves/stringifies exactly as before.
+
+        Exact dict equality pins the legacy contract: no team/workspace
+        metadata may leak into a target that never named a workspace.
+        """
+        job = {"deliver": "slack:C123"}
+        assert _resolve_delivery_target(job) == {
+            "platform": "slack",
+            "chat_id": "C123",
+            "thread_id": None,
+        }
+
+    @pytest.mark.parametrize(
+        "deliver, team_id, channel_id",
+        [
+            ("slack:T111:C123", "T111", "C123"),
+            ("slack:T999:D777", "T999", "D777"),
+        ],
+    )
+    def test_workspace_qualified_slack_target_preserves_team_id(self, deliver, team_id, channel_id):
+        """``slack:<team_id>:<channel_id>`` resolves to the channel and keeps the workspace.
+
+        T team IDs with C/G/D channel IDs are unambiguous against every
+        legacy Slack ref (bare channel, user, @name, channel:thread_ts — the
+        thread form's first segment is always the C/G/D channel). The
+        workspace identity is preserved under the ``team_id`` key, matching
+        the Slack adapter's existing contract.
+        """
+        assert _resolve_delivery_target({"deliver": deliver}) == {
+            "platform": "slack",
+            "chat_id": channel_id,
+            "thread_id": None,
+            "team_id": team_id,
+        }
+
+    @pytest.mark.parametrize(
+        "deliver",
+        [
+            "slack:T0123ABCD",
+            "slack:E0123ABCD",
+            "slack:T111:not-a-channel",
+            "slack:E111:G222",
+            "slack:T:C123",
+            "slack:T111:C",
+        ],
+    )
+    def test_malformed_slack_workspace_targets_fail_closed(self, deliver):
+        """Workspace-looking but ambiguous Slack refs must not resolve to a literal chat_id.
+
+        A realistic-length bare team/enterprise ID names no channel, E
+        enterprise refs are unsupported, and a team ID paired with a
+        non-channel segment is malformed. All must fail closed instead of
+        delivering to a literal ID.
+        """
+        assert _resolve_delivery_target({"deliver": deliver}) is None
+
+    @pytest.mark.parametrize("deliver", ["slack:t111:C123", "slack:e222:G333"])
+    def test_lowercase_slack_workspace_refs_fail_closed(self, deliver):
+        """Lowercase t/e team-looking refs must fail closed, not parse as legacy.
+
+        Workspace detection is case-insensitive, but only canonical uppercase
+        IDs are accepted: ``slack:t111:C123`` must NOT fall through to legacy
+        ``chat_id=t111, thread_id=C123`` parsing — a typo'd workspace ref
+        would otherwise deliver to a garbage literal ID.
+        """
+        assert _resolve_delivery_target({"deliver": deliver}) is None
+
+    @pytest.mark.parametrize("deliver", ["slack:tabc:C123", "slack:eabc:G999"])
+    def test_lowercase_slack_workspace_refs_without_digits_fail_closed(self, deliver):
+        """Colon-qualified lowercase t/e refs are malformed workspace-like, not legacy.
+
+        Regression: the digit-bearing heuristic let ``slack:tabc:C123`` fall
+        through to legacy ``chat_id=tabc:C123`` parsing because ``tabc`` has
+        no digits — delivering to a garbage literal ID. Legacy human-name
+        thread syntax is not supported: a lowercase t/e first segment
+        followed by a colon is always a malformed workspace ref and must
+        fail closed (no delivery target). Lowercase t/e WITHOUT a colon
+        (``slack:team``, ``slack:team-2024``) stays legacy — bare names
+        fall through regardless of digits.
+        """
+        assert _resolve_delivery_target({"deliver": deliver}) is None
+
+    @pytest.mark.parametrize("deliver", ["slack:Tfoo:C123", "slack:T111:Cbar"])
+    def test_non_canonical_slack_workspace_id_chars_fail_closed(self, deliver):
+        """Lowercase chars inside a workspace ID segment must fail closed.
+
+        Regression: prefix-only checks accepted ``Tfoo`` as a team ID and
+        ``Cbar`` as a channel ID. Accepted segments are canonical uppercase
+        alphanumeric — T for team, C/G/D for channel — so any
+        lowercase character makes the ref malformed; it must fail closed
+        instead of resolving to a literal chat_id.
+        """
+        assert _resolve_delivery_target({"deliver": deliver}) is None
+
+    @pytest.mark.parametrize("deliver", ["slack:engineering", "slack:team"])
+    def test_lowercase_slack_human_friendly_names_stay_legacy(self, deliver):
+        """Lowercase channel names starting with t/e are NOT workspace refs.
+
+        Regression: the case-insensitive lowercase t/e fail-closed guard must
+        only catch workspace-looking typos (colon-qualified refs like
+        ``t111:…``/``tabc:…``), not ordinary human-friendly names.
+        ``slack:engineering`` must keep legacy chat_id/name behavior, not be
+        treated as a malformed workspace ref (which would resolve to None
+        and drop the delivery).
+        """
+        assert _resolve_delivery_target({"deliver": deliver}) == {
+            "platform": "slack",
+            "chat_id": deliver.split(":", 1)[1],
+            "thread_id": None,
+        }
+
+    @pytest.mark.parametrize("deliver", ["slack:team-2024", "slack:e2e-testing"])
+    def test_lowercase_slack_names_with_digits_stay_legacy(self, deliver):
+        """Digit-bearing lowercase channel names starting with t/e stay legacy.
+
+        Regression: the digit-bearing ID-like heuristic treated bare
+        human-friendly names such as ``team-2024`` and ``e2e-testing`` as
+        malformed workspace refs and dropped the delivery (resolved to
+        ``None``). A lowercase t/e first segment WITHOUT a colon is always
+        a legacy human-friendly channel name, digits or not — only
+        colon-qualified lowercase t/e refs (``slack:t111:C123``) fail
+        closed.
+        """
+        assert _resolve_delivery_target({"deliver": deliver}) == {
+            "platform": "slack",
+            "chat_id": deliver.split(":", 1)[1],
+            "thread_id": None,
+        }
+
+    def test_cron_create_and_edit_describe_the_same_slack_delivery_rules(self):
+        """Both CLI mutation paths must expose the same Slack target contract."""
+        import argparse
+
+        from hermes_cli.subcommands.cron import build_cron_parser
+
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=lambda _args: None)
+
+        cron_action = next(
+            action
+            for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        cron_parser = cron_action.choices["cron"]
+        cron_subaction = next(
+            action
+            for action in cron_parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+
+        delivery_help = {}
+        for command in ("create", "edit"):
+            command_parser = cron_subaction.choices[command]
+            deliver_action = next(
+                action for action in command_parser._actions if action.dest == "deliver"
+            )
+            delivery_help[command] = deliver_action.help
+
+        assert delivery_help["edit"] == delivery_help["create"]
+        assert "slack:engineering" in delivery_help["create"]
+        assert "slack:team-2024" in delivery_help["create"]
+        assert "slack:e2e-testing" in delivery_help["create"]
+        assert "bare ID-looking T/E values" in delivery_help["create"]
+
+    def test_workspace_qualified_slack_thread_ts_resolves(self):
+        """``slack:<team_id>:<channel_id>:<thread_ts>`` keeps workspace and thread.
+
+        The workspace-qualified form must accept an optional Slack thread_ts
+        third segment, mirroring the legacy ``channel:thread_ts`` shape.
+        """
+        assert _resolve_delivery_target({"deliver": "slack:T111:C123:1712345678.900"}) == {
+            "platform": "slack",
+            "chat_id": "C123",
+            "thread_id": "1712345678.900",
+            "team_id": "T111",
+        }
+
+    def test_dedup_keeps_same_channel_across_workspaces(self):
+        """Same channel ID in different workspaces must survive dedup.
+
+        ``T111:C123`` and ``T222:C123`` are distinct delivery targets; only
+        the exact duplicate ``T111:C123`` collapses.
+        """
+        from cron.scheduler import _resolve_delivery_targets
+
+        targets = _resolve_delivery_targets(
+            {"deliver": "slack:T111:C123,slack:T222:C123,slack:T111:C123"}
+        )
+
+        assert targets == [
+            {"platform": "slack", "chat_id": "C123", "thread_id": None, "team_id": "T111"},
+            {"platform": "slack", "chat_id": "C123", "thread_id": None, "team_id": "T222"},
+        ]
+
+    @pytest.mark.parametrize(
+        "deliver",
+        [
+            "slack:Engineering",
+            "slack:TODO",
+            "slack:Townhall",
+            "slack:E2E",
+            "slack:TEAM2",
+            "slack:T3",
+            "slack:T111",
+        ],
+    )
+    def test_bare_uppercase_slack_friendly_names_stay_legacy(self, deliver):
+        """Bare uppercase T/E-leading channel names are NOT workspace refs.
+
+        Regression: the workspace guard treated any bare T/E-leading segment
+        as a malformed team ID, so friendly names like ``Engineering``,
+        ``TODO`` and ``Townhall`` failed closed and silently dropped the
+        delivery. Only realistic-length canonical T/E IDs (at least 9
+        characters and digit-bearing, e.g. ``T0123ABCD`` or ``E0123ABCD``)
+        may fail closed; friendly names must keep legacy chat_id behavior regardless
+        of case (lowercase ``engineering``/``team`` already work).
+        """
+        assert _resolve_delivery_target({"deliver": deliver}) == {
+            "platform": "slack",
+            "chat_id": deliver.split(":", 1)[1],
+            "thread_id": None,
+        }
+
+    @pytest.mark.parametrize(
+        "rest",
+        [
+            "T111:C123: 1712345678.900",   # leading whitespace in thread segment
+            "T111:C123:1712345678.900 ",   # trailing whitespace in thread segment
+            "T111:C123:1712 345678.900",   # internal whitespace in thread segment
+        ],
+    )
+    def test_workspace_qualified_thread_whitespace_is_malformed(self, rest):
+        """Thread whitespace must match the strict legacy Slack thread parser.
+
+        The legacy thread target (``_SLACK_THREAD_TARGET_RE``) anchors the
+        thread segment as ``[^\\s:]+`` — no whitespace anywhere. The
+        workspace-qualified parser accepted any colon-free string, so
+        ``slack:T111:C123: 1712.34`` delivered with a garbage thread_ts.
+        Whitespace-bearing thread segments must fail closed.
+        """
+        from cron.scheduler import _parse_slack_workspace_ref, _SLACK_MALFORMED_WORKSPACE
+
+        assert _parse_slack_workspace_ref(rest) is _SLACK_MALFORMED_WORKSPACE
+
+    @pytest.mark.parametrize(
+        "deliver",
+        [
+            "slack:T111:C123: 1712345678.900",
+            "slack:T111:C123:1712 345678.900",
+        ],
+    )
+    def test_workspace_qualified_thread_whitespace_fails_closed(self, deliver):
+        """Whitespace-bearing thread refs that survive part-stripping drop delivery."""
+        assert _resolve_delivery_target({"deliver": deliver}) is None
+
 
     def test_list_form_deliver_is_normalized(self, monkeypatch):
         """deliver=['telegram'] (Python list) should resolve like 'telegram' string.
@@ -419,6 +676,107 @@ class TestDeliverResultWrapping:
         assert voice_call[1]["audio_path"] == str(media_path)
 
 
+    def test_slack_workspace_metadata_propagates_to_text_send(self):
+        """deliver='slack:T111:C123' must hand the live Slack adapter the
+        workspace identity. The adapter/config has no channel→team cache or
+        home-channel scope, so explicit target metadata is the ONLY
+        restart-independent workspace signal for client selection."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        job = {"id": "slack-ws", "deliver": "slack:T111:C123"}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job, "workspace ping",
+                adapters={Platform.SLACK: adapter}, loop=loop,
+            )
+
+        assert result is None
+        adapter.send.assert_called_once()
+        metadata = adapter.send.call_args.kwargs["metadata"]
+        assert metadata["team_id"] == "T111"
+        assert metadata["scope_id"] == "T111"
+        assert metadata["slack_team_id"] == "T111"
+        assert metadata["workspace_pinned"] == "true"
+
+
+    def test_slack_workspace_metadata_propagates_to_media_send(self, tmp_path, monkeypatch):
+        """Media attachments on a workspace-qualified Slack target must carry
+        the SAME team_id/scope_id as the text send — otherwise attachments
+        pick a different (or no) workspace client than the text they belong to."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "ws-voice.mp3")
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        adapter.send_voice.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        job = {"id": "slack-ws", "deliver": "slack:T111:C123"}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job, f"voice note\nMEDIA:{media_path}",
+                adapters={Platform.SLACK: adapter}, loop=loop,
+            )
+
+        assert result is None
+        adapter.send.assert_called_once()
+        text_metadata = adapter.send.call_args.kwargs["metadata"]
+        adapter.send_voice.assert_called_once()
+        voice_call = adapter.send_voice.call_args
+        assert voice_call.kwargs["audio_path"] == str(media_path)
+        media_metadata = voice_call.kwargs["metadata"]
+        for key in ("team_id", "scope_id", "slack_team_id"):
+            assert text_metadata[key] == "T111"
+            assert media_metadata[key] == text_metadata[key]
+        assert text_metadata["workspace_pinned"] == "true"
+        assert media_metadata["workspace_pinned"] == "true"
+
+
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""
 
@@ -439,6 +797,132 @@ class TestDeliverResultErrorReturns:
             result = _deliver_result(job, "Output.")
         assert result is not None
         assert "not configured" in result
+
+    def test_slack_workspace_failure_error_includes_team_identity(self):
+        """A workspace-qualified Slack failure must name the team in the error.
+
+        ``slack:T111:C123`` and ``slack:T222:C123`` are distinct delivery
+        targets; if the returned error renders both as ``slack:C123`` the
+        operator cannot tell which workspace failed.
+        """
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        job = {
+            "id": "slack-ws-job",
+            "deliver": "slack:T111:C123,slack:T222:C123",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run", side_effect=RuntimeError("no running loop")), \
+             patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
+            mock_pool = MagicMock()
+            mock_pool_cls.return_value = mock_pool
+            fail_future = MagicMock()
+            fail_future.result.side_effect = ConnectionError("connection refused")
+            mock_pool.submit.return_value = fail_future
+
+            result = _deliver_result(job, "Report content")
+
+        assert result is not None
+        assert "slack:T111:C123" in result
+        assert "slack:T222:C123" in result
+
+    def test_slack_workspace_standalone_returned_error_includes_team_identity(self):
+        """A standalone ``{"error": ...}`` result must be attributed to the workspace.
+
+        The standalone path's normal returned-error message
+        (``delivery error: …``) named no target at all, so a multi-workspace
+        fan-out failure was unattributable. It must carry the
+        ``slack:<team_id>:<channel_id>`` identity.
+        """
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        async def fake_send(*args, **kwargs):
+            return {"error": "Slack API error: channel_not_found"}
+
+        job = {"id": "slack-ws-standalone-err", "deliver": "slack:T111:C123"}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", side_effect=fake_send):
+            result = _deliver_result(job, "Report content")
+
+        assert result is not None
+        assert "slack:T111:C123" in result
+        assert "channel_not_found" in result
+
+    def test_slack_workspace_standalone_success_log_includes_team_identity(self, caplog):
+        """The success log line for a workspace-qualified delivery names the workspace.
+
+        ``delivered to slack:C123`` is ambiguous when the same channel ID is
+        fanned out to across workspaces; the log must use the
+        ``slack:<team_id>:<channel_id>`` identity.
+        """
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        async def fake_send(*args, **kwargs):
+            return {"success": True, "message_id": "171.1"}
+
+        job = {"id": "slack-ws-standalone-ok", "deliver": "slack:T111:C123"}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", side_effect=fake_send), \
+             caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            result = _deliver_result(job, "Report content")
+
+        assert result is None
+        assert any(
+            "delivered to slack:T111:C123" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_slack_workspace_standalone_send_receives_team_id(self):
+        """The standalone cron path must hand _send_to_platform the team identity.
+
+        Without it the plugin standalone sender only has a comma-separated
+        token list and picks tokens[0] — potentially the wrong workspace.
+        """
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        captured = {}
+
+        async def fake_send(platform, pconfig, chat_id, message, **kwargs):
+            captured["chat_id"] = chat_id
+            captured.update(kwargs)
+            return {"success": True, "message_id": "171.1"}
+
+        job = {"id": "slack-ws-standalone-team", "deliver": "slack:T111:C123"}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", side_effect=fake_send):
+            result = _deliver_result(job, "Report content")
+
+        assert result is None
+        assert captured["chat_id"] == "C123"
+        assert captured["team_id"] == "T111"
 
 
 class TestRunJobSessionPersistence:
@@ -1642,6 +2126,29 @@ class TestCronDeliveryMirror:
         # boundary) still distinguishes it from a genuine user message.
         assert args[2].startswith("[Cron delivery: Morning Brief]")
         assert "Market movers today" in args[2]
+
+    def test_workspace_target_only_matches_same_workspace_origin(self):
+        """Same channel IDs in different Slack workspaces are not one session."""
+        from cron.scheduler import _target_matches_origin
+
+        origin = {
+            "platform": "slack",
+            "chat_id": "C123",
+            "scope_id": "T_ONE",
+        }
+        assert _target_matches_origin(
+            origin, "slack", "C123", None, team_id="T_ONE"
+        )
+        assert not _target_matches_origin(
+            origin, "slack", "C123", None, team_id="T_TWO"
+        )
+        assert not _target_matches_origin(
+            {"platform": "slack", "chat_id": "C123"},
+            "slack",
+            "C123",
+            None,
+            team_id="T_ONE",
+        )
 
 
     def test_delivery_mirrors_clean_content_not_wrapped(self):

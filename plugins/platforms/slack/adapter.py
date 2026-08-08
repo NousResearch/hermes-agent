@@ -2338,6 +2338,16 @@ class SlackAdapter(BasePlatformAdapter):
         return ""
 
     @staticmethod
+    def _metadata_workspace_pinned(metadata: Optional[Dict[str, Any]]) -> bool:
+        """Whether metadata explicitly requires an exact workspace client."""
+        if not metadata:
+            return False
+        value = metadata.get("workspace_pinned")
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @staticmethod
     def _workspace_event_id(team_id: str, event_id: str) -> str:
         """Scope Slack's workspace-local event/message ids for deduplication."""
         return f"{team_id}:{event_id}" if team_id else str(event_id)
@@ -2347,17 +2357,47 @@ class SlackAdapter(BasePlatformAdapter):
         """Return an in-memory routing marker without changing legacy no-team tests."""
         return (str(team_id), str(message_id)) if team_id else str(message_id)
 
-    def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
-        """Return the workspace-specific WebClient for a channel."""
-        if team_id and team_id in self._team_clients:
-            return self._team_clients[team_id]
+    def _get_client(
+        self,
+        chat_id: str,
+        team_id: Optional[str] = None,
+        *,
+        require_exact: bool = False,
+    ) -> Any:
+        """Return the workspace-specific WebClient for a channel.
+
+        ``require_exact`` is reserved for explicit outbound workspace targets:
+        an unknown id then fails closed instead of using another workspace.
+        Event-derived team ids remain hints and preserve the legacy
+        channel-cache → primary fallback when the team is not registered.
+        """
+        if require_exact and not team_id:
+            raise ValueError(
+                "Slack workspace pin requires a non-empty team_id "
+                "(failing closed — not falling back to the channel cache "
+                "or primary workspace)"
+            )
+        if team_id:
+            client = self._team_clients.get(team_id)
+            if client is None and require_exact:
+                raise ValueError(
+                    f"no Slack client for explicitly requested workspace "
+                    f"{team_id} (failing closed — not falling back to the "
+                    f"channel cache or primary workspace)"
+                )
+            if client is not None:
+                return client
         team_id = self._channel_team.get(chat_id)
         if team_id and team_id in self._team_clients:
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
     async def _ensure_dm_conversation(
-        self, chat_id: str, team_id: Optional[str] = None
+        self,
+        chat_id: str,
+        team_id: Optional[str] = None,
+        *,
+        require_exact: bool = False,
     ) -> str:
         """Resolve a bare Slack user ID target to a DM conversation ID.
 
@@ -2380,7 +2420,9 @@ class SlackAdapter(BasePlatformAdapter):
         if cached:
             return cached
         try:
-            response = await self._get_client(cid, team_id=team_id).conversations_open(
+            response = await self._get_client(
+                cid, team_id=team_id, require_exact=require_exact
+            ).conversations_open(
                 users=cid
             )
             dm_id = ((response or {}).get("channel") or {}).get("id")
@@ -2465,7 +2507,8 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         chat_id = await self._ensure_dm_conversation(
-            chat_id, team_id=self._metadata_team_id(metadata)
+            chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
         )
         thread_ts = None
         try:
@@ -2565,7 +2608,9 @@ class SlackAdapter(BasePlatformAdapter):
 
                 try:
                     last_result = await self._get_client(
-                        chat_id, team_id=team_id
+                        chat_id,
+                        team_id=team_id,
+                        require_exact=self._metadata_workspace_pinned(metadata),
                     ).chat_postMessage(**kwargs)
                 except Exception as e:
                     if kwargs.get("blocks") and self._is_block_payload_rejection(e):
@@ -2576,7 +2621,9 @@ class SlackAdapter(BasePlatformAdapter):
                             e,
                         )
                         last_result = await self._get_client(
-                            chat_id, team_id=team_id
+                            chat_id,
+                            team_id=team_id,
+                            require_exact=self._metadata_workspace_pinned(metadata),
                         ).chat_postMessage(**retry_kwargs)
                     else:
                         raise
@@ -2664,7 +2711,8 @@ class SlackAdapter(BasePlatformAdapter):
                 kwargs["thread_ts"] = thread_ts
 
             result = await self._get_client(
-                chat_id, team_id=self._metadata_team_id(metadata)
+                chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
             ).chat_postEphemeral(**kwargs)
             return SendResult(
                 success=True,
@@ -2759,7 +2807,8 @@ class SlackAdapter(BasePlatformAdapter):
                     update_kwargs["blocks"] = blocks
             try:
                 await self._get_client(
-                    chat_id, team_id=self._metadata_team_id(metadata)
+                    chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
                 ).chat_update(**update_kwargs)
             except Exception as e:
                 if update_kwargs.get("blocks") and self._is_block_payload_rejection(e):
@@ -2773,7 +2822,8 @@ class SlackAdapter(BasePlatformAdapter):
                         e,
                     )
                     await self._get_client(
-                        chat_id, team_id=self._metadata_team_id(metadata)
+                        chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
                     ).chat_update(**retry_kwargs)
                 else:
                     raise
@@ -3191,14 +3241,16 @@ class SlackAdapter(BasePlatformAdapter):
             raise FileNotFoundError(f"File not found: {file_path}")
 
         chat_id = await self._ensure_dm_conversation(
-            chat_id, team_id=self._metadata_team_id(metadata)
+            chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
         )
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
         last_exc = None
         for attempt in range(3):
             try:
                 result = await self._get_client(
-                    chat_id, team_id=self._metadata_team_id(metadata)
+                    chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
                 ).files_upload_v2(
                     channel=chat_id,
                     file=file_path,
@@ -3250,7 +3302,8 @@ class SlackAdapter(BasePlatformAdapter):
             return
 
         chat_id = await self._ensure_dm_conversation(
-            chat_id, team_id=self._metadata_team_id(metadata)
+            chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
         )
         try:
             from urllib.parse import unquote as _unquote
@@ -3341,7 +3394,8 @@ class SlackAdapter(BasePlatformAdapter):
                     len(chunks),
                 )
                 result = await self._get_client(
-                    chat_id, team_id=self._metadata_team_id(metadata)
+                    chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
                 ).files_upload_v2(
                     channel=chat_id,
                     file_uploads=file_uploads,
@@ -4083,10 +4137,12 @@ class SlackAdapter(BasePlatformAdapter):
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             chat_id = await self._ensure_dm_conversation(
-                chat_id, team_id=self._metadata_team_id(metadata)
+                chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
             )
             result = await self._get_client(
-                chat_id, team_id=self._metadata_team_id(metadata)
+                chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
             ).files_upload_v2(
                 channel=chat_id,
                 content=response.content,
@@ -4159,7 +4215,8 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         chat_id = await self._ensure_dm_conversation(
-            chat_id, team_id=self._metadata_team_id(metadata)
+            chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
         )
         try:
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
@@ -4167,7 +4224,8 @@ class SlackAdapter(BasePlatformAdapter):
             for attempt in range(3):
                 try:
                     result = await self._get_client(
-                        chat_id, team_id=self._metadata_team_id(metadata)
+                        chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
                     ).files_upload_v2(
                         channel=chat_id,
                         file=video_path,
@@ -4224,7 +4282,8 @@ class SlackAdapter(BasePlatformAdapter):
         display_name = file_name or os.path.basename(file_path)
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
         chat_id = await self._ensure_dm_conversation(
-            chat_id, team_id=self._metadata_team_id(metadata)
+            chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
         )
 
         try:
@@ -4232,7 +4291,8 @@ class SlackAdapter(BasePlatformAdapter):
             for attempt in range(3):
                 try:
                     result = await self._get_client(
-                        chat_id, team_id=self._metadata_team_id(metadata)
+                        chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
                     ).files_upload_v2(
                         channel=chat_id,
                         file=file_path,
@@ -6376,7 +6436,8 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         chat_id = await self._ensure_dm_conversation(
-            chat_id, team_id=self._metadata_team_id(metadata)
+            chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
         )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
@@ -6445,7 +6506,8 @@ class SlackAdapter(BasePlatformAdapter):
                 kwargs["thread_ts"] = thread_ts
 
             result = await self._get_client(
-                chat_id, team_id=self._metadata_team_id(metadata)
+                chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
             ).chat_postMessage(**kwargs)
             msg_ts = result.get("ts", "")
             if msg_ts:
@@ -6476,7 +6538,8 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         chat_id = await self._ensure_dm_conversation(
-            chat_id, team_id=self._metadata_team_id(metadata)
+            chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
         )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
@@ -6534,7 +6597,8 @@ class SlackAdapter(BasePlatformAdapter):
                 kwargs["thread_ts"] = thread_ts
 
             result = await self._get_client(
-                chat_id, team_id=self._metadata_team_id(metadata)
+                chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
             ).chat_postMessage(**kwargs)
             return SendResult(
                 success=True, message_id=result.get("ts", ""), raw_response=result
@@ -6583,7 +6647,8 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         chat_id = await self._ensure_dm_conversation(
-            chat_id, team_id=self._metadata_team_id(metadata)
+            chat_id, team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata)
         )
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
@@ -6633,7 +6698,11 @@ class SlackAdapter(BasePlatformAdapter):
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
 
-            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            result = await self._get_client(
+                chat_id,
+                team_id=self._metadata_team_id(metadata),
+                require_exact=self._metadata_workspace_pinned(metadata),
+            ).chat_postMessage(**kwargs)
             msg_ts = result.get("ts", "")
             if msg_ts:
                 # Mark unresolved so the action handler's atomic-pop guard can
@@ -8590,6 +8659,65 @@ async def _standalone_upload_file(
     return {"success": True, "message_id": message_id, "raw": result}
 
 
+async def _resolve_workspace_token(tokens: List[str], team_id: str) -> Optional[str]:
+    """Return the bot token belonging to workspace ``team_id``, or None.
+
+    Deterministic selection for an explicit workspace identity (never
+    tokens[0], which may belong to a different workspace):
+
+    1. OAuth installs persist per-workspace tokens in ``slack_tokens.json``
+       keyed by team_id — an exact local match, no network needed.
+    2. Env-configured comma-separated tokens carry no local team mapping, so
+       each is verified via ``auth.test`` and the first one whose team_id
+       matches wins.
+
+    A None result means no configured token belongs to the workspace — the
+    caller must fail closed rather than deliver via the wrong workspace.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        _tokens_file = get_hermes_home() / "slack_tokens.json"
+        if _tokens_file.exists():
+            _saved = json.loads(_tokens_file.read_text(encoding="utf-8"))
+            _entry = _saved.get(team_id)
+            if isinstance(_entry, dict) and _entry.get("token"):
+                return _entry["token"]
+    except Exception:
+        pass
+
+    try:
+        import aiohttp
+    except ImportError:
+        return None
+    try:
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp
+
+        _proxy = resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15), **_sess_kw
+        ) as session:
+            for tok in tokens:
+                try:
+                    headers = {"Authorization": f"Bearer {tok}"}
+                    async with session.post(
+                        "https://slack.com/api/auth.test", headers=headers, **_req_kw
+                    ) as resp:
+                        data = await resp.json()
+                except Exception:
+                    logger.debug(
+                        "[Slack] auth.test workspace token probe failed for one token",
+                        exc_info=True,
+                    )
+                    continue
+                if data.get("ok") and str(data.get("team_id", "")) == team_id:
+                    return tok
+    except Exception:
+        logger.debug("[Slack] auth.test workspace token probe failed", exc_info=True)
+    return None
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -8599,6 +8727,7 @@ async def _standalone_send(
     media_files=None,
     force_document=False,
     caption=None,
+    team_id=None,
 ):
     """Out-of-process Slack delivery via the Web API.
 
@@ -8618,6 +8747,11 @@ async def _standalone_send(
     When ``caption`` is set (single captionable MEDIA:<path> + short text), the
     text rides as ``initial_comment`` on the upload instead of a separate
     ``chat.postMessage``.
+
+    When ``team_id`` is set (workspace-qualified ``slack:<team>:<channel>``
+    cron/send targets), the bot token is selected deterministically for that
+    workspace via ``_resolve_workspace_token``; no match fails closed —
+    falling back to tokens[0] could deliver to the wrong workspace.
     """
     del force_document  # signature parity with other standalone senders
     # Profile-scoped read: under multiplex os.environ may hold ANOTHER
@@ -8646,6 +8780,20 @@ async def _standalone_send(
     if not tokens:
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
     token = tokens[0]
+    team_id = str(team_id or "").strip()
+    if team_id:
+        # Workspace-qualified target: pin the token to the named workspace.
+        # tokens[0] may belong to a DIFFERENT workspace — select
+        # deterministically and fail closed when nothing matches.
+        token = await _resolve_workspace_token(tokens, team_id)
+        if token is None:
+            return {
+                "error": (
+                    f"Slack send failed: no configured bot token belongs to "
+                    f"workspace {team_id} (checked slack_tokens.json and "
+                    f"auth.test for every configured token)"
+                )
+            }
 
     # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare
     # user IDs (U.../W...) — resolve to a DM conversation ID (D...) first via
@@ -8654,7 +8802,10 @@ async def _standalone_send(
     chat_id = str(chat_id or "")
     if chat_id[:1] in ("U", "W"):
         resolved = None
-        for _tok in tokens:
+        # With an explicit workspace the DM must be opened on that
+        # workspace's token only — probing other tokens could re-pin the
+        # send to the wrong workspace.
+        for _tok in ([token] if team_id else tokens):
             resolved = await _resolve_slack_user_dm(_tok, chat_id)
             if resolved is not None:
                 token = _tok
@@ -8830,7 +8981,9 @@ async def _standalone_send(
             payload = {"channel": chat_id, "text": formatted, "mrkdwn": True}
             if thread_id:
                 payload["thread_ts"] = thread_id
-            for tok in tokens:
+            # With an explicit workspace, only the resolved workspace token
+            # is valid — the other tokens belong to different workspaces.
+            for tok in ([token] if team_id else tokens):
                 headers = {
                     "Authorization": f"Bearer {tok}",
                     "Content-Type": "application/json",

@@ -786,8 +786,13 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
         return False
 
 
-def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
-                           thread_id: Optional[str]) -> bool:
+def _target_matches_origin(
+    origin: dict,
+    platform_name: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    team_id: Optional[str] = None,
+) -> bool:
     """True when a delivery target is the job's own origin conversation.
 
     Mirroring is scoped to the origin session by design (see
@@ -811,6 +816,14 @@ def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
         return False
     if str(origin.get("chat_id", "")) != str(chat_id):
         return False
+    if team_id is not None:
+        origin_team_id = (
+            origin.get("team_id")
+            or origin.get("slack_team_id")
+            or origin.get("scope_id")
+        )
+        if str(origin_team_id or "") != str(team_id):
+            return False
     # thread_id must match when the origin pins one (topic-scoped chats); a
     # target that lost the thread_id is not the same conversation lane.
     origin_thread = origin.get("thread_id")
@@ -1276,6 +1289,85 @@ def cron_delivery_targets() -> list[dict]:
     return targets
 
 
+# Sentinel returned by _parse_slack_workspace_ref when the ref looks
+# workspace-qualified (T…/E… first segment, or a colon-qualified lowercase
+# t/e segment) but is not an accepted canonical ref — the caller must fail
+# closed instead of delivering to a literal ID.
+_SLACK_MALFORMED_WORKSPACE = object()
+
+# Canonical Slack ID segments in a workspace-qualified ref: uppercase
+# alphanumeric, T prefix for team IDs, C/G/D for channel/DM
+# IDs. No length requirement — prefix + case is the whole contract.
+_SLACK_TEAM_ID_RE = re.compile(r"T[A-Z0-9]+")
+_SLACK_CHANNEL_ID_RE = re.compile(r"[CGD][A-Z0-9]+")
+_SLACK_BARE_WORKSPACE_ID_RE = re.compile(r"[TE][A-Z0-9]+")
+_SLACK_BARE_WORKSPACE_ID_MIN_LEN = 9
+
+
+def _parse_slack_workspace_ref(rest: str):
+    """Parse a ``<team_id>:<channel_id>[:<thread_ts>]`` workspace-qualified Slack ref.
+
+    Three outcomes:
+
+    - ``None`` — ``rest`` is not workspace-looking; the caller continues
+      with legacy parsing (bare channel, user, @name, channel:thread_ts —
+      none of those start with a canonical T team segment).
+    - ``(team_id, channel_id, thread_ts)`` — well-formed workspace-qualified
+      ref; ``thread_ts`` is ``None`` when the third segment is absent.
+    - ``_SLACK_MALFORMED_WORKSPACE`` — the first segment looks like a
+      team/workspace ID but is not canonical uppercase alphanumeric, the
+      channel segment is missing or is not a canonical C/G/D channel ID,
+      or the ref has trailing junk; fail closed.
+
+    Workspace detection is case-insensitive on the first character (t/T/e/E)
+    so colon-qualified lowercase typos fail closed instead of falling
+    through to legacy ``chat_id=t111/thread=C123`` parsing. A lowercase t/e
+    segment followed by a colon is always malformed workspace-like (legacy
+    human-name thread syntax is not supported); without a colon it is a
+    human-friendly channel name and falls through to legacy parsing —
+    digit-bearing names like ``team-2024`` or ``e2e-testing`` included.
+    Bare UPPERCASE T/E-leading segments follow the same rule: only a
+    realistic-length, canonical T/E workspace ID (at least 9 characters and
+    digit-bearing, e.g. ``T0123ABCD`` or ``E0123ABCD``) fails closed. Short
+    T/E-leading bare names (``T111``, ``E2E``, ``TEAM2``) remain legacy friendly
+    channel names. Colon-qualified segments are stricter: only canonical T
+    team IDs are accepted, so E-prefixed enterprise refs and ``Tfoo:C123``
+    fail closed. Accepted channel segments remain canonical uppercase
+    alphanumeric C/G/D IDs with no length requirement. The
+    thread segment matches the strict legacy Slack thread parser
+    (``_SLACK_THREAD_TARGET_RE``'s ``[^\\s:]+``): no whitespace anywhere.
+    """
+    first, sep, remainder = rest.partition(":")
+    if not first or first[0].upper() not in ("T", "E"):
+        return None
+    if first[0] not in ("T", "E"):
+        if sep:
+            return _SLACK_MALFORMED_WORKSPACE
+        return None
+    if not sep:
+        # A bare realistic-length canonical T/E workspace ID names no channel.
+        # Short T/E-leading values remain legacy friendly names.
+        if (
+            len(first) >= _SLACK_BARE_WORKSPACE_ID_MIN_LEN
+            and _SLACK_BARE_WORKSPACE_ID_RE.fullmatch(first) is not None
+            and any(ch.isdigit() for ch in first)
+        ):
+            return _SLACK_MALFORMED_WORKSPACE
+        return None
+    if _SLACK_TEAM_ID_RE.fullmatch(first) is None:
+        return _SLACK_MALFORMED_WORKSPACE
+    channel, sep2, thread_ts = remainder.partition(":")
+    if _SLACK_CHANNEL_ID_RE.fullmatch(channel) is None:
+        return _SLACK_MALFORMED_WORKSPACE
+    if sep2:
+        if not thread_ts or ":" in thread_ts or any(
+            ch.isspace() for ch in thread_ts
+        ):
+            return _SLACK_MALFORMED_WORKSPACE
+        return first, channel, thread_ts
+    return first, channel, None
+
+
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
@@ -1311,6 +1403,24 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if ":" in deliver_value:
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
+
+        if platform_key == "slack":
+            workspace_ref = _parse_slack_workspace_ref(rest)
+            if workspace_ref is _SLACK_MALFORMED_WORKSPACE:
+                logger.warning(
+                    "Job '%s' has malformed workspace-qualified Slack deliver target %r; skipping delivery",
+                    job.get("name", job.get("id", "?")),
+                    deliver_value,
+                )
+                return None
+            if workspace_ref is not None:
+                team_id, channel_id, thread_ts = workspace_ref
+                return {
+                    "platform": platform_name,
+                    "chat_id": channel_id,
+                    "thread_id": thread_ts,
+                    "team_id": team_id,
+                }
 
         from tools.send_message_tool import _parse_target_ref
 
@@ -1431,7 +1541,7 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     ``all`` routing-intent token, which expands to every platform with
     a configured home channel.  Tokens may be combined with explicit
     targets: ``origin,all`` and ``all,telegram:-100:17`` both work.
-    Duplicate (platform, chat_id, thread_id) tuples are collapsed by the
+    Duplicate (platform, chat_id, thread_id, team_id) tuples are collapsed by the
     existing dedup pass.
     """
     deliver = _normalize_deliver_value(job.get("deliver", "local"))
@@ -1450,7 +1560,12 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     for part in parts:
         target = _resolve_single_delivery_target(job, part)
         if target:
-            key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
+            key = (
+                target["platform"].lower(),
+                str(target["chat_id"]),
+                target.get("thread_id"),
+                target.get("team_id"),
+            )
             if key not in seen:
                 seen.add(key)
                 targets.append(target)
@@ -1602,6 +1717,28 @@ def _is_channel_dm_topic(
     return is_channel
 
 
+def _delivery_target_identity(
+    platform_name: str,
+    chat_id,
+    thread_id=None,
+    team_id=None,
+) -> str:
+    """Error/log identity for a delivery target.
+
+    A workspace-qualified Slack target carries a ``team_id``; include it
+    (``slack:<team_id>:<chat_id>[:<thread_id>]``) so a failure on
+    ``slack:T111:C123`` is distinguishable from one on ``slack:T222:C123`` —
+    both otherwise render as ``slack:C123``. Targets without a team keep the
+    historical ``<platform>:<chat_id>`` shape.
+    """
+    if team_id:
+        identity = f"{platform_name}:{team_id}:{chat_id}"
+        if thread_id:
+            identity = f"{identity}:{thread_id}"
+        return identity
+    return f"{platform_name}:{chat_id}"
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -1693,6 +1830,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
+        # Identity used in error/log strings below: team-qualified when the
+        # target named a Slack workspace, legacy "<platform>:<chat>" otherwise.
+        target_identity = _delivery_target_identity(
+            platform_name, chat_id,
+            thread_id=thread_id, team_id=target.get("team_id"),
+        )
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
@@ -1713,7 +1856,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # / home-channel-fallback target is never mirrored (it is not the
         # conversation the job was created in, and may have no session at all).
         mirror_this_target = mirror_enabled and _target_matches_origin(
-            origin, platform_name, chat_id, thread_id
+            origin,
+            platform_name,
+            chat_id,
+            thread_id,
+            team_id=target.get("team_id"),
         )
         # Pass the origin's user_id so a per-user-isolated group chat resolves to
         # the exact member who scheduled the job — parity with send_message.
@@ -1927,6 +2074,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
 
+            # Slack workspace-qualified target (slack:<team>:<channel>[:<ts>]):
+            # the adapter/config has no channel→team cache or home-channel
+            # scope, so the explicit target metadata is the ONLY
+            # restart-independent workspace signal for client selection.
+            # Propagate the team id under every key the Slack adapter reads
+            # (team_id / scope_id / slack_team_id) on BOTH the text route and
+            # the media route so attachments use the same workspace client.
+            target_team_id = target.get("team_id")
+            if target_team_id:
+                for ws_key in ("team_id", "scope_id", "slack_team_id"):
+                    route_metadata[ws_key] = str(target_team_id)
+                route_metadata["workspace_pinned"] = "true"
+                media_metadata = dict(media_metadata or {})
+                for ws_key in ("team_id", "scope_id", "slack_team_id"):
+                    media_metadata[ws_key] = str(target_team_id)
+                media_metadata["workspace_pinned"] = "true"
+
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
                 # Route through the gateway's DeliveryRouter so the live send
@@ -1990,7 +2154,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             cancelled = future.cancel()
                             if cancelled:
                                 msg = (
-                                    f"live adapter send to {platform_name}:{chat_id} "
+                                    f"live adapter send to {target_identity} "
                                     "timed out before the coroutine was dispatched"
                                 )
                                 logger.warning(
@@ -2004,11 +2168,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 timed_out = True
                                 timeout_handled = True
                                 logger.warning(
-                                    "Job '%s': live adapter send to %s:%s timed out "
+                                    "Job '%s': live adapter send to %s timed out "
                                     "after 60s; already dispatched (in flight), "
                                     "assuming delivered (skipping standalone fallback "
                                     "to avoid duplicate)",
-                                    job["id"], platform_name, chat_id,
+                                    job["id"], target_identity,
                                 )
                         except Exception as ex:
                             # A real send error (not a slow confirmation) — fall
@@ -2050,7 +2214,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                     err = "no response from adapter"
                                     shape = "None"
                                 msg = (
-                                    f"live adapter send to {platform_name}:{chat_id} "
+                                    f"live adapter send to {target_identity} "
                                     f"returned unconfirmed result ({shape}, error={err})"
                                 )
                                 if transport is not None and transport.is_relay:
@@ -2070,7 +2234,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 requested_thread_id = send_raw_response.get("requested_thread_id") or thread_id
                                 msg = (
                                     f"configured thread_id {requested_thread_id} for "
-                                    f"{platform_name}:{chat_id} was not found; delivered without thread_id"
+                                    f"{target_identity} was not found; delivered without thread_id"
                                 )
                                 logger.warning("Job '%s': %s", job["id"], msg)
                                 delivery_errors.append(msg)
@@ -2106,7 +2270,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 elif timed_out and media_files:
                     msg = (
                         f"{len(media_files)} media attachment(s) not delivered to "
-                        f"{platform_name}:{chat_id} (live adapter confirmation timed out)"
+                        f"{target_identity} (live adapter confirmation timed out)"
                     )
                     logger.warning("Job '%s': %s", job["id"], msg)
                     delivery_errors.append(msg)
@@ -2140,7 +2304,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         enabled=mirror_this_target and not thread_seeded and not inchannel_seeded,
                     )
             except Exception as e:
-                err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
+                err_msg = f"live adapter delivery to {target_identity} failed: {e}"
                 if not any(err_msg in err for err in target_errors):
                     target_errors.append(err_msg)
                 if transport is not None and transport.is_relay:
@@ -2158,7 +2322,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # and cannot be authenticated correctly, so fail closed.
                 if not target_errors:
                     target_errors.append(
-                        f"relay delivery to {platform_name}:{chat_id} failed"
+                        f"relay delivery to {target_identity} failed"
                     )
                 delivery_errors.extend(target_errors)
                 continue
@@ -2169,13 +2333,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             # rather than emitting an ERROR traceback on every restart-race
             # (#58720, #55924).
             if _interpreter_shutting_down():
-                msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
+                msg = f"delivery to {target_identity} skipped — interpreter is shutting down"
                 logger.warning("Job '%s': %s", job["id"], msg)
                 target_errors.append(msg)
                 delivery_errors.extend(target_errors)
                 continue
-            # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            # Standalone path: run the async send in a fresh event loop (safe from any thread).
+            # team_id carries the workspace identity of a slack:<team>:<channel>
+            # target so the plugin standalone sender picks the matching
+            # workspace token instead of tokens[0].
+            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files, team_id=target.get("team_id"))
             try:
                 result = asyncio.run(coro)
             except RuntimeError as run_err:
@@ -2188,7 +2355,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # the fresh-thread fallback would fail identically — skip
                 # gracefully instead of logging a shutdown-race traceback.
                 if _interpreter_shutting_down(run_err):
-                    msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
+                    msg = f"delivery to {target_identity} skipped — interpreter is shutting down"
                     logger.warning("Job '%s': %s", job["id"], msg)
                     target_errors.append(msg)
                     delivery_errors.extend(target_errors)
@@ -2204,7 +2371,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files, team_id=target.get("team_id")))
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)
@@ -2212,31 +2379,34 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     # A shutdown-race here is expected during teardown; downgrade
                     # to a warning so it doesn't read as a genuine failure.
                     if _interpreter_shutting_down(e):
-                        msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
+                        msg = f"delivery to {target_identity} skipped — interpreter is shutting down"
                         logger.warning("Job '%s': %s", job["id"], msg)
                         target_errors.append(msg)
                         delivery_errors.extend(target_errors)
                         continue
-                    msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
+                    msg = f"delivery to {target_identity} failed: {e}"
                     logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
                     target_errors.extend([msg])
                     delivery_errors.extend(target_errors)
                     continue
             except Exception as e:
-                msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
+                msg = f"delivery to {target_identity} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
                 continue
 
             if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
+                # Attribute the returned error to the concrete target —
+                # team-qualified for workspace Slack targets so a
+                # multi-workspace fan-out failure is attributable.
+                msg = f"delivery to {target_identity} returned error: {result['error']}"
                 logger.error("Job '%s': %s", job["id"], msg)
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
                 continue
 
-            logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            logger.info("Job '%s': delivered to %s", job["id"], target_identity)
             _maybe_mirror_cron_delivery(
                 job, platform_name, chat_id, mirror_text,
                 thread_id=thread_id, user_id=origin_user_id,

@@ -694,6 +694,7 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
+    team_id=None,
 ):
     """Send a message via a live gateway adapter, with a standalone fallback
     for out-of-process callers (e.g. cron running separately from the gateway).
@@ -705,6 +706,12 @@ async def _send_via_adapter(
          ``PlatformEntry`` (used when the gateway is not in this process, so
          the runner weakref is ``None``).
       3. A descriptive error explaining both options.
+
+    ``team_id`` carries an explicit Slack workspace identity (from a
+    workspace-qualified ``slack:<team>:<channel>`` target). The live adapter
+    receives it under every metadata key its client selection reads, and the
+    standalone sender receives it verbatim so it can pick the matching
+    workspace token instead of tokens[0].
     """
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     runner = None
@@ -724,6 +731,10 @@ async def _send_via_adapter(
                 metadata = {}
                 if thread_id:
                     metadata["thread_id"] = thread_id
+                if team_id:
+                    for ws_key in ("team_id", "scope_id", "slack_team_id"):
+                        metadata[ws_key] = str(team_id)
+                    metadata["workspace_pinned"] = "true"
                 if platform_name == "ntfy" and chat_id:
                     metadata["publish_topic"] = chat_id
                 if not metadata:
@@ -746,13 +757,18 @@ async def _send_via_adapter(
 
     if entry is not None and entry.standalone_sender_fn is not None:
         try:
+            standalone_kwargs = {
+                "thread_id": thread_id,
+                "media_files": media_files,
+                "force_document": force_document,
+            }
+            if team_id:
+                standalone_kwargs["team_id"] = str(team_id)
             result = await entry.standalone_sender_fn(
                 pconfig,
                 chat_id,
                 chunk,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document,
+                **standalone_kwargs,
             )
         except asyncio.CancelledError:
             raise
@@ -780,12 +796,16 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, team_id=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
     using the same smart-splitting algorithm as the gateway adapters
     (preserves code-block boundaries, adds part indicators).
+
+    ``team_id`` carries an explicit Slack workspace identity (from a
+    workspace-qualified ``slack:<team>:<channel>`` target) through to the
+    live adapter metadata and the plugin standalone sender.
     """
     from gateway.config import Platform
 
@@ -1008,6 +1028,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files,
                 caption=_sl_caption,
+                team_id=team_id,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1021,6 +1042,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chunk,
                 thread_id=thread_id,
                 media_files=media_files if is_last else [],
+                team_id=team_id,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -1097,6 +1119,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files if is_last else [],
                 force_document=force_document,
+                team_id=team_id,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result

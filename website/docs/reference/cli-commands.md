@@ -573,6 +573,8 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `status` | Check whether the cron scheduler is running. |
 | `tick` | Run due jobs once and exit. |
 
+`create`/`edit` accept `--deliver <target>` to route the job's result: `origin` (back to the originating chat), `local` (save only, no delivery), `all` (every connected home channel), or `platform:chat_id[:thread_id]`; comma-separate to combine (e.g. `origin,all`). Slack accepts legacy `slack:<channel_id>` / `slack:<channel_id>:<thread_ts>`, canonical workspace-qualified `slack:<T-team_id>:<C/G/D-channel_id>[:<thread_ts>]`, and lowercase-friendly names such as `slack:engineering`, `slack:team-2024`, and `slack:e2e-testing`. Malformed colon-qualified T/E-prefixed refs and bare ID-looking T/E values (9+ uppercase alphanumeric characters including a digit) fail closed; ordinary names remain legacy targets.
+
 The cron **trigger** is pluggable via the `cron.provider` config key. Empty
 (the default) uses the built-in in-process ticker. Set it to `chronos` (the
 NAS-managed provider for scale-to-zero hosted gateways) — configured via the

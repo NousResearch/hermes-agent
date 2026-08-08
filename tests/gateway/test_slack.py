@@ -295,6 +295,73 @@ class TestSlackWorkspaceCollisionIsolation:
 
 
 # ---------------------------------------------------------------------------
+# TestGetClientWorkspaceFailClosed — an explicitly supplied team_id pins the
+# workspace: unknown ids must NOT fall back to the channel cache or the
+# primary client (that would deliver to the wrong workspace).
+# ---------------------------------------------------------------------------
+
+
+class TestGetClientWorkspaceFailClosed:
+    def test_exact_pin_without_team_id_fails_closed(self, adapter):
+        """A malformed pin marker must never fall back to the primary client."""
+        with pytest.raises(ValueError, match="non-empty team_id"):
+            adapter._get_client("C123", require_exact=True)
+
+    def test_false_string_does_not_enable_workspace_pin(self, adapter):
+        assert adapter._metadata_workspace_pinned({"workspace_pinned": "false"}) is False
+
+    def test_unknown_explicit_team_id_fails_closed(self, adapter):
+        """Unknown explicit team_id raises instead of using another workspace."""
+        cached_client = MagicMock(name="cached-client")
+        adapter._team_clients["T_KNOWN"] = cached_client
+        adapter._channel_team["C123"] = "T_KNOWN"
+
+        with pytest.raises(ValueError, match="T_UNKNOWN"):
+            adapter._get_client("C123", team_id="T_UNKNOWN", require_exact=True)
+
+    def test_unknown_event_team_id_keeps_legacy_fallback(self, adapter):
+        """An event-derived unknown team remains a hint, not an exact pin."""
+        cached_client = MagicMock(name="cached-client")
+        adapter._team_clients["T_KNOWN"] = cached_client
+        adapter._channel_team["C123"] = "T_KNOWN"
+
+        assert adapter._get_client("C123", team_id="T_UNKNOWN") is cached_client
+        assert adapter._get_client("C_NO_CACHE", team_id="T_UNKNOWN") is adapter._app.client
+
+    def test_known_explicit_team_id_wins_over_channel_cache(self, adapter):
+        """Explicit team_id selects that workspace's own client."""
+        team_client = MagicMock(name="team-client")
+        adapter._team_clients.update({"T_ONE": MagicMock(), "T_TWO": team_client})
+        adapter._channel_team["C123"] = "T_ONE"
+
+        assert adapter._get_client("C123", team_id="T_TWO") is team_client
+
+    def test_no_team_id_keeps_legacy_fallback(self, adapter):
+        """Legacy fallback (channel cache → primary) applies only with no team_id."""
+        cached_client = MagicMock(name="cached-client")
+        adapter._team_clients["T_KNOWN"] = cached_client
+        adapter._channel_team["C123"] = "T_KNOWN"
+
+        assert adapter._get_client("C123") is cached_client
+        assert adapter._get_client("C_NO_CACHE") is adapter._app.client
+
+    @pytest.mark.asyncio
+    async def test_send_with_unknown_explicit_team_returns_error(self, adapter):
+        """Caller error result: send() fails closed, primary client untouched."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "1.0"})
+
+        result = await adapter.send(
+            "C123",
+            "hello",
+            metadata={"slack_team_id": "T_UNKNOWN", "workspace_pinned": True},
+        )
+
+        assert not result.success
+        assert "T_UNKNOWN" in result.error
+        adapter._app.client.chat_postMessage.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # TestAppMentionHandler
 # ---------------------------------------------------------------------------
 
@@ -4222,6 +4289,30 @@ class TestEnsureDmConversation:
         assert result.success is True
         post_kwargs = adapter._app.client.chat_postMessage.await_args.kwargs
         assert post_kwargs["channel"] == "D999NEW"
+
+    @pytest.mark.asyncio
+    async def test_send_clarify_uses_explicit_workspace_client(self, adapter):
+        """Interactive prompts must honor the same exact workspace pin as text/media."""
+        primary = adapter._app.client
+        primary.chat_postMessage = AsyncMock(return_value={"ok": True, "ts": "wrong"})
+        team_client = AsyncMock()
+        team_client.chat_postMessage.return_value = {"ok": True, "ts": "right"}
+        adapter._team_clients["T_TWO"] = team_client
+        adapter._channel_team["C123"] = "T_ONE"
+
+        result = await adapter.send_clarify(
+            chat_id="C123",
+            question="Which one?",
+            choices=["a", "b"],
+            clarify_id="cl-2",
+            session_key="sk-2",
+            metadata={"slack_team_id": "T_TWO", "workspace_pinned": "true"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "right"
+        team_client.chat_postMessage.assert_awaited_once()
+        primary.chat_postMessage.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -107,6 +107,34 @@ class TestBoundedJobsLock:
         assert time.monotonic() - start < 5
         assert not [r for r in caplog.records if "Timed out" in r.message]
 
+    def test_external_claim_fails_closed_on_lock_timeout(self, monkeypatch):
+        job = create_job(name="strict claim", schedule="every 5m", prompt="x")
+        before = get_job(job["id"])
+        assert before is not None
+
+        jobs_mod.ensure_dirs()
+        lock_path = jobs_mod._jobs_lock_file()
+        lock_path.touch()
+        monkeypatch.setattr(jobs_mod, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.05)
+        release = threading.Event()
+        held = threading.Event()
+        holder = threading.Thread(
+            target=_hold_jobs_flock, args=(lock_path, release, held), daemon=True
+        )
+        holder.start()
+        assert held.wait(timeout=10)
+        try:
+            assert claim_job_for_fire(job["id"]) is False
+        finally:
+            release.set()
+            holder.join(timeout=10)
+
+        after = get_job(job["id"])
+        assert after is not None
+        assert after["next_run_at"] == before["next_run_at"]
+        assert after.get("last_external_fire_at") is None
+        assert after.get("fire_claim") is None
+
     def test_reentrant_nesting_still_works(self):
         with _jobs_lock():
             with _jobs_lock():  # must not deadlock or re-flock

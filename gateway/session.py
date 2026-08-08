@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Callable, cast
 
 logger = logging.getLogger(__name__)
 
@@ -328,6 +328,7 @@ class SessionContext:
     # Session metadata
     session_key: str = ""
     session_id: str = ""
+    routing_revision: int = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -790,6 +791,11 @@ class SessionEntry:
     platform: Optional[Platform] = None
     chat_type: str = "dm"
 
+    # Monotonic revision of the stable-key → concrete-session route. Metadata
+    # and token updates do not change it. Reset/resume/compression publication
+    # do, preventing an ABA route (old→new→old) from satisfying a sealed cron.
+    routing_revision: int = 0
+
     # Lightweight persisted key/value state scoped to this session entry
     # (e.g. Slack thread-context watermarks). Survives gateway restarts via
     # the routing index; must stay small and JSON-serializable.
@@ -907,6 +913,11 @@ class SessionEntry:
             "reset_had_activity": self.reset_had_activity,
             "prev_session_id": self.prev_session_id,
         }
+        # Keep legacy/default session records byte-compatible. Revision zero
+        # is the implicit pre-contextual value; only routes that have actually
+        # moved need the persisted field.
+        if self.routing_revision:
+            result["routing_revision"] = self.routing_revision
         if self.model_override:
             # Defence-in-depth: strip credentials even if a caller stored an
             # unsanitized dict directly on the entry.
@@ -978,6 +989,7 @@ class SessionEntry:
             display_name=data.get("display_name"),
             platform=platform,
             chat_type=data.get("chat_type", "dm"),
+            routing_revision=int(data.get("routing_revision", 0) or 0),
             metadata=dict(data.get("metadata") or {}),
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),
@@ -2492,6 +2504,7 @@ class SessionStore:
         db_create_kwargs = None
         existing_session_id = None
         force_new_observed_entry = None
+        replacement_routing_revision = 0
 
         # ---- Phase 0: lock read -- existing session_id for compression tip ----
         if not force_new:
@@ -2515,6 +2528,10 @@ class SessionStore:
             self._ensure_loaded_locked()
             if force_new:
                 force_new_observed_entry = self._entries.get(session_key)
+                if force_new_observed_entry is not None:
+                    replacement_routing_revision = (
+                        int(force_new_observed_entry.routing_revision) + 1
+                    )
             if session_key in self._entries and not force_new:
                 _entry_for_checks = self._entries[session_key]
                 _stale_session_id = _entry_for_checks.session_id
@@ -2575,6 +2592,9 @@ class SessionStore:
                 _healed = self._heal_compression_tip_locked(
                     entry, existing_session_id, canonical_existing_session_id
                 )
+                if _healed:
+                    entry.routing_revision += 1
+                    _needs_save = True
 
                 if _is_stale and entry.session_id == _stale_session_id:
                     # Stale routing self-heal (#54878): the in-memory entry
@@ -2592,6 +2612,10 @@ class SessionStore:
                         session_key, entry.session_id,
                     )
                     self._entries.pop(session_key, None)
+                    replacement_routing_revision = max(
+                        replacement_routing_revision,
+                        int(entry.routing_revision) + 1,
+                    )
                     # If an expiry watcher (daily/idle reset) already finalized
                     # this session, honour the reset decision instead of silently
                     # reopening it via recovery.
@@ -2618,6 +2642,10 @@ class SessionStore:
                         db_end_session_id = entry.session_id
                         prev_session_id = entry.session_id
                         self._entries.pop(session_key, None)
+                        replacement_routing_revision = max(
+                            replacement_routing_revision,
+                            int(entry.routing_revision) + 1,
+                        )
                         entry = None
                         _needs_recover = True
                     else:
@@ -2638,6 +2666,10 @@ class SessionStore:
                 session_key=session_key, source=source, now=now,
             )
             if recovered is not None:
+                recovered.routing_revision = max(
+                    int(recovered.routing_revision),
+                    replacement_routing_revision,
+                )
                 with self._lock:
                     published = self._entries.get(session_key)
                     if published is None:
@@ -2659,6 +2691,7 @@ class SessionStore:
                 display_name=source.chat_name,
                 platform=source.platform,
                 chat_type=source.chat_type,
+                routing_revision=replacement_routing_revision,
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
@@ -2678,6 +2711,7 @@ class SessionStore:
             entry = published
             _needs_save = True
             if entry is candidate:
+                assert session_id is not None
                 db_create_kwargs = {
                     "session_id": session_id,
                     "source": source.platform.value,
@@ -2717,7 +2751,7 @@ class SessionStore:
 
         if self._db and db_create_kwargs:
             try:
-                self._db.create_session(**db_create_kwargs)
+                cast(Any, self._db.create_session)(**db_create_kwargs)
                 self._record_gateway_session_peer(
                     session_id,
                     session_key,
@@ -2733,14 +2767,21 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        *,
+        touch_activity: bool = True,
     ) -> None:
-        """Update lightweight session metadata after an interaction."""
+        """Update lightweight session metadata after an interaction.
+
+        Internal contextual cron turns pass ``touch_activity=False`` so they do
+        not move the human-idle reset clock.
+        """
         with self._lock:
             self._ensure_loaded_locked()
             entry = self._entries.get(session_key)
             if entry is None:
                 return
-            entry.updated_at = _now()
+            if touch_activity:
+                entry.updated_at = _now()
             if last_prompt_tokens is not None:
                 entry.last_prompt_tokens = last_prompt_tokens
             # Snapshot peer fields while still holding _lock: a concurrent
@@ -3140,11 +3181,13 @@ class SessionStore:
                 display_name=display_name if display_name is not None else old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                routing_revision=old_entry.routing_revision + 1,
                 is_fresh_reset=True,
             )
 
             self._entries[session_key] = new_entry
             self._save()
+            assert session_id is not None
             db_create_kwargs = {
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
@@ -3172,7 +3215,7 @@ class SessionStore:
 
         if self._db and db_create_kwargs:
             try:
-                self._db.create_session(**db_create_kwargs)
+                cast(Any, self._db.create_session)(**db_create_kwargs)
                 self._record_gateway_session_peer(
                     session_id,
                     session_key,
@@ -3210,14 +3253,25 @@ class SessionStore:
                 return entry
             if entry.session_id != expected_session_id:
                 return None
+            old_session_id = entry.session_id
+            old_revision = entry.routing_revision
+            old_updated_at = entry.updated_at
             if not self._heal_compression_tip_locked(
                 entry,
                 expected_session_id,
                 target_session_id,
             ):
                 return None
+            entry.routing_revision += 1
             entry.updated_at = _now()
-            self._save()
+            try:
+                self._save()
+            except BaseException:
+                entry.session_id = old_session_id
+                entry.routing_revision = old_revision
+                entry.updated_at = old_updated_at
+                self._routing_generation += 1
+                raise
             return entry
 
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
@@ -3256,6 +3310,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                routing_revision=old_entry.routing_revision + 1,
             )
 
             self._entries[session_key] = new_entry
@@ -3330,6 +3385,47 @@ class SessionStore:
             self._ensure_loaded_locked()
             entry = self._entries.get(session_key)
             return getattr(entry, "session_id", None) if entry else None
+
+    def peek_session_entry(self, session_key: str) -> Optional[SessionEntry]:
+        """Snapshot a live routing entry without creating/resetting/touching it."""
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            origin = replace(entry.origin) if entry.origin is not None else None
+            return replace(entry, origin=origin, metadata=dict(entry.metadata))
+
+    def seal_contextual_admission(
+        self,
+        session_key: str,
+        execution_id: str,
+        seal: Callable[[str, str, str, int], bool],
+    ) -> Optional[SessionEntry]:
+        """Linearize durable cron admission with reset/resume route mutations.
+
+        The short ledger CAS runs while the existing routing lock is held. Thus
+        either a reset publishes first and admission seals the new route, or
+        admission seals first and the later revision change makes it stale.
+        """
+        if not session_key or not execution_id:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.origin is None:
+                return None
+            if not seal(
+                execution_id,
+                session_key,
+                entry.session_id,
+                int(entry.routing_revision),
+            ):
+                return None
+            origin = replace(entry.origin)
+            return replace(entry, origin=origin, metadata=dict(entry.metadata))
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Serialize transcript draining across queue migration boundaries."""
@@ -3481,6 +3577,25 @@ class SessionStore:
                     msg = pending[0]
                 continue
 
+    def append_contextual_transcript_message_once(
+        self, session_id: str, message: Dict[str, Any]
+    ) -> None:
+        """Durably append one contextual-outbox row without a memory retry queue.
+
+        Contextual executions retry from their SQLite outbox. Enqueuing the same
+        row in the generic in-memory retry buffer creates a second, independent
+        replay authority and permits duplicate rows after a crash. The
+        ``contextual-cron:`` message identity is protected by a partial UNIQUE
+        index in ``SessionDB`` and ``append_message`` returns the existing row
+        for a duplicate identity.
+        """
+        message_id = message.get("platform_message_id") or message.get("message_id")
+        if not isinstance(message_id, str) or not message_id.startswith(
+            "contextual-cron:"
+        ):
+            raise ValueError("contextual transcript rows require a stable identity")
+        self._append_transcript_message(session_id, message)
+
     def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> None:
         """Write one transcript row. Caller handles retry queuing."""
         self._db.append_message(
@@ -3503,6 +3618,8 @@ class SessionStore:
             # any gateway-side persistence path or the next turn's
             # replay diverges at this row.
             api_content=extract_api_content_sidecar(message),
+            display_kind=message.get("display_kind"),
+            display_metadata=message.get("display_metadata"),
         )
 
     # Maximum in-memory pending messages per session before dropping the
@@ -3565,6 +3682,14 @@ class SessionStore:
             self._dirty_transcripts.pop(session_id, None)
             self._transcript_append_failures.pop(session_id, None)
     
+    def has_platform_message_id_strict(
+        self, session_id: str, platform_message_id: str
+    ) -> bool:
+        """Durably query transcript identity or raise when it cannot be proved."""
+        if not self._db:
+            raise RuntimeError("durable session database is unavailable")
+        return self._db.has_platform_message_id(session_id, platform_message_id)
+
     def has_platform_message_id(
         self, session_id: str, platform_message_id: str
     ) -> bool:
@@ -3635,11 +3760,67 @@ class SessionStore:
             # would otherwise re-trigger the pre-request repair on every
             # request forever — heal it once at the restore boundary.
             return self._db.get_messages_as_conversation(
-                session_id, repair_alternation=True
+                session_id, repair_alternation=True, include_hidden=True
             )
         except Exception as e:
             logger.debug("Could not load messages from DB: %s", e)
             return []
+
+    def load_transcript_with_fence_strict(
+        self, session_id: str
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Load one self-consistent transcript snapshot and its durable revision."""
+        if not self._db:
+            raise RuntimeError("Session database is unavailable")
+        for _attempt in range(3):
+            before_count, before_revision = self._db.get_transcript_fence(session_id)
+            messages = self._db.get_messages_as_conversation(
+                session_id, include_ancestors=False, include_hidden=True
+            )
+            after_count, after_revision = self._db.get_transcript_fence(session_id)
+            if (
+                before_count == after_count == len(messages)
+                and before_revision == after_revision
+            ):
+                return messages, after_revision
+        raise RuntimeError("Session transcript changed while its causal fence was loaded")
+
+    def get_contextual_transcript_application(
+        self, execution_id: str
+    ) -> Optional[Dict[str, Any]]:
+        if not self._db:
+            raise RuntimeError("Session database is unavailable")
+        return self._db.get_contextual_transcript_application(execution_id)
+
+    def apply_contextual_transcript_outbox(
+        self,
+        *,
+        execution_id: str,
+        session_id: str,
+        entries: List[Dict[str, Any]],
+        base_count: int,
+        base_revision: int,
+        last_prompt_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Atomically apply a fenced contextual outbox in the canonical state DB."""
+        if not self._db:
+            raise RuntimeError("Session database is unavailable")
+        return self._db.apply_contextual_transcript_outbox(
+            execution_id=execution_id,
+            session_id=session_id,
+            entries=entries,
+            base_count=base_count,
+            base_revision=base_revision,
+            last_prompt_tokens=last_prompt_tokens,
+        )
+
+    def load_transcript_strict(self, session_id: str) -> List[Dict[str, Any]]:
+        """Load the durable transcript or raise when its causal base is unknown."""
+        if not self._db:
+            raise RuntimeError("durable session database is unavailable")
+        return self._db.get_messages_as_conversation(
+            session_id, repair_alternation=False, include_hidden=True
+        )
 
     def rewind_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
         """Back up ``n`` user turns via soft-delete, keeping rows for audit.
@@ -3727,6 +3908,7 @@ def build_session_context(
     if session_entry:
         context.session_key = session_entry.session_key
         context.session_id = session_entry.session_id
+        context.routing_revision = int(getattr(session_entry, "routing_revision", 0))
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at
     

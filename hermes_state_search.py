@@ -961,6 +961,7 @@ class SessionSearchMixin:
         window: int = 5,
         bookend: int = 3,
         keep_roles: Optional[Tuple[str, ...]] = ("user", "assistant"),
+        include_hidden: bool = False,
     ) -> Dict[str, Any]:
         """Return an anchored window plus session bookends.
 
@@ -994,7 +995,10 @@ class SessionSearchMixin:
         # Reuse the primitive — handles anchor-existence, content decoding,
         # tool_calls deserialisation, and boundary counts.
         primitive = self.get_messages_around(
-            session_id, around_message_id, window=window
+            session_id,
+            around_message_id,
+            window=window,
+            include_hidden=include_hidden,
         )
         window_rows = primitive["window"]
         if not window_rows:
@@ -1027,6 +1031,11 @@ class SessionSearchMixin:
         bookend_end_rows: List[Any] = []
         if bookend > 0:
             with self._read_ctx() as conn:
+                hidden_clause = (
+                    ""
+                    if include_hidden
+                    else " AND COALESCE(display_kind, '') != 'hidden'"
+                )
                 role_clause = ""
                 role_params: list = []
                 if keep_roles is not None:
@@ -1038,6 +1047,7 @@ class SessionSearchMixin:
                     f"SELECT * FROM messages "
                     f"WHERE session_id = ? AND id < ?{role_clause} "
                     f"AND length(content) > 0 "
+                    f"{hidden_clause} "
                     f"ORDER BY id ASC LIMIT ?",
                     (session_id, window_min_id, *role_params, bookend),
                 ).fetchall()
@@ -1046,6 +1056,7 @@ class SessionSearchMixin:
                     f"SELECT * FROM messages "
                     f"WHERE session_id = ? AND id > ?{role_clause} "
                     f"AND length(content) > 0 "
+                    f"{hidden_clause} "
                     f"ORDER BY id DESC LIMIT ?",
                     (session_id, window_max_id, *role_params, bookend),
                 ).fetchall()
@@ -1308,6 +1319,7 @@ class SessionSearchMixin:
         table: str = "messages_fts_trigram",
         order_by_sql: str,
         include_inactive: bool,
+        include_hidden: bool = False,
         source_filter: List[str] = None,
         exclude_sources: List[str] = None,
         role_filter: List[str] = None,
@@ -1343,6 +1355,8 @@ class SessionSearchMixin:
         tri_params: list = [trigram_query]
         if not include_inactive:
             tri_where.append("(m.active = 1 OR m.compacted = 1)")
+        if not include_hidden:
+            tri_where.append("COALESCE(m.display_kind, '') != 'hidden'")
         if source_filter is not None:
             tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
             tri_params.extend(source_filter)
@@ -1391,6 +1405,7 @@ class SessionSearchMixin:
         sort: str = None,
         include_inactive: bool = False,
         fields: Optional[Collection[str]] = None,
+        include_hidden: bool = False,
     ) -> List[Dict[str, Any]]:
         """Instrumented wrapper around :meth:`_search_messages_impl`.
 
@@ -1413,6 +1428,7 @@ class SessionSearchMixin:
                 sort=sort,
                 include_inactive=include_inactive,
                 fields=fields,
+                include_hidden=include_hidden,
             )
             return rows
         finally:
@@ -1463,6 +1479,7 @@ class SessionSearchMixin:
         sort: str = None,
         include_inactive: bool = False,
         fields: Optional[Collection[str]] = None,
+        include_hidden: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -1534,6 +1551,8 @@ class SessionSearchMixin:
             # are discoverable; only rewind/undo rows (active=0, compacted=0)
             # are hidden. See archive_and_compact() / #38763.
             where_clauses.append("(m.active = 1 OR m.compacted = 1)")
+        if not include_hidden:
+            where_clauses.append("COALESCE(m.display_kind, '') != 'hidden'")
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -1634,6 +1653,8 @@ class SessionSearchMixin:
                 cjk_params: list = [cjk_query]
                 if not include_inactive:
                     cjk_where.append("(m.active = 1 OR m.compacted = 1)")
+                if not include_hidden:
+                    cjk_where.append("COALESCE(m.display_kind, '') != 'hidden'")
                 if source_filter is not None:
                     cjk_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     cjk_params.extend(source_filter)
@@ -1723,6 +1744,8 @@ class SessionSearchMixin:
                 tri_params: list = [trigram_query]
                 if not include_inactive:
                     tri_where.append("(m.active = 1 OR m.compacted = 1)")
+                if not include_hidden:
+                    tri_where.append("COALESCE(m.display_kind, '') != 'hidden'")
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)
@@ -1817,6 +1840,8 @@ class SessionSearchMixin:
                     # compaction-archived rows are discoverable; rewind/undo
                     # rows (active=0, compacted=0) are hidden (#38763).
                     like_where.append("(m.active = 1 OR m.compacted = 1)")
+                if not include_hidden:
+                    like_where.append("COALESCE(m.display_kind, '') != 'hidden'")
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)
@@ -1882,6 +1907,7 @@ class SessionSearchMixin:
                     query,
                     limit - len(matches),
                     include_inactive=include_inactive,
+                    include_hidden=include_hidden,
                     source_filter=source_filter,
                     exclude_sources=exclude_sources,
                     role_filter=role_filter,
@@ -1920,6 +1946,7 @@ class SessionSearchMixin:
                     table="messages_fts_cjk",
                     order_by_sql=order_by_sql,
                     include_inactive=include_inactive,
+                    include_hidden=include_hidden,
                     source_filter=source_filter,
                     exclude_sources=exclude_sources,
                     role_filter=role_filter,
@@ -1937,6 +1964,7 @@ class SessionSearchMixin:
                     _fb_query,
                     order_by_sql=order_by_sql,
                     include_inactive=include_inactive,
+                    include_hidden=include_hidden,
                     source_filter=source_filter,
                     exclude_sources=exclude_sources,
                     role_filter=role_filter,
@@ -1955,35 +1983,52 @@ class SessionSearchMixin:
         )
         for match in context_matches:
             try:
+                context_hidden_clause = (
+                    ""
+                    if include_hidden
+                    else " AND COALESCE(m.display_kind, '') != 'hidden'"
+                )
+                target_hidden_clause = (
+                    ""
+                    if include_hidden
+                    else " AND COALESCE(display_kind, '') != 'hidden'"
+                )
+                center_hidden_clause = (
+                    ""
+                    if include_hidden
+                    else " AND COALESCE(center.display_kind, '') != 'hidden'"
+                )
                 with self._read_ctx() as conn:
                     ctx_cursor = conn.execute(
-                        """WITH target AS (
+                        f"""WITH target AS (
                                SELECT session_id, timestamp, id
                                FROM messages
-                               WHERE id = ?
+                               WHERE id = ?{target_hidden_clause}
                            )
                            SELECT role, content
                            FROM (
                                SELECT m.id, m.timestamp, m.role, m.content
                                FROM messages m
                                JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp < t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id < t.id)
+                               WHERE ((m.timestamp < t.timestamp)
+                                  OR (m.timestamp = t.timestamp AND m.id < t.id))
+                                 {context_hidden_clause}
                                ORDER BY m.timestamp DESC, m.id DESC
                                LIMIT 1
                            )
                            UNION ALL
                            SELECT role, content
-                           FROM messages
-                           WHERE id = ?
+                           FROM messages center
+                           WHERE center.id = ?{center_hidden_clause}
                            UNION ALL
                            SELECT role, content
                            FROM (
                                SELECT m.id, m.timestamp, m.role, m.content
                                FROM messages m
                                JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp > t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id > t.id)
+                               WHERE ((m.timestamp > t.timestamp)
+                                  OR (m.timestamp = t.timestamp AND m.id > t.id))
+                                 {context_hidden_clause}
                                ORDER BY m.timestamp ASC, m.id ASC
                                LIMIT 1
                            )""",
@@ -2031,6 +2076,7 @@ class SessionSearchMixin:
         limit: int,
         *,
         include_inactive: bool = False,
+        include_hidden: bool = False,
         source_filter: Optional[List[str]] = None,
         exclude_sources: Optional[List[str]] = None,
         role_filter: Optional[List[str]] = None,
@@ -2070,6 +2116,8 @@ class SessionSearchMixin:
             params += [f"%{esc}%"] * 3
         if not include_inactive:
             where.append("(m.active = 1 OR m.compacted = 1)")
+        if not include_hidden:
+            where.append("COALESCE(m.display_kind, '') != 'hidden'")
         if source_filter is not None:
             where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
             params.extend(source_filter)

@@ -21,7 +21,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from agent.display import (
     KawaiiSpinner,
@@ -755,6 +755,38 @@ def _begin_tool_execution(
             pass
 
 
+def _tool_execution_policy_block(agent, function_name: str) -> Optional[str]:
+    """Reject tools outside a hard per-agent boundary before any side effect.
+
+    This is an execution authorization check, not a schema hint.  It runs on
+    the final resolved tool name (including tool-search unwrapping) before
+    middleware, hooks, inline dispatch, registry lookup, or worker launch.
+    """
+    try:
+        from gateway.session_context import _get_contextual_turn_authority
+
+        contextual_authority = _get_contextual_turn_authority()
+    except Exception:
+        contextual_authority = None
+    allowed = (
+        frozenset()
+        if contextual_authority is not None
+        else getattr(agent, "allowed_tool_names", None)
+    )
+    if allowed is None or function_name in allowed:
+        return None
+    return json.dumps(
+        {
+            "error": (
+                f"Tool '{function_name}' is not permitted by this execution policy."
+            ),
+            "error_type": "tool_execution_policy",
+            "tool": function_name,
+        },
+        ensure_ascii=False,
+    )
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -806,7 +838,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # ── Parse args + pre-execution bookkeeping ───────────────────────
     # (tool call, resolved name, parsed args, middleware trace, parse error,
-    # tool-search scope block)
+    # tool-search scope block, hard execution-policy block)
     parsed_calls = []
     for tool_call in tool_calls:
         function_name = tool_call.function.name
@@ -816,6 +848,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         )
 
         if malformed_args_result is not None:
+            _policy_block = _tool_execution_policy_block(agent, function_name)
             parsed_calls.append(
                 (
                     tool_call,
@@ -824,6 +857,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     [],
                     malformed_args_result,
                     None,
+                    _policy_block,
                 )
             )
             continue
@@ -868,21 +902,72 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        _policy_block = _tool_execution_policy_block(agent, function_name)
         parsed_calls.append(
-            (tool_call, function_name, function_args, [], None, _ts_scope_block)
+            (
+                tool_call,
+                function_name,
+                function_args,
+                [],
+                None,
+                _ts_scope_block,
+                _policy_block,
+            )
         )
 
     # ── Logging / callbacks ──────────────────────────────────────────
-    tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
+    tool_names_str = ", ".join(name for _, name, _, _, _, _, _ in parsed_calls)
     if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
 
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
-    results = [None] * num_tools
-    for i, (tc, name, args, middleware_trace, block_result, _scope_block) in enumerate(parsed_calls):
-        if block_result is not None:
-            results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
+    results: list[
+        Optional[
+            tuple[
+                str,
+                dict[str, Any],
+                Any,
+                float,
+                bool,
+                bool,
+                list[dict[str, Any]],
+            ]
+        ]
+    ] = cast(Any, [None] * num_tools)
+    for i, (
+        tc,
+        name,
+        args,
+        middleware_trace,
+        _parse_error,
+        _scope_block,
+        policy_block,
+    ) in enumerate(parsed_calls):
+        if policy_block is not None:
+            results[i] = (
+                name,
+                args,
+                policy_block,
+                0.0,
+                True,
+                True,
+                middleware_trace,
+            )
+        elif _parse_error is not None:
+            # Parse-invalid calls are intentionally excluded from
+            # ``runnable_calls``. Seed their terminal result here so the
+            # collector preserves the validation error instead of fabricating
+            # a missing-thread result for work correctly never submitted.
+            results[i] = (
+                name,
+                args,
+                _parse_error,
+                0.0,
+                True,
+                False,
+                middleware_trace,
+            )
 
     start_condition = threading.Condition()
     next_start_order = 0
@@ -1154,10 +1239,18 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     try:
         runnable_calls = [
             (i, tc, name, args, scope_block)
-            for i, (tc, name, args, _trace, parse_error, scope_block) in enumerate(
+            for i, (
+                tc,
+                name,
+                args,
+                _trace,
+                parse_error,
+                scope_block,
+                policy_block,
+            ) in enumerate(
                 parsed_calls
             )
-            if parse_error is None
+            if parse_error is None and policy_block is None
         ]
         futures = []
         future_to_index = {}
@@ -1352,9 +1445,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
     # ── Post-execution: display per-tool results ─────────────────────
-    for i, (tc, name, args, middleware_trace, _parse_error, _scope_block) in enumerate(
-        parsed_calls
-    ):
+    for i, (
+        tc,
+        name,
+        args,
+        middleware_trace,
+        _parse_error,
+        _scope_block,
+        _policy_block,
+    ) in enumerate(parsed_calls):
         r = results[i]
         blocked = False
         is_error = True
@@ -1418,7 +1517,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             name = function_name
             args = function_args
             progress_function_name = function_name
-            if _parse_error is not None:
+            if _parse_error is not None and _policy_block is None:
                 _emit_terminal_post_tool_call(
                     agent,
                     function_name=function_name,
@@ -1718,6 +1817,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         )
         except Exception:
             pass
+
+        _policy_block = _tool_execution_policy_block(agent, function_name)
+        if _policy_block is not None:
+            messages.append(
+                make_tool_result_message(
+                    function_name,
+                    _policy_block,
+                    tool_call.id,
+                    effect_disposition="none",
+                )
+            )
+            if not _flush_session_db_after_tool_progress(
+                agent,
+                messages,
+                stage=f"policy-blocked tool result {function_name}",
+            ):
+                return
+            continue
 
         middleware_trace: list[dict[str, Any]] = []
         _execution_blocked = False

@@ -712,7 +712,7 @@ class TestFlushCompressedSummaryOverrideGuard:
             agent._persist_user_message_timestamp = None
             agent._flush_messages_to_session_db(messages, None)
 
-            msgs = db.get_messages_as_conversation(sid)
+            msgs = db.get_messages_as_conversation(sid, include_hidden=True)
             assert msgs[0]["content"] == merged  # summary survives
             assert "api_content" not in msgs[0]  # wire == row, no sidecar
         finally:

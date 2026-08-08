@@ -27,6 +27,7 @@ session a few steps later.
 """
 import asyncio
 from contextvars import copy_context
+from typing import Any, cast
 
 import pytest
 
@@ -133,7 +134,7 @@ def test_reset_session_vars_closes_inheritance_leak():
     (stripped, because they are _UNSET in this context and the process is
     engaged) — NOT the parent's MINE_*. B's own bind then takes effect normally.
     """
-    set_session_vars(**MINE)  # parent A binds in the current context
+    cast(Any, set_session_vars)(**MINE)  # parent A binds in the current context
 
     captured = asyncio.run(_child_turn(reset_first=True))
 
@@ -190,7 +191,9 @@ def test_reset_session_vars_closes_async_delivery_leak():
     default-supported behavior (True) — NOT the stateless sibling's False — so a
     real gateway turn isn't wrongly told its channel can't route async delivery.
     """
-    set_session_vars(**FOREIGN, async_delivery=False)  # stateless sibling A
+    cast(Any, set_session_vars)(
+        **FOREIGN, async_delivery=False
+    )  # stateless sibling A
 
     captured = asyncio.run(_child_async_delivery(reset_first=True))
 

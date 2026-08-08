@@ -98,27 +98,27 @@ class CronScheduler(ABC):
 
         return recover_interrupted_executions()
 
+    def resume_pending_deliveries(self, *, adapters=None, loop=None) -> int:
+        """Resume only durable agent-complete deliveries that never began."""
+        from cron.scheduler import resume_pending_contextual_deliveries
+
+        return resume_pending_contextual_deliveries(adapters=adapters, loop=loop)
+
     def fire_due(self, job_id: str, *, adapters: Any = None, loop: Any = None) -> bool:
-        """Run a single job NOW via the shared orchestrator. Called by the
-        inbound fire webhook when an external scheduler signals a job is due.
+        """Run a single job NOW via the existing external-provider path.
 
-        The default claims the job with a store-level compare-and-set
-        (multi-machine at-most-once), then runs it via the shared
-        ``run_one_job`` body. Built-in never calls this (it has its own tick
-        loop); an external provider routes its inbound fire here.
-
-        Returns True if THIS caller claimed and ran the job, False if the claim
-        was lost (another machine/retry won it) or the job no longer exists.
+        Contextual jobs cannot be created while an external provider is
+        configured, so this compatibility path remains isolated-only in V1.
         """
         from cron.jobs import claim_job_for_fire, get_job
         from cron.executions import create_execution
         from cron.scheduler import run_one_job
 
         if not claim_job_for_fire(job_id):
-            return False  # another machine already claimed this fire
+            return False
         job = get_job(job_id)
         if job is None:
-            return False  # job removed (e.g. repeat-N exhausted) between arm and fire
+            return False
         job["execution_id"] = create_execution(job_id, source=self.name)["id"]
         return run_one_job(job, adapters=adapters, loop=loop)
 
@@ -192,6 +192,8 @@ class InProcessCronScheduler(CronScheduler):
         interval=60,
         can_dispatch=None,
         profile_homes=None,
+        profile_adapters=None,
+        contextual_transcript_recover=None,
     ):
         import logging
         from cron.scheduler import tick as cron_tick
@@ -215,10 +217,12 @@ class InProcessCronScheduler(CronScheduler):
             self._start_multiplex(
                 stop_event,
                 profile_homes=profile_homes,
+                profile_adapters=profile_adapters,
                 adapters=adapters,
                 loop=loop,
                 interval=interval,
                 can_dispatch=can_dispatch,
+                contextual_transcript_recover=contextual_transcript_recover,
             )
             return
 
@@ -229,12 +233,26 @@ class InProcessCronScheduler(CronScheduler):
                 "Marked %d interrupted cron execution(s) unknown after restart",
                 recovered,
             )
+        if contextual_transcript_recover is not None:
+            try:
+                contextual_transcript_recover()
+            except BaseException:
+                logger.error(
+                    "Contextual transcript startup recovery deferred",
+                    exc_info=True,
+                )
+        resumed = self.resume_pending_deliveries(adapters=adapters, loop=loop)
+        if resumed:
+            logger.info("Resumed %d pending contextual cron delivery(s)", resumed)
         # Heartbeat once before the first sleep so `hermes cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
         record_ticker_heartbeat()
         while not stop_event.is_set():
             ok = False
             try:
+                if contextual_transcript_recover is not None:
+                    contextual_transcript_recover()
+                    self.resume_pending_deliveries(adapters=adapters, loop=loop)
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
@@ -275,10 +293,12 @@ class InProcessCronScheduler(CronScheduler):
         stop_event,
         *,
         profile_homes,
+        profile_adapters=None,
         adapters=None,
         loop=None,
         interval=60,
         can_dispatch=None,
+        contextual_transcript_recover=None,
     ):
         """Tick every served profile's cron store when multiplex_profiles is on.
 
@@ -305,63 +325,130 @@ class InProcessCronScheduler(CronScheduler):
             [p[0] if isinstance(p, tuple) else p for p in profile_homes],
         )
 
-        # Recovery + initial heartbeat for every profile.
+        adapter_maps = profile_adapters or {}
+        if profile_adapters is None and adapters:
+            logger.error(
+                "Multiplex cron received only a process-wide adapter map; "
+                "live delivery is disabled rather than risking cross-profile transport reuse"
+            )
+
+        def _entry_parts(entry):
+            if isinstance(entry, tuple):
+                return str(entry[0]), entry[1]
+            return str(entry), entry
+
+        # Recovery + initial heartbeat are isolated per profile. One corrupt
+        # profile must not prevent later profiles from recovering or ticking.
         for entry in profile_homes:
-            home = entry[1] if isinstance(entry, tuple) else entry
+            profile_name, home = _entry_parts(entry)
+            live_adapters = adapter_maps.get(profile_name, {})
             home_token = set_hermes_home_override(str(home))
             try:
                 with use_cron_store(home):
-                    recovered = self.recover_interrupted()
-                    if recovered:
-                        logger.warning(
-                            "Marked %d interrupted cron execution(s) for profile at %s",
-                            recovered,
-                            home,
+                    try:
+                        recovered = self.recover_interrupted()
+                        if recovered:
+                            logger.warning(
+                                "Marked %d interrupted cron execution(s) for profile %s",
+                                recovered,
+                                profile_name,
+                            )
+                        if contextual_transcript_recover is not None:
+                            contextual_transcript_recover()
+                        resumed = self.resume_pending_deliveries(
+                            adapters=live_adapters,
+                            loop=loop,
                         )
-                    record_ticker_heartbeat()
+                        if resumed:
+                            logger.info(
+                                "Resumed %d pending contextual delivery(s) for profile %s",
+                                resumed,
+                                profile_name,
+                            )
+                        record_ticker_heartbeat(success=True)
+                        clear_ticker_error()
+                    except BaseException as exc:
+                        logger.error(
+                            "Cron recovery failed for profile %s: %s",
+                            profile_name,
+                            exc,
+                            exc_info=True,
+                        )
+                        try:
+                            record_ticker_heartbeat(success=False)
+                            record_ticker_error(f"{type(exc).__name__}: {exc}")
+                        except BaseException:
+                            logger.error(
+                                "Could not record cron recovery failure for profile %s",
+                                profile_name,
+                                exc_info=True,
+                            )
+            except BaseException as exc:
+                logger.error(
+                    "Could not open cron store for profile %s during recovery: %s",
+                    profile_name,
+                    exc,
+                    exc_info=True,
+                )
             finally:
                 reset_hermes_home_override(home_token)
 
         while not stop_event.is_set():
-            ok = False
-            try:
-                if can_dispatch is not None and not can_dispatch():
-                    logger.debug("Cron dispatch paused while gateway drains existing work")
-                else:
-                    for entry in profile_homes:
-                        home = entry[1] if isinstance(entry, tuple) else entry
-                        home_token = set_hermes_home_override(str(home))
+            dispatch_allowed = can_dispatch is None or can_dispatch()
+            if not dispatch_allowed:
+                logger.debug("Cron dispatch paused while gateway drains existing work")
+
+            for entry in profile_homes:
+                profile_name, home = _entry_parts(entry)
+                live_adapters = adapter_maps.get(profile_name, {})
+                home_token = set_hermes_home_override(str(home))
+                try:
+                    with use_cron_store(home):
+                        ok = False
+                        tick_error = None
                         try:
-                            with use_cron_store(home):
+                            if contextual_transcript_recover is not None:
+                                contextual_transcript_recover()
+                                self.resume_pending_deliveries(
+                                    adapters=live_adapters,
+                                    loop=loop,
+                                )
+                            if dispatch_allowed:
                                 cron_tick(
                                     verbose=False,
-                                    adapters=adapters,
+                                    adapters=live_adapters,
                                     loop=loop,
                                     sync=False,
                                     can_dispatch=can_dispatch,
                                 )
-                        finally:
-                            reset_hermes_home_override(home_token)
-                ok = True
-            except BaseException as e:
-                logger.error("Cron tick error: %s", e, exc_info=True)
-                _tick_error = f"{type(e).__name__}: {e}"
-            else:
-                _tick_error = None
-            # Record per-profile heartbeat after each tick cycle.
-            for entry in profile_homes:
-                home = entry[1] if isinstance(entry, tuple) else entry
-                home_token = set_hermes_home_override(str(home))
-                try:
-                    with use_cron_store(home):
-                        record_ticker_heartbeat(success=ok)
-                        # Surface the failure reason (or clear it) per profile
-                        # so `hermes cron status` can show WHY ticks fail
-                        # (#68483).
-                        if ok:
-                            clear_ticker_error()
-                        elif _tick_error:
-                            record_ticker_error(_tick_error)
+                            ok = True
+                        except BaseException as exc:
+                            tick_error = f"{type(exc).__name__}: {exc}"
+                            logger.error(
+                                "Cron tick failed for profile %s: %s",
+                                profile_name,
+                                exc,
+                                exc_info=True,
+                            )
+                        try:
+                            record_ticker_heartbeat(success=ok)
+                            if ok:
+                                clear_ticker_error()
+                            elif tick_error:
+                                record_ticker_error(tick_error)
+                        except BaseException:
+                            logger.error(
+                                "Could not record cron heartbeat for profile %s",
+                                profile_name,
+                                exc_info=True,
+                            )
+                except BaseException as exc:
+                    logger.error(
+                        "Could not open cron store for profile %s during tick: %s",
+                        profile_name,
+                        exc,
+                        exc_info=True,
+                    )
                 finally:
                     reset_hermes_home_override(home_token)
             stop_event.wait(interval)

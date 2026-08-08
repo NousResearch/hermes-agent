@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 import types
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -286,12 +287,52 @@ def test_applies_agent_side_effects():
     assert agent._current_turn_id
 
 
+def test_contextual_prologue_skips_all_extension_and_persistence_planes():
+    """A hidden scheduled turn cannot escape through prologue side effects."""
+    agent = _FakeAgent()
+    agent_any = cast(Any, agent)
+    agent.compression_enabled = True
+    agent.context_compressor.threshold_tokens = 1
+    agent.context_compressor.should_compress_info = lambda tokens=None: (
+        True,
+        "threshold",
+    )
+    agent_any._compress_context = MagicMock(
+        side_effect=AssertionError("contextual prologue attempted compression")
+    )
+    agent._memory_manager = MagicMock()
+    agent._memory_manager.prefetch_all.return_value = "PRIVATE MEMORY"
+    agent_any._gateway_turn_context_notes = "human-only gateway note"
+    agent_any._ensure_db_session = MagicMock(
+        side_effect=AssertionError("contextual prologue attempted persistence")
+    )
 
+    with (
+        patch(
+            "agent.turn_context.recover_rotated_compression_session",
+            side_effect=AssertionError("contextual prologue followed a rotated route"),
+        ) as recover,
+        patch("hermes_cli.lifecycle.invoke_hook") as invoke_hook,
+    ):
+        ctx = _build(
+            agent,
+            contextual_execution=True,
+            user_message="inspect the entire private transcript",
+            conversation_history=[
+                {"role": "user", "content": "private history " * 100}
+            ],
+        )
 
-
-
-
-
+    recover.assert_not_called()
+    invoke_hook.assert_not_called()
+    agent_any._compress_context.assert_not_called()
+    agent._memory_manager.on_turn_start.assert_not_called()
+    agent._memory_manager.prefetch_all.assert_not_called()
+    agent_any._ensure_db_session.assert_not_called()
+    assert agent._persist_calls == 0
+    assert agent_any._gateway_turn_context_notes == "human-only gateway note"
+    assert ctx.plugin_user_context == ""
+    assert ctx.ext_prefetch_cache == ""
 
 
 def test_pending_cli_message_uses_clean_override_for_api_local_note():

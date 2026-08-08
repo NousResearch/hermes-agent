@@ -110,6 +110,27 @@ async def test_session_messages_default_to_latest_bounded_page(adapter, session_
 
 
 @pytest.mark.asyncio
+async def test_session_messages_omits_hidden_contextual_rows(adapter, session_db):
+    session_id = session_db.create_session("hidden-session", "api_server")
+    session_db.append_message(
+        session_id,
+        role="user",
+        content="HIDDEN-PROMPT-CANARY",
+        display_kind="hidden",
+    )
+    session_db.append_message(session_id, role="assistant", content="visible answer")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert resp.status == 200
+        data = await resp.json()
+
+    assert [message["content"] for message in data["data"]] == ["visible answer"]
+    assert "HIDDEN-PROMPT-CANARY" not in str(data)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")

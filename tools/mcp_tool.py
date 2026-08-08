@@ -7164,6 +7164,15 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Contextual turns receive a gateway-owned hard allowlist. Re-apply it
+    # after late MCP/plugin discovery so refresh cannot widen capabilities.
+    allowed_tool_names = getattr(agent, "allowed_tool_names", None)
+    if allowed_tool_names is not None:
+        allowed = frozenset(allowed_tool_names)
+        new_defs = [t for t in new_defs if t["function"]["name"] in allowed]
+        new_names = {t["function"]["name"] for t in new_defs}
+        staged_engine_names.intersection_update(new_names)
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.

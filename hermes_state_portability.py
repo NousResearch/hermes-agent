@@ -11,7 +11,7 @@ module-level constants live in hermes_state_common.
 import logging
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
 from hermes_state_common import (
@@ -41,6 +41,50 @@ class SessionPortabilityMixin:
                 if name not in cls._SESSION_COMPACT_EXCLUDED
             )
         return cls._session_compact_cols_sql
+
+    def _apply_visible_session_counts(
+        self, sessions: List[Dict[str, Any]]
+    ) -> None:
+        """Replace durable total counters with one batched public projection."""
+        session_ids = sorted(
+            {str(session.get("id") or "") for session in sessions if session.get("id")}
+        )
+        if not session_ids:
+            return
+        placeholders = ",".join("?" for _ in session_ids)
+        query = f"""
+            SELECT session_id,
+                   COUNT(*) AS message_count,
+                   COALESCE(SUM(
+                       CASE
+                           WHEN tool_calls IS NULL THEN 0
+                           WHEN json_valid(tool_calls) = 0 THEN 1
+                           WHEN json_type(tool_calls) = 'array'
+                               THEN json_array_length(tool_calls)
+                           ELSE 1
+                       END
+                   ), 0) AS tool_call_count
+            FROM messages
+            WHERE session_id IN ({placeholders})
+              AND COALESCE(display_kind, '') != 'hidden'
+            GROUP BY session_id
+        """
+        host = cast(Any, self)
+        with host._lock:
+            rows = host._conn.execute(query, session_ids).fetchall()
+        counts = {
+            str(row["session_id"]): (
+                int(row["message_count"] or 0),
+                int(row["tool_call_count"] or 0),
+            )
+            for row in rows
+        }
+        for session in sessions:
+            message_count, tool_call_count = counts.get(
+                str(session.get("id") or ""), (0, 0)
+            )
+            session["message_count"] = message_count
+            session["tool_call_count"] = tool_call_count
 
     def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery.
@@ -107,6 +151,7 @@ class SessionPortabilityMixin:
                     (SELECT {_PREVIEW_RAW_SELECT}
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                       AND COALESCE(m.display_kind, '') != 'hidden'
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
@@ -191,6 +236,7 @@ class SessionPortabilityMixin:
                     (SELECT {_PREVIEW_RAW_SELECT}
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                       AND COALESCE(m.display_kind, '') != 'hidden'
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
@@ -207,6 +253,7 @@ class SessionPortabilityMixin:
             s = self._session_row_dict(row)
             s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
             result[s["id"]] = s
+        self._apply_visible_session_counts(list(result.values()))
         return result
 
     def get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
@@ -235,6 +282,7 @@ class SessionPortabilityMixin:
                     SELECT m2.id FROM messages m2
                     WHERE m2.session_id = s.id AND m2.role = 'user'
                       AND m2.content IS NOT NULL
+                      AND COALESCE(m2.display_kind, '') != 'hidden'
                     ORDER BY m2.timestamp, m2.id LIMIT 1
                 )
                 WHERE s.title IS NOT NULL AND m.content LIKE ?
@@ -255,6 +303,7 @@ class SessionPortabilityMixin:
             row = self._conn.execute(
                 "SELECT content FROM messages "
                 "WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL "
+                "AND COALESCE(display_kind, '') != 'hidden' "
                 "ORDER BY timestamp, id LIMIT 1",
                 (session_id,),
             ).fetchone()
@@ -263,13 +312,23 @@ class SessionPortabilityMixin:
         decoded = self._decode_content(row["content"])
         return decoded if isinstance(decoded, str) else ""
 
-    def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def export_session(
+        self, session_id: str, *, include_hidden: bool = False
+    ) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict."""
         session = self.get_session(session_id)
         if not session:
             return None
-        messages = self.get_messages(session_id)
-        return {**session, "messages": messages}
+        messages = self.get_messages(session_id, include_hidden=include_hidden)
+        tool_call_count = sum(
+            len(message.get("tool_calls") or []) for message in messages
+        )
+        return {
+            **session,
+            "message_count": len(messages),
+            "tool_call_count": tool_call_count,
+            "messages": messages,
+        }
 
     def export_session_lineage(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Export a compression lineage as one logical session dict."""
@@ -300,7 +359,17 @@ class SessionPortabilityMixin:
         results = []
         for session in sessions:
             messages = self.get_messages(session["id"])
-            results.append({**session, "messages": messages})
+            tool_call_count = sum(
+                len(message.get("tool_calls") or []) for message in messages
+            )
+            results.append(
+                {
+                    **session,
+                    "message_count": len(messages),
+                    "tool_call_count": tool_call_count,
+                    "messages": messages,
+                }
+            )
         return results
 
     @staticmethod

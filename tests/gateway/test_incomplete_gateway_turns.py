@@ -3,6 +3,7 @@
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -141,7 +142,7 @@ async def test_incomplete_codex_turn_stays_out_of_slack_transcript(monkeypatch, 
     await adapter._process_message_background(event, build_session_key(event.source))
 
     assert adapter.sent == []
-    assert runner.session_store.update_session.called
+    assert cast(Any, runner.session_store.update_session).called
 
     transcript_roles = [
         call.args[1]["role"]

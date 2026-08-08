@@ -117,7 +117,8 @@ Check status with `hermes gateway status` — Buzz connection state is reported 
 
 ## Notes and limitations
 
-- **Inbound is polled, not streamed.** The `buzz` CLI is request/response, so the adapter polls `buzz messages get` per watched channel every `poll_interval` seconds (default 4). Expect up to one interval of latency on inbound messages. A future optimization is a websocket transport (the Buzz repo ships `buzz-ws-client` for true streaming).
+- **Inbound transport.** By default (`transport: auto`), inbound messages arrive over a persistent NIP-42-authenticated Nostr WebSocket subscription (near-instant delivery). When the WebSocket cannot authenticate, the adapter falls back to CLI polling (`buzz messages get` per watched channel every `poll_interval` seconds, default 4). Pin `transport: poll` to force polling only, or `transport: websocket` to require WebSocket and fail connect otherwise.
 - On (re)connect the adapter seeds its high-water mark from the newest events, so channel history is never replayed into the agent.
-- New DM conversations are discovered automatically (every few poll sweeps).
+- New DM conversations are discovered automatically (via WebSocket membership events when connected over WS, or every few poll sweeps in poll mode).
+- Outbound messages always go through the `buzz` CLI.
 - The private key is passed to the CLI via the subprocess environment — it never appears in argv or logs.

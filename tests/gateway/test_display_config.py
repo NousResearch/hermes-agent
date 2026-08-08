@@ -133,11 +133,18 @@ class TestPlatformDefaults:
 
 
     def test_low_tier_platforms(self):
-        """Signal, BlueBubbles, etc. default to 'off' tool progress."""
+        """Signal, BlueBubbles, Buzz, etc. default to 'off' tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud"):
+        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud", "buzz"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
+
+    def test_buzz_final_answer_first_defaults(self):
+        """Buzz shared channels should not spam tool progress or interim chatter."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "buzz", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "buzz", "long_running_notifications") is False
 
 
     def test_telegram_mobile_chatter_defaults(self):

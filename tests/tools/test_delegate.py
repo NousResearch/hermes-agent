@@ -1747,6 +1747,65 @@ class TestFallbackModelInheritance(unittest.TestCase):
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
 
+    def test_routed_child_uses_parent_primary_as_last_report_fallback(self):
+        """A routed scout can finish its report on the parent's primary model."""
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "custom"
+        parent.model = "gpt-5.6-sol"
+        parent.base_url = "https://codex-lb.example/v1"
+        parent.api_key = "parent-key"
+        parent._fallback_chain = []
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="research then report",
+                context=None,
+                toolsets=None,
+                model="gpt-5.6-luna",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(
+            kwargs["fallback_model"],
+            [{
+                "provider": "custom",
+                "model": "gpt-5.6-sol",
+                "base_url": "https://codex-lb.example/v1",
+                "api_key": "parent-key",
+            }],
+        )
+
+    def test_parent_primary_follows_configured_child_fallbacks(self):
+        """Explicit fallback order remains authoritative before parent recovery."""
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "custom"
+        parent.model = "gpt-5.6-sol"
+        parent.base_url = "https://codex-lb.example/v1"
+        configured = {"provider": "openrouter", "model": "backup-model"}
+        parent._fallback_chain = [configured]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="research then report",
+                context=None,
+                toolsets=None,
+                model="gpt-5.6-luna",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["fallback_model"][0], configured)
+        self.assertEqual(kwargs["fallback_model"][1]["model"], "gpt-5.6-sol")
+
 
 if __name__ == "__main__":
     unittest.main()

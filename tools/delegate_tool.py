@@ -1567,11 +1567,56 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    # Inherit the parent's configured fallback chain. When a delegation route
+    # selects a different model/backend, also keep the parent's primary runtime
+    # as the last fallback. A scout can complete useful tool calls and then lose
+    # every account for its routed model before it writes the final report; the
+    # parent model can finish that same conversation without discarding the
+    # collected tool results or changing the user's configured primary route.
+    parent_fallback = list(getattr(parent_agent, "_fallback_chain", None) or [])
+    parent_provider = getattr(parent_agent, "provider", None)
+    parent_model = getattr(parent_agent, "model", None)
+    parent_base_url = _inherit_parent_base_url(
+        parent_agent, getattr(parent_agent, "base_url", None)
+    )
+    if parent_provider and parent_model:
+        from agent.backend_identity import BackendIdentity, should_skip_candidate
+
+        parent_entry = {
+            "provider": parent_provider,
+            "model": parent_model,
+            "base_url": parent_base_url,
+        }
+        if parent_api_key:
+            parent_entry["api_key"] = parent_api_key
+        parent_identity = BackendIdentity.build(
+            provider=parent_provider,
+            model=parent_model,
+            base_url=parent_base_url,
+        )
+        child_identity = BackendIdentity.build(
+            provider=effective_provider,
+            model=effective_model,
+            base_url=effective_base_url,
+        )
+        configured_identities = [
+            BackendIdentity.build(
+                provider=entry.get("provider"),
+                model=entry.get("model"),
+                base_url=entry.get("base_url"),
+            )
+            for entry in parent_fallback
+            if isinstance(entry, dict)
+        ]
+        if (
+            not should_skip_candidate(parent_identity, child_identity)
+            and not any(
+                should_skip_candidate(parent_identity, configured_identity)
+                for configured_identity in configured_identities
+            )
+        ):
+            parent_fallback.append(parent_entry)
+    parent_fallback = parent_fallback or None
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing

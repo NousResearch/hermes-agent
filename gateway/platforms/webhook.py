@@ -41,6 +41,7 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 from collections import deque
 from typing import Any, Deque, Dict, Optional
 
@@ -240,6 +241,13 @@ class WebhookAdapter(BasePlatformAdapter):
         self._route_processor = WebhookRouteProcessor(
             script_timeout_seconds=self._script_timeout_seconds
         )
+
+        # Per-route concurrency control with persistent queue
+        self._route_semaphores: Dict[str, asyncio.Semaphore] = {}
+        self._route_queue_dir = Path.home() / ".hermes" / "webhook-queues"
+        self._route_queue_dir.mkdir(parents=True, exist_ok=True)
+        # Replay any queued events from previous session
+        self._replay_queued_events()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -581,6 +589,112 @@ class WebhookAdapter(BasePlatformAdapter):
         effective_profile = request_profile or "default"
         return configured_profile == effective_profile
 
+    # ------------------------------------------------------------------
+    # Per-route concurrency control with persistent queue
+    # ------------------------------------------------------------------
+
+    def _get_route_semaphore(self, route_name: str) -> Optional[asyncio.Semaphore]:
+        """Get or create a semaphore for a route if max_concurrent is set."""
+        route_config = self._routes.get(route_name, {})
+        max_concurrent = route_config.get("max_concurrent")
+        if not max_concurrent or max_concurrent <= 0:
+            return None
+        if route_name not in self._route_semaphores:
+            self._route_semaphores[route_name] = asyncio.Semaphore(int(max_concurrent))
+        return self._route_semaphores[route_name]
+
+    def _load_route_queue(self, route_name: str) -> list:
+        """Load queued events for a route from disk."""
+        queue_file = self._route_queue_dir / f"{route_name}.json"
+        if not queue_file.exists():
+            return []
+        try:
+            with open(queue_file) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return []
+
+    def _save_route_queue(self, route_name: str, queue: list):
+        """Save queued events for a route to disk."""
+        queue_file = self._route_queue_dir / f"{route_name}.json"
+        with open(queue_file, "w") as f:
+            json.dump(queue, f)
+
+    def _enqueue_route_event(self, route_name: str, entry: dict):
+        """Add an event to the persistent queue."""
+        queue = self._load_route_queue(route_name)
+        queue.append(entry)
+        self._save_route_queue(route_name, queue)
+        logger.info(
+            "[webhook] Enqueued event for route=%s (queue size: %d)",
+            route_name, len(queue),
+        )
+
+    def _dequeue_route_event(self, route_name: str, delivery_id: str):
+        """Remove an event from the persistent queue after processing."""
+        queue = self._load_route_queue(route_name)
+        queue = [e for e in queue if e.get("delivery_id") != delivery_id]
+        self._save_route_queue(route_name, queue)
+
+    def _replay_queued_events(self):
+        """Schedule replay of queued events from disk on startup."""
+        if not self._route_queue_dir.exists():
+            return
+        for queue_file in self._route_queue_dir.glob("*.json"):
+            route_name = queue_file.stem
+            queue = self._load_route_queue(route_name)
+            if queue:
+                logger.info(
+                    "[webhook] Replaying %d queued event(s) for route=%s",
+                    len(queue), route_name,
+                )
+                for entry in queue:
+                    asyncio.get_event_loop().create_task(
+                        self._replay_single_event(route_name, entry)
+                    )
+
+    async def _replay_single_event(self, route_name: str, entry: dict):
+        """Replay a single queued event."""
+        delivery_id = entry.get("delivery_id", "replay")
+        prompt = entry.get("prompt", "")
+        payload = entry.get("payload", {})
+        event_type = entry.get("event_type", "replay")
+        deliver_config = entry.get("deliver_config", {})
+
+        semaphore = self._get_route_semaphore(route_name)
+        if semaphore:
+            await semaphore.acquire()
+
+        try:
+            session_chat_id = f"webhook:{route_name}:{delivery_id}"
+            self._delivery_info[session_chat_id] = deliver_config
+
+            source = self.build_source(
+                chat_id=session_chat_id,
+                chat_name=f"webhook/{route_name}",
+                chat_type="webhook",
+                user_id=f"webhook:{route_name}",
+                user_name=route_name,
+            )
+            event = MessageEvent(
+                text=prompt,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=payload,
+                message_id=delivery_id,
+            )
+            task = asyncio.create_task(self.handle_message(event))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            if semaphore:
+                semaphore.release()
+            self._dequeue_route_event(route_name, delivery_id)
+            logger.exception(
+                "[webhook] Failed to replay event for route=%s delivery=%s",
+                route_name, delivery_id,
+            )
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
@@ -914,11 +1028,49 @@ class WebhookAdapter(BasePlatformAdapter):
             delivery_id,
         )
 
+        # ── Concurrency control ───────────────────────────────────
+        semaphore = self._get_route_semaphore(route_name)
+        if semaphore and semaphore._value == 0:
+            # Another event is processing for this route — queue it
+            queue_entry = {
+                "delivery_id": delivery_id,
+                "prompt": prompt,
+                "payload": payload,
+                "event_type": event_type,
+                "deliver_config": {
+                    "deliver": route_config.get("deliver", "log"),
+                    "deliver_extra": self._render_delivery_extra(
+                        route_config.get("deliver_extra", {}), payload
+                    ),
+                },
+                "queued_at": time.time(),
+            }
+            self._enqueue_route_event(route_name, queue_entry)
+            logger.info(
+                "[webhook] Queued event for route=%s delivery=%s (semaphore held)",
+                route_name, delivery_id,
+            )
+            return web.json_response(
+                {
+                    "status": "queued",
+                    "route": route_name,
+                    "event": event_type,
+                    "delivery_id": delivery_id,
+                },
+                status=202,
+            )
+
         # Non-blocking — return 202 Accepted immediately.  The per-delivery
         # session is closed by the ``on_processing_complete`` override below
         # once the agent run actually finishes (``handle_message`` itself is
         # fire-and-forget: it spawns ``_process_message_background`` and
         # returns before the run starts, so nothing can be closed here).
+        if semaphore:
+            await semaphore.acquire()
+            # Store route info for on_processing_complete to release
+            self._delivery_info[session_chat_id]["_semaphore_route"] = route_name
+            self._delivery_info[session_chat_id]["_semaphore_delivery_id"] = delivery_id
+
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -956,6 +1108,37 @@ class WebhookAdapter(BasePlatformAdapter):
         row, so this never clobbers a ``compression``/``agent_close`` reason.
         """
         await self._end_webhook_session(event, event.source.chat_id)
+
+        # Release semaphore and process next queued event
+        session_chat_id = event.source.chat_id
+        deliver_info = self._delivery_info.get(session_chat_id, {})
+        route_name = deliver_info.get("_semaphore_route")
+        delivery_id = deliver_info.get("_semaphore_delivery_id")
+
+        if route_name:
+            # Remove from persistent queue
+            self._dequeue_route_event(route_name, delivery_id or "")
+
+            # Release semaphore
+            semaphore = self._route_semaphores.get(route_name)
+            if semaphore:
+                semaphore.release()
+                logger.info(
+                    "[webhook] Released semaphore for route=%s delivery=%s",
+                    route_name, delivery_id,
+                )
+
+            # Process next queued event if any
+            queue = self._load_route_queue(route_name)
+            if queue:
+                next_entry = queue[0]
+                logger.info(
+                    "[webhook] Processing next queued event for route=%s delivery=%s",
+                    route_name, next_entry.get("delivery_id"),
+                )
+                asyncio.get_event_loop().create_task(
+                    self._replay_single_event(route_name, next_entry)
+                )
 
     async def _end_webhook_session(
         self, event: "MessageEvent", session_chat_id: str

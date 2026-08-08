@@ -2224,6 +2224,16 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
+    # A crashed/interrupted fetch can leave .git/shallow.lock (or another git
+    # lock file) behind; every later fetch then fails with "File exists" and
+    # the check reports a hard failure (or, in the banner path, silently
+    # compares stale refs). Self-heal abandoned locks before fetching.
+    from hermes_cli.gitlock import clear_stale_git_locks
+
+    cleared = clear_stale_git_locks(_m().PROJECT_ROOT)
+    for lock_path in cleared:
+        print(f"  (removed stale git lock: {lock_path})")
+
     # Fetch only the branch we compare against; prefer upstream as the canonical
     # reference. A bare `git fetch <remote>` pulls every ref, and this repo has
     # thousands of auto-generated branches, so scope the fetch to <branch>.
@@ -2334,6 +2344,22 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         ).stdout.strip()
         if head_sha and target_sha and head_sha == target_sha:
             print("✓ Already up to date.")
+        elif head_sha and target_sha:
+            # Tip SHAs differ, but the local checkout may still *contain* the
+            # remote tip — e.g. a cherry-picked local fix on top of origin/main
+            # makes HEAD different yet ahead. A naive tip-SHA compare reports a
+            # false "update available" in that case. Ask the ancestry question
+            # directly; only report an update when the remote tip is genuinely
+            # not yet in HEAD.
+            from hermes_cli.gitlock import is_ancestor_of_head
+
+            if is_ancestor_of_head(_m().PROJECT_ROOT, target_sha):
+                print("✓ Already up to date.")
+            else:
+                print(f"⚕ Update available (behind {compare_branch}).")
+                from hermes_cli.config import recommended_update_command
+
+                print(f"  Run '{recommended_update_command()}' to install.")
         else:
             print(f"⚕ Update available (behind {compare_branch}).")
             from hermes_cli.config import recommended_update_command
@@ -3740,6 +3766,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # minutes on a non-single-branch checkout. Fetch only what we update
         # against.
         branch = _m()._resolve_update_branch(args)
+
+        # Self-heal abandoned git lock files (e.g. .git/shallow.lock left by a
+        # crashed fetch) before the fetch — otherwise the update fails with
+        # "Unable to create .../shallow.lock: File exists" and never reaches
+        # the network.
+        from hermes_cli.gitlock import clear_stale_git_locks
+
+        cleared = clear_stale_git_locks(_m().PROJECT_ROOT)
+        if cleared:
+            print("  (removed stale git lock(s): %s)" % ", ".join(cleared))
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(

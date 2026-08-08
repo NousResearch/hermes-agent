@@ -126,3 +126,51 @@ test('skipped-count path resolves via SHA compare, never via empty countStr', ()
     0
   )
 })
+
+// FAIL-BEFORE: a shallow checkout with local commits on top of the remote tip
+// (e.g. cherry-picked fixes) had differing tip SHAs, so the shallow fallback
+// reported "update available" even though HEAD already contains the remote tip.
+// The caller now passes isAncestor=true from `git merge-base --is-ancestor`,
+// and the fallback must treat that as up-to-date (mirrors hermes_cli.gitlock).
+test('shallow checkout whose remote tip is an ancestor of HEAD reports up-to-date', () => {
+  assert.equal(
+    resolveBehindCount({
+      countStr: '',
+      currentSha: 'abc',
+      targetSha: 'def',
+      isShallow: true,
+      hasMergeBase: false,
+      isAncestor: true
+    }),
+    0
+  )
+})
+
+test('shallow checkout whose remote tip is NOT an ancestor still reports update available', () => {
+  assert.equal(
+    resolveBehindCount({
+      countStr: '',
+      currentSha: 'abc',
+      targetSha: 'def',
+      isShallow: true,
+      hasMergeBase: false,
+      isAncestor: false
+    }),
+    1
+  )
+})
+
+test('isAncestor is ignored when a merge-base exists (count path wins)', () => {
+  assert.equal(
+    resolveBehindCount({
+      countStr: '2',
+      currentSha: 'aaa',
+      targetSha: 'bbb',
+      isShallow: true,
+      hasMergeBase: true,
+      isAncestor: true
+    }),
+    2
+  )
+})
+

@@ -15,9 +15,17 @@ function shouldCountCommits({ isShallow, hasMergeBase }) {
 // fall back to a binary up-to-date check by SHA, exactly like the official-SSH
 // path in checkUpdates() and the CLI guard in hermes_cli/banner.py. Full clones
 // (developers / Docker dev images) keep the exact count path unchanged.
-function resolveBehindCount({ countStr, currentSha, targetSha, isShallow, hasMergeBase }) {
+function resolveBehindCount({ countStr, currentSha, targetSha, isShallow, hasMergeBase, isAncestor = false }) {
   if (!shouldCountCommits({ isShallow, hasMergeBase })) {
     if (currentSha && targetSha && currentSha === targetSha) {
+      return 0
+    }
+
+    // Different tip SHAs can still mean "up to date" when local commits (e.g.
+    // cherry-picked fixes) sit on top of the remote tip — HEAD differs from
+    // origin/main but contains it. Ask ancestry directly before showing the
+    // update indicator (mirrors hermes_cli.gitlock.is_ancestor_of_head).
+    if (isAncestor) {
       return 0
     }
 

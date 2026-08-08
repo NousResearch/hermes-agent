@@ -2533,7 +2533,7 @@ async function checkUpdates() {
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr, mergeBaseStr] = await Promise.all([
+  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr, mergeBaseStr, isAncestorStr] = await Promise.all([
     git(['rev-parse', 'HEAD']),
     git(['rev-parse', `origin/${branch}`]),
     git(['status', '--porcelain']),
@@ -2541,11 +2541,16 @@ async function checkUpdates() {
     git(['rev-parse', '--is-shallow-repository']),
     // merge-base exits non-zero with empty stdout when HEAD shares no common
     // ancestor with the freshly fetched tip — exactly the shallow-clone case.
-    git(['merge-base', 'HEAD', `origin/${branch}`])
+    git(['merge-base', 'HEAD', `origin/${branch}`]),
+    // Ancestry probe: exit 0 means origin/<branch> is already an ancestor of
+    // HEAD (local commits on top), i.e. we are NOT behind even though the tip
+    // SHAs differ. Needed for the shallow+no-merge-base fallback below.
+    runGit(['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], { cwd: updateRoot }).then(r => (r.code === 0 ? 'true' : 'false'))
   ])
 
   const isShallow = shallowStr === 'true'
   const hasMergeBase = Boolean(mergeBaseStr)
+  const isAncestor = isAncestorStr === 'true'
 
   // Only enumerate the commit count when it is meaningful. On a shallow checkout
   // with no merge-base, `rev-list --count` walks the entire remote ancestry
@@ -2560,7 +2565,8 @@ async function checkUpdates() {
     currentSha,
     targetSha,
     isShallow,
-    hasMergeBase
+    hasMergeBase,
+    isAncestor
   })
 
   const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []

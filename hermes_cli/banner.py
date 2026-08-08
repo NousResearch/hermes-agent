@@ -226,6 +226,15 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     is_shallow = shallow == "true"
 
     try:
+        # Self-heal abandoned git lock files before fetching. A stale
+        # .git/shallow.lock from a crashed fetch makes the fetch fail, the
+        # exception below is swallowed, and the stale origin/main ref gets
+        # compared against HEAD — producing a false "update available" even
+        # when the checkout already contains the remote tip.
+        from hermes_cli.gitlock import clear_stale_git_locks
+
+        clear_stale_git_locks(repo_dir)
+
         # Scope the fetch to the one branch the behind-count compares against.
         # An unscoped ``git fetch origin`` transfers every remote head (~1,400
         # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
@@ -257,7 +266,18 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         )
         if not head_rev or not target_rev:
             return None
-        return 0 if head_rev == target_rev else UPDATE_AVAILABLE_NO_COUNT
+        if head_rev == target_rev:
+            return 0
+        # Different tip SHAs can still mean "up to date" when local commits
+        # (e.g. cherry-picked fixes) sit on top of the remote tip — HEAD
+        # differs from origin/main but contains it. Ask ancestry directly
+        # before reporting an update, so a locally-ahead checkout doesn't
+        # generate a false "update available" banner.
+        from hermes_cli.gitlock import is_ancestor_of_head
+
+        if is_ancestor_of_head(repo_dir, target_rev):
+            return 0
+        return UPDATE_AVAILABLE_NO_COUNT
 
     try:
         result = subprocess.run(

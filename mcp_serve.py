@@ -263,7 +263,7 @@ def _extract_attachments(msg: dict) -> List[dict]:
                 if url:
                     attachments.append({"type": "image", "url": url})
             elif ptype == "image":
-                url = part.get("url", part.get("source", {}).get("url", ""))
+                url = part.get("url", (part.get("source") or {}).get("url", ""))
                 if url:
                     attachments.append({"type": "image", "url": url})
             elif ptype not in {"text",}:
@@ -629,7 +629,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         conversations = []
 
         for key, entry in entries.items():
-            origin = entry.get("origin", {})
+            origin = entry.get("origin") or {}
             entry_platform = entry.get("platform") or origin.get("platform", "")
 
             if platform and entry_platform.lower() != platform.lower():
@@ -678,7 +678,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         if not entry:
             return json.dumps({"error": f"Conversation not found: {session_key}"})
 
-        origin = entry.get("origin", {})
+        origin = entry.get("origin") or {}
         return json.dumps({
             "session_key": session_key,
             "session_id": entry.get("session_id", ""),
@@ -922,7 +922,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             targets = []
             seen = set()
             for key, entry in entries.items():
-                origin = entry.get("origin", {})
+                origin = entry.get("origin") or {}
                 p = entry.get("platform") or origin.get("platform", "")
                 chat_id = origin.get("chat_id", "")
                 if not p or not chat_id:
@@ -942,7 +942,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps({"count": len(targets), "channels": targets}, indent=2)
 
         channels = []
-        for plat, entries_list in directory.get("platforms", {}).items():
+        for plat, entries_list in (directory.get("platforms") or {}).items():
             if platform and plat.lower() != platform.lower():
                 continue
             if isinstance(entries_list, list):

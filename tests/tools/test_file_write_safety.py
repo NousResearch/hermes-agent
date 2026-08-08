@@ -213,6 +213,103 @@ class TestCheckSensitivePathMacOSBypass:
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
 
+class TestCheckSensitivePathGitWorktreePointer:
+    """_check_sensitive_path must refuse git worktree .git pointer FILES (#78565).
+
+    A linked worktree's repository link is a plain FILE named ``.git``
+    (``gitdir: <path>``). Writing that file — or anything below it —
+    atomically replaces/severs the pointer, turning the worktree into a
+    zombie: git commands inside it die and git tooling refuses to remove
+    it. The write_file_tool / V4A surfaces guard via _check_sensitive_path,
+    so it must carry the same refusal as the file_operations deny layer.
+    """
+
+    @staticmethod
+    def _make_worktree(tmp_path: Path) -> Path:
+        """Create a fake linked worktree: a dir whose .git is a FILE."""
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / ".git").write_text(
+            f"gitdir: {tmp_path / 'bare.git' / 'worktrees' / 'wt'}\n",
+            encoding="utf-8",
+        )
+        return wt
+
+    def test_pointer_file_itself_refused(self, tmp_path: Path):
+        from tools.file_tools import _check_sensitive_path
+        wt = self._make_worktree(tmp_path)
+        assert _check_sensitive_path(str(wt / ".git")) is not None
+
+    def test_path_below_pointer_refused(self, tmp_path: Path):
+        from tools.file_tools import _check_sensitive_path
+        wt = self._make_worktree(tmp_path)
+        assert _check_sensitive_path(str(wt / ".git" / "refs" / "heads" / "x")) is not None
+
+    def test_normal_git_directory_allowed(self, tmp_path: Path):
+        # A .git DIRECTORY (normal repo / submodule) is not a worktree
+        # pointer; sibling writes and git-internal writes stay permitted.
+        from tools.file_tools import _check_sensitive_path
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        assert _check_sensitive_path(str(repo / ".git" / "config")) is None
+        assert _check_sensitive_path(str(repo / "src" / "main.py")) is None
+
+    def test_unrelated_paths_allowed(self, tmp_path: Path):
+        from tools.file_tools import _check_sensitive_path
+        assert _check_sensitive_path(str(tmp_path / "notes.txt")) is None
+
+
+class TestCheckSensitivePathGitManagedState:
+    """_check_sensitive_path refuses git-managed state inside ``.git``
+    DIRECTORIES (#78793).
+
+    A normal repository's ``.git`` directory holds git-owned state (HEAD,
+    index, refs/, objects/, logs/, packed-refs, ...).  The write_file_tool
+    / V4A surfaces guard via _check_sensitive_path, so they must refuse
+    replacing that state; only user-owned entries git never rewrites
+    (config, description, info/exclude, hooks/) stay writable.
+    """
+
+    @staticmethod
+    def _make_repo(tmp_path: Path) -> Path:
+        """A normal repository: <repo>/.git is a DIRECTORY."""
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        return repo
+
+    def test_git_managed_state_refused(self, tmp_path: Path):
+        from tools.file_tools import _check_sensitive_path
+        repo = self._make_repo(tmp_path)
+        for rel in [
+            "HEAD",
+            "index",
+            "refs/heads/x",
+            "objects/ab/cdef",
+            "info/refs",
+        ]:
+            err = _check_sensitive_path(str(repo / ".git" / rel))
+            assert err is not None, rel
+            assert "git-managed state" in err
+
+    def test_git_dir_itself_refused_sibling_allowed(self, tmp_path: Path):
+        from tools.file_tools import _check_sensitive_path
+        repo = self._make_repo(tmp_path)
+        assert _check_sensitive_path(str(repo / ".git")) is not None
+        assert _check_sensitive_path(str(repo / "src" / "main.py")) is None
+
+    def test_user_owned_git_entries_allowed(self, tmp_path: Path):
+        from tools.file_tools import _check_sensitive_path
+        repo = self._make_repo(tmp_path)
+        for rel in [
+            "config",
+            "description",
+            "info/exclude",
+            "hooks/pre-commit",
+        ]:
+            assert _check_sensitive_path(str(repo / ".git" / rel)) is None, rel
+
+
 class TestAtomicWrite:
     """write_file / patch land via a temp-file + atomic rename.
 

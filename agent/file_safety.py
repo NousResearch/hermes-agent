@@ -98,8 +98,116 @@ def get_safe_write_roots() -> set[str]:
     return roots
 
 
+# Denial kind returned by ``_classify_write_denial`` when the target is (or
+# sits under) a git worktree ``.git`` pointer FILE.  Kept distinct from the
+# ``"credential"`` / ``"safe_root"`` kinds so ``get_write_denied_error`` can
+# surface the specific worktree-severing explanation.
+_WORKTREE_GIT_POINTER_DENIAL = "worktree_git_pointer"
+
+
+def find_git_worktree_pointer_file(resolved_path: str) -> Optional[str]:
+    """Return the on-disk path of a ``.git`` *file* (git worktree pointer)
+    that ``resolved_path`` touches, or ``None``.
+
+    A linked worktree stores its repository link as a plain FILE named
+    ``.git`` containing ``gitdir: <path>``.  Writing that file — or
+    anything below it — replaces/severs the pointer and the worktree
+    disappears from ``git worktree list``.  ``.git`` DIRECTORY components
+    (normal repositories, submodules) are not pointers and are
+    deliberately not matched.
+
+    ``resolved_path`` must already be realpath-resolved (the caller
+    resolves).  Missing components are skipped: a not-yet-created target
+    below an existing worktree pointer is still caught, while a brand-new
+    path under a nonexistent ``.git`` directory is not false-positived.
+    """
+    parts = Path(resolved_path).parts
+    for idx, part in enumerate(parts):
+        if part != ".git":
+            continue
+        candidate = os.path.join(*parts[: idx + 1])
+        try:
+            # isfile() follows symlinks and is False for directories.
+            if os.path.isfile(candidate):
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+# Denial kind returned by ``_classify_write_denial`` when the target is (or
+# sits under) a ``.git`` DIRECTORY (normal repo / submodule) at a path git
+# owns — branch identity, refs, index, object store.  Kept distinct so
+# ``get_write_denied_error`` can explain the corruption risk instead of the
+# generic credential message.
+_GIT_STATE_DENIAL = "git_managed_state"
+
+# User-owned entries inside a ``.git`` DIRECTORY that git never rewrites.
+# ``config`` and ``description`` are exact files, ``info/exclude`` is the
+# per-repo ignore file, and ``hooks/`` is a whole subtree of user scripts.
+# Everything else under ``.git`` is git-managed state.
+_GIT_USER_OWNED_EXACT = ("config", "description", "info/exclude")
+
+
+def _is_git_user_owned_remainder(remainder: str) -> bool:
+    """Return True when ``remainder`` — the path relative to a ``.git``
+    DIRECTORY, ``''`` when the target IS the ``.git`` dir — is user-owned
+    configuration that git never rewrites.
+
+    Allowlist: ``config``, ``description``, ``info/exclude`` (exact
+    relative paths), and ``hooks/`` (the directory itself and anything
+    under it — user scripts).  Everything else is git-managed state.
+    """
+    if remainder in _GIT_USER_OWNED_EXACT:
+        return True
+    if remainder == "hooks" or remainder.startswith("hooks/"):
+        return True
+    return False
+
+
+def find_git_managed_state_target(resolved_path: str) -> Optional[str]:
+    """Return the ``.git`` DIRECTORY whose git-managed state ``resolved_path``
+    would replace, or ``None``.
+
+    For every ``.git`` path component that is a DIRECTORY (normal
+    repository / submodule — NOT the worktree-pointer FILE handled by
+    ``find_git_worktree_pointer_file``), classify the remainder relative to
+    that ``.git`` dir.  The target is refused unless the remainder is
+    user-owned: ``config``, ``description``, ``info/exclude``, or anything
+    under ``hooks/``.  Everything else — ``HEAD``, ``index``, ``refs/``,
+    ``objects/``, ``logs/``, ``packed-refs``, ``ORIG_HEAD``,
+    ``FETCH_HEAD``, ``MERGE_HEAD``, ``CHERRY_PICK_HEAD``, ``REBASE_HEAD``,
+    ``COMMIT_EDITMSG``, ``shallow``, ``info/`` (except ``info/exclude``),
+    the ``.git`` dir itself, anything unknown — is git-managed state whose
+    replacement corrupts the repository.
+
+    ``resolved_path`` must already be realpath-resolved (the caller
+    resolves).  ``.git`` FILE components are skipped — the worktree-pointer
+    guard owns them.  Missing components below an existing ``.git``
+    directory are still classified (a not-yet-created target is caught).
+    """
+    parts = Path(resolved_path).parts
+    for idx, part in enumerate(parts):
+        if part != ".git":
+            continue
+        candidate = os.path.join(*parts[: idx + 1])
+        try:
+            # isdir() follows symlinks and is False for files.
+            if not os.path.isdir(candidate):
+                # .git FILE — worktree pointer, owned by the sibling check.
+                continue
+        except OSError:
+            continue
+        remainder = "/".join(parts[idx + 1 :])
+        if _is_git_user_owned_remainder(remainder):
+            continue
+        return candidate
+    return None
+
+
 def _classify_write_denial(path: str) -> Optional[str]:
-    """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
+    """Return ``'credential'``, ``'safe_root'``, ``'worktree_git_pointer'``,
+    ``'git_managed_state'``, or ``None`` if writes are allowed."""
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
@@ -145,6 +253,30 @@ def _classify_write_denial(path: str) -> Optional[str]:
         except Exception:
             pass
 
+    # Git worktree ``.git`` pointer FILES: a plain file named ``.git`` whose
+    # ``gitdir: <path>`` content links a linked worktree to its (bare)
+    # repository.  write_file's temp-file + ``mv -f`` — and delete/move —
+    # would replace or sever that pointer, making the worktree vanish from
+    # ``git worktree list``.  Refuse any target that IS such a pointer file
+    # or sits below one; ``.git`` DIRECTORY components (normal repos,
+    # submodules) are handled by the git-managed-state check below.
+    worktree_git_pointer = find_git_worktree_pointer_file(resolved)
+    if worktree_git_pointer is not None:
+        return _WORKTREE_GIT_POINTER_DENIAL
+
+    # Git-managed state inside ``.git`` DIRECTORIES (#78793): normal
+    # repositories and submodules keep their database in a ``.git``
+    # directory.  Almost everything in it — HEAD, index, refs/, objects/,
+    # logs/, packed-refs, ORIG_HEAD / FETCH_HEAD / MERGE_HEAD /
+    # CHERRY_PICK_HEAD / REBASE_HEAD, COMMIT_EDITMSG, shallow — is
+    # git-owned state.  A generic write_file/patch/delete/move that
+    # replaces any of it corrupts branch identity, refs and the index;
+    # only user-owned entries git never rewrites (config, description,
+    # info/exclude, hooks/) stay writable.
+    git_state_dir = find_git_managed_state_target(resolved)
+    if git_state_dir is not None:
+        return _GIT_STATE_DENIAL
+
     safe_roots = get_safe_write_roots()
     if safe_roots:
         allowed = False
@@ -173,6 +305,20 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
         return (
             f"{verb} denied: '{path}' is outside HERMES_WRITE_SAFE_ROOT "
             f"({roots_display}). Unset the variable or add this path's directory prefix."
+        )
+    if denial == _WORKTREE_GIT_POINTER_DENIAL:
+        return (
+            f"{verb} denied: '{path}' touches a git worktree .git pointer "
+            f"file. Writing here replaces the 'gitdir: <path>' link that "
+            f"attaches the worktree to its repository and severs the "
+            f"worktree from git. Use the terminal or git commands instead."
+        )
+    if denial == _GIT_STATE_DENIAL:
+        return (
+            f"{verb} denied: '{path}' targets git-managed state inside a "
+            f".git directory. Writing here replaces repository state that "
+            f"git owns (branch identity, refs, index) and corrupts the "
+            f"repository. Use terminal git commands instead."
         )
     return f"{verb} denied: '{path}' is a protected system/credential file."
 

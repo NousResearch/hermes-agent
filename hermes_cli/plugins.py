@@ -216,6 +216,18 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Gateway platform-boundary observer hooks (#64176). Observer-only; each
+    # callback isolated by invoke_hook. Payloads are normalized envelopes only,
+    # never raw platform SDK objects (per #64176 / #64182 ground rule); raw
+    # access is a separate capability-gated action API, not a hook.
+    #
+    #   gateway_platform_event: inbound platform event as a normalized envelope.
+    #       Kwargs: platform, event_type, payload (event_type-specific dict).
+    #       Telegram reactions fire today. Other event types and their hook
+    #       names land here together with their real fire-sites and payload
+    #       contracts when #64176's taxonomy is finalized (#64231); no inert
+    #       VALID_HOOKS surface is registered ahead of implementation.
+    "gateway_platform_event",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

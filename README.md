@@ -34,6 +34,33 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 
 ## Quick Install
 
+### Android / Termux (Lightweight Mode)
+
+```bash
+# Install via Termux (recommended)
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --termux
+```
+
+> **Catatan:** Script di atas meng‑install versi *lightweight* yang hanya mengaktifkan toolset dasar (file, terminal, web, skills, todo, session_search). Semua operasi berat (browser, image generation, voice, dll.) secara otomatis dialihkan ke VPS melalui WebSocket bridge. Pastikan Anda sudah mengatur `bridge.server_url` dan `bridge.auth_token` di `~/.hermes-android/config.yaml` (dihasilkan oleh `android_setup.sh`).
+
+Jika Anda ingin meng‑install secara manual, jalankan `android_setup.sh` yang ada di repo ini:
+
+```bash
+cd ~/hermes-agent
+bash android_setup.sh
+```
+
+Setelah selesai, aktifkan environment Termux dan jalankan:
+
+```bash
+source ~/.hermes-android-venv/bin/activate
+hermes    # Mulai Hermes Agent dalam mode Android ringan
+```
+
+---
+
+## Quick Install
+
 ### Linux, macOS, WSL2, Termux
 
 ```bash

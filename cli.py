@@ -4389,6 +4389,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        # Startup-level selection, remembered for the life of the process.
+        #
+        # ``--model``/``--provider`` are NOT session-scoped runtime overrides
+        # like ``/model --session``, ``/fast`` or ``/model --once``: they are
+        # how the process was launched. ``new_session()`` deliberately drops
+        # the session-scoped kind at a conversation boundary (#67979), but it
+        # re-derives from config.yaml, which also discarded these — so a
+        # headless appliance started with explicit flags answered every
+        # wake-word turn (and every ``/new``) with ``model.default`` instead
+        # (#74329). Recorded only when the flag was actually passed, so an
+        # unflagged launch keeps re-deriving from config exactly as before.
+        self._record_startup_selection(model, provider)
         # A ``moa:<preset>`` model string selects the MoA virtual provider in
         # one shot (parity with interactive ``/moa`` and the model picker). Do
         # this before provider resolution so ``-Q -m moa:<preset>`` routes
@@ -8137,6 +8149,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return None
         return history_snapshot
 
+    def _record_startup_selection(
+        self, model: Optional[str], provider: Optional[str],
+    ) -> None:
+        """Remember the ``--model``/``--provider`` this process was launched with.
+
+        Recorded only when a flag was actually passed, so an unflagged launch
+        keeps re-deriving from config.yaml at every session boundary exactly
+        as before. See ``new_session()`` for why these outrank the config
+        default there (#74329).
+        """
+        self._startup_model = (model or "").strip() or None
+        self._startup_provider = (provider or "").strip() or None
+
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         old_session_id = self.session_id
@@ -8202,12 +8227,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if isinstance(_model_config, dict)
             else (_model_config or "")
         )
-        if _config_model and _config_model != getattr(self, "model", None):
-            _config_provider = (
-                _model_config.get("provider", "")
-                if isinstance(_model_config, dict)
-                else ""
+        _config_provider_default = (
+            _model_config.get("provider", "")
+            if isinstance(_model_config, dict)
+            else ""
+        )
+        # ...but the startup ``--model``/``--provider`` are the baseline this
+        # boundary resets *to*, not an override it resets away. They describe
+        # how the process was launched, so they outrank config.yaml here; a
+        # wake-word session or a plain /new must not silently answer on
+        # ``model.default`` when the operator launched with explicit flags
+        # (#74329).
+        #
+        # Model and provider are resolved independently: ``--provider`` alone
+        # is a complete startup selection (same model, different backend), and
+        # a session-scoped ``/model --provider`` on the same model has to be
+        # undone here too. Coupling them would leave both cases stuck on the
+        # session's provider.
+        _desired_model = getattr(self, "_startup_model", None) or _config_model
+        _desired_provider = (
+            getattr(self, "_startup_provider", None) or _config_provider_default
+        )
+        # Any difference in the resolved route — model or provider — has to go
+        # back through the shared switch pipeline, so the session lands on the
+        # startup/config backend rather than whichever one it was steered to.
+        _route_changed = bool(_desired_model) and (
+            _desired_model != getattr(self, "model", None)
+            or (
+                bool(_desired_provider)
+                and _desired_provider != getattr(self, "provider", None)
             )
+        )
+        if _route_changed:
+            _config_model = _desired_model
+            _config_provider = _desired_provider
             try:
                 from hermes_cli.model_switch import switch_model as _switch_model
 

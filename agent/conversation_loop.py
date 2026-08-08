@@ -4668,9 +4668,25 @@ def run_conversation(
                 )
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+<<<<<<< HEAD
                 _should_fallback = (
                     is_rate_limited
                     or (_is_transport_failure and retry_count >= 2)
+=======
+                # Retryable 5xx (502/503/500/529): align with transport
+                # persistent-failure policy. retry_count is incremented
+                # before this gate (#68771 sweeper), so >= 2 means one
+                # completed primary retry then fallback — not immediate
+                # failover on the first failure.
+                is_retryable_5xx = classified.reason in {
+                    FailoverReason.server_error,
+                    FailoverReason.overloaded,
+                }
+                _should_fallback = (
+                    is_rate_limited
+                    or (_is_transport_failure and retry_count >= 2)
+                    or (is_retryable_5xx and retry_count >= 2)
+>>>>>>> fced93ed3 (fix(agent): 5xx fallback after one primary retry (>=2 counter))
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may

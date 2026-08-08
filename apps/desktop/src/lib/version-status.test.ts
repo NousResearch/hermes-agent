@@ -22,6 +22,14 @@ describe('resolveVersionStatus', () => {
     expect(status.unknown).toBe(false)
   })
 
+  it('treats backend UPDATE_DIVERGED (-2) as update without tip count', () => {
+    const status = backend({ behind: -2, version: '0.4.2' })
+    expect(status.hasUpdate).toBe(true)
+    expect(status.label).toContain('diverged')
+    expect(status.label).not.toContain('+-2')
+    expect(status.tooltip).toMatch(/diverged/i)
+  })
+
   it('appends the commit diff when the client is behind', () => {
     const status = client({ behind: 12, branch: 'main', version: '0.4.2' })
 

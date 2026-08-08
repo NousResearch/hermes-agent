@@ -70,7 +70,9 @@ export function resolveVersionStatus({
 }: VersionStatusInput): VersionStatusResult {
   const client = target === 'client'
   const busy = applying || restarting
-  const available = behind > 0 || (!client && !!updateAvailable)
+  // UPDATE_DIVERGED from backend is -2 (#68484) — not a fast-forward count.
+  const diverged = behind === -2
+  const available = behind > 0 || diverged || (!client && !!updateAvailable)
 
   // A client with no version still identifies itself by sha; a backend can't.
   const named = version ?? (client ? sha : null) ?? copy.unknown
@@ -81,14 +83,23 @@ export function resolveVersionStatus({
       ? copy.clientLabel(named)
       : (version && `v${version}`) || named
 
-  // Commits behind is the precise diff; `(update)` is the fallback for a
-  // backend that knows it's stale but can't count (pip, non-git checkout).
-  const hint = busy ? '' : behind > 0 ? ` (+${behind})` : available ? ` (${copy.update})` : ''
+  // Commits behind is the precise diff; diverged is not a tip count;
+  // `(update)` is the fallback for pip/non-git stale installs.
+  const hint = busy
+    ? ''
+    : behind > 0
+      ? ` (+${behind})`
+      : diverged
+        ? ` (diverged)`
+        : available
+          ? ` (${copy.update})`
+          : ''
 
   const tooltip = [
     busy && (applyMessage || copy.updateInProgress),
     !busy && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
-    !busy && behind <= 0 && available && copy.update,
+    !busy && diverged && 'branch diverged from origin/main (not a fast-forward)',
+    !busy && behind <= 0 && !diverged && available && copy.update,
     version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
     client && sha && copy.commit(sha),
     client && branch && copy.branch(branch)

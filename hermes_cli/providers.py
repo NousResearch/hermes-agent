@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from utils import base_url_host_matches, base_url_hostname
 
@@ -649,6 +650,111 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     return None
 
 
+@dataclass(frozen=True)
+class DeepSeekModelCapabilities:
+    """First-party DeepSeek capabilities that affect the wire contract.
+
+    Keep Responses support separate from native web search: DeepSeek may expose
+    a model on the Responses API before enabling every server-side tool. A new
+    model is therefore enabled by changing one entry here, without touching the
+    routing, endpoint, request-sanitizing, or tool-replay paths.
+    """
+
+    responses_api: bool = False
+    native_web_search: bool = False
+
+
+# Fail closed for unknown / dated model IDs. The current DeepSeek Responses
+# guide documents V4 Flash only and says V4 Pro support is not yet available.
+# Keep the Pro entry explicit so its future rollout is a localized capability
+# change rather than another cross-cutting routing patch.
+_DEEPSEEK_MODEL_CAPABILITIES: Dict[str, DeepSeekModelCapabilities] = {
+    "deepseek-v4-flash": DeepSeekModelCapabilities(
+        responses_api=True,
+        native_web_search=True,
+    ),
+    "deepseek-v4-pro": DeepSeekModelCapabilities(
+        responses_api=False,
+        native_web_search=False,
+    ),
+}
+_DEEPSEEK_NO_CAPABILITIES = DeepSeekModelCapabilities()
+
+
+def _normalize_deepseek_model_id(model: str = "") -> str:
+    candidate = str(model or "").strip().lower()
+    if candidate.startswith("deepseek/"):
+        candidate = candidate.split("/", 1)[1].strip()
+    return candidate
+
+
+def deepseek_model_capabilities(model: str = "") -> DeepSeekModelCapabilities:
+    """Return the documented first-party capabilities for *model*."""
+    return _DEEPSEEK_MODEL_CAPABILITIES.get(
+        _normalize_deepseek_model_id(model),
+        _DEEPSEEK_NO_CAPABILITIES,
+    )
+
+
+def deepseek_supports_responses(model: str = "") -> bool:
+    """Return whether *model* may use DeepSeek's Responses API."""
+    return deepseek_model_capabilities(model).responses_api
+
+
+def deepseek_supports_native_web_search(model: str = "") -> bool:
+    """Return whether *model* supports DeepSeek's server-side web search.
+
+    Native search is a Responses tool, so a malformed future capability entry
+    that enables search without Responses still fails closed.
+    """
+    capabilities = deepseek_model_capabilities(model)
+    return capabilities.responses_api and capabilities.native_web_search
+
+
+def deepseek_native_web_search_models() -> Tuple[str, ...]:
+    """Return model IDs currently enabled for DeepSeek native web search."""
+    return tuple(
+        sorted(
+            model
+            for model, capabilities in _DEEPSEEK_MODEL_CAPABILITIES.items()
+            if capabilities.responses_api and capabilities.native_web_search
+        )
+    )
+
+
+def deepseek_api_mode(model: str = "") -> str:
+    """Resolve DeepSeek's model-dependent wire protocol."""
+    return "codex_responses" if deepseek_supports_responses(model) else "chat_completions"
+
+
+def normalize_deepseek_base_url(provider: str, api_mode: str, base_url: str) -> str:
+    """Normalize only DeepSeek's official endpoint for the selected wire.
+
+    The official Responses endpoint lives at ``/responses`` while the OpenAI
+    compatible Chat Completions endpoint is rooted under ``/v1``. Custom
+    proxies are left byte-for-byte unchanged apart from a trailing slash.
+    """
+    value = str(base_url or "").strip().rstrip("/")
+    if str(provider or "").strip().lower() != "deepseek":
+        return value
+    if base_url_hostname(value) != "api.deepseek.com":
+        return value
+
+    # Only rewrite the two documented official roots. Preserve any explicit
+    # non-standard path on the official host rather than guessing.
+    lower = value.lower()
+    if lower.endswith("/v1"):
+        root = value[:-3].rstrip("/")
+    else:
+        root = value
+    parsed = urlparse(root)
+    if parsed.path not in {"", "/"}:
+        return value
+    if api_mode == "codex_responses":
+        return root.rstrip("/")
+    return root.rstrip("/") + "/v1"
+
+
 def nous_api_mode(model: str = "") -> str:
     """Resolve the wire protocol for a Nous Portal model.
 
@@ -690,6 +796,8 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
     # (the majority of the Portal catalog), so the transport lookup below
     # would pin Claude on the wrong wire without this carve-out.
     provider_norm = (provider or "").strip().lower()
+    if provider_norm == "deepseek":
+        return deepseek_api_mode(model)
     if provider_norm in {"nous", "nous-portal", "nousresearch"}:
         return nous_api_mode(model)
 

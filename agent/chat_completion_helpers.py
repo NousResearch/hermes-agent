@@ -1389,6 +1389,12 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             )
         )
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
+        from hermes_cli.providers import deepseek_supports_responses
+
+        is_deepseek_responses = (
+            agent.provider == "deepseek"
+            and deepseek_supports_responses(agent.model)
+        )
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
 
         # xAI's /responses endpoint rejects ``pattern`` and ``format`` keywords
@@ -1437,9 +1443,11 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
+            is_deepseek_responses=is_deepseek_responses,
             github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
-            replay_encrypted_reasoning=bool(
-                getattr(agent, "_codex_reasoning_replay_enabled", True)
+            replay_encrypted_reasoning=(
+                not is_deepseek_responses
+                and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
             ),
         )
 
@@ -2047,6 +2055,18 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
+        elif fb_provider == "deepseek":
+            from hermes_cli.providers import (
+                deepseek_api_mode,
+                normalize_deepseek_base_url,
+            )
+
+            fb_api_mode = deepseek_api_mode(fb_model)
+            fb_base_url = normalize_deepseek_base_url(
+                fb_provider,
+                fb_api_mode,
+                fb_base_url,
+            )
         elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
             # Portal is dual-wire: anthropic/* must land on /v1/messages.
             # resolve_provider_client still returns an OpenAI client for
@@ -2163,6 +2183,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # Swap OpenAI client and config in-place
             agent.api_key = fb_client.api_key
             agent.client = fb_client
+            _fb_client_base_url = str(getattr(fb_client, "base_url", "") or "").rstrip("/")
+            _fb_route_changed = _fb_client_base_url != fb_base_url.rstrip("/")
             # Preserve provider-specific headers that
             # resolve_provider_client() may have baked into
             # fb_client via the default_headers kwarg.  The OpenAI
@@ -2181,10 +2203,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             }
             if _fb_timeout is not None:
                 agent._client_kwargs["timeout"] = _fb_timeout
-                # Rebuild the shared OpenAI client so the configured
-                # timeout takes effect on the very next fallback request,
-                # not only after a later credential-rotation rebuild.
-                agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+            if _fb_route_changed or _fb_timeout is not None:
+                # Rebuild the shared OpenAI client so endpoint normalization
+                # and/or the configured timeout take effect on the very next
+                # fallback request, not only after a later credential rotation.
+                agent._replace_primary_openai_client(
+                    reason=(
+                        "fallback_timeout_apply"
+                        if _fb_timeout is not None
+                        else "fallback_route_apply"
+                    )
+                )
 
         from agent.agent_runtime_helpers import sync_credential_pool_entry_id
         sync_credential_pool_entry_id(agent)

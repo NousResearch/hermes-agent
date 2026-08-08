@@ -934,6 +934,88 @@ function Get-NpmRange {
     return $NpmRange
 }
 
+# Convert the numeric core of an npm version or range operand into a stable
+# three-component System.Version. npm reports semantic versions, but the
+# installer only needs the numeric core for the comparator ranges authored in
+# package.json (for example, <11.10.0 || >=11.17.0).
+function ConvertTo-NpmVersion {
+    param([string]$Version)
+
+    if (-not $Version) { return $null }
+
+    $core = ($Version.Trim() -replace '^v', '' -replace '-.*$', '')
+    $parts = @($core -split '\.')
+    if ($parts.Count -lt 1 -or $parts.Count -gt 3) { return $null }
+    foreach ($part in $parts) {
+        if ($part -notmatch '^\d+$') { return $null }
+    }
+    while ($parts.Count -lt 3) { $parts += '0' }
+
+    try {
+        return [version]($parts -join '.')
+    } catch {
+        return $null
+    }
+}
+
+# Evaluate the comparator-only npm ranges used by the root manifest and the
+# pre-clone fallback. Alternatives are separated with || and each alternative
+# may contain one or more whitespace-separated <, <=, >, or >= comparators.
+# Unknown range syntax fails closed so an incompatible system npm cannot reach
+# npm ci and fail later with EBADENGINE.
+function Test-NpmVersionOk {
+    param(
+        [string]$Version,
+        [string]$Range = (Get-NpmRange)
+    )
+
+    $actual = ConvertTo-NpmVersion $Version
+    if (-not $actual -or -not $Range) { return $false }
+
+    foreach ($alternative in @($Range -split '\s*\|\|\s*')) {
+        $clause = $alternative.Trim()
+        if (-not $clause) { continue }
+
+        $comparators = [regex]::Matches(
+            $clause,
+            '(?:^|\s)(<=|>=|<|>)\s*(\d+(?:\.\d+){0,2})(?=\s|$)'
+        )
+        if ($comparators.Count -eq 0) { continue }
+
+        $remainder = [regex]::Replace(
+            $clause,
+            '(?:^|\s)(?:<=|>=|<|>)\s*\d+(?:\.\d+){0,2}(?=\s|$)',
+            ''
+        ).Trim()
+        if ($remainder) { continue }
+
+        $matchesClause = $true
+        foreach ($comparator in $comparators) {
+            $target = ConvertTo-NpmVersion $comparator.Groups[2].Value
+            if (-not $target) {
+                $matchesClause = $false
+                break
+            }
+
+            $matchesComparator = switch ($comparator.Groups[1].Value) {
+                '<'  { $actual -lt $target }
+                '<=' { $actual -le $target }
+                '>'  { $actual -gt $target }
+                '>=' { $actual -ge $target }
+                default { $false }
+            }
+            if (-not $matchesComparator) {
+                $matchesClause = $false
+                break
+            }
+        }
+
+        if ($matchesClause) { return $true }
+    }
+
+    return $false
+}
+
 # Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange.
 #
 # The nodejs.org zip ships whatever npm that Node major bundles -- Node 26.5.1
@@ -1587,19 +1669,54 @@ function Test-NodeVersionOk {
     return ($v.Major -gt 22)
 }
 
+# Accept a system Node only when its companion npm also satisfies the same
+# range used to provision the Hermes-managed tree. Keeping this probe separate
+# lets the initial PATH check and the post-winget check share one authority.
+function Test-SystemNodeReady {
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $false }
+
+    $version = node --version
+    if (-not (Test-NodeVersionOk $version)) {
+        Write-Warn "Node.js $version is too old (Hermes requires Node >=22.22.0)"
+        return $false
+    }
+
+    Ensure-NodeExeOnPath | Out-Null
+    $npmRange = Get-NpmRange
+    $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npmCmd) {
+        $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    }
+
+    $npmVersion = $null
+    if ($npmCmd) {
+        try {
+            $npmVersion = (& $npmCmd --version 2>$null | Select-Object -First 1)
+        } catch { }
+    }
+
+    if ($npmVersion -and (Test-NpmVersionOk $npmVersion $npmRange)) {
+        Write-Success "Node.js $version with npm $npmVersion found"
+        return $true
+    }
+
+    if ($npmVersion) {
+        Write-Warn "Node.js $version uses npm $npmVersion, which does not satisfy Hermes requirement $npmRange"
+    } else {
+        Write-Warn "Node.js $version was found, but npm is missing or could not report its version"
+    }
+    return $false
+}
+
 function Test-Node {
     Write-Info "Checking Node.js (for browser tools)..."
 
-    if (Get-Command node -ErrorAction SilentlyContinue) {
-        $version = node --version
-        if (Test-NodeVersionOk $version) {
-            Ensure-NodeExeOnPath | Out-Null
-            Write-Success "Node.js $version found"
-            $script:HasNode = $true
-            return $true
-        }
-        Write-Warn "Node.js $version is too old (Hermes requires Node >=26)"
+    if (Test-SystemNodeReady) {
+        $script:HasNode = $true
+        return $true
     }
+
+    Write-Info "Using a Hermes-managed Node.js installation instead..."
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
     $managedNode = "$HermesHome\node\node.exe"
@@ -1774,9 +1891,7 @@ function Test-Node {
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if (Get-Command node -ErrorAction SilentlyContinue) {
-                $version = node --version
-                Write-Success "Node.js $version installed via winget"
+            if (Test-SystemNodeReady) {
                 $script:HasNode = $true
                 return $true
             }

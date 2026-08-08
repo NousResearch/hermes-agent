@@ -1618,3 +1618,87 @@ print('fake reply')
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
         assert title == "a2a-dev-ctx-unsafe-value"
+
+
+# --------------------------------------------------------------------------
+# #78050 — A2A client tools must be visible in CLI/TUI sessions
+#
+# A platform plugin that declares ``provides_tools`` in its manifest loads
+# eagerly so its outbound agent tools register in every process — not only in
+# gateway/web processes where the deferred platform loader fires.  Pure inbound
+# adapters (telegram, discord, …) leave ``provides_tools`` empty and stay
+# deferred to avoid importing ~20 heavy platform SDKs on every CLI start.
+# --------------------------------------------------------------------------
+
+_A2A_TOOL_NAMES = {
+    "a2a_call",
+    "a2a_discover",
+    "a2a_list",
+    "a2a_history",
+    "a2a_orchestrate",
+}
+
+
+class TestA2APluginEagerToolRegistration:
+    """The a2a platform plugin provides outbound client tools, so it must be
+    eagerly loaded — not deferred — for those tools to appear in CLI/TUI."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_home(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    @staticmethod
+    def _discover():
+        from hermes_cli import plugins as pmod
+
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+        return mgr
+
+    def test_a2a_platform_eagerly_loaded_not_deferred(self):
+        """The a2a plugin loads eagerly; its module is imported and tools
+        are registered immediately at discovery time."""
+        mgr = self._discover()
+        loaded = mgr._plugins.get("a2a-platform")
+        assert loaded is not None, "a2a-platform not discovered"
+        assert not loaded.deferred, "a2a-platform should load eagerly, not defer"
+        assert loaded.module is not None, "module should be imported eagerly"
+        assert loaded.enabled
+
+    def test_a2a_manifest_declares_provides_tools(self):
+        """The manifest carries the provides_tools declaration that triggers
+        eager loading."""
+        mgr = self._discover()
+        loaded = mgr._plugins.get("a2a-platform")
+        assert loaded is not None
+        assert set(loaded.manifest.provides_tools) == _A2A_TOOL_NAMES
+
+    def test_a2a_tools_registered_after_discovery(self):
+        """All five outbound tools are registered after plugin discovery."""
+        mgr = self._discover()
+        loaded = mgr._plugins.get("a2a-platform")
+        assert loaded is not None
+        assert set(loaded.tools_registered) == _A2A_TOOL_NAMES
+
+    def test_a2a_toolset_resolvable_after_discovery(self):
+        """resolve_toolset('a2a') returns the five tools — the opt-in path
+        via ``hermes tools`` can now see them."""
+        self._discover()
+        from toolsets import resolve_toolset
+
+        resolved = resolve_toolset("a2a")
+        assert set(resolved) == _A2A_TOOL_NAMES
+
+    def test_pure_inbound_adapter_stays_deferred(self):
+        """A platform plugin without provides_tools (e.g. telegram) must
+        still be deferred — the eager-load exception is scoped to plugins
+        that declare outbound tools."""
+        mgr = self._discover()
+        telegram = mgr._plugins.get("telegram-platform")
+        if telegram is None:
+            pytest.skip("telegram-platform plugin not present in this checkout")
+        assert telegram.deferred, (
+            "telegram has no provides_tools — it must stay deferred"
+        )

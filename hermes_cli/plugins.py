@@ -1461,8 +1461,19 @@ class PluginManager:
             # is imported only when the gateway / cron / setup / send_message
             # path actually asks for that platform. Every platform Hermes ships
             # remains available out of the box — it just loads on first use.
+            #
+            # Exception: a platform plugin that also provides outbound agent
+            # tools (declared via ``provides_tools`` in plugin.yaml) must load
+            # eagerly. Those tools need to be visible in CLI/TUI sessions,
+            # not only in gateway/web processes where the deferred loader
+            # fires — otherwise the toolset is unreachable via ``hermes tools``
+            # and invisible to the agent (#78050). Pure inbound adapters leave
+            # ``provides_tools`` empty and stay deferred.
             if manifest.source == "bundled" and manifest.kind == "platform":
-                self._register_deferred_platform(manifest)
+                if manifest.provides_tools:
+                    self._load_plugin(manifest)
+                else:
+                    self._register_deferred_platform(manifest)
                 continue
 
             # Everything else (standalone, user-installed backends,

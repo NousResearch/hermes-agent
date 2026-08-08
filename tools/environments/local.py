@@ -908,16 +908,36 @@ def _bash_starts(bash: str) -> bool:
         return cached
 
     try:
-        result = subprocess.run(
+        # Explicit Popen instead of subprocess.run(timeout=...): on Windows a
+        # hung probe bash can survive Popen.kill() and/or leave children
+        # holding the stdout pipe, so run()'s post-timeout reap communicate()
+        # blocks FOREVER (seen live 2026-08-04 in the Buzz/ACP spawn env: probe
+        # bash alive 7+ min, the whole agent turn frozen at env init). Kill the
+        # whole process TREE on timeout and bound the reap.
+        proc = subprocess.Popen(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
-            timeout=15,
             creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
         )
-        ok = result.returncode == 0
+        try:
+            out, err = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            if _IS_WINDOWS:
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                    capture_output=True, timeout=10,
+                )
+            else:
+                proc.kill()
+            try:
+                out, err = proc.communicate(timeout=10)
+            except Exception:
+                out, err = "", "bash probe timed out; process tree killed"
+        ok = proc.returncode == 0
         if not ok:
-            combined = f"{result.stdout or ''}{result.stderr or ''}"
+            combined = f"{out or ''}{err or ''}"
             _bash_probe_details_cache[bash] = combined.strip()[:2000]
             logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
     except Exception as exc:

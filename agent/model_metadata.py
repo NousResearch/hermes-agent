@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import time
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse
@@ -26,6 +27,11 @@ from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 from hermes_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
+
+_PRICING_UNIT_DIVISORS: dict[str, Decimal] = {
+    "per_1m_tokens": Decimal("1000000"),
+    "per_1k_tokens": Decimal("1000"),
+}
 
 # ``requests`` (with urllib3) costs ~27 ms of the `import cli` waterfall and
 # is only used inside the fetch functions below. It's resolved lazily:
@@ -1131,11 +1137,20 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         normalized = {str(key).lower(): value for key, value in mapping.items()}
         if not any(any(alias in normalized for alias in aliases) for aliases in alias_map.values()):
             continue
+        unit_divisor = _PRICING_UNIT_DIVISORS.get(
+            str(normalized.get("unit", "")).lower()
+        )
         pricing: Dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
                 if alias in normalized and normalized[alias] not in {None, ""}:
-                    pricing[target] = normalized[alias]
+                    value = normalized[alias]
+                    if unit_divisor is not None and target != "request":
+                        try:
+                            value = str(Decimal(str(value)) / unit_divisor)
+                        except (InvalidOperation, TypeError, ValueError):
+                            pass
+                    pricing[target] = value
                     break
         if pricing:
             return pricing

@@ -20,6 +20,7 @@ from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
     DEFAULT_FALLBACK_CONTEXT,
+    _extract_pricing,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -1003,6 +1004,53 @@ class TestFetchModelMetadata:
         assert "anthropic/claude-3.5-sonnet:beta" in result
         assert "anthropic/claude-3.5-sonnet" in result
         assert result["anthropic/claude-3.5-sonnet"]["context_length"] == 200000
+
+
+class TestExtractPricing:
+    def test_generic_pricing_respects_per_million_unit(self):
+        pricing = _extract_pricing(
+            {
+                "pricing": {
+                    "currency": "CNY",
+                    "unit": "per_1m_tokens",
+                    "prompt": 1,
+                    "completion": 2,
+                    "cache_read": "0.5",
+                }
+            }
+        )
+
+        assert pricing["prompt"] == "0.000001"
+        assert pricing["completion"] == "0.000002"
+        assert pricing["cache_read"] == "5E-7"
+
+    def test_generic_pricing_respects_per_thousand_unit(self):
+        pricing = _extract_pricing(
+            {
+                "pricing": {
+                    "unit": "per_1k_tokens",
+                    "input": "1.5",
+                    "output": 2,
+                }
+            }
+        )
+
+        assert pricing["prompt"] == "0.0015"
+        assert pricing["completion"] == "0.002"
+
+    def test_generic_pricing_leaves_request_cost_unscaled(self):
+        pricing = _extract_pricing(
+            {
+                "pricing": {
+                    "unit": "per_1m_tokens",
+                    "prompt": 1,
+                    "request": "0.25",
+                }
+            }
+        )
+
+        assert pricing["prompt"] == "0.000001"
+        assert pricing["request"] == "0.25"
 
 
 

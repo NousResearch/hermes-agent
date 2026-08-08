@@ -312,3 +312,28 @@ def test_vertex_default_model_estimates_cached_usage(monkeypatch):
 
     assert result.status == "estimated"
     assert result.amount_usd is not None and result.amount_usd > 0
+
+
+def test_provider_models_api_respects_per_million_pricing_units(monkeypatch):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {
+            "custom/model": {
+                "pricing": {
+                    "prompt": "0.000001",
+                    "completion": "0.000002",
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "custom/model",
+        provider="custom",
+        base_url="https://tokenrhythm.studio/v1",
+    )
+
+    assert entry is not None
+    assert entry.source == "provider_models_api"
+    assert entry.input_cost_per_million == 1
+    assert entry.output_cost_per_million == 2

@@ -1011,9 +1011,12 @@ def _consume_codex_event_stream(
     * ``on_text_delta(str)`` — fires per ``response.output_text.delta``, suppressed
       once a function_call event is seen (so tool-call turns don't bleed text
       into the chat).
-    * ``on_reasoning_delta(str)`` — fires per ``response.reasoning.*.delta`` and
-      ``phase=analysis`` message deltas. When no dedicated commentary callback
-      is supplied, commentary also uses this legacy fallback.
+    * ``on_reasoning_delta(str)`` — fires once per
+      ``response.reasoning.*.delta`` and ``phase=analysis`` message delta. The
+      first indexed delta of a new summary/content part is prefixed with the
+      missing Markdown paragraph newlines so adjacent parts do not concatenate.
+      When no dedicated commentary callback is supplied, commentary also uses
+      this legacy fallback.
     * ``on_commentary_message(str)`` — fires once per completed
       ``phase=commentary`` message, before any following tool item executes.
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
@@ -1027,16 +1030,33 @@ def _consume_codex_event_stream(
     first_delta_fired = False
     active_message_phase: str | None = None
     commentary_text_deltas: List[str] = []
-    # Last reasoning summary_index seen. The Responses stream delimits summary
-    # parts by this index and gives each part no separator of its own, so a
-    # change of index is where the blank line belongs.
-    active_summary_index: Any = None
+    active_reasoning_part: tuple[Any, ...] | None = None
+    saw_reasoning_delta = False
+    reasoning_trailing_newlines = 0
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
     terminal_incomplete_details: Any = None
     terminal_error: Any = None
     saw_terminal = False
+
+    def _record_reasoning_delivery(
+        text: str,
+        part: tuple[Any, ...] | None = None,
+    ) -> None:
+        nonlocal active_reasoning_part
+        nonlocal reasoning_trailing_newlines
+        nonlocal saw_reasoning_delta
+
+        saw_reasoning_delta = True
+        active_reasoning_part = part
+        if text.endswith("\n"):
+            reasoning_trailing_newlines = min(
+                2,
+                len(text) - len(text.rstrip("\n")),
+            )
+        else:
+            reasoning_trailing_newlines = 0
 
     for event in event_iter:
         if on_event is not None:
@@ -1094,12 +1114,16 @@ def _consume_codex_event_stream(
                         on_reasoning_delta(delta_text)
                     except Exception:
                         logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+                    else:
+                        _record_reasoning_delivery(delta_text)
             elif delta_text and active_message_phase == "analysis":
                 if on_reasoning_delta is not None:
                     try:
                         on_reasoning_delta(delta_text)
                     except Exception:
                         logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+                    else:
+                        _record_reasoning_delivery(delta_text)
             elif delta_text:
                 collected_text_deltas.append(delta_text)
                 if not has_tool_calls:
@@ -1124,21 +1148,67 @@ def _consume_codex_event_stream(
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = _event_field(event, "delta", "")
             if reasoning_text and on_reasoning_delta is not None:
-                # Summary parts stream one after another with no separator of
-                # their own; summary_index is the boundary the wire gives us.
-                summary_index = _event_field(event, "summary_index")
-                if (
-                    summary_index is not None
-                    and active_summary_index is not None
-                    and summary_index != active_summary_index
-                ):
-                    reasoning_text = f"\n\n{reasoning_text}"
+                item_id = _event_field(
+                    event,
+                    "item_id",
+                    _event_field(event, "itemId"),
+                )
+                output_index = _event_field(
+                    event,
+                    "output_index",
+                    _event_field(event, "outputIndex"),
+                )
+                summary_index = _event_field(
+                    event,
+                    "summary_index",
+                    _event_field(event, "summaryIndex"),
+                )
+                content_index = _event_field(
+                    event,
+                    "content_index",
+                    _event_field(event, "contentIndex"),
+                )
+
+                reasoning_part: tuple[Any, ...] | None = None
                 if summary_index is not None:
-                    active_summary_index = summary_index
+                    reasoning_part = (
+                        "summary",
+                        item_id,
+                        output_index,
+                        summary_index,
+                    )
+                elif content_index is not None:
+                    reasoning_part = (
+                        "content",
+                        item_id,
+                        output_index,
+                        content_index,
+                    )
+
+                reasoning_payload = reasoning_text
+                if (
+                    reasoning_part is not None
+                    and saw_reasoning_delta
+                    and reasoning_part != active_reasoning_part
+                ):
+                    leading_newlines = len(reasoning_text) - len(
+                        reasoning_text.lstrip("\n")
+                    )
+                    missing_newlines = max(
+                        0,
+                        2 - reasoning_trailing_newlines - leading_newlines,
+                    )
+                    if missing_newlines:
+                        reasoning_payload = (
+                            "\n" * missing_newlines + reasoning_text
+                        )
+
                 try:
-                    on_reasoning_delta(reasoning_text)
+                    on_reasoning_delta(reasoning_payload)
                 except Exception:
                     logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+                else:
+                    _record_reasoning_delivery(reasoning_payload, reasoning_part)
             continue
 
         if event_type == "response.output_item.done":

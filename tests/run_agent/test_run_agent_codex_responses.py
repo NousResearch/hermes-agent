@@ -533,6 +533,137 @@ def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
     assert response.output == [commentary_item]
 
 
+def test_consume_codex_stream_separates_indexed_reasoning_parts():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_streamed = []
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                delta="**First",
+                item_id="rs_1",
+                output_index=0,
+                summary_index=0,
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                delta=" summary**",
+                item_id="rs_1",
+                output_index=0,
+                summary_index=0,
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                delta="**Second summary**",
+                item_id="rs_1",
+                output_index=0,
+                summary_index=1,
+            ),
+            SimpleNamespace(
+                type="response.reasoning_text.delta",
+                delta="Private detail",
+                item_id="rs_1",
+                output_index=0,
+                content_index=0,
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert reasoning_streamed == [
+        "**First",
+        " summary**",
+        "\n\n**Second summary**",
+        "\n\nPrivate detail",
+    ]
+
+
+def test_consume_codex_stream_separates_analysis_from_indexed_reasoning():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_streamed = []
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", phase="analysis"),
+            ),
+            SimpleNamespace(
+                type="response.output_text.delta",
+                delta="Analysis preamble",
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                delta="**Indexed summary**",
+                item_id="rs_1",
+                output_index=0,
+                summary_index=0,
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert reasoning_streamed == [
+        "Analysis preamble",
+        "\n\n**Indexed summary**",
+    ]
+
+
+def test_consume_codex_stream_preserves_unindexed_reasoning_deltas():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_streamed = []
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(
+                type="response.reasoning_text.delta",
+                delta="legacy ",
+            ),
+            SimpleNamespace(
+                type="response.reasoning_text.delta",
+                delta="chunks",
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
+        ]),
+        model="gpt-5-codex",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert reasoning_streamed == ["legacy ", "chunks"]
+
+
+def test_extract_responses_reasoning_text_separates_summary_parts():
+    from agent.codex_responses_adapter import _extract_responses_reasoning_text
+
+    item = SimpleNamespace(
+        summary=[
+            SimpleNamespace(text="**First summary**"),
+            SimpleNamespace(text="**Second summary**"),
+        ]
+    )
+
+    assert _extract_responses_reasoning_text(item) == (
+        "**First summary**\n\n**Second summary**"
+    )
+
+
 
 
 def test_run_codex_stream_delivers_redacted_commentary_once(monkeypatch):

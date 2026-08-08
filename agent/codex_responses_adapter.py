@@ -1176,7 +1176,7 @@ def _extract_responses_reasoning_text(item: Any) -> str:
             if isinstance(text, str) and text:
                 chunks.append(text)
         if chunks:
-            return "\n".join(chunks).strip()
+            return "\n\n".join(chunks).strip()
     text = getattr(item, "text", None)
     if isinstance(text, str) and text:
         return text.strip()

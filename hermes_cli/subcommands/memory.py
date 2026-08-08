@@ -6,6 +6,7 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 
@@ -31,6 +32,13 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         nargs="?",
         default=None,
         help="Provider to configure directly (e.g. honcho), skipping the picker",
+    )
+    _setup_parser.add_argument(
+        "provider_args",
+        nargs=argparse.REMAINDER,
+        default=[],
+        metavar="PROVIDER_ARG",
+        help="Provider-specific setup arguments passed through to the selected provider",
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")

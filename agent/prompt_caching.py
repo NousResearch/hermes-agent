@@ -14,7 +14,7 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from agent.prompt_cache_boundary import find_stable_prefix, is_registered_stable_prefix
+from agent.prompt_cache_boundary import find_stable_prefix
 
 
 @dataclass(frozen=True)
@@ -193,8 +193,11 @@ def strip_anthropic_cache_control(
 
     Flattening back to a plain string is restricted to the exact shapes
     :func:`apply_anthropic_cache_control` produces from string content —
-    a single ``{"type": "text"}`` part, or the two-part ``[static, volatile]``
-    system split — so the ``""``-join is provably byte-exact. Organic
+    a single ``{"type": "text"}`` part, the two-part ``[static, volatile]``
+    system split, or the two-part builder-declared skill split (recognised
+    by its marker-on-the-first-part shape, so flattening never depends on
+    the prefix registry still holding the entry) — so the ``""``-join is
+    provably byte-exact. Organic
     multi-part text (merged user turns, imported transcripts) and parts
     carrying extra keys (``citations`` etc.) keep their structure; only
     per-part markers are removed. Marker removal is copy-on-write on the
@@ -213,6 +216,21 @@ def strip_anthropic_cache_control(
         content = msg.get("content")
         if not isinstance(content, list):
             continue
+        # Two-part skill-invocation split (#81867). The builder-declared
+        # boundary is the only decoration that marks the *first* part of a
+        # user message: list content otherwise receives its marker on the
+        # last part, and the two-part [static, volatile] split is role-gated
+        # to system. So the shape alone identifies it, and flattening stays
+        # correct even when the prefix registry has since evicted the entry
+        # (failover re-decorates a request built many messages ago, #72626).
+        skill_split_shape = (
+            msg.get("role") == "user"
+            and len(content) == 2
+            and isinstance(content[0], dict)
+            and isinstance(content[1], dict)
+            and "cache_control" in content[0]
+            and "cache_control" not in content[1]
+        )
         if any(isinstance(part, dict) and "cache_control" in part for part in content):
             content = [
                 {k: v for k, v in part.items() if k != "cache_control"}
@@ -230,14 +248,7 @@ def strip_anthropic_cache_control(
         ) and (
             len(content) == 1
             or (msg.get("role") == "system" and len(content) == 2)
-            or (
-                # Two-part skill-invocation split: the first part is byte-for-
-                # byte a builder-registered scaffold, so the ""-join provably
-                # reconstructs the original string.
-                msg.get("role") == "user"
-                and len(content) == 2
-                and is_registered_stable_prefix(content[0]["text"])
-            )
+            or skill_split_shape
         )
         if decoration_shape:
             msg["content"] = "".join(part["text"] for part in content)

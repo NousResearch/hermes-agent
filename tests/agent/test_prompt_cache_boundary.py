@@ -20,7 +20,6 @@ import tools.skills_tool as skills_tool
 from agent.prompt_cache_boundary import (
     clear_stable_prefixes,
     find_stable_prefix,
-    is_registered_stable_prefix,
     register_stable_prefix,
 )
 from agent.prompt_caching import (
@@ -87,7 +86,47 @@ class TestRegistry:
 
     def test_empty_prefix_never_registered(self):
         register_stable_prefix("")
-        assert not is_registered_stable_prefix("")
+        assert find_stable_prefix("anything") is None
+
+    def test_lookup_refreshes_the_entry_lru_position(self):
+        """A cron scaffold fired every minute must survive a burst of one-off
+        invocations; without the refresh it silently drops back to
+        whole-message caching while still being the hottest prefix."""
+        from agent import prompt_cache_boundary
+
+        register_stable_prefix("hot-scaffold ")
+        for index in range(prompt_cache_boundary._MAX_ENTRIES - 1):
+            register_stable_prefix(f"cold-{index} ")
+
+        assert find_stable_prefix("hot-scaffold volatile") == "hot-scaffold "
+
+        register_stable_prefix("newcomer ")
+
+        assert find_stable_prefix("hot-scaffold volatile") == "hot-scaffold "
+        assert find_stable_prefix("cold-0 volatile") is None
+
+    def test_total_byte_cap_evicts_oldest_and_keeps_newest(self, monkeypatch):
+        """Entries retain whole skill bodies, so the entry count alone does
+        not bound memory."""
+        from agent import prompt_cache_boundary
+
+        monkeypatch.setattr(prompt_cache_boundary, "_MAX_BYTES", 100)
+
+        register_stable_prefix("a" * 80)
+        register_stable_prefix("b" * 80)
+
+        assert find_stable_prefix("a" * 80 + "tail") is None
+        assert find_stable_prefix("b" * 80 + "tail") == "b" * 80
+
+    def test_single_oversized_prefix_still_registers(self, monkeypatch):
+        from agent import prompt_cache_boundary
+
+        monkeypatch.setattr(prompt_cache_boundary, "_MAX_BYTES", 10)
+        oversized = "x" * 500
+
+        register_stable_prefix(oversized)
+
+        assert find_stable_prefix(oversized + "tail") == oversized
 
 
 class TestRequestLocalSplit:
@@ -152,6 +191,25 @@ class TestRequestLocalSplit:
 
         assert stripped == original
         assert apply_anthropic_cache_control(copy.deepcopy(stripped)) == first_wire
+
+    def test_strip_flattens_even_after_the_prefix_was_evicted(self):
+        """Mid-turn failover re-decorates a request built many messages ago
+        (#72626). If flattening depended on the registry still holding the
+        entry, a busy gateway that registered _MAX_ENTRIES newer scaffolds in
+        between would ship the split shape to the next provider instead of
+        the canonical string."""
+        from agent import prompt_cache_boundary
+
+        scaffold = "stable scaffold\n\n" + _SINGLE_SKILL_INSTRUCTION
+        register_stable_prefix(scaffold)
+        original = [{"role": "user", "content": scaffold + "ticket=one"}]
+        marked = apply_anthropic_cache_control(copy.deepcopy(original))
+
+        for index in range(prompt_cache_boundary._MAX_ENTRIES + 1):
+            register_stable_prefix(f"unrelated-scaffold-{index} ")
+        assert find_stable_prefix(scaffold + "ticket=one") is None
+
+        assert strip_anthropic_cache_control(marked) == original
 
     def test_strip_leaves_organic_two_part_user_content_structured(self):
         organic = [

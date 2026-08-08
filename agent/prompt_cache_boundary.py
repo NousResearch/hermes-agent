@@ -30,6 +30,13 @@ from typing import Optional
 # fall back to whole-message caching rather than growing unboundedly.
 _MAX_ENTRIES = 32
 
+# Entries hold whole expanded skill bodies, so an entry count alone does not
+# bound memory — a handful of large skills can retain tens of MB in a
+# long-lived gateway process. Evict by total retained bytes too, always
+# keeping the newest entry so a single oversized scaffold still gets a
+# boundary instead of silently disabling the split.
+_MAX_BYTES = 4 * 1024 * 1024
+
 _lock = threading.Lock()
 _prefixes: "OrderedDict[str, None]" = OrderedDict()
 
@@ -43,6 +50,8 @@ def register_stable_prefix(prefix: str) -> None:
         _prefixes.move_to_end(prefix)
         while len(_prefixes) > _MAX_ENTRIES:
             _prefixes.popitem(last=False)
+        while len(_prefixes) > 1 and sum(map(len, _prefixes)) > _MAX_BYTES:
+            _prefixes.popitem(last=False)
 
 
 def find_stable_prefix(content: str) -> Optional[str]:
@@ -50,6 +59,10 @@ def find_stable_prefix(content: str) -> Optional[str]:
 
     Proper (``len(content) > len(prefix)``) so the split never produces an
     empty volatile text block, which Anthropic rejects on the wire.
+
+    A hit refreshes the entry's LRU position: a scaffold fired every minute
+    by cron must not be evicted by a burst of one-off skill invocations,
+    which would silently drop it back to whole-message caching.
     """
     with _lock:
         candidates = list(_prefixes)
@@ -58,13 +71,11 @@ def find_stable_prefix(content: str) -> Optional[str]:
         if len(content) > len(prefix) and content.startswith(prefix):
             if best is None or len(prefix) > len(best):
                 best = prefix
+    if best is not None:
+        with _lock:
+            if best in _prefixes:
+                _prefixes.move_to_end(best)
     return best
-
-
-def is_registered_stable_prefix(text: str) -> bool:
-    """Exact-match check used when flattening a decorated split back."""
-    with _lock:
-        return text in _prefixes
 
 
 def clear_stable_prefixes() -> None:

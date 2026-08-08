@@ -72,3 +72,47 @@ def validate_platform_toolsets(
             "have no tools. Run `hermes tools` to reconfigure."
         )
     return warnings
+
+
+def clean_platform_toolsets(
+    platform_toolsets: object,
+    is_valid_toolset: Callable[[str], bool],
+) -> bool:
+    """Drop entries referencing unknown toolsets from a ``platform_toolsets`` mapping.
+
+    In-place complement to :func:`validate_platform_toolsets`: where validation
+    only warns, this removes the offending entries so the per-startup
+    "Unknown toolsets" warning stops firing. Used by ``hermes config migrate``
+    to auto-clean stale toolset names (e.g. the legacy ``messaging`` toolset
+    removed in v0.19 — #76847).
+
+    An entry is dropped only when it is a string that ``is_valid_toolset``
+    rejects; non-string entries are tolerated exactly like validation tolerates
+    them. A platform whose list loses every entry is removed entirely (an empty
+    list would otherwise trip the zero-valid-toolsets warning), falling back to
+    the default toolsets.
+
+    Args:
+        platform_toolsets: The raw ``platform_toolsets`` value from config.
+            Only ``dict`` values carry toolset entries; anything else is a no-op.
+        is_valid_toolset: Predicate returning ``True`` for a known toolset name.
+
+    Returns:
+        True when at least one entry was removed.
+    """
+    if not isinstance(platform_toolsets, dict):
+        return False
+    changed = False
+    for platform, raw in list(platform_toolsets.items()):
+        if isinstance(raw, list):
+            kept = [n for n in raw if not (isinstance(n, str) and not is_valid_toolset(n))]
+            if len(kept) != len(raw):
+                changed = True
+            if kept:
+                platform_toolsets[platform] = kept
+            else:
+                del platform_toolsets[platform]
+        elif isinstance(raw, str) and not is_valid_toolset(raw):
+            del platform_toolsets[platform]
+            changed = True
+    return changed

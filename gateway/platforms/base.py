@@ -5186,17 +5186,28 @@ class BasePlatformAdapter(ABC):
         if not is_network and self._is_timeout_error(error_str):
             return result
 
+        # Server-requested backoff (HTTP 429 / Telegram FloodWait) is
+        # delivery-ambiguous for the same reason a timeout is: the platform
+        # commonly ACCEPTS the message and rate-limits the acknowledgement, so
+        # re-sending puts a second full copy in the chat. The adapter already
+        # refuses its own internal resend on this error for that exact reason;
+        # retrying here just relocates the duplicate. Return the failure so the
+        # single copy the platform already holds stays the only one.
+        if result.retry_after is not None:
+            logger.warning(
+                "[%s] Send hit server rate limit (retry_after=%.1fs); not "
+                "resending — the message may already have been delivered: %s",
+                self.name, result.retry_after, error_str,
+            )
+            return result
+
         if is_network:
-            # Retry with exponential backoff for transient errors.
-            # Honor server-requested retry_after (e.g. Telegram FloodWait)
-            # when present — it is authoritative over our backoff schedule.
-            server_retry_after = result.retry_after
+            # Retry with exponential backoff for transient errors. A
+            # server-requested retry_after never reaches here — both the
+            # pre-loop check above and the in-loop check below return on it
+            # rather than resending, so there is no server schedule to honor.
             for attempt in range(1, max_retries + 1):
-                if server_retry_after is not None:
-                    delay = server_retry_after + random.uniform(0, 1)
-                    server_retry_after = None  # only honor once per send
-                else:
-                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 logger.warning(
                     "[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s",
                     self.name, attempt, max_retries, delay, error_str,
@@ -5213,7 +5224,14 @@ class BasePlatformAdapter(ABC):
                     return result
                 error_str = result.error or ""
                 if result.retry_after is not None:
-                    server_retry_after = result.retry_after
+                    # Same duplicate risk as the pre-loop check above: the
+                    # platform may already hold this message. Stop resending.
+                    logger.warning(
+                        "[%s] Send hit server rate limit on retry %d "
+                        "(retry_after=%.1fs); not resending: %s",
+                        self.name, attempt, result.retry_after, error_str,
+                    )
+                    return result
                 if not (result.retryable or self._is_retryable_error(error_str)):
                     break  # error switched to non-transient — fall through to plain-text fallback
             else:

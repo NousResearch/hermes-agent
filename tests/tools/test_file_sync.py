@@ -410,3 +410,32 @@ class TestBulkUpload:
         mgr.sync(force=True)
         bulk_upload.assert_called_once()
         assert len(bulk_upload.call_args[0][0]) == 3
+
+
+def test_ssh_agent_path_matches_file_sync_destination(tmp_path, monkeypatch):
+    """The path shown to the agent must equal where file_sync actually puts it.
+
+    ``to_agent_visible_cache_path`` (tools/credential_files.py) and
+    ``iter_sync_files`` (this module) independently decide where a cached file
+    lands on an SSH worker. If they drift, the agent is handed a path that
+    resolves to nothing on the remote side and ``read_file`` fails with a
+    confusing "no such file".
+
+    This asserts the *relationship* between the two rather than freezing a
+    literal string, so a future change to either side that breaks the contract
+    fails here instead of in production.
+    """
+    from tools.credential_files import to_agent_visible_cache_path
+
+    hermes_home = tmp_path / "profiles" / "workbot"
+    doc_dir = hermes_home / "cache" / "documents"
+    doc_dir.mkdir(parents=True)
+    host_path = doc_dir / "report.pdf"
+    host_path.write_bytes(b"%PDF-1.7")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+
+    sync_targets = dict(iter_sync_files("~/.hermes"))
+
+    assert str(host_path) in sync_targets
+    assert to_agent_visible_cache_path(str(host_path)) == sync_targets[str(host_path)]

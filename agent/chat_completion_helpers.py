@@ -1016,7 +1016,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # failure mode emits an opening SSE frame and then stalls forever in SSL
     # read; for that we watch the gap since the last Codex stream event. This
     # matches Codex CLI's stream_idle_timeout model: any valid SSE event is
-    # activity. Operators can tune via HERMES_CODEX_TTFB_TIMEOUT_SECONDS and
+    # activity — and since run_codex_stream wraps the response's raw byte
+    # stream, SSE comment lines (``: keepalive``, which the SDK drops before
+    # they can become events) count as activity too. Operators can tune via
+    # HERMES_CODEX_TTFB_TIMEOUT_SECONDS and
     # HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables each).
     _codex_watchdog_enabled = agent.api_mode == "codex_responses"
     _openai_codex_backend = _is_openai_codex_backend(agent)
@@ -1221,6 +1224,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # Stream-idle detector: the Codex backend emitted at least one SSE
         # frame, then stopped emitting events. Valid keepalive / in_progress
         # frames refresh _codex_stream_last_event_ts and should not be killed.
+        # SSE *comment* keepalives (``: keepalive``) also refresh it via the
+        # raw-byte wrapper in codex_runtime — only genuine transport silence
+        # trips this detector.
         _last_codex_event_ts = getattr(agent, "_codex_stream_last_event_ts", None)
         if (
             _codex_idle_enabled

@@ -1243,6 +1243,57 @@ def _consume_codex_event_stream(
     return final
 
 
+def _wrap_codex_stream_byte_activity(agent, raw_stream: Any) -> None:
+    """Count ANY inbound stream bytes — not just parsed SDK events — as activity.
+
+    The Codex TTFB / stream-idle watchdogs read
+    ``agent._codex_stream_last_event_ts``, which ``_on_event`` refreshes once
+    per *parsed* SSE event. Some Responses-API backends (observed: xAI Grok
+    with high reasoning effort) emit SSE *comment* lines (``: keepalive``)
+    every few seconds during long thinking phases. Per the SSE spec those
+    lines are comments, and the OpenAI SDK's ``SSEDecoder`` drops them, so
+    they never surface as stream events: a connection that is actively
+    streaming keepalives looks dead to the watchdog and gets killed mid-think
+    (the workaround was a large HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS).
+
+    The documented intent of the idle watchdog is that valid keepalive frames
+    count as activity, so wrap the underlying httpx response's ``iter_raw``
+    to refresh the same timestamp on every raw byte chunk. The SDK consumes
+    the body via ``response.iter_bytes()`` → ``self.iter_raw()``; an
+    instance-attribute wrapper therefore sees every byte the socket delivers,
+    including comment lines, while passing chunks through unchanged.
+    """
+    try:
+        response = getattr(raw_stream, "response", None)
+        if response is None:
+            return
+        if getattr(response, "_hermes_byte_activity_wrapped", False):
+            return
+        original_iter_raw: Callable[..., Any] | None = getattr(
+            response, "iter_raw", None
+        )
+        if not callable(original_iter_raw):
+            return
+
+        def iter_raw_with_activity(chunk_size=None):
+            for chunk in original_iter_raw(chunk_size=chunk_size):
+                # Any inbound bytes — data lines, comments, keepalives —
+                # prove the connection is alive. Refresh the same timestamp
+                # the TTFB / stream-idle watchdogs poll.
+                agent._codex_stream_last_event_ts = time.time()
+                yield chunk
+
+        response.iter_raw = iter_raw_with_activity
+        response._hermes_byte_activity_wrapped = True
+    except Exception:
+        # Never break a stream over liveness accounting — worst case we fall
+        # back to the pre-fix event-only behavior.
+        logger.debug(
+            "Could not install codex stream byte-activity wrapper",
+            exc_info=True,
+        )
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """Execute one streaming Responses API request and return the final response.
 
@@ -1292,6 +1343,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             # Claim the delta sink for THIS physical attempt. A newer attempt
             # supersedes this token and fences late deltas out of the turn.
             writer_token["value"] = claim_stream_writer(agent)
+            # Liveness = any inbound bytes, including SSE keepalive comments
+            # the SDK swallows before they can become events.
+            _wrap_codex_stream_byte_activity(agent, _raw_stream)
 
         def _accept_codex_chunk(_chunk: Any) -> bool:
             token = writer_token["value"]

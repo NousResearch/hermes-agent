@@ -316,3 +316,72 @@ class TestConfigMutationLock:
             "PUT /api/dashboard/plugin-providers is not holding "
             "_CONFIG_MUTATION_LOCK around its read-modify-write span"
         )
+
+    def test_model_set_serialized_against_other_writers(self):
+        """POST /api/model/set (_apply_model_assignment_sync) does config RMW
+        off-loop (asyncio.to_thread) same as every other handler in this
+        class — it must hold the same _CONFIG_MUTATION_LOCK, or a concurrent
+        locked writer's update gets erased by its stale save."""
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli import web_server
+        from hermes_cli.config import load_config
+
+        client = TestClient(web_server.app)
+        client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+
+        results = []
+
+        def _put_model():
+            resp = client.post(
+                "/api/model/set",
+                json={
+                    "scope": "auxiliary",
+                    "task": "vision",
+                    "provider": "anthropic",
+                    "model": "claude-haiku",
+                    "confirm_expensive_model": True,
+                },
+            )
+            results.append(("model", resp.status_code))
+
+        def _put_theme():
+            resp = client.put("/api/dashboard/theme", json={"name": "midnight"})
+            results.append(("theme", resp.status_code))
+
+        # Slow down save_config so an unserialized theme write can land
+        # inside the model-set writer's RMW span and be erased by its stale
+        # save. With the mutation lock the whole span is serialized and both
+        # writes survive.
+        real_save = web_server.save_config
+
+        def _slow_save(cfg, **kwargs):
+            time.sleep(0.15)
+            return real_save(cfg, **kwargs)
+
+        threads = []
+        try:
+            web_server.save_config = _slow_save
+            t_model = threading.Thread(target=_put_model)
+            t_theme = threading.Thread(target=_put_theme)
+            threads = [t_model, t_theme]
+            t_model.start()
+            time.sleep(0.05)  # let the model writer enter its RMW span first
+            t_theme.start()
+        finally:
+            for t in threads:
+                t.join()
+            web_server.save_config = real_save
+
+        assert all(code == 200 for _, code in results), results
+        cfg = load_config()
+        assert (cfg.get("auxiliary") or {}).get("vision", {}).get("provider") == "anthropic", (
+            "auxiliary.vision write lost — model-set RMW not serialized"
+        )
+        assert (cfg.get("dashboard") or {}).get("theme") == "midnight", (
+            "theme write lost to a concurrent model-set write — "
+            "POST /api/model/set is not holding "
+            "_CONFIG_MUTATION_LOCK around its read-modify-write span"
+        )

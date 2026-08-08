@@ -1297,6 +1297,20 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             text_chunks = BasePlatformAdapter.truncate_message(
                 formatted, 4096, len_fn=utf16_len
             )
+
+            # Escape MarkdownV2 reserved characters in chunk indicators.
+            # BasePlatformAdapter.truncate_message() appends " (1/3)", " (2/3)"
+            # etc. to each chunk when the message spans multiple messages.
+            # These parentheses '(', ')' are reserved in Telegram MarkdownV2
+            # and will be rejected by the API, causing a fallback to plain
+            # text that silently strips all formatting (#74004).
+            if send_parse_mode == ParseMode.MARKDOWN_V2 and len(text_chunks) > 1:
+                import re as _re
+                text_chunks = [
+                    _re.sub(r' \((\d+)/(\d+)\)$', r' \\(\1/\2\\)', c)
+                    for c in text_chunks
+                ]
+
             for chunk in text_chunks:
                 try:
                     last_msg = await _send_telegram_message_with_retry(

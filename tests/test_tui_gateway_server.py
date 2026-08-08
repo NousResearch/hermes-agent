@@ -876,12 +876,14 @@ def test_terminal_task_cwd_ssh_sentinel_cwd_uses_remote_home(monkeypatch):
 class _ChunkyStdout:
     def __init__(self):
         self.parts: list[str] = []
+        self._lock = threading.Lock()
 
     def write(self, text: str) -> int:
-        for ch in text:
-            self.parts.append(ch)
-            time.sleep(0.0001)
-        return len(text)
+        with self._lock:
+            for ch in text:
+                self.parts.append(ch)
+                time.sleep(0.0001)
+            return len(text)
 
     def flush(self) -> None:
         return None
@@ -904,57 +906,63 @@ def test_write_json_serializes_concurrent_writes(monkeypatch):
     Match the WS concurrent-send check: count in-flight writes, and only
     assert on frames that carry this test's marker payload.
     """
-    marker = "x" * 24
-    active = 0
-    max_active = 0
-    gate = threading.Lock()
-    frames: list[str] = []
+    from tui_gateway.transport import bind_transport, reset_transport
 
-    class RecordingStdout:
-        def write(self, text: str) -> int:
-            nonlocal active, max_active
-            with gate:
-                active += 1
-                max_active = max(max_active, active)
-            try:
-                # Release the GIL while "in write" so a missing outer lock
-                # would let another thread bump max_active above 1.
-                time.sleep(0.01)
-                frames.append(text)
-            finally:
+    tok = bind_transport(None)
+    try:
+        marker = "x" * 24
+        active = 0
+        max_active = 0
+        gate = threading.Lock()
+        frames: list[str] = []
+
+        class RecordingStdout:
+            def write(self, text: str) -> int:
+                nonlocal active, max_active
                 with gate:
-                    active -= 1
-            return len(text)
+                    active += 1
+                    max_active = max(max_active, active)
+                try:
+                    # Release the GIL while "in write" so a missing outer lock
+                    # would let another thread bump max_active above 1.
+                    time.sleep(0.01)
+                    frames.append(text)
+                finally:
+                    with gate:
+                        active -= 1
+                return len(text)
 
-        def flush(self) -> None:
-            return None
+            def flush(self) -> None:
+                return None
 
-    monkeypatch.setattr(server, "_real_stdout", RecordingStdout())
+        monkeypatch.setattr(server, "_real_stdout", RecordingStdout())
 
-    barrier = threading.Barrier(8)
+        barrier = threading.Barrier(8)
 
-    def _worker(seq: int) -> None:
-        barrier.wait(timeout=5)
-        server.write_json({"seq": seq, "text": marker})
+        def _worker(seq: int) -> None:
+            barrier.wait(timeout=5)
+            server.write_json({"seq": seq, "text": marker})
 
-    threads = [threading.Thread(target=_worker, args=(i,)) for i in range(8)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=10)
-        assert not t.is_alive()
+        threads = [threading.Thread(target=_worker, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+            assert not t.is_alive()
 
-    assert max_active == 1
+        assert max_active == 1
 
-    ours = []
-    for frame in frames:
-        assert frame.endswith("\n"), frame
-        obj = json.loads(frame)
-        if obj.get("text") == marker and "seq" in obj:
-            ours.append(obj)
+        ours = []
+        for frame in frames:
+            assert frame.endswith("\n"), frame
+            obj = json.loads(frame)
+            if obj.get("text") == marker and "seq" in obj:
+                ours.append(obj)
 
-    assert {obj["seq"] for obj in ours} == set(range(8))
-    assert len(ours) == 8
+        assert {obj["seq"] for obj in ours} == set(range(8))
+        assert len(ours) == 8
+    finally:
+        reset_transport(tok)
 
 
 def test_write_json_returns_false_on_broken_pipe(monkeypatch):

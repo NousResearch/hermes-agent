@@ -8470,7 +8470,7 @@ class _ChatStreamAccumulator:
         self.resp_model = model or ""
 
     def feed(self, chunk: Any) -> None:
-        _notify_aux_progress()
+        _made_progress = False
         if (
             self._total_ceiling is not None
             and (time.monotonic() - self._started) >= self._total_ceiling
@@ -8484,6 +8484,9 @@ class _ChatStreamAccumulator:
         chunk_usage = getattr(chunk, "usage", None)
         if chunk_usage:
             self.usage = chunk_usage
+            # Usage is a billing trailer, not a token delta — do not count it
+            # as forward progress; only real content/reasoning/tool-call deltas
+            # should advance CompressionCommitFence._last_progress.
         choices = getattr(chunk, "choices", None) or []
         if not choices:
             return
@@ -8491,17 +8494,22 @@ class _ChatStreamAccumulator:
         self.finish_reason = getattr(choice, "finish_reason", None) or self.finish_reason
         delta = getattr(choice, "delta", None)
         if delta is None:
+            if _made_progress:
+                _notify_aux_progress()
             return
         piece = getattr(delta, "content", None)
         if piece:
             self.content_parts.append(piece)
+            _made_progress = True
         reasoning_piece = (
             getattr(delta, "reasoning", None)
             or getattr(delta, "reasoning_content", None)
         )
         if reasoning_piece and isinstance(reasoning_piece, str):
             self.reasoning_parts.append(reasoning_piece)
+            _made_progress = True
         for tc in (getattr(delta, "tool_calls", None) or []):
+            _made_progress = True
             idx = getattr(tc, "index", 0) or 0
             acc = self.tool_calls_acc.setdefault(
                 idx, {"id": "", "name": "", "arguments": []}
@@ -8514,6 +8522,9 @@ class _ChatStreamAccumulator:
                     acc["name"] = fn.name
                 if getattr(fn, "arguments", None):
                     acc["arguments"].append(fn.arguments)
+        
+        if _made_progress:
+            _notify_aux_progress()
 
     def finish(self) -> Any:
         tool_calls = None

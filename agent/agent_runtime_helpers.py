@@ -2661,6 +2661,22 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         _runtime_context_length,
     )
 
+    # ── Re-apply the active custom provider's extra_body ──
+    # Nothing else in this function touches request_overrides['extra_body'],
+    # so switching away from a providers:/custom_providers: entry that had one
+    # (e.g. a vLLM endpoint listed twice as "vllm" / "vllm-no-think", the
+    # latter carrying extra_body.chat_template_kwargs.enable_thinking) would
+    # otherwise leave that extra_body stuck on every request for the rest of
+    # the session, even after switching to a provider with none configured.
+    try:
+        from agent.agent_init import _merge_custom_provider_extra_body
+        _merge_custom_provider_extra_body(agent, _sm_custom_providers or [])
+    except Exception:
+        logger.debug(
+            "switch_model: custom-provider extra_body reconciliation skipped",
+            exc_info=True,
+        )
+
     # ── Re-evaluate prompt caching ──
     agent._use_prompt_caching, agent._use_native_cache_layout = (
         agent._anthropic_prompt_cache_policy(

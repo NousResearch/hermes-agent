@@ -1892,6 +1892,69 @@ def _extra_headers_from_config(entry: Any) -> dict[str, str]:
     return normalize_extra_headers(entry.get("extra_headers"))
 
 
+def _extra_body_identity(entry: Any) -> str:
+    """Stable, hashable identity for an entry's ``extra_body``.
+
+    Two entries can share (api_url, credential, api_mode) yet send different
+    request bodies — e.g. a vLLM endpoint listed twice with only
+    ``extra_body.chat_template_kwargs.enable_thinking`` differing between the
+    "think" and "no-think" variants. Without this in the group identity the
+    picker silently collapses them into one row and one of the two configured
+    ``providers:``/``custom_providers:`` entries becomes unreachable.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    extra_body = entry.get("extra_body")
+    if not isinstance(extra_body, dict) or not extra_body:
+        return ""
+    import json
+
+    try:
+        return json.dumps(extra_body, sort_keys=True, default=str)
+    except TypeError:
+        return repr(sorted(extra_body.items(), key=lambda kv: str(kv[0])))
+
+
+def _group_display_prefix(raw_name: str) -> str:
+    """Version-stripped display prefix used to decide whether two same-
+    endpoint ``providers:`` entries are the same logical provider (several
+    models, one row) or genuinely distinct providers that happen to share a
+    connection.
+
+    Strips a trailing " — " / " - " suffix (Hermes's own config writer uses
+    this to separate a provider label from its model, e.g. "Ollama — GLM
+    5.1"), then drops trailing numeric/version tokens ("Palantir Claude 4.7
+    Opus" → "Palantir Claude") so multi-model entries for the same provider
+    still collapse into one picker row — this mirrors the cosmetic label
+    logic section 4 (``custom_providers:``) already uses for its own display
+    prefix, applied here as part of the *grouping identity* instead of only
+    the label.
+
+    A name with neither a separator nor a trailing digit token is returned
+    unchanged. That is what disambiguates a case like a vLLM endpoint listed
+    twice under distinct names ("vLLM" / "vLLM No-Think", e.g. to toggle
+    ``extra_body.chat_template_kwargs.enable_thinking`` for a hybrid-thinking
+    model) — those names carry no version pattern, so they stay distinct
+    picker rows rather than collapsing into one with only the first entry's
+    identity reachable.
+    """
+    prefix = str(raw_name or "")
+    for sep in ("—", " - "):
+        if sep in prefix:
+            prefix = prefix.split(sep)[0].strip()
+            break
+    tokens = prefix.split()
+    cut_at = None
+    for i, tok in enumerate(tokens):
+        stripped_tok = tok.strip(".,()")
+        if stripped_tok and any(c.isdigit() for c in stripped_tok):
+            cut_at = i
+            break
+    if cut_at is not None and cut_at >= 2:
+        prefix = " ".join(tokens[:cut_at]).strip()
+    return prefix
+
+
 def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     """Warm the provider-models disk cache in a background daemon thread.
 
@@ -2545,19 +2608,39 @@ def list_authenticated_providers(
     # and one "custom:openrouter" from section 4, both labelled identically.
     _section3_emitted_pairs: set = set()
     if user_providers and isinstance(user_providers, dict):
-        # Group ``providers:`` entries by (api_url, key_env, api_mode) so that
-        # multiple keyed providers pointing at the same endpoint with the
-        # same credential and wire-protocol collapse into one picker row.
-        # Mirrors section-4's grouping for ``custom_providers:`` lists.
-        # Concrete case: a Palantir Foundry Anthropic-proxy with two
-        # configured models (claude-4.6 + claude-4.7) — both share the same
-        # api/key_env/api_mode and used to produce two near-duplicate rows
-        # labelled "Palantir Claude 4.6 Opus" and "Palantir Claude 4.7 Opus";
-        # now they appear as a single "Palantir Claude" row with both models
-        # in the dropdown. Same-host entries with different ``key_env`` or
-        # ``api_mode`` (e.g. an OpenAI-compat gpt-5.4 alongside the Anthropic
-        # claude-4.7 on the same Palantir host) keep distinct rows since
-        # the wire protocol differs.
+        # Group ``providers:`` entries by (api_url, credential, api_mode,
+        # headers, extra_body, name-prefix) so that multiple keyed providers
+        # pointing at the same endpoint with the same credential and wire
+        # protocol collapse into one picker row — but ONLY when their names
+        # also identify them as the same logical provider. Mirrors (and now
+        # matches) section-4's grouping for ``custom_providers:`` lists.
+        #
+        # Concrete "same provider" case: a Palantir Foundry Anthropic-proxy
+        # with two configured models (claude-4.6 + claude-4.7) — both share
+        # api/key_env/api_mode and are named "Palantir Claude 4.6 Opus" /
+        # "Palantir Claude 4.7 Opus". The trailing version token is stripped
+        # (_group_display_prefix) so both fold into a single "Palantir
+        # Claude" row with both models in the dropdown, instead of two
+        # near-duplicate rows.
+        #
+        # Concrete "distinct providers" case: a vLLM endpoint listed twice —
+        # same base_url/model, no credential — under deliberately different
+        # names ("vLLM" / "vLLM No-Think") so the second entry can pin
+        # ``extra_body: {chat_template_kwargs: {enable_thinking: false}}``
+        # for a hybrid-thinking model. Neither name carries a version
+        # pattern, so the prefix heuristic leaves them unchanged and they
+        # stay distinct rows. Without this — and without extra_body/headers
+        # also participating in the identity below — the group_key collapsed
+        # to one row keyed on the FIRST entry's slug, and the second entry's
+        # extra_body became permanently unreachable from the picker even
+        # though it resolved correctly via ``--provider vllm-no-think`` or a
+        # direct config edit (request-time resolution matches by slug, not
+        # by this grouping).
+        #
+        # Same-host entries with different ``key_env`` or ``api_mode`` (e.g.
+        # an OpenAI-compat gpt-5.4 alongside the Anthropic claude-4.7 on the
+        # same Palantir host) keep distinct rows since the wire protocol
+        # differs — unaffected by any of the above.
         from collections import OrderedDict as _OD3
 
         from hermes_cli.config import is_provider_enabled
@@ -2599,7 +2682,27 @@ def list_authenticated_providers(
             # URL, routed by header) and must keep distinct picker rows.
             entry_extra_headers = _extra_headers_from_config(ep_cfg)
             headers_identity = tuple(sorted(entry_extra_headers.items()))
-            group_key = (api_url_norm, credential_identity, api_mode, headers_identity)
+            # Per-provider extra_body participates in the group identity for
+            # the same reason as headers: two entries sharing
+            # (api_url, credential, api_mode, headers) but declaring different
+            # extra_body (e.g. chat_template_kwargs.enable_thinking) send
+            # different requests and must stay distinct picker rows.
+            body_identity = _extra_body_identity(ep_cfg)
+            # The version-stripped name prefix participates in the group
+            # identity too (see the module-level docstring on
+            # _group_display_prefix and the block comment above this loop):
+            # this is what tells "same provider, more models" (Palantir)
+            # apart from "distinct provider sharing a connection" (vLLM /
+            # vLLM No-Think).
+            group_prefix = _group_display_prefix(display_name)
+            group_key = (
+                api_url_norm,
+                credential_identity,
+                api_mode,
+                headers_identity,
+                body_identity,
+                group_prefix.lower(),
+            )
 
             # ``default_model`` is the legacy key; ``model`` matches what
             # custom_providers entries use, so accept either.
@@ -2617,33 +2720,10 @@ def list_authenticated_providers(
                     entry_models.append(model_id)
 
             if group_key not in ep_groups:
-                # Strip per-model suffix so "Palantir Claude 4.7 Opus" becomes
-                # "Palantir Claude". Em dash and " - " are the separators
-                # Hermes's own writer uses (mirrors section-4 grouping).
-                grp_display = display_name
-                for sep in ("—", " - "):
-                    if sep in grp_display:
-                        grp_display = grp_display.split(sep)[0].strip()
-                        break
-                # Drop trailing numeric/version tokens that distinguish per-model
-                # entries ("Palantir Claude 4.7 Opus" → "Palantir Claude").
-                # Keeps the row label short; the model dropdown carries the
-                # per-version detail. Heuristic: split at the first token whose
-                # stripped form contains a digit; keep the prefix only if it
-                # is at least 2 words (avoids over-trimming single-word names).
-                _toks = grp_display.split()
-                _cut_at = None
-                for _i, _t in enumerate(_toks):
-                    _tl = _t.strip(".,()")
-                    if _tl and any(c.isdigit() for c in _tl):
-                        _cut_at = _i
-                        break
-                if _cut_at is not None and _cut_at >= 2:
-                    grp_display = " ".join(_toks[:_cut_at]).strip()
                 grp_slug = ep_name  # primary slug is the first ep_name encountered
                 ep_groups[group_key] = {
                     "slug": grp_slug,
-                    "name": grp_display or display_name,
+                    "name": group_prefix or display_name,
                     "api_url": api_url,
                     "models": [],
                     "has_explicit_models": False,
@@ -2887,6 +2967,15 @@ def list_authenticated_providers(
             entry_extra_headers = _extra_headers_from_config(entry)
             headers_identity = tuple(sorted(entry_extra_headers.items()))
 
+            # Per-provider extra_body participates in the group identity for
+            # the same reason as headers: two entries sharing
+            # (api_url, credential, api_mode, headers) but declaring different
+            # extra_body (e.g. a vLLM endpoint listed twice with only
+            # extra_body.chat_template_kwargs.enable_thinking differing) send
+            # different requests and must stay distinct picker rows rather
+            # than collapsing with only one of the two ``models:`` surviving.
+            body_identity = _extra_body_identity(entry)
+
             # Display-name prefix (text before " — " / " - "), used both
             # as a grouping dimension and to derive the row's display name.
             _display_prefix = raw_name
@@ -2895,7 +2984,14 @@ def list_authenticated_providers(
                     _display_prefix = _display_prefix.split(sep)[0].strip()
                     break
 
-            group_key = (api_url, credential_identity, api_mode, headers_identity, _display_prefix.lower())
+            group_key = (
+                api_url,
+                credential_identity,
+                api_mode,
+                headers_identity,
+                body_identity,
+                _display_prefix.lower(),
+            )
             if group_key not in groups:
                 # Reuse the prefix computed above as the row display name;
                 # fall back to the raw name if stripping left it empty.

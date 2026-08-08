@@ -708,6 +708,42 @@ def test_same_endpoint_different_extra_headers_not_collapsed(monkeypatch):
     assert models_by_row == {("model-a",), ("model-b",)}
 
 
+def test_same_endpoint_different_extra_body_not_collapsed(monkeypatch):
+    """Entries sharing (api_url, credential, api_mode, headers) but declaring
+    different extra_body must NOT collapse into one picker row — e.g. a vLLM
+    endpoint listed twice where only extra_body.chat_template_kwargs
+    .enable_thinking differs between "think" and "no-think" variants."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=[
+            {
+                "name": "vLLM",
+                "base_url": "http://192.168.15.115:8000/v1",
+                "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+                "discover_models": False,
+                "models": {"unsloth/Qwen3.6-35B-A3B-NVFP4": {}},
+            },
+            {
+                "name": "vLLM",
+                "base_url": "http://192.168.15.115:8000/v1",
+                "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+                "discover_models": False,
+                "models": {"unsloth/Qwen3.6-35B-A3B-NVFP4": {}},
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            },
+        ],
+        max_models=50,
+    )
+
+    rows = [
+        p for p in providers if p.get("api_url") == "http://192.168.15.115:8000/v1"
+    ]
+    assert len(rows) == 2, f"expected 2 rows, got {len(rows)}: {rows}"
 
 
 

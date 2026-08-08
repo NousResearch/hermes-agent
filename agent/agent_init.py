@@ -398,14 +398,55 @@ def _custom_provider_extra_body_for_agent(
     model: str,
     base_url: str,
     custom_providers: List[Dict[str, Any]],
+    requested_provider: str = "",
 ) -> Optional[Dict[str, Any]]:
     provider_norm = (provider or "").strip().lower()
+    requested_norm = (requested_provider or "").strip().lower()
+
     if provider_norm == "custom":
-        provider_key_filter = ""
+        # ``agent.provider`` is the bare canonical "custom" for every named
+        # providers:/custom_providers: entry AT AGENT-INIT TIME — the runtime
+        # resolver (hermes_cli/runtime_provider.py::_resolve_named_custom_runtime)
+        # never emits "custom:<name>". The entry's actual identity survives
+        # only on ``agent.requested_provider``. Without filtering on it, two
+        # entries sharing (base_url, model) — e.g. a vLLM endpoint listed
+        # twice as "vllm" / "vllm-no-think" with the same model id — are
+        # indistinguishable here and the matcher falls through to "first
+        # entry with a non-empty extra_body", silently applying the WRONG
+        # entry's extra_body to every provider at that endpoint regardless
+        # of which one is actually selected.
+        provider_key_filter = requested_norm if requested_norm not in ("", "custom") else ""
+        if provider_key_filter.startswith("custom:"):
+            provider_key_filter = provider_key_filter.split(":", 1)[1].strip()
     elif provider_norm.startswith("custom:"):
         provider_key_filter = provider_norm.split(":", 1)[1].strip()
     else:
-        return None
+        # A LIVE ``/model`` switch (hermes_cli/model_switch.py's pure
+        # switch_model(), which every gateway/TUI/CLI switch path calls
+        # before mutating the live agent) resolves ``target_provider`` to
+        # the entry's OWN identity ("vllm"), not "custom" — a different
+        # convention than agent-init resolution. So after any live switch,
+        # neither ``provider`` nor ``requested_provider`` ever looks like
+        # "custom"/"custom:<name>" for a named custom provider, and every
+        # branch above misses. Recognize this shape explicitly: only engage
+        # when the bare name actually names a configured custom_providers
+        # entry (by provider_key or display name) — this still can't
+        # false-positive on a builtin provider (openai, anthropic, ...)
+        # since those never appear in ``custom_providers``.
+        known_identities = {
+            str(e.get("provider_key", "") or "").strip().lower()
+            for e in (custom_providers or []) if isinstance(e, dict)
+        } | {
+            str(e.get("name", "") or "").strip().lower()
+            for e in (custom_providers or []) if isinstance(e, dict)
+        }
+        known_identities.discard("")
+        if provider_norm in known_identities:
+            provider_key_filter = provider_norm
+        elif requested_norm in known_identities:
+            provider_key_filter = requested_norm
+        else:
+            return None
 
     target_url = _normalized_custom_base_url(base_url)
     if not target_url:
@@ -438,22 +479,46 @@ def _custom_provider_extra_body_for_agent(
 
 
 def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, Any]]) -> None:
+    """(Re)apply the active custom provider's ``extra_body`` onto the agent.
+
+    Called at agent init AND again on every live ``/model`` switch (see
+    ``agent.agent_runtime_helpers.switch_model``) — nothing else touches
+    ``agent.request_overrides['extra_body']`` on a switch, so without the
+    second call a provider switched-away-from with an ``extra_body`` (e.g.
+    a vLLM endpoint listed twice as "vllm" / "vllm-no-think", the latter
+    with ``chat_template_kwargs.enable_thinking``) leaves its extra_body
+    stuck on every request for the rest of the session, even after
+    switching to a provider with none.
+
+    Idempotent/repeatable: each call first strips whatever keys the
+    *previous* call itself contributed (tracked via
+    ``agent._custom_provider_extra_body_keys``) before merging in the
+    newly resolved ``extra_body``, so keys set by something else entirely
+    (e.g. an explicit fast-mode ``service_tier`` override) are preserved
+    across the switch.
+    """
     extra_body = _custom_provider_extra_body_for_agent(
         provider=agent.provider,
         model=agent.model,
         base_url=agent.base_url,
         custom_providers=custom_providers,
-    )
-    if not extra_body:
-        return
+        requested_provider=getattr(agent, "requested_provider", ""),
+    ) or {}
 
     overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    existing_extra_body = dict(overrides.get("extra_body") or {})
+    for key in getattr(agent, "_custom_provider_extra_body_keys", set()):
+        existing_extra_body.pop(key, None)
+
     merged_extra_body = dict(extra_body)
-    existing_extra_body = overrides.get("extra_body")
-    if isinstance(existing_extra_body, dict):
-        merged_extra_body.update(existing_extra_body)
-    overrides["extra_body"] = merged_extra_body
+    merged_extra_body.update(existing_extra_body)
+
+    if merged_extra_body:
+        overrides["extra_body"] = merged_extra_body
+    elif "extra_body" in overrides:
+        del overrides["extra_body"]
     agent.request_overrides = overrides
+    agent._custom_provider_extra_body_keys = set(extra_body.keys())
 
 
 def init_agent(

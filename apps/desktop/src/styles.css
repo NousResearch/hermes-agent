@@ -2400,13 +2400,18 @@ button[data-slot='aui_msg-reactions'] svg {
      session measures 0 and the sheet collapses behind the bar, rather than
      painting a full-height slab with nothing in it. The extra is breathing room
      above the first row so the fade has somewhere to land. */
-  height: min(100%, calc(var(--hud-band-height, 0px) + 0.75rem));
+  height: min(100%, calc(var(--hud-band-height, 0px) + var(--hud-sheet-overhang, 0.75rem)));
   z-index: 0;
   pointer-events: none;
   border-radius: 0.75rem 0.75rem 0 0;
   background: color-mix(in srgb, var(--dt-background) 62%, transparent);
   opacity: 0;
-  transition: opacity var(--hud-fade) ease var(--hud-fade-delay);
+  /* Height is animated because it changes on every reply. Snapping to each new
+     size reads as the panel twitching; growing into it reads as the transcript
+     filling up. */
+  transition:
+    opacity var(--hud-fade) ease var(--hud-fade-delay),
+    height var(--hud-reveal) ease;
   -webkit-mask-image: var(--hud-thread-mask);
   mask-image: var(--hud-thread-mask);
   -webkit-mask-position: bottom;

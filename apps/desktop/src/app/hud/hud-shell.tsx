@@ -24,6 +24,11 @@ const HUD_REVEAL_MS = 150
 const HUD_FADE_DELAY_MS = 3_000
 const HUD_FADE_MS = 1_200
 
+/** Breathing room the sheet keeps above the first row, so the fade has
+ *  somewhere to land. Published to CSS, and used here to work out how much of
+ *  the window the HUD actually occupies. */
+const HUD_SHEET_OVERHANG_PX = 12
+
 /**
  * True for a hold window after any conversation activity (a message landing,
  * a stream flushing, a turn starting or ending). The CSS uses it — alongside
@@ -100,25 +105,36 @@ export function HudShell() {
   // EDGE-tight, not a midpoint rule: the first cut compared topGap<bottomGap,
   // which flips the layout the moment the window crosses the vertical center
   // of the screen — reported (correctly) as "flips way too early". Now it
-  // flips to 'top' only when the window is actually parked against the top
-  // (within FLIP_ON px of the usable area, i.e. below the menu bar), and back
-  // once it clearly leaves (FLIP_OFF) — the gap between the two is hysteresis
-  // so the layout can't flutter while the window is dragged along the line.
+  // flips to 'top' only when the HUD is actually parked against the top, and
+  // back once it clearly leaves — the gap between the two thresholds is
+  // hysteresis so the layout can't flutter while it's dragged along the line.
   const [edge, setEdge] = useState<'bottom' | 'top'>('bottom')
+  // How much of the window the HUD actually occupies. The sheet is sized to the
+  // transcript, so a tall window can be mostly empty above it — the flip has to
+  // measure the visible panel, not a window edge that reached the screen top
+  // long before the bar looked anywhere near it.
+  const visibleHeightRef = useRef(0)
 
   useEffect(() => {
-    // ZERO tolerance by explicit request: top-mode only when the window is
-    // flush against the usable top (gap 0 — macOS won't let it overlap the
-    // menu bar, so flush IS availTop). Tiny FLIP_OFF so the 300ms poll can't
-    // flutter on sub-pixel jitter while parked.
-    const FLIP_ON = 0
-    const FLIP_OFF = 4
+    // ZERO tolerance by explicit request: top-mode only when the HUD is flush
+    // against the usable top (gap 0 — macOS won't let it overlap the menu bar,
+    // so flush IS availTop). Tiny FLIP_OFF so the 300ms poll can't flutter on
+    // sub-pixel jitter while parked.
+    // Proportional to the display, not an absolute pixel count. The HUD hugs
+    // its bar, so its visible top can never actually reach the screen edge —
+    // an exact-flush rule would simply never fire. "Parked at the top" is a
+    // band near the top instead, with hysteresis so dragging along the line
+    // can't flutter the layout.
+    const usableHeight = (window.screen as { availHeight?: number }).availHeight || window.screen.height || 1
+    const FLIP_ON = usableHeight * 0.12
+    const FLIP_OFF = usableHeight * 0.18
 
     const measure = () => {
       // availTop ≈ menu bar / notch inset on macOS; screenY is in full-screen
       // coordinates, so "parked at the top" means screenY ≈ availTop, not 0.
       const availTop = (window.screen as { availTop?: number }).availTop ?? 0
-      const topGap = window.screenY - availTop
+      const visibleTop = window.screenY + Math.max(0, window.innerHeight - visibleHeightRef.current)
+      const topGap = visibleTop - availTop
 
       setEdge(prev => (topGap <= FLIP_ON ? 'top' : topGap >= FLIP_OFF ? 'bottom' : prev))
     }
@@ -194,11 +210,14 @@ export function HudShell() {
       // to the root estimate and reserved ~20px more than the bar occupies —
       // a visible hole under the last message.
       const bar = root.querySelector<HTMLElement>('[data-slot="composer-dock"]')
+      const barHeight = bar?.getBoundingClientRect().height ?? 0
 
       if (bar) {
         ro.observe(bar)
-        root.style.setProperty('--hud-bar-height', `${Math.round(bar.getBoundingClientRect().height)}px`)
+        root.style.setProperty('--hud-bar-height', `${Math.round(barHeight)}px`)
       }
+
+      void barHeight
     }
 
     // The viewport mounts async (lazy chat surface); poll briefly until it
@@ -241,7 +260,8 @@ export function HudShell() {
         {
           '--hud-fade-delay': `${HUD_FADE_DELAY_MS}ms`,
           '--hud-fade': `${HUD_FADE_MS}ms`,
-          '--hud-reveal': `${HUD_REVEAL_MS}ms`
+          '--hud-reveal': `${HUD_REVEAL_MS}ms`,
+          '--hud-sheet-overhang': `${HUD_SHEET_OVERHANG_PX}px`
         } as CSSProperties
       }
     >

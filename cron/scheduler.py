@@ -2720,6 +2720,9 @@ def _build_job_prompt(
         "to the user — do NOT use send_message or try to deliver "
         "the output yourself. Just produce your report/output as your "
         "final response and the system handles the rest. "
+        f"Before report content, include a line that says exactly "
+        f"{CRON_DELIVERABLE_MARKER}. Only content after that marker "
+        f"will be delivered; do not put working notes after the marker. "
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
@@ -4237,6 +4240,9 @@ def run_job(
             )
 
         final_response = result.get("final_response", "") or ""
+        # Delivery-time extraction (FINAL_CRON_OUTPUT: marker) lives in
+        # run_one_job immediately before _deliver_result so the persisted
+        # cron output document keeps the full model response (#52934).
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""

@@ -216,7 +216,7 @@ def test_make_agent_passes_dashboard_user_id(monkeypatch):
     monkeypatch.setattr(server, "_load_provider_routing", lambda: {})
     monkeypatch.setattr(server, "_load_reasoning_config", lambda _model: {})
     monkeypatch.setattr(server, "_load_service_tier", lambda: None)
-    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_args: None)
     monkeypatch.setattr(server, "_cfg_max_turns", lambda *_args: 10)
     monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("model", None))
     monkeypatch.setattr(

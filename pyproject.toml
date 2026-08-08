@@ -200,7 +200,8 @@ voice = [
 wake = [
   "openwakeword==0.6.0",
   "onnxruntime==1.27.0",
-  "sherpa-onnx==1.13.4",
+  "sherpa-onnx==1.12.40",
+  "sherpa-onnx-core==1.12.40",
   "sentencepiece==0.2.2",
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",

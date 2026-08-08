@@ -1999,6 +1999,7 @@ class TestBuildSchemaFromConfig:
         cats = Counter(e["category"] for e in CONFIG_SCHEMA.values())
         for cat, count in cats.items():
             assert count >= 2, f"Category '{cat}' has only {count} field(s) — should be merged"
+        assert CONFIG_SCHEMA["oauth.refresh_owner"]["category"] == "security"
 
 
 # ---------------------------------------------------------------------------

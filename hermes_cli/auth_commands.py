@@ -377,7 +377,12 @@ def auth_add_command(args) -> None:
             last_refresh=creds.get("last_refresh"),
         )
         first_credential = not pool.entries()
-        pool.add_entry(entry)
+        # Genuine interactive xAI OAuth login only. Under
+        # oauth.refresh_owner=external, write_credential_pool drops new OAuth
+        # rows unless this authority is explicit — Fleet recovery spawns
+        # exactly `hermes auth add xai-oauth`. Do not grant this for API-key
+        # or non-xAI add paths.
+        pool.add_entry(entry, oauth_token_write_authority="interactive-login")
         # Adding the first xAI credential should make it the active provider
         # (the old singleton save path did this implicitly via
         # _save_provider_state). Subsequent adds leave the active provider as-is.

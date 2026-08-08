@@ -9,6 +9,12 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    "oauth": {
+        # Runtime-owned preserves standalone Hermes behavior. Managed fleets
+        # can set "external" so one scheduler is the sole refresh-token writer
+        # for xAI Grok subscription OAuth (oauth.refresh_owner=external).
+        "refresh_owner": "runtime",
+    },
     "toolsets": ["hermes-cli"],
     # SQLite journal mode used by every Hermes database opener. WAL is the
     # normal default; set DELETE for weak-fsync/shared filesystems where WAL is

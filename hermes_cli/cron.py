@@ -211,10 +211,12 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
         print("No cron execution attempts recorded.")
         return
     for record in records:
+        outcome = record.get("outcome")
+        outcome_text = f"  outcome={outcome}" if outcome else ""
         print(
             f"{record.get('id', '?')}  {record.get('status', '?'):<9}  "
             f"job={record.get('job_id', '?')}  source={record.get('source', '?')}  "
-            f"{record.get('claimed_at', '?')}"
+            f"{record.get('claimed_at', '?')}{outcome_text}"
         )
         if record.get("error"):
             print(f"    {record['error']}")

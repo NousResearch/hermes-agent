@@ -2348,7 +2348,9 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
-) -> tuple[bool, str]:
+    *,
+    raw_output: bool = False,
+) -> tuple[bool, Any]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2452,11 +2454,9 @@ def _run_job_script(
 
         popen_kwargs = {}
         if sys.platform == "win32":
-            popen_kwargs = {
-                "creationflags": windows_hide_flags(),
-                "encoding": "utf-8",
-                "errors": "replace",
-            }
+            popen_kwargs = {"creationflags": windows_hide_flags()}
+            if not raw_output:
+                popen_kwargs.update({"encoding": "utf-8", "errors": "replace"})
         env = build_subprocess_env()
         env.update(env_overlay)
         # Use the job's workdir as the subprocess cwd when configured,
@@ -2467,14 +2467,24 @@ def _run_job_script(
         result = subprocess.run(
             argv,
             capture_output=True,
-            text=True,
+            text=not raw_output,
             timeout=script_timeout,
             cwd=_script_cwd,
             env=env,
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        stdout_raw = result.stdout or (b"" if raw_output else "")
+        stderr_raw = result.stderr or (b"" if raw_output else "")
+        stdout = (
+            stdout_raw.decode("utf-8", errors="replace")
+            if isinstance(stdout_raw, bytes)
+            else stdout_raw.strip()
+        )
+        stderr = (
+            stderr_raw.decode("utf-8", errors="replace").strip()
+            if isinstance(stderr_raw, bytes)
+            else stderr_raw.strip()
+        )
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2494,7 +2504,7 @@ def _run_job_script(
                 parts.append(f"stdout:\n{stdout}")
             return False, "\n".join(parts)
 
-        return True, stdout
+        return True, stdout_raw if raw_output else stdout
 
     except subprocess.TimeoutExpired:
         return False, f"Script timed out after {script_timeout}s: {path}"
@@ -4664,6 +4674,12 @@ def run_one_job(
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
+        monitor_no_change = bool(
+            success
+            and final_response == SILENT_MARKER
+            and "**Status:** no_change (agent run suppressed)" in output
+        )
+
         if not _consume_interrupted_flag(job["id"]):
             if blocked_config:
                 mark_job_run(
@@ -4671,7 +4687,18 @@ def run_one_job(
                     status="blocked_config",
                 )
             else:
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                if monitor_no_change:
+                    mark_job_run(
+                        job["id"],
+                        success,
+                        error,
+                        delivery_error=delivery_error,
+                        status="no_change",
+                    )
+                else:
+                    mark_job_run(
+                        job["id"], success, error, delivery_error=delivery_error
+                    )
         normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
         if delivery_error:
             delivery_outcome = "failed"
@@ -4686,6 +4713,7 @@ def run_one_job(
             success=success,
             error=error,
             delivery_outcome=delivery_outcome,
+            outcome="no_change" if monitor_no_change else None,
         )
         return True
 

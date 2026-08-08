@@ -39,6 +39,43 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
     assert persisted == [completed]
 
 
+def test_no_change_outcome_is_durable_and_visible(monkeypatch, tmp_path, capsys):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("monitor-job", source="builtin")
+
+    completed = executions.finish_execution(
+        record["id"], success=True, outcome="no_change"
+    )
+
+    assert completed["status"] == "completed"
+    assert completed["outcome"] == "no_change"
+
+    from hermes_cli.cron import cron_runs
+
+    cron_runs("monitor-job", limit=10)
+    assert "outcome=no_change" in capsys.readouterr().out
+
+
+def test_existing_execution_ledger_migrates_outcome_column(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    executions.EXECUTIONS_FILE.parent.mkdir(parents=True)
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute(
+            """CREATE TABLE executions (
+                 id TEXT PRIMARY KEY, job_id TEXT NOT NULL, source TEXT NOT NULL,
+                 process_id TEXT NOT NULL, pid INTEGER NOT NULL,
+                 process_started_at INTEGER, status TEXT NOT NULL,
+                 claimed_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+                 error TEXT
+               )"""
+        )
+
+    record = executions.create_execution("legacy-job", source="builtin")
+
+    assert "outcome" in record
+    assert record["outcome"] is None
+
+
 def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     record = executions.create_execution("immutable", source="builtin")
@@ -225,6 +262,48 @@ def test_run_one_job_records_running_then_terminal(monkeypatch):
     assert events[0] == ("running", "exec-3")
     assert events[-1][0:2] == ("finish", "exec-3")
     assert events[-1][2]["success"] is True
+
+
+def test_run_one_job_records_monitor_no_change_outcome(monkeypatch):
+    import cron.scheduler as scheduler
+
+    finished = []
+    marked = []
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        scheduler,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, *, defer_agent_teardown=None, **_kw: (
+            True,
+            "# Cron Job\n\n**Mode:** monitor\n"
+            "**Status:** no_change (agent run suppressed)\n",
+            scheduler.SILENT_MARKER,
+            None,
+        ),
+    )
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "_deliver_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        scheduler,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)),
+    )
+
+    job = {
+        "id": "monitor-job",
+        "execution_id": "monitor-exec",
+        "monitor_script": "watch.sh",
+    }
+    assert scheduler.run_one_job(job) is True
+
+    assert marked[0][1]["status"] == "no_change"
+    assert finished[0][1]["outcome"] == "no_change"
 
 
 def test_provider_start_recovers_interrupted_records_before_tick(monkeypatch):

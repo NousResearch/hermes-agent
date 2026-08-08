@@ -371,11 +371,10 @@ def _jobs_lock():
             _jobs_lock_state.depth = 0
             _jobs_lock_state.load_stamp = None
 
-# Fields on a cron job that must never change after creation. ``id`` is used
-# as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
-# updated lets an unsafe value (``../escape``, absolute path, nested) leak
-# into output writes/deletes.
-_IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+# Fields callers must never change directly. ``id`` is a filesystem path
+# component, while ``monitor_source_generation`` is advanced internally with
+# each source mutation and forms part of the stale-observation security check.
+_IMMUTABLE_JOB_FIELDS = frozenset({"id", "monitor_source_generation"})
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -1493,6 +1492,14 @@ def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Opti
     )
 
 
+def _monitor_source_generation(job: Dict[str, Any]) -> int:
+    """Return a safe generation for new and legacy monitor job records."""
+    value = job.get("monitor_source_generation", 0)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return 0
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1689,6 +1696,9 @@ def create_job(
         "no_agent": normalized_no_agent,
         "monitor_script": normalized_monitor_script,
         "monitor_url": normalized_monitor_url,
+        # Advances on every source mutation so an A→B→A replacement cannot
+        # make an observation from the original A current again.
+        "monitor_source_generation": 0,
         # Hash-suppression state for monitor jobs: {"last_output_hash": ...,
         # "last_changed_at": ...}. None until the first monitor tick.
         "monitor_state": None,
@@ -1820,6 +1830,32 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
+            previous_monitor_source = (
+                _normalize_job_optional_text(job.get("monitor_script")),
+                _normalize_job_optional_text(job.get("monitor_url")),
+            )
+            updated_monitor_source = (
+                _normalize_job_optional_text(updated.get("monitor_script")),
+                _normalize_job_optional_text(updated.get("monitor_url")),
+            )
+            if all(updated_monitor_source):
+                raise ValueError(
+                    "monitor_script and monitor_url are mutually exclusive — a job "
+                    "can only have one monitor source."
+                )
+            if any(updated_monitor_source) and bool(updated.get("no_agent")):
+                raise ValueError(
+                    "monitor_script/monitor_url cannot be combined with no_agent=True"
+                )
+            monitor_source_changed = updated_monitor_source != previous_monitor_source
+            if monitor_source_changed:
+                # A hash belongs to one source identity. Reusing it after a
+                # replace/clear can suppress the new source's first observation
+                # when its output happens to match the old source.
+                updated["monitor_state"] = None
+                updated["monitor_source_generation"] = (
+                    _monitor_source_generation(job) + 1
+                )
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)
@@ -1889,8 +1925,65 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
             jobs[i] = updated
             save_jobs(jobs)
+            if monitor_source_changed:
+                # Save the new job shape first. A stale snapshot is harmless
+                # while monitor_state is None, and best-effort cleanup avoids
+                # orphaning source data after monitor mode is cleared.
+                from cron.monitor import clear_monitor_snapshot
+
+                clear_monitor_snapshot(job_id)
             return _normalize_job_record(jobs[i])
     return None
+
+
+def update_monitor_state_if_source_matches(
+    job_id: str,
+    *,
+    expected_monitor_script: Optional[str],
+    expected_monitor_url: Optional[str],
+    expected_monitor_source_generation: int,
+    monitor_state: Dict[str, Any],
+    monitor_output: str,
+) -> bool:
+    """Persist monitor state only while the observed source is still current.
+
+    Source execution intentionally happens outside the jobs lock. This
+    compare-and-set prevents an old in-flight tick from restoring source A's
+    hash after an operator has changed the job. The generation check also
+    rejects an A→B→A replacement whose current source values look identical.
+    """
+    expected_source = (
+        _normalize_job_optional_text(expected_monitor_script),
+        _normalize_job_optional_text(expected_monitor_url),
+    )
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job.get("id") != job_id:
+                continue
+            current_source = (
+                _normalize_job_optional_text(job.get("monitor_script")),
+                _normalize_job_optional_text(job.get("monitor_url")),
+            )
+            if current_source != expected_source:
+                return False
+            if (
+                _monitor_source_generation(job)
+                != expected_monitor_source_generation
+            ):
+                return False
+            job["monitor_state"] = dict(monitor_state)
+            jobs[i] = job
+            save_jobs(jobs)
+            # Keep the sidecar paired with the state we just committed. The
+            # jobs lock must remain held until this write finishes; otherwise
+            # a stale generation can resume after a source update and
+            # overwrite the current generation's snapshot.
+            from cron.monitor import _write_last_output
+
+            _write_last_output(job_id, monitor_output)
+            return True
+    return False
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:

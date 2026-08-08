@@ -49,9 +49,25 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              claimed_at TEXT NOT NULL,
              started_at TEXT,
              finished_at TEXT,
-             error TEXT
+             error TEXT,
+             outcome TEXT
            )"""
     )
+    # Backward-compatible additive migration for ledgers created before
+    # monitor outcomes were recorded. Existing rows remain outcome=NULL.
+    columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(executions)").fetchall()
+    }
+    if "outcome" not in columns:
+        try:
+            conn.execute("ALTER TABLE executions ADD COLUMN outcome TEXT")
+        except sqlite3.OperationalError as exc:
+            # Another scheduler process may have completed the same additive
+            # migration after our PRAGMA read but before this ALTER acquired
+            # SQLite's schema lock. Only that exact race is safe to ignore.
+            if "duplicate column name" not in str(exc).lower():
+                raise
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
         "ON executions(job_id, claimed_at DESC, id DESC)"
@@ -175,6 +191,7 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
     delivery_outcome: Optional[str] = None,
+    outcome: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Write a terminal result once; terminal attempts cannot be rewritten."""
     now = _hermes_now().isoformat()
@@ -182,9 +199,9 @@ def finish_execution(
     detail = None if success else (str(error) if error else "unknown failure")
     with _transaction() as conn:
         cur = conn.execute(
-            """UPDATE executions SET status=?, finished_at=?, error=?
+            """UPDATE executions SET status=?, finished_at=?, error=?, outcome=?
                WHERE id=? AND status IN ('claimed','running')""",
-            (status, now, detail, execution_id),
+            (status, now, detail, outcome, execution_id),
         )
         if cur.rowcount != 1:
             return None

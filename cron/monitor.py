@@ -36,6 +36,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ MAX_OUTPUT_CHARS = 8000
 # Bounded GET limits for monitor_url sources.
 URL_TIMEOUT_SECONDS = 30
 MAX_URL_BYTES = 262_144  # 256 KiB
+MAX_URL_REDIRECTS = 5
 
 _SNAPSHOT_FILENAME = "monitor_last_output.txt"
 
@@ -65,6 +67,11 @@ class MonitorOutcome:
 def hash_monitor_output(output: str) -> str:
     """Hash the monitor output as exact UTF-8 bytes (no normalization)."""
     return hashlib.sha256(output.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _hash_monitor_bytes(output: bytes) -> str:
+    """Hash exact source bytes before lossy decoding for prompt display."""
+    return hashlib.sha256(output).hexdigest()
 
 
 def build_monitor_diff(old: str, new: str) -> str:
@@ -108,36 +115,109 @@ def _write_last_output(job_id: str, output: str) -> None:
         logger.warning("Monitor: failed to persist last output for %r: %s", job_id, exc)
 
 
-def _fetch_monitor_url(url: str) -> tuple[bool, str]:
-    """Bounded GET of a monitor URL. Returns (ok, body-or-error)."""
-    import urllib.request
-
-    if not str(url).lower().startswith(("http://", "https://")):
-        return False, f"monitor_url must be http(s): {url!r}"
+def clear_monitor_snapshot(job_id: str) -> None:
+    """Remove a monitor's persisted diff snapshot after its source changes."""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "hermes-cron-monitor"})
-        with urllib.request.urlopen(req, timeout=URL_TIMEOUT_SECONDS) as resp:  # nosec B310 — scheme checked above
-            body = resp.read(MAX_URL_BYTES + 1)
-        if len(body) > MAX_URL_BYTES:
-            body = body[:MAX_URL_BYTES]
-        return True, body.decode("utf-8", errors="replace")
+        _snapshot_path(job_id).unlink(missing_ok=True)
+    except Exception as exc:
+        logger.warning("Monitor: failed to clear last output for %r: %s", job_id, exc)
+
+
+def _fetch_monitor_url_bytes(url: str) -> tuple[bool, bytes | str]:
+    """Bounded GET of a monitor URL. Success returns exact body bytes."""
+    from tools.url_safety import create_ssrf_safe_client, is_safe_url
+
+    current_url = str(url)
+    try:
+        with create_ssrf_safe_client(
+            timeout=URL_TIMEOUT_SECONDS,
+            follow_redirects=False,
+            headers={"User-Agent": "hermes-cron-monitor"},
+        ) as client:
+            for _ in range(MAX_URL_REDIRECTS + 1):
+                scheme = (urlparse(current_url).scheme or "").lower()
+                if scheme not in {"http", "https"}:
+                    return False, f"monitor_url must be http(s): {current_url!r}"
+                if not is_safe_url(current_url):
+                    return False, "monitor_url blocked by SSRF protection"
+
+                with client.stream("GET", current_url) as resp:
+                    if resp.is_redirect:
+                        location = resp.headers.get("location")
+                        if not location:
+                            return False, "monitor_url redirect omitted Location"
+                        current_url = urljoin(current_url, location)
+                        continue
+
+                    resp.raise_for_status()
+                    chunks: list[bytes] = []
+                    total = 0
+                    for chunk in resp.iter_bytes(65_536):
+                        total += len(chunk)
+                        if total > MAX_URL_BYTES:
+                            return False, (
+                                f"monitor_url response exceeds {MAX_URL_BYTES} bytes"
+                            )
+                        chunks.append(chunk)
+                    return True, b"".join(chunks)
+        return False, f"monitor_url exceeded {MAX_URL_REDIRECTS} redirects"
     except Exception as exc:
         return False, f"monitor_url fetch failed: {exc}"
 
 
-def _run_monitor_source(job: dict) -> tuple[bool, str]:
-    """Run the job's monitor source (script or URL). Returns (ok, output)."""
+def _fetch_monitor_url(url: str) -> tuple[bool, str]:
+    """Text compatibility wrapper around the exact-byte URL fetcher."""
+    ok, result = _fetch_monitor_url_bytes(url)
+    if not ok:
+        return False, _redact_monitor_text(result)
+    return True, bytes(result).decode("utf-8", errors="replace")
+
+
+def _redact_monitor_text(text: object) -> str:
+    """Redact every monitor egress even when global redaction is disabled."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(
+            str(text),
+            force=True,
+            redact_url_credentials=True,
+        )
+    except Exception as exc:
+        logger.warning("Monitor: failed to redact source data: %s", exc)
+        return "[REDACTED - redaction failed]"
+
+
+def _redact_monitor_output(raw_output: bytes) -> str:
+    """Decode source bytes for prompt/snapshot use without hashing this view."""
+    return _redact_monitor_text(raw_output.decode("utf-8", errors="replace"))
+
+
+def _run_monitor_source(job: dict) -> tuple[bool, str, bytes]:
+    """Run one monitor source, returning display text plus exact hash bytes."""
     monitor_script = (job.get("monitor_script") or "").strip()
     if monitor_script:
         # Same containment + interpreter rules as the existing `script` field.
         from cron.scheduler import _run_job_script
 
         workdir = (job.get("workdir") or "").strip() or None
-        return _run_job_script(monitor_script, workdir=workdir)
+        ok, result = _run_job_script(
+            monitor_script,
+            workdir=workdir,
+            raw_output=True,
+        )
+        if not ok:
+            return False, _redact_monitor_text(result), b""
+        raw_output = bytes(result)
+        return True, _redact_monitor_output(raw_output), raw_output
     monitor_url = (job.get("monitor_url") or "").strip()
     if monitor_url:
-        return _fetch_monitor_url(monitor_url)
-    return False, "monitor job has neither monitor_script nor monitor_url"
+        ok, result = _fetch_monitor_url_bytes(monitor_url)
+        if not ok:
+            return False, _redact_monitor_text(result), b""
+        raw_output = bytes(result)
+        return True, _redact_monitor_output(raw_output), raw_output
+    return False, "monitor job has neither monitor_script nor monitor_url", b""
 
 
 def job_has_monitor(job: dict) -> bool:
@@ -153,11 +233,11 @@ def check_monitor(job: dict) -> MonitorOutcome:
     On failure nothing is persisted.
     """
     job_id = str(job.get("id") or "")
-    ok, output = _run_monitor_source(job)
+    ok, output, raw_output = _run_monitor_source(job)
     if not ok:
         return MonitorOutcome(ok=False, error=output)
 
-    new_hash = hash_monitor_output(output)
+    new_hash = _hash_monitor_bytes(raw_output)
     raw_state = job.get("monitor_state")
     state = raw_state if isinstance(raw_state, dict) else {}
     last_hash = state.get("last_output_hash")
@@ -188,25 +268,42 @@ def check_monitor(job: dict) -> MonitorOutcome:
             f"### Current output\n\n```\n{shown_output}\n```"
         )
 
-    _persist_monitor_state(job_id, new_hash, output)
+    if _persist_monitor_state(job, new_hash, output) is False:
+        # The source was edited or the job removed while this observation was
+        # in flight. Do not run the agent for obsolete data; the new source
+        # keeps its empty baseline and will run normally on its next tick.
+        return MonitorOutcome(ok=True, changed=False)
     return MonitorOutcome(
         ok=True, changed=True, first_run=first_run, context_block=context_block
     )
 
 
-def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:
-    from cron.jobs import _hermes_now, update_job
+def _persist_monitor_state(job: dict, new_hash: str, output: str) -> Optional[bool]:
+    from cron.jobs import (
+        _hermes_now,
+        _monitor_source_generation,
+        update_monitor_state_if_source_matches,
+    )
 
-    _write_last_output(job_id, output)
+    job_id = job["id"]
     try:
-        update_job(
+        persisted = update_monitor_state_if_source_matches(
             job_id,
-            {
-                "monitor_state": {
-                    "last_output_hash": new_hash,
-                    "last_changed_at": _hermes_now().isoformat(),
-                }
+            expected_monitor_script=job.get("monitor_script"),
+            expected_monitor_url=job.get("monitor_url"),
+            expected_monitor_source_generation=_monitor_source_generation(job),
+            monitor_state={
+                "last_output_hash": new_hash,
+                "last_changed_at": _hermes_now().isoformat(),
             },
+            monitor_output=output,
         )
+        if not persisted:
+            logger.info(
+                "Monitor: discarded stale state for %r because its source changed",
+                job_id,
+            )
+        return persisted
     except Exception as exc:
         logger.warning("Monitor: failed to persist state for %r: %s", job_id, exc)
+        return None

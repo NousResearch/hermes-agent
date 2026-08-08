@@ -73,8 +73,8 @@ _MARKETING_WORDS = (
 _POSIX_PRIMITIVES = (
     "fcntl",
     "termios",
-    "os.setsid",
-    "signal.SIGKILL",
+    "os.setsid",  # windows-footgun: ok  (search-pattern string, not a call)
+    "signal.SIGKILL",  # windows-footgun: ok  (search-pattern string, not a call)
     "osascript",
     "/proc/",
     "apt-get",

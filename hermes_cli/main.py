@@ -10006,7 +10006,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
       * a provider is already registered, or
       * stdin/stdout isn't a TTY (Docker/s6, CI, piped ``--no-open`` runs).
     """
-    host = getattr(args, "host", "127.0.0.1") or "127.0.0.1"
+    host = (getattr(args, "host", ["127.0.0.1"]) or ["127.0.0.1"])[0]
 
     try:
         from hermes_cli.web_server import should_require_auth
@@ -10327,8 +10327,8 @@ def cmd_dashboard(args):
         # Desktop pool backends are intentionally per-profile.
         and os.environ.get("HERMES_DESKTOP") != "1"
     ):
-        url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
-        if _dashboard_listening(args.host, args.port):
+        url = f"http://{(args.host or ['127.0.0.1'])[0]}:{args.port}/?profile={_launch_profile}"
+        if _dashboard_listening((args.host or ['127.0.0.1'])[0], args.port):
             print(f"Machine dashboard already running on port {args.port}.")
             print(f"  Managing profile '{_launch_profile}': {url}")
             if not args.no_open:
@@ -10350,9 +10350,10 @@ def cmd_dashboard(args):
             # `serve` doesn't silently rebuild the UI as `dashboard`.
             "serve" if _headless_backend else "dashboard",
             "--port", str(args.port),
-            "--host", args.host,
-            "--open-profile", _launch_profile,
         ]
+        for _h in (args.host or ["127.0.0.1"]):
+            reexec_argv.extend(["--host", _h])
+        reexec_argv.extend(["--open-profile", _launch_profile])
         if _ssh_owner_nonce:
             reexec_argv.extend(["--ssh-owner-nonce", _ssh_owner_nonce])
         if _token_file:
@@ -10548,7 +10549,7 @@ def cmd_dashboard(args):
     # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
     start_server(
-        host=args.host,
+        hosts=args.host,
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),

@@ -491,13 +491,13 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
+def _is_accepted_host(host_header: str, bound_hosts: frozenset[str]) -> bool:
+    """True if the Host header targets one of the interfaces we bound to.
 
     Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
+    - Exact bound host (with or without port suffix) matching ANY bound host
+    - Loopback aliases when at least one bound host is loopback
+    - Any host when bound to 0.0.0.0 or :: (explicit opt-in to all-interfaces,
       no protection possible at this layer)
     """
     if not host_header:
@@ -510,29 +510,44 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     #   127.0.0.1:9119
     h = host_header.strip()
     if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
+        # IPv6 bracketed — port (if any) follows "]:""
         close = h.find("]")
         if close != -1:
             host_only = h[1:close]  # strip brackets
         else:
             host_only = h.strip("[]")
     else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
+        # Bare IPv6 (no brackets) or v4. Port suffix is the part after the
+        # LAST colon — if it's all digits it's a port, otherwise it's part of
+        # the IPv6 address (e.g. "::1" is pure IPv6, "::1:9119" has a port).
+        colon_idx = h.rfind(":")
+        if colon_idx != -1:
+            maybe_port = h[colon_idx + 1:]
+            if maybe_port.isdigit() and not h[colon_idx - 1] == ":":
+                # "127.0.0.1:9119" or "::1:9119" — port suffix
+                host_only = h[:colon_idx]
+            else:
+                # "::1" or "fe80::1" — bare IPv6, no port
+                host_only = h
+        else:
+            host_only = h
     host_only = host_only.lower()
 
-    # 0.0.0.0 bind means operator explicitly opted into all-interfaces
-    # (requires --insecure per web_server.start_server). No Host-layer
-    # defence can protect that mode; rely on operator network controls.
-    if bound_host in {"0.0.0.0", "::"}:
-        return True
+    # Any wildcard bind means operator explicitly opted into all-interfaces.
+    # No Host-layer defence can protect that mode; rely on operator controls.
+    for bh in bound_hosts:
+        if bh in {"0.0.0.0", "::"}:
+            return True
 
-    # Loopback bind: accept the loopback names
-    bound_lc = bound_host.lower()
-    if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+    for bh in bound_hosts:
+        bh_lc = bh.lower()
+        if bh_lc in _LOOPBACK_HOST_VALUES:
+            if host_only in _LOOPBACK_HOST_VALUES:
+                return True
+        elif host_only == bh_lc:
+            return True
 
-    # Explicit non-loopback bind: require exact host match
-    return host_only == bound_lc
+    return False
 
 
 @app.middleware("http")
@@ -550,9 +565,10 @@ async def host_header_middleware(request: Request, call_next):
     # Store the bound host on app.state so this middleware can read it —
     # set by start_server() at listen time.
     bound_host = getattr(app.state, "bound_host", None)
-    if bound_host:
+    bound_hosts = getattr(app.state, "bound_hosts", None)
+    if bound_hosts:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        if not _is_accepted_host(host_header, bound_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -14740,8 +14756,13 @@ def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
     """
     if getattr(app.state, "auth_required", False):
         return None
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    bound_hosts: frozenset[str] | None = getattr(app.state, "bound_hosts", None)
+    bound_host: str = (getattr(app.state, "bound_host", "") or "").strip().lower()
+    if bound_hosts is not None:
+        all_loopback = all(bh.lower() in _LOOPBACK_HOSTS for bh in bound_hosts)
+    else:
+        all_loopback = bound_host in _LOOPBACK_HOSTS
+    if not all_loopback:
         return None
     client_host = ws.client.host if ws.client else ""
     if not client_host:
@@ -14787,8 +14808,13 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     # access via --insecure.  The loopback-only peer gate only applies to
     # an actual loopback bind; otherwise the WS handshake is rejected even
     # though same-bind HTTP requests pass _is_accepted_host.
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    bound_hosts_set: frozenset[str] | None = getattr(app.state, "bound_hosts", None)
+    bound_host: str = (getattr(app.state, "bound_host", "") or "").strip().lower()
+    if bound_hosts_set is not None:
+        all_loopback = all(bh.lower() in _LOOPBACK_HOSTS for bh in bound_hosts_set)
+    else:
+        all_loopback = bound_host in _LOOPBACK_HOSTS
+    if not all_loopback:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
@@ -14806,13 +14832,13 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     machine-parseable token (``host_mismatch …`` / ``origin_mismatch …``)
     on rejection so the close path can log *why* the upgrade was refused.
     """
-    bound_host = getattr(app.state, "bound_host", None)
-    if not bound_host:
+    bound_hosts = getattr(app.state, "bound_hosts", None)
+    if not bound_hosts:
         return None
 
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
-        return f"host_mismatch host={host_header or '?'} bound={bound_host}"
+    if not _is_accepted_host(host_header, bound_hosts):
+        return f"host_mismatch host={host_header or '?'} bound={','.join(bound_hosts)}"
 
     origin = ws.headers.get("origin", "")
     if not origin:
@@ -14826,10 +14852,10 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return None
 
     if not parsed.netloc:
-        return f"origin_mismatch origin={origin} bound={bound_host}"
+        return f"origin_mismatch origin={origin}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
-        return f"origin_mismatch origin={origin} bound={bound_host}"
+    if not _is_accepted_host(parsed.netloc, bound_hosts):
+        return f"origin_mismatch origin={origin} bound={','.join(bound_hosts)}"
     return None
 
 
@@ -14859,8 +14885,13 @@ def _ws_auth_mode() -> str:
     """Short label for the active WS auth mode — logged on every connection."""
     if getattr(app.state, "auth_required", False):
         return "gated"
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    bound_hosts_set: frozenset[str] | None = getattr(app.state, "bound_hosts", None)
+    bound_host: str = (getattr(app.state, "bound_host", "") or "").strip().lower()
+    if bound_hosts_set is not None:
+        all_loopback = all(bh.lower() in _LOOPBACK_HOSTS for bh in bound_hosts_set)
+    else:
+        all_loopback = bound_host in _LOOPBACK_HOSTS
+    if not all_loopback:
         return "insecure"
     return "loopback"
 
@@ -17544,6 +17575,40 @@ app.include_router(_dashboard_auth_router)
 mount_spa(app)
 
 
+def _create_server_sockets(hosts: list[str], port: int) -> list:
+    """Pre-bind one TCP socket per host entry and return them as a list.
+
+    Each socket is created with ``SO_REUSEADDR``.  IPv6 sockets get
+    ``IPV6_V6ONLY=1`` so they coexist with IPv4 listeners on the same
+    port.  Intended for uvicorn's ``server.startup(sockets=…)`` API which
+    accepts multiple pre-created sockets natively.
+
+    When *port* is 0, the first socket is bound to an OS-assigned ephemeral
+    port; subsequent sockets reuse that same port so all listeners share a
+    single port number.
+
+    Raises ``OSError`` if any host fails to bind.
+    """
+    import socket as _sk
+
+    socks: list = []
+    for h in hosts:
+        family = _sk.AF_INET6 if ":" in h else _sk.AF_INET
+        sock = _sk.socket(family, _sk.SOCK_STREAM)
+        sock.setsockopt(_sk.SOL_SOCKET, _sk.SO_REUSEADDR, 1)
+        if family == _sk.AF_INET6:
+            sock.setsockopt(_sk.IPPROTO_IPV6, _sk.IPV6_V6ONLY, 1)
+        sock.bind((h, port))
+        if port == 0 and not socks:
+            # First bind with port 0 — read the OS-assigned port so we
+            # reuse it for remaining listeners instead of getting N different
+            # ephemeral ports.
+            port = sock.getsockname()[1]
+        sock.set_inheritable(True)
+        socks.append(sock)
+    return socks
+
+
 def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
     """Read the OS-assigned port from a live uvicorn server socket.
 
@@ -17640,7 +17705,7 @@ def _maybe_open_browser(
 
 
 def start_server(
-    host: str = "127.0.0.1",
+    hosts: list[str] | None = None,
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
@@ -17650,6 +17715,11 @@ def start_server(
     ssh_owner_nonce: Optional[str] = None,
 ):
     """Start the web UI server.
+
+    ``hosts`` is a list of interface addresses to bind (e.g. ``["0.0.0.0", "::"]``
+    for dual-stack).  Each entry creates its own pre-bound socket; uvicorn
+    accepts all of them via ``server.startup(sockets=…)``.  When ``None``
+    (default) falls back to ``["127.0.0.1"]``.
 
     ``initial_profile`` (when set) is appended to the auto-opened browser
     URL as ``?profile=<name>`` so the SPA's profile switcher preselects it
@@ -17668,6 +17738,9 @@ def start_server(
 
     import uvicorn
 
+    hosts = hosts or ["127.0.0.1"]
+    _primary = hosts[0]
+
     try:
         from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
 
@@ -17679,19 +17752,21 @@ def start_server(
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
     # uses this to decide whether to refuse the bind, log the gate-on
     # banner, and enable uvicorn proxy_headers.
-    app.state.auth_required = should_require_auth(host)
+    app.state.auth_required = any(should_require_auth(h) for h in hosts)
+
+    _any_public = any(h not in _LOOPBACK_HOST_VALUES for h in hosts)
 
     # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
     # the hermes-0day MCP-persistence campaign abused unauthenticated public
     # dashboards). If a caller still passes it, warn that it is now a no-op
     # rather than silently changing their expectation of an open bind.
-    if allow_public and host not in _LOOPBACK_HOST_VALUES:
+    if allow_public and _any_public:
         _log.warning(
             "--insecure no longer bypasses dashboard authentication. A "
             "non-loopback bind (%s) now ALWAYS requires an auth provider "
             "(OAuth or the bundled password provider). Configure one — see "
             "below — or bind to 127.0.0.1 and reach it over an SSH tunnel / "
-            "Tailscale.", host,
+            "Tailscale.", ", ".join(hosts),
         )
 
     if app.state.auth_required:
@@ -17757,7 +17832,7 @@ def start_server(
                 pass
             if skip_reasons:
                 raise SystemExit(
-                    f"Refusing to bind dashboard to {host} — the auth gate "
+                    f"Refusing to bind dashboard to {_primary} — the auth gate "
                     f"engages on non-loopback binds, but no auth providers "
                     f"are registered.\n\n"
                     f"Bundled providers reported these issues:\n"
@@ -17766,19 +17841,27 @@ def start_server(
                     + _fix_hint
                 )
             raise SystemExit(
-                f"Refusing to bind dashboard to {host} — the auth gate "
+                f"Refusing to bind dashboard to {_primary} — the auth gate "
                 f"engages on non-loopback binds, but no auth providers are "
                 f"registered.\n\n" + _fix_hint
             )
         _log.info(
             "Dashboard binding to %s with auth gate enabled. Providers: %s",
-            host,
+            ", ".join(hosts),
             ", ".join(p.name for p in list_providers()),
         )
 
     # Record the bound host so host_header_middleware can validate incoming
     # Host headers against it. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
-    app.state.bound_host = host
+    app.state.bound_hosts = frozenset(hosts)
+    app.state.bound_host = _primary
+
+    # ── Pre-bind sockets for all requested hosts ────────────────────
+    # Pre-creating the sockets lets us bind multiple addresses (e.g. IPv4 +
+    # IPv6) on the same port.  IPv6 sockets get IPV6_V6ONLY=1 so they coexist
+    # with IPv4 listeners.  The sockets are passed to uvicorn's startup()
+    # which accepts a pre-created list natively.
+    _precreated_socks = _create_server_sockets(hosts, port)
 
     # ── Start uvicorn with direct Server API ─────────────────────────
     # We use uvicorn.Server directly (not uvicorn.run) so we can split
@@ -17812,23 +17895,12 @@ def start_server(
     # (idle timeout ~100s) where half-open IS a real failure mode, so keep the
     # ping at 20/20 to detect it promptly and stay under the tunnel's idle
     # window.
-    _is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    _all_loopback = all(h in _LOOPBACK_HOST_VALUES for h in hosts)
     config = uvicorn.Config(
-        app, host=host, port=port, log_level="warning",
-        # proxy_headers defaults to False so _ws_client_is_allowed sees
-        # the real connection peer rather than X-Forwarded-For's rewritten
-        # value (which would defeat the loopback gate when behind a reverse
-        # proxy).  When the OAuth gate is active we are explicitly running
-        # behind a TLS terminator (Fly.io) and need X-Forwarded-Proto to
-        # decide cookie Secure flags, so we flip proxy_headers on for that
-        # mode.
+        app, host=_primary, port=port, log_level="warning",
         proxy_headers=bool(app.state.auth_required),
-        # Half-open detection for public binds only (see above). Loopback
-        # disables the protocol ping (None) so an event-loop stall can never
-        # trigger a false disconnect; a genuinely dead local client is still
-        # reaped via the WebSocketDisconnect → disconnect/reap path.
-        ws_ping_interval=None if _is_loopback else 20.0,
-        ws_ping_timeout=None if _is_loopback else 20.0,
+        ws_ping_interval=None if _all_loopback else 20.0,
+        ws_ping_timeout=None if _all_loopback else 20.0,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     server = uvicorn.Server(config)
@@ -17840,7 +17912,7 @@ def start_server(
             config.load()
         server.lifespan = config.lifespan_class(config)
         with server.capture_signals():
-            await server.startup()
+            await server.startup(sockets=_precreated_socks)
             if server.should_exit:
                 return
 
@@ -17856,10 +17928,10 @@ def start_server(
             if headless:
                 # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
                 # advertise a paste-and-connect URL, just announce the bind.
-                print(f"  Hermes backend listening on {host}:{actual_port}")
+                print(f"  Hermes backend listening on {_primary}:{actual_port}")
             else:
-                print(f"  Hermes Web UI → http://{host}:{actual_port}")
-            _maybe_open_browser(host, actual_port, open_browser, initial_profile)
+                print(f"  Hermes Web UI → http://{_primary}:{actual_port}")
+            _maybe_open_browser(_primary, actual_port, open_browser, initial_profile)
 
             # Collapse the peer-hangup teardown flood (#50005). When the Desktop
             # forcibly closes its WebSocket mid-write, asyncio logs a full

@@ -73,7 +73,7 @@ def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
     captured = _stub_uvicorn(monkeypatch)
 
     web_server.start_server(
-        host="127.0.0.1",
+        hosts=["127.0.0.1"],
         port=0,
         open_browser=False,
         ssh_session_token="s" * 64,
@@ -101,7 +101,7 @@ def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
     captured = _stub_uvicorn(monkeypatch)
 
     # Loopback bind => no auth gate, so this reaches the Config constructor.
-    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+    web_server.start_server(hosts=["127.0.0.1"], port=0, open_browser=False)
 
     assert captured["ws_ping_interval"] is None
     assert captured["ws_ping_timeout"] is None
@@ -114,7 +114,7 @@ def test_start_server_accepts_base64_desktop_attachments_above_preview_limit(mon
     """
     captured = _stub_uvicorn(monkeypatch)
 
-    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+    web_server.start_server(hosts=["127.0.0.1"], port=0, open_browser=False)
 
     raw_attachment_bytes = 256 * 1024 * 1024
     base64_bytes = ((raw_attachment_bytes + 2) // 3) * 4
@@ -139,7 +139,7 @@ def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
     # without requiring a registered provider (a real public bind would raise
     # SystemExit here). The ping window keys off the host, not the auth flag.
     monkeypatch.setattr(web_server, "should_require_auth", lambda *a, **k: False)
-    web_server.start_server(host="0.0.0.0", port=0, open_browser=False)
+    web_server.start_server(hosts=["0.0.0.0"], port=0, open_browser=False)
 
     assert captured["ws_ping_interval"] and captured["ws_ping_interval"] > 0
     assert captured["ws_ping_timeout"] and captured["ws_ping_timeout"] > 0
@@ -193,7 +193,7 @@ def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):
 
     monkeypatch.setattr(asyncio, "run", _guard_asyncio_run)
 
-    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+    web_server.start_server(hosts=["127.0.0.1"], port=0, open_browser=False)
 
     assert seen.get("loop_factory") is sentinel_factory, (
         "start_server must pass uvicorn's get_loop_factory() result to the "
@@ -234,7 +234,7 @@ def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
 
     monkeypatch.setattr(asyncio, "run", _fake_asyncio_run)
 
-    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+    web_server.start_server(hosts=["127.0.0.1"], port=0, open_browser=False)
 
     assert bare_called["hit"] is True, "POSIX must serve via bare asyncio.run"
     assert runner_called["hit"] is False, (

@@ -27,7 +27,9 @@ def _add_server_runtime_args(parser) -> None:
         "--port", type=int, default=9119, help="Port (default 9119, 0 for auto-assign by OS)"
     )
     parser.add_argument(
-        "--host", default="127.0.0.1", help="Host (default 127.0.0.1)"
+        "--host", action="append", default=None,
+        help="Host to bind (may be repeated for multiple addresses, e.g. "
+             "--host 0.0.0.0 --host '::' for dual-stack). Default 127.0.0.1",
     )
     parser.add_argument(
         "--insecure",

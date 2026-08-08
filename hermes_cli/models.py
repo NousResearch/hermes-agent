@@ -5478,3 +5478,78 @@ def validate_requested_model(
             f"If the service isn't down, this model may not be valid."
         ),
     }
+
+
+def categorize_models(model_ids):
+    """Categorize the supplied live model IDs into picker buckets.
+
+    Classification is intentionally derived only from each input ID.  The
+    provider response is the source of truth; the static OpenRouter snapshot
+    must not leak stale models into this picker.
+    """
+    def is_free(model_id):
+        lowered = str(model_id).lower()
+        return lowered.endswith((":free", "-free", "/free"))
+
+    def is_fast(model_id):
+        lowered = str(model_id).lower()
+        return lowered.endswith(":fast") or "fast" in lowered
+
+    free = [model_id for model_id in model_ids if is_free(model_id)]
+    paid = [model_id for model_id in model_ids if not is_free(model_id)]
+    fast = [model_id for model_id in model_ids if is_fast(model_id)]
+    slow = [model_id for model_id in model_ids if not is_fast(model_id)]
+    return {"free": free, "paid": paid, "fast": fast, "slow": slow}
+
+
+
+
+def categorize_models_nested(model_ids, speed_categories_enabled=False):
+    """Partition model IDs by Free/Paid, optionally by Fast/Slow.
+
+    Returns:
+        speed_categories_enabled=False → ``{"free": [...], "paid": [...]}``
+        speed_categories_enabled=True  →
+            ``{"free": {"fast": [...], "slow": [...]}, "paid": {...}}``
+
+    Pure function over the existing :func:`categorize_models` partition.
+    """
+    base = categorize_models(model_ids)
+    if not speed_categories_enabled:
+        return {"free": base["free"], "paid": base["paid"]}
+    return {
+        "free": {
+            "fast": [m for m in base["free"] if m in base["fast"]],
+            "slow": [m for m in base["free"] if m in base["slow"]],
+        },
+        "paid": {
+            "fast": [m for m in base["paid"] if m in base["fast"]],
+            "slow": [m for m in base["paid"] if m in base["slow"]],
+        },
+    }
+
+
+def validate_picker_query(query):
+    """Validate picker search query for the Telegram picker contract.
+
+    Accepts strings of length 1..64 inclusive; everything else is rejected so
+    the caller can render a clear UX response instead of echoing raw input.
+    """
+    if not isinstance(query, str):
+        return False
+    if not (1 <= len(query) <= 64):
+        return False
+    return True
+
+
+def filter_models_by_query(model_ids, query):
+    """Case-insensitive substring filter on model IDs.
+
+    Bounded to 1..64 characters per the picker contract. Empty or oversized
+    queries return an empty list — callers must surface a UX error rather than
+    echoing raw user input.
+    """
+    if not isinstance(query, str) or not (1 <= len(query) <= 64):
+        return []
+    needle = query.lower()
+    return [m for m in model_ids if needle in m.lower()]

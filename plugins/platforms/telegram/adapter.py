@@ -234,7 +234,14 @@ async def _shutdown_abandoned_app(app) -> None:
             logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
 try:
-    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import (
+        Update,
+        Bot,
+        Message,
+        InlineKeyboardButton,
+        InlineKeyboardMarkup,
+        ForceReply,
+    )
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -257,6 +264,7 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    ForceReply = Any
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
@@ -5764,7 +5772,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             # Build provider buttons — folds provider groups (display only).
-            keyboard, provider_page_info = self._build_provider_keyboard(providers, 0)
+            keyboard, provider_page_info = self._build_provider_keyboard(
+                providers, 0, nested=True
+            )
 
             provider_label = get_label(current_provider)
             text = self.format_message(
@@ -5794,15 +5804,29 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             )
 
-            # Store picker state keyed by chat_id
+            # Store picker state keyed by chat_id. Nested fields are additive;
+            # legacy callback states remain valid when they are absent.
             self._model_picker_state[str(chat_id)] = {
                 "msg_id": msg.message_id,
                 "providers": providers,
+                "provider_view": list(providers),
                 "session_key": session_key,
                 "on_model_selected": on_model_selected,
                 "current_model": current_model,
                 "current_provider": current_provider,
                 "provider_page": 0,
+                "nested_picker": True,
+                "nested_stage": "providers",
+                "speed_categories": self._model_picker_speed_categories_enabled(),
+                "selected_provider_idx": None,
+                "selected_category": None,
+                "selected_speed": None,
+                "model_list": [],
+                "model_page": 0,
+                "search_stage": None,
+                "search_prompt_id": None,
+                "search_started_at": None,
+                "model_filter_query": None,
             }
 
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -5934,8 +5958,232 @@ class TelegramAdapter(BasePlatformAdapter):
         self._choice_picker_state.pop(chat_id, None)
 
     _MODEL_PAGE_SIZE = 8
+    _MODEL_PICKER_CALLBACK_MAX_BYTES = 64
+    _MODEL_PICKER_QUERY_MAX_CHARS = 64
+    _MODEL_PICKER_SEARCH_TTL_SECONDS = 300
 
-    def _build_provider_keyboard(self, providers: list, page: int = 0) -> tuple:
+    def _model_picker_speed_categories_enabled(self) -> bool:
+        """Return the opt-in Fast/Slow layer flag from Telegram extras."""
+        extra = getattr(self.config, "extra", {}) or {}
+        nested = extra.get("model_picker", {})
+        value = nested.get("speed_categories") if isinstance(nested, dict) else None
+        if value is None:
+            value = extra.get("model_picker.speed_categories", False)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @classmethod
+    def _model_picker_callback(cls, data: str) -> str:
+        if len(data.encode("utf-8")) > cls._MODEL_PICKER_CALLBACK_MAX_BYTES:
+            raise ValueError("model picker callback exceeds Telegram's 64-byte limit")
+        return data
+
+    @staticmethod
+    def _model_picker_categories(model_ids: list, speed_categories: bool) -> dict:
+        from hermes_cli.models import categorize_models_nested
+
+        return categorize_models_nested(
+            model_ids, speed_categories_enabled=speed_categories
+        )
+
+    @staticmethod
+    def _model_picker_filter(model_ids: list, query: str) -> list:
+        from hermes_cli.models import filter_models_by_query
+
+        return filter_models_by_query(model_ids, query)
+
+    def _model_picker_provider(self, state: dict, index: int):
+        providers = state.get("provider_view")
+        if providers is None:
+            providers = state.get("providers") or []
+        return providers[index] if isinstance(index, int) and 0 <= index < len(providers) else None
+
+    def _model_picker_category_models(self, state: dict, category: str, speed: Optional[str] = None) -> list:
+        provider = self._model_picker_provider(state, state.get("selected_provider_idx"))
+        if not provider or category not in {"free", "paid"}:
+            return []
+        categories = self._model_picker_categories(
+            list(provider.get("models", [])), bool(state.get("speed_categories"))
+        )
+        bucket = categories.get(category, [])
+        if speed is not None:
+            models = list(bucket.get(speed, [])) if isinstance(bucket, dict) and speed in {"fast", "slow"} else []
+        else:
+            models = list(bucket) if isinstance(bucket, list) else []
+        query = state.get("model_filter_query")
+        return self._model_picker_filter(models, query) if query else models
+
+    def _model_picker_nested_keyboard(self, state: dict):
+        stage = state.get("nested_stage", "providers")
+        if stage == "providers":
+            providers = state.get("provider_view")
+            if providers is None:
+                providers = state.get("providers") or []
+            keyboard, _ = self._build_provider_keyboard(
+                providers, state.get("provider_page", 0), nested=True
+            )
+            return keyboard
+
+        if stage == "categories":
+            provider = self._model_picker_provider(state, state.get("selected_provider_idx"))
+            models = list(provider.get("models", [])) if provider else []
+            query = state.get("model_filter_query")
+            if query:
+                models = self._model_picker_filter(models, query)
+            categories = self._model_picker_categories(models, bool(state.get("speed_categories")))
+            def _count(bucket):
+                return len(bucket) if isinstance(bucket, list) else sum(len(v) for v in bucket.values())
+            rows = [[
+                InlineKeyboardButton(f"Free ({_count(categories['free'])})", callback_data=self._model_picker_callback(f"mp:cat:{state['selected_provider_idx']}:free")),
+                InlineKeyboardButton(f"Paid ({_count(categories['paid'])})", callback_data=self._model_picker_callback(f"mp:cat:{state['selected_provider_idx']}:paid")),
+            ]]
+            rows.append([InlineKeyboardButton("🔎 Search", callback_data="mp:q:c")])
+            rows.append([InlineKeyboardButton("◀ Back", callback_data="mp:b:p"), InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+            return InlineKeyboardMarkup(rows)
+
+        if stage == "speeds":
+            category = state.get("selected_category")
+            fast = self._model_picker_category_models(state, category, "fast")
+            slow = self._model_picker_category_models(state, category, "slow")
+            rows = [[
+                InlineKeyboardButton(f"Fast ({len(fast)})", callback_data=self._model_picker_callback(f"mp:cat2:{state['selected_provider_idx']}:{category}:fast")),
+                InlineKeyboardButton(f"Slow ({len(slow)})", callback_data=self._model_picker_callback(f"mp:cat2:{state['selected_provider_idx']}:{category}:slow")),
+            ]]
+            rows.append([InlineKeyboardButton("🔎 Search", callback_data="mp:q:s")])
+            rows.append([InlineKeyboardButton("◀ Back", callback_data="mp:b:c"), InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+            return InlineKeyboardMarkup(rows)
+
+        models = state.get("model_list", [])
+        keyboard, _ = self._build_model_keyboard(
+            models,
+            state.get("model_page", 0),
+            nested=True,
+            back_callback="mp:b:s" if state.get("speed_categories") else "mp:b:c",
+        )
+        return keyboard
+
+    def _model_picker_nested_text(self, state: dict) -> str:
+        stage = state.get("nested_stage", "providers")
+        if stage == "providers":
+            return "⚙ *Model Configuration*\n\nSelect a provider:"
+        provider = self._model_picker_provider(state, state.get("selected_provider_idx")) or {}
+        name = provider.get("name", provider.get("slug", ""))
+        if stage == "categories":
+            return f"⚙ *Model Configuration*\n\nProvider: *{name}*\n\nSelect Free or Paid:"
+        if stage == "speeds":
+            return f"⚙ *Model Configuration*\n\nProvider: *{name}*\nCategory: *{state.get('selected_category', '')}*\n\nSelect Fast or Slow:"
+        return f"⚙ *Model Configuration*\n\nProvider: *{name}*\n\nSelect a model:"
+
+    async def _model_picker_render_nested(self, query, state: dict) -> None:
+        await query.edit_message_text(
+            text=self.format_message(self._model_picker_nested_text(state)),
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=self._model_picker_nested_keyboard(state),
+        )
+        await query.answer()
+
+    async def _model_picker_render_nested_message(self, state: dict, chat_id: str) -> None:
+        """Render the active nested picker after a ForceReply search response."""
+        if not self._bot or not state.get("msg_id"):
+            return
+        await self._bot.edit_message_text(
+            chat_id=normalize_telegram_chat_id(chat_id),
+            message_id=state["msg_id"],
+            text=self.format_message(self._model_picker_nested_text(state)),
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=self._model_picker_nested_keyboard(state),
+        )
+
+    async def _model_picker_begin_search(self, query, state: dict, stage: str) -> None:
+        """Start a bounded, reply-scoped search prompt."""
+        state["search_stage"] = stage
+        state["search_started_at"] = time.monotonic()
+        prompt_message = getattr(query, "message", None)
+        prompt = None
+        reply_text = getattr(prompt_message, "reply_text", None)
+        if callable(reply_text):
+            prompt = await reply_text(
+                "Type a search term (1–64 characters).",
+                reply_markup=ForceReply(selective=True),
+            )
+        state["search_prompt_id"] = getattr(prompt, "message_id", None)
+        await query.answer()
+
+    async def _send_model_picker_search_feedback(self, message, text: str) -> None:
+        reply_text = getattr(message, "reply_text", None)
+        if callable(reply_text):
+            await reply_text(text)
+
+    async def _handle_model_picker_search_message(self, message) -> bool:
+        """Consume only a reply to the currently active picker search prompt."""
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(message, "chat_id", None) or getattr(chat, "id", None)
+        if chat_id is None:
+            return False
+        picker_state = getattr(self, "_model_picker_state", None)
+        if not isinstance(picker_state, dict):
+            return False
+        state = picker_state.get(str(chat_id))
+        if not state or not state.get("search_stage"):
+            return False
+        reply_to = getattr(message, "reply_to_message", None)
+        if getattr(reply_to, "message_id", None) != state.get("search_prompt_id"):
+            return False
+        started = state.get("search_started_at")
+        if started and time.monotonic() - started > self._MODEL_PICKER_SEARCH_TTL_SECONDS:
+            state["search_stage"] = None
+            state["search_prompt_id"] = None
+            state["search_started_at"] = None
+            await self._send_model_picker_search_feedback(
+                message, "Search prompt expired — use Search again."
+            )
+            return True
+
+        query = str(getattr(message, "text", "") or "").strip()
+        if not (1 <= len(query) <= self._MODEL_PICKER_QUERY_MAX_CHARS):
+            await self._send_model_picker_search_feedback(
+                message, "Search must be between 1 and 64 characters."
+            )
+            return True
+
+        stage = state["search_stage"]
+        state["search_stage"] = None
+        state["search_prompt_id"] = None
+        state["search_started_at"] = None
+        if stage == "providers":
+            needle = query.casefold()
+            state["provider_view"] = [
+                provider for provider in state.get("providers", [])
+                if needle in str(provider.get("slug", "")).casefold()
+                or needle in str(provider.get("name", "")).casefold()
+            ]
+            state["provider_page"] = 0
+            state["nested_stage"] = "providers"
+        elif stage in {"category", "speeds"}:
+            state["model_filter_query"] = query
+            state["nested_stage"] = "categories" if stage == "category" else "speeds"
+        elif stage == "models":
+            state["model_filter_query"] = query
+            state["model_list"] = self._model_picker_category_models(
+                state,
+                state.get("selected_category") or "",
+                state.get("selected_speed") if state.get("speed_categories") else None,
+            )
+            state["model_page"] = 0
+            state["nested_stage"] = "models"
+        else:
+            return True
+        try:
+            await self._model_picker_render_nested_message(state, str(chat_id))
+        except Exception as exc:
+            logger.warning("[%s] nested picker search render failed: %s", self.name, _redact_telegram_error_text(exc))
+        return True
+
+
+    def _build_provider_keyboard(
+        self, providers: list, page: int = 0, *, nested: bool = False
+    ) -> tuple:
         """Build the paginated top-level provider keyboard, folding groups.
 
         Provider families (Kimi/Moonshot, MiniMax, xAI Grok, ...) collapse to
@@ -5960,7 +6208,19 @@ class TelegramAdapter(BasePlatformAdapter):
             return InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
 
         buttons: list = []
-        if group_providers is not None:
+        if nested:
+            for index, provider in enumerate(providers):
+                count = provider.get("total_models", len(provider.get("models", [])))
+                label = f"{provider.get('name', provider.get('slug', 'provider'))} ({count})"
+                if provider.get("is_current"):
+                    label = f"✓ {label}"
+                buttons.append(
+                    InlineKeyboardButton(
+                        label,
+                        callback_data=self._model_picker_callback(f"mp:p:{index}"),
+                    )
+                )
+        elif group_providers is not None:
             for row in group_providers([p.get("slug") for p in providers]):
                 if row["kind"] == "group":
                     members = [by_slug[m] for m in row["members"] if m in by_slug]
@@ -5998,11 +6258,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mpv:{page + 1}"))
             rows.append(nav)
 
+        if nested:
+            rows.append([InlineKeyboardButton("🔎 Search", callback_data="mp:q:p")])
         rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
 
         return InlineKeyboardMarkup(rows), page_meta["page_info"]
 
-    def _build_model_keyboard(self, models: list, page: int) -> tuple:
+    def _build_model_keyboard(
+        self,
+        models: list,
+        page: int,
+        *,
+        nested: bool = False,
+        back_callback: str = "mb",
+    ) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
         page_models, page_meta = self._format_choice_page(
             models, page, self._MODEL_PAGE_SIZE
@@ -6033,8 +6302,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mg:{page + 1}"))
             rows.append(nav)
 
+        if nested:
+            rows.append([InlineKeyboardButton("🔎 Search", callback_data="mp:q:m")])
         rows.append([
-            InlineKeyboardButton("◀ Back", callback_data="mb"),
+            InlineKeyboardButton("◀ Back", callback_data=back_callback if nested else "mb"),
             InlineKeyboardButton("✗ Cancel", callback_data="mx"),
         ])
 
@@ -6054,6 +6325,86 @@ class TelegramAdapter(BasePlatformAdapter):
         except ImportError:
             def get_label(slug):
                 return slug
+
+        if state.get("nested_picker") and data.startswith("mp:"):
+            if data.startswith("mp:p:"):
+                try:
+                    index = int(data[5:])
+                except ValueError:
+                    await query.answer(text="Invalid provider.")
+                    return
+                provider = self._model_picker_provider(state, index)
+                if provider is None:
+                    await query.answer(text="Provider not found.")
+                    return
+                state["selected_provider_idx"] = index
+                state["selected_provider"] = provider.get("slug", "")
+                state["selected_provider_name"] = provider.get("name", provider.get("slug", ""))
+                state["nested_stage"] = "categories"
+                state["model_filter_query"] = None
+                await self._model_picker_render_nested(query, state)
+                return
+            if data.startswith("mp:cat2:"):
+                parts = data.split(":")
+                if len(parts) != 5 or parts[3] not in {"free", "paid"} or parts[4] not in {"fast", "slow"}:
+                    await query.answer(text="Invalid category.")
+                    return
+                try:
+                    state["selected_provider_idx"] = int(parts[2])
+                except ValueError:
+                    await query.answer(text="Invalid provider.")
+                    return
+                state["selected_category"] = parts[3]
+                state["selected_speed"] = parts[4]
+                state["model_list"] = self._model_picker_category_models(state, parts[3], parts[4])
+                state["model_page"] = 0
+                state["nested_stage"] = "models"
+                await self._model_picker_render_nested(query, state)
+                return
+            if data.startswith("mp:cat:"):
+                parts = data.split(":")
+                if len(parts) != 4 or parts[3] not in {"free", "paid"}:
+                    await query.answer(text="Invalid category.")
+                    return
+                try:
+                    state["selected_provider_idx"] = int(parts[2])
+                except ValueError:
+                    await query.answer(text="Invalid provider.")
+                    return
+                state["selected_category"] = parts[3]
+                if state.get("speed_categories"):
+                    state["nested_stage"] = "speeds"
+                else:
+                    state["model_list"] = self._model_picker_category_models(state, parts[3])
+                    state["model_page"] = 0
+                    state["nested_stage"] = "models"
+                await self._model_picker_render_nested(query, state)
+                return
+            if data in {"mp:q:p", "mp:q:c", "mp:q:s", "mp:q:m"}:
+                stage = {
+                    "mp:q:p": "providers",
+                    "mp:q:c": "category",
+                    "mp:q:s": "speeds",
+                    "mp:q:m": "models",
+                }[data]
+                await self._model_picker_begin_search(query, state, stage)
+                return
+            if data == "mp:b:p":
+                state["nested_stage"] = "providers"
+                await self._model_picker_render_nested(query, state)
+                return
+            if data == "mp:b:c":
+                state["nested_stage"] = "categories"
+                await self._model_picker_render_nested(query, state)
+                return
+            if data == "mp:b:s":
+                state["nested_stage"] = "speeds"
+                await self._model_picker_render_nested(query, state)
+                return
+            if data == "mp:b:m":
+                state["nested_stage"] = "models"
+                await self._model_picker_render_nested(query, state)
+                return
 
         if data.startswith("mp:"):
             # --- Provider selected: show model buttons (page 0) ---
@@ -6102,6 +6453,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
             models = state.get("model_list", [])
             state["model_page"] = page
+            if state.get("nested_picker"):
+                state["nested_stage"] = "models"
+                await self._model_picker_render_nested(query, state)
+                return
 
             keyboard, page_info = self._build_model_keyboard(models, page)
 
@@ -6137,6 +6492,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             state["provider_page"] = page
+            if state.get("nested_picker"):
+                if state.get("provider_view") is None:
+                    state["provider_view"] = state["providers"]
+                state["nested_stage"] = "providers"
+                await self._model_picker_render_nested(query, state)
+                return
             keyboard, provider_page_info = self._build_provider_keyboard(
                 state["providers"], page
             )
@@ -6243,10 +6604,11 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception:
                 warning = None
             if warning is not None:
+                back_callback = "mp:b:m" if state.get("nested_picker") else "mb"
                 keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("Switch anyway", callback_data=f"mc:{idx}")],
                     [
-                        InlineKeyboardButton("◀ Back", callback_data="mb"),
+                        InlineKeyboardButton("◀ Back", callback_data=back_callback),
                         InlineKeyboardButton("✗ Cancel", callback_data="mx"),
                     ],
                 ])
@@ -8895,6 +9257,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
+            return
+        if await self._handle_model_picker_search_message(msg):
             return
         # Early user-level auth check: reject unauthorized users before any
         # text batching, observe-buffer persistence, event building, or response

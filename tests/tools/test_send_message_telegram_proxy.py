@@ -155,3 +155,53 @@ class TestSendTelegramStandaloneProxy:
         assert "get_updates_request" not in call_kwargs
         httpx_request_factory.assert_not_called()
         bot.send_message.assert_awaited_once()
+
+
+class TestTelegramStandaloneLazyDeps:
+    """The standalone Telegram send path should lazy-install missing SDK deps."""
+
+    def test_missing_telegram_sdk_invokes_lazy_deps_then_reimports(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the initial Telegram import fails, call lazy_deps.ensure for
+        platform.telegram and retry the import instead of returning a manual
+        pip-install error immediately.
+        """
+        import builtins
+        from tools import send_message_tool
+
+        for name in list(sys.modules):
+            if name == "telegram" or name.startswith("telegram."):
+                monkeypatch.delitem(sys.modules, name, raising=False)
+
+        bot_factory = MagicMock()
+        httpx_request_factory = MagicMock()
+        installed = False
+        ensure_calls: list[tuple[str, bool]] = []
+
+        def fake_ensure(feature: str, prompt: bool = True) -> None:
+            nonlocal installed
+            ensure_calls.append((feature, prompt))
+            installed = True
+            _install_telegram_mock_with_request(
+                monkeypatch,
+                bot_factory,
+                httpx_request_factory,
+            )
+
+        monkeypatch.setattr("tools.lazy_deps.ensure", fake_ensure)
+
+        original_import = builtins.__import__
+
+        def fake_import(name: str, globals=None, locals=None, fromlist=(), level: int = 0):
+            if (name == "telegram" or name.startswith("telegram.")) and not installed:
+                raise ImportError("No module named 'telegram'")
+            return original_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        Bot, ParseMode = send_message_tool._import_telegram_send_deps()
+
+        assert ensure_calls == [("platform.telegram", False)]
+        assert Bot is bot_factory
+        assert ParseMode.MARKDOWN_V2 == "MarkdownV2"

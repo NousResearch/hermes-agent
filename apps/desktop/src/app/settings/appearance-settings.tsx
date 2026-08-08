@@ -18,6 +18,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
+import { $windowChrome, setWindowChrome } from '@/store/window-chrome'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
@@ -252,6 +253,7 @@ export function AppearanceSettings() {
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
+  const windowChrome = useStore($windowChrome)
   const reactionsEnabled = useStore($reactionsEnabled)
   const backdrop = useStore($backdrop)
   const installs = useStore($marketplaceInstalls)
@@ -457,6 +459,24 @@ export function AppearanceSettings() {
             }
             description={a.translucencyDesc}
             title={a.translucencyTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setWindowChrome(id === 'on' ? 'app-drawn' : 'overlay')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={windowChrome === 'app-drawn' ? 'on' : 'off'}
+              />
+            }
+            description={a.windowChromeDesc}
+            title={a.windowChromeTitle}
           />
 
           <ListRow

@@ -763,6 +763,41 @@ function writePersistedTranslucency(intensity) {
 
 let translucencyIntensity = readPersistedTranslucency()
 
+// Window chrome mode. 'overlay' (default) = frameless title bar + native
+// Window Controls Overlay (Windows/Linux) or traffic lights (macOS), exactly
+// as today. 'app-drawn' = `frame: false` with the renderer painting
+// min/max/close itself (see computeWindowChromeOptions + WindowControls).
+// Persisted so window creation reads it before the renderer loads. `frame`
+// cannot change on a live BrowserWindow, so a runtime toggle applies to
+// windows created after the next launch. See store/window-chrome.
+const WINDOW_CHROME_CONFIG_PATH = path.join(app.getPath('userData'), 'window-chrome.json')
+const WINDOW_CHROME_MODES = new Set(['overlay', 'app-drawn'])
+
+function readWindowChromeMode() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(WINDOW_CHROME_CONFIG_PATH, 'utf8'))
+
+    if (parsed && WINDOW_CHROME_MODES.has(parsed.mode)) {
+      return parsed.mode
+    }
+  } catch {
+    // Missing / malformed → default overlay chrome.
+  }
+
+  return 'overlay'
+}
+
+function writeWindowChromeMode(mode) {
+  try {
+    fs.mkdirSync(path.dirname(WINDOW_CHROME_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(WINDOW_CHROME_CONFIG_PATH, JSON.stringify({ mode }, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[window-chrome] write failed: ${error.message}`)
+  }
+}
+
+let windowChromeMode = readWindowChromeMode()
+
 // Map the 0–100 lever to a window opacity. Floor at 0.3 so the most see-through
 // setting is still usable rather than nearly invisible. 0 → fully opaque.
 function windowOpacity() {
@@ -827,6 +862,34 @@ function getTitleBarOverlayOptions() {
           ? '#f7f7f7'
           : '#242424'
   }
+}
+
+// Shared window-chrome options for every full chat window (primary, instance,
+// session). Default 'overlay' mode is exactly the current behavior: frameless
+// title bar + native WCO on Windows/Linux, traffic lights on macOS. 'app-drawn'
+// mode (non-macOS only) drops the OS chrome entirely (`frame: false`) so the
+// renderer paints min/max/close itself — see src/app/shell/window-controls.
+// Compact session windows pass appDrawn: false: their slim shell trims the
+// titlebar controls (no WindowControls to fall back on), so they keep the
+// native overlay.
+function computeWindowChromeOptions({ appDrawn = true } = {}): Electron.BrowserWindowConstructorOptions {
+  const base: Electron.BrowserWindowConstructorOptions = {
+    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    vibrancy: IS_MAC ? 'sidebar' : undefined,
+    opacity: windowOpacity(),
+    backgroundColor: getWindowBackgroundColor()
+  }
+
+  // macOS is already app-drawn in both modes (hidden titlebar + native lights).
+  if (IS_MAC || !appDrawn || windowChromeMode !== 'app-drawn') {
+    return {
+      ...base,
+      titleBarStyle: 'hidden',
+      titleBarOverlay: getTitleBarOverlayOptions()
+    }
+  }
+
+  return { ...base, frame: false }
 }
 
 // Push refreshed overlay options to a live window after a theme/appearance
@@ -5185,10 +5248,12 @@ function getNativeOverlayWidth() {
 function getWindowState(win = mainWindow) {
   return {
     isFullscreen: Boolean(win?.isFullScreen?.()),
+    isMaximized: Boolean(win?.isMaximized?.()),
     isMinimized: Boolean(win?.isMinimized?.()),
     isVisible: Boolean(win?.isVisible?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
-    windowButtonPosition: getWindowButtonPosition()
+    windowButtonPosition: getWindowButtonPosition(),
+    windowChromeMode
   }
 }
 
@@ -8756,11 +8821,10 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
     title: 'Hermes',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    vibrancy: IS_MAC ? 'sidebar' : undefined,
-    opacity: windowOpacity(),
+    // Session windows keep the native overlay chrome even in app-drawn mode:
+    // their slim shell trims the titlebar controls, so there is no
+    // WindowControls cluster to fall back on.
+    ...computeWindowChromeOptions({ appDrawn: false }),
     icon,
     // Don't show until the renderer's first themed paint is ready. macOS
     // `vibrancy` ignores `backgroundColor` and paints a translucent OS
@@ -8769,7 +8833,6 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     // covers it. ready-to-show fires after the boot-time paint in
     // themes/context.tsx, so the window appears already themed.
     show: false,
-    backgroundColor: getWindowBackgroundColor(),
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -8842,14 +8905,9 @@ function createInstanceWindow() {
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
     title: 'Hermes',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    vibrancy: IS_MAC ? 'sidebar' : undefined,
-    opacity: windowOpacity(),
+    ...computeWindowChromeOptions(),
     icon,
     show: false,
-    backgroundColor: getWindowBackgroundColor(),
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -9253,17 +9311,14 @@ function createWindow() {
     // inside the same band. On Windows/Linux, titleBarOverlay tells Electron
     // to paint native min/max/close in the top-right of the renderer; on
     // macOS it just reserves a content inset alongside the traffic lights.
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    vibrancy: IS_MAC ? 'sidebar' : undefined,
-    opacity: windowOpacity(),
+    // In 'app-drawn' chrome mode the OS chrome is dropped entirely and the
+    // renderer paints min/max/close (see computeWindowChromeOptions).
+    ...computeWindowChromeOptions(),
     icon,
     // Hidden until the first themed paint so macOS `vibrancy` (which ignores
     // `backgroundColor` and follows the OS appearance) can't flash a light
     // material before the renderer paints the app theme. See createSessionWindow.
     show: false,
-    backgroundColor: getWindowBackgroundColor(),
     // Shared with the secondary session windows (chatWindowWebPreferences);
     // stream-aware throttling is applied per-window via streamThrottle so a
     // live answer keeps painting while the window is blurred or minimized,
@@ -10659,6 +10714,45 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
   for (const win of BrowserWindow.getAllWindows()) {
     applyWindowTranslucency(win)
   }
+})
+
+// App-drawn window chrome: the renderer's min/max/close buttons (only
+// rendered in 'app-drawn' mode — see WindowControls). The sender's own window
+// is the target, so secondary/instance windows control themselves.
+ipcMain.on('hermes:window-control:minimize', event => {
+  BrowserWindow.fromWebContents(event.sender)?.minimize()
+})
+
+ipcMain.on('hermes:window-control:toggle-maximize', event => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+
+  if (!win) {
+    return
+  }
+
+  if (win.isMaximized()) {
+    win.unmaximize()
+  } else {
+    win.maximize()
+  }
+})
+
+ipcMain.on('hermes:window-control:close', event => {
+  BrowserWindow.fromWebContents(event.sender)?.close()
+})
+
+// Persist the window-chrome mode. `frame` can't change on a live window, so
+// the new mode applies to windows created after the next launch; the renderer
+// switches its own controls immediately. See store/window-chrome.
+ipcMain.on('hermes:window-chrome', (_event, payload) => {
+  const mode = payload && payload.mode === 'app-drawn' ? 'app-drawn' : 'overlay'
+
+  if (mode === windowChromeMode) {
+    return
+  }
+
+  windowChromeMode = mode
+  writeWindowChromeMode(mode)
 })
 
 // Keep-awake: hold the machine awake for long/overnight runs. Main owns the one

@@ -111,6 +111,7 @@ import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
 import { startWorkspaceSession } from '../session/workspace-session-target'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
+import { useAppDrawnChrome, WINDOW_CONTROLS_WIDTH } from '../shell/window-controls'
 import { titlebarControlsPosition } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
 import { UpdatesOverlay } from '../updates-overlay'
@@ -977,9 +978,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const controlsTranslateY = 2
   // Windows/WSLg reserve native min/max/close on the right (AppShell parity:
   // prefer the live WCO measurement, fall back to the static reservation).
+  // In app-drawn mode the renderer's own window controls occupy that slot, so
+  // the system cluster reserves their width instead.
   const measuredOverlayWidth = useWindowControlsOverlayWidth()
   const nativeOverlayWidth = measuredOverlayWidth ?? connection?.nativeOverlayWidth ?? 0
-  const titlebarToolsRight = nativeOverlayWidth > 0 ? `${nativeOverlayWidth}px` : '0.75rem'
+  const appDrawn = useAppDrawnChrome()
+  const titlebarToolsRight = appDrawn ? WINDOW_CONTROLS_WIDTH : nativeOverlayWidth > 0 ? `${nativeOverlayWidth}px` : '0.75rem'
   // Pane-registered tools (preview's monitor/devtools cluster) anchor flush
   // against the static system cluster — in the tree layout the titlebar band
   // sits ABOVE the grid, so AppShell's pane-width anchoring doesn't apply.

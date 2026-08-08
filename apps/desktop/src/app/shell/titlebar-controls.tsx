@@ -22,6 +22,7 @@ import {
 import { appViewForPath, isOverlayView, SETTINGS_ROUTE } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
+import { WindowControls } from './window-controls'
 
 export interface TitlebarTool {
   id: string
@@ -261,6 +262,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         ))}
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
       </div>
+
+      {/* App-drawn min/max/close — renders in place of the native WCO when the
+          window was created with frame: false. Hidden alongside the other
+          clusters while an overlay view owns the window. */}
+      <WindowControls />
     </>
   )
 }

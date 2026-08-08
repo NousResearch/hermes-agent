@@ -443,6 +443,8 @@ export const zh: Translations = {
       terminalFontReset: '使用默认字体',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
+      windowChromeTitle: '应用绘制窗口边框',
+      windowChromeDesc: '由应用绘制最小化/最大化/关闭按钮，而非系统。自定义窗口边框皮肤需要此选项；同时修复 WSLg 下窗口按钮缺失的问题。重启后生效。',
       backdropTitle: '聊天背景',
       backdropDesc: '对话后方那张淡淡的雕像图片。',
       reactionsTitle: '消息回应',
@@ -2588,6 +2590,12 @@ export const zh: Translations = {
 
   shell: {
     windowControls: '窗口控件',
+    windowButtons: {
+      minimize: '最小化',
+      maximize: '最大化',
+      restore: '还原',
+      close: '关闭'
+    },
     paneControls: '面板控件',
     appControls: '应用控件',
     modelMenu: {

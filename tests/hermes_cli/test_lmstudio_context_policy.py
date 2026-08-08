@@ -66,6 +66,29 @@ def test_missing_echo_refreshes_loaded_state(monkeypatch):
     assert result == 88_000
 
 
+def test_load_without_explicit_context_reads_runtime_from_loaded_instance(monkeypatch):
+    """When loaded without explicit context, read runtime from now-loaded instance.
+    
+    Regression test: LM Studio's load response omits `load_config` when no 
+    explicit context_length is provided, so we must re-fetch the models list
+    to discover the actual runtime context that was applied.
+    """
+    catalogs = iter([
+        _catalog(),  # Before load (no loaded instance)
+        _catalog(loaded_context=132_096),  # After load with LM Studio's default
+    ])
+    monkeypatch.setattr(
+        models, "_lmstudio_fetch_raw_models", lambda **_kwargs: next(catalogs)
+    )
+    _capture_load(monkeypatch, {"status": "loaded"})
+
+    result = models.ensure_lmstudio_model_loaded(
+        MODEL, BASE_URL, api_key="", target_context_length=None  # No explicit context
+    )
+
+    assert result == 132_096
+
+
 def test_explicit_override_above_known_maximum_rejects_even_when_loaded(monkeypatch):
     monkeypatch.setattr(
         models,

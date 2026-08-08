@@ -3319,9 +3319,10 @@ def _inherit_notify_subs(
     conn.execute(
         f"""
         INSERT OR IGNORE INTO kanban_notify_subs
-            (task_id, platform, chat_id, thread_id, user_id,
-             notifier_profile, created_at, last_event_id)
-        SELECT ?, platform, chat_id, thread_id, user_id, notifier_profile, ?, ?
+            (task_id, platform, chat_id, chat_type, thread_id, user_id,
+             notifier_profile, delivery_metadata, created_at, last_event_id)
+        SELECT ?, platform, chat_id, chat_type, thread_id, user_id,
+               notifier_profile, delivery_metadata, ?, ?
           FROM kanban_notify_subs
          WHERE task_id IN ({placeholders})
         """,

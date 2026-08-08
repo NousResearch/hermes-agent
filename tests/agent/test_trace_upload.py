@@ -118,9 +118,29 @@ def test_converter_keeps_secrets_when_redact_disabled():
 # ---------------------------------------------------------------------------
 
 
+def test_load_session_messages_closes_session_db(monkeypatch):
+    fake_db = MagicMock()
+    fake_db.resolve_session_id.return_value = "resolved"
+    fake_db.get_session.return_value = {"id": "resolved"}
+    fake_db.get_messages_as_conversation.return_value = _sample_messages()
+    monkeypatch.setattr("hermes_state.SessionDB", MagicMock(return_value=fake_db))
+
+    messages, meta = trace_upload.load_session_messages("prefix")
+
+    assert messages == _sample_messages()
+    assert meta == {"id": "resolved"}
+    fake_db.close.assert_called_once_with()
 
 
+def test_load_session_messages_closes_session_db_after_read_failure(monkeypatch):
+    fake_db = MagicMock()
+    fake_db.resolve_session_id.side_effect = RuntimeError("read failed")
+    monkeypatch.setattr("hermes_state.SessionDB", MagicMock(return_value=fake_db))
 
+    with pytest.raises(RuntimeError, match="read failed"):
+        trace_upload.load_session_messages("prefix")
+
+    fake_db.close.assert_called_once_with()
 
 
 def test_upload_happy_path_mocked(monkeypatch):
@@ -159,9 +179,6 @@ def test_upload_happy_path_mocked(monkeypatch):
     first = json.loads(body.strip().split("\n")[0])
     assert first["type"] in ("user", "assistant")
     assert first["sessionId"] == "20260531_abc"
-
-
-
 
 
 

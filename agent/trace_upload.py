@@ -336,10 +336,13 @@ def load_session_messages(
     """
     from hermes_state import SessionDB
     db = SessionDB(db_path=db_path) if db_path else SessionDB()
-    resolved = db.resolve_session_id(session_id) or session_id
-    meta = db.get_session(resolved) or {}
-    messages = db.get_messages_as_conversation(resolved)
-    return messages, meta
+    try:
+        resolved = db.resolve_session_id(session_id) or session_id
+        meta = db.get_session(resolved) or {}
+        messages = db.get_messages_as_conversation(resolved)
+        return messages, meta
+    finally:
+        db.close()
 
 
 def upload_session_trace(

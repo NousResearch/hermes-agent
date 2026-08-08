@@ -201,7 +201,7 @@ class TestAudit:
         security.audit("inbound", "peer-y", "task-1", "hello world")
         audit_file = tmp_path / "a2a_audit.jsonl"
         assert audit_file.exists()
-        rec = json.loads(audit_file.read_text().strip().splitlines()[-1])
+        rec = json.loads(audit_file.read_text(encoding="utf-8").strip().splitlines()[-1])
         assert rec["direction"] == "inbound"
         assert rec["peer"] == "peer-y"
         assert rec["task_id"] == "task-1"
@@ -1569,6 +1569,49 @@ class TestV1SpecRegressionFixes:
         assert "bad" not in adapter._agents
         assert "one" in adapter._agents
         assert "two" not in adapter._agents
+
+    @pytest.mark.parametrize(
+        ("helper_name", "helper_args"),
+        [
+            ("_lookup_forward_session", ("dev", "session-title")),
+            ("_latest_a2a_session", ("dev", 0.0)),
+            ("_title_forward_session", ("dev", "session-id", "session-title")),
+        ],
+    )
+    def test_profile_session_helpers_close_connection_on_query_error(
+        self,
+        helper_name,
+        helper_args,
+        monkeypatch,
+        tmp_path,
+    ):
+        from plugins.platforms.a2a import adapter as adapter_module
+        from gateway.config import PlatformConfig
+
+        class FailingConnection:
+            closed = False
+
+            def execute(self, *_args, **_kwargs):
+                raise RuntimeError("query failed")
+
+            def close(self):
+                self.closed = True
+
+        db_path = tmp_path / "state.db"
+        db_path.touch()
+        connection = FailingConnection()
+        monkeypatch.setattr(
+            adapter_module.sqlite3,
+            "connect",
+            lambda *_args, **_kwargs: connection,
+        )
+
+        adapter = adapter_module.A2AAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_profile_state_db", lambda _profile: str(db_path))
+
+        getattr(adapter, helper_name)(*helper_args)
+
+        assert connection.closed is True
 
     def test_forward_to_profile_first_contact_creates_then_resumes_fake_hermes(self, monkeypatch, tmp_path):
         from plugins.platforms.a2a.adapter import A2AAdapter

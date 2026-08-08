@@ -90,15 +90,23 @@ def cmd_sessions(args, sessions_parser=None):
             if report.get("backup_path"):
                 print(f"  backup: {report['backup_path']}")
             print(f"  strategy: {report.get('strategy')}")
+            db = None
             try:
                 from hermes_state import SessionDB
 
-                n = SessionDB()._conn.execute(
+                db = SessionDB()
+                n = db._conn.execute(
                     "SELECT COUNT(*) FROM sessions"
                 ).fetchone()[0]
                 print(f"✓ Repaired — {n} sessions recovered.")
             except Exception:
                 print("✓ Repaired.")
+            finally:
+                if db is not None:
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
         else:
             print(f"✗ Repair failed: {report.get('error')}")
             if report.get("backup_path"):

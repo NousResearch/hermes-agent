@@ -43,6 +43,7 @@ import urllib.request
 from collections import deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 
@@ -807,13 +808,12 @@ class A2AAdapter(BasePlatformAdapter):
         if not db or not os.path.exists(db):
             return ""
         try:
-            con = sqlite3.connect(db, timeout=5)
-            row = con.execute(
-                "SELECT id FROM sessions WHERE title = ? ORDER BY started_at DESC LIMIT 1",
-                (title,),
-            ).fetchone()
-            con.close()
-            return str(row[0]) if row else ""
+            with closing(sqlite3.connect(db, timeout=5)) as con:
+                row = con.execute(
+                    "SELECT id FROM sessions WHERE title = ? ORDER BY started_at DESC LIMIT 1",
+                    (title,),
+                ).fetchone()
+                return str(row[0]) if row else ""
         except Exception:
             logger.debug("A2A: could not lookup forwarded session", exc_info=True)
             return ""
@@ -823,13 +823,12 @@ class A2AAdapter(BasePlatformAdapter):
         if not db or not os.path.exists(db):
             return ""
         try:
-            con = sqlite3.connect(db, timeout=5)
-            row = con.execute(
-                "SELECT id FROM sessions WHERE source = 'a2a' AND started_at >= ? ORDER BY started_at DESC LIMIT 1",
-                (started_after - 2.0,),
-            ).fetchone()
-            con.close()
-            return str(row[0]) if row else ""
+            with closing(sqlite3.connect(db, timeout=5)) as con:
+                row = con.execute(
+                    "SELECT id FROM sessions WHERE source = 'a2a' AND started_at >= ? ORDER BY started_at DESC LIMIT 1",
+                    (started_after - 2.0,),
+                ).fetchone()
+                return str(row[0]) if row else ""
         except Exception:
             logger.debug("A2A: could not find latest forwarded session", exc_info=True)
             return ""
@@ -839,10 +838,9 @@ class A2AAdapter(BasePlatformAdapter):
         if not db or not os.path.exists(db) or not session_id:
             return
         try:
-            con = sqlite3.connect(db, timeout=5)
-            con.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, session_id))
-            con.commit()
-            con.close()
+            with closing(sqlite3.connect(db, timeout=5)) as con:
+                con.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, session_id))
+                con.commit()
         except Exception:
             logger.debug("A2A: could not title forwarded session", exc_info=True)
 

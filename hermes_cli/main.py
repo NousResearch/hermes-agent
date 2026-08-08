@@ -1497,6 +1497,7 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
       from an exit summary printed before the bug fix, or from notes) get
       resumed at the live tip instead of a stale parent with no messages.
     """
+    db = None
     try:
         from hermes_state import SessionDB
 
@@ -1519,11 +1520,34 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
             except Exception:
                 pass
 
-        db.close()
         return resolved_id
     except Exception:
         pass
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
     return None
+
+
+def _resume_session_cwd(session_id: str) -> str:
+    """Return a resumed session's cwd without abandoning the owned database."""
+    db = None
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        return ((db.get_session(session_id) or {}).get("cwd") or "").strip()
+    except Exception:
+        return ""
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:
@@ -2613,9 +2637,7 @@ def cmd_chat(args):
         and not getattr(args, "worktree", False)
     ):
         try:
-            from hermes_state import SessionDB
-
-            _saved_cwd = ((SessionDB().get_session(args.resume) or {}).get("cwd") or "").strip()
+            _saved_cwd = _resume_session_cwd(args.resume)
             if _saved_cwd and not os.path.isdir(_saved_cwd):
                 print(f"⚠ session's recorded dir is gone ({_saved_cwd}); staying in {os.getcwd()}")
             elif _saved_cwd and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):
@@ -11133,6 +11155,7 @@ def cmd_tools(args):
 
 
 def cmd_insights(args):
+    db = None
     try:
         from hermes_state import SessionDB
         from agent.insights import InsightsEngine
@@ -11141,9 +11164,14 @@ def cmd_insights(args):
         engine = InsightsEngine(db)
         report = engine.generate(days=args.days, source=args.source)
         print(engine.format_terminal(report))
-        db.close()
     except Exception as e:
         print(f"Error generating insights: {e}")
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def cmd_monitoring(args):

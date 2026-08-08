@@ -589,6 +589,77 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_slash_exec_plugin_overrides_live_direct_redirect(server):
+    """A plugin command with the same name as a live-direct redirect (e.g.
+    /models, /rename) should dispatch to the plugin, not the redirect text.
+
+    Regression for the silent-shadow bug: _live_slash_command_output() has
+    hardcoded redirects that short-circuit with an early return. If the plugin
+    check sits after that return, the redirect silently wins and the plugin
+    handler is never reached.
+    """
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    # /models is one of the _LIVE_SESSION_DIRECT_COMMANDS redirects
+    # ("Use /model to view or switch the current model"). Patch the plugin
+    # handler so a plugin has registered /models.
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: (lambda arg: f"plugin-models:{arg}") if name == "models" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-redirect-override",
+            "method": "slash.exec",
+            "params": {"command": "models", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "plugin-models:"}
+    assert worker.calls == []
+
+
+def test_slash_exec_no_plugin_falls_back_to_live_direct_redirect(server):
+    """When no plugin registers a colliding name, the redirect still works."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    # No plugin registers /models → the redirect should fire
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: None,
+    ):
+        resp = server.handle_request({
+            "id": "r-no-plugin-redirect",
+            "method": "slash.exec",
+            "params": {"command": "models", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "Use /model to view or switch the current model; desktop users can also open the model picker."}
+    assert worker.calls == []
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"

@@ -1094,6 +1094,38 @@ def _(rid, params: dict) -> dict:
     _cmd_base = (_cmd_parts[0] if _cmd_parts else "").lower()
     _cmd_arg = _cmd_parts[1] if len(_cmd_parts) > 1 else ""
 
+    # Plugin commands are checked here, before _live_slash_command_output()
+    # below. That function has hardcoded redirects for a few convenience
+    # aliases (e.g. /models → "Use /model", /rename → "Use /title") that
+    # short-circuit with an early return. If a plugin registers a command
+    # with a name that collides with one of these redirects, placing the
+    # plugin check after them means the redirect silently wins and the
+    # plugin handler is never reached — no error, just the redirect text.
+    # Checking plugins first lets a plugin override a redirect when the
+    # user has explicitly installed one for that name. The CLI already
+    # does this: its process_command() checks plugins before prefix
+    # matching, so this keeps the TUI gateway consistent.
+    plugin_handler = None
+    resolve_plugin_command_result = None
+    if _cmd_base:
+        try:
+            from hermes_cli.plugins import (
+                get_plugin_command_handler,
+                resolve_plugin_command_result,
+            )
+
+            plugin_handler = get_plugin_command_handler(_cmd_base)
+        except Exception:
+            plugin_handler = None
+            resolve_plugin_command_result = None
+
+    if plugin_handler and resolve_plugin_command_result:
+        try:
+            result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
+            return _ok(rid, {"output": str(result or "(no output)")})
+        except Exception as e:
+            return _ok(rid, {"output": f"Plugin command error: {e}"})
+
     live_output = _live_slash_command_output(
         params.get("session_id", ""), session, _cmd_base, _cmd_arg
     )
@@ -1153,27 +1185,6 @@ def _(rid, params: dict) -> dict:
             )
     except Exception:
         pass
-
-    plugin_handler = None
-    resolve_plugin_command_result = None
-    if _cmd_base:
-        try:
-            from hermes_cli.plugins import (
-                get_plugin_command_handler,
-                resolve_plugin_command_result,
-            )
-
-            plugin_handler = get_plugin_command_handler(_cmd_base)
-        except Exception:
-            plugin_handler = None
-            resolve_plugin_command_result = None
-
-    if plugin_handler and resolve_plugin_command_result:
-        try:
-            result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
-            return _ok(rid, {"output": str(result or "(no output)")})
-        except Exception as e:
-            return _ok(rid, {"output": f"Plugin command error: {e}"})
 
     worker = session.get("slash_worker")
     if not worker:

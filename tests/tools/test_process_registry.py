@@ -1649,6 +1649,10 @@ class TestSystemdCgroupIsolation:
     ENTIRE gateway cgroup, taking down the messaging control plane.
     """
 
+    @pytest.fixture(autouse=True)
+    def _mark_gateway_process(self, monkeypatch):
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+
     def _fake_popen_capture(self):
         """Return (fake_popen, captured) where captured["argv"] gets the
         argv passed to subprocess.Popen."""
@@ -1779,6 +1783,63 @@ class TestSystemdCgroupIsolation:
         argv = captured["argv"]
         assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
         assert captured["start_new_session"] is True
+
+    def test_inherited_systemd_marker_does_not_scope_interactive_cli(
+        self, registry, monkeypatch
+    ):
+        """A CLI inside a supervised terminal must keep workers off its tty."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setenv("INVOCATION_ID", "herdr-service-inherited-marker")
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert captured["argv"] == [
+            "/bin/bash",
+            "-lic",
+            "set +m; echo hello",
+        ]
+        assert captured["start_new_session"] is True
+
+    def test_inherited_systemd_marker_does_not_scope_interactive_cli_pty(
+        self, registry, monkeypatch
+    ):
+        """The same gateway-identity gate applies to PTY-backed workers."""
+        from ptyprocess import PtyProcess
+
+        fake_pty = MagicMock()
+        fake_pty.pid = 4321
+
+        monkeypatch.setenv("INVOCATION_ID", "herdr-service-inherited-marker")
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn, \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
+
+        assert pty_spawn.call_args.args[0] == [
+            "/bin/bash",
+            "-lic",
+            "set +m; codex",
+        ]
+        assert session.systemd_unit == ""
 
     def test_systemd_post_spawn_failure_never_kills_gateway_process_group(
         self, registry, monkeypatch

@@ -245,6 +245,27 @@ def _systemd_run_user_scope_available() -> bool:
         return available
 
 
+def _is_supervised_gateway_process() -> bool:
+    """Return whether this process is in a supervised Hermes gateway runtime.
+
+    Supervisor markers such as systemd's ``INVOCATION_ID`` are inherited by
+    every descendant. An interactive CLI launched from a supervised terminal
+    manager therefore cannot use that marker alone: its login-shell workers
+    would stay in the CLI's session and could take ownership of the controlling
+    tty. ``gateway.run`` adds ``_HERMES_GATEWAY`` to the gateway process tree;
+    unrelated supervised terminal managers do not.
+    """
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        return False
+
+    try:
+        from gateway.restart import is_gateway_supervisor_process
+
+        return is_gateway_supervisor_process()
+    except Exception:
+        return False
+
+
 def _build_systemd_scope_argv(
     shell_argv: List[str],
     unit_suffix: str,
@@ -991,18 +1012,12 @@ class ProcessRegistry:
                 # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
                 # Wrap the PTY command in a systemd scope so interactive
                 # executors get their own cgroup, same as pipe mode.
-                pty_use_systemd_scope = False
-                try:
-                    from gateway.restart import is_gateway_supervisor_process
-
-                    pty_under_supervisor = is_gateway_supervisor_process()
-                    pty_use_systemd_scope = (
-                        not _IS_WINDOWS
-                        and pty_under_supervisor
-                        and _systemd_run_user_scope_available()
-                    )
-                except Exception:
-                    pty_use_systemd_scope = False
+                pty_under_supervisor = _is_supervised_gateway_process()
+                pty_use_systemd_scope = (
+                    not _IS_WINDOWS
+                    and pty_under_supervisor
+                    and _systemd_run_user_scope_available()
+                )
 
                 if pty_use_systemd_scope:
                     pty_argv = _build_systemd_scope_argv(
@@ -1081,18 +1096,12 @@ class ProcessRegistry:
         # for both pipe mode and the PTY path above.
         shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
         use_systemd_scope = False
-        under_supervisor = False
-        try:
-            from gateway.restart import is_gateway_supervisor_process
-
-            under_supervisor = is_gateway_supervisor_process()
-            use_systemd_scope = (
-                not _IS_WINDOWS
-                and under_supervisor
-                and _systemd_run_user_scope_available()
-            )
-        except Exception:
-            use_systemd_scope = False
+        under_supervisor = _is_supervised_gateway_process()
+        use_systemd_scope = (
+            not _IS_WINDOWS
+            and under_supervisor
+            and _systemd_run_user_scope_available()
+        )
 
         if use_systemd_scope:
             unit_suffix = (

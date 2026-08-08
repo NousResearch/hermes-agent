@@ -25,25 +25,46 @@ import pytest
 
 # Load ~/.hermes/.env so live runs pick up OPENROUTER_API_KEY without
 # needing the runner to shell-source it first. Silent if the file is absent.
-def _load_user_env() -> None:
+#
+# Only the key this module needs is imported, and only when live runs are
+# actually enabled. The earlier version copied EVERY key from the file into
+# os.environ at import time, which broke unrelated tests: pytest imports every
+# collected module during COLLECTION, before any fixture runs, so the writes
+# landed ahead of the hermetic `_hermetic_environment` autouse fixture and were
+# never scrubbed. The file here carries 23 keys, ~12 of which (SEARXNG_URL,
+# TELEGRAM_*, WHATSAPP_*, HERMES_SPOTIFY_*) do not match the conftest
+# credential-suffix filter. With SEARXNG_URL leaked, `_get_backend()` resolved
+# to "searxng" and two web-backend tests failed on `assert 'searxng' ==
+# 'firecrawl'` — in any run that merely COLLECTED this file, with zero tests
+# from it executing, which is why an execution-order bisect found nothing.
+_LIVE_ENV_KEYS = ("OPENROUTER_API_KEY",)
+
+
+def _load_user_env(keys: tuple[str, ...] = _LIVE_ENV_KEYS) -> None:
     env_file = Path.home() / ".hermes" / ".env"
     if not env_file.exists():
         return
+    wanted = set(keys)
     for raw in env_file.read_text().splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
         k = k.strip()
+        if k not in wanted:
+            continue
         v = v.strip().strip('"').strip("'")
         # Don't clobber an already-set env var — lets the caller override.
         os.environ.setdefault(k, v)
 
 
-_load_user_env()
-
-
 LIVE = os.environ.get("HERMES_LIVE_TESTS") == "1"
+
+# Gate the env read on the live flag: a skipped module must not touch shared
+# process state just by being imported.
+if LIVE:
+    _load_user_env()
+
 OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
 pytestmark = [

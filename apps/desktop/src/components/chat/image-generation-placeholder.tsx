@@ -248,6 +248,13 @@ const drawAsciiDiffusion = (
   ctx.fillRect(0, 0, width, height)
 }
 
+// Cap concurrent animated instances — each rAF loop redraws the full canvas
+// every frame, so N instances multiply the CPU/GPU cost linearly (#79077).
+// Beyond the cap the canvas still mounts (so layout/layout is unchanged) but
+// the animation loop is skipped, giving a zero-cost static placeholder.
+const MAX_ANIMATED_INSTANCES = 2
+let activeAnimatedCount = 0
+
 export const DiffusionCanvas: FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sizeRef = useRef({ width: 0, height: 0 })
@@ -299,15 +306,52 @@ export const DiffusionCanvas: FC = () => {
 
     sizeRef.current = fitCanvas(canvas, ctx)
 
-    let frame = requestAnimationFrame(function draw(now) {
+    // Over the concurrent cap — draw one static frame, skip the rAF loop so
+    // extra instances are zero-cost (#79077).
+    if (activeAnimatedCount >= MAX_ANIMATED_INSTANCES) {
       const { width, height } = sizeRef.current
-      ctx.clearRect(0, 0, width, height)
-      drawAsciiDiffusion(ctx, themeRef.current, width, height, now / 1000)
+      drawAsciiDiffusion(ctx, themeRef.current, width, height, 0)
+      return
+    }
+
+    activeAnimatedCount++
+
+    let visible = !document.hidden
+    let frame = 0
+    let lastDraw = 0
+    const FRAME_INTERVAL = 1000 / 15 // ~15fps target
+
+    // Arrow function (not hoisted) so TypeScript keeps the narrowed non-null
+    // `ctx` from the guard above inside the loop body.
+    const draw = (now: number) => {
+      if (!visible) {
+        return
+      }
+      if (now - lastDraw >= FRAME_INTERVAL) {
+        const { width, height } = sizeRef.current
+        ctx.clearRect(0, 0, width, height)
+        drawAsciiDiffusion(ctx, themeRef.current, width, height, now / 1000)
+        lastDraw = now
+      }
       frame = requestAnimationFrame(draw)
-    })
+    }
+
+    const onVisibility = () => {
+      const nowVisible = !document.hidden
+      if (nowVisible && !visible) {
+        lastDraw = 0
+        frame = requestAnimationFrame(draw)
+      }
+      visible = nowVisible
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+
+    frame = requestAnimationFrame(draw)
 
     return () => {
       cancelAnimationFrame(frame)
+      document.removeEventListener('visibilitychange', onVisibility)
+      activeAnimatedCount--
     }
   }, [])
 

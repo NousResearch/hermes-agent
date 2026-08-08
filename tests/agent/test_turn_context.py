@@ -20,8 +20,14 @@ from hermes_state import SessionDB
 
 
 class _FakeTodoStore:
+    def __init__(self):
+        self.items = []
+
     def has_items(self):
-        return True
+        return bool(self.items)
+
+    def read(self):
+        return [item.copy() for item in self.items]
 
     def _hydrate(self, *_a, **_k):
         pass
@@ -284,6 +290,31 @@ def test_applies_agent_side_effects():
     # task/turn ids assigned on the agent.
     assert agent._current_task_id
     assert agent._current_turn_id
+
+
+def test_resume_hydration_reaches_pre_llm_hook_before_agent_work():
+    agent = _FakeAgent()
+    hydrated = [
+        {"id": "resume", "content": "continue prior work", "status": "in_progress"}
+    ]
+
+    def _hydrate(_history):
+        agent._todo_store.items = [item.copy() for item in hydrated]
+
+    agent._hydrate_todo_store = _hydrate
+    observed = {}
+
+    def _hook(name, **kwargs):
+        if name == "pre_llm_call":
+            observed.update(kwargs)
+        return []
+
+    with patch("hermes_cli.lifecycle.invoke_hook", side_effect=_hook):
+        _build(agent, conversation_history=[{"role": "user", "content": "prior"}])
+
+    assert observed["session_id"] == "sess-1"
+    assert observed["todos"] == hydrated
+    assert observed["todos"] is not agent._todo_store.items
 
 
 

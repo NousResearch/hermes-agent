@@ -8149,6 +8149,11 @@ def main(
             "Tell me about the latest developments in Python 3.13 and what new features "
             "developers should know about. Please search for current information and try it out."
         )
+    elif isinstance(query, (list, tuple)):
+        # fire.Fire splits comma-separated values into tuples (e.g.
+        # --query="hello,what model are you" → ("hello", "what model are you")).
+        # Join them back into a single string so the API receives a valid message.
+        user_query = ", ".join(str(p) for p in query)
     else:
         user_query = query
     

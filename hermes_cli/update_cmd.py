@@ -3075,6 +3075,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
 
     try:
         from gateway.status import terminate_pid
+        from hermes_cli import gateway_windows
         from hermes_cli.gateway import (
             _capture_gateway_argv,
             _get_restart_drain_timeout,
@@ -3104,12 +3105,15 @@ def _pause_windows_gateways_for_update() -> dict | None:
             from hermes_cli import gateway_windows
 
             if gateway_windows.is_installed():
+                cold_scm = gateway_windows.is_service_registered()
                 return {
                     "resume_needed": True,
                     "profiles": {},
                     "unmapped_pids": [],
                     "unmapped": [],
+                    "scm_managed_profiles": {},
                     "cold_start_if_installed": True,
+                    "cold_start_via_scm": cold_scm,
                 }
         except Exception as exc:
             logger.debug(
@@ -3127,28 +3131,46 @@ def _pause_windows_gateways_for_update() -> dict | None:
         logger.debug("Could not map Windows gateway PIDs to profiles: %s", exc)
 
     profiles: dict[str, int] = {}
+    scm_managed_profiles: dict[str, str] = {}  # profile -> hermes_home
     mapped_pids = []
     for pid in running_pids:
         proc = profile_processes.get(pid)
         if proc is None:
             continue
-        profiles[str(proc.profile)] = int(pid)
+        profile_name = str(proc.profile)
+        profile_home = str(Path(proc.path).resolve())
+        profiles[profile_name] = int(pid)
         mapped_pids.append(int(pid))
-        _write_update_planned_stop_marker(Path(proc.path), int(pid))
+        try:
+            if gateway_windows.is_service_registered_for_hermes_home(profile_home):
+                scm_managed_profiles[profile_name] = profile_home
+                continue
+        except Exception as exc:
+            logger.debug(
+                "Service-registered probe for profile %s failed: %s",
+                profile_name,
+                exc,
+            )
+        _m()._write_update_planned_stop_marker(Path(proc.path), int(pid))
 
-    # Resolve each mapped worker's venv-side launcher BEFORE draining: the
-    # drain stops tracking a PID exactly when it dies, so a gracefully
-    # drained worker is gone by the time the wait returns — and a dead pid's
-    # parent cannot be recovered (psutil raises NoSuchProcess). The snapshot
-    # is stopped after the drain alongside the survivors.
-    #
-    # Why launchers matter: the drain targets the PID that wrote the PID
-    # file (the uv-side worker). On Windows that worker's parent is usually
-    # the venv-side ``python.exe`` launcher, which keeps venv ``.pyd`` files
-    # mapped and is what ``_detect_venv_python_processes()`` reports
-    # downstream. Left alive, it trips the venv-holder guard and aborts the
-    # update even though the gateway itself is stopped.
-    launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
+    scm_stopped: list[str] = []
+    scm_failed: list[str] = []
+    for profile_name in sorted(scm_managed_profiles):
+        home = scm_managed_profiles[profile_name]
+        try:
+            if gateway_windows.stop_service_for_hermes_home(home):
+                scm_stopped.append(profile_name)
+            else:
+                scm_failed.append(profile_name)
+        except Exception as exc:
+            logger.debug("SCM stop for profile %s failed: %s", profile_name, exc)
+            scm_failed.append(profile_name)
+
+    manual_profile_pids = [
+        pid for profile_name, pid in profiles.items()
+        if profile_name not in scm_managed_profiles
+    ]
+    launcher_pids = _m()._venv_launcher_ancestors(manual_profile_pids)
 
     print("→ Stopping Windows gateway process(es) before updating Hermes...")
     try:
@@ -3156,7 +3178,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     except Exception:
         drain_timeout = 10.0
     survivors = _m()._wait_for_windows_update_gateway_exit(
-        mapped_pids,
+        manual_profile_pids,
         timeout=drain_timeout,
     )
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes]
@@ -3191,6 +3213,16 @@ def _pause_windows_gateways_for_update() -> dict | None:
 
     if profiles:
         print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
+    if scm_stopped:
+        print(
+            f"  ✓ Paused {len(scm_stopped)} SCM-managed gateway profile(s): "
+            f"{', '.join(scm_stopped)}"
+        )
+    if scm_failed:
+        print(
+            f"  ⚠ Failed to SCM-stop {len(scm_failed)} gateway profile(s): "
+            f"{', '.join(scm_failed)}"
+        )
     if force_killed:
         print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
 
@@ -3209,22 +3241,24 @@ def _pause_windows_gateways_for_update() -> dict | None:
         "profiles": profiles,
         "unmapped_pids": unmapped_pids,
         "unmapped": unmapped,
+        "scm_managed_profiles": scm_managed_profiles,
     }
 
-def _cold_start_windows_gateway_after_update() -> None:
-    """Start a fresh detached gateway after update when one is installed but down.
+def _cold_start_windows_gateway_after_update(*, via_scm: bool = False) -> None:
+    """Start a fresh Windows gateway after update when one is installed but down.
 
     Invoked from ``_resume_windows_gateways_after_update`` for the
     ``cold_start_if_installed`` case: no gateway was running when the update
     began, but an autostart entry (Scheduled Task / Startup-folder login item)
-    is installed, signalling the user wants a gateway. Unlike the relaunch
-    paths — which watch an old PID and respawn once it exits — this is a direct
-    fresh spawn via the same hidden-console + breakaway path that
-    ``hermes gateway start`` uses (``gateway_windows._spawn_detached``).
+    is installed, signalling the user wants a gateway.
 
-    Best-effort and idempotent: re-checks that nothing is running first so a
-    concurrent start (e.g. the autostart entry firing) can't produce a
-    duplicate gateway.
+    For non-SCM installs, this falls back to ``gateway_windows._spawn_detached``
+    — the same windowless ``pythonw`` + breakaway path that
+    ``hermes gateway start`` uses. For SCM-managed installs (PR #50200),
+    this issues a ``StartService`` against the registered SCM unit so the
+    service child process is the source of truth, never a parallel detached
+    gateway. Best-effort and idempotent: re-checks that nothing is running
+    first so a concurrent start can't produce a duplicate gateway.
     """
     if not _m()._is_windows():
         return
@@ -3243,6 +3277,19 @@ def _cold_start_windows_gateway_after_update() -> None:
             return
     except Exception as exc:
         logger.debug("Could not re-check gateway liveness before cold-start: %s", exc)
+        return
+
+    if via_scm:
+        try:
+            if gateway_windows.start_service():
+                print()
+                print("  ✓ Starting Windows gateway after update (via SCM StartService)")
+                return
+        except Exception as exc:
+            logger.debug("Could not SCM-start Windows gateway after update: %s", exc)
+        print()
+        print("  ✗ SCM StartService failed — gateway not restarted")
+        print("    Fix the SCM service and run: sc start <service-name>")
         return
 
     try:
@@ -3350,13 +3397,20 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
 
     profiles = token.get("profiles") or {}
     unmapped = token.get("unmapped") or []
+    scm_managed_profiles = token.get("scm_managed_profiles") or {}
     cold_start = bool(token.get("cold_start_if_installed"))
-    if not profiles and not any(u.get("argv") for u in unmapped):
+    cold_start_via_scm = bool(token.get("cold_start_via_scm"))
+    if (
+        not profiles
+        and not scm_managed_profiles
+        and not any(u.get("argv") for u in unmapped)
+    ):
         if cold_start:
-            _m()._cold_start_windows_gateway_after_update()
+            _cold_start_windows_gateway_after_update(via_scm=cold_start_via_scm)
         return
 
     try:
+        from hermes_cli import gateway_windows
         from hermes_cli.gateway import (
             launch_detached_gateway_restart_by_cmdline,
             launch_detached_profile_gateway_restart,
@@ -3366,7 +3420,24 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
         return
 
     relaunched = []
+    scm_started: list[str] = []
+    scm_failed: list[str] = []
+    for profile_name in sorted(scm_managed_profiles):
+        home = scm_managed_profiles[profile_name]
+        try:
+            if gateway_windows.start_service_for_hermes_home(home):
+                scm_started.append(profile_name)
+            else:
+                scm_failed.append(profile_name)
+        except Exception as exc:
+            logger.debug(
+                "SCM start for profile %s failed: %s", profile_name, exc
+            )
+            scm_failed.append(profile_name)
+
     for profile, old_pid in sorted(profiles.items()):
+        if profile in scm_managed_profiles:
+            continue
         try:
             if launch_detached_profile_gateway_restart(str(profile), int(old_pid)):
                 relaunched.append(str(profile))
@@ -3395,11 +3466,22 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
                 exc,
             )
 
-    if relaunched:
+    if scm_started or relaunched or unmapped_relaunched:
         print()
+    if scm_started:
+        print(
+            f"  ✓ Restarting {len(scm_started)} SCM-managed gateway profile(s): "
+            f"{', '.join(scm_started)}"
+        )
+    if scm_failed:
+        print(
+            f"  ⚠ Failed to SCM-restart {len(scm_failed)} gateway profile(s): "
+            f"{', '.join(scm_failed)}"
+        )
+    if relaunched:
         print(f"  ✓ Restarting Windows gateway profile(s): {', '.join(relaunched)}")
     if unmapped_relaunched:
-        if not relaunched:
+        if not scm_started and not relaunched:
             print()
         print(
             f"  ✓ Restarting {unmapped_relaunched} unmapped Windows gateway process(es)"

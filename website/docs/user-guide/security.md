@@ -539,6 +539,14 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
+:::warning `env_passthrough` must be a YAML list
+A JSON-looking quoted scalar (e.g. `env_passthrough: '["MY_CUSTOM_KEY"]'`) is **silently ignored** — Hermes warns and treats the allowlist as empty. Use a real list as shown above.
+:::
+
+**3. Bundled platform terminal passthrough (automatic)**
+
+Bundled platform plugins (e.g. Buzz) may mark their CLI credentials with `terminal_passthrough: true` in `plugin.yaml`. Those exact vars then reach **terminal-spawned subprocesses only** (foreground and background/PTY) — the platform CLI invoked by the agent (e.g. `buzz messages send`) inherits its auth. They remain stripped from `execute_code` and all generic subprocess spawns. See the [Buzz guide](./messaging/buzz) for details.
+
 ### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
 
 Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` under the active profile's `HERMES_HOME`. Skills declare these in frontmatter:

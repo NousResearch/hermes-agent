@@ -453,13 +453,23 @@ def _inject_session_context_env(env: dict) -> None:
             env.pop(var_name, None)
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter Hermes-managed secrets from a subprocess environment."""
+def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None, *, terminal_scope: bool = False) -> dict:
+    """Filter Hermes-managed secrets from a subprocess environment.
+
+    ``terminal_scope`` — when True, the caller is a **terminal** spawn
+    (foreground or background/PTY) and bundled-platform manifest vars marked
+    ``terminal_passthrough: true`` (e.g. the Buzz CLI credentials) are allowed
+    through so platform CLIs invoked by the agent inherit their auth
+    (#76243).  Default False preserves the existing strict behavior for
+    ``execute_code`` and generic subprocess spawns — those must keep
+    consulting :func:`tools.env_passthrough.is_env_passthrough` only.
+    """
     try:
-        from tools.env_passthrough import (
-            is_env_passthrough as _is_passthrough,
-            resolve_passthrough_value as _resolve_passthrough_value,
-        )
+        from tools.env_passthrough import is_env_passthrough as _is_passthrough
+        if terminal_scope:
+            from tools.env_passthrough import (
+                is_terminal_env_passthrough as _is_passthrough,
+            )
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
@@ -1268,10 +1278,11 @@ def _path_env_key(run_env: dict) -> str | None:
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
-        from tools.env_passthrough import (
-            is_env_passthrough as _is_passthrough,
-            resolve_passthrough_value as _resolve_passthrough_value,
-        )
+        # Terminal scope: bundled-platform manifest vars marked
+        # ``terminal_passthrough: true`` (Buzz CLI credentials) pass through
+        # here so platform CLIs invoked by the agent inherit their auth
+        # (#76243). execute_code / generic spawns keep the strict check.
+        from tools.env_passthrough import is_terminal_env_passthrough as _is_passthrough
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731

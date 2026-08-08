@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Iterable
 from hermes_cli.config import cfg_get
 
@@ -45,6 +46,104 @@ def _get_allowed() -> set[str]:
 
 # Cache for the config-based allowlist (loaded once per process).
 _config_passthrough: frozenset[str] | None = None
+
+# Cache for the bundled-platform terminal-only allowlist (loaded once per
+# process).  See _load_bundled_terminal_passthrough().
+_bundled_terminal_passthrough: frozenset[str] | None = None
+
+# Whether the bundled-platform terminal allowlist could be loaded at all.
+# If the bundled plugins dir is missing (partial install), we fail closed and
+# treat the manifest-declared terminal vars as ineligible.
+_bundled_terminal_passthrough_loaded = False
+
+
+def _load_bundled_terminal_passthrough() -> frozenset[str]:
+    """Load terminal-only passthrough vars declared by bundled platform plugins.
+
+    Bundled platform plugins under ``plugins/platforms/*/plugin.yaml`` may
+    mark individual ``requires_env`` / ``optional_env`` entries with
+    ``terminal_passthrough: true``.  Those exact vars are then allowed through
+    the **terminal** env sanitizers (foreground + background/PTY) so a
+    platform CLI invoked by the agent (e.g. ``buzz messages send``) inherits
+    the credentials the platform adapter configured — the Buzz Desktop managed
+    runtime contract (#76243).
+
+    This is deliberately NOT a general passthrough:
+
+    * Only vars explicitly marked in a **bundled** (trusted, shipped in-repo)
+      platform manifest qualify — third-party plugins and skills cannot mark
+      vars here.
+    * The vars only reach terminal-spawned subprocesses; ``execute_code`` and
+      generic subprocess spawns keep stripping them (the terminal-only check
+      is applied by the terminal sanitizers, see ``tools/environments/local.py``
+      ``_make_run_env`` / ``_sanitize_subprocess_env``).
+
+    Fails closed: if the bundled plugins directory can't be resolved or parsed,
+    the allowlist stays empty and existing scrub behavior is unchanged.
+    """
+    global _bundled_terminal_passthrough, _bundled_terminal_passthrough_loaded
+    if _bundled_terminal_passthrough_loaded:
+        return _bundled_terminal_passthrough or frozenset()
+    _bundled_terminal_passthrough_loaded = True
+
+    result: set[str] = set()
+    try:
+        import yaml  # type: ignore
+
+        repo_root = Path(__file__).resolve().parents[1]
+        platforms_dir = repo_root / "plugins" / "platforms"
+        if not platforms_dir.is_dir():
+            _bundled_terminal_passthrough = frozenset()
+            return _bundled_terminal_passthrough
+
+        for child in sorted(platforms_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            manifest_path = child / "plugin.yaml"
+            if not manifest_path.exists():
+                manifest_path = child / "plugin.yml"
+            if not manifest_path.exists():
+                continue
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = yaml.safe_load(f) or {}
+            except Exception:
+                continue
+            entries = list(manifest.get("requires_env") or [])
+            entries.extend(manifest.get("optional_env") or [])
+            for entry in entries:
+                if not isinstance(entry, dict) or not entry.get("name"):
+                    continue
+                if entry.get("terminal_passthrough") is True:
+                    result.add(str(entry["name"]).strip())
+    except Exception as e:
+        logger.debug(
+            "env passthrough: could not load bundled platform terminal "
+            "passthrough vars (failing closed): %s",
+            e,
+        )
+        result = set()
+
+    _bundled_terminal_passthrough = frozenset(result)
+    return _bundled_terminal_passthrough
+
+
+def is_terminal_env_passthrough(var_name: str) -> bool:
+    """Check whether *var_name* may pass through to **terminal** subprocesses.
+
+    Superset of :func:`is_env_passthrough`: in addition to skill-declared and
+    user-configured vars, terminal-only vars explicitly marked by bundled
+    platform plugins (``terminal_passthrough: true`` in ``plugin.yaml``) are
+    eligible.  This function must only be used by the terminal env sanitizers;
+    ``execute_code`` and generic sandbox subprocesses must keep consulting
+    :func:`is_env_passthrough` so manifest-declared credentials never reach
+    them.
+    """
+    if var_name in _get_allowed():
+        return True
+    if var_name in _load_config_passthrough():
+        return True
+    return var_name in _load_bundled_terminal_passthrough()
 
 
 def _is_hermes_provider_credential(name: str) -> bool:
@@ -134,7 +233,19 @@ def _load_config_passthrough() -> frozenset[str]:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
         passthrough = cfg_get(cfg, "terminal", "env_passthrough")
-        if isinstance(passthrough, list):
+        if isinstance(passthrough, str):
+            # A JSON-looking quoted scalar (e.g. '["BUZZ_PRIVATE_KEY"]') is a
+            # common YAML mistake and silently produced an empty allowlist
+            # before — warn loudly instead of failing silently (#76243).
+            logger.warning(
+                "env passthrough: terminal.env_passthrough must be a YAML "
+                "list, got a string %r — ignoring it. Use:\n"
+                "  terminal:\n"
+                "    env_passthrough:\n"
+                "      - VAR_NAME",
+                passthrough,
+            )
+        elif isinstance(passthrough, list):
             for item in passthrough:
                 if not isinstance(item, str) or not item.strip():
                     continue
@@ -156,6 +267,12 @@ def _load_config_passthrough() -> frozenset[str]:
                     )
                     continue
                 result.add(name)
+        elif passthrough is not None:
+            logger.warning(
+                "env passthrough: terminal.env_passthrough must be a YAML "
+                "list of variable names, got %s — ignoring it.",
+                type(passthrough).__name__,
+            )
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
 

@@ -1410,3 +1410,101 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+# ── npm audit min-release-age cooldown annotation (#78893) ──
+
+
+class TestDoctorNpmAuditCooldown:
+    """doctor's npm-audit remediation hint must annotate min-release-age (#78893)."""
+
+    def _run_doctor_with_npm(self, monkeypatch, tmp_path, *, cooldown_stdout="14",
+                             fail_config=False):
+        """Run doctor with mocked npm and return captured stdout."""
+        import json as _json
+        import subprocess as _subprocess
+
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+        (project / "node_modules").mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        home = tmp_path / ".hermes"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        # npm / node found
+        monkeypatch.setattr(doctor_mod, "_safe_which", lambda cmd: "/usr/bin/" + cmd)
+
+        # Stub tool availability
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Stub auth checks
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        def fake_run(cmd, **kwargs):
+            cmd_list = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
+            # npm audit --json [extra...]
+            if "audit" in cmd_list and "--json" in cmd_list:
+                if "--workspaces=false" in cmd_list:
+                    stdout = _json.dumps({
+                        "metadata": {"vulnerabilities": {
+                            "critical": 0, "high": 2, "moderate": 0}}
+                    })
+                else:
+                    stdout = _json.dumps({
+                        "metadata": {"vulnerabilities": {
+                            "critical": 0, "high": 0, "moderate": 0}}
+                    })
+                return _subprocess.CompletedProcess(cmd_list, 0, stdout, "")
+            # npm config get min-release-age
+            if ("config" in cmd_list and "get" in cmd_list
+                    and "min-release-age" in cmd_list):
+                if fail_config:
+                    raise _subprocess.TimeoutExpired(cmd_list, 10)
+                return _subprocess.CompletedProcess(
+                    cmd_list, 0, cooldown_stdout, "")
+            # Everything else: safe no-op
+            return _subprocess.CompletedProcess(cmd_list, 0, "", "")
+
+        monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_cooldown_annotates_audit_fix_hint(self, monkeypatch, tmp_path):
+        """When min-release-age>0, the hint must warn about the cooldown (#78893)."""
+        out = self._run_doctor_with_npm(monkeypatch, tmp_path, cooldown_stdout="14")
+        assert "2 high" in out
+        # The cooldown annotation must appear
+        assert "min-release-age" in out
+        # Must pre-empt the --force escalation
+        assert "--force" in out
+
+    def test_no_cooldown_emits_plain_hint(self, monkeypatch, tmp_path):
+        """When min-release-age=0 (or unset), the plain fix command is emitted."""
+        out = self._run_doctor_with_npm(monkeypatch, tmp_path, cooldown_stdout="0")
+        assert "2 high" in out
+        assert "npm audit fix" in out
+        # No cooldown annotation
+        assert "min-release-age" not in out
+
+    def test_config_get_failure_does_not_crash(self, monkeypatch, tmp_path):
+        """If `npm config get min-release-age` fails, doctor must degrade gracefully."""
+        out = self._run_doctor_with_npm(
+            monkeypatch, tmp_path, fail_config=True)
+        assert "2 high" in out
+        assert "npm audit fix" in out

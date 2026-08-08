@@ -2277,6 +2277,23 @@ def run_doctor(args):
                     fix_cmd = f"cd {npm_dir} && npm audit fix --workspaces=false"
                 else:
                     fix_cmd = f"cd {npm_dir} && npm audit fix"
+                # Check whether .npmrc enforces a min-release-age cooldown
+                # that can make `npm audit fix` a silent no-op for fresh
+                # advisories (#78893).  Security advisories are published
+                # at or before the fix version, so for the first N days of
+                # every advisory's life npm refuses the fix version — the
+                # hint becomes a dead end that escalates toward --force.
+                _cooldown_days = 0
+                if fix_cmd:
+                    try:
+                        _mra = subprocess.run(
+                            [_npm_bin, "config", "get", "min-release-age"],
+                            cwd=str(npm_dir), capture_output=True, text=True,
+                            timeout=10,
+                        ).stdout.strip()
+                        _cooldown_days = int(_mra) if _mra.isdigit() else 0
+                    except Exception:
+                        _cooldown_days = 0
                 if total == 0:
                     check_ok(f"{label} deps", "(no known vulnerabilities)")
                 elif critical > 0 or high > 0:
@@ -2303,6 +2320,14 @@ def run_doctor(args):
                             "  ^ build-time tooling (not runtime); if manual npm remediation "
                             "errors with an arborist crash it's a known npm bug — clears "
                             "via a lockfile bump"
+                        )
+                    if fix_cmd and _cooldown_days > 0:
+                        check_info(
+                            f"  ^ .npmrc sets min-release-age={_cooldown_days}; "
+                            f"fixes published within the last {_cooldown_days} days "
+                            f"are refused — 'audit fix' may be a no-op; do NOT use "
+                            f"--force (bypasses the supply-chain guardrail; clears "
+                            f"via a lockfile bump)"
                         )
                     issues.append(
                         f"{label} has {total} npm "

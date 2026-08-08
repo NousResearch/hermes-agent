@@ -164,6 +164,7 @@ class TestDrainWaitsForApiWork:
                 _snapshot, timed_out = await drain_task
 
         assert timed_out is False
+        mock_agent.close.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_drain_times_out_if_api_run_outlives_the_window(self):
@@ -348,6 +349,7 @@ class TestRunAgentRegistersForShutdownInterrupt:
 
         assert list(observed["during"].values()) == [agent]
         assert adapter._shutdown_interruptible_agents == {}
+        agent.close.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_agent_is_unregistered_when_the_turn_raises(self):
@@ -364,6 +366,7 @@ class TestRunAgentRegistersForShutdownInterrupt:
                 )
 
         assert adapter._shutdown_interruptible_agents == {}
+        agent.close.assert_called_once_with()
 
 
 class TestInterruptActiveRuns:

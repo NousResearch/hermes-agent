@@ -6267,6 +6267,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         # succeeded but the turn never reached registration.
                         self._shutdown_interruptible_agents.pop(id(agent), None)
                     clear_session_vars(tokens)
+                    if agent is not None:
+                        try:
+                            agent.close()
+                        except Exception:
+                            pass
 
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
@@ -6774,6 +6779,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     _put_event_if_active(None)
                 except Exception:
                     pass
+                _agent = self._active_run_agents.get(run_id)
+                if _agent is not None:
+                    try:
+                        _agent.close()
+                    except Exception:
+                        pass
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)

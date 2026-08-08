@@ -1611,6 +1611,7 @@ def init_agent(
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
+        "provider": getattr(agent, "provider", None),
     }
     # Persist a process-scoped --yolo launch into the session row so a later
     # `hermes --resume <id>` can restore the bypass (CLI resume paths read

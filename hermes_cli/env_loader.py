@@ -634,15 +634,27 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     except ImportError:
         return
 
+    # Snapshot current provenance for keys still in os.environ before the
+    # refresh.  If the refresh fails for a source, we can restore
+    # last-known-good provenance so _build_safe_env() still trusts those
+    # keys.  (#77529)
+    _stale_provenance: dict[str, str] = {
+        k: v for k, v in _SECRET_SOURCES.items() if k in os.environ
+    }
+
     try:
         report = apply_all(cfg, home_path)
     except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
+        # Refresh completely failed — restore last-known-good provenance so
+        # MCP children still receive secrets whose values remain in env.
+        _SECRET_SOURCES.update(_stale_provenance)
         return
 
     if not report.sources:
         # Config parsed but no source is enabled: keep retrying cheaply
         # (no fetch happens for disabled sources) so flipping a source on
         # mid-process takes effect on the next call.
+        _SECRET_SOURCES.update(_stale_provenance)
         return
 
     # A real fetch attempt happened (success OR error).  Mark the home now
@@ -667,6 +679,14 @@ def _apply_external_secret_sources(home_path: Path) -> None:
             if name in os.environ:
                 values[name] = os.environ[name]
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+
+    # Partial-failure provenance preservation: when some sources succeed
+    # and others fail, report.provenance only covers the successful ones.
+    # Restore last-known-good provenance for keys whose values are still
+    # in os.environ but weren't refreshed.  (#77529)
+    for key, source in _stale_provenance.items():
+        if key not in _SECRET_SOURCES and key in os.environ:
+            _SECRET_SOURCES[key] = source
 
     for src in report.sources:
         if src.applied:

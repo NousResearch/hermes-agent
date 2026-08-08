@@ -1140,12 +1140,36 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
 
     if push.returncode != 0:
         if stash_created:
-            # git stash push exits non-zero when it saved everything but could
-            # not delete some swept untracked files from the working tree
-            # (e.g. a root-owned directory: "warning: failed to remove ...:
-            # Permission denied").  The stash entry is complete — the changes
-            # are safe — so this is not a failure.  Leave the undeletable
-            # files in place and continue the update.
+            # A new refs/stash entry is not, by itself, proof that a failed
+            # stash push captured every tracked change.  Older Git versions can
+            # create a partial entry before failing to remove an untracked file.
+            # Compare the stash tree to the still-present tracked working tree
+            # before allowing the destructive cleanup below.
+            tracked_tree_check = subprocess.run(
+                git_cmd + ["diff", "--quiet", stash_ref, "--"],
+                cwd=cwd,
+                capture_output=True,
+            )
+            if tracked_tree_check.returncode != 0:
+                print("✗ Could not safely complete the update autostash — update aborted.")
+                if push.stderr.strip():
+                    print(f"  {push.stderr.strip().splitlines()[0]}")
+                print(
+                    "  The saved stash does not match the tracked working tree; "
+                    "no hard reset was attempted."
+                )
+                print(
+                    "  Commit, stash, or clean up your local changes manually, "
+                    "then re-run `hermes update`."
+                )
+                raise subprocess.CalledProcessError(
+                    push.returncode, push.args, output=push.stdout, stderr=push.stderr
+                )
+
+            # The tracked tree is proven present in the stash.  The non-zero
+            # exit is therefore limited to cleanup of swept untracked files
+            # (e.g. a root-owned directory: Permission denied).  Leave those
+            # files in place and continue after cleaning only tracked changes.
             if push.stderr.strip():
                 print(push.stderr.strip())
             print(
@@ -1156,10 +1180,6 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
                 "    They were still saved to the stash and were left in "
                 "place — the update will continue."
             )
-            # A partially-failed stash push also aborts its working-tree
-            # cleanup for TRACKED modifications — they are saved in the stash
-            # but still dirty the tree, which would break the checkout/pull
-            # that follows. Safe to reset: everything is in the stash entry.
             subprocess.run(
                 git_cmd + ["reset", "--hard", "HEAD"],
                 cwd=cwd,
@@ -1240,6 +1260,37 @@ def _stash_apply_failed_only_on_existing_untracked(stderr: str) -> bool:
             return False
     return saw_untracked_error
 
+
+def _stash_tracked_patch_is_present(
+    git_cmd: list[str], cwd: Path, stash_ref: str
+) -> bool:
+    """Return whether the stash's tracked patch is present in the working tree.
+
+    Some older Git versions report only the untracked-file collision from
+    ``stash apply`` but abort before applying the tracked patch.  Prove the
+    patch is present by checking whether Git could cleanly reverse it.  Any
+    inability to produce or validate the patch fails closed.
+    """
+    patch = subprocess.run(
+        git_cmd + ["diff", "--binary", f"{stash_ref}^1", stash_ref, "--"],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if patch.returncode != 0:
+        return False
+    if not patch.stdout:
+        return True
+    reverse_check = subprocess.run(
+        git_cmd + ["apply", "--reverse", "--check", "-"],
+        cwd=cwd,
+        input=patch.stdout,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    return reverse_check.returncode == 0
+
+
 def _restore_stashed_changes(
     git_cmd: list[str],
     cwd: Path,
@@ -1282,9 +1333,16 @@ def _restore_stashed_changes(
     )
     has_conflicts = bool(unmerged.stdout.strip())
 
-    if restore.returncode != 0 and not has_conflicts and (
-        _stash_apply_failed_only_on_existing_untracked(restore.stderr)
-    ):
+    untracked_only_failure = (
+        restore.returncode != 0
+        and not has_conflicts
+        and _stash_apply_failed_only_on_existing_untracked(restore.stderr)
+    )
+    tracked_patch_present = untracked_only_failure and _stash_tracked_patch_is_present(
+        git_cmd, cwd, stash_ref
+    )
+
+    if untracked_only_failure and tracked_patch_present:
         # Permission-denied autostash tail end: the tracked changes applied
         # cleanly; the only "failure" is untracked files that never left the
         # working tree (git could not delete them at stash time, so it now
@@ -1295,7 +1353,10 @@ def _restore_stashed_changes(
             "tree and were kept as-is."
         )
     elif restore.returncode != 0 or has_conflicts:
-        print("✗ Update pulled new code, but restoring local changes hit conflicts.")
+        print(
+            "✗ Update pulled new code, but restoring local changes hit conflicts "
+            "or could not be verified."
+        )
         if restore.stdout.strip():
             print(restore.stdout.strip())
         if restore.stderr.strip():

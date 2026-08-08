@@ -282,7 +282,7 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
 
 # ---------------------------------------------------------------------------
 # Permission-denied autostash class: undeletable untracked files (root-owned
-# packaging/ etc.) must not abort the update when the stash entry was created.
+# packaging/ etc.) must never cause tracked changes to be lost.
 # ---------------------------------------------------------------------------
 
 
@@ -290,10 +290,10 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
 
 
 
-def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
+def test_update_autostash_never_loses_changes_with_undeletable_untracked_dir(tmp_path):
     """Behavioral E2E of the whole permission-denied class with real git:
-    root-owned-style undeletable untracked dir → stash succeeds, update-style
-    reset works, restore round-trips, nothing lost. (#70127 follow-up)"""
+    a verified complete stash may continue; an unverifiable partial stash must
+    abort without touching the tracked working tree. (#70127 follow-up)"""
     import os
     import shutil
     import subprocess
@@ -323,7 +323,14 @@ def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
     (pkg / "hermes-agent.rb").write_text("formula\n")
     os.chmod(pkg, 0o555)  # undeletable contents, like a root-owned dir
     try:
-        stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+        try:
+            stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+        except CalledProcessError:
+            # Older Git versions can create a partial stash entry before the
+            # permission error.  Failing closed must preserve the local edit.
+            assert (tmp_path / "tracked.txt").read_text() == "v2 local change\n"
+            assert (pkg / "hermes-agent.rb").read_text() == "formula\n"
+            return
         assert stash_ref
 
         # The tracked change is stashed; simulate the updater's checkout window.
@@ -332,8 +339,50 @@ def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
         restored = hermes_main._restore_stashed_changes(
             ["git"], tmp_path, stash_ref, prompt_user=False
         )
-        assert restored is True
-        assert (tmp_path / "tracked.txt").read_text() == "v2 local change\n"
+        if restored:
+            assert (tmp_path / "tracked.txt").read_text() == "v2 local change\n"
+        else:
+            # Fail-closed restore keeps the complete stash for manual recovery.
+            stashed = git("show", f"{stash_ref}:tracked.txt").stdout
+            assert stashed == "v2 local change\n"
+            assert git("rev-parse", "--verify", "refs/stash").stdout.strip()
         assert (pkg / "hermes-agent.rb").read_text() == "formula\n"
     finally:
         os.chmod(pkg, 0o755)
+
+
+def test_partial_stash_never_resets_when_tracked_tree_was_not_captured(
+    monkeypatch, tmp_path, capsys
+):
+    """A new stash ref is not proof that a failed stash captured tracked data."""
+    calls = []
+    stash_probes = iter(("old-stash", "partial-stash"))
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-2:] == ["status", "--porcelain"]:
+            return SimpleNamespace(stdout=" M tracked.txt\n", stderr="", returncode=0)
+        if cmd[-2:] == ["ls-files", "--unmerged"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd[-3:] == ["rev-parse", "--verify", "refs/stash"]:
+            return SimpleNamespace(
+                stdout=f"{next(stash_probes)}\n", stderr="", returncode=0
+            )
+        if cmd[1:4] == ["stash", "push", "--include-untracked"]:
+            return SimpleNamespace(
+                args=cmd,
+                stdout="Saved working directory and index state\n",
+                stderr="warning: failed to remove packaging/: Permission denied\n",
+                returncode=1,
+            )
+        if cmd[1:3] == ["diff", "--quiet"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=1)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    with pytest.raises(CalledProcessError):
+        hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+
+    assert not any(cmd[1:3] == ["reset", "--hard"] for cmd in calls)
+    assert "saved stash does not match the tracked working tree" in capsys.readouterr().out

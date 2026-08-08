@@ -1920,6 +1920,23 @@ class CredentialPool:
                     # while the account is already usable again — a throttled
                     # live probe of the Codex usage endpoint detects that and
                     # lifts the stale cooldown (issue #43747).
+                    #
+                    # Before probing, try to refresh the Codex access token if
+                    # it has expired while the credential was exhausted. The
+                    # probe makes an HTTP request with the access token — an
+                    # expired token returns 401, so the probe would always
+                    # return False/None and the entry stays stuck until
+                    # last_error_reset_at elapses (issue #72941).
+                    if (
+                        clear_expired
+                        and self.provider == "openai-codex"
+                        and entry.auth_type == AUTH_TYPE_OAUTH
+                        and entry.refresh_token
+                        and self._entry_needs_refresh(entry)
+                    ):
+                        refreshed = self._refresh_entry(entry, force=False)
+                        if refreshed is not None and refreshed is not entry:
+                            entry = refreshed
                     if not (
                         clear_expired
                         and self._codex_quota_restored_upstream(entry)

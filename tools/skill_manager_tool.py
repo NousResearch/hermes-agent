@@ -34,6 +34,7 @@ Directory layout for user skills:
 
 import json
 import logging
+import os
 import re
 import shutil
 import contextvars as _ctxvars
@@ -636,10 +637,70 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
-    """Build the directory path for a new skill, optionally under a category."""
+    """Build the directory path for a new skill, optionally under a category.
+
+    Honors ``skills.create_dir`` from config.yaml: when set, new skills are
+    created in that directory (e.g. a shared fleet repo) instead of the
+    profile-local ~/.hermes/skills/. Falls back to the local dir when unset.
+    """
+    base = _skills_dir()
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        skills_cfg = cfg.get("skills") or {}
+        raw = skills_cfg.get("create_dir")
+        if raw:
+            expanded = os.path.expanduser(os.path.expandvars(str(raw)))
+            p = Path(expanded)
+            if not p.is_absolute():
+                p = (get_hermes_home() / p).resolve()
+            else:
+                p = p.resolve()
+            if p.is_dir():
+                base = p
+    except Exception:
+        logger.debug("skills.create_dir lookup failed", exc_info=True)
     if category:
-        return _skills_dir() / category / name
-    return _skills_dir() / name
+        return base / category / name
+    return base / name
+
+
+def _maybe_auto_commit_shared(skill_name: str) -> None:
+    """Best-effort git commit when a skill write landed in a shared pool.
+
+    When a write targets a skill under a configured external/shared skills
+    dir that is a git repo, stage and commit it so the shared pool stays
+    clean and every profile sees committed history. Failures are silent —
+    the write itself already succeeded and is readable by all profiles.
+    """
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+        roots = {p.resolve() for p in get_external_skills_dirs() if p.is_dir()}
+        if not roots:
+            return
+        import subprocess
+        for root in roots:
+            if not (root / ".git").exists():
+                continue
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                capture_output=True, timeout=30, check=False,
+            )
+            # Only commit when the add actually staged something.
+            staged = subprocess.run(
+                ["git", "-C", str(root), "diff", "--cached", "--quiet"],
+                capture_output=True, timeout=30, check=False,
+            )
+            if staged.returncode != 1:
+                continue
+            subprocess.run(
+                ["git", "-C", str(root), "-c", "user.name=HermesAgent",
+                 "-c", "user.email=hermes-agent@local",
+                 "commit", "-qm", f"skills: {skill_name} update (agent write)"],
+                capture_output=True, timeout=30, check=False,
+            )
+    except Exception:
+        logger.debug("shared-pool auto-commit skipped for %s", skill_name, exc_info=True)
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -957,10 +1018,16 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     except Exception:
         pass
 
+    try:
+        _display_path = str(skill_dir.relative_to(_skills_dir()))
+    except ValueError:
+        # Skill created in an external/shared dir (skills.create_dir) — show
+        # the absolute path since it is not under the profile-local skills root.
+        _display_path = str(skill_dir)
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(_skills_dir())),
+        "path": _display_path,
         "skill_md": str(skill_md),
         "_change": {"description": _desc},
     }
@@ -1645,6 +1712,13 @@ def skill_manage(
                 # status`/`restore` still see it. Only a hard delete forgets.
                 if not result.get("_archived"):
                     forget(name)
+        except Exception:
+            pass
+
+        # Shared-pool housekeeping: if the write landed in a git-tracked
+        # external skills dir, commit it so the shared repo stays clean.
+        try:
+            _maybe_auto_commit_shared(name)
         except Exception:
             pass
 

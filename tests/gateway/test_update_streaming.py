@@ -332,6 +332,11 @@ class TestWatchUpdateProgress:
                 "native delivery failed  " + "x" * 276,
                 id="sanitized-and-capped",
             ),
+            pytest.param(
+                "\x1b[31mnative delivery failed\x1b[0m\x00\x07\r\n" + "x" * 400,
+                "native delivery failed    " + "x" * 274,
+                id="ansi-and-c0-controls-removed",
+            ),
             pytest.param(None, "unknown error", id="unknown-error"),
         ],
     )
@@ -441,6 +446,134 @@ class TestWatchUpdateProgress:
                     "text delivery failed" in record.message
                     for record in caplog.records
                 )
+                (hermes_home / ".update_exit_code").write_text("0")
+                await watcher
+
+    @pytest.mark.asyncio
+    async def test_text_prompt_exception_warns_without_false_forward_log_and_keeps_pending(
+        self, tmp_path, caplog
+    ):
+        """A text fallback exception cannot kill the watcher or claim delivery."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        session_key = "agent:main:telegram:dm:111"
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": session_key,
+        }))
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": "Restore local changes? [Y/n]",
+            "default": "y",
+        }))
+
+        prompt_attempted = asyncio.Event()
+        fallback_error = "\x1b[31mtext transport failed\x1b[0m\x00\r\n" + "x" * 400
+
+        class TextFallbackExceptionAdapter:
+            async def send_update_prompt(self, **kwargs):
+                return SendResult(success=False, error="native delivery failed")
+
+            async def send(self, chat_id, content, metadata=None):
+                if "Update needs your input" in content:
+                    prompt_attempted.set()
+                    raise RuntimeError(fallback_error)
+                return SendResult(success=True)
+
+        runner.adapters = {Platform.TELEGRAM: TextFallbackExceptionAdapter()}
+
+        with caplog.at_level("DEBUG", logger="gateway.run"):
+            with patch("gateway.run._hermes_home", hermes_home):
+                watcher = asyncio.create_task(runner._watch_update_progress(
+                    poll_interval=0.05,
+                    stream_interval=0.1,
+                    timeout=10.0,
+                ))
+                await asyncio.wait_for(prompt_attempted.wait(), timeout=2.0)
+
+                state = runner._peek_session_state(session_key)
+                assert state is not None
+                assert state.persistent.update_prompt_pending is True
+
+                failure_records = [
+                    record.message
+                    for record in caplog.records
+                    if "Text update prompt send failed" in record.message
+                ]
+                assert len(failure_records) == 1
+                failure = failure_records[0]
+                assert "text transport failed" in failure
+                assert "\x1b" not in failure
+                assert not any(
+                    0 <= ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
+                    for char in failure
+                )
+                assert len(failure.rsplit(": ", 1)[-1]) <= 300
+                assert not any(
+                    "Forwarded update prompt" in record.message
+                    for record in caplog.records
+                )
+
+                (hermes_home / ".update_exit_code").write_text("0")
+                await watcher
+
+    @pytest.mark.asyncio
+    async def test_forwarded_prompt_log_sanitizes_bounded_values(self, tmp_path, caplog):
+        """Forwarded-prompt logs keep hostile session and prompt values safe."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        session_key = "agent:main:telegram:dm:\x1b[31m" + "s" * 200 + "\n"
+        prompt_text = "\x1b]0;spoofed title\x07Restore\x00\n" + "p" * 200
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": session_key,
+        }))
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": prompt_text,
+            "default": "y",
+        }))
+
+        prompt_forwarded = asyncio.Event()
+
+        class PromptLoggingAdapter:
+            async def send(self, chat_id, content, metadata=None):
+                if "Update needs your input" in content:
+                    prompt_forwarded.set()
+                return SendResult(success=True)
+
+        runner.adapters = {Platform.TELEGRAM: PromptLoggingAdapter()}
+
+        with caplog.at_level("INFO", logger="gateway.run"):
+            with patch("gateway.run._hermes_home", hermes_home):
+                watcher = asyncio.create_task(runner._watch_update_progress(
+                    poll_interval=0.05,
+                    stream_interval=0.1,
+                    timeout=10.0,
+                ))
+                await asyncio.wait_for(prompt_forwarded.wait(), timeout=2.0)
+
+                forwarded_records = [
+                    record.message
+                    for record in caplog.records
+                    if "Forwarded update prompt" in record.message
+                ]
+                assert len(forwarded_records) == 1
+                forwarded = forwarded_records[0]
+                assert "Restore" in forwarded
+                assert "\x1b" not in forwarded
+                assert not any(
+                    0 <= ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F
+                    for char in forwarded
+                )
+                assert len(forwarded) < 350
+                assert "s" * 150 not in forwarded
+                assert "p" * 100 not in forwarded
+
                 (hermes_home / ".update_exit_code").write_text("0")
                 await watcher
 

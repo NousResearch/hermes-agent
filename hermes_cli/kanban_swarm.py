@@ -90,6 +90,8 @@ def create_swarm(
     workspace_path: Optional[str] = None,
     priority: int = 0,
     idempotency_key: Optional[str] = None,
+    verifier_skills: Optional[list[str]] = None,
+    synthesizer_skills: Optional[list[str]] = None,
 ) -> SwarmCreated:
     """Create a durable Kanban swarm graph.
 
@@ -189,7 +191,7 @@ def create_swarm(
         priority=priority,
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
-        skills=["requesting-code-review"],
+        skills=verifier_skills if verifier_skills is not None else ["requesting-code-review"],
     )
 
     synthesizer_body = (
@@ -208,7 +210,7 @@ def create_swarm(
         priority=priority,
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
-        skills=["humanizer"],
+        skills=synthesizer_skills if synthesizer_skills is not None else ["humanizer"],
     )
 
     created = SwarmCreated(root, worker_ids, verifier, synthesizer)

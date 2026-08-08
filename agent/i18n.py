@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
+    "af", "ko", "lo","it", "ga", "pt", "ru", "hu", "ar",
 )
 DEFAULT_LANGUAGE = "en"
 
@@ -67,6 +67,8 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "afrikaans": "af", "af-za": "af",
     # Korean
     "korean": "ko", "한국어": "ko", "ko-kr": "ko",
+     # Lao
+    "lao": "lo", "lo-la": "lo", "lo_la": "lo", "ລາວ": "lo","ພາສາລາວ": "lo",
     # Italian
     "italian": "it", "italiano": "it", "it-it": "it", "it-ch": "it",
     # Irish (Gaeilge) — ga is the BCP-47 code

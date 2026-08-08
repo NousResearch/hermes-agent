@@ -3546,6 +3546,32 @@ _copilot_context_cache: dict[str, int] = {}
 _copilot_context_cache_time: float = 0.0
 _COPILOT_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
+# Module-level cache for the raw catalog. api_mode resolution runs on every
+# client construction (hot path); without this the endpoint check would add a
+# live /models round-trip per LLM client build.
+_copilot_catalog_cache: Optional[list[dict[str, Any]]] = None
+_copilot_catalog_cache_time: float = 0.0
+_COPILOT_CATALOG_CACHE_TTL = 3600  # 1 hour
+
+
+def _cached_github_model_catalog(
+    api_key: Optional[str] = None,
+) -> Optional[list[dict[str, Any]]]:
+    """Return the Copilot model catalog, cached in-process for 1 hour."""
+    global _copilot_catalog_cache, _copilot_catalog_cache_time
+
+    if (
+        _copilot_catalog_cache is not None
+        and (time.time() - _copilot_catalog_cache_time) < _COPILOT_CATALOG_CACHE_TTL
+    ):
+        return _copilot_catalog_cache
+
+    catalog = fetch_github_model_catalog(api_key=api_key)
+    if catalog:
+        _copilot_catalog_cache = catalog
+        _copilot_catalog_cache_time = time.time()
+    return catalog
+
 
 def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> Optional[int]:
     """Look up max_prompt_tokens for a Copilot model from the live /models API.
@@ -4078,7 +4104,7 @@ def copilot_model_api_mode(
     # Fetch the catalog once so normalize + endpoint check share it
     # (avoids two redundant network calls for non-GPT-5 models).
     if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
+        catalog = _cached_github_model_catalog(api_key=api_key)
 
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if not normalized:
@@ -4087,6 +4113,30 @@ def copilot_model_api_mode(
     # Primary: model ID pattern (matches opencode's shouldUseCopilotResponsesApi)
     if _should_use_copilot_responses_api(normalized):
         return "codex_responses"
+
+    # Secondary: the live catalog is authoritative for models the GPT-5
+    # pattern can't classify. Copilot ships responses-only non-GPT models
+    # (e.g. grok-4.5 advertises exactly ["/responses"]); sending those to
+    # /chat/completions returns 400 "not accessible via the
+    # /chat/completions endpoint". Only upgrade when the catalog says the
+    # model supports /responses AND does not support /chat/completions, so
+    # Claude slots (which advertise /chat/completions) stay where they are.
+    for item in catalog or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id") or "").strip() != normalized:
+            continue
+        endpoints = item.get("supported_endpoints")
+        if not isinstance(endpoints, list):
+            break
+        normalized_endpoints = {
+            str(endpoint).strip() for endpoint in endpoints if str(endpoint).strip()
+        }
+        if "/responses" in normalized_endpoints and (
+            "/chat/completions" not in normalized_endpoints
+        ):
+            return "codex_responses"
+        break
 
     # Copilot's Claude models are exposed through its OpenAI-compatible chat
     # endpoint, not through Hermes' native Anthropic adapter. The live catalog may

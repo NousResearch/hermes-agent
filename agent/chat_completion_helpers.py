@@ -2071,6 +2071,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
             # support the Responses API. Stay on chat_completions.
             fb_api_mode = "chat_completions"
+        elif fb_base_url.lower().startswith(("acp://", "acp+tcp://")):
+            # ACP transports (CopilotACPClient) implement only ``.chat``.
+            # Mirrors the acp:// exclusion agent_init.py applies on the
+            # primary path so a gpt-5.x ACP fallback isn't upgraded into a
+            # Responses call the client cannot serve.
+            fb_api_mode = "chat_completions"
         elif agent._is_direct_openai_url(fb_base_url):
             fb_api_mode = "codex_responses"
         elif agent._provider_model_requires_responses_api(

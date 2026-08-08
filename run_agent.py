@@ -1591,6 +1591,15 @@ class AIAgent:
     ) -> bool:
         """Return True when this provider/model pair should use Responses API."""
         normalized_provider = (provider or "").strip().lower()
+        # ACP runtimes speak a chat-shaped JSON-RPC protocol over a spawned
+        # subprocess. CopilotACPClient exposes only ``.chat`` — it has no
+        # ``.responses`` surface at all — so upgrading a gpt-5.x model here
+        # makes the loop dispatch ``client.responses.create`` and die with
+        # AttributeError instead of falling back. agent_init.py guards the
+        # primary path by provider/base_url; keeping the rule here covers the
+        # sibling fallback-activation path too.
+        if normalized_provider == "copilot-acp":
+            return False
         # Nous serves GPT-5.x models via its OpenAI-compatible chat
         # completions endpoint; its /v1/responses endpoint returns 404.
         if normalized_provider == "nous":

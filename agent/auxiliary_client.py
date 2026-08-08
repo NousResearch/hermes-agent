@@ -6311,6 +6311,27 @@ def resolve_provider_client(
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
 
+        # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
+        # API — they are not accessible via /chat/completions.  Some non-GPT
+        # Copilot models are responses-only too (e.g. grok-4.5 advertises
+        # exactly ["/responses"]), so consult copilot_model_api_mode(), which
+        # checks the live catalog's supported_endpoints rather than only the
+        # gpt-5.x name pattern.
+        #
+        # Resolved before the request headers are built so the catalog lookup
+        # (which issues its own Copilot request) can't interleave with the
+        # per-client header construction below.  The result is applied after
+        # the client exists.
+        copilot_needs_responses = False
+        if provider == "copilot" and final_model and not raw_codex:
+            try:
+                from hermes_cli.models import copilot_model_api_mode
+                copilot_needs_responses = copilot_model_api_mode(
+                    final_model, api_key=api_key
+                ) == "codex_responses"
+            except ImportError:
+                copilot_needs_responses = False
+
         # Provider-specific headers
         headers = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
@@ -6346,20 +6367,23 @@ def resolve_provider_client(
                         **({"default_headers": headers} if headers else {}))
 
         # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
-        # API — they are not accessible via /chat/completions.  Wrap the
-        # plain client in CodexAuxiliaryClient so call_llm() transparently
-        # routes through responses.stream().
-        if provider == "copilot" and final_model and not raw_codex:
-            try:
-                from hermes_cli.models import _should_use_copilot_responses_api
-                if _should_use_copilot_responses_api(final_model):
-                    logger.debug(
-                        "resolve_provider_client: copilot model %s needs "
-                        "Responses API — wrapping with CodexAuxiliaryClient",
-                        final_model)
-                    client = CodexAuxiliaryClient(client, final_model)
-            except ImportError:
-                pass
+        # API — they are not accessible via /chat/completions.  Some non-GPT
+        # Copilot models are responses-only too (e.g. grok-4.5 advertises
+        # exactly ["/responses"]), so consult copilot_model_api_mode(), which
+        # checks the catalog's supported_endpoints rather than only the
+        # gpt-5.x name pattern.  Wrap the plain client in
+        # CodexAuxiliaryClient so call_llm() transparently routes through
+        # responses.stream().
+        #
+        # allow_network=False keeps client construction off the wire: the
+        # Wrap the plain client in CodexAuxiliaryClient so call_llm()
+        # transparently routes through responses.stream().
+        if copilot_needs_responses:
+            logger.debug(
+                "resolve_provider_client: copilot model %s needs "
+                "Responses API — wrapping with CodexAuxiliaryClient",
+                final_model)
+            client = CodexAuxiliaryClient(client, final_model)
 
         # Honor api_mode for any API-key provider (e.g. direct OpenAI with
         # codex-family models).  The copilot-specific wrapping above handles

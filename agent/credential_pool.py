@@ -2959,6 +2959,20 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
         elif provider == "zai":
             base_url = _resolve_zai_base_url(token, pconfig.inference_base_url, env_url)
+        elif provider == "copilot":
+            # Copilot needs the raw ghu_/gho_ token exchanged for a short-lived
+            # `tid=...` API token, and the exchange advertises the account's own
+            # endpoint (enterprise/business accounts get a dedicated proxy).
+            # _seed_from_singletons() already seeds the exchanged form, but
+            # load_pool() runs this env pass *afterwards* against the same
+            # `env:COPILOT_GITHUB_TOKEN` source key — without this branch the
+            # raw token and the generic api.githubcopilot.com URL clobber it,
+            # which the API rejects intermittently with HTTP 403.
+            # The exchange is memoised in copilot_auth._jwt_cache, so this
+            # does not add a network round-trip.
+            from hermes_cli.copilot_auth import get_copilot_api_token
+            token, exchanged_base_url = get_copilot_api_token(token)
+            base_url = env_url or exchanged_base_url or pconfig.inference_base_url
         changed |= _upsert_entry(
             entries,
             provider,

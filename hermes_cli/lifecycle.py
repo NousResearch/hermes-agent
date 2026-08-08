@@ -3,13 +3,31 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, List
 
 logger = logging.getLogger(__name__)
 
+_hooks_suppressed: ContextVar[bool] = ContextVar(
+    "hermes_lifecycle_hooks_suppressed", default=False
+)
+
+
+@contextmanager
+def suppress_lifecycle_hooks():
+    """Task-local fail-closed boundary for internal unattended execution."""
+    token = _hooks_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _hooks_suppressed.reset(token)
+
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Notify first-party observers, then invoke compatibility plugin hooks."""
+    if _hooks_suppressed.get():
+        return []
     try:
         from hermes_cli.observability import observe_lifecycle
 
@@ -24,6 +42,8 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
 def has_hook(hook_name: str) -> bool:
     """Return whether a first-party observer or plugin consumes a hook."""
+    if _hooks_suppressed.get():
+        return False
     try:
         from hermes_cli.observability import handles_hook
 
@@ -39,6 +59,8 @@ def has_hook(hook_name: str) -> bool:
 
 def finalize_session(**kwargs: Any) -> List[Any]:
     """Notify observers and hard-close one core-owned Relay conversation."""
+    if _hooks_suppressed.get():
+        return []
     try:
         from hermes_cli.observability import observe_lifecycle
 

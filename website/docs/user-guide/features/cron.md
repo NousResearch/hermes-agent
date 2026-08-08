@@ -260,7 +260,39 @@ What they do:
 
 ## How it works
 
-**Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds, running any due jobs in isolated agent sessions.
+**Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds. Jobs use fresh isolated agent sessions by default.
+
+### Opt in to the current conversation
+
+Model-backed jobs created from a live gateway conversation may set
+`session_target: "current"` to continue that same conversation when they run.
+Hermes captures the conversation's stable gateway routing key; callers cannot
+supply an arbitrary session key through the `cronjob` tool. At each occurrence,
+the gateway durably seals the concrete session ID before queueing the turn,
+serializes it through the same resolved-session turn lease used by human turns,
+and revalidates the mapping and authorization immediately before execution.
+
+A contextual job's concrete session binding is immutable from creation. Any
+`/new` or reset that changes that route before or after occurrence admission
+makes the occurrence `stale`; Hermes does not retarget it or fall back to an
+isolated session. Recreate the job from the new conversation to bind it there.
+The scheduled prompt is stored as a hidden
+internal transcript row, progress and streaming output are suppressed, and only
+the final `notify` result goes through the normal cron delivery path. An
+intentional `no_action` result is silent and scheduled turns do not refresh the
+human-interaction timestamp.
+
+Contextual v1 jobs are same-session, model-backed jobs only. They cannot use
+script/`no_agent` execution, attached skills, `workdir`, `context_from`, custom
+toolset or model/provider overrides, `attach_to_session`, or fan-out/cross-user
+delivery. Omit `session_target` (or use `"isolated"`) for the existing isolated
+behavior.
+
+The agent-facing `cronjob(action="run")` call is rejected for contextual jobs:
+that tool is executing inside the human turn whose lease the scheduled turn must
+wait for, so a synchronous run would deadlock against itself. Let the scheduler
+fire the job, or use the authenticated REST trigger from outside the conversation
+turn.
 
 ```bash
 hermes gateway install     # Install as a user service
@@ -277,8 +309,9 @@ On each tick Hermes:
 
 1. loads jobs from `~/.hermes/cron/jobs.json`
 2. checks `next_run_at` against the current time
-3. starts a fresh `AIAgent` session for each due job
-4. optionally injects one or more attached skills into that fresh session
+3. starts a fresh `AIAgent` session for each isolated job, or admits an opt-in
+   contextual job into its immutable live gateway session
+4. optionally injects one or more attached skills into isolated sessions
 5. runs the prompt to completion
 6. delivers the final response
 7. updates run metadata and the next scheduled time
@@ -290,10 +323,14 @@ A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks 
 Hermes records each claimed cron attempt in the profile-local
 `~/.hermes/cron/executions.db` before executor or provider dispatch. Attempts
 move through `claimed`, `running`, and one immutable terminal state:
-`completed`, `failed`, or `unknown`. After restart, Hermes marks an abandoned
+`completed`, `failed`, or `unknown`. After restart, Hermes first checks whether
+an abandoned contextual attempt ever acquired its execution-specific jobs-store
+occurrence claim. If it did not, the attempt is rejected and the occurrence
+remains due. If it did, Hermes marks the
 attempt `unknown` only when the original PID and process-start fingerprint prove
-that its owner is gone. Unknown attempts are audit records and are never
-automatically rerun.
+that its owner is gone; that occurrence is intentionally consumed under
+at-most-once semantics and is never automatically rerun. Unknown attempts remain
+inspectable audit records.
 
 Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The

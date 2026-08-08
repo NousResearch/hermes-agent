@@ -11652,9 +11652,20 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
             self.model = "test-model"
             self.session_id = None
 
+    hidden_canary = "TUI-BRANCH-HIDDEN-CANARY"
+    hidden_metadata = {"execution_id": "exec-tui-branch"}
     parent = {
         "session_key": "parent-key",
-        "history": [{"role": "user", "content": "hi"}],
+        "history": [
+            {
+                "role": "user",
+                "content": hidden_canary,
+                "display_kind": "hidden",
+                "display_metadata": hidden_metadata,
+                "api_content": f"{hidden_canary}-WIRE",
+            },
+            {"role": "assistant", "content": "visible answer"},
+        ],
         "history_lock": __import__("threading").Lock(),
         "running": False,
         "cols": 80,
@@ -11696,7 +11707,13 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         # profile, not left NULL for aggregators to mis-tag as "default".
         assert seen.get("profile_name") == "mlperf"
         assert seen.get("title") == (seen["created"], "forked")
-        assert len(seen["msgs"]) == 1
+        assert len(seen["msgs"]) == 2
+        copied_hidden = next(
+            msg for msg in seen["msgs"] if msg["content"] == hidden_canary
+        )
+        assert copied_hidden["display_kind"] == "hidden"
+        assert copied_hidden["display_metadata"] == hidden_metadata
+        assert copied_hidden["api_content"] == f"{hidden_canary}-WIRE"
         assert seen.get("launch") is None
         assert seen.get("launch_create") is None
         child_sid = resp["result"]["session_id"]
@@ -11708,6 +11725,50 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     finally:
         for k in list(server._sessions):
             server._sessions.pop(k, None)
+
+
+def test_desktop_branch_seed_preserves_hidden_replay_metadata(monkeypatch):
+    """The delayed desktop branch seed must not declassify hidden parent rows."""
+    hidden_canary = "DESKTOP-BRANCH-HIDDEN-CANARY"
+    hidden_metadata = {"execution_id": "exec-desktop-branch"}
+    seen: list[dict] = []
+
+    class FakeDB:
+        def append_messages_batch(self, _session_id, messages, **_kwargs):
+            seen.extend(messages)
+            return len(messages)
+
+    class DBContext:
+        def __enter__(self):
+            return FakeDB()
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(server, "_session_db", lambda _session: DBContext())
+    session = {
+        "session_key": "desktop-child",
+        "parent_session_id": "desktop-parent",
+        "history_lock": threading.Lock(),
+        "history": [
+            {
+                "role": "user",
+                "content": hidden_canary,
+                "display_kind": "hidden",
+                "display_metadata": hidden_metadata,
+                "api_content": f"{hidden_canary}-WIRE",
+            },
+            {"role": "assistant", "content": "visible answer"},
+        ],
+    }
+
+    server._persist_branch_seed(session)
+
+    copied_hidden = next(msg for msg in seen if msg["content"] == hidden_canary)
+    assert copied_hidden["display_kind"] == "hidden"
+    assert copied_hidden["display_metadata"] == hidden_metadata
+    assert copied_hidden["api_content"] == f"{hidden_canary}-WIRE"
+    assert session["_branch_seed_persisted"] is True
 
 
 def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_path):

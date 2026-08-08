@@ -20,11 +20,16 @@ Covers:
 """
 
 import asyncio
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.turn_lease import SessionTurnLeaseRegistry, TurnLeaseTimeoutError
+from gateway.turn_lease import (
+    SessionTurnLeaseRegistry,
+    TurnLeaseTimeoutError,
+    TurnLeaseToken,
+)
 
 
 def _run(coro):
@@ -84,6 +89,72 @@ def test_distinct_sessions_do_not_contend():
     order = _run(scenario())
     # Both started before either finished — no serialization across sessions.
     assert order[:2] == ["start:sess-a", "start:sess-b"]
+
+
+@pytest.mark.asyncio
+async def test_current_holder_validation_rejects_forged_released_and_foreign_tokens():
+    registry = SessionTurnLeaseRegistry()
+    owner = "contextual-cron:execution-1"
+    genuine = await registry.acquire(
+        "session-1",
+        owner_key=owner,
+        generation=0,
+        timeout=1,
+    )
+    foreign = await registry.acquire(
+        "session-2",
+        owner_key=owner,
+        generation=0,
+        timeout=1,
+    )
+    assert genuine is not None
+    assert foreign is not None
+
+    assert registry.is_current_holder(
+        genuine,
+        session_id="session-1",
+        owner_key=owner,
+        generation=0,
+    )
+    assert not registry.is_current_holder(
+        object(),
+        session_id="session-1",
+        owner_key=owner,
+        generation=0,
+    )
+    assert not registry.is_current_holder(
+        TurnLeaseToken("session-1", owner, 0),
+        session_id="session-1",
+        owner_key=owner,
+        generation=0,
+    )
+    assert not registry.is_current_holder(
+        foreign,
+        session_id="session-1",
+        owner_key=owner,
+        generation=0,
+    )
+    assert not registry.is_current_holder(
+        genuine,
+        session_id="session-1",
+        owner_key="contextual-cron:other",
+        generation=0,
+    )
+    assert not registry.is_current_holder(
+        genuine,
+        session_id="session-1",
+        owner_key=owner,
+        generation=1,
+    )
+
+    assert registry.release(genuine) is True
+    assert not registry.is_current_holder(
+        genuine,
+        session_id="session-1",
+        owner_key=owner,
+        generation=0,
+    )
+    assert registry.release(foreign) is True
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +239,82 @@ async def test_agent_path_propagates_timed_out_lease_before_loading_transcript(
         assert runner._turn_leases.release(holder) is True
 
     runner.session_store.load_transcript.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("variant", ["fabricated", "released", "foreign", "stale"])
+async def test_contextual_preheld_lease_is_revalidated_before_transcript_load(
+    monkeypatch,
+    tmp_path,
+    variant,
+):
+    from gateway.session_context import _bind_contextual_turn_authority
+    from tests.gateway.test_42039_duplicate_user_message import (
+        _bootstrap,
+        _event,
+        _source,
+    )
+
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner_any = cast(Any, runner)
+    registry = SessionTurnLeaseRegistry()
+    runner_any._turn_leases = registry
+    live_entry = runner_any.session_store.get_or_create_session.return_value
+    live_entry.origin = _source()
+    runner_any.async_session_store.peek_session_entry = AsyncMock(
+        return_value=live_entry
+    )
+    owner = "contextual-cron:execution-1"
+    cleanup_token = None
+    if variant == "fabricated":
+        token = object()
+    elif variant == "released":
+        token = await registry.acquire(
+            "sess-dedup", owner_key=owner, generation=0, timeout=1
+        )
+        assert token is not None
+        assert registry.release(token) is True
+    elif variant == "foreign":
+        token = await registry.acquire(
+            "other-session", owner_key=owner, generation=0, timeout=1
+        )
+        assert token is not None
+        cleanup_token = token
+    else:
+        token = TurnLeaseToken("sess-dedup", owner, 0)
+
+    event = _event()
+    event.internal = True
+    event.metadata.update(
+        {
+            "contextual_cron": True,
+            "contextual_cron_lease_preheld": True,
+            "contextual_cron_lease_token": token,
+        }
+    )
+    runner.session_store.load_transcript.side_effect = AssertionError(
+        "invalid preheld authority must fail before transcript load"
+    )
+    try:
+        with _bind_contextual_turn_authority(
+            execution_id="execution-1",
+            session_key="agent:main:telegram:group:-1001:12345",
+            admitted_session_id="sess-dedup",
+            admitted_routing_revision=live_entry.routing_revision,
+        ):
+            result = await runner._handle_message_with_agent(
+                event,
+                _source(),
+                "agent:main:telegram:group:-1001:12345",
+                1,
+            )
+    finally:
+        if cleanup_token is not None:
+            assert registry.release(cleanup_token) is True
+
+    runner.session_store.load_transcript.assert_not_called()
+    assert result is None
+    assert event.metadata["contextual_cron_result"]["outcome"] == "rejected"
 
 
 @pytest.mark.asyncio

@@ -57,7 +57,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, cast
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
@@ -1280,6 +1280,7 @@ def _derive_chat_session_id(
 
 
 _CRON_AVAILABLE = False
+_cron_public_job: Optional[Callable[[dict[str, Any]], dict[str, Any]]]
 try:
     from cron.jobs import (
         list_jobs as _cron_list,
@@ -1287,6 +1288,7 @@ try:
         update_job as _cron_update,
         remove_job as _cron_remove,
         pause_job as _cron_pause,
+        public_job_record as _cron_public_job_impl,
         resume_job as _cron_resume,
         trigger_job as _cron_trigger,
     )
@@ -1294,6 +1296,7 @@ try:
         CronSchedulerRegistrationError as _CronSchedulerRegistrationError,
         create_job_with_scheduler_registration as _cron_create,
     )
+    _cron_public_job = _cron_public_job_impl
     _CRON_AVAILABLE = True
 except ImportError:
     _cron_list = None
@@ -1302,6 +1305,7 @@ except ImportError:
     _cron_update = None
     _cron_remove = None
     _cron_pause = None
+    _cron_public_job = None
     _cron_resume = None
     _cron_trigger = None
 
@@ -2877,7 +2881,7 @@ class APIServerAdapter(BasePlatformAdapter):
             else GatewayRunner._load_fallback_model()
         )
 
-        agent_kwargs = {
+        agent_kwargs: Dict[str, Any] = {
             "model": model,
             **runtime_kwargs,
             **_checkpoint_agent_kwargs(user_config),
@@ -3304,8 +3308,14 @@ class APIServerAdapter(BasePlatformAdapter):
         # Offload the blocking SQLite read off the event loop (CWE/perf: the
         # API server is single-threaded aiohttp; a sync SessionDB call here
         # freezes every in-flight request, see PR discussion on event-loop
-        # blocking SQLite in the gateway surface).
-        session = await asyncio.to_thread(db.get_session, session_id)
+        # blocking SQLite in the gateway surface). The rich-row projection
+        # replaces hidden-inclusive durable counters with public visible counts.
+        rich_reader = getattr(db, "get_session_rich_row", None)
+        reader = rich_reader if callable(rich_reader) else db.get_session
+        session = cast(
+            Optional[Dict[str, Any]],
+            await asyncio.to_thread(reader, session_id),
+        )
         if not session:
             return None, web.json_response(_openai_error(f"Session not found: {session_id}", code="session_not_found"), status=404)
         return session, None
@@ -3315,7 +3325,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if db is None:
             return []
         try:
-            return await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+            return await asyncio.to_thread(
+                db.get_messages_as_conversation,
+                session_id,
+                include_hidden=True,
+            )
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
@@ -3539,12 +3553,19 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
         db = await self._ensure_session_db_async()
+        assert db is not None  # _get_existing_session_or_404 already fenced this path
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
-        messages = await asyncio.to_thread(db.get_messages, resolved_id)
+        messages = await asyncio.to_thread(
+            db.get_messages, resolved_id, include_hidden=False
+        )
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": [
+                self._message_response(message)
+                for message in messages
+                if message.get("display_kind") != "hidden"
+            ],
         })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
@@ -3560,6 +3581,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
         db = await self._ensure_session_db_async()
+        assert db is not None  # _get_existing_session_or_404 already fenced this path
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
         if not fork_id or re.search(r'[\r\n\x00]', fork_id):
             return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
@@ -3578,7 +3600,9 @@ class APIServerAdapter(BasePlatformAdapter):
             system_prompt=source.get("system_prompt"),
             parent_session_id=source_id,
         )
-        messages = await asyncio.to_thread(db.get_messages, source_id)
+        messages = await asyncio.to_thread(
+            db.get_messages, source_id, include_hidden=True
+        )
         await asyncio.to_thread(db.replace_messages, fork_id, messages)
         title = body.get("title")
         if title is None:
@@ -4074,7 +4098,11 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 db = await self._ensure_session_db_async()
                 if db is not None:
-                    history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+                    history = await asyncio.to_thread(
+                        db.get_messages_as_conversation,
+                        session_id,
+                        include_hidden=True,
+                    )
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []
@@ -5501,6 +5529,22 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         return None
 
+    @staticmethod
+    def _cron_job_response(job: Dict[str, Any]) -> Any:
+        """Serialize one cron job without leaking contextual authority state."""
+        assert web is not None
+        assert _cron_public_job is not None
+        return web.json_response({"job": _cron_public_job(job)})
+
+    @staticmethod
+    def _cron_jobs_response(jobs: List[Dict[str, Any]]) -> Any:
+        """Serialize cron jobs through the same fail-closed public projection."""
+        assert web is not None
+        assert _cron_public_job is not None
+        return web.json_response(
+            {"jobs": [_cron_public_job(job) for job in jobs]}
+        )
+
     def _check_job_id(self, request: "web.Request") -> tuple:
         """Validate and extract job_id. Returns (job_id, error_response)."""
         job_id = request.match_info["job_id"]
@@ -5526,7 +5570,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             include_disabled = request.query.get("include_disabled", "").lower() in {"true", "1"}
             jobs = _cron_list(include_disabled=include_disabled)
-            return web.json_response({"jobs": jobs})
+            return self._cron_jobs_response(jobs)
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
@@ -5579,7 +5623,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 kwargs["repeat"] = repeat
 
             job = _cron_create(**kwargs)
-            return web.json_response({"job": job})
+            return self._cron_job_response(job)
         except _CronSchedulerRegistrationError as e:
             return web.json_response(e.to_dict(), status=424)
         except Exception as e:
@@ -5600,7 +5644,7 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_get(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
-            return web.json_response({"job": job})
+            return self._cron_job_response(job)
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
@@ -5638,7 +5682,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             _notify_cron_provider_jobs_changed()
-            return web.json_response({"job": job})
+            return self._cron_job_response(job)
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
@@ -5678,7 +5722,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             _notify_cron_provider_jobs_changed()
-            return web.json_response({"job": job})
+            return self._cron_job_response(job)
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
@@ -5698,7 +5742,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             _notify_cron_provider_jobs_changed()
-            return web.json_response({"job": job})
+            return self._cron_job_response(job)
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
@@ -5720,7 +5764,7 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_trigger(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
-            return web.json_response({"job": job})
+            return self._cron_job_response(job)
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 

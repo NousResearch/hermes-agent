@@ -405,7 +405,7 @@ class CLIAgentSetupMixin:
                 if resolved_meta:
                     session_meta = resolved_meta
             restored = self._session_db.get_messages_as_conversation(
-                self.session_id, repair_alternation=True
+                self.session_id, repair_alternation=True, include_hidden=True
             )
             if restored:
                 restored = [m for m in restored if m.get("role") != "session_meta"]

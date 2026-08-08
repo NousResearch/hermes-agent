@@ -252,6 +252,14 @@ DEFAULT_CONFIG = {
         # detector instead of hanging forever. The env var
         # ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch use.
         "local_stream_stale_timeout": 900,
+        # Recovery policy after the existing provider stale_timeout_seconds
+        # detects a request that has produced no real response chunks.
+        "provider_stall_recovery": {
+            "enabled": True,
+            "health_probe_enabled": False,
+            "health_probe_timeout_seconds": 5,
+            "same_provider_retries": 1,
+        },
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly

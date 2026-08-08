@@ -2871,6 +2871,7 @@ class AIAgent:
         max_retries: Optional[int] = None,
         retryable: Optional[bool] = None,
         reason: Optional[str] = None,
+        error_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         # Lazy module import (not from-import) so tests can replace lifecycle
         # dispatch at this call site. After first call the import is a
@@ -2901,6 +2902,7 @@ class AIAgent:
                 max_retries=max_retries,
                 retryable=retryable,
                 reason=reason,
+                error_context=self._sanitize_hook_payload(error_context or {}),
                 error={
                     "type": error_type,
                     "message": error_message,

@@ -3,13 +3,111 @@ from __future__ import annotations
 import textwrap
 
 from hermes_cli.timeouts import (
+    ProviderStallRecoveryConfig,
     get_provider_request_timeout,
     get_provider_stale_timeout,
+    get_provider_stall_recovery_config,
 )
 
 
 def _write_config(tmp_path, body: str) -> None:
     (tmp_path / "config.yaml").write_text(textwrap.dedent(body), encoding="utf-8")
+
+
+def test_provider_stall_recovery_defaults(monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+
+    assert get_provider_stall_recovery_config() == ProviderStallRecoveryConfig(
+        enabled=True,
+        health_probe_enabled=False,
+        health_probe_timeout_seconds=5.0,
+        same_provider_retries=1,
+    )
+
+
+def test_provider_stall_recovery_explicit_values(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "agent": {
+                "provider_stall_recovery": {
+                    "enabled": False,
+                    "health_probe_enabled": True,
+                    "health_probe_timeout_seconds": 12.5,
+                    "same_provider_retries": 0,
+                }
+            }
+        },
+    )
+
+    assert get_provider_stall_recovery_config() == ProviderStallRecoveryConfig(
+        enabled=False,
+        health_probe_enabled=True,
+        health_probe_timeout_seconds=12.5,
+        same_provider_retries=0,
+    )
+
+
+def test_provider_stall_recovery_malformed_values_use_safe_defaults(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "agent": {
+                "provider_stall_recovery": {
+                    "enabled": "false",
+                    "health_probe_enabled": "true",
+                    "health_probe_timeout_seconds": "invalid",
+                    "same_provider_retries": object(),
+                }
+            }
+        },
+    )
+
+    assert get_provider_stall_recovery_config() == ProviderStallRecoveryConfig()
+
+
+def test_provider_stall_recovery_non_dict_config_uses_defaults(monkeypatch):
+    for config in (None, [], {"agent": []}, {"agent": {"provider_stall_recovery": []}}):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly", lambda config=config: config
+        )
+        assert get_provider_stall_recovery_config() == ProviderStallRecoveryConfig()
+
+
+def test_provider_stall_recovery_clamps_probe_timeout_and_retry_count(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "agent": {
+                "provider_stall_recovery": {
+                    "health_probe_timeout_seconds": 999,
+                    "same_provider_retries": 8,
+                }
+            }
+        },
+    )
+
+    config = get_provider_stall_recovery_config()
+    assert config.health_probe_timeout_seconds == 30.0
+    assert config.same_provider_retries == 1
+
+
+def test_provider_stall_recovery_clamps_values_below_bounds(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "agent": {
+                "provider_stall_recovery": {
+                    "health_probe_timeout_seconds": 0.25,
+                    "same_provider_retries": -4,
+                }
+            }
+        },
+    )
+
+    config = get_provider_stall_recovery_config()
+    assert config.health_probe_timeout_seconds == 1.0
+    assert config.same_provider_retries == 0
 
 
 
@@ -100,7 +198,6 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
     # Case C: no config, no env → 1800.0 default
     monkeypatch.delenv("HERMES_API_TIMEOUT", raising=False)
     assert agent2._resolved_api_call_timeout() == 1800.0
-
 
 
 

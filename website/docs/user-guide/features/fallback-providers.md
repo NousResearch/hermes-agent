@@ -107,6 +107,7 @@ The fallback activates automatically when the primary model fails with:
 - **Auth failures** (HTTP 401, 403) — immediately (no point retrying)
 - **Not found** (HTTP 404) — immediately
 - **Invalid responses** — when the API returns malformed or empty responses repeatedly
+- **Repeated zero-chunk stalls** — after the configured stale interval and one bounded fresh-connection retry on the same provider
 
 When triggered, Hermes:
 
@@ -116,6 +117,33 @@ When triggered, Hermes:
 4. Resets the retry counter and continues the conversation
 
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
+
+### Zero-Chunk Stall Recovery
+
+`providers.<id>.stale_timeout_seconds` owns the interval during which a request may produce no real response chunks. The model-specific `providers.<id>.models.<model>.stale_timeout_seconds` overrides it. Any positive value is allowed; **300–450 seconds is recommended for slow reasoning providers** that can pause for minutes before first output. This setting is not non-stream-only: it governs the wait for the first real streaming chunk as well as stale non-streaming calls. A stall after real streaming output has begun follows the ordinary mid-stream stale policy instead.
+
+Recovery is bounded. When a zero-chunk interval expires, Hermes can perform an opt-in diagnostic HTTP `HEAD` probe, then rechecks whether a response chunk raced the probe. If a chunk arrived, the original request continues. Otherwise Hermes cancels the old transport and makes at most one fresh-connection retry on the same provider. That reconnect consumes the existing `HERMES_STREAM_RETRIES` budget; explicitly setting that limit to `0` retains diagnosis and fallback but prevents a same-provider retry. If the fresh attempt also stalls, Hermes immediately switches to `fallback_providers`; it does not start another same-provider stall cycle. With no fallback configured, the turn ends with a terminal diagnosis naming the provider/model, silent interval, attempt, and probe result rather than retrying indefinitely.
+
+The probe is disabled by default and is never an inference health check. It is bounded, auth-free, sends no credentials, prompt, generation payload, or response content, and does not keep the stalled request alive. Any HTTP status—even 401, 404, or 500—means only that the endpoint was reachable; it does not mean authentication, inference, the model, or the provider is healthy.
+
+```yaml
+agent:
+  provider_stall_recovery:
+    enabled: true                 # default: true
+    health_probe_enabled: true    # default: false; opt in explicitly
+    health_probe_timeout_seconds: 5  # default: 5 (clamped to 1–30)
+    same_provider_retries: 1      # default: 1 (bounded to 0 or 1)
+
+providers:
+  xiaomi:
+    stale_timeout_seconds: 360
+
+fallback_providers:
+  - provider: openai-codex
+    model: gpt-5.6-sol
+```
+
+Because the final failover changes provider/model for the current turn, its first request commonly cannot reuse the primary provider's prompt cache. Returning to the primary on the next turn can cause another cache miss. This is the availability-versus-cache-cost tradeoff of cross-provider recovery.
 
 :::warning Fallback resets the prompt cache
 Prompt caches are keyed to the model (and on most providers, the account) serving the request. When fallback fires, the new provider:model has no cached prefix for your conversation, so the next request re-reads the entire history at full input-token price instead of the ~75–90% discounted cached rate. The same applies when the turn ends and the primary is restored — that first request back on the primary is a full re-read too (unless the primary's cache TTL hasn't expired). This is unavoidable — it's the cost of staying alive through an outage — but it's why a long session that bounces between providers can cost noticeably more than one that stays put.
@@ -171,7 +199,9 @@ fallback_providers:
 
 | Context | Fallback Supported |
 |---------|-------------------|
-| CLI sessions | ✔ |
+| Classic CLI sessions | ✔ |
+| TUI sessions | ✔ |
+| Hermes Desktop | ✔ |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
 | Subagent delegation | ✔ (subagents inherit the parent fallback chain) |
 | Cron jobs | ✔ (cron agents inherit configured fallback providers) |

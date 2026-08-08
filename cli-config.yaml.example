@@ -124,16 +124,18 @@ model:
   #       X-Client-Name: "hermes-agent"
 
 # Named provider overrides (optional)
-# Use this for per-provider request timeouts, non-stream stale timeouts,
-# and per-model exceptions.
+# Use this for per-provider request timeouts, zero-real-chunk intervals,
+# and per-model exceptions. ``stale_timeout_seconds`` owns the wait for the
+# first real streaming chunk as well as stale non-streaming calls; 300-450s is
+# recommended for slow reasoning providers that can pause before first output.
 # Applies to the primary turn client on every api_mode (OpenAI-wire, native
 # Anthropic, and Anthropic-compatible providers), the fallback chain, and
 # client rebuilds during credential rotation.  For OpenAI-wire chat
 # completions (streaming and non-streaming) the configured value is also
 # used as the per-request ``timeout=`` kwarg so it wins over the legacy
 # HERMES_API_TIMEOUT env var (which still applies when no config is set).
-# ``stale_timeout_seconds`` controls the non-streaming stale-call detector and
-# wins over the legacy HERMES_API_CALL_STALE_TIMEOUT env var. Leaving these
+# ``stale_timeout_seconds`` also wins over the legacy
+# HERMES_API_CALL_STALE_TIMEOUT env var for non-stream calls. Leaving these
 # unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
 # HERMES_API_CALL_STALE_TIMEOUT=90s, native Anthropic 900s). The
 # implicit non-stream stale detector is auto-disabled for local endpoints
@@ -154,7 +156,31 @@ model:
 #   openai-codex:
 #     models:
 #       gpt-5.4:
-#         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
+#         stale_timeout_seconds: 1800  # Longer zero-chunk interval for slow large-context turns
+
+# Bounded zero-chunk stall recovery (shared by CLI, TUI, Desktop, gateways,
+# subagents, and cron). Recovery is enabled by default; the auth-free HEAD
+# reachability probe is opt-in. It sends no credentials or request/response
+# content, and any HTTP status means reachable only, never inference health.
+# Hermes rechecks for a chunk that raced the probe, then makes at most one
+# fresh same-provider retry. A repeated stall immediately uses
+# fallback_providers; without one, Hermes returns a terminal diagnosis.
+# Cross-provider fallback can invalidate the current conversation prompt cache.
+#
+# agent:
+#   provider_stall_recovery:
+#     enabled: true                    # default: true
+#     health_probe_enabled: true       # default: false; opt in explicitly
+#     health_probe_timeout_seconds: 5  # default: 5; clamped to 1-30 seconds
+#     same_provider_retries: 1         # default: 1; bounded to 0 or 1
+#
+# providers:
+#   xiaomi:
+#     stale_timeout_seconds: 360
+#
+# fallback_providers:
+#   - provider: openai-codex
+#     model: gpt-5.6-sol
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)

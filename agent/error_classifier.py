@@ -16,6 +16,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from agent.provider_stall import ProviderStalledError
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +43,7 @@ class FailoverReason(enum.Enum):
 
     # Transport
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
+    provider_stalled = "provider_stalled"  # Repeated silent stream after one reconnect — fallback
     # TLS certificate verification failure — deterministic for the host
     # (TLS-inspecting proxy, missing/expired CA bundle, self-signed cert).
     # Retrying reproduces the identical handshake failure, so fail fast
@@ -715,6 +718,19 @@ def classify_api_error(
         }
         defaults.update(overrides)
         return ClassifiedError(**defaults)
+
+    if isinstance(error, ProviderStalledError):
+        return _result(
+            FailoverReason.provider_stalled,
+            retryable=False,
+            should_fallback=True,
+            error_context={
+                "silent_seconds": error.silent_seconds,
+                "attempt": error.attempt,
+                "probe_status": error.probe.status,
+                "probe_http_status": error.probe.http_status,
+            },
+        )
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
 

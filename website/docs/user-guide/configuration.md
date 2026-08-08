@@ -93,9 +93,9 @@ For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-ho
 
 You can set `providers.<id>.request_timeout_seconds` for a provider-wide request timeout, plus `providers.<id>.models.<model>.timeout_seconds` for a model-specific override. Applies to the primary turn client on every transport (OpenAI-wire, native Anthropic, Anthropic-compatible), the fallback chain, rebuilds after credential rotation, and (for OpenAI-wire) the per-request timeout kwarg — so the configured value wins over the legacy `HERMES_API_TIMEOUT` env var.
 
-You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming stale-call detector, plus `providers.<id>.models.<model>.stale_timeout_seconds` for a model-specific override. This wins over the legacy `HERMES_API_CALL_STALE_TIMEOUT` env var.
+You can also set `providers.<id>.stale_timeout_seconds` for the maximum zero-real-chunk interval, plus `providers.<id>.models.<model>.stale_timeout_seconds` for a model-specific override. It applies while a streaming request is waiting for its first real response chunk and to non-streaming stale calls. This wins over the legacy `HERMES_API_CALL_STALE_TIMEOUT` env var.
 
-Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
+Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The stale detector is auto-adjusted for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
 ## Update Behavior
 
@@ -1007,22 +1007,63 @@ goals:
 
 `max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](/user-guide/features/goals) for the full feature.
 
-### API Timeouts
+### API Timeouts and Provider Stall Recovery
 
-Hermes has separate timeout layers for streaming, plus a stale detector for non-streaming calls. The stale detectors auto-adjust for local providers only when you leave them at their implicit defaults.
+Hermes has separate timeout layers for transport reads, zero-real-chunk stalls, and total non-streaming calls. The stale detectors auto-adjust for local providers only when you leave them at their implicit defaults.
 
 | Timeout | Default | Local providers | Config / env |
 |---------|---------|----------------|--------------|
 | Socket read timeout | 120s | Auto-raised to 1800s | `HERMES_STREAM_READ_TIMEOUT` |
-| Stale stream detection | 180s | Raised to a 900s ceiling (`agent.local_stream_stale_timeout`) | `HERMES_STREAM_STALE_TIMEOUT` |
-| Stale non-stream detection | 90s | Auto-disabled when left implicit | `providers.<id>.stale_timeout_seconds` or `HERMES_API_CALL_STALE_TIMEOUT` |
+| Streaming zero-chunk interval | 180s | Raised to a 900s ceiling (`agent.local_stream_stale_timeout`) | `providers.<id>.stale_timeout_seconds`, model override, or `HERMES_STREAM_STALE_TIMEOUT` |
+| Non-stream stale detection | 90s | Auto-disabled when left implicit | `providers.<id>.stale_timeout_seconds`, model override, or `HERMES_API_CALL_STALE_TIMEOUT` |
 | API call (non-streaming) | 1800s | Unchanged | `providers.<id>.request_timeout_seconds` / `timeout_seconds` or `HERMES_API_TIMEOUT` |
 
 The **socket read timeout** controls how long httpx waits for the next chunk of data from the provider. Local LLMs can take minutes for prefill on large contexts before producing the first token, so Hermes raises this to 30 minutes when it detects a local endpoint. If you explicitly set `HERMES_STREAM_READ_TIMEOUT`, that value is always used regardless of endpoint detection.
 
-The **stale stream detection** kills connections that receive SSE keep-alive pings but no actual content. For local providers (which don't send keep-alive pings during prefill) the default is raised to a finite 900-second ceiling instead of the 180s base — configurable via `agent.local_stream_stale_timeout` or the `HERMES_LOCAL_STREAM_STALE_TIMEOUT` env var.
+The **streaming zero-chunk interval** is owned by `providers.<id>.stale_timeout_seconds` (or the model-specific override). It is the longest Hermes waits for a real response chunk, regardless of SSE keep-alive traffic. You may choose any positive interval; **300–450 seconds is recommended for slow reasoning providers** that sometimes pause for several minutes before their first output. Mid-stream stalls after real output has begun retain the ordinary stale-stream safety policy and do not use the recovery probe described below. For local providers left at the implicit default, Hermes raises the 180-second base to a finite 900-second ceiling via `agent.local_stream_stale_timeout` (or legacy `HERMES_LOCAL_STREAM_STALE_TIMEOUT`).
 
-The **stale non-stream detection** kills non-streaming calls that produce no response for too long. By default Hermes disables this on local endpoints to avoid false positives during long prefills. If you explicitly set `providers.<id>.stale_timeout_seconds`, `providers.<id>.models.<model>.stale_timeout_seconds`, or `HERMES_API_CALL_STALE_TIMEOUT`, that explicit value is honored even on local endpoints.
+The same explicit `stale_timeout_seconds` also governs non-streaming calls that produce no response for too long. By default Hermes disables this non-stream detector on local endpoints to avoid false positives during long prefills. An explicit provider, model, or legacy `HERMES_API_CALL_STALE_TIMEOUT` value is honored even on local endpoints.
+
+#### Zero-chunk recovery policy
+
+Provider stall recovery is enabled by default, while its optional endpoint probe is off by default. These are the exact keys and defaults:
+
+```yaml
+agent:
+  provider_stall_recovery:
+    enabled: true
+    health_probe_enabled: false
+    health_probe_timeout_seconds: 5
+    same_provider_retries: 1
+```
+
+- `enabled` controls the bounded recovery path after a zero-chunk interval expires.
+- `health_probe_enabled` opts into one diagnostic, credential-free HTTP `HEAD` request to the provider base URL. Hermes sends no API credential, prompt, generation payload, or response content, does not follow redirects, and never uses the probe to keep the stalled inference request alive. **Any HTTP status means only that the endpoint is reachable**—including 4xx or 5xx—not that authentication, inference, the selected model, or the provider is healthy.
+- `health_probe_timeout_seconds` bounds that diagnostic request (default `5`; values are clamped to 1–30 seconds).
+- `same_provider_retries` is bounded to `0` or `1` (default `1`). With `1`, Hermes cancels the stalled transport and makes at most one fresh-connection retry on the same provider. This retry consumes the existing `HERMES_STREAM_RETRIES` budget, so an explicit `HERMES_STREAM_RETRIES=0` disables it while preserving stall diagnosis and configured provider fallback.
+
+A real provider chunk can arrive while the probe is running, so Hermes rechecks the original attempt after the probe and lets that recovered response win. If the fresh same-provider attempt also reaches the zero-chunk interval, Hermes immediately activates the configured `fallback_providers` chain instead of starting another stall retry. Without a fallback, the turn ends with a specific provider/model, silent-duration, attempt, and probe diagnosis rather than retrying indefinitely.
+
+This behavior is part of the shared agent core and therefore applies to classic CLI sessions, the TUI, Hermes Desktop, messaging gateways, delegated subagents, and cron jobs. Fallback changes the provider/model for the current turn; because prompt caches are provider/model (and often account) specific, that switch can invalidate the cached conversation prefix and make the next request a full-price cache miss.
+
+Complete example for a slow Xiaomi reasoning provider with diagnostic probing and Codex OAuth fallback:
+
+```yaml
+agent:
+  provider_stall_recovery:
+    enabled: true
+    health_probe_enabled: true
+    health_probe_timeout_seconds: 5
+    same_provider_retries: 1
+
+providers:
+  xiaomi:
+    stale_timeout_seconds: 360
+
+fallback_providers:
+  - provider: openai-codex
+    model: gpt-5.6-sol
+```
 
 This budget bounds every non-streaming call, including the ones cron jobs and delegated subagents run inline. A provider that accepts a request and then goes silent — connection held open, no bytes, no error — is aborted at the stale timeout and retried, rather than hanging until the much longer socket read timeout (or, for an unattended cron run, until something external kills the process).
 

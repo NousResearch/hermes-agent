@@ -38,6 +38,7 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.provider_stall import format_provider_stall_status
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
     build_turn_context,
@@ -4073,7 +4074,36 @@ def run_conversation(
                     max_retries=max_retries,
                     retryable=classified.retryable,
                     reason=classified.reason.value,
+                    error_context=classified.error_context,
                 )
+
+                if classified.reason == FailoverReason.provider_stalled:
+                    if agent._try_activate_fallback(
+                        reason=FailoverReason.provider_stalled
+                    ):
+                        agent._buffer_status(
+                            format_provider_stall_status(api_error, "falling_back")
+                        )
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt
+                        )
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
+                    stall_error = format_provider_stall_status(api_error, "failed")
+                    agent._buffer_status(stall_error)
+                    agent._flush_status_buffer()
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": stall_error,
+                        "messages": messages,
+                        "completed": False,
+                        "api_calls": api_call_count,
+                        "error": stall_error,
+                        "failed": True,
+                        "failure_reason": classified.reason.value,
+                    }
 
                 if (
                     classified.reason == FailoverReason.billing

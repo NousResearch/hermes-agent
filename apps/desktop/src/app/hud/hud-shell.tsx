@@ -165,6 +165,18 @@ export function HudShell() {
       }
 
       setScrollable(Boolean(el && el.scrollHeight > el.clientHeight + 4))
+
+      // How tall the band actually needs to be. The transcript is packed to the
+      // bottom, so this is the distance from the topmost visible row down to the
+      // bar — which is 0 on a fresh session, and the glass then collapses behind
+      // the bar instead of painting an empty slab over the whole window.
+      //
+      // Written straight to the element rather than through state: it changes on
+      // every stream flush, and the sheet resizing must not re-render the tree.
+      const rows = el?.querySelectorAll<HTMLElement>('[data-slot="aui_thread-content"] > *:not([data-slot])')
+      const top = rows?.length ? rows[0].getBoundingClientRect().top : null
+      const height = top === null || !el ? 0 : Math.max(0, el.getBoundingClientRect().bottom - top)
+      root.style.setProperty('--hud-band-height', `${Math.round(height)}px`)
     }
 
     // The viewport mounts async (lazy chat surface); poll briefly until it

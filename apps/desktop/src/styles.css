@@ -2393,7 +2393,14 @@ button[data-slot='aui_msg-reactions'] svg {
    rather than a true blur-radius ramp. Its own change, not this one. */
 [data-hud-shell] [data-hud-glass] {
   position: absolute;
-  inset: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  /* Grows up from the bar to fit the transcript, capped at the window. An empty
+     session measures 0 and the sheet collapses behind the bar, rather than
+     painting a full-height slab with nothing in it. The extra is breathing room
+     above the first row so the fade has somewhere to happen. */
+  height: min(100%, calc(var(--hud-band-height, 0px) + 2rem));
   z-index: 0;
   pointer-events: none;
   border-radius: 0.75rem 0.75rem 0 0;

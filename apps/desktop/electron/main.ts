@@ -485,6 +485,7 @@ import {
   type RegistrySessionSource,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
+  resolveProfileSessionAggregateRoute,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
   tagPrimaryAggregateRows,
@@ -1891,6 +1892,7 @@ const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
 // lifecycles, so concurrent dials for one (connectionId, profile) scope
 // coalesce here — the second caller awaits the first spawn's result.
 const backendDialClaims = new BackendDialClaims()
+let globalRemoteConnectionPromise: Promise<any> | null = null
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
@@ -9901,7 +9903,76 @@ async function fetchJsonForProfile(profile, path) {
 async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
 
+  return requestJsonForConnection(conn, path, method, body)
+}
+
+async function requestJsonForConnection(conn, path: string, method: string, body?: string) {
   return fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+}
+
+// Mixed remote mode (app-global remote + an explicit override on the active
+// profile): the window's primary backend is that override, but the app-global
+// remote still owns every inherited profile's sessions, the default profile's
+// Telegram chat included (#81198). Dial it separately for those reads.
+async function ensureGlobalRemoteBackend() {
+  if (globalRemoteConnectionPromise) {
+    return globalRemoteConnectionPromise
+  }
+
+  const connectionAttempt = (async () => {
+    const remote = await resolveRemoteBackend(null)
+
+    if (!remote) {
+      throw new Error('The app-global Hermes backend is not remote.')
+    }
+
+    await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode)
+
+    return remote
+  })()
+
+  globalRemoteConnectionPromise = connectionAttempt
+
+  try {
+    return await connectionAttempt
+  } catch (error) {
+    if (globalRemoteConnectionPromise === connectionAttempt) {
+      globalRemoteConnectionPromise = null
+    }
+
+    throw error
+  }
+}
+
+async function requestJsonForGlobalRemote(path: string, method: string, body?: string) {
+  const conn = await ensureGlobalRemoteBackend()
+  const connectionAttempt = globalRemoteConnectionPromise
+
+  try {
+    return await requestJsonForConnection(conn, path, method, body)
+  } catch (error) {
+    if (globalRemoteConnectionPromise === connectionAttempt) {
+      globalRemoteConnectionPromise = null
+    }
+
+    throw error
+  }
+}
+
+function profileSessionAggregateFetchOptions() {
+  return {
+    globalRemote: globalRemoteActive(),
+    primaryProfileRemoteOverride: Boolean(profileHasRemoteOverride(primaryProfileKey())),
+    fetchJsonForGlobalRemote: (_profile, path) => requestJsonForGlobalRemote(path, 'GET')
+  }
+}
+
+async function requestJsonForGlobalProfile(path: string, method: string, body?: string) {
+  if (resolveProfileSessionAggregateRoute(profileSessionAggregateFetchOptions()) === 'global-remote') {
+    return requestJsonForGlobalRemote(path, method, body)
+  }
+
+  return requestJsonForProfile(null, path, method, body)
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -10149,6 +10220,7 @@ function resetBootProgressForReconnect() {
 function resetHermesConnectionState({ soft = false }: { soft?: boolean } = {}): void {
   backendStartFailure = null
   remoteReauthFailure = null
+  globalRemoteConnectionPromise = null
   remoteLiveness.clear()
   // The next startHermes() re-reads active-profile.json for its launch profile.
   primaryProfilePin.clear()
@@ -15536,12 +15608,12 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       const path = `${pathname}?${passthroughParams.toString()}`
 
       if (method === 'GET') {
-        return fetchJsonForProfile(null, path)
+        return requestJsonForGlobalProfile(path, method)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
 
-      return requestJsonForProfile(null, path, method, body)
+      return requestJsonForGlobalProfile(path, method, body)
     }
 
     return undefined
@@ -15616,7 +15688,9 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
       return remoteSessionList(requested, searchParams)
     }
 
-    return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)
+    return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, {
+      aggregate: profileSessionAggregateFetchOptions()
+    })
   }
 
   return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, pinnedConnectionId)
@@ -15633,7 +15707,10 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
-  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
+  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, {
+    prefixForMerge: true,
+    aggregate: profileSessionAggregateFetchOptions()
+  })) as any
 
   if (pinned) {
     await tagPrimaryAggregateRows(base, () => ensureBackend(null, { passive: true }), pinned)

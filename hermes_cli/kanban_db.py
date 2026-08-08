@@ -4451,6 +4451,20 @@ def heartbeat_claim(
         return False
 
 
+def set_task_priority(
+    conn: sqlite3.Connection, task_id: str, priority: int
+) -> bool:
+    """Set priority for one existing task and retain an audit event."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET priority = ? WHERE id = ?", (priority, task_id)
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(conn, task_id, "priority_changed", {"priority": priority})
+        return True
+
+
 def release_stale_claims(
     conn: sqlite3.Connection,
     *,

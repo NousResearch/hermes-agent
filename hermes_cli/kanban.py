@@ -562,6 +562,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_claim.add_argument("task_id")
     p_claim.add_argument("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS,
                          help="Claim TTL in seconds (default: 900)")
+    p_claim.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    p_priority = sub.add_parser("priority", help="Set one task's priority")
+    p_priority.add_argument("task_id")
+    p_priority.add_argument("priority", type=int)
 
     # --- comment / complete / block / unblock / archive ---
     p_comment = sub.add_parser("comment", help="Append a comment")
@@ -1056,7 +1061,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "diag":     _cmd_diagnostics,
             "link":     _cmd_link,
             "unlink":   _cmd_unlink,
-            "claim":    _cmd_claim,
+        "claim":    _cmd_claim,
+        "priority": _cmd_priority,
             "comment":  _cmd_comment,
             "attach":   _cmd_attach,
             "attachments": _cmd_attachments,
@@ -1123,6 +1129,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "link",
     "unlink",
     "claim",
+    "priority",
     "comment",
     "attach",
     "attach-rm",
@@ -1439,7 +1446,18 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
+    claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
     with kb.connect_closing() as conn:
+        if claim_lock and not kb.heartbeat_claim(
+            conn,
+            args.task_id,
+            claimer=claim_lock,
+        ):
+            print(
+                f"cannot heartbeat {args.task_id} (claim moved)",
+                file=sys.stderr,
+            )
+            return 1
         ok = kb.heartbeat_worker(
             conn,
             args.task_id,
@@ -2027,8 +2045,30 @@ def _cmd_claim(args: argparse.Namespace) -> int:
             return 1
         workspace = kb.resolve_workspace(task)
         kb.set_workspace_path(conn, task.id, str(workspace))
-    print(f"Claimed {task.id}")
-    print(f"Workspace: {workspace}")
+    if args.json:
+        print(json.dumps({
+            "task_id": task.id,
+            "assignee": task.assignee,
+            "run_id": task.current_run_id,
+            "claim_lock": task.claim_lock,
+            "claim_expires": task.claim_expires,
+            "workspace": str(workspace),
+        }, sort_keys=True))
+    else:
+        print(f"Claimed {task.id}")
+        print(f"Workspace: {workspace}")
+    return 0
+
+
+def _cmd_priority(args: argparse.Namespace) -> int:
+    if not -100 <= args.priority <= 100:
+        print("kanban: priority must be from -100 through 100", file=sys.stderr)
+        return 2
+    with kb.connect_closing() as conn:
+        if not kb.set_task_priority(conn, args.task_id, args.priority):
+            print(f"no such task: {args.task_id}", file=sys.stderr)
+            return 1
+    print(f"Priority for {args.task_id} set to {args.priority}")
     return 0
 
 

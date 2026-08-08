@@ -6,12 +6,31 @@ import argparse
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
+
+
+def _run_cli(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    return kc.kanban_command(parser.parse_args(["kanban", *argv]))
+
+
+def _create_ready(conn, *, title: str, assignee: str | None = None) -> str:
+    task_id = kb.create_task(conn, title=title, assignee=assignee)
+    conn.execute(
+        "UPDATE tasks SET status='ready', claim_lock=NULL, claim_expires=NULL "
+        "WHERE id=?",
+        (task_id,),
+    )
+    conn.commit()
+    return task_id
 
 
 @pytest.fixture
@@ -55,6 +74,68 @@ def test_kanban_list_json_includes_session_id(kanban_home):
         and row.get("session_id") == "acp-x"
         for row in payload
     )
+
+
+def test_claim_json_returns_external_worker_receipt(kanban_home, capsys):
+    with kb.connect_closing() as conn:
+        task_id = _create_ready(
+            conn,
+            title="external work",
+            assignee="codex-alpha-frontend",
+        )
+
+    assert _run_cli(["claim", task_id, "--json"]) == 0
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["task_id"] == task_id
+    assert receipt["assignee"] == "codex-alpha-frontend"
+    assert isinstance(receipt["run_id"], int)
+    assert receipt["claim_lock"]
+    assert receipt["claim_expires"] > int(time.time())
+    assert Path(receipt["workspace"]).is_absolute()
+
+
+def test_cli_heartbeat_extends_exact_external_claim(kanban_home, monkeypatch):
+    with kb.connect_closing() as conn:
+        task_id = _create_ready(conn, title="heartbeat")
+        task = kb.claim_task(
+            conn, task_id, claimer="host:external-worker", ttl_seconds=1
+        )
+        assert task is not None
+        before = task.claim_expires
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "host:external-worker")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(task.current_run_id))
+
+    assert _run_cli(["heartbeat", task_id, "--note", "turn active"]) == 0
+
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, task_id).claim_expires > before
+
+
+def test_cli_heartbeat_rejects_stale_external_claim(kanban_home, monkeypatch):
+    with kb.connect_closing() as conn:
+        task_id = _create_ready(conn, title="stale")
+        task = kb.claim_task(conn, task_id, claimer="host:current")
+        assert task is not None
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "host:stale")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(task.current_run_id))
+
+    assert _run_cli(["heartbeat", task_id]) == 1
+
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, task_id).claim_lock == "host:current"
+
+
+def test_priority_command_updates_one_task(kanban_home):
+    with kb.connect_closing() as conn:
+        task_id = _create_ready(conn, title="reprioritize")
+
+    assert _run_cli(["priority", task_id, "-25"]) == 0
+
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, task_id).priority == -25
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
@@ -164,5 +245,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
-

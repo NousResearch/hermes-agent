@@ -274,6 +274,25 @@ class TestPluginDiscovery:
         assert mgr.has_middleware("llm_request") is True
 
 
+
+    def test_execution_middleware_does_not_retry_downstream_failure(self, monkeypatch):
+        calls = []
+
+        def middleware(**kwargs):
+            return kwargs["next_call"](kwargs["args"])
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(args)
+            raise RuntimeError("tool failed")
+
+        with pytest.raises(RuntimeError, match="tool failed"):
+            run_tool_execution_middleware("terminal", {"command": "false"}, terminal)
+
+        assert calls == [{"command": "false"}]
+
     def test_middleware_helpers_skip_no_listener_work(self, monkeypatch):
         manager = types.SimpleNamespace(_middleware={})
         monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
@@ -295,13 +314,305 @@ class TestPluginDiscovery:
         assert run_tool_execution_middleware("terminal", args, lambda payload: payload) is args
         assert has_middleware("tool_request") is False
 
+    def test_request_middleware_changed_tracks_trace_not_deep_equality(self, monkeypatch):
+        def same_payload_middleware(**kwargs):
+            return {"args": kwargs["args"], "source": "same-payload"}
 
+        manager = types.SimpleNamespace(
+            _middleware={"tool_request": [same_payload_middleware]},
+            invoke_middleware=lambda kind, **kwargs: [same_payload_middleware(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
 
+        args = {"path": "README.md"}
+        result = apply_tool_request_middleware("read_file", args)
 
+        assert result.payload == args
+        assert result.original_payload == args
+        assert result.changed is True
+        assert result.trace == [{"source": "same-payload"}]
 
+    def test_tool_request_middleware_hides_internal_skip_relay_flag(
+        self,
+        monkeypatch,
+    ):
+        observed = []
 
+        def middleware(**kwargs):
+            observed.append(kwargs)
+            return {"args": kwargs["args"]}
 
+        manager = types.SimpleNamespace(
+            _middleware={"tool_request": [middleware]},
+            invoke_middleware=lambda kind, **kwargs: [middleware(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
 
+        apply_tool_request_middleware(
+            "read_file",
+            {"path": "README.md"},
+            session_id="",
+            skip_relay=True,
+        )
+
+        assert len(observed) == 1
+        assert "skip_relay" not in observed[0]
+
+    def test_llm_request_middleware_chains_effective_request_in_order(self, monkeypatch):
+        seen = []
+
+        def first(**kwargs):
+            seen.append(("first", kwargs["request"], kwargs["original_request"]))
+            return {
+                "request": {**kwargs["request"], "first": True},
+                "source": "first",
+            }
+
+        def second(**kwargs):
+            seen.append(("second", kwargs["request"], kwargs["original_request"]))
+            return {
+                "request": {**kwargs["request"], "second": True},
+                "source": "second",
+            }
+
+        manager = PluginManager()
+        manager._middleware = {"llm_request": [first, second]}
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        request = {"messages": []}
+        result = apply_llm_request_middleware(request)
+
+        assert result.payload == {"messages": [], "first": True, "second": True}
+        assert result.original_payload == request
+        assert result.trace == [{"source": "first"}, {"source": "second"}]
+        assert seen[0] == ("first", request, request)
+        assert seen[1] == (
+            "second",
+            {"messages": [], "first": True},
+            request,
+        )
+
+    def test_tool_request_middleware_chains_relay_and_plugin_rewrites(
+        self,
+        monkeypatch,
+    ):
+        seen = []
+
+        monkeypatch.setattr(
+            "agent.relay_runtime.apply_tool_request_intercepts",
+            lambda **kwargs: {**kwargs["args"], "relay": True},
+        )
+
+        def first(**kwargs):
+            seen.append(("first", kwargs["args"], kwargs["original_args"]))
+            return {
+                "args": {**kwargs["args"], "first": True},
+                "source": "first",
+            }
+
+        def second(**kwargs):
+            seen.append(("second", kwargs["args"], kwargs["original_args"]))
+            return {
+                "args": {**kwargs["args"], "second": True},
+                "source": "second",
+            }
+
+        manager = PluginManager()
+        manager._middleware = {"tool_request": [first, second]}
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        args = {"path": "README.md"}
+        result = apply_tool_request_middleware("read_file", args, session_id="s1")
+
+        assert result.payload == {
+            "path": "README.md",
+            "relay": True,
+            "first": True,
+            "second": True,
+        }
+        assert result.original_payload == args
+        assert result.trace == [
+            {"source": "nemo_relay"},
+            {"source": "first"},
+            {"source": "second"},
+        ]
+        assert seen == [
+            ("first", {"path": "README.md", "relay": True}, args),
+            (
+                "second",
+                {"path": "README.md", "relay": True, "first": True},
+                args,
+            ),
+        ]
+
+    def test_request_middleware_failure_keeps_prior_rewrite_isolated(
+        self,
+        monkeypatch,
+        caplog,
+    ):
+        seen = []
+
+        def first(**kwargs):
+            return {
+                "request": {**kwargs["request"], "first": True},
+                "source": "first",
+            }
+
+        def failing(**kwargs):
+            assert kwargs["request"]["first"] is True
+            kwargs["request"]["failed_mutation"] = True
+            raise RuntimeError("broken plugin")
+
+        def third(**kwargs):
+            seen.append(kwargs["request"])
+            return {
+                "request": {**kwargs["request"], "third": True},
+                "source": "third",
+            }
+
+        manager = PluginManager()
+        manager._middleware = {"llm_request": [first, failing, third]}
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        with caplog.at_level(logging.WARNING):
+            result = apply_llm_request_middleware({"messages": []})
+
+        assert seen == [{"messages": [], "first": True}]
+        assert result.payload == {"messages": [], "first": True, "third": True}
+        assert result.trace == [{"source": "first"}, {"source": "third"}]
+        assert "Middleware 'llm_request' callback failing raised: broken plugin" in caplog.text
+
+    def test_execution_middleware_post_next_call_error_does_not_retry(self, monkeypatch):
+        calls = []
+
+        def middleware(**kwargs):
+            result = kwargs["next_call"](kwargs["args"])
+            raise RuntimeError(f"post-processing failed after {result}")
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(args)
+            return "terminal-result"
+
+        result = run_tool_execution_middleware("terminal", {"command": "printf ok"}, terminal)
+
+        assert result == "terminal-result"
+        assert calls == [{"command": "printf ok"}]
+
+    def test_execution_middleware_pre_next_call_error_fails_open_to_remaining_chain(self, monkeypatch):
+        calls = []
+
+        def failing_middleware(**kwargs):
+            calls.append("failing")
+            raise RuntimeError("middleware setup failed")
+
+        def downstream_middleware(**kwargs):
+            calls.append("downstream")
+            return kwargs["next_call"]({**kwargs["args"], "rewritten": True})
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [failing_middleware, downstream_middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(("terminal", args))
+            return args
+
+        result = run_tool_execution_middleware("terminal", {"command": "printf ok"}, terminal)
+
+        assert result == {"command": "printf ok", "rewritten": True}
+        assert calls == ["failing", "downstream", ("terminal", {"command": "printf ok", "rewritten": True})]
+
+    def test_execution_middleware_translated_downstream_failure_is_not_masked(self, monkeypatch):
+        calls = []
+
+        def middleware(**kwargs):
+            try:
+                return kwargs["next_call"](kwargs["args"])
+            except Exception as exc:
+                raise RuntimeError(f"translated downstream failure: {exc}") from exc
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(args)
+            raise RuntimeError("terminal failed")
+
+        with pytest.raises(RuntimeError, match="translated downstream failure: terminal failed"):
+            run_tool_execution_middleware("terminal", {"command": "false"}, terminal)
+
+        assert calls == [{"command": "false"}]
+
+    def test_execution_middleware_downstream_base_exception_is_not_wrapped(self, monkeypatch):
+        calls = []
+
+        def middleware(**kwargs):
+            try:
+                return kwargs["next_call"](kwargs["args"])
+            except Exception as exc:
+                raise RuntimeError(f"middleware should not catch base exception: {exc}") from exc
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(args)
+            raise KeyboardInterrupt()
+
+        with pytest.raises(KeyboardInterrupt):
+            run_tool_execution_middleware("terminal", {"command": "interrupt"}, terminal)
+
+        assert calls == [{"command": "interrupt"}]
+
+    def test_execution_middleware_double_next_call_does_not_run_terminal_twice(self, monkeypatch):
+        calls = []
+
+        def middleware(**kwargs):
+            first = kwargs["next_call"](kwargs["args"])
+            # Deliberate misuse: a second next_call() must not re-run the
+            # downstream tool. The chain surfaces it as an error and preserves
+            # the first (successful) downstream result.
+            kwargs["next_call"](kwargs["args"])
+            return first
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(args)
+            return "terminal-result"
+
+        result = run_tool_execution_middleware("terminal", {"command": "printf ok"}, terminal)
+
+        assert result == "terminal-result"
+        assert calls == [{"command": "printf ok"}]
+
+    def test_request_middleware_tolerates_non_deepcopyable_payload(self, monkeypatch):
+        import threading
+
+        recorded = {}
+
+        def middleware(**kwargs):
+            recorded["args"] = kwargs["args"]
+            return None
+
+        manager = types.SimpleNamespace(
+            _middleware={"tool_request": [middleware]},
+            invoke_middleware=lambda kind, **kwargs: [middleware(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        # threading.Lock is not deepcopyable; a hard deepcopy would raise.
+        args = {"command": "noop", "lock": threading.Lock()}
+        result = apply_tool_request_middleware("terminal", args)
+
+        # Middleware ran (payload was copied via the shallow fallback) and the
+        # non-deepcopyable member is shared by reference rather than aborting.
+        assert recorded["args"]["command"] == "noop"
+        assert result.payload["command"] == "noop"
+        assert result.payload["lock"] is args["lock"]
 
     def test_failed_discovery_is_not_cached(self, tmp_path, monkeypatch):
         """A sweep that raises must not cache 'discovered' with no plugins.

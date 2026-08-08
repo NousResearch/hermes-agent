@@ -62,6 +62,12 @@ return {
 Hermes stores those trace entries in later observer hook payloads as
 `middleware_trace`.
 
+If multiple plugins register the same request middleware kind, Hermes applies
+them in registration order. Each callback receives the effective request or
+arguments returned by the previous callback, while `original_request` or
+`original_args` remains the pre-middleware snapshot. Callback failures are
+fail-open and do not discard rewrites already applied by earlier middleware.
+
 Execution middleware receives a `next_call` callback. Call it to continue the
 chain:
 

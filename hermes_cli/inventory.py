@@ -302,6 +302,7 @@ def build_model_options_payload(
         ctx,
         explicit_only=bool(explicit_only),
         include_unconfigured=bool(include_unconfigured),
+        for_picker=True,
         picker_hints=True,
         canonical_order=True,
         pricing=True,

@@ -922,9 +922,53 @@ class TestConvertMessages:
 
 
 class TestBuildAnthropicKwargs:
+    def test_oauth_prepends_claude_code_billing_and_identity_blocks(self):
+        messages = [
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user", "content": "Hi"},
+        ]
+        with patch(
+            "agent.anthropic_adapter._get_claude_code_version",
+            return_value="test-version",
+        ):
+            kwargs = build_anthropic_kwargs(
+                model="claude-opus-4-8",
+                messages=messages,
+                tools=None,
+                max_tokens=4096,
+                reasoning_config=None,
+                is_oauth=True,
+            )
 
+        assert kwargs["system"] == [
+            {
+                "type": "text",
+                "text": (
+                    "x-anthropic-billing-header: "
+                    "cc_version=test-version; cc_entrypoint=sdk-cli;"
+                ),
+            },
+            {
+                "type": "text",
+                "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+            },
+            {"type": "text", "text": "Be helpful."},
+        ]
 
+    def test_non_oauth_does_not_prepend_claude_code_system_blocks(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-8",
+            messages=[
+                {"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": "Hi"},
+            ],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=False,
+        )
 
+        assert kwargs["system"] == "Be helpful."
 
     def test_reasoning_config_maps_to_manual_thinking_for_pre_4_6_models(self):
         kwargs = build_anthropic_kwargs(

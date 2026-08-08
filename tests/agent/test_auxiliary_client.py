@@ -1182,6 +1182,22 @@ class TestVisionClientFallback:
         assert response.usage.completion_tokens == 4
 
 
+    def test_custom_provider_fallback_uses_fallback_provider_default_model(self):
+        """A failed custom endpoint must not leak its model into fallback providers."""
+        fallback_client = MagicMock()
+
+        with (
+            patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)),
+            patch(
+                "agent.auxiliary_client._resolve_api_key_provider",
+                return_value=(fallback_client, "gemini-2.0-flash"),
+            ),
+        ):
+            client, model = resolve_provider_client("custom", "ark-code-latest")
+
+        assert client is fallback_client
+        assert model == "gemini-2.0-flash"
+
 
 class TestAuxiliaryPoolAwareness:
 

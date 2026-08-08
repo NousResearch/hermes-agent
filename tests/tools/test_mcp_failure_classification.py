@@ -105,6 +105,71 @@ def test_keepalive_failure_logs_root_cause(monkeypatch, tmp_path, caplog):
     assert not any("unhandled errors in a TaskGroup" in m for m in keepalive_logs)
 
 
+# ── run() logs the root cause for TaskGroup-wrapped initial failures ────────
+
+def test_initial_connect_failure_logs_root_cause(monkeypatch, tmp_path, caplog):
+    """The initial-connect path must mirror the keepalive-path guarantee: a
+    TaskGroup-wrapped BrokenPipeError (the exact shape seen in the field —
+    stdio pipe closed before the child can speak) must surface as
+    'BrokenPipeError' in the retry/park logs, never as the opaque
+    'unhandled errors in a TaskGroup'."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+
+    _real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_delay, *a, **kw):
+        await _real_sleep(0)
+
+    monkeypatch.setattr(mcp_tool.asyncio, "sleep", _fast_sleep)
+
+    state = {"parked": False}
+
+    async def _scenario():
+        class _Task(MCPServerTask):
+            def _is_http(self):
+                return False
+
+            def _deregister_tools(self):
+                state["parked"] = True
+                self._registered_tool_names = []
+
+            async def _run_stdio(self, config):
+                raise _group(BrokenPipeError())
+
+        task = _Task("pipey-init")
+
+        with caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
+            run_task = asyncio.ensure_future(task.run({"command": "x"}))
+            for _ in range(1000):
+                await _real_sleep(0)
+                if state["parked"]:
+                    break
+
+        assert state["parked"]
+
+        task._shutdown_event.set()
+        task._reconnect_event.set()
+        try:
+            await asyncio.wait_for(run_task, timeout=15)
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            run_task.cancel()
+
+    asyncio.run(_scenario())
+
+    connect_logs = [
+        r.getMessage() for r in caplog.records
+        if "initial connection failed" in r.getMessage()
+        or "parking until a reconnect" in r.getMessage()
+    ]
+    assert connect_logs, "initial-connect failure was not logged"
+    assert any("BrokenPipeError" in m for m in connect_logs), connect_logs
+    assert not any(
+        "unhandled errors in a TaskGroup" in m for m in connect_logs
+    ), connect_logs
+
+
 # ── run() parks permanent failures immediately ───────────────────────────────
 
 @pytest.mark.no_isolate

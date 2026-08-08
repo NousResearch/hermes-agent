@@ -235,9 +235,28 @@ export const ja = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: 'アーカイブ済みチャット',
+      general: '全般',
       about: '情報',
       billing: '請求',
       notifications: '通知'
+    },
+    general: {
+      title: '全般',
+      intro: 'Windows のデスクトップ基本設定：システムトレイの動作と、Windows 起動時に Hermes を開始するかどうか。',
+      windowsOnly: 'これらのオプションは Windows で利用できます。',
+      loadFailed: 'デスクトップの設定を読み込めませんでした。',
+      trayUnavailable:
+        'トレイは有効ですが、まだトレイアイコンがありません（アイコン資産の欠落またはセットアップ失敗）。トレイへ閉じ込めるには有効なトレイが必要です。',
+      enable: 'トレイを有効にする',
+      enableDesc: 'Hermes を通知領域に表示します。オフにすると通常のウィンドウの閉じる/終了動作に戻ります。',
+      closeToTray: '閉じるボタンでトレイへ',
+      closeToTrayDesc: 'タイトルバーの閉じるで終了せずに隠し、トレイから復元できるようにします。',
+      startInTray: '起動時にトレイで開始',
+      startInTrayDesc: '起動時はメインウィンドウを隠したまま、トレイから開くまで待ちます。',
+      popOutPetOnStartup: '起動時にペットを表示',
+      popOutPetOnStartupDesc: 'ペットが利用可能な場合、起動後にデスクトップペットとして自動的に浮かべます。',
+      launchAtLogin: 'ログイン時に起動',
+      launchAtLoginDesc: 'Windows サインイン時に Hermes を開始します（OS のログイン項目）。'
     },
     notifications: {
       title: '通知',

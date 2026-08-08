@@ -61,6 +61,8 @@ declare global {
         control: (payload: PetOverlayControl) => void
         onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
+        reportTrayState: (state: { available: boolean; poppedOut: boolean }) => void
+        onTrayCommand: (callback: (command: 'pop-out' | 'pop-in') => void) => () => void
       }
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS
       // shortcut registration + the persisted preference (it must restore the
@@ -153,6 +155,36 @@ declare global {
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       setTranslucency?: (payload: { intensity: number }) => void
       setKeepAwake?: (on: boolean) => void
+    getTrayPreferences?: () => Promise<{
+      preferences: {
+        enabled: boolean
+        closeToTray: boolean
+        startInTray: boolean
+        popOutPetOnStartup: boolean
+        launchAtLogin: boolean
+      }
+      trayAvailable: boolean
+      platform: string
+      launchAtLoginSupported: boolean
+    }>
+    setTrayPreferences?: (next: Partial<{
+      enabled: boolean
+      closeToTray: boolean
+      startInTray: boolean
+      popOutPetOnStartup: boolean
+      launchAtLogin: boolean
+    }>) => Promise<{
+      preferences: {
+        enabled: boolean
+        closeToTray: boolean
+        startInTray: boolean
+        popOutPetOnStartup: boolean
+        launchAtLogin: boolean
+      }
+      trayAvailable: boolean
+      platform: string
+      launchAtLoginSupported: boolean
+    }>
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       openPreviewInBrowser?: (url: string) => Promise<void>

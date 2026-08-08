@@ -299,10 +299,29 @@ export const ar = defineLocale({
       keysSettings: 'الإعدادات',
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
+      general: 'عام',
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',
       plugins: 'الإضافات'
+    },
+    general: {
+      title: 'عام',
+      intro: 'أساسيات سطح المكتب لنظام Windows: سلوك علبة النظام وهل يبدأ Hermes مع Windows.',
+      windowsOnly: 'تتوفر هذه الخيارات على Windows.',
+      loadFailed: 'تعذّر تحميل تفضيلات سطح المكتب.',
+      trayUnavailable:
+        'علبة النظام مفعّلة، لكن لا يوجد رمز علبة نشط بعد (أصل الرمز مفقود أو فشل الإعداد). الإغلاق إلى العلبة يتطلب علبة نشطة.',
+      enable: 'تفعيل علبة النظام',
+      enableDesc: 'إظهار Hermes في منطقة الإشعارات. عند الإيقاف، تعود إلى سلوك الإغلاق/الخروج العادي.',
+      closeToTray: 'إغلاق النافذة إلى العلبة',
+      closeToTrayDesc: 'زر الإغلاق في شريط العنوان يخفي Hermes بدلاً من إنهائه، مع إمكانية الاستعادة من العلبة.',
+      startInTray: 'البدء في العلبة',
+      startInTrayDesc: 'عند التشغيل، أبقِ النافذة الرئيسية مخفية حتى تفتح Hermes من العلبة.',
+      popOutPetOnStartup: 'إظهار الحيوان الأليف عند البدء',
+      popOutPetOnStartupDesc: 'عند توفّر الحيوان الأليف، افصله تلقائياً كحيوان أليف عائم بعد التشغيل.',
+      launchAtLogin: 'البدء عند تسجيل الدخول',
+      launchAtLoginDesc: 'بدء Hermes عند تسجيل دخول Windows (عنصر تسجيل دخول النظام).'
     },
     plugins: {
       title: 'إضافات سطح المكتب',

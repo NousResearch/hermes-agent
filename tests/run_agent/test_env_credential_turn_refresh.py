@@ -146,6 +146,77 @@ class TestLeavesNonEnvStateAlone:
         assert agent._try_refresh_env_client_credentials() is False
 
 
+class TestRebindsCredentialPoolEntryId:
+    """#79156: after adopting an env credential edit, the agent's
+    ``_credential_pool_entry_id`` must be rebound to the key now in use.
+
+    When a pool rotation previously moved the session onto a fallback entry,
+    ``_credential_pool_entry_id`` points at that fallback. If the per-turn env
+    refresh then adopts a different (env) key and a subsequent 429 arrives,
+    ``mark_exhausted_and_rotate`` resolves by ``credential_id`` *first* and
+    quarantines the healthy fallback entry with the env key's error — leaving
+    the pool with "no available entries" despite a healthy key.
+    """
+
+    def test_adoption_rebinds_stale_pool_entry_id(self, env):
+        agent = _make_agent()
+        env["OPENAI_API_KEY"] = "sk-old"
+        assert agent._try_refresh_env_client_credentials() is False
+
+        # Pool rotated the session onto a fallback entry earlier; the env
+        # key is edited mid-session (the #79156 trigger).
+        import agent.agent_runtime_helpers as arh
+
+        pool = MagicMock()
+        pool.entry_id_for_api_key.return_value = "entry-env-key"
+        agent._credential_pool = pool
+        agent._credential_pool_entry_id = "entry-fallback"
+        env["OPENAI_API_KEY"] = "sk-new"
+
+        with pytest.MonkeyPatch.context() as mp:
+            captured = {}
+
+            def _fake_sync(agent_obj):
+                captured["called"] = True
+                agent_obj._credential_pool_entry_id = (
+                    agent_obj._credential_pool.entry_id_for_api_key(
+                        getattr(agent_obj, "api_key", None)
+                    )
+                )
+
+            mp.setattr(arh, "sync_credential_pool_entry_id", _fake_sync)
+
+            assert agent._try_refresh_env_client_credentials() is True
+
+        assert agent.api_key == "sk-new"
+        assert captured.get("called") is True
+        assert agent._credential_pool_entry_id == "entry-env-key"
+
+    def test_noop_turn_keeps_pool_entry_id_untouched(self, env):
+        """An unchanged env (no adoption) must not clobber the rotation's
+        credential binding — the refresh is a no-op and leaves
+        ``_credential_pool_entry_id`` exactly as the rotation set it."""
+        agent = _make_agent()
+        env["OPENAI_API_KEY"] = "sk-old"
+        assert agent._try_refresh_env_client_credentials() is False
+
+        import agent.agent_runtime_helpers as arh
+
+        agent._credential_pool = MagicMock()
+        agent._credential_pool_entry_id = "entry-fallback"
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(
+            arh,
+            "sync_credential_pool_entry_id",
+            lambda a: (_ for _ in ()).throw(AssertionError("must not be called")),
+        )
+        try:
+            assert agent._try_refresh_env_client_credentials() is False
+        finally:
+            monkeypatch.undo()
+        assert agent._credential_pool_entry_id == "entry-fallback"
+
+
 class TestFailedRebuildRetries:
     def test_failed_rebuild_rolls_back_and_retries_next_turn(self, env):
         """A failed client rebuild must not advance the edit baseline: the

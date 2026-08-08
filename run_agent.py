@@ -5626,6 +5626,21 @@ class AIAgent:
             return False
 
         self._env_creds_seen = resolved
+        # The env credential was just adopted, but ``_credential_pool_entry_id``
+        # may still point at the previously-rotated fallback entry — pool
+        # rotation legitimately moves the session off the env key, and this
+        # refresh intentionally does not stomp that. Rebind the id to the key
+        # now in use so a subsequent 429/401 is attributed to the entry that
+        # actually failed; otherwise ``mark_exhausted_and_rotate`` quarantines
+        # the healthy fallback key with this request's error (issue #79156).
+        try:
+            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+
+            sync_credential_pool_entry_id(self)
+        except Exception:
+            # Fail-safe: an unresolved id degrades to api_key_hint matching in
+            # mark_exhausted_and_rotate, identical to pre-fix behaviour.
+            pass
         logger.info(
             "Applied updated .env credentials for %s: endpoint %s",
             self.provider,

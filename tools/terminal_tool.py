@@ -3200,7 +3200,10 @@ def terminal_tool(
             # Real prefixes, auth headers, JWTs, private keys are masked in
             # both modes. See issue #43025.
             from agent.redact import redact_terminal_output
-            output = redact_terminal_output(output.strip(), command) if output else ""
+            try:
+                output = redact_terminal_output(output.strip(), command) if output else ""
+            except Exception:
+                logger.debug("redact_terminal_output failed", exc_info=True)
 
             # Interpret non-zero exit codes that aren't real errors
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")

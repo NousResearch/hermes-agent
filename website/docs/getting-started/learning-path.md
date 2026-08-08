@@ -28,7 +28,7 @@ First-time users almost always want `hermes setup --portal` — one OAuth covers
 |---|---|---|---|
 | **Beginner** | Get up and running, have basic conversations, use built-in tools | [Installation](/getting-started/installation) → [Quickstart](/getting-started/quickstart) → [CLI Usage](/user-guide/cli) → [Configuration](/user-guide/configuration) | ~1 hour |
 | **Intermediate** | Set up messaging bots, use advanced features like memory, cron jobs, and skills | [Sessions](/user-guide/sessions) → [Messaging](/user-guide/messaging) → [Tools](/user-guide/features/tools) → [Skills](/user-guide/features/skills) → [Memory](/user-guide/features/memory) → [Cron](/user-guide/features/cron) | ~2–3 hours |
-| **Advanced** | Build custom tools, create skills, train models with RL, contribute to the project | [Architecture](/developer-guide/architecture) → [Adding Tools](/developer-guide/adding-tools) → [Creating Skills](/developer-guide/creating-skills) → [Contributing](/developer-guide/contributing) | ~4–6 hours |
+| **Advanced** | Build custom tools, create skills, train models with RL, contribute to the project | [Architecture](/developer-guide/architecture) → [Adding Tools](/developer-guide/adding-tools) → [Creating Skills](/developer-guide/creating-skills) → [RL Training](/user-guide/features/rl-training) → [Contributing](/developer-guide/contributing) | ~4–6 hours |
 
 ## By Use Case
 
@@ -104,9 +104,10 @@ Use reinforcement learning to fine-tune model behavior with Hermes Agent's RL tr
 
 1. [Quickstart](/getting-started/quickstart)
 2. [Configuration](/user-guide/configuration)
-3. [Atropos RL Environments](https://github.com/NousResearch/atropos) (external)
-4. [Provider Routing](/user-guide/features/provider-routing)
-5. [Architecture](/developer-guide/architecture)
+3. [RL Training](/user-guide/features/rl-training)
+4. [Atropos RL Environments](https://github.com/NousResearch/atropos) (external)
+5. [Provider Routing](/user-guide/features/provider-routing)
+6. [Architecture](/developer-guide/architecture)
 
 :::tip
 RL training works best when you already understand the basics of how Hermes Agent handles conversations and tool calls. Run through the Beginner path first if you're new.
@@ -140,6 +141,7 @@ Not sure what's available? Here's a quick directory of major features:
 | **Browser** | Web browsing and scraping | [Browser](/user-guide/features/browser) |
 | **Hooks** | Event-driven callbacks and middleware | [Hooks](/user-guide/features/hooks) |
 | **Batch Processing** | Process multiple inputs in bulk | [Batch Processing](/user-guide/features/batch-processing) |
+| **RL Training** | Fine-tune models with reinforcement learning | [RL Training](/user-guide/features/rl-training) |
 | **Provider Routing** | Route requests across multiple LLM providers | [Provider Routing](/user-guide/features/provider-routing) |
 
 ## What to Read Next

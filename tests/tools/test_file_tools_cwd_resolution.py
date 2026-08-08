@@ -15,8 +15,10 @@ Core invariant these tests pin:
   never left to resolve against whatever the process cwd happens to be.
 """
 
+import json
 import os
 from pathlib import Path, PurePosixPath
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -132,6 +134,308 @@ def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypat
 
     assert resolved == container_mount / "oilsands-sim" / "README.md"
     assert resolved != host_project / "oilsands-sim" / "README.md"
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("/proc/1/task/1/root/dev/zero", True),
+        ("/proc/self/root", False),
+        ("/workspace/proc/self/root/dev/zero", False),
+        ("/proc/١/root/dev/zero", False),
+        ("/proc/1/task/١/root/dev/zero", False),
+        # /proc/<pid>/exe is a symlink to the process's own executable —
+        # reading it shares the same hang/leak surface as the other
+        # /proc suffix family (environ, maps, ...), so it is blocked
+        # outright rather than requiring cwd-style resolution.
+        ("/proc/self/exe", True),
+        ("/proc/12345/exe", True),
+        ("/proc/self/task/1234/exe", True),
+        ("/proc/self/root/proc/self/exe", True),
+        # Suffix match must be exact ("/exe"), not a bare substring.
+        ("/proc/self/exec", False),
+        ("/proc/self/myexe", False),
+    ],
+)
+def test_container_device_path_canonicalization_walk(path, expected):
+    assert ft._is_blocked_container_device_path(path) is expected
+
+
+def _empty_search_ops():
+    mock_ops = MagicMock()
+    result_obj = MagicMock(matches=[])
+    result_obj.to_dict.return_value = {"matches": []}
+    mock_ops.search.return_value = result_obj
+    return mock_ops
+
+
+@pytest.fixture
+def _container_search_backend(monkeypatch):
+    mock_ops = _empty_search_ops()
+    file_ops_factory = MagicMock(return_value=mock_ops)
+    host_check = MagicMock(
+        side_effect=AssertionError("container search used a host device predicate")
+    )
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "docker"})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setenv("TERMINAL_CWD", "/workspace")
+    monkeypatch.setattr(ft, "get_read_block_error", lambda candidate: None)
+    monkeypatch.setattr(ft, "_is_blocked_device_path", host_check)
+    monkeypatch.setattr(ft, "_is_blocked_device", host_check)
+    monkeypatch.setattr(ft, "_get_file_ops", file_ops_factory)
+    return mock_ops, file_ops_factory
+
+
+@pytest.mark.parametrize(
+    "path, blocked",
+    [
+        ("/proc/self/root/../dev/zero", True),
+        ("/proc/1/task/1/root/dev/zero", True),
+        ("/proc/1/root/proc/self/root/dev/zero", True),
+        ("/proc/thread-self/root/dev/zero", True),
+        ("/dev/zero", True),
+        ("/proc/self/environ", True),
+        # /proc/<self|thread-self>/cwd is a symlink to the task's own cwd
+        # (TERMINAL_CWD == "/workspace" in this fixture), so ".." segments
+        # after the alias must resolve against that cwd, not be left as
+        # literal path text.
+        ("/proc/self/cwd/../dev/zero", True),
+        ("/proc/self/cwd/../../dev/zero", True),
+        ("/proc/thread-self/cwd/../dev/zero", True),
+        # Per-thread cwd alias: /proc/self/task/<tid>/cwd -- "self" still
+        # names this task's own process, so it resolves the same way.
+        ("/proc/self/task/1234/cwd/../dev/zero", True),
+        # Numeric pid/tid cwd aliases fail CLOSED regardless of what follows
+        # -- this task cannot verify a different process's real cwd, so even
+        # a benign-looking suffix (no ../ needed to reach a device) is
+        # refused rather than approximated. See _resolve_container_cwd_alias.
+        ("/proc/1/cwd/../dev/zero", True),
+        ("/proc/1/cwd/src/main.py", True),
+        ("/proc/1/cwd", True),
+        ("/proc/1/task/2/cwd/../dev/zero", True),
+        ("/proc/1/task/2/cwd", True),
+        ("/proc/self/exe", True),
+        ("/proc/1/task/2/exe", True),
+        ("//dev/zero", True),
+        ("///dev/zero", True),
+        # Lexical bypass spellings must still be recognized as the alias
+        # (duplicate "/" and literal "." are collapsed before the alias
+        # regex runs -- see _normalize_slashes_and_dots_only), not silently
+        # fall through to the literal-path walker, which doesn't know "cwd"
+        # is a symlink at all.
+        ("/proc/./self/cwd/../dev/zero", True),
+        ("/proc//self/cwd/../dev/zero", True),
+        ("//proc/self/cwd/../dev/zero", True),
+        ("/proc/self/./cwd/../dev/zero", True),
+        ("/proc/./1/cwd/src/main.py", True),
+        ("//./etc/hosts", False),
+        ("//./workspace/tools", False),
+        ("/etc/hosts", False),
+        ("tools", False),
+        ("workspace/src", False),
+        ("dev/zero", False),
+        ("/workspace/proc/self/root/dev/zero", False),
+        ("/proc/self/root", False),
+        ("/proc/self/cwd/src/main.py", False),
+        ("/proc/self/cwd", False),
+        ("/proc/self/cwd/", False),
+        ("/proc/self/task/1234/cwd", False),
+        # Non-ASCII digits must not satisfy the pid/tid match (mirrors the
+        # existing /proc/.../root canonicalization behavior).
+        ("/proc/١/cwd/../dev/zero", False),
+        # Non-numeric tid must not match the /task/<tid>/cwd alias either.
+        ("/proc/self/task/abc/cwd/../dev/zero", False),
+    ],
+)
+def test_container_search_classifies_paths_through_production_resolution(
+    _container_search_backend, path, blocked
+):
+    """Use search_tool's real resolver with a configured Docker cwd."""
+    mock_ops, file_ops_factory = _container_search_backend
+    task_id = "container-production-resolution"
+    result = json.loads(ft.search_tool(pattern="x", path=path, task_id=task_id))
+
+    if blocked:
+        assert set(result) == {"error"}
+        assert "device file" in result["error"]
+        file_ops_factory.assert_not_called()
+    else:
+        assert result == {"matches": []}
+        file_ops_factory.assert_called_once_with(task_id)
+
+
+@pytest.mark.parametrize(
+    "cwd_alias",
+    ["/proc/self/cwd", "/proc/self/task/2/cwd"],
+    ids=["self-alias", "self-task-tid-alias"],
+)
+@pytest.mark.parametrize(
+    "container_cwd, blocked",
+    [
+        ("/workspace", True),
+        ("/a/b/c", False),
+    ],
+)
+def test_container_search_self_cwd_alias_respects_cwd_depth(
+    _container_search_backend, monkeypatch, cwd_alias, container_cwd, blocked
+):
+    """The self/thread-self proc cwd alias (plain or per-thread
+    /task/<tid>/cwd form) must be resolved against the configured container
+    cwd, not treated as literal path text -- a shallower cwd means
+    "../dev/zero" no longer lands on the real device path, so a blocked
+    verdict at one depth must NOT generalize to another (refusal must track
+    the actual resolved path, not the alias string alone), and a
+    non-blocked verdict must still dispatch to search (no over-blocking of a
+    genuinely safe, deep cwd)."""
+    mock_ops, file_ops_factory = _container_search_backend
+    monkeypatch.setenv("TERMINAL_CWD", container_cwd)
+    path = f"{cwd_alias}/../dev/zero"
+    task_id = f"container-self-cwd-depth-{cwd_alias}-{blocked}"
+
+    result = json.loads(ft.search_tool(pattern="x", path=path, task_id=task_id))
+
+    if blocked:
+        assert set(result) == {"error"}
+        assert "device file" in result["error"]
+        file_ops_factory.assert_not_called()
+    else:
+        assert result == {"matches": []}
+        file_ops_factory.assert_called_once_with(task_id)
+        assert mock_ops.search.call_args.kwargs["path"] == path
+
+
+@pytest.mark.parametrize(
+    "numeric_pid_alias",
+    ["/proc/1/cwd", "/proc/1/task/2/cwd"],
+    ids=["pid-alias", "task-tid-alias"],
+)
+@pytest.mark.parametrize("container_cwd", ["/workspace", "/a/b/c"])
+def test_container_search_numeric_pid_cwd_alias_always_refused(
+    _container_search_backend, monkeypatch, numeric_pid_alias, container_cwd
+):
+    """A numeric-pid /proc/<pid>/cwd alias (or its /task/<tid>/cwd form)
+    names a DIFFERENT process's cwd that this task cannot verify -- there is
+    no task-registry lookup here from pid to the process that actually owns
+    it. Approximating it as this task's own cwd could bypass the guard (if
+    the real target is deeper than this task's own cwd), so it fails
+    closed: refused regardless of this task's own cwd depth, and even for a
+    benign-looking suffix that never needs "../" to reach a device -- the
+    alias itself is refused, proving there is no depth-dependent bypass."""
+    mock_ops, file_ops_factory = _container_search_backend
+    monkeypatch.setenv("TERMINAL_CWD", container_cwd)
+    path = f"{numeric_pid_alias}/src/main.py"
+    task_id = f"container-numeric-cwd-refusal-{numeric_pid_alias}-{container_cwd}"
+
+    result = json.loads(ft.search_tool(pattern="x", path=path, task_id=task_id))
+
+    assert set(result) == {"error"}
+    assert "device file" in result["error"]
+    file_ops_factory.assert_not_called()
+
+
+def _seed_not_found_cache(resolved_path: str, task_id: str) -> None:
+    """Pre-populate the search negative-result cache as if a prior call had
+    legitimately missed on *resolved_path* -- used to prove enforcement runs
+    before the cache is ever consulted, not to exercise the cache's own
+    correctness."""
+    ft._record_not_found(
+        "search", resolved_path, task_id,
+        json.dumps({"error": f"Path not found: {resolved_path}"}, ensure_ascii=False),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Regression: rv-20260804-175517-r69403rr -- the negative-result cache
+# lookup ran BEFORE the device/cwd-alias guard, so a stale "not found" hit
+# under the key the generic (alias-unaware) top-of-function resolver
+# produces could short-circuit the request and skip enforcement entirely.
+# Each case below seeds a cache entry under exactly that generic key, then
+# confirms the guard still fires -- i.e. the cache is never consulted until
+# AFTER normalization, cwd-alias resolution, and the device-block decision.
+# ---------------------------------------------------------------------------
+
+def test_numeric_pid_cwd_alias_refusal_survives_stale_not_found_cache(
+    _container_search_backend,
+):
+    """Numeric-pid cwd alias must stay refused (fail-closed) even when a
+    stale not-found entry exists under the key the generic, alias-unaware
+    resolver would have produced for this exact literal path (a plausible
+    prior legitimate miss) -- a cache hit here would silently bypass the
+    refusal."""
+    mock_ops, file_ops_factory = _container_search_backend
+    task_id = "cache-bypass-numeric-pid"
+    path = "/proc/1/cwd/../dev/zero"
+    # posixpath.normpath (the generic resolver) pops "cwd" lexically via
+    # ".." without knowing it's a symlink, landing on "/proc/1/dev/zero".
+    _seed_not_found_cache("/proc/1/dev/zero", task_id)
+
+    result = json.loads(ft.search_tool(pattern="x", path=path, task_id=task_id))
+
+    assert set(result) == {"error"}
+    assert "device file" in result["error"]
+    file_ops_factory.assert_not_called()
+
+
+def test_bypass_spelling_cwd_alias_refusal_survives_stale_not_found_cache(
+    _container_search_backend,
+):
+    """A lexical bypass spelling ("/proc/./self/cwd/...") must still be
+    recognized as the cwd alias and blocked, even when a stale not-found
+    entry exists under the key the generic resolver alone would produce."""
+    mock_ops, file_ops_factory = _container_search_backend
+    task_id = "cache-bypass-spelling"
+    path = "/proc/./self/cwd/../dev/zero"
+    # The generic resolver collapses both "./" and ".." lexically, popping
+    # "cwd" without knowing it's a symlink, landing on "/proc/self/dev/zero".
+    _seed_not_found_cache("/proc/self/dev/zero", task_id)
+
+    result = json.loads(ft.search_tool(pattern="x", path=path, task_id=task_id))
+
+    assert set(result) == {"error"}
+    assert "device file" in result["error"]
+    file_ops_factory.assert_not_called()
+
+
+def test_plain_device_path_refusal_survives_stale_not_found_cache(
+    _container_search_backend,
+):
+    """A plain (non-alias) device path must stay blocked even when a stale
+    not-found entry exists under its own resolved key."""
+    mock_ops, file_ops_factory = _container_search_backend
+    task_id = "cache-bypass-plain-device"
+    path = "/dev/zero"
+    _seed_not_found_cache("/dev/zero", task_id)
+
+    result = json.loads(ft.search_tool(pattern="x", path=path, task_id=task_id))
+
+    assert set(result) == {"error"}
+    assert "device file" in result["error"]
+    file_ops_factory.assert_not_called()
+
+
+def test_local_search_dispatches_posix_double_slash_path_after_resolution(monkeypatch):
+    path = "//./etc/hosts"
+    resolved_path = PurePosixPath("/etc/hosts")
+    file_ops_factory = MagicMock(return_value=_empty_search_ops())
+    local_device_check = MagicMock(return_value=False)
+
+    assert ft._is_blocked_device_path(path)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "local"})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(
+        ft, "_resolve_path_for_task",
+        lambda candidate, task_id="default": resolved_path,
+    )
+    monkeypatch.setattr(ft, "get_read_block_error", lambda candidate: None)
+    monkeypatch.setattr(ft, "_is_blocked_device", local_device_check)
+    monkeypatch.setattr(ft, "_get_file_ops", file_ops_factory)
+
+    result = json.loads(ft.search_tool(pattern="x", path=path, task_id="local-posix"))
+
+    assert result == {"matches": []}
+    local_device_check.assert_called_once_with(str(resolved_path), base_dir=None)
 
 
 class _DummyDockerEnvironment:

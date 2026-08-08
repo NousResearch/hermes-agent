@@ -206,7 +206,16 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")
+        for key in (
+            "goal",
+            "goals",
+            "context",
+            "toolsets",
+            "role",
+            "model",
+            "is_batch",
+            "origin_route",
+        )
         if key in record
     }
     with _DB_LOCK, _transaction() as conn:
@@ -330,6 +339,7 @@ def recover_abandoned_delegations() -> int:
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
+            event.update(task.get("origin_route") or {})
             result = {"status": "unknown", "summary": None, "error": event["error"]}
             conn.execute(
                 """UPDATE async_delegations SET state='unknown', completed_at=?,
@@ -682,6 +692,7 @@ def dispatch_async_delegation(
     role: str,
     model: Optional[str],
     session_key: str,
+    origin_route: Optional[Dict[str, str]] = None,
     parent_session_id: Optional[str] = None,
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
@@ -742,6 +753,7 @@ def dispatch_async_delegation(
         "role": role,
         "model": model,
         "session_key": session_key,
+        "origin_route": dict(origin_route or {}),
         "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
@@ -908,6 +920,7 @@ def _push_completion_event(
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
     }
+    evt.update(record.get("origin_route") or {})
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
     for _k in (
@@ -937,6 +950,7 @@ def dispatch_async_delegation_batch(
     role: str,
     model: Optional[str],
     session_key: str,
+    origin_route: Optional[Dict[str, str]] = None,
     parent_session_id: Optional[str] = None,
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
@@ -982,6 +996,7 @@ def dispatch_async_delegation_batch(
         "role": role,
         "model": model,
         "session_key": session_key,
+        "origin_route": dict(origin_route or {}),
         "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
@@ -1117,6 +1132,7 @@ def _push_batch_completion_event(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
     }
+    evt.update(event_record.get("origin_route") or {})
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
     for _k in (

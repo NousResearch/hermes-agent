@@ -135,6 +135,11 @@ consumers use a durable claim, so only the consumer that successfully accepts
 the synthetic turn acknowledges delivery; failed attempts release the claim for
 retry.
 
+On gateway platforms, dispatch also captures the current chat, thread, sender,
+and triggering message route. The completion returns to that exact thread even
+when the broader conversation session was originally created at channel level
+or Hermes restarts before delivery.
+
 This does not resume child execution after a crash. A delegation whose owner
 process disappears while it is still running is recorded as `unknown`, because
 Hermes cannot prove whether its external side effects happened. Pending and

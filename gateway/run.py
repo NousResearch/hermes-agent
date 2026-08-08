@@ -22188,19 +22188,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Falling back to the currently active foreground event is what causes
         cross-topic bleed, so don't do that.
         """
+        from dataclasses import replace
+
         from gateway.session import SessionSource
 
         session_key = str(evt.get("session_key") or "").strip()
         derived_platform = ""
         derived_chat_type = ""
         derived_chat_id = ""
+        persisted_origin = None
+        has_explicit_route = all(
+            str(evt.get(key) or "").strip()
+            for key in ("platform", "chat_type", "chat_id")
+        )
 
         if session_key:
             try:
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
-                    return entry.origin
+                    persisted_origin = entry.origin
+                    if not has_explicit_route:
+                        return persisted_origin
             except Exception as exc:
                 logger.debug(
                     "Synthetic process-event session-store lookup failed for %s: %s",
@@ -22208,15 +22217,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     exc,
                 )
 
-            cached_source = self._get_cached_session_source(session_key)
-            if cached_source is not None:
-                return cached_source
+            if persisted_origin is None:
+                cached_source = self._get_cached_session_source(session_key)
+                if cached_source is not None:
+                    if has_explicit_route:
+                        persisted_origin = cached_source
+                    else:
+                        return cached_source
 
-            _parsed = _parse_session_key(session_key)
-            if _parsed:
-                derived_platform = _parsed["platform"]
-                derived_chat_type = _parsed["chat_type"]
-                derived_chat_id = _parsed["chat_id"]
+            if not has_explicit_route and persisted_origin is None:
+                _parsed = _parse_session_key(session_key)
+                if _parsed:
+                    derived_platform = _parsed["platform"]
+                    derived_chat_type = _parsed["chat_type"]
+                    derived_chat_id = _parsed["chat_id"]
 
         platform_name = str(evt.get("platform") or derived_platform or "").strip().lower()
         chat_type = str(evt.get("chat_type") or derived_chat_type or "").strip().lower()
@@ -22250,14 +22264,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
 
-        return SessionSource(
-            platform=platform,
-            chat_id=chat_id,
-            chat_type=chat_type,
-            thread_id=str(evt.get("thread_id") or "").strip() or None,
-            user_id=str(evt.get("user_id") or "").strip() or None,
-            user_name=str(evt.get("user_name") or "").strip() or None,
-        )
+        # Nullable dispatch fields intentionally overwrite stale origin values:
+        # a top-level completion has no thread_id and must not inherit the
+        # session's previous thread. Profile is different: it is namespacing
+        # metadata, not per-message routing, so preserve it when uncaptured.
+        explicit_fields = {
+            "platform": platform,
+            "chat_id": chat_id,
+            "chat_type": chat_type,
+            "thread_id": str(evt.get("thread_id") or "").strip() or None,
+            "user_id": str(evt.get("user_id") or "").strip() or None,
+            "user_name": str(evt.get("user_name") or "").strip() or None,
+            "message_id": str(evt.get("message_id") or "").strip() or None,
+        }
+        profile = str(evt.get("profile") or "").strip()
+        if profile:
+            explicit_fields["profile"] = profile
+        if persisted_origin is not None:
+            return replace(persisted_origin, **explicit_fields)
+        return SessionSource(**explicit_fields)
 
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict,

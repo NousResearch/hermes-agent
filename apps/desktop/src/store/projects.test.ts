@@ -22,6 +22,7 @@ import {
   exitProjectScope,
   openProjectCreate,
   pickProjectFolder,
+  projectIdForCwd,
   projectNameForCwd,
   refreshProjects,
   refreshProjectTree,
@@ -239,6 +240,13 @@ describe('projectNameForCwd', () => {
 
     // A linked worktree lives OUTSIDE the project root but still belongs to it.
     expect(projectNameForCwd('/elsewhere/mono-feature/src')).toBe('Monorepo')
+  })
+
+  it('matches nested Windows paths across separator and case differences', () => {
+    $projectTree.set([treeNode({ id: 'p_win', label: 'Windows app', path: 'C:\\Repos\\App' })])
+
+    expect(projectIdForCwd('c:/repos/app/src')).toBe('p_win')
+    expect(projectNameForCwd('c:/repos/app/src')).toBe('Windows app')
   })
 
   it('ignores auto-projects and the No-project bucket (no named identity)', () => {

@@ -229,8 +229,26 @@ export function resolveNewSessionCwd(): string {
   return workspaceCwdForNewSession()
 }
 
-const underPath = (parent: string, child: string): boolean =>
-  child === parent || child.startsWith(parent.endsWith('/') ? parent : `${parent}/`)
+// Comparison-only path spelling: accept either separator everywhere, trim a
+// trailing separator, and fold case for Windows drive/UNC paths. The backend
+// uses the same host-aware identity rule when assigning sessions to projects.
+const comparisonPath = (path: string): string => {
+  const raw = path.trim()
+  const windows = /^[A-Za-z]:[/\\]/.test(raw) || raw.startsWith('\\') || raw.startsWith('//')
+  const normalized = raw.replace(/\\/g, '/').replace(/\/+$/, '')
+
+  return windows ? normalized.toLowerCase() : normalized
+}
+
+const underPath = (parent: string, child: string): boolean => {
+  const normalizedParent = comparisonPath(parent)
+  const normalizedChild = comparisonPath(child)
+
+  return (
+    normalizedChild === normalizedParent ||
+    normalizedChild.startsWith(normalizedParent.endsWith('/') ? normalizedParent : `${normalizedParent}/`)
+  )
+}
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across
 // the live tree. Null when no project covers it (it'll surface as a fresh

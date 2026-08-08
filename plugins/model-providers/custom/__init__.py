@@ -83,6 +83,10 @@ class CustomProfile(ProviderProfile):
 
 custom = CustomProfile(
     name="custom",
+    # User-configured OpenAI-compatible endpoints (vLLM, Ollama, LiteLLM,
+    # llama.cpp) commonly implement an older schema that rejects the
+    # ``developer`` role with HTTP 400 (#41125).
+    supports_developer_role=False,
     aliases=(
         "ollama",
         "local",

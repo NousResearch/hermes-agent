@@ -4592,12 +4592,33 @@ This compaction should PRIORITISE preserving all information related to the focu
         if cls._is_context_summary_content(content):
             return True
         text = _content_text_for_contains(content).strip()
+        # Sibling recovery nudges from agent.conversation_loop's retry loop:
+        # same "ephemeral scaffolding, not a real human turn" class as the
+        # markers above (see _CODEX_INCOMPLETE_NUDGE's own docstring there),
+        # imported lazily to avoid a module-load-order cycle (conversation_loop
+        # already imports FROM this module at call time for the same reason).
+        from agent.conversation_loop import (
+            _CODEX_ACK_CONTINUATION_NUDGE,
+            _CODEX_INCOMPLETE_NUDGE,
+            _DROPPED_TOOLCALL_NUDGE_CONTENT,
+            _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
+            _LENGTH_CONTINUATION_NETWORK_STUB,
+            _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+        )
+
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT,
             _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
             MAX_ITERATIONS_SUMMARY_REQUEST,
+            _CODEX_INCOMPLETE_NUDGE,
+            _CODEX_ACK_CONTINUATION_NUDGE,
+            _DROPPED_TOOLCALL_NUDGE_CONTENT,
+            _LENGTH_CONTINUATION_NETWORK_STUB,
+            _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         } or text.startswith(
             TODO_INJECTION_HEADER + "\n"
+        ) or text.startswith(
+            _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX
         )
 
     @staticmethod

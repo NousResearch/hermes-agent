@@ -4142,6 +4142,7 @@ class AIAgent:
         final_response: Any,
         interrupted: bool,
         messages: list | None = None,
+        messages_are_authoritative: bool = False,
     ) -> None:
         """Mirror a completed turn into external memory providers.
 
@@ -4154,6 +4155,11 @@ class AIAgent:
         Uses ``original_user_message`` rather than ``user_message``
         because the latter may carry injected skill content that bloats
         or breaks provider queries.
+
+        ``messages_are_authoritative`` distinguishes a caller-supplied,
+        recovered, or compacted transcript from a history-less current
+        exchange. The latter is merged into provider-only session history so a
+        backend recovering on the next turn can inspect the exchange it missed.
 
         Interrupted turns are skipped entirely (#15218).  A partial
         assistant output, an aborted tool chain, or a mid-stream reset
@@ -4181,9 +4187,13 @@ class AIAgent:
         if not (user_text and response_text):
             return
         try:
+            sync_messages = self._external_memory_transcript(
+                messages,
+                authoritative=messages_are_authoritative,
+            )
             sync_kwargs = {"session_id": self.session_id or ""}
-            if messages is not None:
-                sync_kwargs["messages"] = messages
+            if sync_messages is not None:
+                sync_kwargs["messages"] = sync_messages
             self._memory_manager.sync_all(
                 user_text,
                 response_text,
@@ -4200,6 +4210,54 @@ class AIAgent:
                 )
         except Exception:
             pass
+
+    def _external_memory_transcript(
+        self,
+        messages: list | None,
+        *,
+        authoritative: bool,
+    ) -> list | None:
+        """Snapshot completed turns for provider reconciliation only.
+
+        Most Hermes surfaces pass their accumulated conversation history into
+        ``run_conversation``. ``chat()`` and direct embedders may omit it,
+        though, so each finalizer receives a list containing only the current
+        exchange. If a provider was unreachable for turn N, sending only turn
+        N+1 after recovery makes N permanently invisible.
+
+        Preserve a separate per-session provider transcript in that
+        history-less mode. Caller-supplied or recovered conversation history
+        is authoritative and replaces the snapshot (which also handles
+        compression). A current-exchange-only list appends to the prior
+        snapshot. Nothing here is fed back into model context.
+        """
+        if messages is None:
+            return None
+
+        current = [dict(message) for message in messages if isinstance(message, dict)]
+        session_id = self.session_id or ""
+        previous_session_id = getattr(
+            self,
+            "_external_memory_session_id",
+            session_id,
+        )
+        previous = getattr(self, "_external_memory_messages", [])
+        if previous_session_id != session_id:
+            previous = []
+
+        if previous and not authoritative:
+            # A stateless turn may repeat the stable system prompt. Providers
+            # need source turns, not a second mid-session system message.
+            current_turn = [
+                message for message in current if message.get("role") != "system"
+            ]
+            transcript = [*previous, *current_turn]
+        else:
+            transcript = current
+
+        self._external_memory_messages = transcript
+        self._external_memory_session_id = session_id
+        return [dict(message) for message in transcript]
 
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
@@ -8016,10 +8074,21 @@ class AIAgent:
         messages: List[Dict[str, Any]],
         effective_task_id: str,
         should_review_memory: bool = False,
+        messages_are_authoritative: bool = False,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
-        return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+
+        return run_codex_app_server_turn(
+            self,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=should_review_memory,
+            messages_are_authoritative=messages_are_authoritative,
+        )
+
 
 def main(
     query: str = None,

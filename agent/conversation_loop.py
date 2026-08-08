@@ -1553,6 +1553,9 @@ def run_conversation(
             messages=messages,
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
+            messages_are_authoritative=bool(
+                getattr(agent, "_external_memory_transcript_authoritative", False)
+            ),
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:

@@ -4639,6 +4639,73 @@ class TestRetryExhaustion:
         assert "bad messages" in result["error"]
 
 
+class TestExternalMemoryHistoryRecovery:
+    def test_recovered_memory_manager_receives_turn_missed_during_outage(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+        agent._memory_manager.prefetch_all.return_value = ""
+        agent._memory_manager.sync_all.side_effect = [
+            ConnectionError("simulated provider outage"),
+            None,
+        ]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("the reserve gemstone is jade")
+            agent.run_conversation("are you back")
+
+        delivered = agent._memory_manager.sync_all.call_args_list[-1].kwargs["messages"]
+        assert any(
+            message.get("role") == "user"
+            and message.get("content") == "the reserve gemstone is jade"
+            for message in delivered
+        ), "the recovered provider never receives the turn missed during its outage"
+
+    def test_explicit_history_remains_authoritative_for_memory_sync(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+        agent._memory_manager.prefetch_all.return_value = ""
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            first = agent.run_conversation("first turn")
+            agent.run_conversation(
+                "second turn",
+                conversation_history=first["messages"],
+            )
+
+        delivered = agent._memory_manager.sync_all.call_args_list[-1].kwargs["messages"]
+        first_users = [
+            message
+            for message in delivered
+            if message.get("role") == "user"
+            and message.get("content") == "first turn"
+        ]
+        assert len(first_users) == 1
+
+
 # ---------------------------------------------------------------------------
 # Conversation history mutation
 # ---------------------------------------------------------------------------

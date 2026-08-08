@@ -376,6 +376,12 @@ def build_turn_context(
     recovered_history = recover_rotated_compression_session(agent)
     if recovered_history is not None:
         conversation_history = recovered_history
+    # This is intentionally distinct from the persistence flush baseline.
+    # A later compression boundary may make ``messages`` authoritative while
+    # legacy rotation still resets ``conversation_history`` to None.
+    agent._external_memory_transcript_authoritative = (
+        conversation_history is not None
+    )
 
     # NOTE: the DB session row is created later, AFTER the system prompt is
     # restored/built (see _ensure_db_session() below the system-prompt block).

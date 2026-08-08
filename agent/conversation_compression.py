@@ -1894,11 +1894,14 @@ def conversation_history_after_compression(
     if bool(getattr(agent, "_last_compression_attempt_recorded", False)):
         attempt_in_place = getattr(agent, "_last_compression_attempt_in_place", None)
         if attempt_in_place is True:
+            agent._external_memory_transcript_authoritative = True
             return list(messages)
         if attempt_in_place is False:
+            agent._external_memory_transcript_authoritative = True
             return None
         return previous_history
     if bool(getattr(agent, "_last_compaction_in_place", False)):
+        agent._external_memory_transcript_authoritative = True
         return list(messages)
     return None
 

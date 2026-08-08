@@ -917,6 +917,10 @@ class GatewayConfig:
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
+    # Attach the platform-authenticated sender name and stable ID to every
+    # inbound turn, including DMs. This keeps agent context and persisted
+    # transcripts attributable even when one gateway serves multiple people.
+    attribute_sender: bool = True
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
 
     # Multi-profile multiplexing (opt-in; default off preserves one-gateway-per-profile).
@@ -1068,6 +1072,7 @@ class GatewayConfig:
             "stt_echo_transcripts": self.stt_echo_transcripts,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
+            "attribute_sender": self.attribute_sender,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
@@ -1134,6 +1139,9 @@ class GatewayConfig:
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         multiplex_profiles = data.get("multiplex_profiles")
         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        attribute_sender = data.get("attribute_sender")
+        if attribute_sender is None and isinstance(nested_gateway, dict):
+            attribute_sender = nested_gateway.get("attribute_sender")
         if "systemd_watchdog_seconds" in data:
             systemd_watchdog_raw = data.get("systemd_watchdog_seconds")
             systemd_watchdog_key = "systemd_watchdog_seconds"
@@ -1206,6 +1214,7 @@ class GatewayConfig:
             stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
+            attribute_sender=_coerce_bool(attribute_sender, True),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=loop_watchdog,
@@ -1343,6 +1352,11 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
             elif isinstance(gateway_section, dict) and "thread_sessions_per_user" in gateway_section:
                 gw_data["thread_sessions_per_user"] = gateway_section["thread_sessions_per_user"]
+
+            if "attribute_sender" in yaml_cfg:
+                gw_data["attribute_sender"] = yaml_cfg["attribute_sender"]
+            elif isinstance(gateway_section, dict) and "attribute_sender" in gateway_section:
+                gw_data["attribute_sender"] = gateway_section["attribute_sender"]
 
             # Multiplexing flag: accept both the top-level key and the nested
             # gateway.multiplex_profiles form (written by

@@ -579,6 +579,28 @@ class TestLoadGatewayConfig:
         assert config.group_sessions_per_user is False
 
 
+    def test_attribute_sender_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n  attribute_sender: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.attribute_sender is False
+
+
+    def test_attribute_sender_roundtrips(self):
+        config = GatewayConfig(attribute_sender=False)
+
+        restored = GatewayConfig.from_dict(config.to_dict())
+
+        assert restored.attribute_sender is False
+
+
     def test_reset_triggers_from_nested_gateway_section(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

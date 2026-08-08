@@ -465,6 +465,21 @@ class TestSchemaValidation:
         assert saved["desktop"]["macos_signing_identity"] == "Hermes Local Signing"
         assert "not a recognized config key" not in capsys.readouterr().out
 
+    @pytest.mark.parametrize("key", [
+        "attribute_sender",
+        "gateway.attribute_sender",
+    ])
+    def test_attribute_sender_documented_forms_are_recognized(
+        self, key, _isolated_hermes_home, capsys
+    ):
+        """Both documented config paths must be accepted by ``hermes config set``."""
+        from gateway.config import load_gateway_config
+
+        set_config_value(key, "false")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        assert load_gateway_config().attribute_sender is False
+
 
 
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
@@ -490,6 +505,8 @@ class TestValidateConfigKey:
         "mcp_servers.foo.command",
         "providers.openrouter.api_key",
         "gateway.strict",
+        "attribute_sender",
+        "gateway.attribute_sender",
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",

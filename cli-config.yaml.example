@@ -742,6 +742,14 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Attach the sender's display name and platform-authenticated stable ID to every
+# inbound message, including DMs. This lets agents and transcript/memory systems
+# retain who spoke when one gateway serves more than one person. When
+# privacy.redact_pii is true, PII-safe platforms use stable hashes instead of
+# raw sender IDs. Set false only to preserve legacy unprefixed DMs and
+# display-name-only shared-chat messages.
+attribute_sender: true
+
 # ─────────────────────────────────────────────────────────────────────────────
 # API Server — per-client model routing
 # ─────────────────────────────────────────────────────────────────────────────

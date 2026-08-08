@@ -2021,6 +2021,35 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 
 For the behavior details and examples, see [Sessions](/user-guide/sessions) and the [Discord guide](/user-guide/messaging/discord).
 
+## Sender Attribution
+
+By default, Hermes attaches a human-readable name and the platform-authenticated
+stable sender ID to every inbound user turn, including DMs. This makes speaker
+identity available to the agent and retains it in the transcript used by memory
+and recall. Slack keeps its native mention target; a Discord DM, for example,
+arrives as:
+
+```text
+[Hermes sender: Example User | Discord user <stable user ID>] message text
+```
+
+The name is display metadata and may change; the platform user ID is the stable
+identity. When `privacy.redact_pii: true` is enabled, PII-safe platforms retain
+a stable hash rather than exposing raw phone-like IDs. Platforms whose native
+operations require raw addresses or mention targets keep their existing raw-ID
+behavior. For phone-based platforms, enable `privacy.redact_pii` if you do not
+want raw addresses retained in transcripts. To retain legacy behavior
+(unprefixed DMs and display-name-only prefixes only in shared sessions), opt
+out explicitly:
+
+```yaml
+attribute_sender: false
+```
+
+Hermes removes leading user-supplied lookalikes of its supported platform
+envelopes before adding its own prefix, so the adapter-authenticated envelope
+is the authoritative sender identity.
+
 ## Unauthorized DM Behavior
 
 Control what Hermes does when an unknown user sends a direct message:

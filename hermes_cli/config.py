@@ -1865,6 +1865,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "known_plugin_toolsets", # written/read by hermes_cli/tools_config.py toolset-save flow
     "known_builtin_toolsets",  # ditto — which builtin toolsets a platform's checklist has offered
     "session_reset",         # top-level form read by gateway/config.py + setup
+    "attribute_sender",      # top-level form bridged by gateway/config.py
     "group_sessions_per_user",   # top-level form bridged by gateway/config.py
     "thread_sessions_per_user",  # top-level form bridged by gateway/config.py
     "stt_echo_transcripts",      # top-level form bridged by gateway/config.py
@@ -1879,6 +1880,24 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "signal",            # Signal settings bridged to env vars by gateway/config.py
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
+
+# Gateway settings that are intentionally accepted both at the config root and
+# under ``gateway:``.  Keep this in sync with the top-level bridge in
+# ``gateway/config.py`` so ``hermes config set`` recognizes these documented
+# spellings rather than reporting a false unknown-key warning.
+_GATEWAY_BRIDGED_KEYS = frozenset({
+    "session_reset",
+    "attribute_sender",
+    "group_sessions_per_user",
+    "thread_sessions_per_user",
+    "stt_echo_transcripts",
+    "reset_triggers",
+    "always_log_local",
+    "filter_silence_narration",
+    "multiplex_profiles",
+    "profile_routes",
+    "unauthorized_dm_behavior",
+})
 
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
@@ -4727,7 +4746,7 @@ def _known_top_level_keys() -> set[str]:
     to decide whether a ``hermes config set`` invocation is targeting a
     known shape.
     """
-    keys = set(DEFAULT_CONFIG.keys())
+    keys = set(_KNOWN_ROOT_KEYS)
     keys.update(_OPEN_DICT_TOP_LEVEL_KEYS)
     keys.update(_DYNAMIC_TOP_LEVEL_KEYS)
     keys.update(_SCHEMA_DEFINED_DICT_KEYS)
@@ -4786,6 +4805,13 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
         return True, None
 
     known = _known_top_level_keys()
+
+    # GatewayConfig deliberately accepts a small set of compatibility
+    # settings at both the root and under ``gateway:``.  Those values are not
+    # part of DEFAULT_CONFIG's runtime-only gateway block, so recognize their
+    # documented nested form before walking that schema.
+    if top == "gateway" and len(segments) == 2 and segments[1] in _GATEWAY_BRIDGED_KEYS:
+        return True, None
 
     # ── First-segment validation ─────────────────────────────────────
     # Top-level ``platforms.<name>.<field>`` is a valid current shape:

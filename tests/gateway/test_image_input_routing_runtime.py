@@ -164,6 +164,6 @@ async def test_prepare_route_identity_check_keeps_event_loop_responsive(monkeypa
     )
     await heartbeat
 
-    assert result == "inspect @AGENTS.md"
+    assert result == "[Hermes sender: Maxim | Telegram user 42] inspect @AGENTS.md"
     assert seen["event_loop_progressed"] is True
     assert seen["thread"] is not main_thread

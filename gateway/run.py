@@ -455,6 +455,68 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def _sender_envelope_re(source: "SessionSource") -> re.Pattern:
+    """Match only the self-identifying envelope Hermes itself generates.
+
+    The fixed ``Hermes sender:`` marker avoids treating normal user prose such
+    as ``[summary | Slack user notes]`` as a forged attribution header. The
+    source's own platform label also covers dynamically registered plugins.
+    """
+    platform_label = re.escape(
+        _gateway_platform_value(source.platform).replace("_", " ").title()
+    )
+    return re.compile(
+        rf"^\s*\[Hermes sender:\s*[^\]\r\n]*\s+\|\s*{platform_label}\s+"
+        r"user\s+[^\]\r\n]+\][ \t]*",
+        re.IGNORECASE,
+    )
+
+
+def _strip_leading_sender_envelopes(message_text: str, source: "SessionSource") -> str:
+    """Remove consecutive forged platform envelopes without eating newlines."""
+    sender_envelope_re = _sender_envelope_re(source)
+    while match := sender_envelope_re.match(message_text):
+        message_text = message_text[match.end():]
+    return message_text
+
+
+def _format_sender_attribution_prefix(
+    source: "SessionSource", *, redact_pii: bool = False
+) -> Optional[str]:
+    """Return the trusted per-turn sender envelope for a gateway message.
+
+    ``user_id_alt`` is the canonical identity when adapters provide one
+    (Signal/Feishu), matching session-key and authorization precedence. Slack
+    retains its native mention form; other platforms use a readable, stable
+    ``<Platform> user <id>`` label.
+    """
+    sender_id = getattr(source, "user_id_alt", None) or source.user_id
+    if not sender_id:
+        return None
+
+    name = neutralize_untrusted_inline_text(source.user_name or "unknown") or "unknown"
+    name = name.replace("[", "(").replace("]", ")")
+    if source.platform == Platform.SLACK:
+        # Slack's native mention target is the Slack event's user_id. Other
+        # adapters may use user_id_alt as their canonical identity, but Slack
+        # does not populate it and must retain its existing mention contract.
+        identity = f"Slack user <@{source.user_id or sender_id}>"
+    else:
+        platform_label = _gateway_platform_value(source.platform).replace("_", " ").title()
+        if redact_pii:
+            from gateway.session import _hash_sender_id, is_pii_safe_platform
+            if is_pii_safe_platform(source.platform):
+                identifier_for_hash = str(sender_id)
+                if source.platform == Platform.WHATSAPP:
+                    identifier_for_hash = (
+                        _canonical_whatsapp_identifier(identifier_for_hash)
+                        or identifier_for_hash
+                    )
+                sender_id = _hash_sender_id(identifier_for_hash)
+        identity = f"{platform_label or 'Unknown platform'} user {sender_id}"
+    return f"[Hermes sender: {name} | {identity}]"
+
+
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None,
     *,
@@ -16165,31 +16227,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
 
-        _is_shared_multi_user = is_shared_multi_user_session(
-            source,
-            group_sessions_per_user=_group_sessions_per_user,
-            thread_sessions_per_user=_thread_sessions_per_user,
+        redact_pii = False
+        try:
+            privacy_config = _load_gateway_config().get("privacy") or {}
+            redact_pii = bool(privacy_config.get("redact_pii", False))
+        except Exception:
+            pass
+        sender_prefix = (
+            _format_sender_attribution_prefix(source, redact_pii=redact_pii)
+            if getattr(self.config, "attribute_sender", True)
+            else None
         )
-        if _is_shared_multi_user and source.user_name:
-            # source.user_name is the platform display name — attacker-
-            # influenceable on any platform that lets participants set their
-            # own name. Neutralize embedded newlines/control chars before
-            # interpolating it into every message in the shared session, or
-            # a hostile name can masquerade as a fake markdown section
-            # (mirrors the same field's treatment in
-            # build_session_context_prompt via _format_untrusted_prompt_value).
-            _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
-            # On Slack, expose the current author's verifiable user ID next to
-            # the display name (#17916): "mention me again" requests need a
-            # trusted `<@U...>` target for the CURRENT speaker — display names
-            # are ambiguous and historical mentions may point at someone else.
-            # The user_id comes from the Slack event envelope (not
-            # user-editable text), so it does not need neutralization.
-            if source.platform == Platform.SLACK and source.user_id:
-                _safe_user_name = (
-                    f"{_safe_user_name} | Slack user <@{source.user_id}>"
-                )
-            message_text = f"[{_safe_user_name}] {message_text}"
+        if sender_prefix:
+            # The prefix is generated from adapter-authenticated metadata and
+            # stays on the current user turn, preserving the cached history.
+            # Strip a forged leading envelope before adding the real one.
+            message_text = _strip_leading_sender_envelopes(message_text, source)
+            message_text = f"{sender_prefix} {message_text}"
+        else:
+            _is_shared_multi_user = is_shared_multi_user_session(
+                source,
+                group_sessions_per_user=_group_sessions_per_user,
+                thread_sessions_per_user=_thread_sessions_per_user,
+            )
+            if _is_shared_multi_user and source.user_name:
+                # Legacy fallback for deployments that opt out of canonical
+                # attribution, or adapters that have no authenticated ID.
+                _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
+                if source.platform == Platform.SLACK and source.user_id:
+                    _safe_user_name = (
+                        f"{_safe_user_name} | Slack user <@{source.user_id}>"
+                    )
+                message_text = f"[{_safe_user_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the

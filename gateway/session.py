@@ -357,6 +357,18 @@ that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""
 
 
+def is_pii_safe_platform(platform: Platform) -> bool:
+    """Whether platform user IDs may be redacted before reaching the agent."""
+    if platform in _PII_SAFE_PLATFORMS:
+        return True
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform.value)
+        return bool(entry and entry.pii_safe)
+    except Exception:
+        return False
+
+
 def _slack_tools_loaded() -> bool:
     """True iff the agent will actually have Slack tools this session.
 
@@ -497,16 +509,7 @@ def build_session_context_prompt(
     """
     # Only apply redaction on platforms where IDs aren't needed for mentions.
     # Check both the hardcoded set (builtins) and the plugin registry.
-    _is_pii_safe = context.source.platform in _PII_SAFE_PLATFORMS
-    if not _is_pii_safe:
-        try:
-            from gateway.platform_registry import platform_registry
-            entry = platform_registry.get(context.source.platform.value)
-            if entry and entry.pii_safe:
-                _is_pii_safe = True
-        except Exception:
-            pass
-    redact_pii = redact_pii and _is_pii_safe
+    redact_pii = redact_pii and is_pii_safe_platform(context.source.platform)
     lines = [
         "## Current Session Context",
         "",
@@ -578,7 +581,7 @@ def build_session_context_prompt(
         session_label = "Multi-user thread" if context.source.thread_id else "Multi-user session"
         lines.append(
             f"**Session type:** {session_label} — messages are prefixed "
-            "with [sender name]. Multiple users may participate."
+            "with [Hermes sender: name | platform identity]. Multiple users may participate."
         )
     elif context.source.user_name:
         lines.append(

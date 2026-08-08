@@ -3097,6 +3097,8 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
         from agent.bedrock_adapter import is_streaming_access_denied_error
 
         return is_streaming_access_denied_error(exc)
+    if "unexpected event order" in err_lower:
+        return True
     return False
 
 

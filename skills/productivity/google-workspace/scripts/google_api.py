@@ -31,6 +31,23 @@ from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 
+
+
+def _decode_shell_escapes(text: str) -> str:
+    """Decode literal C-style escape sequences from shell arguments.
+
+    LLM agents frequently construct shell commands like:
+        --body "Line one\n\nLine two"
+    POSIX shells preserve ``\n`` inside ordinary double quotes, so the
+    script receives a literal backslash-n instead of a real newline.
+    This helper normalises the most common sequences so that ``MIMEText``
+    receives properly formatted content.
+    """
+    if "\\" not in text and "\n" not in text and "\t" not in text:
+        return text
+    return text.replace("\\n", "\n").replace("\\t", "\t")
+
+
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
@@ -317,7 +334,7 @@ def gmail_get(args):
 
 def gmail_send(args):
     if _gws_binary():
-        message = MIMEText(args.body, "html" if args.html else "plain")
+        message = MIMEText(_decode_shell_escapes(args.body), "html" if args.html else "plain")
         message["To"] = args.to
         message["Subject"] = args.subject
         if args.cc:
@@ -339,7 +356,7 @@ def gmail_send(args):
         return
 
     service = build_service("gmail", "v1")
-    message = MIMEText(args.body, "html" if args.html else "plain")
+    message = MIMEText(_decode_shell_escapes(args.body), "html" if args.html else "plain")
     message["To"] = args.to
     message["Subject"] = args.subject
     if args.cc:
@@ -375,7 +392,7 @@ def gmail_reply(args):
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
 
-        message = MIMEText(args.body)
+        message = MIMEText(_decode_shell_escapes(args.body))
         message["To"] = headers.get("from", "")
         message["Subject"] = subject
         if args.from_header:
@@ -404,7 +421,7 @@ def gmail_reply(args):
     if not subject.startswith("Re:"):
         subject = f"Re: {subject}"
 
-    message = MIMEText(args.body)
+    message = MIMEText(_decode_shell_escapes(args.body))
     message["To"] = headers.get("from", "")
     message["Subject"] = subject
     if args.from_header:

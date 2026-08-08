@@ -30,6 +30,31 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_exception_returns_json_error(self):
+        # Even if something goes wrong, should return valid JSON with a
+        # top-level error envelope. Message wording varies (exception wrap
+        # vs structured "No web search provider configured") — only require
+        # a non-empty error string, not specific substrings.
+        result = handle_function_call("web_search", None)  # None args may cause issues
+        parsed = json.loads(result)
+        assert isinstance(parsed, dict)
+        assert "error" in parsed
+        assert isinstance(parsed["error"], str)
+        assert len(parsed["error"]) > 0
+
+    def test_tool_hooks_receive_session_and_tool_call_ids(self):
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                tool_call_id="call-1",
+                session_id="session-1",
+            )
 
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):

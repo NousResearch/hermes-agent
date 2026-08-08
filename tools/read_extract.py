@@ -16,6 +16,8 @@ import importlib
 import json
 import os
 import posixpath
+import shutil
+import subprocess
 import threading
 import time
 import zipfile
@@ -145,7 +147,96 @@ def _extract_anydoc(path: str) -> str:
         raise ExtractionError(f"{type(exc).__name__}: {exc}") from exc
     if not isinstance(text, str) or not text.strip():
         raise ExtractionError("Document contains no extractable text")
-    return text.rstrip("\n") + "\n"
+    text = text.rstrip("\n") + "\n"
+    if Path(path).suffix.lower() == ".pdf":
+        note = _pdf_coverage_note(path)
+        if note:
+            # Prepend: read_file paginates the extraction, so a footer on a
+            # long document would sit on a page the model may never fetch.
+            text = note + text
+    return text
+
+
+# ── Scanned-PDF coverage detection ──────────────────────────────────
+#
+# anydoc (like every text-layer extractor) returns nothing for scanned
+# image pages and emits no image placeholders or page markers, so a
+# mostly-scanned PDF converts "successfully" into a few headers with
+# empty bodies — silent data loss the model cannot detect. Count per-page
+# text via poppler's pdftotext (form-feed page separators) and append a
+# loud footer when a meaningful share of pages yielded no text.
+
+# A page with fewer extracted characters than this is considered empty.
+PDF_EMPTY_PAGE_CHARS = 20
+# Warn when at least this many pages are empty AND they exceed the ratio,
+# or when the absolute count alone is overwhelming.
+PDF_COVERAGE_MIN_EMPTY = 2
+PDF_COVERAGE_MIN_RATIO = 0.2
+PDF_COVERAGE_ABSOLUTE_EMPTY = 10
+PDF_PAGE_SCAN_TIMEOUT = 20.0
+
+
+def _pdf_page_char_counts(path: str) -> Optional[list[int]]:
+    """Per-page extracted-text char counts, or None when undeterminable."""
+    if shutil.which("pdftotext") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["pdftotext", path, "-"],
+            capture_output=True,
+            timeout=PDF_PAGE_SCAN_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    pages = proc.stdout.decode("utf-8", errors="replace").split("\f")
+    if pages and not pages[-1].strip():
+        pages.pop()  # trailing form-feed artifact
+    if not pages:
+        return None
+    return [len(page.strip()) for page in pages]
+
+
+def _page_ranges(pages: list[int]) -> str:
+    """Compact 1-based range list, e.g. '2-29, 33-35, 42'."""
+    ranges: list[list[int]] = []
+    for p in pages:
+        if ranges and p == ranges[-1][1] + 1:
+            ranges[-1][1] = p
+        else:
+            ranges.append([p, p])
+    parts = [f"{a}-{b}" if a != b else str(a) for a, b in ranges]
+    if len(parts) > 12:
+        parts = parts[:12] + ["…"]
+    return ", ".join(parts)
+
+
+def _pdf_coverage_note(path: str) -> str:
+    """A warning footer when many PDF pages produced no text, else ''."""
+    counts = _pdf_page_char_counts(path)
+    if not counts or len(counts) < 2:
+        return ""
+    empty = [i + 1 for i, n in enumerate(counts) if n < PDF_EMPTY_PAGE_CHARS]
+    total = len(counts)
+    if len(empty) < PDF_COVERAGE_MIN_EMPTY:
+        return ""
+    if (
+        len(empty) / total < PDF_COVERAGE_MIN_RATIO
+        and len(empty) < PDF_COVERAGE_ABSOLUTE_EMPTY
+    ):
+        return ""
+    return (
+        "[EXTRACTION COVERAGE WARNING: "
+        f"{len(empty)} of {total} pages in this PDF yielded no text "
+        f"(pages {_page_ranges(empty)}). Those pages are likely scanned "
+        "images (or blank) — their content is MISSING from the extracted "
+        "text below, even where section headers appear with empty bodies. "
+        "To read them: render pages to images with "
+        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> '{path}' /tmp/page` "
+        "and inspect each image with the vision_analyze tool, or use the "
+        "ocr-and-documents skill (marker-pdf) for bulk OCR.]\n"
+    )
 
 
 def _source_text(source) -> str:

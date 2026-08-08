@@ -158,6 +158,7 @@ Read [forms.md](forms.md) first — it distinguishes fillable (AcroForm) PDFs fr
 
 ## Pitfalls
 
+- `read_file` auto-converts PDFs (via the optional anydoc converter) but reads the **text layer only**. A mostly-scanned PDF converts "successfully" into section headers with empty bodies; when that happens read_file appends an `EXTRACTION COVERAGE WARNING` footer listing the pages that yielded no text. Recover those pages with `pdftoppm -jpeg -r 150 -f N -l N file.pdf /tmp/page` + `vision_analyze`, or bulk-OCR via the `ocr-and-documents` skill.
 - `page.extract_text()` returns `None` on image-only pages — guard with `or ""` and fall back to OCR.
 - pypdf preserves encryption flags: reading an encrypted PDF requires `PdfReader(path, password=...)` before pages are accessible.
 - reportlab coordinates are bottom-left origin, points (1/72″) — not top-left.

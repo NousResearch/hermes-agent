@@ -25,10 +25,40 @@ def _hermes_root_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+# Credential / secret stores that live under HERMES_HOME (and, when a profile
+# is active, ALSO under the global Hermes root — a profile session must not
+# reach the root copies either, #15981 / #14157).
+#
+# ONE list feeds both guards. They used to be maintained separately and had
+# drifted: the read guard blocked ``auth.json``, ``auth.lock``,
+# ``webhook_subscriptions.json``, ``auth/google_oauth.json`` and the plaintext
+# ``cache/bws_cache.json``, none of which the write guard knew about — so the
+# agent could not READ its own OAuth store but could freely OVERWRITE it,
+# destroying every provider login. In the other direction the write guard knew
+# only the ENCRYPTED ``cache/bws_cache.enc.json`` while the read guard knew
+# only the plaintext spelling, so each list was missing the other's file.
+# Both spellings are real (``agent/secret_sources/bitwarden.py``).
+HERMES_CREDENTIAL_FILE_NAMES: tuple[str, ...] = (
+    "auth.json",
+    "auth.lock",
+    ".anthropic_oauth.json",
+    ".env",
+    "webhook_subscriptions.json",
+    os.path.join("auth", "google_oauth.json"),
+    os.path.join("cache", "bws_cache.json"),
+    os.path.join("cache", "bws_cache.enc.json"),
+)
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
     hermes_root = _hermes_root_path()
+    hermes_credential_paths = [
+        str(base / name)
+        for base in (hermes_home, hermes_root)
+        for name in HERMES_CREDENTIAL_FILE_NAMES
+    ]
     return {
         os.path.realpath(p)
         for p in [
@@ -36,19 +66,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
-            # Active profile .env (or top-level .env when not in profile mode).
-            str(hermes_home / ".env"),
-            # Top-level .env, even when running under a profile — overwriting it
-            # leaks credentials across every profile that inherits from root (#15981).
-            str(hermes_root / ".env"),
-            # Active profile Anthropic PKCE credential store.
-            str(hermes_home / ".anthropic_oauth.json"),
-            # Top-level Anthropic PKCE credential store remains sensitive even
-            # when a profile is active; default/non-profile sessions still read it.
-            str(hermes_root / ".anthropic_oauth.json"),
-            # Bitwarden Secrets Manager encrypted disk cache.
-            str(hermes_home / "cache" / "bws_cache.enc.json"),
-            str(hermes_root / "cache" / "bws_cache.enc.json"),
+            *hermes_credential_paths,
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
@@ -271,18 +289,9 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     # Credential / secret stores. Exact-file matches under either
     # HERMES_HOME or <root>.
-    credential_file_names = (
-        "auth.json",
-        "auth.lock",
-        ".anthropic_oauth.json",
-        ".env",
-        "webhook_subscriptions.json",
-        os.path.join("auth", "google_oauth.json"),
-        # Bitwarden Secrets Manager disk cache: stores plaintext secret values
-        # to avoid re-fetching across back-to-back CLI invocations. The file
-        # was introduced by #31968 but not added to this guard.
-        os.path.join("cache", "bws_cache.json"),
-    )
+    # Shared with the write denylist so the two guards cannot drift again —
+    # see HERMES_CREDENTIAL_FILE_NAMES.
+    credential_file_names = HERMES_CREDENTIAL_FILE_NAMES
     for hd in hermes_dirs:
         for name in credential_file_names:
             try:

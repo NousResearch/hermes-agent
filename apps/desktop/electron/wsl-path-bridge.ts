@@ -17,6 +17,16 @@ let cachedDistro: null | string = null
 let cachedUncBase: null | string = null
 
 /**
+ * Already a Windows-host path the picker/fs can open without bridging.
+ * Mirrors renderer `isWindowsPath` (drive, `\\…` UNC, or `//…` UNC).
+ * Forward-slash UNC must be detected before any `\`→`/` normalize, or
+ * `//wsl.localhost/…` is mistaken for POSIX and nested under another UNC.
+ */
+function isWindowsHostPath(path: string): boolean {
+  return WIN_DRIVE_RE.test(path) || path.startsWith('\\') || path.startsWith('//')
+}
+
+/**
  * Pick the default distro from `wsl.exe -l -q` output.
  *
  * `wsl.exe` emits UTF-16LE without a BOM unless `WSL_UTF8=1` (WSL >= 0.64), so
@@ -94,6 +104,11 @@ function wslUncBase(distro: string): string {
  */
 export function wslPosixToWindowsAccessible(posixPath: string, distro: string = resolveDefaultWslDistro()): string {
   const value = String(posixPath || '').trim()
+
+  if (isWindowsHostPath(value)) {
+    return value
+  }
+
   const normalized = value.replace(/\\/g, '/')
 
   if (!normalized.startsWith('/')) {
@@ -124,14 +139,16 @@ export function resolvePickerDefaultPath(
 
   const value = String(defaultPath).trim()
 
-  return value.startsWith('/') && !WIN_DRIVE_RE.test(value) ? wslPosixToWindowsAccessible(value, distro) : defaultPath
+  return value.startsWith('/') && !isWindowsHostPath(value)
+    ? wslPosixToWindowsAccessible(value, distro)
+    : defaultPath
 }
 
 /** fs read path: on Windows, make a WSL cwd readable via its UNC / drive form. */
 export function resolveLocalReadPath(dirPath: string, distro: string = resolveDefaultWslDistro()): string {
   const value = String(dirPath || '').trim()
 
-  return IS_WINDOWS && value.startsWith('/') && !WIN_DRIVE_RE.test(value)
+  return IS_WINDOWS && value.startsWith('/') && !isWindowsHostPath(value)
     ? wslPosixToWindowsAccessible(value, distro)
     : value
 }

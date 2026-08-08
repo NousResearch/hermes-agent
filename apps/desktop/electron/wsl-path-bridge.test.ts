@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { parseDefaultDistro, resolvePickerDefaultPath, wslPosixToWindowsAccessible } from './wsl-path-bridge'
+import {
+  parseDefaultDistro,
+  resolveLocalReadPath,
+  resolvePickerDefaultPath,
+  wslPosixToWindowsAccessible
+} from './wsl-path-bridge'
 
 test('parseDefaultDistro reads the first distro from clean utf-8 output', () => {
   assert.equal(parseDefaultDistro('Ubuntu\nDebian\n'), 'Ubuntu')
@@ -32,10 +37,34 @@ test('wslPosixToWindowsAccessible maps an in-distro POSIX path to a UNC share', 
 test('wslPosixToWindowsAccessible leaves non-absolute / already-Windows paths alone', () => {
   assert.equal(wslPosixToWindowsAccessible('C:\\Users\\alex', 'Ubuntu'), 'C:\\Users\\alex')
   assert.equal(wslPosixToWindowsAccessible('relative/dir', 'Ubuntu'), 'relative/dir')
+  assert.equal(
+    wslPosixToWindowsAccessible('\\\\wsl.localhost\\Ubuntu\\home\\alex', 'Ubuntu'),
+    '\\\\wsl.localhost\\Ubuntu\\home\\alex'
+  )
+  assert.equal(
+    wslPosixToWindowsAccessible('//wsl.localhost/Ubuntu/home/alex', 'Debian'),
+    '//wsl.localhost/Ubuntu/home/alex'
+  )
+  assert.equal(wslPosixToWindowsAccessible('//wsl$/Debian/tmp', 'Ubuntu'), '//wsl$/Debian/tmp')
 })
 
 test('resolvePickerDefaultPath bridges a WSL cwd but passes Windows paths and empties through', () => {
   assert.equal(resolvePickerDefaultPath('/home/alex', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
   assert.equal(resolvePickerDefaultPath('C:\\proj', 'Ubuntu'), 'C:\\proj')
   assert.equal(resolvePickerDefaultPath(undefined, 'Ubuntu'), undefined)
+  assert.equal(
+    resolvePickerDefaultPath('//wsl.localhost/Ubuntu/home/alex', 'Ubuntu'),
+    '//wsl.localhost/Ubuntu/home/alex'
+  )
+  assert.equal(resolvePickerDefaultPath('//wsl$/Debian/tmp', 'Ubuntu'), '//wsl$/Debian/tmp')
+})
+
+test('resolveLocalReadPath passes forward-slash WSL UNC through', () => {
+  // UNC must not be mistaken for POSIX; on non-Windows the bridge is skipped
+  // entirely, so either path still leaves the value unchanged.
+  assert.equal(
+    resolveLocalReadPath('//wsl.localhost/Ubuntu/home/alex', 'Ubuntu'),
+    '//wsl.localhost/Ubuntu/home/alex'
+  )
+  assert.equal(resolveLocalReadPath('//wsl$/Debian/tmp', 'Ubuntu'), '//wsl$/Debian/tmp')
 })

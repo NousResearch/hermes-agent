@@ -90,6 +90,8 @@ class SubdirectoryHintTracker:
         # Pre-mark the working dir as loaded (startup context handles it)
         self._loaded_dirs.add(self.working_dir)
         self._seed_working_dir_digest()
+        home_dir = Path.home().resolve()
+        self._is_home_working = (self.working_dir == home_dir)
 
     def _seed_working_dir_digest(self) -> None:
         """Record the CWD context file's digest so it is never re-injected.
@@ -122,6 +124,8 @@ class SubdirectoryHintTracker:
 
         Returns formatted hint text to append to the tool result, or None.
         """
+        if self._is_home_working:
+            return None
         dirs = self._extract_directories(tool_name, tool_args)
         if not dirs:
             return None
@@ -264,14 +268,16 @@ class SubdirectoryHintTracker:
             if not directory.is_relative_to(self.working_dir):
                 logger.debug(
                     "Skipping hint files in %s — outside working_dir %s",
-                    directory, self.working_dir,
+                    directory,
+                    self.working_dir,
                 )
                 return None
         except (OSError, ValueError):
             if not _is_ancestor_or_same(self.working_dir, directory):
                 logger.debug(
                     "Skipping hint files in %s — outside working_dir %s",
-                    directory, self.working_dir,
+                    directory,
+                    self.working_dir,
                 )
                 return None
 

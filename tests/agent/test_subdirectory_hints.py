@@ -1,11 +1,9 @@
 """Tests for progressive subdirectory hint discovery."""
-
 import pytest
 from pathlib import Path
 from unittest.mock import patch
 
 from agent.subdirectory_hints import SubdirectoryHintTracker
-
 
 @pytest.fixture
 def project(tmp_path):
@@ -42,8 +40,6 @@ def project(tmp_path):
 class TestSubdirectoryHintTracker:
     """Unit tests for SubdirectoryHintTracker."""
 
-
-
     def test_discovers_claude_md(self, project):
         """Frontend CLAUDE.md should be discovered."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))
@@ -66,9 +62,6 @@ class TestSubdirectoryHintTracker:
         )
         assert result2 is None  # already loaded
 
-
-
-
     def test_relative_path(self, project):
         """Relative paths resolved against working_dir."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))
@@ -78,10 +71,6 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Frontend rules" in result
 
-
-
-
-
     def test_workdir_arg(self, project):
         """The workdir argument from terminal tool is checked."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))
@@ -90,8 +79,6 @@ class TestSubdirectoryHintTracker:
         )
         assert result is not None
         assert "Frontend rules" in result
-
-
 
     def test_truncation_of_large_hints(self, tmp_path):
         """Hint files over the limit are truncated."""
@@ -113,7 +100,6 @@ class TestSubdirectoryHintTracker:
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         assert tracker.check_tool_call("read_file", {}) is None
         assert tracker.check_tool_call("terminal", {"command": ""}) is None
-
 
 
 class TestPermissionErrorHandling:
@@ -161,13 +147,11 @@ class TestPermissionErrorHandling:
 class TestOutsideWorkspaceRejection:
     """Direct tests for _is_valid_subdir rejecting outside-workspace paths."""
 
-
     def test_is_valid_subdir_allows_inside_path(self, project):
         """_is_valid_subdir should return True for paths inside working_dir."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         backend = project / "backend"
         assert tracker._is_valid_subdir(backend) is True
-
 
     def test_is_valid_subdir_rejects_sibling_dir(self, tmp_path, project):
         """_is_valid_subdir should reject a sibling directory (simulating ~/.codex)."""
@@ -284,3 +268,19 @@ class TestExcludedDirectories:
         tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
         result = tracker.check_tool_call("read_file", {"path": str(normal / "f.py")})
         assert result is not None and "Backend rules" in result
+
+
+class TestHomeWorkingDir:
+    """Tests for when working_dir is the user's home directory."""
+
+    def test_no_hints_when_working_dir_is_home(self, monkeypatch, tmp_path):
+        """SubdirectoryHintTracker should return None for all tool calls when working_dir is home."""
+        # Mock Path.home to return a temporary directory
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        monkeypatch.setattr('pathlib.Path.home', lambda: home_dir)
+        # Also set the working_dir to home
+        tracker = SubdirectoryHintTracker(working_dir=str(home_dir))
+        # Any tool call should return None
+        assert tracker.check_tool_call('read_file', {'path': 'some/file.txt'}) is None
+        assert tracker.check_tool_call('terminal', {'command': 'ls'}) is None

@@ -277,16 +277,25 @@ class MemoryStore:
             rows = self._conn.execute(sql, params).fetchall()
             results = [self._row_to_dict(r) for r in rows]
 
-            if results:
-                ids = [r["fact_id"] for r in results]
-                placeholders = ",".join("?" * len(ids))
-                self._conn.execute(
-                    f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                    ids,
-                )
-                self._conn.commit()
+        self.record_retrievals([r["fact_id"] for r in results])
+        return results
 
-            return results
+    def record_retrievals(self, fact_ids: list[int]) -> None:
+        """Increment retrieval_count for the given facts.
+
+        Retrieval bookkeeping lives here so every read path can share it.
+        Callers pass the ids they actually returned to the caller, so the
+        counter reflects facts surfaced rather than rows scanned.
+        """
+        if not fact_ids:
+            return
+        with self._lock:
+            placeholders = ",".join("?" * len(fact_ids))
+            self._conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            self._conn.commit()
 
     def update_fact(
         self,
@@ -397,7 +406,10 @@ class MemoryStore:
                 LIMIT ?
             """
             rows = self._conn.execute(sql, params).fetchall()
-            return [self._row_to_dict(r) for r in rows]
+            facts = [self._row_to_dict(r) for r in rows]
+        # Outside the read lock: record_retrievals takes the same RLock and commits.
+        self.record_retrievals([f["fact_id"] for f in facts])
+        return facts
 
     def record_feedback(self, fact_id: int, helpful: bool) -> dict:
         """Record user feedback and adjust trust asymmetrically.

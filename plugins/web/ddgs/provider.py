@@ -300,7 +300,7 @@ class DDGSWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Execute a DuckDuckGo search and return normalized results.
 
         The synchronous ``ddgs`` call runs in a disposable child process with

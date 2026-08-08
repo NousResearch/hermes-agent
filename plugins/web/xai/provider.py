@@ -145,7 +145,7 @@ class XAIWebSearchProvider(WebSearchProvider):
 
     # -- Search -----------------------------------------------------------
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Execute a Grok-backed web search.
 
         Returns ``{"success": True, "data": {"web": [{title, url, description, position}, ...]}}``

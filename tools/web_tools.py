@@ -615,7 +615,11 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def web_search_tool(
+    query: str,
+    limit: int = 5,
+    categories: Optional[list[str]] = None,
+) -> str:
     """
     Search the web for information using available search API backend.
 
@@ -624,10 +628,25 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
     Note: This function returns search result metadata only (URLs, titles, descriptions).
     Use web_extract_tool to get full content from specific URLs.
-    
+
     Args:
         query (str): The search query to look up
         limit (int): Maximum number of results to return (default: 5)
+        categories (Optional[list[str]]): Server-side result category filter.
+            Supported values depend on the active backend:
+
+            - firecrawl: ``web``, ``news``, ``images`` (sources); ``research``,
+              ``github``, ``pdf`` (categories)
+            - searxng: Many categories depending on installed engines —
+              ``general``, ``news``, ``science``, ``it``, ``images``,
+              ``files``, ``social media``, ``map``, ``music``, ``videos``,
+              and others. Check ``GET /config`` on your instance.
+            - exa: ``company``, ``people``, ``news``, ``code``
+            - brave-free: ``web``, ``news``, ``images``, ``video``
+            - tavily: ``general``, ``news``, ``finance`` (via ``topic`` param)
+
+            Other backends (parallel, ddgs, xai) do not support category
+            filtering — the parameter is silently ignored.
     
     Returns:
         str: JSON string containing search results with the following structure:
@@ -643,6 +662,12 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                          },
                          ...
                      ]
+                 },
+                 "_metadata": {                          # included when categories requested
+                     "backend": str,                     # which backend handled the search
+                     "categories_requested": [str],       # what the agent asked for
+                     "categories_applied": [str],          # what was actually applied (empty list = ignored)
+                     "warning": str                       # present when backend ignores categories
                  }
              }
     
@@ -658,13 +683,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     debug_call_data = {
         "parameters": {
             "query": query,
-            "limit": limit
+            "limit": limit,
         },
         "error": None,
         "results_count": 0,
         "original_response_size": 0,
         "final_response_size": 0
     }
+    if categories:
+        debug_call_data["parameters"]["categories"] = categories
     
     try:
         from tools.interrupt import is_interrupted
@@ -719,7 +746,29 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
-            response_data = provider.search(query, limit)
+            response_data = provider.search(query, limit, categories=categories)
+            # Report what filters were applied so agents can detect
+            # silent-ignore from non-supporting backends
+            _CATEGORY_AWARE_BACKENDS = frozenset({
+                "searxng", "firecrawl", "exa",
+                "brave-free", "tavily",
+            })
+            applied: dict[str, Any] = {
+                "backend": backend or provider.name,
+            }
+            if categories:
+                applied["categories_requested"] = list(categories)
+                if backend in _CATEGORY_AWARE_BACKENDS:
+                    applied["categories_applied"] = list(categories)
+                else:
+                    applied["categories_applied"] = []
+                    applied["warning"] = (
+                        f"Backend '{backend}' does not support category filtering. "
+                        "Results are unfiltered."
+                    )
+            if isinstance(response_data, dict):
+                response_data.setdefault("_metadata", {})
+                response_data["_metadata"].update(applied)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1182,6 +1231,11 @@ WEB_SEARCH_SCHEMA = {
                 "minimum": 1,
                 "maximum": 100,
                 "default": 5
+            },
+            "categories": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional category filter for server-side result scoping. Values depend on the configured search backend. For SearXNG: general, news, science, it, images, files, social media, map, music, videos. For Firecrawl: web, news, images, research, github, pdf. For Exa: company, people, news, code. For Brave: web, news, images, video. For Tavily: general, news, finance."
             }
         },
         "required": ["query"]
@@ -1214,7 +1268,9 @@ registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=lambda args, **kw: web_search_tool(
+        args.get("query", ""), limit=args.get("limit", 5), categories=args.get("categories")
+    ),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",

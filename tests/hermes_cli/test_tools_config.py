@@ -742,3 +742,63 @@ def test_platforms_whose_composite_excludes_it_are_left_narrow():
             include_default_mcp_servers=False,
         )
         assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled), platform
+
+
+def test_xai_credentials_present_store_read_memoised(monkeypatch):
+    """Measured-work pin: the auth-store read runs once per store state.
+
+    ``_xai_credentials_present`` reads + parses the xAI OAuth store (JSON
+    file I/O under a lock) on every call — and it runs on every /tools
+    completion keystroke via ``_get_platform_tools``' x_search auto-enable.
+    The store read is memoised keyed on the store path+mtime, so repeated
+    calls reuse the parsed result; only an actual store change (mtime/size
+    bump) re-reads. This pins that the per-keystroke path stops paying the
+    file read.
+    """
+    import hermes_cli.tools_config as _tc
+
+    reads = {"n": 0}
+
+    def counting_read_xai(*args, **kwargs):
+        reads["n"] += 1
+        raise Exception("no creds")  # keep the store-read result False
+
+    def fake_auth_file_path():
+        return _tc.Path("/tmp/fake-hermes-home/auth.json")
+
+    def fake_global_auth_file_path():
+        return None
+
+    monkeypatch.setattr(_tc, "_xai_oauth_store_has_creds_cache", None)
+    # The function imports _read_xai_oauth_tokens from hermes_cli.auth inside
+    # its body, so patch the source module.
+    monkeypatch.setattr(
+        "hermes_cli.auth._read_xai_oauth_tokens", counting_read_xai
+    )
+    # Patch the path helpers so the mtime key is stable across calls.
+    monkeypatch.setattr("hermes_cli.auth._auth_file_path", fake_auth_file_path)
+    monkeypatch.setattr(
+        "hermes_cli.auth._global_auth_file_path", fake_global_auth_file_path
+    )
+
+    # First call: cache miss -> one store read.
+    _tc._xai_credentials_present()
+    assert reads["n"] == 1, "first call should read the store once"
+
+    # Subsequent calls: cache hit -> no additional store reads.
+    for _ in range(10):
+        _tc._xai_credentials_present()
+    assert reads["n"] == 1, (
+        "repeated calls must reuse the memoised store read, "
+        f"got {reads['n']} reads"
+    )
+
+    # A store mtime change invalidates the cache -> re-read.
+    import os
+
+    auth_path = _tc.Path("/tmp/fake-hermes-home/auth.json")
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path.write_text("{}", encoding="utf-8")
+    auth_path.touch()
+    _tc._xai_credentials_present()
+    assert reads["n"] == 2, "store mtime change should re-read once"

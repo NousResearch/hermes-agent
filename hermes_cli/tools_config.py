@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 
 from hermes_cli.config import (
@@ -165,6 +165,25 @@ _DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin",
 _CONFIG_ONLY_TOOLSETS = {"stt"}
 
 
+# mtime-keyed memo of the xAI OAuth-store read inside _xai_credentials_present.
+# The check runs on every /tools completion keystroke (_get_platform_tools ->
+# x_search auto-enable) and every provider-readiness render; the auth-store
+# read is JSON file I/O under a lock. Credentials only change when the user
+# runs an auth flow, so the path+mtime key stays freshness-correct (same
+# pattern as _nous_auth_status_cache in hermes_cli/auth.py and load_env in
+# config.py). Only the store read is memoised — the cheap env/secret
+# fallbacks below still run per call so runtime env changes are honoured.
+_xai_oauth_store_has_creds_cache: Optional[
+    Tuple[
+        Tuple[
+            Tuple[Optional[str], Optional[float], Optional[int]],
+            Tuple[Optional[str], Optional[float], Optional[int]],
+        ],
+        bool,
+    ]
+] = None
+
+
 def _xai_credentials_present() -> bool:
     """Cheap, side-effect-free check for usable xAI credentials.
 
@@ -176,13 +195,47 @@ def _xai_credentials_present() -> bool:
     Also reused by ``provider_readiness_status`` for ``post_setup:
     "xai_grok"`` picker rows (xAI TTS, Grok OAuth x_search).
     """
+    global _xai_oauth_store_has_creds_cache
+    store_has_creds = False
     try:
-        from hermes_cli.auth import _read_xai_oauth_tokens
+        from hermes_cli.auth import (
+            _auth_file_path,
+            _global_auth_file_path,
+            _read_xai_oauth_tokens,
+        )
 
-        _read_xai_oauth_tokens()
-        return True
+        try:
+            local = _auth_file_path()
+            local_stat = (str(local), local.stat().st_mtime, local.stat().st_size)
+        except OSError:
+            local_stat = (None, None, None)
+        try:
+            global_path = _global_auth_file_path()
+            global_stat = (
+                (str(global_path), global_path.stat().st_mtime, global_path.stat().st_size)
+                if global_path is not None
+                else (None, None, None)
+            )
+        except OSError:
+            global_stat = (None, None, None)
+        key = (local_stat, global_stat)
+
+        if _xai_oauth_store_has_creds_cache is not None:
+            cached_key, cached_value = _xai_oauth_store_has_creds_cache
+            if cached_key == key:
+                return cached_value
+
+        try:
+            _read_xai_oauth_tokens()
+            store_has_creds = True
+        except Exception:
+            store_has_creds = False
+        _xai_oauth_store_has_creds_cache = (key, store_has_creds)
     except Exception:
-        pass
+        store_has_creds = False
+
+    if store_has_creds:
+        return True
     try:
         from tools.xai_http import get_env_value as _xai_get_env_value
 

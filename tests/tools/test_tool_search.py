@@ -179,6 +179,27 @@ class TestRetrieval:
 
 
 class TestAssembly:
+    def test_explicit_empty_has_no_bridge_or_deferred_catalog(self):
+        import model_tools
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+
+        defs = model_tools.get_tool_definitions(
+            enabled_toolsets=[],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        result = assemble_tool_defs(
+            defs,
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+
+        assert defs == []
+        assert result.tool_defs == []
+        assert result.activated is False
+        assert result.deferred_count == 0
+        assert result.tier == 0
+
     def test_no_deferrable_returns_unchanged(self):
         """Pure-core toolset: pass-through, no bridge tools added."""
         from tools.tool_search import assemble_tool_defs, ToolSearchConfig
@@ -443,6 +464,33 @@ class TestRegression_ToolsetScoping:
         )
         hit_names = {m["name"] for m in parsed["matches"]}
         assert "scoped_oos_plugin" not in hit_names
+
+    def test_empty_scope_has_zero_search_and_call_reachability(self):
+        import model_tools
+
+        self._register("mcp_zero_scope_secret", "mcp-zero-scope")
+
+        searched = json.loads(
+            model_tools.handle_function_call(
+                function_name="tool_search",
+                function_args={"query": "zero scope"},
+                enabled_toolsets=[],
+            )
+        )
+        called = json.loads(
+            model_tools.handle_function_call(
+                function_name="tool_call",
+                function_args={
+                    "name": "mcp_zero_scope_secret",
+                    "arguments": {},
+                },
+                enabled_toolsets=[],
+            )
+        )
+
+        assert searched["total_available"] == 0
+        assert searched["matches"] == []
+        assert "not available in this session" in called["error"]
 
 
     def test_scoped_deferrable_names_helper(self):

@@ -306,6 +306,51 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
+def test_zero_tool_codex_request_omits_all_tool_fields(monkeypatch):
+    """Capture the final OpenAI-Codex request for an actual [] tool scope."""
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "must-not-widen-zero-tools")
+
+    agent = run_agent.AIAgent(
+        model="gpt-5.6-terra",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="test-token",
+        enabled_toolsets=[],
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+        skip_background_review=True,
+    )
+    # The worker env is only needed to exercise model_tools' force-add path at
+    # construction.  Clear it before the turn so the unrelated kanban
+    # completion nudge does not turn this transport assertion into a worker
+    # lifecycle test.
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._disable_streaming = True
+    captured = {}
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Connectivity test only; no legal content.")
+
+    assert result["completed"] is True
+    assert agent.enabled_toolsets == []
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
+    assert "tools" not in captured
+    assert "tool_choice" not in captured
+    assert "parallel_tool_calls" not in captured
+
+
 def test_build_api_kwargs_mantle_sets_extended_prompt_cache_retention(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(

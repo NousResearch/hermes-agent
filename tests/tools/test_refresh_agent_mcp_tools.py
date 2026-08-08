@@ -134,6 +134,51 @@ def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
     assert "lcm_grep" not in agent.valid_tool_names   # gated out (#5544)
 
 
+def test_refresh_cannot_widen_explicit_empty_toolsets(monkeypatch):
+    """Late MCP, memory, and context schemas remain unreachable under []."""
+    from tools.registry import registry
+
+    registry.register(
+        name="mcp_zero_tool_late_arrival",
+        handler=lambda args, **kwargs: "{}",
+        schema=_tool("mcp_zero_tool_late_arrival")["function"],
+        toolset="mcp-zero-tool-late",
+    )
+    agent = _agent([], enabled=[])
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {"name": "memory_search", "description": "", "parameters": {}}
+        ]
+    )
+    agent.context_compressor = types.SimpleNamespace(
+        get_tool_schemas=lambda: [
+            {"name": "lcm_grep", "description": "", "parameters": {}}
+        ]
+    )
+    agent._context_engine_tool_names = set()
+
+    import model_tools
+
+    original = model_tools.get_tool_definitions
+
+    def _late_registry(**kwargs):
+        assert kwargs["enabled_toolsets"] == []
+        assert original(
+            enabled_toolsets=[],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        ) == []
+        return []
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", _late_registry)
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert added == set()
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
+
+
 def test_refreshed_tool_is_callable_through_valid_tool_names_guard(monkeypatch):
     """The whole point: a late tool, once refreshed, passes the name guard the
     run loop uses to accept/reject tool calls (agent.valid_tool_names)."""

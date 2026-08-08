@@ -77,6 +77,27 @@ class TestSurfaceResolution:
 
 
 class TestResolverPlumbing:
+    def test_explicit_empty_config_beats_posture_and_desktop_surface(
+        self, tmp_path, no_desktop_env
+    ):
+        """Exercise the real config loader from an isolated HERMES_HOME."""
+        tmp_path.joinpath("config.yaml").write_text(
+            "platform_toolsets:\n  cli: []\n",
+            encoding="utf-8",
+        )
+        no_desktop_env.setenv("HERMES_HOME", str(tmp_path))
+
+        import agent.coding_context as cc
+
+        no_desktop_env.setattr(
+            cc,
+            "coding_selection",
+            lambda **_: pytest.fail("coding posture must not widen explicit []"),
+        )
+
+        assert server._load_enabled_toolsets("desktop") == []
+        assert server._load_enabled_toolsets("tui") == []
+
     def test_posture_path_folds_in_the_session_surface(self, no_desktop_env):
         """Focus-mode returns early — the surface toolsets must survive it."""
         import agent.coding_context as cc
@@ -111,3 +132,16 @@ class TestResolverPlumbing:
         no_desktop_env.setenv("HERMES_TUI_TOOLSETS", "web,memory")
 
         assert server._load_enabled_toolsets("desktop") == ["web", "memory"]
+
+    def test_explicit_env_pin_can_override_empty_config(self, no_desktop_env):
+        """The existing operator-only env override retains its precedence."""
+        import hermes_cli.config as config_mod
+
+        no_desktop_env.setenv("HERMES_TUI_TOOLSETS", "web")
+        no_desktop_env.setattr(
+            config_mod,
+            "load_config",
+            lambda: {"platform_toolsets": {"cli": []}},
+        )
+
+        assert server._load_enabled_toolsets("desktop") == ["web"]

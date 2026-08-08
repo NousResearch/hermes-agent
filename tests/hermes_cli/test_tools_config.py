@@ -31,6 +31,24 @@ from hermes_cli.tools_config import (
 )
 
 
+def test_explicit_empty_platform_toolsets_is_absolute_deny_all():
+    """Defaults, plugins, context tools, and MCP must not widen []."""
+    config = {
+        "platform_toolsets": {"cli": []},
+        "context": {"engine": "lcm"},
+        "mcp_servers": {"demo": {"enabled": True}},
+    }
+
+    with patch(
+        "hermes_cli.tools_config._get_plugin_toolset_keys",
+        side_effect=AssertionError("plugin discovery must not run"),
+    ), patch(
+        "hermes_cli.tools_config.enabled_mcp_server_names",
+        side_effect=AssertionError("MCP defaults must not be added"),
+    ):
+        assert _get_platform_tools(config, "cli") == set()
+
+
 
 
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):

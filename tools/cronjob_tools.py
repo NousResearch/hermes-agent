@@ -590,7 +590,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["monitor_state"] = job["monitor_state"]
     if job.get("no_agent"):
         result["no_agent"] = True
-    if job.get("enabled_toolsets"):
+    if job.get("enabled_toolsets") is not None:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
@@ -1134,7 +1134,9 @@ def cronjob(
                     base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                     script=_normalize_optional_job_value(script),
                     context_from=context_from,
-                    enabled_toolsets=enabled_toolsets or None,
+                    enabled_toolsets=(
+                        enabled_toolsets if enabled_toolsets is not None else None
+                    ),
                     workdir=_normalize_optional_job_value(workdir),
                     no_agent=_no_agent,
                     attach_to_session=attach_to_session,
@@ -1392,7 +1394,7 @@ def cronjob(
                             )
                 updates["context_from"] = refs or None
             if enabled_toolsets is not None:
-                updates["enabled_toolsets"] = enabled_toolsets or None
+                updates["enabled_toolsets"] = enabled_toolsets
             if attach_to_session is not None:
                 updates["attach_to_session"] = bool(attach_to_session)
             if workdir is not None:

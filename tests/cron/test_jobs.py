@@ -786,6 +786,20 @@ class TestEnabledToolsets:
         job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "terminal"])
         assert job["enabled_toolsets"] == ["web", "terminal"]
 
+    def test_explicit_empty_toolsets_survive_store_reload_and_update(self, tmp_cron_dir):
+        job = create_job(
+            prompt="monitor",
+            schedule="every 1h",
+            enabled_toolsets=[],
+        )
+        assert job["enabled_toolsets"] == []
+        assert get_job(job["id"])["enabled_toolsets"] == []
+
+        update_job(job["id"], {"enabled_toolsets": ["web"]})
+        update_job(job["id"], {"enabled_toolsets": []})
+
+        assert get_job(job["id"])["enabled_toolsets"] == []
+
 
 class TestMarkJobRunConcurrency:
     """Regression tests for concurrent parallel job state writes.

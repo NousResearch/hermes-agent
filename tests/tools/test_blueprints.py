@@ -82,6 +82,18 @@ class TestParseBlueprint:
         assert spec is not None
         assert spec.deliver == "origin"
 
+    def test_explicit_empty_toolsets_survive_blueprint_parse(self):
+        skill = (
+            "---\nname: zero-tools\ndescription: d\nmetadata:\n  hermes:\n"
+            "    blueprint:\n      schedule: every 1h\n"
+            "      enabled_toolsets: []\n---\n\nbody"
+        )
+
+        spec = parse_blueprint(skill)
+
+        assert spec is not None
+        assert spec.enabled_toolsets == []
+
 
 class TestBlueprintSpecForInstalled:
     def test_finds_and_parses_installed_blueprint(self, tmp_path):

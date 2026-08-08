@@ -246,6 +246,33 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_update_and_list_preserve_explicit_empty_toolsets(self):
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check",
+                schedule="every 1h",
+                enabled_toolsets=[],
+            )
+        )
+        job_id = created["job_id"]
+        assert created["job"]["enabled_toolsets"] == []
+        assert get_job(job_id)["enabled_toolsets"] == []
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=job_id,
+                enabled_toolsets=[],
+            )
+        )
+        assert updated["job"]["enabled_toolsets"] == []
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["enabled_toolsets"] == []
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

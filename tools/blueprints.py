@@ -136,7 +136,9 @@ def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
         no_agent=no_agent,
         model=str(model).strip() if model else None,
         provider=str(provider).strip() if provider else None,
-        enabled_toolsets=[str(t) for t in toolsets] if toolsets else None,
+        enabled_toolsets=(
+            [str(t) for t in toolsets] if toolsets is not None else None
+        ),
         raw=blueprint,
     )
 

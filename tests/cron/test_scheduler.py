@@ -48,7 +48,7 @@ class TestPerJobToolsetMcpMerge:
         assert not (set(result) & self._enabled_names())
 
 
-    def test_resolver_empty_per_job_falls_through_to_platform(self):
+    def test_resolver_omitted_per_job_falls_through_to_platform(self):
         # No per-job list -> must delegate to _get_platform_tools (the platform
         # fallback), NOT the per-job merge. Stub the platform resolver and assert
         # it is the path taken and its result is returned.
@@ -61,6 +61,18 @@ class TestPerJobToolsetMcpMerge:
         # _get_platform_tools args: (cfg, "cron")
         assert m_platform.call_args[0][1] == "cron"
         assert set(result) == set(sentinel)
+
+    def test_resolver_explicit_empty_per_job_stays_empty_without_mcp(self):
+        with patch(
+            "cron.scheduler._merge_mcp_into_per_job_toolsets",
+            side_effect=AssertionError("MCP must not widen explicit []"),
+        ), patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            side_effect=AssertionError("platform defaults must not widen explicit []"),
+        ):
+            assert _resolve_cron_enabled_toolsets(
+                {"enabled_toolsets": []}, self.CFG
+            ) == []
 
 
 class TestResolveOrigin:
@@ -576,6 +588,18 @@ class TestRunJobSessionPersistence:
         assert kwargs["enabled_toolsets"] == ["memory", "file"]
         assert "memory" in kwargs["disabled_toolsets"]
 
+    def test_run_job_preserves_explicit_empty_toolsets(self, tmp_path):
+        job = {
+            "id": "zero-tool-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": [],
+        }
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            run_job(job)
+
+        assert mock_agent_cls.call_args.kwargs["enabled_toolsets"] == []
+
     def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
         """The drain gate runs before advancing a due job's schedule."""
         from cron.scheduler import tick
@@ -594,6 +618,18 @@ class TestRunJobSessionPersistence:
 
         advance.assert_not_called()
         run_one.assert_not_called()
+
+    def test_tick_with_no_jobs_never_constructs_agent(self, tmp_path):
+        from cron.scheduler import tick
+
+        with patch("cron.scheduler._get_lock_paths", return_value=(tmp_path, tmp_path / "tick.lock")), patch(
+            "cron.scheduler.get_due_jobs", return_value=[]
+        ), patch("tools.mcp_tool._kill_orphaned_mcp_children"), patch(
+            "run_agent.AIAgent"
+        ) as agent_cls:
+            assert tick(verbose=False, sync=True) == 0
+
+        agent_cls.assert_not_called()
 
 
 class TestRunJobConfigLogging:
@@ -1974,5 +2010,3 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
-

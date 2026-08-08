@@ -680,6 +680,7 @@ def test_profile_scoped_agent_build_starts_mcp_discovery_in_profile_home(
     try:
         server._start_agent_build(sid, session)
         assert built.wait(timeout=2)
+        assert ready.wait(timeout=2)
     finally:
         server._sessions.pop(sid, None)
 
@@ -735,6 +736,7 @@ def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path)
     try:
         server._start_agent_build(sid, session)
         assert built.wait(timeout=2)
+        assert ready.wait(timeout=2)
     finally:
         server._sessions.pop(sid, None)
 
@@ -3573,6 +3575,26 @@ def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
     kwargs = server._background_agent_kwargs(agent, "task-id")
 
     assert kwargs["fallback_model"] == []
+
+
+def test_background_agent_kwargs_preserves_empty_toolsets(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.6-terra",
+        provider="openai-codex",
+        enabled_toolsets=[],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(
+        server,
+        "_load_enabled_toolsets",
+        lambda *_a, **_kw: pytest.fail(
+            "background task must not re-resolve an explicit empty selection"
+        ),
+    )
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["enabled_toolsets"] == []
 
 
 def test_startup_runtime_resolves_short_alias_without_network(monkeypatch):

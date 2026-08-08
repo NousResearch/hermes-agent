@@ -2250,6 +2250,14 @@ def _get_platform_tools(
     # Normalise to str so downstream sorted() never mixes types.
     toolset_names = [str(ts) for ts in toolset_names]
 
+    # An explicitly saved empty selection is an absolute deny-all policy, not
+    # a request to recover platform defaults.  Return before recently-shipped
+    # builtins, plugin toolsets, context-engine tools, and default MCP servers
+    # can widen the selection.  ``None`` remains the legacy "use defaults"
+    # sentinel; ``[]`` deliberately means "no tools" throughout runtime.
+    if explicitly_configured and not toolset_names:
+        return set()
+
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     plugin_ts_keys = _get_plugin_toolset_keys()
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
@@ -2435,19 +2443,13 @@ def _get_platform_tools(
     # Context-engine tools are runtime-provided by the active engine, so they
     # are not part of any static platform composite. When a non-default engine
     # is selected, keep its recovery/status tools available even after a user
-    # saves an explicit platform toolset list. Preserve the explicit empty-list
-    # contract: selecting no configurable tools means no context-engine tools
-    # either unless the user adds ``context_engine`` manually later.
+    # saves an explicit platform toolset list. Explicit empty selections have
+    # already returned above, before any runtime-provided tools can be added.
     context_cfg = config.get("context") or {}
     if not isinstance(context_cfg, dict):
         context_cfg = {}
     context_engine_name = str(context_cfg.get("engine") or "compressor").strip().lower()
-    explicit_empty_selection = (
-        platform in platform_toolsets
-        and isinstance(platform_toolsets.get(platform), list)
-        and not toolset_names
-    )
-    if context_engine_name and context_engine_name != "compressor" and not explicit_empty_selection:
+    if context_engine_name and context_engine_name != "compressor":
         enabled_toolsets.add("context_engine")
 
     # Preserve any explicit non-configurable toolset entries (for example,

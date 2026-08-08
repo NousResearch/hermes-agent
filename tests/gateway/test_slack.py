@@ -1739,6 +1739,160 @@ class TestIncomingDocumentHandling:
         assert "• First bullet" in msg_event.text
         assert "• Second bullet" in msg_event.text
 
+    @pytest.mark.asyncio
+    async def test_ordered_list_continuation_keeps_its_numbering(self, adapter):
+        """A list split by prose must keep the numbers the user sees.
+
+        Slack sends the continuation as a separate ``rich_text_list`` block and
+        reports where it resumes in ``offset``. Numbering every block from 1
+        renames the user's items, which changes the message when the numbering
+        is the content.
+        """
+        event = self._make_event(
+            text="Here is the plan",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_list",
+                            "style": "ordered",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Intake"}],
+                                },
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Analysis"}],
+                                },
+                            ],
+                        },
+                        {
+                            "type": "rich_text_section",
+                            "elements": [
+                                {"type": "text", "text": "That covers stage one."}
+                            ],
+                        },
+                        {
+                            "type": "rich_text_list",
+                            "style": "ordered",
+                            "offset": 2,
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Decision"}],
+                                }
+                            ],
+                        },
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        text = adapter.handle_message.call_args[0][0].text
+        assert "1. Intake" in text
+        assert "2. Analysis" in text
+        assert "That covers stage one." in text
+        assert "3. Decision" in text
+        assert "1. Decision" not in text
+
+    @pytest.mark.asyncio
+    async def test_ordered_list_without_offset_starts_at_one(self, adapter):
+        """The common single-block case must be unchanged."""
+        event = self._make_event(
+            text="Plain list",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_list",
+                            "style": "ordered",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "First"}],
+                                },
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Second"}],
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        text = adapter.handle_message.call_args[0][0].text
+        assert "1. First" in text
+        assert "2. Second" in text
+
+    @pytest.mark.asyncio
+    async def test_unusable_list_offset_falls_back_to_one(self, adapter):
+        """A malformed offset must not raise or drop the items."""
+        event = self._make_event(
+            text="Odd payload",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_list",
+                            "style": "ordered",
+                            "offset": "not-a-number",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Only item"}],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        assert "1. Only item" in adapter.handle_message.call_args[0][0].text
+
+    @pytest.mark.asyncio
+    async def test_bullet_list_ignores_offset(self, adapter):
+        """Bullets carry no numbering, so an offset must not reach them."""
+        event = self._make_event(
+            text="Bullets",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_list",
+                            "style": "bullet",
+                            "offset": 4,
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Alpha"}],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        text = adapter.handle_message.call_args[0][0].text
+        assert "• Alpha" in text
+        assert "5." not in text
+
 
 # ---------------------------------------------------------------------------
 # TestIncomingAudioHandling — Slack voice messages (regression)

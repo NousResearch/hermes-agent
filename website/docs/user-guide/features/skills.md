@@ -492,15 +492,15 @@ The `patch` action is preferred for updates — it's more token-efficient than `
 
 ### Gating agent skill writes (`skills.write_approval`)
 
-By default the agent writes skills freely — including from the [background
+By default skill writes require approval — including from the [background
 self-improvement review](/user-guide/features/memory#controlling-memory-writes-write_approval)
-that runs after a turn. If you'd rather approve every skill write first
-(small models that misjudge what they learned, secure environments, or just
-wanting eyes on the self-improvement loop), turn on the write-approval gate:
+that runs after a turn — so unsupervised background review cannot rewrite
+your skills on a stock install (#70128). If you'd rather let the agent write
+skills freely, turn the gate off:
 
 ```yaml
 skills:
-  write_approval: false     # false = write freely (default) | true = require approval
+  write_approval: true      # true = require approval (default) | false = write freely
 ```
 
 When `write_approval: true`, every `skill_manage` write (create / edit /

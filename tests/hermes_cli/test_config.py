@@ -743,6 +743,10 @@ class TestConfigSupportFloor:
         "model": {"default": "anthropic/claude-fable-5", "provider": "nous"},
         "model_catalog": {"ttl_hours": 1},
         "plugins": {"disabled": ["foo"], "enabled": []},
+        # skills.write_mode "on" → write_approval=False (v28→29). That is the
+        # legacy explicit dump of the OLD default; with #70128 skills default
+        # on, False is a non-default so it remains materialized on disk.
+        "skills": {"write_approval": False},
     }
 
     _ENV_FIXTURE = (
@@ -1104,10 +1108,19 @@ class TestWriteApprovalMigration:
                         "skills:\n  write_mode: approve\n")
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            loaded = load_config()
+            # memory.write_approval defaults to False, so approve->True differs
+            # from the default and is materialised to disk.
             assert raw["memory"]["write_approval"] is True
-            assert raw["skills"]["write_approval"] is True
+            # skills.write_approval defaults to True (#70128), so approve->True
+            # equals the default and is NOT materialised to disk (lean-config
+            # invariant) — the legacy write_mode key is gone and the effective
+            # value resolves to True via load_config()'s deep-merge.
+            assert "write_approval" not in raw.get("skills", {})
+            assert loaded["memory"]["write_approval"] is True
+            assert loaded["skills"]["write_approval"] is True
             assert "write_mode" not in raw["memory"]
-            assert "write_mode" not in raw["skills"]
+            assert "write_mode" not in raw.get("skills", {})
 
     def test_on_and_off_map_to_false(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

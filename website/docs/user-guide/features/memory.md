@@ -324,7 +324,7 @@ Skills use the same on/off gate, but the review UX differs because a
 
 ```yaml
 skills:
-  write_approval: false     # false = write freely (default) | true = require approval
+  write_approval: true      # true = require approval (default) | false = write freely
 ```
 
 When `write_approval: true`, skill writes (create / edit / patch / write_file /

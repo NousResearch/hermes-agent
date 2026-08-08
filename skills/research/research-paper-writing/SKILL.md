@@ -824,21 +824,7 @@ Every successful ML paper centers on what Neel Nanda calls "the narrative": a sh
 
 ### The Sources Behind This Guidance
 
-This skill synthesizes writing philosophy from researchers who have published extensively at top venues. The writing philosophy layer was originally compiled by [Orchestra Research](https://github.com/orchestra-research) as the `ml-paper-writing` skill.
-
-| Source | Key Contribution | Link |
-|--------|-----------------|------|
-| **Neel Nanda** (Google DeepMind) | The Narrative Principle, What/Why/So What framework | [How to Write ML Papers](https://www.alignmentforum.org/posts/eJGptPbbFPZGLpjsp/highly-opinionated-advice-on-how-to-write-ml-papers) |
-| **Sebastian Farquhar** (DeepMind) | 5-sentence abstract formula | [How to Write ML Papers](https://sebastianfarquhar.com/on-research/2024/11/04/how_to_write_ml_papers/) |
-| **Gopen & Swan** | 7 principles of reader expectations | [Science of Scientific Writing](https://cseweb.ucsd.edu/~swanson/papers/science-of-writing.pdf) |
-| **Zachary Lipton** | Word choice, eliminating hedging | [Heuristics for Scientific Writing](https://www.approximatelycorrect.com/2018/01/29/heuristics-technical-scientific-writing-machine-learning-perspective/) |
-| **Jacob Steinhardt** (UC Berkeley) | Precision, consistent terminology | [Writing Tips](https://bounded-regret.ghost.io/) |
-| **Ethan Perez** (Anthropic) | Micro-level clarity tips | [Easy Paper Writing Tips](https://ethanperez.net/easy-paper-writing-tips/) |
-| **Andrej Karpathy** | Single contribution focus | Various lectures |
-
-**For deeper dives into any of these, see:**
-- [references/writing-guide.md](references/writing-guide.md) — Full explanations with examples
-- [references/sources.md](references/sources.md) — Complete bibliography
+This skill synthesizes writing philosophy from researchers who have published extensively at top venues (Neel Nanda, Sebastian Farquhar, Gopen & Swan, Zachary Lipton, Jacob Steinhardt, Ethan Perez, Andrej Karpathy). The writing philosophy layer was originally compiled by [Orchestra Research](https://github.com/orchestra-research) as the `ml-paper-writing` skill. Full source attributions, explanations, and the complete bibliography live in [references/writing-guide.md](references/writing-guide.md) and [references/sources.md](references/sources.md).
 
 ### Time Allocation
 
@@ -911,21 +897,9 @@ LaTeX Quality Checklist (verify after every edit):
 
 The title is the single most-read element of the paper. It determines whether anyone clicks through to the abstract.
 
-**Good titles**:
-- State the contribution or finding: "Autoreason: When Iterative LLM Refinement Works and Why It Fails"
-- Highlight a surprising result: "Scaling Data-Constrained Language Models" (implies you can)
-- Name the method + what it does: "DPO: Direct Preference Optimization of Language Models"
+**Good titles** state the contribution ("Autoreason: When Iterative LLM Refinement Works and Why It Fails"), a surprising result ("Scaling Data-Constrained Language Models" implies you can), or the method + what it does ("DPO: Direct Preference Optimization of Language Models"). **Bad titles** are too generic ("An Approach to Improving Language Model Outputs"), too long (>15 words), or jargon-only with no domain anchor.
 
-**Bad titles**:
-- Too generic: "An Approach to Improving Language Model Outputs"
-- Too long: anything over ~15 words
-- Jargon-only: "Asymptotic Convergence of Iterative Stochastic Policy Refinement" (who is this for?)
-
-**Rules**:
-- Include your method name if you have one (for citability)
-- Include 1-2 keywords reviewers will search for
-- Avoid colons unless both halves carry meaning
-- Test: would a reviewer know the domain and contribution from the title alone?
+**Rules:** include your method name for citability; include 1-2 keywords reviewers will search for; avoid colons unless both halves carry meaning; test that a reviewer would know the domain and contribution from the title alone.
 
 ### Step 5.1: Abstract (5-Sentence Formula)
 
@@ -1276,58 +1250,7 @@ For converting between venues, see Phase 7 (Submission Preparation) — it cover
 
 ### Professional LaTeX Preamble
 
-Add these packages to any paper for professional quality. They are compatible with all major conference style files:
-
-```latex
-% --- Professional Packages (add after conference style file) ---
-
-% Typography
-\usepackage{microtype}              % Microtypographic improvements (protrusion, expansion)
-                                     % Makes text noticeably more polished — always include
-
-% Tables
-\usepackage{booktabs}               % Professional table rules (\toprule, \midrule, \bottomrule)
-\usepackage{siunitx}                % Consistent number formatting, decimal alignment
-                                     % Usage: \num{12345} → 12,345; \SI{3.5}{GHz} → 3.5 GHz
-                                     % Table alignment: S column type for decimal-aligned numbers
-
-% Figures
-\usepackage{graphicx}               % Include graphics (\includegraphics)
-\usepackage{subcaption}             % Subfigures with (a), (b), (c) labels
-                                     % Usage: \begin{subfigure}{0.48\textwidth} ... \end{subfigure}
-
-% Diagrams and Algorithms
-\usepackage{tikz}                   % Programmable vector diagrams
-\usetikzlibrary{arrows.meta, positioning, shapes.geometric, calc, fit, backgrounds}
-\usepackage[ruled,vlined]{algorithm2e}  % Professional pseudocode
-                                     % Alternative: \usepackage{algorithmicx} if template bundles it
-
-% Cross-references
-\usepackage{cleveref}               % Smart references: \cref{fig:x} → "Figure 1"
-                                     % MUST be loaded AFTER hyperref
-                                     % Handles: figures, tables, sections, equations, algorithms
-
-% Math (usually included by conference .sty, but verify)
-\usepackage{amsmath,amssymb}        % AMS math environments and symbols
-\usepackage{mathtools}              % Extends amsmath (dcases, coloneqq, etc.)
-
-% Colors (for figures and diagrams)
-\usepackage{xcolor}                 % Color management
-% Okabe-Ito colorblind-safe palette:
-\definecolor{okblue}{HTML}{0072B2}
-\definecolor{okorange}{HTML}{E69F00}
-\definecolor{okgreen}{HTML}{009E73}
-\definecolor{okred}{HTML}{D55E00}
-\definecolor{okpurple}{HTML}{CC79A7}
-\definecolor{okcyan}{HTML}{56B4E9}
-\definecolor{okyellow}{HTML}{F0E442}
-```
-
-**Notes:**
-- `microtype` is the single highest-impact package for visual quality. It adjusts character spacing at a sub-pixel level. Always include it.
-- `siunitx` handles decimal alignment in tables via the `S` column type — eliminates manual spacing.
-- `cleveref` must be loaded **after** `hyperref`. Most conference .sty files load hyperref, so put cleveref last.
-- Check if the conference template already loads any of these (especially `algorithm`, `amsmath`, `graphicx`). Don't double-load.
+Add these packages to any paper for professional quality. They are compatible with all major conference style files. The full preamble (microtype, booktabs, siunitx, tikz, cleveref, Okabe-Ito palette, and per-package usage notes) is in [references/latex-preamble.md](references/latex-preamble.md).
 
 ### siunitx Table Alignment
 

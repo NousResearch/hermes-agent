@@ -29,6 +29,59 @@ describe('platform action modifier', () => {
     expect(isActionMod({ ctrl: true, meta: false, super: false })).toBe(true)
     expect(isActionMod({ ctrl: false, meta: false, super: true })).toBe(false)
   })
+
+  it('uses only explicit Cmd/Super for destructive macOS action shortcuts', async () => {
+    const { isExplicitAction, isExplicitActionMod, shouldSwallowActionChordText } = await importPlatform('darwin')
+
+    expect(isExplicitActionMod({ ctrl: false, meta: false, super: true })).toBe(true)
+    expect(isExplicitActionMod({ ctrl: false, meta: true, super: false })).toBe(false)
+    expect(isExplicitActionMod({ ctrl: true, meta: false, super: false })).toBe(false)
+    expect(isExplicitAction({ ctrl: false, meta: true, super: false }, 'd', 'd')).toBe(false)
+    expect(isExplicitAction({ ctrl: false, meta: true, super: false }, 'l', 'l')).toBe(false)
+    expect(isExplicitAction({ ctrl: true, meta: false, super: false }, 'd', 'd')).toBe(false)
+    expect(isExplicitAction({ ctrl: false, meta: false, super: true }, 'd', 'd')).toBe(true)
+    expect(isExplicitAction({ ctrl: false, meta: false, super: true }, 'l', 'l')).toBe(true)
+    expect(shouldSwallowActionChordText({ ctrl: false, meta: true, super: false }, 'd')).toBe(true)
+    expect(shouldSwallowActionChordText({ ctrl: false, meta: true, super: false }, 'l')).toBe(true)
+    expect(shouldSwallowActionChordText({ ctrl: false, meta: true, super: false }, 'c')).toBe(false)
+    // Bare Ctrl+D belongs to the readline delete-char path, never the swallow.
+    expect(shouldSwallowActionChordText({ ctrl: true, meta: false, super: false }, 'd')).toBe(false)
+    // Bare Ctrl+L is the readline redraw chord — consumed, handled globally.
+    expect(shouldSwallowActionChordText({ ctrl: true, meta: false, super: false }, 'l')).toBe(true)
+  })
+
+  it('uses Ctrl as the explicit action modifier on non-macOS', async () => {
+    const { isExplicitActionMod } = await importPlatform('linux')
+
+    expect(isExplicitActionMod({ ctrl: true, meta: false, super: false })).toBe(true)
+  })
+
+  it('classifies bare-Ctrl chords consistently for readline arbitration', async () => {
+    const { isBareCtrl } = await importPlatform('linux')
+
+    expect(isBareCtrl({ ctrl: true, meta: false })).toBe(true)
+    expect(isBareCtrl({ ctrl: true, meta: false, shift: true })).toBe(false)
+    expect(isBareCtrl({ ctrl: true, meta: false, alt: true })).toBe(false)
+    expect(isBareCtrl({ ctrl: true, meta: true })).toBe(false)
+    expect(isBareCtrl({ ctrl: true, meta: false, super: true })).toBe(false)
+    expect(isBareCtrl({ ctrl: false, meta: false })).toBe(false)
+  })
+
+  it('swallows unowned Ctrl+D/L shapes in the composer on non-macOS', async () => {
+    const { shouldSwallowActionChordText } = await importPlatform('linux')
+
+    // Ctrl+L: the global handler owns redraw; the composer must not insert 'l'.
+    expect(shouldSwallowActionChordText({ ctrl: true, meta: false }, 'l')).toBe(true)
+    // Non-bare Ctrl+D (CSI-u Ctrl+Shift+D / Ctrl+Alt+D): neither exit nor
+    // readline delete-char — consume instead of inserting a literal 'd'.
+    expect(shouldSwallowActionChordText({ ctrl: true, meta: false, shift: true }, 'd')).toBe(true)
+    expect(shouldSwallowActionChordText({ ctrl: true, meta: false, alt: true }, 'd')).toBe(true)
+    // Bare Ctrl+D stays with the readline delete-char path.
+    expect(shouldSwallowActionChordText({ ctrl: true, meta: false }, 'd')).toBe(false)
+    // Ordinary typing and other chords fall through untouched.
+    expect(shouldSwallowActionChordText({ ctrl: false, meta: false }, 'd')).toBe(false)
+    expect(shouldSwallowActionChordText({ ctrl: true, meta: false }, 'f')).toBe(false)
+  })
 })
 
 describe('isCopyShortcut', () => {
@@ -56,6 +109,12 @@ describe('isCopyShortcut', () => {
     const { isCopyShortcut } = await importPlatform('darwin')
 
     expect(isCopyShortcut({ ctrl: true, meta: false, super: true }, 'c', {})).toBe(true)
+  })
+
+  it('keeps the legacy macOS key.meta Cmd+C copy fallback', async () => {
+    const { isCopyShortcut } = await importPlatform('darwin')
+
+    expect(isCopyShortcut({ ctrl: false, meta: true, super: false }, 'c', {})).toBe(true)
   })
 })
 
@@ -244,18 +303,16 @@ describe('parseVoiceRecordKey (#18994)', () => {
     expect(parseVoiceRecordKey('super+v').mod).toBe('super')
   })
 
-  it('rejects alt+{c,d,l} on macOS — meta-as-alt collides with isAction', async () => {
+  it('only rejects alt+c on macOS because copy still keeps the meta fallback', async () => {
     const { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } = await importPlatform('darwin')
 
     // hermes-ink reports Alt as ``key.meta`` on many terminals, and
-    // ``isActionMod`` on darwin accepts ``key.meta`` as the action
-    // modifier. So ``alt+c`` / ``alt+d`` / ``alt+l`` get claimed by
-    // isCopyShortcut / isAction('d') / isAction('l') before voice
-    // runs (Copilot round-12 on #19835).
+    // copy intentionally keeps the broad action-modifier fallback for
+    // legacy Cmd+C compatibility. Destructive exit/clear now use the
+    // explicit action helper, so Alt+D/L can be configured for voice.
     expect(parseVoiceRecordKey('alt+c')).toEqual(DEFAULT_VOICE_RECORD_KEY)
-    expect(parseVoiceRecordKey('alt+d')).toEqual(DEFAULT_VOICE_RECORD_KEY)
-    expect(parseVoiceRecordKey('alt+l')).toEqual(DEFAULT_VOICE_RECORD_KEY)
-    // Other alt letters stay usable on darwin.
+    expect(parseVoiceRecordKey('alt+d').mod).toBe('alt')
+    expect(parseVoiceRecordKey('alt+l').mod).toBe('alt')
     expect(parseVoiceRecordKey('alt+r').mod).toBe('alt')
     expect(parseVoiceRecordKey('alt+space').mod).toBe('alt')
   })

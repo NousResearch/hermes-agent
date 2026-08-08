@@ -11276,6 +11276,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # default profile needs the same whole-handler runtime scope as a
             # secondary profile: authorization and prompt rendering both run
             # before the narrower agent-turn scope is installed.
+            if not await self._stamp_primary_adapter_or_dispose(adapter, platform):
+                continue
             adapter.set_message_handler(self._primary_message_handler())
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
@@ -12659,6 +12661,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         del self._failed_platforms[platform]
                         continue
 
+                    if not await self._stamp_primary_adapter_or_dispose(adapter, platform):
+                        # Left in self._failed_platforms at its existing
+                        # backoff schedule -- this scan's attempt is
+                        # abandoned, not retried immediately; the next
+                        # scheduled scan tries again (Slice 1.1R-B: a
+                        # stamp failure must not be silently swallowed, but
+                        # a transient one also must not permanently drop a
+                        # retryable platform from the reconnect queue).
+                        continue
                     adapter.set_message_handler(self._primary_message_handler())
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
@@ -13619,6 +13630,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await self._safe_adapter_disconnect(adapter, platform)
         return connected
 
+    @staticmethod
+    def _stamp_receiving_profile(adapter: BasePlatformAdapter, profile_name: str) -> None:
+        """Stamp the immutable per-adapter receiving-profile field, if this adapter type has one.
+
+        Slice 1.1R-B (conflict #7): TelegramAdapter's capture-aware queue
+        seam needs to know which profile's bot account received an update
+        at construction time, before dispatch -- profile identity was
+        previously only stamped onto outbound message sources, after
+        dispatch, too late for a pre-dispatch capture seam. Duck-typed
+        (``hasattr``) rather than an isinstance check against TelegramAdapter
+        specifically, since ``BasePlatformAdapter`` (shared by every
+        platform) is out of this envelope's scope to change -- adapters that
+        don't expose ``receiving_profile`` are silently skipped.
+
+        Deliberately does not catch anything: a failed stamp (missing
+        profile name, a profile name that fails the adapter's own format
+        validation, or a double-stamp on an already-immutable field) must
+        propagate to the caller, not be swallowed into a debug log line
+        while the adapter is left running unstamped -- an unstamped
+        secondary-profile adapter must never be silently treated as if it
+        were the default profile. Each call site decides its own blast
+        radius (skip this platform, retry this profile, etc.); this method
+        only refuses to hide the failure.
+        """
+        if not hasattr(adapter, "receiving_profile"):
+            return
+        if not profile_name:
+            raise ValueError(f"missing profile_name for {getattr(adapter, 'platform', '?')} adapter")
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", str(profile_name)):
+            raise ValueError(f"invalid receiving_profile {profile_name!r}")
+        adapter.receiving_profile = profile_name
+
+    async def _stamp_primary_adapter_or_dispose(
+        self, adapter: BasePlatformAdapter, platform: Platform
+    ) -> bool:
+        """Shared by the primary-profile startup and reconnect loops.
+
+        Returns True if the caller should proceed with this adapter, False
+        if a stamp failure means this platform must be skipped this
+        attempt. Never swallows the failure silently (Slice 1.1R-B blocker
+        2) -- contained to just this one platform/attempt, not the whole
+        startup or reconnect loop, mirroring the "no adapter" skip-and-
+        continue pattern already used right above each call site.
+        """
+        try:
+            self._stamp_receiving_profile(adapter, self._active_profile_name())
+        except Exception as e:
+            logger.error(
+                "✗ %s: failed to stamp receiving_profile, skipping: %s",
+                platform.value, e,
+            )
+            await _dispose_unused_adapter(adapter)
+            return False
+        return True
+
     def _configure_profile_adapter(
         self,
         adapter: BasePlatformAdapter,
@@ -13626,6 +13692,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         platform: Platform,
     ) -> None:
         """Install the profile-scoped handlers shared by startup and reconnect."""
+        self._stamp_receiving_profile(adapter, profile_name)
         adapter.set_message_handler(self._make_profile_message_handler(profile_name))
         adapter.set_fatal_error_handler(
             self._make_profile_fatal_error_handler(profile_name, platform)

@@ -292,8 +292,15 @@ class WebhookRouteProcessor:
         except json.JSONDecodeError:
             transformed = {**payload, "script_output": stdout}
         if not isinstance(transformed, dict):
-            logger.warning("[webhook] script stdout must be a JSON object or text")
-            return False, None
+            # Stdout parsed, but not as an object. A JSON array/number/bool/
+            # null/string cannot REPLACE the payload, so carry it through as
+            # ``script_output`` exactly like non-JSON text. Dropping here made
+            # the ignore rule depend on whether the output happened to be
+            # JSON-parseable: ``print("hello")`` kept the webhook while
+            # ``print(json.dumps(items))`` silently discarded it, even though
+            # the documented ignore conditions are only empty stdout,
+            # ``[SILENT]``, and a nonzero exit.
+            transformed = {**payload, "script_output": stdout}
         if (
             transformed.get("[SILENT]") is True
             or transformed.get("__hermes_ignore__") is True

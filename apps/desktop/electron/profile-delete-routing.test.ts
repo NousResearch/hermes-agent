@@ -80,3 +80,7 @@ test('resolveRouteProfile passes the requested profile through when nothing was 
 test('resolveRouteProfile passes through undefined when nothing was torn down and no profile was requested', () => {
   assert.equal(resolveRouteProfile(null, undefined), undefined)
 })
+
+test('resolveRouteProfile preserves a primary-backend route from another routing policy', () => {
+  assert.equal(resolveRouteProfile(null, null), null)
+})

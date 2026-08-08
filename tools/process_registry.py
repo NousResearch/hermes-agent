@@ -1837,6 +1837,20 @@ class ProcessRegistry:
         """Read the full output log with optional pagination by lines."""
         from tools.ansi_strip import strip_ansi
 
+        try:
+            offset = int(offset)
+        except (TypeError, ValueError):
+            offset = 0
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 200
+        # Negative limit must not fall into ``lines[offset:offset+limit]``
+        # with a negative stop (returns nearly the whole buffer). Huge
+        # limits dump the entire log into the tool result.
+        offset = max(0, offset)
+        limit = max(1, min(limit, 5000))
+
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}

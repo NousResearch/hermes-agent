@@ -488,6 +488,38 @@ class TestReadLog:
         result = registry.read_log(s.id, offset=10, limit=5)
         assert "5 lines" in result["showing"]
 
+    def test_read_log_clamps_negative_limit(self, registry):
+        """Negative limit must not become lines[0:-N] (nearly the full buffer)."""
+        lines = "\n".join([f"line {i}" for i in range(50)])
+        s = _make_session(output=lines)
+        registry._running[s.id] = s
+        result = registry.read_log(s.id, offset=0, limit=-5)
+        assert result["showing"] == "1 lines"
+        assert result["output"] == "line 49"
+
+    def test_read_log_clamps_negative_offset(self, registry):
+        lines = "\n".join([f"line {i}" for i in range(20)])
+        s = _make_session(output=lines)
+        registry._running[s.id] = s
+        result = registry.read_log(s.id, offset=-10, limit=5)
+        assert result["showing"] == "5 lines"
+        assert result["output"].splitlines() == [f"line {i}" for i in range(15, 20)]
+
+    def test_read_log_clamps_huge_limit(self, registry):
+        lines = "\n".join([f"line {i}" for i in range(50)])
+        s = _make_session(output=lines)
+        registry._running[s.id] = s
+        result = registry.read_log(s.id, offset=0, limit=10**9)
+        assert result["total_lines"] == 50
+        assert result["showing"] == "50 lines"
+
+    def test_read_log_clamps_zero_limit(self, registry):
+        lines = "\n".join([f"line {i}" for i in range(10)])
+        s = _make_session(output=lines)
+        registry._running[s.id] = s
+        result = registry.read_log(s.id, offset=0, limit=0)
+        assert result["showing"] == "1 lines"
+        assert result["output"] == "line 9"
 
 # =========================================================================
 # Stdin helpers

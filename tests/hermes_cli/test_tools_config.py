@@ -31,6 +31,19 @@ from hermes_cli.tools_config import (
 )
 
 
+def test_camofox_setup_only_prompts_for_environment_backed_values():
+    camofox = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider["name"] == "Camofox"
+    )
+
+    assert [item["key"] for item in camofox["env_vars"]] == [
+        "CAMOFOX_URL",
+        "CAMOFOX_API_KEY",
+    ]
+
+
 
 
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):

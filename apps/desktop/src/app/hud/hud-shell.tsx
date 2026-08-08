@@ -11,6 +11,7 @@ import { closeHud } from '@/store/hud'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
 
+import { RICH_INPUT_SLOT } from '../chat/composer/rich-editor'
 import { WiredPane } from '../contrib/wiring'
 import { titlebarButtonClass } from '../shell/titlebar'
 
@@ -59,16 +60,23 @@ const hudBandMaxPx = () => Math.min(window.innerHeight * HUD_BAND_MAX_FRACTION, 
  *  rather than flipping to follow the screen edge the HUD is parked against. */
 const HUD_THREAD_ALWAYS_BELOW = true
 
+const composerHasFocus = () =>
+  document.activeElement?.closest(`[data-slot="${RICH_INPUT_SLOT}"]`) != null
+
 /**
  * True for a hold window after any conversation activity (a message landing,
  * a stream flushing, a turn starting or ending). The CSS uses it — alongside
  * :focus-within — to decide whether the thread is visible; idle HUD mode is
  * just the Spotlight bar.
  *
- * $messages replaces ~30×/s mid-stream, so activity RESTARTS the timer on
- * every flush — the thread stays up while a reply is writing and for the hold
- * window after it finishes, without a per-flush re-render (state only changes
- * on the false↔true edges).
+ * $messages replaces ~30×/s mid-stream, so a FOCUSED composer restarts the
+ * timer on every flush and the thread stays up for the whole reply, without a
+ * per-flush re-render (state only changes on the false↔true edges).
+ *
+ * Unfocused, activity buys one hold window and no more. Re-arming there kept
+ * the band up for the entire length of a reply on a HUD nobody was looking at
+ * — the thing it exists to avoid. A turn landing still flashes it; watching
+ * one write is what focus is for.
  */
 function useRecentActivity(): [boolean, () => void] {
   const [recent, setRecent] = useState(false)
@@ -82,6 +90,10 @@ function useRecentActivity(): [boolean, () => void] {
 
     const bump = () => {
       if (timerRef.current) {
+        if (!composerHasFocus()) {
+          return
+        }
+
         clearTimeout(timerRef.current)
       }
 
@@ -130,21 +142,17 @@ function useRecentActivity(): [boolean, () => void] {
 /**
  * True while the HUD must stay up regardless of the hold timer.
  *
- * The fade is built for an idle transcript, and there are states where leaving
- * is the wrong answer: a clarify/approval/sudo/secret prompt is a question you
- * have to answer, and a running turn is progress you asked to watch. Letting
- * either fade hands you a surface you cannot use — the band goes to zero opacity
- * and the window goes mouse-transparent under it, so the prompt is neither
- * readable nor clickable.
+ * Only a question: a clarify/approval/sudo/secret prompt is something the agent
+ * cannot continue without, and letting it fade hands you a surface you cannot
+ * use — zero opacity, and the window goes mouse-transparent under it, so the
+ * prompt is neither readable nor clickable.
  *
- * `recent` alone doesn't cover it: it re-arms on transcript changes, so a long
- * tool call with no visible output would time out mid-turn.
+ * A merely BUSY session is not that. Pinning the band for the length of a turn
+ * meant a HUD you had walked away from sat open across the screen for as long
+ * as the agent worked; the answer arriving flashes it anyway.
  */
 function useHudHeld(): boolean {
-  const awaitingInput = useStore($activeSessionAwaitingInput)
-  const busy = useStore($busy)
-
-  return awaitingInput || busy
+  return useStore($activeSessionAwaitingInput)
 }
 
 /**

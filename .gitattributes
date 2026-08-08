@@ -8,3 +8,21 @@ web/package-lock.json linguist-generated=true
 Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
+
+# Enforce LF for all text content. On Windows (`core.autocrlf=true`) checkouts
+# otherwise convert these to CRLF, producing spurious whole-file diffs across
+# worktrees and breaking `git apply` / GottZ review diffs for no real reason.
+*           text=auto eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.toml      text eol=lf
+*.json      text eol=lf
+*.py        text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.jsx       text eol=lf
+*.html      text eol=lf
+*.css       text eol=lf
+*.rst       text eol=lf

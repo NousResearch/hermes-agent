@@ -8429,7 +8429,8 @@ def _aggregate_chat_stream(
 ) -> Any:
     """Consume a chat.completions chunk stream into a complete response.
 
-    Ticks the thread-local aux progress hook on every chunk. Raises
+    Ticks the thread-local aux progress hook on chunks that carry a content,
+    reasoning or tool-call delta; content-free keepalive frames do not. Raises
     TimeoutError when *total_ceiling* seconds elapse before the stream
     finishes — phrased with "timed out" so existing timeout classification
     (``_is_timeout_error``) treats it exactly like a request timeout.
@@ -8470,7 +8471,13 @@ class _ChatStreamAccumulator:
         self.resp_model = model or ""
 
     def feed(self, chunk: Any) -> None:
-        _notify_aux_progress()
+        # A chunk arriving is not a token arriving. Providers hold a stalled
+        # stream open with content-free frames (keepalive pings, role-only or
+        # usage-only deltas), and waiters read the progress hook as "the
+        # summary model produced a token" to tell a slow model from a hung one
+        # (CompressionCommitFence.seconds_since_progress). Ticking per chunk
+        # makes a hung stream indistinguishable from a live one, so the hook
+        # fires below, only for deltas that actually carry something.
         if (
             self._total_ceiling is not None
             and (time.monotonic() - self._started) >= self._total_ceiling
@@ -8492,16 +8499,20 @@ class _ChatStreamAccumulator:
         delta = getattr(choice, "delta", None)
         if delta is None:
             return
+        progressed = False
         piece = getattr(delta, "content", None)
         if piece:
             self.content_parts.append(piece)
+            progressed = True
         reasoning_piece = (
             getattr(delta, "reasoning", None)
             or getattr(delta, "reasoning_content", None)
         )
         if reasoning_piece and isinstance(reasoning_piece, str):
             self.reasoning_parts.append(reasoning_piece)
+            progressed = True
         for tc in (getattr(delta, "tool_calls", None) or []):
+            progressed = True
             idx = getattr(tc, "index", 0) or 0
             acc = self.tool_calls_acc.setdefault(
                 idx, {"id": "", "name": "", "arguments": []}
@@ -8514,6 +8525,8 @@ class _ChatStreamAccumulator:
                     acc["name"] = fn.name
                 if getattr(fn, "arguments", None):
                     acc["arguments"].append(fn.arguments)
+        if progressed:
+            _notify_aux_progress()
 
     def finish(self) -> Any:
         tool_calls = None

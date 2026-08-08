@@ -1,5 +1,11 @@
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
 
+import json
+import os
+import stat
+import sys
+import time
+
 import pytest
 from unittest.mock import patch
 
@@ -136,4 +142,178 @@ class TestEnvVarOrder:
         assert "COPILOT_GITHUB_TOKEN" in copilot.api_key_env_vars
         # COPILOT_GITHUB_TOKEN should be first
         assert copilot.api_key_env_vars[0] == "COPILOT_GITHUB_TOKEN"
+
+
+# ---------------------------------------------------------------------------
+# On-disk exchanged-JWT store writers (<HERMES_HOME>/.copilot_jwt.json)
+# ---------------------------------------------------------------------------
+
+_OWNER_ONLY = stat.S_IRUSR | stat.S_IWUSR
+
+
+def _seed_store(path, entries):
+    """Write an existing JWT store at 0o600 so the writer takes its merge path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries), encoding="utf-8")
+    os.chmod(path, _OWNER_ONLY)
+
+
+def _spying_os_open(observed):
+    """Record every ``os.open`` call so the creation mode can be asserted."""
+    real_os_open = os.open
+
+    def spy(path, flags, mode=0o777, *args, **kwargs):
+        observed.append((str(path), flags, mode))
+        return real_os_open(path, flags, mode, *args, **kwargs)
+
+    return spy
+
+
+def _assert_temp_created_owner_only(observed):
+    tmp_opens = [
+        entry for entry in observed if ".copilot_jwt.json.tmp" in entry[0]
+    ]
+    assert tmp_opens, (
+        "os.open was never called for the JWT store temp file — the writer still "
+        f"creates it at the process umask; observed={observed!r}"
+    )
+    for path, flags, mode in tmp_opens:
+        assert flags & os.O_CREAT, f"temp open missing O_CREAT: {path}"
+        assert flags & os.O_EXCL, (
+            f"temp open missing O_EXCL — a concurrent writer could be clobbered: {path}"
+        )
+        assert mode == _OWNER_ONLY, (
+            f"temp open mode 0o{mode:o} != 0o600 — umask applies and the live "
+            f"Copilot JWT is briefly world-readable: {path}"
+        )
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="POSIX mode bits and symlinks are not enforced on Windows",
+)
+class TestJwtStoreDiskWrites:
+    """``.copilot_jwt.json`` holds a live Copilot API token.
+
+    Both writers — ``_save_jwt_to_disk`` and ``evict_cached_exchanged_token`` —
+    used to create the temp file with ``Path.write_text`` and only ``chmod`` it
+    to 0o600 afterward (world-readable at the process umask in between), then
+    finish with a bare ``os.replace`` that detaches a symlinked store. They now
+    share ``_write_jwt_store_atomically``: ``os.open(O_EXCL, 0o600)`` + ``fsync``
+    + ``utils.atomic_replace``. Mirrors #19673 / #21148 and
+    ``tests/hermes_cli/test_auth_toctou_file_modes.py``.
+    """
+
+    def test_save_creates_store_owner_only(self, tmp_path, monkeypatch):
+        """``_save_jwt_to_disk`` must create the store at 0o600, never 0o644."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import copilot_auth
+
+        observed: list = []
+        old_umask = os.umask(0o022)  # make the race observable if it regresses
+        try:
+            with patch.object(os, "open", _spying_os_open(observed)):
+                copilot_auth._save_jwt_to_disk(
+                    "fp-save", "tid=abc;exp=1", time.time() + 600, None
+                )
+        finally:
+            os.umask(old_umask)
+
+        store_path = tmp_path / ".copilot_jwt.json"
+        assert store_path.exists(), "JWT store was not written"
+        mode = stat.S_IMODE(store_path.stat().st_mode)
+        assert mode == 0o600, f"JWT store mode 0o{mode:o} != 0o600"
+        assert json.loads(store_path.read_text())["fp-save"]["api_token"] == "tid=abc;exp=1"
+        _assert_temp_created_owner_only(observed)
+
+    def test_save_preserves_symlinked_store(self, tmp_path, monkeypatch):
+        """A ``.copilot_jwt.json`` symlinked into a managed profile must survive."""
+        home = tmp_path / "home"
+        home.mkdir()
+        real = tmp_path / "tracked" / "copilot_jwt.json"
+        _seed_store(real, {})
+        link = home / ".copilot_jwt.json"
+        link.symlink_to(real)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        from hermes_cli import copilot_auth
+
+        copilot_auth._save_jwt_to_disk(
+            "fp-save", "tid=abc;exp=1", time.time() + 600, None
+        )
+
+        assert link.is_symlink(), (
+            "the symlinked JWT store was replaced by a regular file — managed "
+            "profile packages silently detach (#16743)"
+        )
+        assert os.path.realpath(link) == os.path.realpath(real)
+        assert json.loads(real.read_text())["fp-save"]["api_token"] == "tid=abc;exp=1"
+        real_mode = stat.S_IMODE(real.stat().st_mode)
+        assert real_mode == 0o600, f"symlink target mode 0o{real_mode:o} != 0o600"
+
+    def test_evict_creates_store_owner_only(self, tmp_path, monkeypatch):
+        """``evict_cached_exchanged_token`` must rewrite the store at 0o600."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import copilot_auth
+
+        drop_raw, keep_raw = "gho_drop_me", "gho_keep_me"
+        drop_fp = copilot_auth._token_fingerprint(drop_raw)
+        keep_fp = copilot_auth._token_fingerprint(keep_raw)
+        expires_at = time.time() + 600
+        store_path = tmp_path / ".copilot_jwt.json"
+        _seed_store(
+            store_path,
+            {
+                drop_fp: {"api_token": "stale", "expires_at": expires_at, "base_url": None},
+                keep_fp: {"api_token": "fresh", "expires_at": expires_at, "base_url": None},
+            },
+        )
+
+        observed: list = []
+        old_umask = os.umask(0o022)
+        try:
+            with patch.object(os, "open", _spying_os_open(observed)):
+                copilot_auth.evict_cached_exchanged_token(drop_raw)
+        finally:
+            os.umask(old_umask)
+
+        data = json.loads(store_path.read_text())
+        assert drop_fp not in data, "evicted fingerprint survived the rewrite"
+        assert data[keep_fp]["api_token"] == "fresh", "eviction dropped an unrelated entry"
+        mode = stat.S_IMODE(store_path.stat().st_mode)
+        assert mode == 0o600, f"JWT store mode 0o{mode:o} != 0o600"
+        _assert_temp_created_owner_only(observed)
+
+    def test_evict_preserves_symlinked_store(self, tmp_path, monkeypatch):
+        """Eviction must not detach a symlinked store either."""
+        home = tmp_path / "home"
+        home.mkdir()
+        real = tmp_path / "tracked" / "copilot_jwt.json"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        from hermes_cli import copilot_auth
+
+        drop_raw, keep_raw = "gho_drop_me", "gho_keep_me"
+        drop_fp = copilot_auth._token_fingerprint(drop_raw)
+        keep_fp = copilot_auth._token_fingerprint(keep_raw)
+        expires_at = time.time() + 600
+        _seed_store(
+            real,
+            {
+                drop_fp: {"api_token": "stale", "expires_at": expires_at, "base_url": None},
+                keep_fp: {"api_token": "fresh", "expires_at": expires_at, "base_url": None},
+            },
+        )
+        link = home / ".copilot_jwt.json"
+        link.symlink_to(real)
+
+        copilot_auth.evict_cached_exchanged_token(drop_raw)
+
+        assert link.is_symlink(), (
+            "eviction replaced the symlinked JWT store with a regular file (#16743)"
+        )
+        assert os.path.realpath(link) == os.path.realpath(real)
+        data = json.loads(real.read_text())
+        assert drop_fp not in data
+        assert data[keep_fp]["api_token"] == "fresh"
+        real_mode = stat.S_IMODE(real.stat().st_mode)
+        assert real_mode == 0o600, f"symlink target mode 0o{real_mode:o} != 0o600"
 

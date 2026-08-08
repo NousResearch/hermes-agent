@@ -216,6 +216,77 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Generic per-row Kanban observer. Fired once for every row committed to
+    # the board's `task_events` table, in whichever process performed the
+    # write (dispatcher, worker/manual CLI, or the web server for
+    # dashboard-origin edits). Observer only: return values are ignored.
+    #
+    # TIMING. Notifications are queued inside the write transaction and
+    # flushed only after COMMIT succeeds AND the post-commit file-length
+    # invariant passes, with the transaction frame already detached — so a
+    # callback never runs while the SQLite write lock is held and always sees
+    # durable state. Rollback, a terminal COMMIT failure, and an invariant
+    # failure each discard the whole queue. Delivery is AT MOST ONCE, best
+    # effort: there is no outbox, no retry, and no acknowledgement, so a
+    # committed row with zero callbacks is a real and documented outcome
+    # (invariant failure happens after the data is durable). A gap in
+    # `core_event_seq` therefore never proves hook loss, and a repeat never
+    # proves duplicate delivery.
+    #
+    # LATENCY is off-lock but on-path: callbacks run synchronously on the
+    # originating call's return path, so a slow observer delays the caller
+    # (including a dashboard HTTP response) after the commit.
+    #
+    # Kwargs (all content-free; no payload, reason, summary, title, body,
+    # message, note, filename, author, actor, or PID is ever passed):
+    #   task_id: str                     -- the task the event belongs to
+    #   kind: str                        -- the exact committed task_events.kind
+    #   core_event_seq: int              -- the committed task_events.id
+    #   created_at_epoch_s: int          -- the exact committed created_at
+    #   run_id: int | None               -- the exact committed run_id
+    #   board: str | None                -- the board THIS CONNECTION writes,
+    #                                       resolved from the connection's own
+    #                                       main DB file; None when that file
+    #                                       maps to no board (in-memory/temp DB,
+    #                                       a path outside the board layout).
+    #                                       Never guessed from ambient state.
+    #   profile_name: str
+    #   kanban_event_schema_version: "hermes.kanban.event.v1"
+    #   status_to: str                   -- ONLY when the writer established a
+    #                                       status and its guarded UPDATE
+    #                                       actually matched a row; omitted
+    #                                       otherwise. Never reconstructed and
+    #                                       never re-read after commit.
+    #   failure_count: int               -- ONLY at the two failure writers that
+    #                                       already hold a bounded integer.
+    #
+    # `core_event_seq` is the board-local rowid: monotonic within one board
+    # GENERATION only, not globally unique, not gap-free (task deletion and
+    # event retention GC leave holes), not stable across a schema rebuild
+    # (which reassigns ids), and reset to 1 by `remove_board` + a same-slug
+    # reconnect. The `(core_event_seq, kind)` pair is likewise not stable
+    # across migration, which rewrites some legacy kinds in place.
+    #
+    # VOCABULARY. `kanban_db.KANBAN_EVENT_KINDS` declares the kinds core emits.
+    # It is a capability declaration, not a DB constraint: `task_events.kind`
+    # is an open TEXT column, and an undeclared kind (a future core kind, or an
+    # out-of-tree writer's) is dispatched UNCHANGED — never dropped, coerced,
+    # or rewritten, because a consumer must see what actually committed. That
+    # pass-through is also the exact limit of the content-free guarantee: core
+    # introduces no content channel of its own and copies no payload into one,
+    # but an out-of-tree writer that puts arbitrary prose in `kind` will have
+    # that string delivered verbatim. Writers must keep kinds fixed
+    # identifiers.
+    #
+    # Registration is NOT capability detection: `register_hook` warns but still
+    # stores an unknown name, so a plugin can register this hook on a runtime
+    # that will never fire it. Detect support by reading VALID_HOOKS (and
+    # KANBAN_EVENT_KINDS), never by registering and assuming delivery.
+    #
+    # This hook is purely additive: it neither replaces nor retimes the three
+    # legacy hooks above, and core does not deduplicate between them. A row
+    # that fires a legacy hook also fires one generic notification.
+    "kanban_task_event",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

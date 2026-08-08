@@ -210,6 +210,231 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
 
 
+# ---------------------------------------------------------------------------
+# Generic per-row task_events observer (``kanban_task_event``)
+# ---------------------------------------------------------------------------
+
+#: Schema token for the generic observer's kwargs. Distinct from the plugin
+#: manager's own ``telemetry_schema_version``, which ``invoke_hook`` injects.
+KANBAN_EVENT_SCHEMA_VERSION = "hermes.kanban.event.v1"
+
+#: Upper bound for the one bounded integer the generic observer is allowed to
+#: carry out of a payload. Chosen well above DEFAULT_FAILURE_LIMIT; anything
+#: outside [0, FAILURE_COUNT_MAX] is omitted rather than clamped.
+FAILURE_COUNT_MAX = 1000
+
+#: Every ``task_events.kind`` this tree's writers emit — a CAPABILITY
+#: DECLARATION for ``kanban_task_event`` consumers, never a database
+#: constraint. ``task_events.kind`` stays an open TEXT column with no CHECK,
+#: and an undeclared kind still dispatches unchanged (a consumer must see what
+#: actually committed). Kinds must stay fixed identifiers: this is also the
+#: boundary of the hook's content-free guarantee, since an out-of-tree writer
+#: that puts prose in ``kind`` has that string delivered verbatim.
+KANBAN_EVENT_KINDS: frozenset[str] = frozenset({
+    # Literal kinds passed to _append_event.
+    "archived",
+    "assigned",
+    "attached",
+    "attachment_removed",
+    "block_loop_detected",
+    "blocked",
+    "claim_extended",
+    "claim_rejected",
+    "claimed",
+    "commented",
+    "completed",
+    "completion_blocked_hallucination",
+    "created",
+    "decomposed",
+    "dependency_wait",
+    "edited",
+    "gave_up",
+    "heartbeat",
+    "linked",
+    "model_override_set",
+    "promoted",
+    "promoted_manual",
+    "reasoning_effort_set",
+    "reclaim_deferred",
+    "reclaimed",
+    "reconciled",
+    "respawn_guarded",
+    "scheduled",
+    "spawned",
+    "specified",
+    "stale",
+    "suspected_hallucinated_references",
+    "timed_out",
+    "tip_scratch_workspace",
+    "unblocked",
+    "unlinked",
+    # detect_crashed_workers' three-way exit classifier.
+    "crashed",
+    "protocol_violation",
+    "rate_limited",
+    # _record_task_failure's dynamic outcome, gated on end_run=True. The only
+    # production callers that reach it pass 'spawn_failed' or 'timed_out'.
+    "spawn_failed",
+    # Bundled dashboard writers, routed through the same seam.
+    "reprioritized",
+    "status",
+})
+
+
+def _resolve_board_for_connection(conn: sqlite3.Connection) -> Optional[str]:
+    """Return the board slug *this connection* writes, or ``None``.
+
+    Ambient board state is deliberately not consulted. ``connect(board=...)``
+    and ``connect(db_path=...)`` both bypass the chain that
+    :func:`get_current_board` reads — and ``HERMES_KANBAN_DB`` even overrides an
+    explicit ``board=`` argument — so the dashboard and tool/CLI layers
+    routinely write a board the ambient chain does not name. The only
+    authoritative answer is the file the connection actually has open.
+
+    The slug is never parsed out of the path text. A candidate is taken from
+    the directory, then confirmed by rebuilding the canonical board path
+    through the same construction :func:`kanban_db_path` uses and comparing.
+
+    ``None`` is an honest, documented result — an in-memory or temp database, a
+    path outside the board layout, an unreadable ``PRAGMA``, or an ambiguous
+    match — and must never be back-filled from ambient state.
+
+    Attribution is best-effort and fails SAFE. This runs at frame install,
+    *after* ``BEGIN IMMEDIATE`` has already succeeded, so any failure to probe
+    the connection degrades to ``None`` rather than propagating: a cosmetic
+    attribution problem must never turn into a failed write. That deliberately
+    covers connection objects that are not real :mod:`sqlite3` connections —
+    the doubles several existing tests drive ``write_txn`` with return ``None``
+    from ``execute`` and raise :class:`AttributeError`, not ``sqlite3.Error``.
+    """
+    try:
+        listing = conn.execute("PRAGMA database_list").fetchall()
+    except Exception:
+        return None
+    if not listing:
+        return None
+
+    main_file = None
+    for row in listing:
+        try:
+            if str(row[1]) == "main":
+                main_file = row[2]
+                break
+        except (IndexError, KeyError, TypeError):
+            continue
+    if not main_file:
+        # ``:memory:`` and temporary databases report an empty file column.
+        return None
+
+    try:
+        actual = Path(str(main_file)).resolve()
+    except OSError:
+        return None
+
+    def _is(candidate: Path) -> bool:
+        try:
+            return candidate.resolve() == actual
+        except OSError:
+            return False
+
+    matches: list[str] = []
+    try:
+        # ``default`` is deliberately NOT under boards_root(): its DB stays at
+        # the back-compat ``<root>/kanban.db``.
+        if _is(kanban_home() / "kanban.db"):
+            matches.append(DEFAULT_BOARD)
+        try:
+            candidate = _normalize_board_slug(actual.parent.name)
+        except ValueError:
+            candidate = None
+        if candidate and candidate != DEFAULT_BOARD:
+            if _is(board_dir(candidate) / "kanban.db"):
+                matches.append(candidate)
+    except Exception:  # pragma: no cover - defensive; board root unresolvable
+        return None
+
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+@dataclass(frozen=True)
+class _TaskEventRecord:
+    """An immutable, content-free snapshot of one committed ``task_events`` row.
+
+    Every field is captured at INSERT time inside the transaction. Nothing is
+    re-read or recomputed after commit: by then another writer may have moved
+    or deleted the task. No payload object, serialized payload, or
+    payload-derived string is ever stored here.
+    """
+
+    task_id: str
+    kind: str
+    core_event_seq: int
+    created_at_epoch_s: int
+    run_id: Optional[int]
+    board: Optional[str]
+    #: The status this writer established, when it honestly established one.
+    #: ``None`` means "omit the kwarg entirely", never "unknown status".
+    status_to: Optional[str] = None
+    #: The single value extracted from a payload anywhere in C-1, and only at
+    #: the two writers that already hold it as a local integer.
+    failure_count: Optional[int] = None
+
+
+class _TaskEventFrame:
+    """The notification queue owned by one open ``write_txn``.
+
+    Bound to the exact :class:`sqlite3.Connection` identity that opened the
+    transaction, so an append against a different connection cannot land in it.
+    No state is attached to the connection object itself.
+
+    ``board`` is resolved once, at install, and carried into every record the
+    frame collects — so attribution is fixed for the transaction and cannot
+    drift if ambient state changes mid-body.
+    """
+
+    __slots__ = ("conn", "board", "records")
+
+    def __init__(self, conn: sqlite3.Connection, board: Optional[str]) -> None:
+        self.conn = conn
+        self.board = board
+        self.records: list[_TaskEventRecord] = []
+
+
+_TASK_EVENT_FRAME: ContextVar[Optional[_TaskEventFrame]] = ContextVar(
+    "_kanban_task_event_frame", default=None
+)
+
+
+def _dispatch_task_events(records: Iterable[_TaskEventRecord]) -> None:
+    """Fire ``kanban_task_event`` once per record, in insertion order.
+
+    Called only after COMMIT and the post-commit invariant have both succeeded,
+    with the frame already detached and the write lock released. Each callback
+    is isolated by the plugin manager's per-callback try/except, and the whole
+    fan-out is best-effort: an observer can neither roll back nor alter the
+    committed state it is being told about.
+    """
+    for rec in records:
+        _fire_kanban_lifecycle_hook(
+            "kanban_task_event",
+            rec.task_id,
+            kind=rec.kind,
+            core_event_seq=rec.core_event_seq,
+            created_at_epoch_s=rec.created_at_epoch_s,
+            run_id=rec.run_id,
+            board=rec.board,
+            kanban_event_schema_version=KANBAN_EVENT_SCHEMA_VERSION,
+            **({} if rec.status_to is None else {"status_to": rec.status_to}),
+            **(
+                {}
+                if rec.failure_count is None
+                else {"failure_count": rec.failure_count}
+            ),
+        )
+
+
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
 # call ``heartbeat_claim(task_id)`` periodically. In practice most kanban
@@ -2811,31 +3036,49 @@ def write_txn(conn: sqlite3.Connection):
     """
     _assert_not_delegated_child_mutation()
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
+    # Install the generic-observer queue only once BEGIN IMMEDIATE has actually
+    # succeeded: the delegated-child guard above and a failed BEGIN must leave
+    # no frame behind, because no row can exist to notify about.
+    frame = _TaskEventFrame(conn, _resolve_board_for_connection(conn))
+    token = _TASK_EVENT_FRAME.set(frame)
+    pending: tuple[_TaskEventRecord, ...] = ()
     try:
-        yield conn
-    except Exception:
         try:
-            conn.execute("ROLLBACK")
-        except sqlite3.OperationalError:
-            # SQLite has already auto-rolled-back the transaction (typical
-            # under EIO, lock contention, or corruption). Nothing to undo;
-            # do not let this secondary failure shadow the real one.
-            pass
-        raise
-    else:
-        try:
-            _execute_boundary_with_retry(conn, "COMMIT")
+            yield conn
         except Exception:
-            # COMMIT exhausted retries with the txn still open; roll back so the
-            # connection isn't poisoned for the next BEGIN IMMEDIATE.
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.OperationalError:
+                # SQLite has already auto-rolled-back the transaction (typical
+                # under EIO, lock contention, or corruption). Nothing to undo;
+                # do not let this secondary failure shadow the real one.
                 pass
             raise
-        # Post-commit file-length check: header page_count must match actual file pages.
-        # A discrepancy means a torn-extend — raise now rather than silently corrupt.
-        _check_file_length_invariant(conn)
+        else:
+            try:
+                _execute_boundary_with_retry(conn, "COMMIT")
+            except Exception:
+                # COMMIT exhausted retries with the txn still open; roll back so the
+                # connection isn't poisoned for the next BEGIN IMMEDIATE.
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.OperationalError:
+                    pass
+                raise
+            # Post-commit file-length check: header page_count must match actual file pages.
+            # A discrepancy means a torn-extend — raise now rather than silently corrupt.
+            _check_file_length_invariant(conn)
+            # Only a clean COMMIT *and* a clean invariant release the queue.
+            # Rollback, a terminal COMMIT failure, and an invariant failure all
+            # leave ``pending`` empty and dispatch nothing — the last of those
+            # being the deliberate committed-row-without-callback window.
+            pending = tuple(frame.records)
+    finally:
+        # Detach on every path, so a callback that writes the board below opens
+        # an independent transaction with a fresh frame and can neither append
+        # to nor re-flush this one.
+        _TASK_EVENT_FRAME.reset(token)
+    _dispatch_task_events(pending)
 
 
 # ---------------------------------------------------------------------------
@@ -3269,6 +3512,7 @@ def create_task(
                         "model_override": model_override,
                         "provider_override": provider_override,
                     },
+                    status_to=task_status,
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
@@ -3544,14 +3788,19 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         parent_status = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (parent_id,)
         ).fetchone()["status"]
+        demoted_rows = 0
         if parent_status != "done":
-            conn.execute(
+            demoted = conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
             )
+            demoted_rows = demoted.rowcount
         _append_event(
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},
+            # Only report a transition the guarded UPDATE actually made: the
+            # child may well have already been past 'ready'.
+            status_to="todo" if demoted_rows == 1 else None,
         )
         _inherit_notify_subs(conn, child_id, (parent_id,))
 
@@ -3958,6 +4207,8 @@ def _append_event(
     payload: Optional[dict] = None,
     *,
     run_id: Optional[int] = None,
+    status_to: Optional[str] = None,
+    failure_count: Optional[int] = None,
 ) -> None:
     """Record an event row.  Called from within an already-open txn.
 
@@ -3965,13 +4216,55 @@ def _append_event(
     events by attempt. For events that aren't scoped to a single run
     (task created/edited/archived, dependency promotion) leave it None
     and the row carries NULL.
+
+    ``failure_count`` is likewise notification-only, and is accepted only from
+    a writer that already holds a bounded local integer — never parsed out of
+    ``payload``. Acceptance is strict: a real ``int`` (``bool`` rejected) in
+    ``[0, FAILURE_COUNT_MAX]``. Anything else is omitted, never coerced.
+
+    ``status_to`` is notification metadata only — it is never written to the
+    row. Pass the status this writer just established, taken from the local
+    transition scalar and only when the guarded UPDATE actually matched, so the
+    generic observer never has to reconstruct it from ``payload`` or re-read
+    ``tasks.status`` after commit. Anything outside :data:`VALID_STATUSES` is
+    omitted rather than guessed at.
     """
+    frame = _TASK_EVENT_FRAME.get()
+    if frame is None or frame.conn is not conn:
+        # Fail closed *before* the INSERT: a durable new-event row must never
+        # escape instrumentation. The test is "is a frame active for this
+        # connection", not "did this function open one" — helpers like
+        # _insert_completion_attachment legitimately run inside a caller's frame.
+        raise RuntimeError(
+            "_append_event requires an active write_txn frame for this "
+            f"connection (task_id={task_id!r}, kind={kind!r})"
+        )
     now = int(time.time())
     pl = json.dumps(payload, ensure_ascii=False) if payload else None
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
+    )
+    frame.records.append(
+        _TaskEventRecord(
+            task_id=task_id,
+            kind=kind,
+            core_event_seq=int(cur.lastrowid),
+            created_at_epoch_s=now,
+            run_id=run_id,
+            board=frame.board,
+            status_to=status_to if status_to in VALID_STATUSES else None,
+            failure_count=(
+                failure_count
+                if (
+                    isinstance(failure_count, int)
+                    and not isinstance(failure_count, bool)
+                    and 0 <= failure_count <= FAILURE_COUNT_MAX
+                )
+                else None
+            ),
+        )
     )
 
 
@@ -4204,17 +4497,20 @@ def recompute_ready(
                     )
                     if failures >= effective_limit:
                         continue
-                    conn.execute(
+                    promoted_cur = conn.execute(
                         "UPDATE tasks SET status = 'ready' "
                         "WHERE id = ? AND status = 'blocked'",
                         (task_id,),
                     )
                 else:
-                    conn.execute(
+                    promoted_cur = conn.execute(
                         "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
                         (task_id,),
                     )
-                _append_event(conn, task_id, "promoted", None)
+                _append_event(
+                    conn, task_id, "promoted", None,
+                    status_to="ready" if promoted_cur.rowcount == 1 else None,
+                )
                 promoted += 1
     return promoted
 
@@ -4254,7 +4550,7 @@ def claim_task(
             (task_id,),
         ).fetchone()
         if undone:
-            conn.execute(
+            demoted = conn.execute(
                 "UPDATE tasks SET status = 'todo' "
                 "WHERE id = ? AND status = 'ready'",
                 (task_id,),
@@ -4262,6 +4558,7 @@ def claim_task(
             _append_event(
                 conn, task_id, "claim_rejected",
                 {"reason": "parents_not_done"},
+                status_to="todo" if demoted.rowcount == 1 else None,
             )
             return None
         # Defensive: if a prior run somehow leaked (invariant violation from
@@ -4333,6 +4630,7 @@ def claim_task(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id},
             run_id=run_id,
+            status_to="running",
         )
         claimed = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
@@ -4416,6 +4714,7 @@ def claim_review_task(
             {"lock": lock, "expires": expires, "run_id": run_id,
              "source_status": "review"},
             run_id=run_id,
+            status_to="running",
         )
         return get_task(conn, task_id)
 
@@ -4592,6 +4891,7 @@ def release_stale_claims(
                 conn, row["id"], "reclaimed",
                 payload,
                 run_id=run_id,
+                status_to="ready",
             )
             reclaimed += 1
     return reclaimed
@@ -4657,6 +4957,7 @@ def reclaim_task(
             conn, task_id, "reclaimed",
             payload,
             run_id=run_id,
+            status_to="ready",
         )
     # Operator intervention — they've looked at the task, so the
     # consecutive-failures counter is now stale. Give the next retry
@@ -5000,6 +5301,7 @@ def complete_task(
             conn, task_id, "completed",
             completed_payload,
             run_id=run_id,
+            status_to="done",
         )
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
@@ -5703,6 +6005,7 @@ def block_task(
             _append_event(
                 conn, task_id, "dependency_wait",
                 {"reason": reason, "kind": kind}, run_id=run_id,
+                status_to="todo",
             )
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(
@@ -5761,6 +6064,7 @@ def block_task(
                     "recurrences": recurrences,
                     "limit": BLOCK_RECURRENCE_LIMIT,
                 },
+                status_to="triage",
                 run_id=run_id,
             )
         else:
@@ -5814,6 +6118,7 @@ def block_task(
                 conn, task_id, "blocked",
                 {"reason": reason, "kind": kind, "recurrences": recurrences},
                 run_id=run_id,
+                status_to="blocked",
             )
         _blocked_task = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
@@ -5893,6 +6198,7 @@ def promote_task(
             task_id,
             "promoted_manual",
             {"actor": actor, "reason": reason, "forced": force},
+            status_to="ready",
         )
 
     return True, None
@@ -5960,6 +6266,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         _append_event(
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
+            status_to=new_status,
         )
         return True
 
@@ -6045,6 +6352,7 @@ def specify_triage_task(
             task_id,
             "specified",
             {"changed_fields": changed_fields} if changed_fields else None,
+            status_to="todo",
         )
     # Outside the write_txn above, so we don't nest BEGIN IMMEDIATE — the
     # ready-promotion pass opens its own IMMEDIATE txn. This runs the same
@@ -6214,6 +6522,7 @@ def decompose_triage_task(
             _append_event(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
+                status_to="todo",
             )
             _inherit_notify_subs(conn, new_id, (task_id,), created_at=now)
             child_ids.append(new_id)
@@ -6276,6 +6585,7 @@ def decompose_triage_task(
                 "child_ids": child_ids,
                 "root_assignee": root_assignee,
             },
+            status_to="todo",
         )
 
     # Outside the write_txn: promote parent-free children to 'ready'
@@ -6306,7 +6616,10 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        _append_event(
+            conn, task_id, "archived", None, run_id=run_id,
+            status_to="archived",
+        )
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
@@ -6728,7 +7041,10 @@ def schedule_task(
                 outcome="scheduled",
                 summary=reason,
             )
-        _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
+        _append_event(
+            conn, task_id, "scheduled", {"reason": reason}, run_id=run_id,
+            status_to="scheduled",
+        )
         return True
 
 
@@ -7283,6 +7599,7 @@ def enforce_max_runtime(
                 )
                 _append_event(
                     conn, tid, "timed_out", payload, run_id=run_id,
+                    status_to="ready",
                 )
                 timed_out.append(tid)
         # Increment the unified failure counter. Outside the write_txn
@@ -7421,6 +7738,7 @@ def detect_stale_running(
             )
             _append_event(
                 conn, tid, "stale", payload, run_id=run_id,
+                status_to="ready",
             )
             reclaimed.append(tid)
 
@@ -7518,7 +7836,10 @@ def reconcile_orphaned_running(
                     now,
                 ),
             )
-            _append_event(conn, tid, "reconciled", payload, run_id=run_id)
+            _append_event(
+                conn, tid, "reconciled", payload, run_id=run_id,
+                status_to="ready",
+            )
             reconciled.append(tid)
         _log.info(
             "kanban reconcile: requeued orphaned running task %s "
@@ -7755,6 +8076,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     conn, row["id"], event_kind,
                     event_payload,
                     run_id=run_id,
+                    status_to="ready",
                 )
                 if rate_limited_exit:
                     # Stamp the failure-error column so ``check_respawn_guard``
@@ -7962,7 +8284,7 @@ def _record_task_failure(
             # Trip the breaker.
             if release_claim:
                 # Spawn path: still running, also clear claim state.
-                conn.execute(
+                blocked_cur = conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
@@ -7973,7 +8295,7 @@ def _record_task_failure(
                 # Timeout/crash path: task is already at ``ready``
                 # with claim cleared; just flip to blocked + update
                 # counter fields.
-                conn.execute(
+                blocked_cur = conn.execute(
                     "UPDATE tasks SET status = 'blocked', "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('ready', 'running')",
@@ -8004,19 +8326,25 @@ def _record_task_failure(
                 payload.update(event_payload_extra)
             _append_event(
                 conn, task_id, "gave_up", payload, run_id=run_id,
+                # Both guarded branches can match zero rows if the task moved;
+                # never claim 'blocked' from the SQL literal alone.
+                status_to="blocked" if blocked_cur.rowcount == 1 else None,
+                failure_count=failures,
             )
             blocked = True
         else:
             # Below threshold.
+            requeued_rows = 0
             if release_claim:
                 # Spawn path: transition running → ready + clear claim.
-                conn.execute(
+                requeued = conn.execute(
                     "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (failures, error[:500], task_id),
                 )
+                requeued_rows = requeued.rowcount
             else:
                 # Timeout/crash path: task is already at ``ready`` via
                 # its own UPDATE. Just bookkeep the counter + last error.
@@ -8037,6 +8365,10 @@ def _record_task_failure(
                     conn, task_id, outcome,
                     {"error": error[:500], "failures": failures},
                     run_id=run_id,
+                    # Only the release_claim branch establishes a status, and
+                    # only when its guarded UPDATE matched.
+                    status_to="ready" if requeued_rows == 1 else None,
+                    failure_count=failures,
                 )
             # Timeout/crash path's caller already emitted its own event.
     return blocked

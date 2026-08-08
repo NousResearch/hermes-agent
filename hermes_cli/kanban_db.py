@@ -4842,6 +4842,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    expected_status: Optional[str] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4918,8 +4919,9 @@ def complete_task(
                        block_recurrences = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
+                   AND (? IS NULL OR status = ?)
                 """,
-                (result, now, task_id),
+                (result, now, task_id, expected_status, expected_status),
             )
         else:
             cur = conn.execute(
@@ -4936,8 +4938,16 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
+                   AND (? IS NULL OR status = ?)
                 """,
-                (result, now, task_id, int(expected_run_id)),
+                (
+                    result,
+                    now,
+                    task_id,
+                    int(expected_run_id),
+                    expected_status,
+                    expected_status,
+                ),
             )
         if cur.rowcount != 1:
             return False
@@ -5622,6 +5632,7 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    expected_status: Optional[str] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -5685,9 +5696,17 @@ def block_task(
                        block_kind    = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
+                   AND (? IS NULL OR status = ?)
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, task_id) if expected_run_id is None
-                else (kind, task_id, int(expected_run_id)),
+                (kind, task_id, expected_status, expected_status)
+                if expected_run_id is None
+                else (
+                    kind,
+                    task_id,
+                    expected_status,
+                    expected_status,
+                    int(expected_run_id),
+                ),
             )
             if cur.rowcount != 1:
                 return False
@@ -5738,9 +5757,18 @@ def block_task(
                        block_recurrences = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
+                   AND (? IS NULL OR status = ?)
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, recurrences, task_id) if expected_run_id is None
-                else (kind, recurrences, task_id, int(expected_run_id)),
+                (kind, recurrences, task_id, expected_status, expected_status)
+                if expected_run_id is None
+                else (
+                    kind,
+                    recurrences,
+                    task_id,
+                    expected_status,
+                    expected_status,
+                    int(expected_run_id),
+                ),
             )
             if cur.rowcount != 1:
                 return False
@@ -5776,8 +5804,9 @@ def block_task(
                            block_recurrences = ?
                      WHERE id = ?
                        AND status IN ('running', 'ready')
+                       AND (? IS NULL OR status = ?)
                     """,
-                    (kind, recurrences, task_id),
+                    (kind, recurrences, task_id, expected_status, expected_status),
                 )
             else:
                 cur = conn.execute(
@@ -5792,8 +5821,16 @@ def block_task(
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                        AND current_run_id = ?
+                       AND (? IS NULL OR status = ?)
                     """,
-                    (kind, recurrences, task_id, int(expected_run_id)),
+                    (
+                        kind,
+                        recurrences,
+                        task_id,
+                        int(expected_run_id),
+                        expected_status,
+                        expected_status,
+                    ),
                 )
             if cur.rowcount != 1:
                 return False
@@ -5898,7 +5935,12 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_status: Optional[str] = None,
+) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
@@ -5911,8 +5953,10 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (task_id,),
+            "SELECT current_run_id FROM tasks WHERE id = ? "
+            "AND status IN ('blocked', 'scheduled') "
+            "AND (? IS NULL OR status = ?)",
+            (task_id, expected_status, expected_status),
         ).fetchone()
         if stale and stale["current_run_id"]:
             conn.execute(
@@ -5952,8 +5996,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (new_status, task_id),
+            "WHERE id = ? AND status IN ('blocked', 'scheduled') "
+            "AND (? IS NULL OR status = ?)",
+            (new_status, task_id, expected_status, expected_status),
         )
         if cur.rowcount != 1:
             return False
@@ -6288,13 +6333,19 @@ def decompose_triage_task(
     return child_ids
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_status: Optional[str] = None,
+) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status != 'archived'",
-            (task_id,),
+            "WHERE id = ? AND status != 'archived' "
+            "AND (? IS NULL OR status = ?)",
+            (task_id, expected_status, expected_status),
         )
         if cur.rowcount != 1:
             return False
@@ -6693,6 +6744,7 @@ def schedule_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    expected_status: Optional[str] = None,
 ) -> bool:
     """Park a task in ``scheduled`` so it is waiting on time, not human input.
 
@@ -6710,7 +6762,9 @@ def schedule_task(
                    worker_pid   = NULL
              WHERE id = ?
                AND status IN ('todo', 'ready', 'running', 'blocked')
+               AND (? IS NULL OR status = ?)
         """
+        params.extend((expected_status, expected_status))
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params.append(int(expected_run_id))

@@ -823,8 +823,34 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
 # PATCH /tasks/:id  (status / assignee / priority / title / body)
 # ---------------------------------------------------------------------------
 
+
+class _StatusConflict(RuntimeError):
+    def __init__(self, expected_status: str, current_status: str):
+        self.expected_status = expected_status
+        self.current_status = current_status
+        super().__init__(
+            f"expected status {expected_status!r}, found {current_status!r}"
+        )
+
+
+_CAS_STATUS_TARGETS = frozenset(
+    {"triage", "todo", "scheduled", "ready", "blocked", "done", "archived"}
+)
+_MANAGED_STATUS_TARGETS = frozenset({"running", "review"})
+
+
 class UpdateTaskBody(BaseModel):
     status: Optional[str] = None
+    # Optional compare-and-swap guard for dashboard drag/drop writes. Every
+    # Board target uses its existing lifecycle helper; the guard is folded into
+    # that helper's status UPDATE so stale snapshots cannot reclaim active work.
+    expected_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "CAS guard for Board status updates to triage, todo, scheduled, "
+            "ready, blocked, done, or archived"
+        ),
+    )
     assignee: Optional[str] = None
     priority: Optional[int] = None
     title: Optional[str] = None
@@ -851,14 +877,217 @@ class UpdateTaskBody(BaseModel):
     clear_reasoning_effort: bool = False
 
 
+def _apply_patch_status(
+    conn: sqlite3.Connection,
+    task_id: str,
+    payload: UpdateTaskBody,
+    *,
+    expected_status: Optional[str] = None,
+) -> bool:
+    """Apply one PATCH status transition with its existing lifecycle semantics.
+
+    ``expected_status`` is passed into the same transaction that performs the
+    transition. The guarantee covers only this single-task PATCH route:
+    direct ``todo``/``triage``/``ready`` moves and the existing
+    scheduled/blocked/done/archived/unblock helpers. Dispatcher claims,
+    lifecycle tool calls, and the bulk endpoint have their own concurrency
+    contracts and are intentionally not covered by this request field.
+    Legacy callers omit it and retain the historical behavior.
+    """
+    s = payload.status
+    if s is None:
+        return True
+    if s == "done":
+        return kanban_db.complete_task(
+            conn,
+            task_id,
+            result=payload.result,
+            summary=payload.summary,
+            metadata=payload.metadata,
+            expected_status=expected_status,
+        )
+    if s == "blocked":
+        return kanban_db.block_task(
+            conn,
+            task_id,
+            reason=payload.block_reason,
+            expected_status=expected_status,
+        )
+    if s == "scheduled":
+        if expected_status is None:
+            return kanban_db.schedule_task(
+                conn,
+                task_id,
+                reason=payload.block_reason,
+            )
+        return kanban_db.schedule_task(
+            conn,
+            task_id,
+            reason=payload.block_reason,
+            expected_status=expected_status,
+        )
+    if s == "ready":
+        # Preserve unblock semantics for blocked/scheduled tasks (parent re-gate,
+        # stale-run recovery); other Board moves use the direct status helper.
+        # A guarded call routes from the caller's expected source, not from an
+        # unlocked snapshot, so helper selection cannot introduce a TOCTOU gap.
+        if expected_status in ("blocked", "scheduled"):
+            return kanban_db.unblock_task(
+                conn,
+                task_id,
+                expected_status=expected_status,
+            )
+        if expected_status is not None:
+            return _set_status_direct(
+                conn,
+                task_id,
+                "ready",
+                expected_status=expected_status,
+            )
+        current = kanban_db.get_task(conn, task_id)
+        if current and current.status in ("blocked", "scheduled"):
+            return kanban_db.unblock_task(
+                conn,
+                task_id,
+                expected_status=expected_status,
+            )
+        return _set_status_direct(
+            conn,
+            task_id,
+            "ready",
+            expected_status=expected_status,
+        )
+    if s == "archived":
+        return kanban_db.archive_task(
+            conn,
+            task_id,
+            expected_status=expected_status,
+        )
+    if s in _MANAGED_STATUS_TARGETS:
+        if expected_status is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot set status to {s!r} directly; "
+                    "use the managed lifecycle path"
+                ),
+            )
+        if s == "running":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cannot set status to 'running' directly; "
+                    "use the dispatcher/claim path"
+                ),
+            )
+        raise HTTPException(status_code=400, detail=f"unknown status: {s}")
+    if s in {"todo", "triage"}:
+        return _set_status_direct(
+            conn,
+            task_id,
+            s,
+            expected_status=expected_status,
+        )
+    raise HTTPException(status_code=400, detail=f"unknown status: {s}")
+
+
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
+    if (
+        payload.expected_status is not None
+        and payload.expected_status not in kanban_db.VALID_STATUSES
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "expected_status must be one of "
+                + ", ".join(sorted(kanban_db.VALID_STATUSES))
+            ),
+        )
+    if (
+        payload.expected_status is not None
+        and payload.status in _MANAGED_STATUS_TARGETS
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot set status to {payload.status!r} directly; "
+                "use the managed lifecycle path"
+            ),
+        )
+    if (
+        payload.expected_status is not None
+        and payload.status not in _CAS_STATUS_TARGETS
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "expected_status is supported only for Board status updates to "
+                + ", ".join(sorted(_CAS_STATUS_TARGETS))
+            ),
+        )
     conn = _conn(board=board)
     try:
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+
+        # A guarded status write runs before every other PATCH field so a stale
+        # snapshot fails closed without partially applying assignee/metadata
+        # edits. The comparison and status mutation still happen together in
+        # _set_status_direct's IMMEDIATE transaction.
+        cas_status_updated = False
+        if payload.expected_status is not None:
+            cas_target = payload.status
+            if cas_target is None:  # defensive; rejected by validation above
+                raise HTTPException(status_code=400, detail="status is required")
+            try:
+                ok = _apply_patch_status(
+                    conn, task_id, payload, expected_status=payload.expected_status
+                )
+            except _StatusConflict as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "status_conflict",
+                        "expected_status": exc.expected_status,
+                        "current_status": exc.current_status,
+                    },
+                )
+            if not ok:
+                current = kanban_db.get_task(conn, task_id)
+                if current is not None and current.status != payload.expected_status:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "status_conflict",
+                            "expected_status": payload.expected_status,
+                            "current_status": current.status,
+                        },
+                    )
+                if cas_target == "ready":
+                    blockers = _parents_blocking_ready(conn, task_id)
+                    if blockers:
+                        names = ", ".join(
+                            f"{p['title']!r} ({p['id']}, status={p['status']})"
+                            for p in blockers
+                        )
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "Cannot move to 'ready': blocked by parent(s) "
+                                f"not done — {names}"
+                            ),
+                        )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"status transition to {cas_target!r} "
+                        "not valid from current state"
+                    ),
+                )
+            cas_status_updated = True
 
         # --- assignee ----------------------------------------------------
         if payload.assignee is not None:
@@ -872,39 +1101,9 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 raise HTTPException(status_code=404, detail="task not found")
 
         # --- status -------------------------------------------------------
-        if payload.status is not None:
+        if payload.status is not None and not cas_status_updated:
             s = payload.status
-            ok = True
-            if s == "done":
-                ok = kanban_db.complete_task(
-                    conn, task_id,
-                    result=payload.result,
-                    summary=payload.summary,
-                    metadata=payload.metadata,
-                )
-            elif s == "blocked":
-                ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
-            elif s == "scheduled":
-                ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
-            elif s == "ready":
-                # Re-open a blocked/scheduled task, or just an explicit status set.
-                current = kanban_db.get_task(conn, task_id)
-                if current and current.status in ("blocked", "scheduled"):
-                    ok = kanban_db.unblock_task(conn, task_id)
-                else:
-                    # Direct status write for drag-drop (todo -> ready etc).
-                    ok = _set_status_direct(conn, task_id, "ready")
-            elif s == "archived":
-                ok = kanban_db.archive_task(conn, task_id)
-            elif s == "running":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
-                )
-            elif s in ("todo", "triage", "scheduled"):
-                ok = _set_status_direct(conn, task_id, s)
-            else:
-                raise HTTPException(status_code=400, detail=f"unknown status: {s}")
+            ok = _apply_patch_status(conn, task_id, payload)
             if not ok:
                 # For ``ready``, name the blocking parent(s) so the dashboard
                 # can render an actionable toast instead of a silent no-op.
@@ -1040,7 +1239,11 @@ def _parents_blocking_ready(
 
 
 def _set_status_direct(
-    conn: sqlite3.Connection, task_id: str, new_status: str,
+    conn: sqlite3.Connection,
+    task_id: str,
+    new_status: str,
+    *,
+    expected_status: Optional[str] = None,
 ) -> bool:
     """Direct status write for drag-drop moves that aren't covered by the
     structured complete/block/unblock/archive verbs (e.g. todo<->ready,
@@ -1051,6 +1254,10 @@ def _set_status_direct(
     active run with outcome='reclaimed' so attempt history isn't
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
+
+    When ``expected_status`` is provided, the comparison, direct status
+    update, run cleanup, and event append share one IMMEDIATE transaction.
+    A mismatch raises before any of those side effects are applied.
     """
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
@@ -1060,6 +1267,8 @@ def _set_status_direct(
         ).fetchone()
         if prev is None:
             return False
+        if expected_status is not None and prev["status"] != expected_status:
+            raise _StatusConflict(expected_status, prev["status"])
 
         # Guard: don't allow promoting to 'ready' unless all parents are done.
         # Prevents the dispatcher from spawning a child whose upstream work
@@ -1087,8 +1296,16 @@ def _set_status_direct(
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
             "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
-            "WHERE id = ?",
-            (new_status, new_status, new_status, new_status, task_id),
+            "WHERE id = ? AND (? IS NULL OR status = ?)",
+            (
+                new_status,
+                new_status,
+                new_status,
+                new_status,
+                task_id,
+                expected_status,
+                expected_status,
+            ),
         )
         if cur.rowcount != 1:
             return False

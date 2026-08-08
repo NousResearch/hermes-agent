@@ -224,6 +224,246 @@ def test_task_detail_includes_links_and_events(client):
 # ---------------------------------------------------------------------------
 
 
+def _status_mutation_snapshot(task_id):
+    conn = kb.connect()
+    try:
+        task = conn.execute(
+            "SELECT status, assignee, claim_lock, claim_expires, worker_pid, "
+            "current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        run = None
+        if task["current_run_id"] is not None:
+            run = conn.execute(
+                "SELECT status, outcome, ended_at, claim_lock, claim_expires, "
+                "worker_pid FROM task_runs WHERE id = ?",
+                (task["current_run_id"],),
+            ).fetchone()
+        event_count = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()[0]
+        return {
+            "task": tuple(task),
+            "run": tuple(run) if run is not None else None,
+            "event_count": event_count,
+        }
+    finally:
+        conn.close()
+
+
+def _create_task_in_status(client, status):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": f"task in {status}", "assignee": "worker"},
+    ).json()["task"]
+    if status == "ready":
+        return task
+
+    conn = kb.connect()
+    try:
+        if status in {"running", "review"}:
+            claimed = kb.claim_task(conn, task["id"], claimer="test-worker")
+            assert claimed is not None
+            run_id = claimed.current_run_id
+        else:
+            run_id = None
+        with kb.write_txn(conn):
+            if status == "review":
+                conn.execute(
+                    "UPDATE tasks SET status = 'review', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL WHERE id = ?",
+                    (task["id"],),
+                )
+                conn.execute(
+                    "UPDATE task_runs SET status = 'completed', outcome = 'review', "
+                    "ended_at = ?, claim_lock = NULL, claim_expires = NULL, "
+                    "worker_pid = NULL WHERE id = ?",
+                    (int(time.time()), run_id),
+                )
+            elif status != "running":
+                conn.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ?",
+                    (status, task["id"]),
+                )
+    finally:
+        conn.close()
+    return task
+
+
+@pytest.mark.parametrize("current_status", ["running", "review"])
+@pytest.mark.parametrize(
+    "target_status",
+    ["triage", "todo", "scheduled", "ready", "blocked", "done", "archived"],
+)
+def test_patch_status_cas_rejects_stale_managed_task_without_side_effects(
+    client, current_status, target_status,
+):
+    task = _create_task_in_status(client, current_status)
+    before = _status_mutation_snapshot(task["id"])
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "status": target_status,
+            "expected_status": "todo",
+            "assignee": "must-not-change",
+            "block_reason": "must-not-be-recorded",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "error": "status_conflict",
+        "expected_status": "todo",
+        "current_status": current_status,
+    }
+    assert _status_mutation_snapshot(task["id"]) == before
+
+
+@pytest.mark.parametrize(
+    ("source_status", "target_status", "event_kind"),
+    [
+        ("ready", "triage", "status"),
+        ("triage", "todo", "status"),
+        ("ready", "scheduled", "scheduled"),
+        ("todo", "ready", "status"),
+        ("blocked", "ready", "unblocked"),
+        ("scheduled", "ready", "unblocked"),
+        ("ready", "blocked", "blocked"),
+        ("ready", "done", "completed"),
+        ("ready", "archived", "archived"),
+    ],
+)
+def test_patch_status_cas_applies_matching_transition_with_existing_semantics(
+    client, source_status, target_status, event_kind,
+):
+    task = _create_task_in_status(client, source_status)
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "status": target_status,
+            "expected_status": source_status,
+            "block_reason": "dashboard move",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == target_status
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()
+    assert detail["task"]["status"] == target_status
+    assert detail["events"][-1]["kind"] == event_kind
+    if target_status in {"blocked", "scheduled"}:
+        assert detail["events"][-1]["payload"]["reason"] == "dashboard move"
+
+
+def test_patch_status_cas_returns_not_found_for_unknown_task(client):
+    response = client.patch(
+        "/api/plugins/kanban/tasks/t_does_not_exist",
+        json={"status": "triage", "expected_status": "todo"},
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == "task t_does_not_exist not found"
+
+
+def test_patch_status_without_cas_keeps_legacy_direct_transition(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "legacy dashboard move", "assignee": "worker"},
+    ).json()["task"]
+    conn = kb.connect()
+    try:
+        claimed = kb.claim_task(conn, task["id"], claimer="legacy-worker")
+        assert claimed is not None
+        run_id = claimed.current_run_id
+    finally:
+        conn.close()
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "triage"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == "triage"
+    assert response.json()["task"]["claim_lock"] is None
+    assert response.json()["task"]["current_run_id"] is None
+    conn = kb.connect()
+    try:
+        run = conn.execute(
+            "SELECT status, outcome, ended_at FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert run["status"] == "reclaimed"
+    assert run["outcome"] == "reclaimed"
+    assert run["ended_at"] is not None
+
+
+def test_patch_scheduled_without_cas_keeps_legacy_schedule_semantics(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "legacy scheduled move"},
+    ).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "scheduled", "block_reason": "pause"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == "scheduled"
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()
+    assert detail["events"][-1]["kind"] == "scheduled"
+    assert detail["events"][-1]["payload"] == {"reason": "pause"}
+    assert detail["runs"][-1]["status"] == "scheduled"
+    assert detail["runs"][-1]["outcome"] == "scheduled"
+    assert detail["runs"][-1]["summary"] == "pause"
+
+
+def test_patch_status_cas_rejects_invalid_expected_status(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "validate CAS input", "triage": True},
+    ).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "todo", "expected_status": "not-a-status"},
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == (
+        "expected_status must be one of " + ", ".join(sorted(kb.VALID_STATUSES))
+    )
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]
+    assert detail["status"] == "triage"
+
+
+@pytest.mark.parametrize("target_status", ["review", "running"])
+def test_patch_status_cas_rejects_managed_target(client, target_status):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "managed target stays managed"},
+    ).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": target_status, "expected_status": "ready"},
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == (
+        f"Cannot set status to {target_status!r} directly; "
+        "use the managed lifecycle path"
+    )
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]
+    assert detail["status"] == "ready"
+
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 

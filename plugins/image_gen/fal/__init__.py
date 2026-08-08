@@ -143,6 +143,7 @@ class FalImageGenProvider(ImageGenProvider):
                 "num_images",
                 "output_format",
                 "seed",
+                "upscale",
             )
             if key in kwargs and kwargs[key] is not None
         }

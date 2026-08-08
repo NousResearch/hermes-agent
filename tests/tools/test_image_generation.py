@@ -274,12 +274,13 @@ class TestRegistryIntegration:
 
     def test_schema_exposes_expected_agent_params(self, image_tool):
         """The agent-facing schema exposes the unified text+image surface:
-        prompt (required), aspect_ratio, and the image-to-image inputs
-        image_url + reference_image_urls. Model selection stays a user-level
-        config choice, never an agent-level arg."""
+        prompt (required), aspect_ratio, the image-to-image inputs
+        image_url + reference_image_urls, and the opt-in upscale pass. Model
+        selection stays a user-level config choice, never an agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
         assert set(props.keys()) == {
             "prompt", "aspect_ratio", "image_url", "reference_image_urls",
+            "upscale",
         }
         assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
 
@@ -447,3 +448,124 @@ class TestFalKreaCatalog:
     def test_fal_krea_models_in_fal_catalog(self, image_tool):
         assert "fal-ai/krea/v2/medium/text-to-image" in image_tool.FAL_MODELS
         assert "fal-ai/krea/v2/large/text-to-image" in image_tool.FAL_MODELS
+
+
+# ---------------------------------------------------------------------------
+# Opt-in upscale pass
+# ---------------------------------------------------------------------------
+
+class _FakeHandle:
+    def __init__(self, result):
+        self._result = result
+
+    def get(self):
+        return self._result
+
+
+class TestUpscaleOptIn:
+    """Explicit ``upscale`` overrides the per-model catalog default."""
+
+    def _run(self, image_tool, monkeypatch, *, model, upscale, upscaler_called):
+        monkeypatch.setenv("FAL_IMAGE_MODEL", model)
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+        monkeypatch.setattr(
+            image_tool, "_submit_fal_request",
+            lambda endpoint, arguments=None: _FakeHandle(
+                {"images": [{"url": "https://fal/native.png", "width": 1024, "height": 768}]}
+            ),
+        )
+        calls = []
+
+        def _fake_upscale(url, prompt):
+            calls.append(url)
+            return {
+                "url": "https://fal/upscaled.png", "width": 2048, "height": 1536,
+                "upscaled": True, "upscale_factor": 2,
+            }
+
+        monkeypatch.setattr(image_tool, "_upscale_image", _fake_upscale)
+
+        import json as _json
+        out = _json.loads(image_tool.image_generate_tool("a cat", upscale=upscale))
+        assert out["success"] is True
+        assert bool(calls) is upscaler_called
+        assert out["upscaled"] is upscaler_called
+        expected_url = "https://fal/upscaled.png" if upscaler_called else "https://fal/native.png"
+        assert out["image"] == expected_url
+
+    def test_explicit_true_upscales_non_default_model(self, image_tool, monkeypatch):
+        """Klein has upscale=False in the catalog — explicit True wins."""
+        self._run(image_tool, monkeypatch,
+                  model="fal-ai/flux-2/klein/9b", upscale=True, upscaler_called=True)
+
+    def test_explicit_false_disables_flux2_pro_default(self, image_tool, monkeypatch):
+        """flux-2-pro defaults to upscale=True — explicit False wins."""
+        self._run(image_tool, monkeypatch,
+                  model="fal-ai/flux-2-pro", upscale=False, upscaler_called=False)
+
+    def test_omitted_keeps_catalog_default_off(self, image_tool, monkeypatch):
+        self._run(image_tool, monkeypatch,
+                  model="fal-ai/flux-2/klein/9b", upscale=None, upscaler_called=False)
+
+    def test_omitted_keeps_catalog_default_on(self, image_tool, monkeypatch):
+        self._run(image_tool, monkeypatch,
+                  model="fal-ai/flux-2-pro", upscale=None, upscaler_called=True)
+
+    def test_upscale_failure_falls_back_to_native(self, image_tool, monkeypatch):
+        monkeypatch.setenv("FAL_IMAGE_MODEL", "fal-ai/flux-2/klein/9b")
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+        monkeypatch.setattr(
+            image_tool, "_submit_fal_request",
+            lambda endpoint, arguments=None: _FakeHandle(
+                {"images": [{"url": "https://fal/native.png"}]}
+            ),
+        )
+        monkeypatch.setattr(image_tool, "_upscale_image", lambda url, prompt: None)
+
+        import json as _json
+        out = _json.loads(image_tool.image_generate_tool("a cat", upscale=True))
+        assert out["success"] is True
+        assert out["image"] == "https://fal/native.png"
+        assert out["upscaled"] is False
+
+
+class TestUpscaleDispatchForwarding:
+    """The tool handler forwards explicit upscale to plugin providers."""
+
+    def test_dispatch_forwards_upscale(self, image_tool, monkeypatch):
+        from unittest.mock import MagicMock
+        import json as _json
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "krea")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        fake_provider = MagicMock()
+        fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider", lambda name: fake_provider
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+
+        out = image_tool._dispatch_to_plugin_provider("a cat", "square", upscale=True)
+        assert _json.loads(out)["success"] is True
+        assert fake_provider.generate.call_args.kwargs["upscale"] is True
+
+    def test_dispatch_omits_upscale_when_unset(self, image_tool, monkeypatch):
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "krea")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        fake_provider = MagicMock()
+        fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider", lambda name: fake_provider
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+
+        image_tool._dispatch_to_plugin_provider("a cat", "square")
+        assert "upscale" not in fake_provider.generate.call_args.kwargs

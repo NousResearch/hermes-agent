@@ -1079,6 +1079,7 @@ def image_generate_tool(
     seed: Optional[int] = None,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    upscale: Optional[bool] = None,
 ) -> str:
     """Generate an image from a text prompt, or edit a source image, via FAL.
 
@@ -1203,9 +1204,15 @@ def image_generate_tool(
         if not images:
             raise ValueError("No images were generated")
 
-        # Edit endpoints already return the final composition; the Clarity
-        # upscaler is a text-to-image quality pass, so skip it for edits.
-        should_upscale = bool(meta.get("upscale", False)) and not use_edit
+        # Explicit ``upscale`` (agent/user opt-in via the tool schema) wins
+        # over the per-model catalog default — including for edits, where an
+        # explicit request is intentional. The catalog default keeps skipping
+        # edits (Clarity is a text-to-image quality pass and must not alter
+        # edit compositions silently).
+        if upscale is not None:
+            should_upscale = bool(upscale)
+        else:
+            should_upscale = bool(meta.get("upscale", False)) and not use_edit
 
         formatted_images = []
         for img in images:
@@ -1241,6 +1248,7 @@ def image_generate_tool(
             "success": True,
             "image": formatted_images[0]["url"] if formatted_images else None,
             "modality": modality,
+            "upscaled": bool(formatted_images and formatted_images[0].get("upscaled")),
         }
 
         debug_call_data["success"] = True
@@ -1448,6 +1456,16 @@ IMAGE_GENERATE_SCHEMA = {
                     "capped per-model; the description above indicates the max."
                 ),
             },
+            "upscale": {
+                "type": "boolean",
+                "description": (
+                    "Optional high-resolution pass: when true, the generated "
+                    "image is run through the active backend's upscaler/"
+                    "enhancer (extra cost and latency, roughly 2x resolution). "
+                    "Use when the user asks for high-res / print / wallpaper "
+                    "quality output. Omit for the model's native resolution."
+                ),
+            },
         },
         "required": ["prompt"],
     },
@@ -1498,6 +1516,7 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    upscale: Optional[bool] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1512,7 +1531,9 @@ def _dispatch_to_plugin_provider(
 
     ``image_url`` / ``reference_image_urls`` enable image-to-image / editing:
     they are forwarded to the provider's ``generate()`` so the backend can
-    route to its edit endpoint.
+    route to its edit endpoint. ``upscale`` (when explicitly set) requests a
+    post-generation high-resolution pass; providers without upscale support
+    ignore it via their ``**kwargs`` (the ABC contract).
     """
     configured = _read_configured_image_provider()
     if not configured or configured == "fal":
@@ -1568,6 +1589,8 @@ def _dispatch_to_plugin_provider(
             norm_refs = normalize_reference_images(reference_image_urls)
         if norm_refs:
             kwargs["reference_image_urls"] = norm_refs
+        if upscale is not None:
+            kwargs["upscale"] = bool(upscale)
         result = provider.generate(**kwargs)
     except TypeError as exc:
         # A provider whose generate() signature predates image_url support
@@ -1655,6 +1678,7 @@ def _maybe_route_managed_krea(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    upscale: Optional[bool] = None,
 ) -> Optional[str]:
     """Route a native ``krea-2-*`` model to the managed Krea gateway, in managed mode.
 
@@ -1713,6 +1737,8 @@ def _maybe_route_managed_krea(
             norm_refs = normalize_reference_images(reference_image_urls)
         if norm_refs:
             kwargs["reference_image_urls"] = norm_refs
+        if upscale is not None:
+            kwargs["upscale"] = bool(upscale)
         result = provider.generate(**kwargs)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Managed Krea routing failed: %s", exc)
@@ -1781,6 +1807,9 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
+    upscale = args.get("upscale")
+    if not isinstance(upscale, bool):
+        upscale = None
     task_id = kw.get("task_id")
 
     # Terminal-backend confinement chokepoint: convert path-like sources to
@@ -1799,6 +1828,7 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        upscale=upscale,
     )
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
@@ -1812,6 +1842,7 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        upscale=upscale,
     )
     if krea_routed is not None:
         return _postprocess_image_generate_result(krea_routed, task_id=task_id)
@@ -1821,6 +1852,7 @@ def _handle_image_generate(args, **kw):
         aspect_ratio=aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        upscale=upscale,
     )
     return _postprocess_image_generate_result(raw, task_id=task_id)
 

@@ -341,3 +341,78 @@ class TestPayloadBuilder:
         )
         # Only prompt — no payload bloat for fields we can't verify
         assert p == {"prompt": "a horse galloping"}
+
+
+class TestUpscalePass:
+    """Opt-in SeedVR2 upscale chain after generation."""
+
+    @pytest.fixture
+    def with_fake_fal(self, monkeypatch):
+        """Stub fal_client.submit, capturing every endpoint hit in order."""
+        import sys
+        import types
+
+        captured = {"calls": []}
+
+        class FakeHandle:
+            def __init__(self, endpoint):
+                self._endpoint = endpoint
+
+            def get(self):
+                if self._endpoint.endswith("upscale/video"):
+                    return {"video": {"url": "https://fake/upscaled.mp4"}}
+                return {"video": {"url": "https://fake/native.mp4"}}
+
+        fake = types.ModuleType("fal_client")
+        def _submit(endpoint, arguments=None, headers=None):
+            captured["calls"].append((endpoint, arguments))
+            return FakeHandle(endpoint)
+        fake.submit = _submit  # type: ignore
+        monkeypatch.setitem(sys.modules, "fal_client", fake)
+
+        from plugins.video_gen import fal as fal_plugin
+        fal_plugin._fal_client = None
+        fal_plugin._managed_fal_video_client = None
+        fal_plugin._managed_fal_video_client_config = None
+
+        monkeypatch.setenv("FAL_KEY", "test")
+        monkeypatch.setattr(fal_plugin, "_resolve_managed_fal_video_gateway", lambda: None)
+        return captured
+
+    def test_upscale_chains_seedvr(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider, UPSCALER_ENDPOINT
+
+        result = FALVideoGenProvider().generate(
+            "a dog", model="pixverse-v6", upscale=True,
+        )
+        assert result["success"] is True
+        assert result["video"] == "https://fake/upscaled.mp4"
+        assert result["upscaled"] is True
+        assert result["upscale_factor"] == 2
+        endpoints = [c[0] for c in with_fake_fal["calls"]]
+        assert endpoints == ["fal-ai/pixverse/v6/text-to-video", UPSCALER_ENDPOINT]
+        # Upscale request carries the native URL + factor mode.
+        upscale_args = with_fake_fal["calls"][1][1]
+        assert upscale_args["video_url"] == "https://fake/native.mp4"
+        assert upscale_args["upscale_mode"] == "factor"
+
+    def test_no_upscale_by_default(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate("a dog", model="pixverse-v6")
+        assert result["success"] is True
+        assert result["video"] == "https://fake/native.mp4"
+        assert result["upscaled"] is False
+        assert len(with_fake_fal["calls"]) == 1
+
+    def test_upscale_failure_falls_back_to_native(self, with_fake_fal, monkeypatch):
+        from plugins.video_gen import fal as fal_plugin
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        monkeypatch.setattr(fal_plugin, "_upscale_video", lambda url: None)
+        result = FALVideoGenProvider().generate(
+            "a dog", model="pixverse-v6", upscale=True,
+        )
+        assert result["success"] is True
+        assert result["video"] == "https://fake/native.mp4"
+        assert result["upscaled"] is False

@@ -380,13 +380,16 @@ def _normalize_to_supported_image(
 
 
 def _is_retryable_download_error(error: Exception) -> bool:
-    """Return True only for transient image-download failures worth retrying.
+    """Return True only for transient media-download failures worth retrying.
+
+    Shared by both media download paths (:func:`_download_image` and
+    :func:`_download_video`) so the two cannot drift apart on retry policy.
 
     Non-retryable (fail-fast):
       - httpx.HTTPStatusError with a 4xx status other than 429 (404/403/410/...):
         the resource is missing or forbidden; retrying can't change that.
       - PermissionError: blocked by website policy / SSRF guard.
-      - ValueError: image too large or blocked redirect — deterministic.
+      - ValueError: media too large or blocked redirect — deterministic.
 
     Retryable (transient):
       - httpx 429 (rate limited) and 5xx (server-side) errors.
@@ -1794,16 +1797,30 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
             return destination
         except Exception as e:
             last_error = e
-            if attempt < max_retries - 1:
-                wait_time = 2 ** (attempt + 1)
-                logger.warning("Video download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
-                await asyncio.sleep(wait_time)
-            else:
+            # Error-class-aware retry, matching _download_image. Terminal
+            # failures must not be retried: _stream_download_to_file enforces
+            # the _MAX_VIDEO_BASE64_BYTES cap by streaming and aborting, so
+            # retrying an oversize video re-downloads up to the cap on every
+            # attempt — turning a bounded 50 MB transfer into 150 MB and
+            # defeating the cap the streaming rewrite exists to enforce.
+            # PermissionError (policy block) and ValueError (too large /
+            # blocked redirect) are deterministic; 4xx except 429 can't
+            # succeed on retry.
+            if not _is_retryable_download_error(e) or attempt >= max_retries - 1:
                 logger.error(
-                    "Video download failed after %s attempts: %s",
-                    max_retries, str(e)[:100], exc_info=True,
+                    "Video download failed after %s attempt(s): %s",
+                    attempt + 1,
+                    str(e)[:100],
+                    exc_info=True,
                 )
+                raise
+            wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
+            logger.warning("Video download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
+            logger.warning("Retrying in %ss...", wait_time)
+            await asyncio.sleep(wait_time)
 
+    # The loop always returns on success or re-raises on the final/non-retryable
+    # attempt, so reaching here means max_retries was non-positive.
     if last_error is None:
         raise RuntimeError(
             f"_download_video exited retry loop without attempting (max_retries={max_retries})"

@@ -1702,15 +1702,25 @@ class HindsightMemoryProvider(MemoryProvider):
             return (
                 f"# Hindsight Memory\n"
                 f"Active (tools mode). Bank: {self._bank_id}, budget: {self._budget}.\n"
-                f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
-                f"hindsight_retain to store facts."
+                f"For cross-session facts, user preferences, and past decisions, "
+                f"prefer hindsight_recall over session_search — it returns "
+                f"deduplicated, high-density observations across sessions. "
+                f"Use hindsight_reflect for cross-session pattern synthesis. "
+                f"Use session_search only when you need verbatim transcripts or "
+                f"exact wording from a specific conversation.\n"
+                f"Use hindsight_retain to store facts."
             )
         return (
             f"# Hindsight Memory\n"
             f"Active. Bank: {self._bank_id}, budget: {self._budget}.\n"
             f"Relevant memories are automatically injected into context. "
-            f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
-            f"hindsight_retain to store facts."
+            f"For cross-session facts, user preferences, and past decisions, "
+            f"prefer hindsight_recall over session_search — it returns "
+            f"deduplicated, high-density observations across sessions. "
+            f"Use hindsight_reflect for cross-session pattern synthesis. "
+            f"Use session_search only when you need verbatim transcripts or "
+            f"exact wording from a specific conversation. "
+            f"Use hindsight_retain to store facts."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:

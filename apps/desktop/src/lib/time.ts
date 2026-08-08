@@ -34,7 +34,13 @@ export const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
 
 // Localized bidirectional "in 5 min" / "2 hr ago" — coarsest sensible unit so a
-// daily job reads "in 14 hr", not "in 840 min".
+// daily job reads "in 14 hr", not "in 840 min". The day bucket uses *calendar*
+// day boundaries (anchored at local midnight via `startOfLocalDay`) rather than
+// a flat 86_400_000 ms division: a cron that fires at 02:00 every three days,
+// read at 18:00 the day before, must read "in 2 days" (8/4), not
+// "in 1 day" / "tomorrow" — 32 h is well past the local-day rollover and the
+// target is on a different date. Calendar-day rounding also matches what the
+// user reads on the clock (#76725).
 export function relativeTime(targetMs: number, nowMs = Date.now()): string {
   const diff = targetMs - nowMs
   const abs = Math.abs(diff)
@@ -52,7 +58,18 @@ export function relativeTime(targetMs: number, nowMs = Date.now()): string {
     return rtf.format(sign * Math.round(abs / HOUR), 'hour')
   }
 
-  return rtf.format(sign * Math.round(abs / DAY), 'day')
+  // ≥1 day: count whole *calendar* days between the two local days. Using
+  // `startOfLocalDay` keeps the rollover at 00:00 local regardless of the
+  // user's timezone, so "in 1 day" only appears when targetMs really is the
+  // next calendar date — the legacy `Math.round(abs / DAY)` was 32 h → 1 day
+  // here on the way back from a 02:00 cron read at 18:00. `dayDiff` already
+  // carries the direction (positive for future, negative for past), so we
+  // round it directly; the `sign` variable is unused here but kept in scope
+  // for the hour / minute / second branches above where the round-trip
+  // through an unsigned `abs` is still meaningful.
+  const dayDiff = (startOfLocalDay(targetMs) - startOfLocalDay(nowMs)) / DAY
+
+  return rtf.format(Math.round(dayDiff), 'day')
 }
 
 // A dated divider bucket below the sidebar's unlabelled "recent" head cluster

@@ -1,0 +1,13 @@
+{
+  "name": "kubrick-guide",
+  "label": "Kubrick",
+  "description": "Guided cinematic brief builder for the Kubrick Hermes skill",
+  "icon": "Eye",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/kubrick",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css"
+}

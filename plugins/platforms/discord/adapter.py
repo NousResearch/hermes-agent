@@ -353,6 +353,11 @@ def _looks_like_nonconversational_history_message(content: str) -> bool:
     return any(pattern.match(text) for pattern in _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS)
 
 
+def _is_exact_heartbeat_message(content: str) -> bool:
+    """Return whether a live inbound bot message is exactly HEARTBEAT_OK."""
+    return (content or "").strip() == "HEARTBEAT_OK"
+
+
 def _clean_discord_id(entry: str) -> str:
     """Strip common prefixes from a Discord user ID or username entry.
 
@@ -1510,6 +1515,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
             except asyncio.TimeoutError:
                 pass
+        if (
+            getattr(message.author, "bot", False)
+            and _is_exact_heartbeat_message(
+                getattr(message, "clean_content", None)
+                or getattr(message, "content", "")
+            )
+        ):
+            self._nonconversational_messages.mark_many([str(message.id)])
+            return False
         admitted, role_authorized = self._discord_message_admission(
             message, claim=True,
         )

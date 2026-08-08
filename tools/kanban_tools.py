@@ -442,6 +442,39 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     return default, f"{name} must be a boolean or 'true'/'false'"
 
 
+def _parse_scheduled_at(value) -> Optional[int]:
+    """Parse an ISO-8601 timestamp (or Unix epoch int) into Unix epoch seconds.
+
+    Accepts the same shapes the CLI/docs use for ``--scheduled-at``:
+    ``2026-06-01T03:00:00Z``, ``2026-06-01 03:00:00+00:00``, or a bare epoch
+    integer. Returns None for unset. Raises ValueError on unparseable input so
+    the caller surfaces a clear tool error instead of silently dropping the
+    delay (the #80119 failure mode).
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        # Bare epoch integer string.
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        from datetime import datetime
+
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return int(parsed.timestamp())
+    except ValueError:
+        raise ValueError(
+            f"scheduled_at must be ISO-8601 (e.g. '2026-06-01T03:00:00Z') "
+            f"or a Unix epoch integer, got {value!r}"
+        )
+
+
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     """Belt-and-suspenders runtime guard for orchestrator-only handlers.
 
@@ -1330,6 +1363,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                scheduled_at=_parse_scheduled_at(args.get("scheduled_at")),
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -2092,6 +2126,16 @@ KANBAN_CREATE_SCHEMA = {
                 ),
             },
             "board": _board_schema_prop(),
+            "scheduled_at": {
+                "type": "string",
+                "description": (
+                    "Optional ISO-8601 timestamp (e.g. '2026-06-01T03:00:00Z') "
+                    "or Unix epoch integer. When set, the dispatcher skips the "
+                    "task until the first tick after this time — use it to "
+                    "delay dispatch (nightly jobs, wait-for-a-time-window "
+                    "work). Omit for immediate dispatch."
+                ),
+            },
         },
         "required": ["title", "assignee"],
     },

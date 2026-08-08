@@ -993,6 +993,9 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Earliest dispatch time (Unix epoch seconds); NULL = dispatch as soon as
+    # ready. See the column comment in SCHEMA_SQL.
+    scheduled_at: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1086,6 +1089,9 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            scheduled_at=(
+                row["scheduled_at"] if "scheduled_at" in keys else None
             ),
         )
 
@@ -1274,7 +1280,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Earliest dispatch time (Unix epoch seconds). NULL = dispatch as soon as
+    -- ready. The dispatcher skips ready tasks whose scheduled_at is still in
+    -- the future and picks them up on the first tick after that timestamp.
+    -- Set via kanban_create(..., scheduled_at=...) or `hermes kanban schedule`.
+    scheduled_at         INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2389,6 +2400,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "max_runtime_seconds", "max_runtime_seconds INTEGER"
         )
+    if "scheduled_at" not in cols:
+        _add_column_if_missing(conn, "tasks", "scheduled_at", "scheduled_at INTEGER")
     if "last_heartbeat_at" not in cols:
         _add_column_if_missing(
             conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
@@ -2906,6 +2919,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    scheduled_at: Optional[int] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3217,8 +3231,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, scheduled_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3244,6 +3258,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        int(scheduled_at) if scheduled_at is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -8463,7 +8478,9 @@ def _dispatch_once_locked(
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
+        "AND (scheduled_at IS NULL OR scheduled_at <= ?) "
+        "ORDER BY priority DESC, created_at ASC",
+        (int(time.time()),),
     ).fetchall()
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,

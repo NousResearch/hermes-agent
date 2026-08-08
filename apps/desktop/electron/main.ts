@@ -136,6 +136,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
+import { createMainWindowRevealController } from './main-window-reveal'
 import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
@@ -9556,6 +9557,8 @@ function createWindow() {
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
+  const createdMainWindow = mainWindow
+
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
 
@@ -9579,42 +9582,34 @@ function createWindow() {
     mainWindow.maximize()
   }
 
-  mainWindow.once('ready-to-show', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show()
-    }
+  const revealController = createMainWindowRevealController(createdMainWindow, {
+    onRevealed: () => {
+      // Persist geometry as soon as the window is visible so a crash before the
+      // first clean resize/move/close still captures the restored bounds (#56726).
+      schedulePersistWindowState()
 
-    // Persist geometry as soon as the window is visible so a crash before the
-    // first clean resize/move/close still captures the restored bounds (#56726).
-    schedulePersistWindowState()
-
-    // #38216: clear the mid-boot marker only after a window is actually usable.
-    // Keep sticky `fallback` when we launched with --no-sandbox so the next
-    // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
-    // records the app version so the next update re-probes the sandbox.
-    if (IS_WINDOWS) {
-      try {
-        writeSandboxMarker(
-          app.getPath('userData'),
-          markerAfterSuccessfulBoot({
-            fallbackActive: windowsSandboxFallbackSticky,
-            reason: windowsSandboxFallbackReason,
-            appVersion: app.getVersion()
-          })
-        )
-      } catch (error) {
-        rememberLog(`[sandbox] marker update after ready-to-show failed: ${error?.message || error}`)
+      // #38216: clear the mid-boot marker only after a window is actually usable.
+      // Keep sticky `fallback` when we launched with --no-sandbox so the next
+      // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
+      // records the app version so the next update re-probes the sandbox.
+      if (IS_WINDOWS) {
+        try {
+          writeSandboxMarker(
+            app.getPath('userData'),
+            markerAfterSuccessfulBoot({
+              fallbackActive: windowsSandboxFallbackSticky,
+              reason: windowsSandboxFallbackReason,
+              appVersion: app.getVersion()
+            })
+          )
+        } catch (error) {
+          rememberLog(`[sandbox] marker update after main-window reveal failed: ${error?.message || error}`)
+        }
       }
     }
   })
 
-  // Under Playright testing, instantly show the window.
-  // `ready-to-show` doesn't fire in some testing envs.
-  if (process.env.TEST_WORKER_INDEX !== undefined) {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
-      mainWindow.show()
-    }
-  }
+  mainWindow.once('ready-to-show', revealController.reveal)
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
@@ -9634,8 +9629,8 @@ function createWindow() {
   mainWindow.on('close', () => schedulePersistWindowState.flush())
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
-  const createdMainWindow = mainWindow
   mainWindow.on('closed', () => {
+    revealController.dispose()
     closePetOverlay()
     wakeIndicatorController.close()
 
@@ -9745,6 +9740,11 @@ function createWindow() {
   startHermes().catch(error => rememberLog(error.stack || error.message))
 
   mainWindow.webContents.once('did-finish-load', () => {
+    // Electron 40 can omit ready-to-show even after the renderer has loaded,
+    // leaving the primary window hidden indefinitely. Give the normal themed
+    // paint path four seconds to win, then reveal the same window as a fallback.
+    revealController.scheduleFallback()
+
     // Zoom restore is handled by wireCommonWindowHandlers (shared with session
     // windows); no need to reapply it here.
     broadcastBootProgress()

@@ -139,6 +139,7 @@ const CHAT_NAV_ITEM: NavItem = {
   labelKey: "chat",
   label: "Chat",
   icon: Terminal,
+  section: "Workspace",
 };
 
 /**
@@ -188,37 +189,41 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "sessions",
     label: "Sessions",
     icon: MessageSquare,
+    section: "Workspace",
   },
-  { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/files", label: "Files", icon: FolderOpen, section: "Workspace" },
   {
     path: "/analytics",
     labelKey: "analytics",
     label: "Analytics",
     icon: BarChart3,
+    section: "Monitoring",
   },
   {
     path: "/models",
     labelKey: "models",
     label: "Models",
     icon: Cpu,
+    section: "Configuration",
   },
-  { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
-  { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
-  { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
-  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/mcp", label: "MCP", icon: Plug },
-  { path: "/channels", label: "Channels", icon: Radio },
-  { path: "/webhooks", label: "Webhooks", icon: Webhook },
-  { path: "/pairing", label: "Pairing", icon: ShieldCheck },
-  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
-  { path: "/config", labelKey: "config", label: "Config", icon: Settings },
-  { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/system", label: "System", icon: Wrench },
+  { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText, section: "Monitoring" },
+  { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock, section: "Automation" },
+  { path: "/skills", labelKey: "skills", label: "Skills", icon: Package, section: "Extensions" },
+  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle, section: "Extensions" },
+  { path: "/mcp", label: "MCP", icon: Plug, section: "Extensions" },
+  { path: "/channels", label: "Channels", icon: Radio, section: "Integrations" },
+  { path: "/webhooks", label: "Webhooks", icon: Webhook, section: "Integrations" },
+  { path: "/pairing", label: "Pairing", icon: ShieldCheck, section: "Configuration" },
+  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users, section: "Configuration" },
+  { path: "/config", labelKey: "config", label: "Config", icon: Settings, section: "Configuration" },
+  { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound, section: "Configuration" },
+  { path: "/system", label: "System", icon: Wrench, section: "System" },
   {
     path: "/docs",
     labelKey: "documentation",
     label: "Documentation",
     icon: BookOpen,
+    section: "System",
   },
 ];
 
@@ -266,6 +271,7 @@ function buildNavItems(
       path: manifest.tab.path,
       label: manifest.label,
       icon: resolveIcon(manifest.icon),
+      section: manifest.tab.section,
     };
 
     const pos = manifest.tab.position ?? "end";
@@ -644,18 +650,45 @@ export default function App() {
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
               aria-label={t.app.navigation}
             >
-              <ul className="flex flex-col">
-                {sidebarNav.coreItems.map((item) => (
-                  <SidebarNavLink
-                    closeMobile={closeMobile}
-                    collapsed={isDesktopCollapsed}
-                    item={item}
-                    key={item.path}
-                    t={t}
-                    tooltipWarmRef={tooltipWarmRef}
-                  />
-                ))}
-              </ul>
+              {(() => {
+                let lastSection: string | undefined;
+                const groups: { section?: string; items: NavItem[] }[] = [];
+                for (const item of sidebarNav.coreItems) {
+                  if (item.section !== lastSection) {
+                    groups.push({ section: item.section, items: [item] });
+                    lastSection = item.section;
+                  } else {
+                    groups[groups.length - 1].items.push(item);
+                  }
+                }
+                return groups.map((group) => (
+                  <div key={group.section ?? "__ungrouped"}>
+                    {group.section && (
+                      <span
+                        className={cn(
+                          "block px-5 pt-2.5 pb-1",
+                          "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
+                          isDesktopCollapsed && "lg:hidden",
+                        )}
+                      >
+                        {group.section}
+                      </span>
+                    )}
+                    <ul className="flex flex-col">
+                      {group.items.map((item) => (
+                        <SidebarNavLink
+                          closeMobile={closeMobile}
+                          collapsed={isDesktopCollapsed}
+                          item={item}
+                          key={item.path}
+                          t={t}
+                          tooltipWarmRef={tooltipWarmRef}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                ));
+              })()}
 
               {sidebarNav.pluginItems.length > 0 && (
                 <div
@@ -1339,6 +1372,8 @@ interface NavItem {
   label: string;
   labelKey?: string;
   path: string;
+  /** Optional section/group label. When set, sidebar groups consecutive items with the same section under a header. */
+  section?: string;
 }
 
 interface SidebarIconWithTooltipProps {

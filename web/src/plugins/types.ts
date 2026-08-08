@@ -16,6 +16,9 @@ export interface PluginManifest {
     override?: string;
     /** When true, the plugin may register without a sidebar tab (slot-only, etc.). */
     hidden?: boolean;
+    /** Optional section/group name. When set and the sidebar supports section grouping,
+     * the plugin nav item renders under the named section header. */
+    section?: string;
   };
   /** Declared for discovery; actual slots use registerSlot in the plugin bundle. */
   slots?: string[];

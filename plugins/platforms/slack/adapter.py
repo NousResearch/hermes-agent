@@ -2429,6 +2429,7 @@ class SlackAdapter(BasePlatformAdapter):
             raw = os.getenv("SLACK_IGNORED_CHANNELS")
         if raw is None:
             return set()
+        raw = _coerce_channel_list(raw)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -8357,6 +8358,7 @@ class SlackAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("SLACK_FREE_RESPONSE_CHANNELS", "")
+        raw = _coerce_channel_list(raw)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         # Coerce non-list scalars (str/int/float) to str before splitting.
@@ -8395,6 +8397,7 @@ class SlackAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("allowed_channels")
         if raw is None:
             raw = os.getenv("SLACK_ALLOWED_CHANNELS", "")
+        raw = _coerce_channel_list(raw)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if isinstance(raw, str) and raw.strip():
@@ -8414,6 +8417,7 @@ class SlackAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("require_mention_channels")
         if raw is None:
             raw = os.getenv("SLACK_REQUIRE_MENTION_CHANNELS", "")
+        raw = _coerce_channel_list(raw)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if isinstance(raw, str) and raw.strip():
@@ -8973,6 +8977,56 @@ def interactive_setup() -> None:
             print_info("Home channel cleared.")
 
 
+def _coerce_channel_list(raw):
+    """Decode channel-list values that arrive as a JSON-array string.
+
+    Config writers (agents editing config.yaml on the user's behalf, hand
+    edits, copy-pasted examples) sometimes serialize a channel list as JSON
+    inside a YAML string::
+
+        allowed_channels: '["C0AAAAAAA", "C0BBBBBBB"]'
+
+    The CSV split in the channel-set readers keeps the brackets and quotes on
+    each entry (``'["C0AAAAAAA"'`` …), so a non-empty whitelist matches no
+    real channel ID and the bot goes silent in every channel with no error
+    anywhere. Accept the JSON form by decoding it back into a list; any value
+    that doesn't parse as a JSON list is returned unchanged and flows through
+    the existing CSV path.
+    """
+    if isinstance(raw, str):
+        s = raw.strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                parsed = json.loads(s)
+            except ValueError:
+                return raw
+            if isinstance(parsed, list):
+                return parsed
+    return raw
+
+
+def _warn_malformed_channel_entries(key: str, csv: str) -> None:
+    """Log entries that can never match a Slack conversation ID.
+
+    Leftover quotes/brackets in a channel-list entry mean the value was
+    mis-serialized (e.g. a JSON string that failed to decode). Matching is
+    exact, so such entries silently gate the bot off — surface them once at
+    config-translation time instead.
+    """
+    bad = [
+        part.strip()
+        for part in csv.split(",")
+        if part.strip() and any(ch in part for ch in "[]\"'")
+    ]
+    if bad:
+        logger.warning(
+            "[Slack] %s entries %s contain quote/bracket characters and will "
+            "never match a channel ID — use a YAML list or comma-separated IDs",
+            key,
+            bad,
+        )
+
+
 def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     """Translate ``config.yaml`` ``slack:`` keys into ``SLACK_*`` env vars.
 
@@ -9005,16 +9059,18 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         ).lower()
     if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
         os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
-    frc = slack_cfg.get("free_response_channels")
+    frc = _coerce_channel_list(slack_cfg.get("free_response_channels"))
     if frc is not None and not os.getenv("SLACK_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):
             frc = ",".join(str(v) for v in frc)
         os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
-    rmc = slack_cfg.get("require_mention_channels")
+        _warn_malformed_channel_entries("free_response_channels", str(frc))
+    rmc = _coerce_channel_list(slack_cfg.get("require_mention_channels"))
     if rmc is not None and not os.getenv("SLACK_REQUIRE_MENTION_CHANNELS"):
         if isinstance(rmc, list):
             rmc = ",".join(str(v) for v in rmc)
         os.environ["SLACK_REQUIRE_MENTION_CHANNELS"] = str(rmc)
+        _warn_malformed_channel_entries("require_mention_channels", str(rmc))
     if "reactions" in slack_cfg and not os.getenv("SLACK_REACTIONS"):
         os.environ["SLACK_REACTIONS"] = str(slack_cfg["reactions"]).lower()
     rt = slack_cfg.get("reaction_triggers")
@@ -9028,17 +9084,19 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
 
     if "disable_dms" in slack_cfg and not os.getenv("SLACK_DISABLE_DMS"):
         os.environ["SLACK_DISABLE_DMS"] = str(slack_cfg["disable_dms"]).lower()
-    ac = slack_cfg.get("allowed_channels")
+    ac = _coerce_channel_list(slack_cfg.get("allowed_channels"))
     if ac is not None and not os.getenv("SLACK_ALLOWED_CHANNELS"):
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
+        _warn_malformed_channel_entries("allowed_channels", str(ac))
     # ignored_channels: blacklist channels where Slack must never respond.
-    ic = slack_cfg.get("ignored_channels")
+    ic = _coerce_channel_list(slack_cfg.get("ignored_channels"))
     if ic is not None and not os.getenv("SLACK_IGNORED_CHANNELS"):
         if isinstance(ic, list):
             ic = ",".join(str(v) for v in ic)
         os.environ["SLACK_IGNORED_CHANNELS"] = str(ic)
+        _warn_malformed_channel_entries("ignored_channels", str(ic))
     return None  # all settings flow through env; nothing to merge into extras
 
 

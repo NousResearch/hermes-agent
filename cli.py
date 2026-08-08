@@ -14564,9 +14564,38 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             all_parts.append(extra)
                     except queue.Empty:
                         break
-                combined = "\n".join(all_parts)
+                # Parts are plain `str`, or `(text, [Path, ...])` tuples when
+                # the Enter handler bundled attached images. `"\n".join` raises
+                # TypeError on a tuple, and since the extras were already taken
+                # off the queue with get_nowait() — and chat()'s bare `except`
+                # swallows the error — the message and its images were silently
+                # lost. Merge type-aware instead: join the text, concatenate the
+                # image lists, and emit a plain `str` when no part carries
+                # images so the text-only path is unchanged. process_loop
+                # already unpacks the `(text, images)` form.
+                text_parts = []
+                merged_images = []
+                for part in all_parts:
+                    if isinstance(part, tuple) and len(part) == 2:
+                        part_text, part_images = part
+                    else:
+                        part_text, part_images = part, None
+                    if part_text:
+                        text_parts.append(
+                            part_text if isinstance(part_text, str) else str(part_text)
+                        )
+                    if part_images:
+                        merged_images.extend(part_images)
+                combined_text = "\n".join(text_parts)
+                combined = (combined_text, merged_images) if merged_images else combined_text
                 n = len(all_parts)
-                preview = combined[:50] + ("..." if len(combined) > 50 else "")
+                preview = combined_text[:50] + ("..." if len(combined_text) > 50 else "")
+                if merged_images:
+                    _img_note = (
+                        f"[{len(merged_images)} image"
+                        f"{'s' if len(merged_images) != 1 else ''} attached]"
+                    )
+                    preview = f"{preview} {_img_note}" if preview else _img_note
                 if n > 1:
                     print(f"\n⚡ Sending {n} messages after interrupt: '{preview}'")
                 else:

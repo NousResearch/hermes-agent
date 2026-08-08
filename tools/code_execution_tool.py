@@ -741,6 +741,16 @@ def _rpc_server_loop(
                 # Dispatch through the standard tool handler.
                 # Suppress stdout/stderr from internal tool handlers so
                 # their status prints don't leak into the CLI spinner.
+                #
+                # MUST be thread-scoped: this handler runs on a per-connection
+                # socket thread, so several execute_code calls (e.g. parallel
+                # subagents) are in flight at once. Assigning sys.stdout
+                # directly rebinds it PROCESS-WIDE; with two threads
+                # interleaving, thread B captures A's devnull as "_real_stdout",
+                # A closes it, and B restores a CLOSED handle — after which
+                # every bare print in the process raises
+                # "ValueError: I/O operation on closed file." (observed
+                # 2026-07-28: 328 occurrences, killing 3 subagents).
                 try:
                     with thread_scoped_silence():
                         result = handle_function_call(
@@ -1015,7 +1025,11 @@ def _rpc_poll_loop(
                         for param in _TERMINAL_BLOCKED_PARAMS:
                             tool_args.pop(param, None)
 
-                    # Dispatch through the standard tool handler
+                    # Dispatch through the standard tool handler.
+                    # Thread-scoped silencing — see the identical note on the
+                    # local-sandbox path above. A process-global
+                    # ``sys.stdout = devnull`` here races other in-flight
+                    # execute_code calls and leaves sys.stdout closed.
                     try:
                         with thread_scoped_silence():
                             tool_result = handle_function_call(

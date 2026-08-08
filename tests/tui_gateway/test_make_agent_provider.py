@@ -15,6 +15,7 @@ def test_make_agent_passes_resolved_provider():
 
     fake_runtime = {
         "provider": "anthropic",
+        "requested_provider": "anthropic",
         "base_url": "https://api.anthropic.com",
         "api_key": "sk-test-key",
         "api_mode": "anthropic_messages",
@@ -55,6 +56,7 @@ def test_make_agent_passes_resolved_provider():
 
         call_kwargs = mock_agent.call_args
         assert call_kwargs.kwargs["provider"] == "anthropic"
+        assert call_kwargs.kwargs["requested_provider"] == "anthropic"
         assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
         assert call_kwargs.kwargs["api_key"] == "sk-test-key"
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"

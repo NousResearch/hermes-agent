@@ -12,12 +12,16 @@ Verifies that:
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 import run_agent
+import agent.transports.codex_app_server_session as session_mod
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
 
@@ -85,6 +89,100 @@ class TestRunConversationCodexPath:
         assert result["api_calls"] == 1
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
+
+    def test_config_to_thread_start_preserves_named_custom_provider(
+        self, monkeypatch
+    ):
+        home = Path(os.environ["HERMES_HOME"])
+        config = {
+            "model": {
+                "provider": "custom:My Gateway",
+                "default": "gpt-5.4",
+                "openai_runtime": "codex_app_server",
+            },
+            "providers": {
+                "My Gateway": {
+                    "api": "https://gateway.example.com/v1",
+                    "api_key": "hermes-only-test-key",
+                    "default_model": "gpt-5.4",
+                    "transport": "codex_responses",
+                }
+            },
+            "auxiliary": {
+                "background_review": {
+                    "provider": "My Gateway",
+                    "model": "gpt-5.4",
+                }
+            },
+        }
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
+        )
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider()
+        requests = []
+
+        class RecordingClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            def initialize(self, **_kwargs):
+                return {}
+
+            def request(self, method, params=None, timeout=30.0):
+                requests.append((method, params or {}))
+                if method == "thread/start":
+                    return {"thread": {"id": "thread-config-chain"}}
+                return {}
+
+            def close(self):
+                pass
+
+        real_session = CodexAppServerSession
+
+        def session_factory(**kwargs):
+            return real_session(client_factory=RecordingClient, **kwargs)
+
+        monkeypatch.setattr(session_mod, "CodexAppServerSession", session_factory)
+
+        def run_turn(self, user_input, **kwargs):
+            self.ensure_started()
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                turn_id="turn-config-chain",
+                thread_id="thread-config-chain",
+            )
+
+        monkeypatch.setattr(real_session, "run_turn", run_turn)
+        agent = run_agent.AIAgent(
+            api_key=runtime["api_key"],
+            base_url=runtime["base_url"],
+            provider=runtime["provider"],
+            requested_provider=runtime["requested_provider"],
+            model=config["model"]["default"],
+            api_mode=runtime["api_mode"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "ok"
+        _, params = next(call for call in requests if call[0] == "thread/start")
+        assert params["model"] == "gpt-5.4"
+        assert params["modelProvider"] == "my-gateway"
+        assert set(params) == {"cwd", "model", "modelProvider"}
+
+        from agent.background_review import _resolve_review_runtime
+
+        review_runtime = _resolve_review_runtime(agent)
+        assert review_runtime["routed"] is False
+        assert review_runtime["api_mode"] == "codex_responses"
 
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):

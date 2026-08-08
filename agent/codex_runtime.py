@@ -673,6 +673,20 @@ def run_codex_app_server_turn(
                 exc_info=True,
             )
 
+        # A named Hermes custom provider can map to a provider configured in
+        # Codex's own config.toml. Pass only that stable identity and the model;
+        # Codex resolves base_url/env_key itself, so Hermes credentials never
+        # enter the subprocess command line or JSON-RPC payload.
+        codex_model_provider = None
+        if str(getattr(agent, "provider", "") or "").strip().lower() == "custom":
+            from hermes_cli.runtime_provider import normalize_custom_provider_id
+
+            requested_provider = normalize_custom_provider_id(
+                str(getattr(agent, "requested_provider", "") or "")
+            )
+            if requested_provider and requested_provider != "custom":
+                codex_model_provider = requested_provider
+
         # Bridge codex JSON-RPC notifications (item/started, item/completed,
         # item/agentMessage/delta, ...) into Hermes' gateway UI callbacks
         # (tool_progress_callback, _fire_stream_delta,
@@ -682,6 +696,8 @@ def run_codex_app_server_turn(
         # Supersedes the narrower item/started-only bridge from #38835.
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            model=(getattr(agent, "model", None) if codex_model_provider else None),
+            model_provider=codex_model_provider,
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,

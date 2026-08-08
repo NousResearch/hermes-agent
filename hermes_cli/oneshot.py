@@ -319,6 +319,98 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _resolve_runtime_with_fallback(
+    effective_provider: Optional[str],
+    effective_model: str,
+    explicit_base_url: Optional[str],
+    cfg: dict,
+) -> tuple[Optional[dict], Optional[Exception]]:
+    """Resolve a runtime provider, falling back to ``fallback_providers`` on quota/429.
+
+    The gateway has a dedicated resolution-time fallback path
+    (``_try_resolve_fallback_provider`` in ``gateway/run.py``) that runs
+    *before* ``AIAgent`` is constructed — exactly when a oneshot invocation
+    in the same situation was failing outright (#81209). The docs claim
+    "Where Fallback Works: CLI sessions ✔", but in practice the CLI was
+    only covered for failures *after* the session started, not at resolution
+    time. This helper ports the gateway's loop into the oneshot path so
+    headless invocations (``hermes -z`` from cron, queue workers, ops
+    scripts) survive a primary provider quota window.
+
+    Returns ``(runtime_dict, None)`` on success. On primary failure with
+    fallback success, returns ``(runtime_dict, None)`` and logs the original
+    primary error at INFO. On total failure, returns
+    ``(None, primary_error)`` so the caller can raise the right diagnostic;
+    if every fallback entry also failed, the primary error is the
+    operator-facing message because it names the configured primary
+    provider (a fallback entry's failure is by definition not what the
+    operator configured first).
+    """
+    from hermes_cli.fallback_config import resolve_entry_api_key
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    primary_exc: Optional[Exception] = None
+    try:
+        runtime = resolve_runtime_provider(
+            requested=effective_provider,
+            target_model=effective_model or None,
+            explicit_base_url=explicit_base_url,
+        )
+        return runtime, None
+    except Exception as exc:
+        primary_exc = exc
+
+    # Primary failed. Walk the configured fallback chain in order, applying
+    # the same managed-overlay / ${VAR}-expansion semantics as the gateway's
+    # _try_resolve_fallback_provider (get_fallback_chain is the single source
+    # of truth for both).
+    try:
+        fb_list = get_fallback_chain(cfg)
+    except Exception:
+        fb_list = []
+
+    if not fb_list:
+        return None, primary_exc
+
+    logging.info(
+        "Primary provider resolution failed (%s); attempting %d configured fallback(s).",
+        primary_exc,
+        len(fb_list),
+    )
+    for entry in fb_list:
+        try:
+            runtime = resolve_runtime_provider(
+                requested=entry.get("provider"),
+                target_model=entry.get("model") or None,
+                explicit_base_url=entry.get("base_url"),
+                explicit_api_key=resolve_entry_api_key(entry),
+            )
+            logging.info(
+                "Oneshot fallback provider resolved: %s model=%s",
+                entry.get("provider") or runtime.get("provider"),
+                entry.get("model"),
+            )
+            # Annotate with the fallback entry's model so AIAgent constructs
+            # against the fallback's model, not the originally-requested
+            # one — same as the gateway does at run.py:2540.
+            fallback_model = entry.get("model")
+            if fallback_model:
+                runtime = {**runtime, "model": fallback_model}
+            return runtime, None
+        except Exception as fb_exc:
+            logging.debug(
+                "Oneshot fallback entry %s failed: %s",
+                entry.get("provider"),
+                fb_exc,
+            )
+            continue
+
+    # Every fallback failed too. Surface the primary error to the caller —
+    # it names the operator's configured primary provider, which is what
+    # the operator needs to fix first.
+    return None, primary_exc
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -391,11 +483,28 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
-    runtime = resolve_runtime_provider(
-        requested=effective_provider,
-        target_model=effective_model or None,
+    runtime, fallback_resolution_error = _resolve_runtime_with_fallback(
+        effective_provider=effective_provider,
+        effective_model=effective_model,
         explicit_base_url=explicit_base_url_from_alias,
+        cfg=cfg,
     )
+
+    # If the primary failed AND every fallback entry also failed, surface a
+    # unified error so the operator sees one message instead of a noisy
+    # DEBUG log of every fallback entry's individual failure.  When the
+    # primary error was the genuine root cause (e.g. config syntax), bubble
+    # it up directly so the operator is not pointed at a fallback that was
+    # not actually the problem (#81209).
+    if runtime is None:
+        if fallback_resolution_error is not None:
+            raise fallback_resolution_error
+        raise RuntimeError(
+            "No usable provider resolved for oneshot invocation: primary "
+            "provider failed and fallback_providers chain returned no "
+            "runtime.  Check `hermes fallback list` and provider "
+            "credentials."
+        )
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
@@ -430,13 +539,18 @@ def _run_agent(
         # gateway sessions.
         _fb = get_fallback_chain(cfg)
 
+        # ``runtime.get("model")`` is set by ``_resolve_runtime_with_fallback``
+        # when the fallback chain supplied a model that differs from the
+        # primary one; honour it so AIAgent constructs against the
+        # fallback's model instead of the originally-requested one.
+        agent_model = runtime.get("model") or effective_model
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
             requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
-            model=effective_model,
+            model=agent_model,
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
             platform="cli",

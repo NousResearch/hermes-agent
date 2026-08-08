@@ -149,6 +149,38 @@ def test_approval_routing_handles_slash_and_quoted_replies(reply):
     _clear_approval_state()
 
 
+@pytest.mark.parametrize(
+    "reply,expected",
+    [
+        ("always approve", "always"),
+        ("approve always", "always"),
+        ("session approve", "session"),
+        ("approve session", "session"),
+        ("always yes", "always"),
+        ("session y", "session"),
+    ],
+)
+def test_approval_scope_word_order(reply, expected):
+    """Reversed scope shorthand ("always approve" etc.) resolves correctly.
+
+    Regression from maintainer review on #81088: the helper previously
+    synthesized "/approve approve" for "always approve", losing the scope.
+    """
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(_make_event(reply), session_key)
+    )
+
+    assert handled is True
+    assert entry.event.is_set()
+    assert entry.result == expected
+    adapter._send_with_retry.assert_awaited()
+    _clear_approval_state()
+
+
 def test_no_pending_approval_does_not_consume_conversational_yes():
     """A bare 'yes' with NO blocking approval must NOT be treated as an
     approval — it falls through to normal busy handling (design intent:

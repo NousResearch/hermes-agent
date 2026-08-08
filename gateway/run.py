@@ -9237,6 +9237,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _cmd = _parts[0] if _parts else ""
             _arg = _parts[1] if len(_parts) > 1 else ""
 
+            # Reversed scope shorthand: "always approve" / "session approve"
+            # (and the same with yes/ok/deny/...) are equivalent to the
+            # canonical "/approve always" / "/approve session" form.
+            if _cmd in {"always", "session"} and _arg and (
+                _arg in _approve_commands or _arg in _deny_commands
+            ):
+                if _arg in _approve_commands:
+                    handler = self._handle_approve_command
+                else:
+                    handler = self._handle_deny_command
+                args = _cmd
+                break
+
             if _cmd in _approve_commands:
                 handler = self._handle_approve_command
                 if _cmd in {"always", "session"} and not _arg:

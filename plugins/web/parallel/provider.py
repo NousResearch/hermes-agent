@@ -28,6 +28,9 @@ Env vars::
 
 from __future__ import annotations
 
+import importlib.util
+import sys
+
 import logging
 import os
 from typing import Any, Dict, List
@@ -43,22 +46,50 @@ logger = logging.getLogger(__name__)
 # :func:`_get_sync_client` / :func:`_get_async_client`).
 
 
+def _parallel_sdk_importable() -> bool:
+    """True when ``import parallel`` would succeed.
+
+    ``sys.modules`` is checked first: an already-imported module is importable
+    by definition, and ``find_spec`` raises ``ValueError`` on entries with no
+    ``__spec__`` (which is how tests inject a stub SDK).
+    """
+    if "parallel" in sys.modules:
+        return True
+    try:
+        return importlib.util.find_spec("parallel") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _ensure_parallel_sdk_installed() -> None:
     """Trigger lazy install of the parallel SDK if it isn't present.
 
-    Mirrors the lazy-deps pattern used by the legacy implementation.
-    Swallows benign ImportError from the lazy_deps helper itself; if the
-    SDK is genuinely missing the subsequent ``from parallel import ...``
-    raises ImportError that the caller can handle.
+    The import is the real gate: whether the SDK can be installed is only
+    interesting when it is not already importable. ``lazy_deps.ensure`` reports
+    an unusable feature with ``FeatureUnavailable`` (a ``RuntimeError``, not an
+    ``ImportError``), so catching ``ImportError`` here never caught the case it
+    was written for, and the broad ``except Exception`` turned "cannot install"
+    into a hard failure even when ``import parallel`` would have worked. On a
+    host with ``security.allow_lazy_installs=false`` that made the provider
+    unusable whether or not ``parallel-web`` was present.
+
+    So: try to install, and if that is impossible, check whether we needed it.
+    Only a genuinely missing package raises, and it carries the install hint.
+    Unrelated faults still surface as ``ImportError`` for the caller.
     """
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-
-        _lazy_ensure("search.parallel", prompt=False)
+        from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
     except ImportError:
-        pass
-    except Exception as exc:  # noqa: BLE001 — surface install hint as ImportError
-        raise ImportError(str(exc))
+        return  # lazy-deps helper itself unavailable — let the import decide
+
+    try:
+        _lazy_ensure("search.parallel", prompt=False)
+    except FeatureUnavailable as exc:
+        if not _parallel_sdk_importable():
+            raise ImportError(str(exc)) from exc
+        # Already importable; nothing needed installing.
+    except Exception as exc:  # noqa: BLE001 — surface real faults as ImportError
+        raise ImportError(str(exc)) from exc
 
 
 def _get_sync_client() -> Any:

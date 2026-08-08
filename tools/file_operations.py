@@ -2198,7 +2198,17 @@ class ShellFileOperations(FileOperations):
 
         # Expand ~ and other shell paths
         path = self._expand_path(path)
-        
+
+        # Resolve relative paths to absolute inside the sandbox so that
+        # --exclude-dir='.*' in the grep fallback never matches the search
+        # root itself (GNU grep treats "." as matching the glob ".*").
+        # Must use _exec rather than Path.resolve() — the search runs inside
+        # the sandbox whose cwd may differ from the host Python process.
+        if not os.path.isabs(path):
+            _r = self._exec(f"cd {self._escape_shell_arg(path)} && pwd -P")
+            if _r.exit_code == 0 and _r.stdout.strip():
+                path = _r.stdout.strip()
+
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:

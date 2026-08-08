@@ -33,6 +33,40 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         help="Provider to configure directly (e.g. honcho), skipping the picker",
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
+    service_parser = memory_sub.add_parser(
+        "service",
+        help="Manage an external memory provider service",
+    )
+    service_sub = service_parser.add_subparsers(
+        dest="service_command",
+        required=True,
+    )
+    for action, help_text in (
+        ("install", "Install and start the external provider service"),
+        ("status", "Show external provider service status"),
+        ("restart", "Restart the external provider service"),
+        ("logs", "Show external provider service log paths"),
+    ):
+        action_parser = service_sub.add_parser(action, help=help_text)
+        action_parser.add_argument(
+            "provider",
+            choices=["hindsight"],
+            help="Provider service to manage",
+        )
+        action_parser.add_argument(
+            "--executable",
+            help="Path to the provider daemon executable (defaults to discovered hindsight-api)",
+        )
+        action_parser.add_argument(
+            "--env-file",
+            help="Optional daemon environment file to source before launch",
+        )
+        if action == "install":
+            action_parser.add_argument(
+                "--force",
+                action="store_true",
+                help="Replace an existing launchd registration before installing",
+            )
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
     _reset_parser = memory_sub.add_parser(
         "reset",

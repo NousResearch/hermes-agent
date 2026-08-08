@@ -18,7 +18,13 @@ const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // lines, or a same-line `$…$`. A delimiter escaped as `\$` is prose — that is
 // exactly how escapeCurrencyDollarsPreservingMath marks a price, so the
 // lookbehinds keep `\$5 and \$10` out of the math branch.
-const MATH_SPAN_SPLIT_RE = /((?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$[^\n$]+?(?<!\\)\$)/g
+//
+// The inline body steps over escape pairs (`\\[^\n]`) rather than excluding
+// `$` outright, because `\$` is a literal dollar INSIDE math (`$x + \$5$`) and
+// must not end the span — the same distinction findClosingSingleDollar draws
+// via isEscapedAt. The two alternatives are disjoint on their first character,
+// so the body cannot backtrack ambiguously.
+const MATH_SPAN_SPLIT_RE = /((?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$(?:[^\n$\\]|\\[^\n])+?(?<!\\)\$)/g
 const LATEX_DISPLAY_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\[[ \t]*\r?$/
 const LATEX_DISPLAY_CLOSE_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\][ \t]*\r?$/
 const CUSTOM_DISPLAY_MATH_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\[\/math\][ \t]*\r?$/

@@ -384,4 +384,10 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toBe('Per the paper, $\\sqrt[3]{8}$ is 2.')
   })
+
+  it('shields inline math whose body contains an escaped dollar', () => {
+    const output = preprocessMarkdown('$\\sqrt[3]{8} + \\$5$')
+
+    expect(output).toContain('\\sqrt[3]{8}')
+  })
 })

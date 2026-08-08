@@ -463,8 +463,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             _tg_extra = {**_gw_tg_extra, **_top_tg_extra}
             if _tg_extra.get("rich_messages"):
                 _default_hint = _default_hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
-        except ImportError:
-            pass  # Config module not available — fall back to base hint only
+        except Exception:
+            pass  # Config read failure — fall back to base hint only
 
     _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
     if platform_key == "tui" and _effective_hint:

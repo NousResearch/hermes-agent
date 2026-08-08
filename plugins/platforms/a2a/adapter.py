@@ -729,9 +729,17 @@ class A2AAdapter(BasePlatformAdapter):
                 "Empty task — nothing to do.", created_at=rec["created_iso"],
             ), None
 
+        # Multi-turn: when a caller reuses a contextId, prepend the prior
+        # conversation so the agent sees the full thread. The original
+        # message (not the augmented copy) is what gets audited and
+        # persisted, so history never accumulates injected prefixes.
+        original_text = text
+        history = protocol.format_history(context_id)
+        if history:
+            text = history + text
         framed = security.wrap_inbound(peer, text)
-        security.audit("inbound", peer, task_id, text)
-        protocol.persist_message(context_id, "user", text, task_id)
+        security.audit("inbound", peer, task_id, original_text)
+        protocol.persist_message(context_id, "user", original_text, task_id)
         protocol.metrics.inbound_total += 1
 
         rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))

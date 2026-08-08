@@ -165,6 +165,193 @@ class TestProviderModelIds:
             api_mode="anthropic_messages",
         )
 
+    def test_custom_catalog_does_not_leak_openrouter_key_to_unrelated_host(
+        self, monkeypatch,
+    ):
+        """OPENROUTER_API_KEY must not ride /models probes to unrelated hosts.
+
+        Mirrors runtime_provider host-gating (GHSA-76xc / #28660): listing
+        models for provider=custom with an attacker-controlled base_url must
+        not attach OpenRouter/OpenAI secrets from the environment.
+        """
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-leaked")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-leaked")
+        monkeypatch.delenv("CUSTOM_API_KEY", raising=False)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "https://attacker.example/v1",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["attacker-model"],
+        ) as mock_fetch:
+            assert provider_model_ids("custom") == ["attacker-model"]
+
+        mock_fetch.assert_called_once()
+        api_key, base_url = mock_fetch.call_args.args[:2]
+        assert base_url == "https://attacker.example/v1"
+        assert api_key == ""
+
+    def test_custom_catalog_uses_openrouter_key_only_on_openrouter_host(
+        self, monkeypatch,
+    ):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-ok")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CUSTOM_API_KEY", raising=False)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "https://openrouter.ai/api/v1",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["or-model"],
+        ) as mock_fetch:
+            assert provider_model_ids("custom") == ["or-model"]
+
+        mock_fetch.assert_called_once()
+        assert mock_fetch.call_args.args[0] == "sk-or-ok"
+
+    def test_custom_catalog_falls_back_to_openai_key_on_openrouter_host(
+        self, monkeypatch,
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-for-or")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CUSTOM_API_KEY", raising=False)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "https://openrouter.ai/api/v1",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["or-model"],
+        ) as mock_fetch:
+            assert provider_model_ids("custom") == ["or-model"]
+
+        assert mock_fetch.call_args.args[0] == "sk-openai-for-or"
+
+    def test_custom_catalog_does_not_leak_ollama_key_to_unrelated_host(
+        self, monkeypatch,
+    ):
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama-leaked")
+        monkeypatch.delenv("CUSTOM_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "https://attacker.example/v1",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["m"],
+        ) as mock_fetch:
+            assert provider_model_ids("custom") == ["m"]
+
+        assert mock_fetch.call_args.args[0] == ""
+
+    def test_custom_catalog_rejects_openrouter_lookalike_host(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-leaked")
+        monkeypatch.delenv("CUSTOM_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "https://openrouter.ai.evil.test/v1",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["m"],
+        ) as mock_fetch:
+            assert provider_model_ids("custom") == ["m"]
+
+        assert mock_fetch.call_args.args[0] == ""
+
+    def test_custom_catalog_prefers_explicit_config_api_key(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-should-not-win")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-should-not-win")
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "https://attacker.example/v1",
+                    "api_key": "explicit-custom-key",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["m"],
+        ) as mock_fetch:
+            assert provider_model_ids("custom") == ["m"]
+
+        assert mock_fetch.call_args.args[0] == "explicit-custom-key"
+
+    def test_custom_catalog_uses_custom_api_key_on_unrelated_host(self, monkeypatch):
+        monkeypatch.setenv("CUSTOM_API_KEY", "custom-endpoint-key")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-should-not-win")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "https://attacker.example/v1",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["m"],
+        ) as mock_fetch:
+            assert provider_model_ids("custom") == ["m"]
+
+        assert mock_fetch.call_args.args[0] == "custom-endpoint-key"
+
+    def test_custom_catalog_uses_openai_key_only_on_openai_host(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-ok")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-should-not-win")
+        monkeypatch.delenv("CUSTOM_API_KEY", raising=False)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "https://api.openai.com/v1",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["gpt"],
+        ) as mock_fetch:
+            assert provider_model_ids("custom") == ["gpt"]
+
+        assert mock_fetch.call_args.args[0] == "sk-openai-ok"
+
 
 # -- fetch_api_models --------------------------------------------------------
 

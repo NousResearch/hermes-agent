@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
+from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -2225,6 +2226,47 @@ def _get_custom_base_url() -> str:
     return str(model_cfg.get("base_url", "")).strip()
 
 
+def _api_key_for_custom_model_catalog(base_url: str, model_cfg: dict[str, Any]) -> str:
+    """Resolve a /models probe key without leaking unrelated provider secrets.
+
+    Explicit ``model.api_key`` / ``CUSTOM_API_KEY`` always win. Env-backed
+    OpenAI / OpenRouter / Ollama keys are host-gated the same way
+    ``runtime_provider`` does for chat (GHSA-76xc-57q6-vm5m / #28660) so a
+    custom ``base_url`` cannot siphon those credentials onto an unrelated host.
+    """
+    cfg_key = str(model_cfg.get("api_key", "") or "").strip()
+    if cfg_key:
+        return cfg_key
+
+    custom_key = os.getenv("CUSTOM_API_KEY", "").strip()
+    if custom_key:
+        return custom_key
+
+    if base_url_host_matches(base_url, "ollama.com"):
+        ollama_key = os.getenv("OLLAMA_API_KEY", "").strip()
+        if ollama_key:
+            return ollama_key
+
+    if base_url_host_matches(base_url, "openai.com") or base_url_host_matches(
+        base_url, "openai.azure.com"
+    ):
+        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if openai_key:
+            return openai_key
+
+    if base_url_host_matches(base_url, "openrouter.ai"):
+        openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+        if openrouter_key:
+            return openrouter_key
+        # Parity with runtime_provider openrouter context (#289):
+        # OpenRouter accepts OPENAI_API_KEY when OPENROUTER_API_KEY is unset.
+        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if openai_key:
+            return openai_key
+
+    return ""
+
+
 def _get_model_config_dict() -> dict[str, Any]:
     """Return the main model config mapping, or an empty dict."""
     try:
@@ -2981,13 +3023,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         base_url = _get_custom_base_url()
         if base_url:
             model_cfg = _get_model_config_dict()
-            # Try common API key env vars for custom endpoints
-            api_key = (
-                str(model_cfg.get("api_key", "") or "").strip()
-                or os.getenv("CUSTOM_API_KEY", "")
-                or os.getenv("OPENAI_API_KEY", "")
-                or os.getenv("OPENROUTER_API_KEY", "")
-            )
+            api_key = _api_key_for_custom_model_catalog(base_url, model_cfg)
             api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
             live = fetch_api_models(api_key, base_url, api_mode=api_mode)
             if live:

@@ -141,7 +141,11 @@ let
         hermes-agent = prev.hermes-agent.overrideAttrs (old: {
           # point straight at the real source instead of the filtered nix store copy
           src = workspaceRoot;
-          nativeBuildInputs = old.nativeBuildInputs ++ final.resolveBuildSystem { editables = [ ]; };
+          nativeBuildInputs =
+            (old.nativeBuildInputs or [ ])
+            ++ final.resolveBuildSystem {
+              editables = [ ];
+            };
         });
       })
     ]

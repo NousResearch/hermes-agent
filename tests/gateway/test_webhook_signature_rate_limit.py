@@ -53,6 +53,11 @@ def _github_signature(body: bytes, secret: str) -> str:
     ).hexdigest()
 
 
+def _mist_signature_v2(body: bytes, secret: str) -> str:
+    """Compute Mist's X-Mist-Signature-v2 HMAC-SHA256 digest."""
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
 SIMPLE_PAYLOAD = {"event": "test", "data": "hello"}
 
 
@@ -138,5 +143,78 @@ class TestSignatureBeforeRateLimit:
 
         # The valid event should have been captured
         assert len(captured_events) == 1
+
+
+class TestMistSignature:
+    @pytest.mark.asyncio
+    async def test_valid_mist_v2_signature_is_accepted(self):
+        secret = "mist-test-secret"
+        route_name = "mist"
+        adapter = _make_adapter(
+            {
+                route_name: {
+                    "secret": secret,
+                    "prompt": "Mist topic: {topic}",
+                    "deliver": "log",
+                }
+            }
+        )
+        captured_events = []
+
+        async def _capture(event):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        body = json.dumps({"topic": "alarms", "events": []}).encode()
+
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            resp = await cli.post(
+                f"/webhooks/{route_name}",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Mist-Signature-v2": _mist_signature_v2(body, secret),
+                },
+            )
+
+            assert resp.status == 202
+
+        assert len(captured_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_mist_v2_signature_rejects_tampered_body(self):
+        secret = "mist-test-secret"
+        route_name = "mist"
+        adapter = _make_adapter(
+            {
+                route_name: {
+                    "secret": secret,
+                    "prompt": "Mist topic: {topic}",
+                    "deliver": "log",
+                }
+            }
+        )
+        captured_events = []
+
+        async def _capture(event):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        original = json.dumps({"topic": "alarms", "events": []}).encode()
+        tampered = json.dumps({"topic": "alarms", "events": [{"evil": True}]}).encode()
+
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            resp = await cli.post(
+                f"/webhooks/{route_name}",
+                data=tampered,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Mist-Signature-v2": _mist_signature_v2(original, secret),
+                },
+            )
+
+            assert resp.status == 401
+
+        assert captured_events == []
 
 

@@ -1067,6 +1067,14 @@ class WebhookAdapter(BasePlatformAdapter):
         if gl_token:
             return _hmac_str_equal(gl_token, secret)
 
+        # Juniper Mist: X-Mist-Signature-v2 = <hex HMAC-SHA256 of raw body>
+        mist_sig_v2 = request.headers.get("X-Mist-Signature-v2", "")
+        if mist_sig_v2:
+            expected_mist_v2 = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return _hmac_str_equal(mist_sig_v2, expected_mist_v2)
+
         # Generic V2: X-Webhook-Signature-V2 = <hex HMAC-SHA256 of "<timestamp>.<body>">
         #             X-Webhook-Timestamp = <unix seconds> (required for V2)
         # Checked independently of (and before) legacy V1 below — a sender

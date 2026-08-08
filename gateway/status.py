@@ -1359,6 +1359,80 @@ def remove_pid_file() -> None:
         pass
 
 
+def _scoped_lock_record_is_stale(record: dict[str, Any]) -> bool:
+    """Return whether a scoped-lock owner record is proven stale."""
+    try:
+        owner_pid = int(record["pid"])
+    except (KeyError, TypeError, ValueError):
+        return True
+
+    if not _pid_exists(owner_pid):
+        return True
+
+    current_start = _get_process_start_time(owner_pid)
+    recorded_start = record.get("start_time")
+    if owner_pid == os.getpid() and recorded_start == current_start:
+        return False
+    if (
+        recorded_start is not None
+        and current_start is not None
+        and current_start != recorded_start
+    ):
+        return True
+
+    # When start_time comparison is unavailable on either side (macOS /
+    # Windows have no /proc, so the lock record's start_time may be None;
+    # psutil may also fail to read create_time for recycled PIDs), fall back
+    # to checking the live process command line. When cmdline is also
+    # unreadable, consult the lock record's own argv. Both oracles must
+    # indicate "not a gateway" to mark stale.
+    if (
+        (recorded_start is None or current_start is None)
+        and not _looks_like_gateway_process(owner_pid)
+    ):
+        live_cmdline = _read_process_cmdline(owner_pid)
+        if live_cmdline is not None or not _record_looks_like_gateway(record):
+            return True
+
+    # Secondary defence against boot-time PID+start_time collisions.
+    if (
+        recorded_start is not None
+        and current_start is not None
+        and not _looks_like_gateway_process(owner_pid)
+    ):
+        live_cmdline = _read_process_cmdline(owner_pid)
+        if live_cmdline is not None:
+            return True
+
+    # Stopped processes still appear alive but cannot service the gateway.
+    try:
+        proc_status = Path(f"/proc/{owner_pid}/status")
+        if proc_status.exists():
+            for line in proc_status.read_text(encoding="utf-8").splitlines():
+                if line.startswith("State:"):
+                    return line.split()[1] in {"T", "t"}
+    except (OSError, PermissionError):
+        pass
+    return False
+
+
+def list_scoped_locks(
+    scope: Optional[str] = None,
+    *,
+    active_only: bool = False,
+) -> list[dict[str, Any]]:
+    """List machine-local scoped-lock records in deterministic order."""
+    records: list[dict[str, Any]] = []
+    for lock_path in sorted(_get_lock_dir().glob("*.lock")):
+        record = _read_json_file(lock_path)
+        if record is None or (scope is not None and record.get("scope") != scope):
+            continue
+        if active_only and _scoped_lock_record_is_stale(record):
+            continue
+        records.append(dict(record))
+    return records
+
+
 def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, Any]] = None) -> tuple[bool, Optional[dict[str, Any]]]:
     """Acquire a machine-local lock keyed by scope + identity.
 
@@ -1403,65 +1477,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
             _write_json_file(lock_path, record)
             return True, existing
 
-        stale = existing_pid is None
-        if not stale:
-            if not _pid_exists(existing_pid):
-                stale = True
-            else:
-                current_start = _get_process_start_time(existing_pid)
-                if (
-                    existing.get("start_time") is not None
-                    and current_start is not None
-                    and current_start != existing.get("start_time")
-                ):
-                    stale = True
-                # When start_time comparison is unavailable on either side
-                # (macOS / Windows have no /proc, so the lock record's
-                # start_time may be None; psutil may also fail to read
-                # create_time for recycled PIDs), fall back to checking the
-                # live process command line.  When cmdline is also unreadable
-                # (Windows has no ps), consult the lock record's own argv —
-                # the gateway writes it at startup and it's the only identity
-                # signal on platforms without ps.  Both oracles must indicate
-                # "not a gateway" to mark stale.
-                if (
-                    not stale
-                    and (existing.get("start_time") is None or current_start is None)
-                    and not _looks_like_gateway_process(existing_pid)
-                ):
-                    live_cmdline = _read_process_cmdline(existing_pid)
-                    if live_cmdline is not None or not _record_looks_like_gateway(existing):
-                        stale = True
-                # Secondary defence against boot-time PID+start_time collisions:
-                # systemd spawns core services deterministically, so an unrelated
-                # process (e.g. cron) can land on the exact same PID and jiffy
-                # count as a previous gateway. If both start_times are known and
-                # match but the live process is not a gateway, and we can confirm
-                # that by reading its cmdline, the lock is stale.
-                if (
-                    not stale
-                    and existing.get("start_time") is not None
-                    and current_start is not None
-                    and not _looks_like_gateway_process(existing_pid)
-                ):
-                    live_cmdline = _read_process_cmdline(existing_pid)
-                    if live_cmdline is not None:
-                        stale = True
-                # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
-                # processes still appear alive to _pid_exists but are not
-                # actually running. Treat them as stale so --replace works.
-                if not stale:
-                    try:
-                        _proc_status = Path(f"/proc/{existing_pid}/status")
-                        if _proc_status.exists():
-                            for _line in _proc_status.read_text(encoding="utf-8").splitlines():
-                                if _line.startswith("State:"):
-                                    _state = _line.split()[1]
-                                    if _state in {"T", "t"}:  # stopped or tracing stop
-                                        stale = True
-                                    break
-                    except (OSError, PermissionError):
-                        pass
+        stale = _scoped_lock_record_is_stale(existing)
         if stale:
             # Remove the stale lock ATOMICALLY by renaming it to a tombstone
             # instead of unlinking. With unlink()+O_EXCL, two racing starters

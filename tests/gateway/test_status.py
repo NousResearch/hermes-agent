@@ -334,6 +334,58 @@ class TestTerminatePid:
 
 
 class TestScopedLocks:
+    def test_list_scoped_locks_returns_only_active_exact_scope_records(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        assert status.acquire_scoped_lock(
+            "signal-groups-account-a", "group-a", metadata={"label": "a"}
+        )[0]
+        assert status.acquire_scoped_lock(
+            "signal-groups-account-a", "group-b", metadata={"label": "b"}
+        )[0]
+        assert status.acquire_scoped_lock(
+            "signal-groups-account-ab", "group-c", metadata={"label": "c"}
+        )[0]
+
+        records = status.list_scoped_locks("signal-groups-account-a", active_only=True)
+
+        assert {record["metadata"]["label"] for record in records} == {"a", "b"}
+        assert records == status.list_scoped_locks(
+            "signal-groups-account-a", active_only=True
+        )
+        assert {record["scope"] for record in records} == {"signal-groups-account-a"}
+
+    def test_list_scoped_locks_uses_acquisition_stale_owner_rules(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = status._get_scope_lock_path("signal-groups-account-a", "group-a")
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text(
+            json.dumps({
+                "pid": 99999,
+                "start_time": None,
+                "kind": "hermes-gateway",
+                "argv": ["hermes", "gateway", "run"],
+                "scope": "signal-groups-account-a",
+                "identity_hash": status._scope_hash("group-a"),
+                "metadata": {},
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "/usr/libexec/unrelated"
+        )
+
+        assert status.list_scoped_locks("signal-groups-account-a")
+        assert (
+            status.list_scoped_locks("signal-groups-account-a", active_only=True) == []
+        )
+
     def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
         lock_path = tmp_path / "gateway.lock"
         handle = open(lock_path, "a+", encoding="utf-8")

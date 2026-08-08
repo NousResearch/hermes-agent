@@ -38,6 +38,7 @@ const COMMON_CODE_LANGUAGES = new Set([
 interface CodeSignals {
   bulletLines: number
   codeSignals: number
+  diagramLines: number
   hasMarkdown: boolean
   proseLines: number
   trimmed: string
@@ -259,6 +260,19 @@ function codeSignalCount(body: string): number {
   return CODE_SIGNAL_RE.reduce((total, pattern) => total + (body.match(pattern)?.length ?? 0), 0)
 }
 
+// Fenced diagrams are layout-sensitive even when their labels look like prose.
+// Count structural rows so the prose-fence recovery heuristic never unwraps
+// them into normal Markdown (which collapses their newlines and spacing).
+const UNICODE_DIAGRAM_LINE_RE = /^\s*[\u2190-\u21ff\u2500-\u257f\u25b2-\u25c0]/u
+const ASCII_DIAGRAM_LINE_RE = /^\s*(?:[|+\\/<>^v][|+\-=`\\/<>^v ]*|[+|`\\][-=>|+`\\]+\s+\S.*)$/iu
+
+function diagramLineCount(body: string): number {
+  return body
+    .split('\n')
+    .map(line => line.replace(/\r$/, ''))
+    .filter(line => UNICODE_DIAGRAM_LINE_RE.test(line) || ASCII_DIAGRAM_LINE_RE.test(line)).length
+}
+
 function codeSignals(body: string): CodeSignals {
   const trimmed = body.trim()
   const markdownSignals = (trimmed.match(/\*\*[^*]+\*\*/g) || []).length + (trimmed.match(/`[^`\n]+`/g) || []).length
@@ -266,6 +280,7 @@ function codeSignals(body: string): CodeSignals {
   return {
     bulletLines: (trimmed.match(/^\s*[-*]\s+\S+/gm) || []).length,
     codeSignals: codeSignalCount(trimmed),
+    diagramLines: diagramLineCount(trimmed),
     hasMarkdown: markdownSignals > 0,
     proseLines: proseLineCount(trimmed),
     trimmed,
@@ -287,6 +302,10 @@ export function isLikelyProseFence(info: string, body: string): boolean {
   const signals = codeSignals(body)
 
   if (!signals.trimmed) {
+    return false
+  }
+
+  if (signals.diagramLines >= 2) {
     return false
   }
 
@@ -312,7 +331,7 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
   const cleanLanguage = sanitizeLanguageTag(language || '')
   const signals = codeSignals(code || '')
 
-  if (!signals.trimmed || signals.codeSignals >= 3) {
+  if (!signals.trimmed || signals.codeSignals >= 3 || signals.diagramLines >= 2) {
     return false
   }
 

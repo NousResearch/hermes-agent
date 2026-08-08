@@ -70,6 +70,67 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('const value = 1;')
   })
 
+  it('keeps ASCII diagrams in text fences preformatted', () => {
+    const input = [
+      '```text',
+      'You',
+      ' │',
+      ' ├─ Hermes Desktop',
+      ' ├─ Terminal',
+      ' ├─ Telegram',
+      ' └─ WhatsApp',
+      '        │',
+      '        ▼',
+      ' Hermes Agent runtime',
+      '        │',
+      '        ├─ Instructions and personality',
+      '        ├─ Current conversation',
+      '        ├─ Memory and relevant skills',
+      '        ├─ Available tools',
+      '        └─ Safety rules',
+      '        │',
+      '        ▼',
+      ' AI model',
+      '        │',
+      '        ├─ Respond directly',
+      '        └─ Request a tool',
+      '               │',
+      '               ▼',
+      '       File, terminal, web,',
+      '       browser, calendar, etc.',
+      '```'
+    ].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('keeps plain-ASCII tree diagrams in text fences preformatted', () => {
+    const input = [
+      '```text',
+      'User',
+      '+----- Desktop',
+      '+- Terminal',
+      '`----- WhatsApp',
+      'Runtime',
+      'Model',
+      '```'
+    ].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('keeps CRLF diagram fences followed by a final newline', () => {
+    const lines = ['```text', 'User', '+----- Desktop', '`----- Terminal', 'Runtime', '```', '']
+
+    expect(preprocessMarkdown(lines.join('\r\n'))).toBe(lines.join('\n'))
+  })
+
+  it('keeps CRLF diagram fences followed by prose', () => {
+    const lines = ['```text', 'User', '+----- Desktop', '`----- Terminal', 'Runtime', '```', '', 'After the diagram.']
+
+    expect(preprocessMarkdown(lines.join('\r\n'))).toBe(lines.join('\n'))
+  })
+
   it('keeps dangling real code fences during streaming', () => {
     const input = ['```ts', 'const value = 1;'].join('\n')
     const output = preprocessMarkdown(input)

@@ -194,7 +194,7 @@ def random_op(rng, conn, kb, task_pool):
         ok = kb.block_task(conn, tid, reason=reason)
         return {"op": "block", "tid": tid, "ok": ok}
     if op == "unblock":
-        ok = kb.unblock_task(conn, tid)
+        ok, _note = kb.unblock_task(conn, tid)
         return {"op": "unblock", "tid": tid, "ok": ok}
     if op == "archive":
         ok = kb.archive_task(conn, tid)

@@ -865,6 +865,7 @@ def _handle_block(args: dict, **kw) -> str:
                 reason=reason,
                 kind=kind,
                 expected_run_id=_worker_run_id(tid),
+                author=os.environ.get("HERMES_PROFILE") or "worker",
             )
             if not ok:
                 return tool_error(
@@ -1489,14 +1490,30 @@ def _handle_unblock(args: dict, **kw) -> str:
     if ownership_err:
         return ownership_err
     board = args.get("board")
+    override_self, bool_err = _parse_bool_arg(args, "override_self", default=False)
+    if bool_err:
+        return tool_error(f"kanban_unblock: {bool_err}")
     try:
         kb, conn = _connect(board=board)
         try:
-            ok = kb.unblock_task(conn, str(tid))
+            ok, note = kb.unblock_task(
+                conn,
+                str(tid),
+                actor=os.environ.get("HERMES_PROFILE") or "worker",
+                override_self=override_self,
+            )
             if not ok:
-                return tool_error(f"could not unblock {tid} (not blocked or unknown)")
+                return tool_error(f"could not unblock {tid}: {note or 'not blocked or unknown'}")
             task = kb.get_task(conn, str(tid))
-            return _ok(task_id=str(tid), status=task.status if task else None)
+            fields: dict[str, Any] = {
+                "task_id": str(tid),
+                "status": task.status if task else None,
+            }
+            if note:
+                # The unblock went through but the caller matched the recorded
+                # blocker (programmatic block kind) — surface the warning.
+                fields["warning"] = note
+            return _ok(**fields)
         finally:
             conn.close()
     except ValueError as e:
@@ -2103,7 +2120,10 @@ KANBAN_UNBLOCK_SCHEMA = {
         "Unblock a Kanban task. It moves to ready when all parents are done, "
         "or todo while any parent remains open. Orchestrator-only — only "
         "profiles with the kanban toolset can unblock routed work; "
-        "dispatcher-spawned task workers never see this tool."
+        "dispatcher-spawned task workers never see this tool. If the caller's "
+        "profile matches the profile that posted the block on a human-gate "
+        "(needs-input / capability) block, the unblock is refused unless "
+        "override_self=true acknowledges a deliberate self-unblock."
     ),
     "parameters": {
         "type": "object",
@@ -2111,6 +2131,15 @@ KANBAN_UNBLOCK_SCHEMA = {
             "task_id": {
                 "type": "string",
                 "description": "Blocked task id to move to ready or parent-gated todo.",
+            },
+            "override_self": {
+                "type": "boolean",
+                "description": (
+                    "Acknowledge a deliberate self-unblock. Required when this "
+                    "caller's profile matches the profile that posted the block "
+                    "on a human-gate block. Self-unblocks are recorded on the "
+                    "task audit trail."
+                ),
             },
             "board": _board_schema_prop(),
         },

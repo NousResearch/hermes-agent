@@ -653,6 +653,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
     )
+    p_unblock.add_argument(
+        "--override-self",
+        action="store_true",
+        help=(
+            "Acknowledge a deliberate self-unblock: required when the "
+            "caller's profile matches the profile that posted the block "
+            "on a human-gate (review-required / needs-input) block. "
+            "Self-unblocks are recorded on the task audit trail."
+        ),
+    )
     p_unblock.add_argument("task_ids", nargs="+")
 
     p_promote = sub.add_parser(
@@ -2271,6 +2281,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 reason=reason,
                 kind=kind,
                 expected_run_id=_worker_run_id_for(tid),
+                author=author,
             ):
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
@@ -2322,16 +2333,27 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     reason = getattr(args, "reason", None)
     if reason is not None:
         reason = reason.strip() or None
-    author = _profile_author() if reason else None
+    author = _profile_author()
+    override_self = bool(getattr(args, "override_self", False))
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            ok, note = kb.unblock_task(
+                conn, tid, actor=author, override_self=override_self
+            )
+            if not ok:
                 failed.append(tid)
-                print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
+                print(
+                    f"cannot unblock {tid}: {note or 'not blocked/scheduled?'}",
+                    file=sys.stderr,
+                )
             else:
+                if note:
+                    # Unblock succeeded but the caller matched the recorded
+                    # blocker on a programmatic block — flag it, don't fail.
+                    print(f"warning: {note}", file=sys.stderr)
                 print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
 

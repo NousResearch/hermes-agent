@@ -993,6 +993,11 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Profile/identity that posted the current block (set by ``block_task``,
+    # cleared on unblock/complete/promote). NULL for legacy rows and for
+    # blocks created before the column existed — the self-unblock guard
+    # treats NULL as unknown-blocker and fails open.
+    blocked_by: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1086,6 +1091,9 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            blocked_by=(
+                row["blocked_by"] if "blocked_by" in keys else None
             ),
         )
 
@@ -1274,7 +1282,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Profile/identity that posted the current block (set by ``block_task``,
+    -- cleared on unblock/complete/promote). NULL for legacy rows and for
+    -- blocks created before the column existed — the self-unblock guard
+    -- treats NULL as unknown-blocker and fails open.
+    blocked_by           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2473,6 +2486,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
+
+    if "blocked_by" not in cols:
+        # Profile/identity that posted the current block. Existing blocked
+        # rows get NULL, which the self-unblock guard treats as
+        # unknown-blocker (fail-open) — same behaviour they had before the
+        # column existed.
+        _add_column_if_missing(conn, "tasks", "blocked_by", "blocked_by TEXT")
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -4908,16 +4928,17 @@ def complete_task(
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL,
-                       block_kind   = NULL,
-                       block_recurrences = 0
-                 WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                  SET status       = 'done',
+                      result       = ?,
+                      completed_at = ?,
+                      claim_lock   = NULL,
+                      claim_expires= NULL,
+                      worker_pid   = NULL,
+                      block_kind   = NULL,
+                      block_recurrences = 0,
+                      blocked_by   = NULL
+                WHERE id = ?
+                  AND status IN ('running', 'ready', 'blocked')
                 """,
                 (result, now, task_id),
             )
@@ -4925,17 +4946,18 @@ def complete_task(
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL,
-                       block_kind   = NULL,
-                       block_recurrences = 0
-                 WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
-                   AND current_run_id = ?
+                  SET status       = 'done',
+                      result       = ?,
+                      completed_at = ?,
+                      claim_lock   = NULL,
+                      claim_expires= NULL,
+                      worker_pid   = NULL,
+                      block_kind   = NULL,
+                      block_recurrences = 0,
+                      blocked_by   = NULL
+                WHERE id = ?
+                  AND status IN ('running', 'ready', 'blocked')
+                  AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),
             )
@@ -5622,8 +5644,15 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    author: Optional[str] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+
+    ``author`` (when provided) is recorded in ``tasks.blocked_by`` so a
+    later ``unblock_task`` can enforce the caller-identity check (a worker
+    must not unblock its own human-gate block — #75319). NULL on legacy
+    callers means the task has no recorded blocker and self-unblock
+    detection fails open.
 
     ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
     un-typed block) drives routing instead of every block landing in one
@@ -5730,17 +5759,18 @@ def block_task(
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status        = 'triage',
-                       claim_lock    = NULL,
-                       claim_expires = NULL,
-                       worker_pid    = NULL,
-                       block_kind    = ?,
-                       block_recurrences = ?
-                 WHERE id = ?
-                   AND status IN ('running', 'ready')
+                  SET status        = 'triage',
+                      claim_lock    = NULL,
+                      claim_expires = NULL,
+                      worker_pid    = NULL,
+                      block_kind    = ?,
+                      block_recurrences = ?,
+                      blocked_by    = ?
+                WHERE id = ?
+                  AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, recurrences, task_id) if expected_run_id is None
-                else (kind, recurrences, task_id, int(expected_run_id)),
+                (kind, recurrences, author, task_id) if expected_run_id is None
+                else (kind, recurrences, author, task_id, int(expected_run_id)),
             )
             if cur.rowcount != 1:
                 return False
@@ -5768,32 +5798,34 @@ def block_task(
                 cur = conn.execute(
                     """
                     UPDATE tasks
-                       SET status        = 'blocked',
-                           claim_lock    = NULL,
-                           claim_expires = NULL,
-                           worker_pid    = NULL,
-                           block_kind    = ?,
-                           block_recurrences = ?
-                     WHERE id = ?
-                       AND status IN ('running', 'ready')
+                      SET status        = 'blocked',
+                          claim_lock    = NULL,
+                          claim_expires = NULL,
+                          worker_pid    = NULL,
+                          block_kind    = ?,
+                          block_recurrences = ?,
+                          blocked_by    = ?
+                    WHERE id = ?
+                      AND status IN ('running', 'ready')
                     """,
-                    (kind, recurrences, task_id),
+                    (kind, recurrences, author, task_id),
                 )
             else:
                 cur = conn.execute(
                     """
                     UPDATE tasks
-                       SET status        = 'blocked',
-                           claim_lock    = NULL,
-                           claim_expires = NULL,
-                           worker_pid    = NULL,
-                           block_kind    = ?,
-                           block_recurrences = ?
-                     WHERE id = ?
-                       AND status IN ('running', 'ready')
-                       AND current_run_id = ?
+                      SET status        = 'blocked',
+                          claim_lock    = NULL,
+                          claim_expires = NULL,
+                          worker_pid    = NULL,
+                          block_kind    = ?,
+                          block_recurrences = ?,
+                          blocked_by    = ?
+                    WHERE id = ?
+                      AND status IN ('running', 'ready')
+                      AND current_run_id = ?
                     """,
-                    (kind, recurrences, task_id, int(expected_run_id)),
+                    (kind, recurrences, author, task_id, int(expected_run_id)),
                 )
             if cur.rowcount != 1:
                 return False
@@ -5882,7 +5914,7 @@ def promote_task(
 
     with write_txn(conn):
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
+            "UPDATE tasks SET status = 'ready', blocked_by = NULL "
             "WHERE id = ? AND status IN ('todo', 'blocked')",
             (task_id,),
         )
@@ -5898,7 +5930,21 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+# Human-in-the-loop block kinds: a task sitting in ``blocked`` with one of
+# these (or a legacy NULL kind) is waiting on a human decision. A caller
+# whose identity matches ``blocked_by`` may not lift the gate without an
+# explicit override. ``transient`` blocks are programmatic (they may clear
+# on retry), so a matching caller only gets a recorded warning (#75319).
+SELF_UNBLOCK_GATED_KINDS = frozenset({None, "needs_input", "capability"})
+
+
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: Optional[str] = None,
+    override_self: bool = False,
+) -> tuple[bool, Optional[str]]:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
@@ -5907,24 +5953,64 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    Caller-identity guard (#75319): when ``actor`` matches the recorded
+    ``blocked_by`` on a human-gate block (kind ``needs_input`` /
+    ``capability`` / legacy NULL), the unblock is refused unless
+    ``override_self=True`` — a worker must not silently lift its own
+    review-required gate. Matching callers on a ``transient`` block proceed
+    with a warning. Tasks with no recorded blocker (legacy rows, or blocks
+    made before the column existed) fail open — there is no identity to
+    compare.
+
+    Returns ``(True, None)`` on success (mirroring ``promote_task``),
+    ``(True, warning)`` when the unblock proceeded despite a matching
+    caller on a programmatic block, and ``(False, error)`` on refusal.
+    The actor and override flag are recorded on the ``unblocked`` event for
+    audit.
     """
     now = int(time.time())
     with write_txn(conn):
-        stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+        row = conn.execute(
+            "SELECT current_run_id, status, block_kind, blocked_by "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
-        if stale and stale["current_run_id"]:
+        if row is None:
+            return False, f"task {task_id} not found"
+        if row["current_run_id"] and row["status"] in ("blocked", "scheduled"):
             conn.execute(
                 """
                 UPDATE task_runs
-                   SET status = 'reclaimed', outcome = 'reclaimed',
-                       summary = COALESCE(summary, 'invariant recovery on unblock'),
-                       ended_at = ?,
-                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
-                 WHERE id = ? AND ended_at IS NULL
+                  SET status = 'reclaimed', outcome = 'reclaimed',
+                      summary = COALESCE(summary, 'invariant recovery on unblock'),
+                      ended_at = ?,
+                      claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                WHERE id = ? AND ended_at IS NULL
                 """,
-                (now, int(stale["current_run_id"])),
+                (now, int(row["current_run_id"])),
+            )
+        warning: Optional[str] = None
+        legacy_blocker = bool(row["status"] == "blocked" and not row["blocked_by"])
+        if (
+            actor
+            and row["status"] == "blocked"
+            and row["blocked_by"]
+            and actor == row["blocked_by"]
+            and not override_self
+        ):
+            kind = row["block_kind"]
+            if kind in SELF_UNBLOCK_GATED_KINDS:
+                return False, (
+                    f"task {task_id} is blocked by {row['blocked_by']} "
+                    f"(this caller); human-gate blocks need a different "
+                    f"operator to unblock, or an explicit override "
+                    f"acknowledging the self-unblock"
+                )
+            warning = (
+                f"task {task_id} was blocked by {row['blocked_by']} "
+                f"(this caller); self-unblock of a '{kind}' block "
+                f"proceeded but is recorded"
             )
         # Re-gate on parent completion before flipping 'blocked' back to
         # 'ready'. Unconditionally setting status='ready' here bypasses the
@@ -5951,17 +6037,26 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # start for the dispatcher's retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "blocked_by = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),
         )
         if cur.rowcount != 1:
-            return False
-        _append_event(
-            conn, task_id, "unblocked",
-            {"status": new_status} if new_status != "ready" else None,
-        )
-        return True
+            return False, f"task {task_id} is not blocked/scheduled"
+        payload: dict[str, object] = {}
+        if new_status != "ready":
+            payload["status"] = new_status
+        if actor is not None:
+            payload["actor"] = actor
+        if legacy_blocker:
+            # The task was blocked before caller-identity recording existed —
+            # the audit trail can't attribute the block, so say so explicitly.
+            payload["legacy_blocker"] = True
+        if override_self:
+            payload["override_self"] = True
+        _append_event(conn, task_id, "unblocked", payload or None)
+        return True, warning
 
 
 def specify_triage_task(

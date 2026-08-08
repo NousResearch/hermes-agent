@@ -284,6 +284,19 @@ parent, missing input, unmet capability) before unblocking, or raise
 `BLOCK_RECURRENCE_LIMIT` if the loop is expected.
 :::
 
+:::note Who may unblock
+`unblock` records the caller's profile on the task audit trail, and the board
+remembers which profile posted the current block (`blocked_by`). When the same
+profile tries to unblock a **human-gate block** (`needs_input`, `capability`,
+or an un-typed legacy block — including the `review-required:` convention),
+the command refuses unless you pass `--override-self` to explicitly
+acknowledge the self-unblock. This stops a worker from silently lifting its
+own review-required gate; the override is recorded in the audit trail
+(`override_self: true` on the `unblocked` event). Programmatic `transient`
+blocks from the same profile proceed with a warning. Tasks blocked before the
+identity column existed have no recorded blocker and unblock normally.
+:::
+
 ## How workers interact with the board
 
 **Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on a dedicated **kanban toolset** in the model's schema. The same toolset is also available to orchestrator profiles that enable `kanban` in their toolsets config. These tools read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.
@@ -301,7 +314,7 @@ parent, missing input, unmet capability) before unblocking, or raise
 | `kanban_attachments` | List a task's attachments. | — |
 | `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
 | `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. | `parent_id`, `child_id` |
-| `kanban_unblock` | (Orchestrators) move a blocked task to `ready` when all parents are done, or `todo` while any parent remains open. | `task_id` |
+| `kanban_unblock` | (Orchestrators) move a blocked task to `ready` when all parents are done, or `todo` while any parent remains open. Refuses to lift a human-gate block posted by the same profile unless `override_self=true` acknowledges the self-unblock. | `task_id` |
 
 A typical worker turn looks like:
 

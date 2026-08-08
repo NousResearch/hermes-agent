@@ -833,7 +833,8 @@ def _(home, kb):
         # complete/block/unblock on archived should all refuse.
         assert kb.complete_task(conn, tid) is False
         assert kb.block_task(conn, tid, reason="no") is False
-        assert kb.unblock_task(conn, tid) is False
+        ok, _note = kb.unblock_task(conn, tid)
+        assert ok is False
         print("  archived task cannot be resurrected via normal APIs")
     finally:
         conn.close()

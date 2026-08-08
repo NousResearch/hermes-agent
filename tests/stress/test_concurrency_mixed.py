@@ -53,7 +53,7 @@ def worker_loop(worker_id: int, hermes_home: str, result_file: str) -> None:
                 ).fetchone()
                 if row:
                     try:
-                        ok = kb.unblock_task(conn, row["id"])
+                        ok, _note = kb.unblock_task(conn, row["id"])
                         events.append({"kind": "unblocked" if ok else "unblock_noop",
                                        "task": row["id"], "worker": worker_id})
                     except sqlite3.OperationalError as e:

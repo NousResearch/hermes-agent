@@ -890,7 +890,9 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 # Re-open a blocked/scheduled task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
                 if current and current.status in ("blocked", "scheduled"):
-                    ok = kanban_db.unblock_task(conn, task_id)
+                    # Dashboard access is the operator surface (session-token
+                    # gated); record the unblock actor for the audit trail.
+                    ok, _note = kanban_db.unblock_task(conn, task_id, actor="dashboard")
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
                     ok = _set_status_direct(conn, task_id, "ready")
@@ -1266,7 +1268,10 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)
                         if cur and cur.status in ("blocked", "scheduled"):
-                            ok = kanban_db.unblock_task(conn, tid)
+                            # Dashboard access is the operator surface
+                            # (session-token gated); record the unblock actor
+                            # for the audit trail.
+                            ok, _note = kanban_db.unblock_task(conn, tid, actor="dashboard")
                         else:
                             ok = _set_status_direct(conn, tid, "ready")
                     elif s == "running":

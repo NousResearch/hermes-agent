@@ -17,6 +17,9 @@ Out of scope on purpose: global pip/npm, editor/browser extensions,
 daily background scans, auto-blocking installs.
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
 from __future__ import annotations
 
 import argparse
@@ -288,13 +291,23 @@ def _http_post_json(url: str, payload: dict) -> dict:
         url, data=data, headers={"Content-Type": "application/json"}, method="POST"
     )
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read()
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        logger.warning("Non-JSON POST response from %s", url)
+        return {}
 
 
 def _http_get_json(url: str) -> dict:
     req = urllib.request.Request(url, method="GET")
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read()
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        logger.warning("Non-JSON GET response from %s", url)
+        return {}
 
 
 def _osv_query_batch(components: list[Component]) -> dict[Component, list[str]]:

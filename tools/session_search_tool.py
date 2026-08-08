@@ -78,6 +78,18 @@ _COMPACTION_PREFIXES = (
 )
 
 
+def _clean_surfaced_text(text):
+    """Strip ANSI escapes from stored text before it is surfaced to the model.
+
+    Transcripts are stored raw (paste-to-analyze); this cleans only the copy returned
+    by search / browse / scroll. strip_ansi matches genuine ESC-anchored / C1 sequences
+    only, so text that merely describes escape codes survives. None-safe.
+    """
+    from tools.ansi_strip import strip_ansi
+
+    return strip_ansi(text)
+
+
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
 
@@ -420,7 +432,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
             "when": _format_timestamp(meta.get("started_at")),
             "source": meta.get("source"),
             "model": meta.get("model"),
-            "title": meta.get("title"),
+            "title": _clean_surfaced_text(meta.get("title")),
         },
         "message_count": total,
         "truncated": truncated,
@@ -456,12 +468,12 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
             results.append({
                 "session_id": sid,
                 "link": _session_link(sid, link_profile),
-                "title": s.get("title") or None,
+                "title": _clean_surfaced_text(s.get("title")) or None,
                 "source": s.get("source", ""),
                 "started_at": s.get("started_at", ""),
                 "last_active": s.get("last_active", ""),
                 "message_count": s.get("message_count", 0),
-                "preview": s.get("preview", ""),
+                "preview": _clean_surfaced_text(s.get("preview", "")),
             })
             if len(results) >= limit:
                 break
@@ -603,7 +615,7 @@ def _scroll(
             "when": _format_timestamp(session_meta.get("started_at")),
             "source": session_meta.get("source"),
             "model": session_meta.get("model"),
-            "title": session_meta.get("title"),
+            "title": _clean_surfaced_text(session_meta.get("title")),
         },
         "window": window,
         "messages": [_shape_message(m, anchor_id=around_message_id) for m in messages],
@@ -666,15 +678,17 @@ def _title_match_result(
     else:
         view = {}
 
+    clean_title = _clean_surfaced_text(session_meta.get("title"))
+
     entry = {
         "session_id": session_id,
         "when": _format_timestamp(session_meta.get("started_at")),
         "source": session_meta.get("source", "unknown"),
         "model": session_meta.get("model") or "unknown",
-        "title": session_meta.get("title") or title_query,
+        "title": clean_title or title_query,
         "matched_role": "session_title",
         "match_message_id": anchor_id,
-        "snippet": f"Session title matched: {session_meta.get('title') or title_query}",
+        "snippet": f"Session title matched: {clean_title or title_query}",
         "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or messages[:3])],
         "messages": [_shape_message(m, anchor_id=anchor_id) for m in (view.get("window") or messages[:5])],
         "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
@@ -808,10 +822,10 @@ def _discover(
             ),
             "source": session_meta.get("source") or match_info.get("source", "unknown"),
             "model": session_meta.get("model") or match_info.get("model") or "unknown",
-            "title": session_meta.get("title") or None,
+            "title": _clean_surfaced_text(session_meta.get("title")) or None,
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
-            "snippet": match_info.get("snippet") or "",
+            "snippet": _clean_surfaced_text(match_info.get("snippet") or ""),
             "bookend_start": [
                 _shape_message(m, max_content_len=1200)
                 for m in (view.get("bookend_start") or [])

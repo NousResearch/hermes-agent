@@ -107,6 +107,30 @@ class TestBrowseShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_browse_strips_ansi_from_title_and_preview_but_persists_raw(self, db):
+        db.create_session("s_ansi_browse", source="cli")
+        db.append_message(
+            "s_ansi_browse", role="user",
+            content="\x1b[31murgent\x1b[0m preview text",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?",
+            ("\x1b[32mAlert Session\x1b[0m", "s_ansi_browse"),
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(db=db))
+        hit = next(r for r in result["results"] if r["session_id"] == "s_ansi_browse")
+        assert "\x1b" not in hit["title"]
+        assert hit["title"] == "Alert Session"
+        assert "\x1b" not in hit["preview"]
+        assert "urgent" in hit["preview"]
+
+        row = db._conn.execute(
+            "SELECT title FROM sessions WHERE id = ?", ("s_ansi_browse",)
+        ).fetchone()
+        assert "\x1b" in row["title"]
+
 
 # =========================================================================
 # Discovery shape (with query)
@@ -157,6 +181,62 @@ class TestDiscoveryShape:
         result = json.loads(session_search(query="modpack", db=db, current_session_id="s_newest"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
+
+    def test_discovery_strips_ansi_from_snippet_and_title(self, db):
+        db.create_session("s_ansi_disc", source="cli")
+        db.append_message(
+            "s_ansi_disc", role="user",
+            content="Investigating \x1b[31mZibbleflorp\x1b[0m anomaly now",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?",
+            ("\x1b[34mIncident Report\x1b[0m", "s_ansi_disc"),
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(query="Zibbleflorp", db=db))
+        hit = next(r for r in result["results"] if r["session_id"] == "s_ansi_disc")
+        assert "\x1b" not in hit["snippet"]
+        assert "Zibbleflorp" in hit["snippet"]
+        assert "\x1b" not in (hit["title"] or "")
+        assert hit["title"] == "Incident Report"
+
+    def test_discovery_title_only_match_strips_ansi_from_title_and_snippet(self, db):
+        raw_title = "\x1b[36mQuazzlewock\x1b[0m"
+        db.create_session("s_ansi_title_only", source="cli")
+        db.append_message("s_ansi_title_only", role="user", content="unrelated content")
+        db._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?",
+            (raw_title, "s_ansi_title_only"),
+        )
+        db._conn.commit()
+
+        # resolve_session_by_title matches the stored title exactly, so the raw
+        # title is what reaches _title_match_result — the clean word won't hit it.
+        result = json.loads(session_search(query=raw_title, db=db))
+        hit = next(r for r in result["results"] if r["session_id"] == "s_ansi_title_only")
+        assert hit["matched_role"] == "session_title"
+        assert "\x1b" not in hit["title"]
+        assert hit["title"] == "Quazzlewock"
+        assert "\x1b" not in hit["snippet"]
+        assert hit["snippet"] == "Session title matched: Quazzlewock"
+
+    def test_discovery_preserves_text_that_merely_describes_escapes(self, db):
+        db.create_session("s_preserve", source="cli")
+        db.append_message(
+            "s_preserve", role="user",
+            content=(
+                "PreserveMarker config note: ]11;rgb:2828/2c2c/3434 remains, "
+                "prose says use \\x1b to escape, and array[0] indexing works."
+            ),
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(query="PreserveMarker", db=db))
+        hit = next(r for r in result["results"] if r["session_id"] == "s_preserve")
+        assert "]11;rgb:2828/2c2c/3434" in hit["snippet"]
+        assert "\\x1b" in hit["snippet"]
+        assert "array[0]" in hit["snippet"]
 
 
 class TestDiscoverySort:
@@ -227,6 +307,22 @@ class TestScrollShape:
 
         assert result["success"] is False
         assert "current session" in result.get("error", "").lower()
+
+    def test_scroll_strips_ansi_from_session_title(self, db):
+        db.create_session("s_ansi_scroll", source="cli")
+        mid = db.append_message("s_ansi_scroll", role="user", content="scroll anchor")
+        db._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?",
+            ("\x1b[33mScroll Target\x1b[0m", "s_ansi_scroll"),
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            session_id="s_ansi_scroll", around_message_id=mid, db=db,
+        ))
+        title = result["session_meta"]["title"]
+        assert "\x1b" not in title
+        assert title == "Scroll Target"
 
 
 class TestScrollPattern:
@@ -318,6 +414,20 @@ class TestReadShape:
         assert result["message_count"] == 50
         assert result["truncated"] is True
         assert len(result["messages"]) == 30  # head 20 + tail 10
+
+    def test_read_strips_ansi_from_session_title(self, db):
+        db.create_session("s_ansi_title", source="cli")
+        db.append_message("s_ansi_title", role="user", content="hello")
+        db._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?",
+            ("\x1b[31mIncident Report\x1b[0m", "s_ansi_title"),
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(session_id="s_ansi_title", db=db))
+        title = result["session_meta"]["title"]
+        assert "\x1b" not in title
+        assert title == "Incident Report"
 
 
 # =========================================================================

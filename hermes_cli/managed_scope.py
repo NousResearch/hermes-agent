@@ -183,6 +183,8 @@ def _parse_env(f) -> Dict[str, str]:
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+        if line.startswith("export ") or line.startswith("export\t"):
+            line = line[len("export"):].lstrip()
         key, _, value = line.partition("=")
         out[key.strip()] = value.strip().strip("\"'")
     return out

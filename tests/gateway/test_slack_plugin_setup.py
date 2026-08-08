@@ -7,12 +7,16 @@ from ``hermes_cli.config`` (get_env_value / save_env_value / remove_env_value)
 and ``hermes_cli.cli_output`` (prompt / prompt_yes_no / print_*), so we patch
 those source modules.
 """
+import json
+
 import hermes_cli.config as config_mod
 import hermes_cli.cli_output as cli_output_mod
 from plugins.platforms.slack.adapter import interactive_setup
 
 
-def _patch_setup_io(monkeypatch, prompts, saved, removed, existing):
+def _patch_setup_io(
+    monkeypatch, prompts, saved, removed, existing, *, stub_manifest=True
+):
     """Wire interactive_setup's lazy-imported CLI helpers to test doubles."""
     prompt_iter = iter(prompts)
     monkeypatch.setattr(config_mod, "get_env_value", lambda key: existing.get(key, ""))
@@ -28,9 +32,34 @@ def _patch_setup_io(monkeypatch, prompts, saved, removed, existing):
     monkeypatch.setattr(cli_output_mod, "prompt_yes_no", lambda *_a, **_kw: False)
     for name in ("print_header", "print_info", "print_success", "print_warning"):
         monkeypatch.setattr(cli_output_mod, name, lambda *_a, **_kw: None)
-    # Manifest writing reaches out to hermes_cli.slack_cli + filesystem; stub it.
-    import hermes_cli.slack_cli as slack_cli_mod
-    monkeypatch.setattr(slack_cli_mod, "_build_full_manifest", lambda **_kw: {"display_information": {}})
+    if stub_manifest:
+        # Most setup tests only exercise prompts; keep their manifest I/O inert.
+        import hermes_cli.slack_cli as slack_cli_mod
+
+        monkeypatch.setattr(
+            slack_cli_mod,
+            "_build_full_manifest",
+            lambda **_kw: {"display_information": {}},
+        )
+
+
+def test_interactive_setup_writes_reaction_capable_manifest(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    saved, removed = {}, []
+    _patch_setup_io(
+        monkeypatch,
+        ["xoxb-test-token", "xapp-test-token", "", ""],
+        saved,
+        removed,
+        existing={},
+        stub_manifest=False,
+    )
+
+    interactive_setup()
+
+    manifest = json.loads((tmp_path / "slack-manifest.json").read_text(encoding="utf-8"))
+    bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
+    assert {"reactions:read", "reactions:write"} <= set(bot_scopes)
 
 
 def test_interactive_setup_saves_home_channel(monkeypatch, tmp_path):
@@ -68,5 +97,3 @@ class TestSlackHomeChannelClear:
         interactive_setup()
         assert "SLACK_HOME_CHANNEL" in removed
         assert "SLACK_HOME_CHANNEL" not in saved
-
-

@@ -1010,6 +1010,10 @@ class SlackAdapter(BasePlatformAdapter):
         # exception between add and finalize would leak them — keep it bounded.
         self._reacting_message_ids: set = set()
         self._REACTING_MESSAGE_IDS_MAX = 5000
+        # Existing Slack installs do not gain new OAuth scopes until the app
+        # is reinstalled. Warn once per workspace when reaction writes expose
+        # a stale manifest, without flooding every lifecycle transition.
+        self._reaction_scope_warned: set[str] = set()
         # Track active Assistant statuses by (team_id, channel_id, thread_ts)
         # so cleanup cannot clear an overlapping Slack Connect workspace.
         # Entries are popped when the status clears, but statuses abandoned
@@ -3719,6 +3723,38 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Reactions -----
 
+    def _log_reaction_failure(
+        self, operation: str, emoji: str, error: Exception, team_id: str
+    ) -> None:
+        """Surface a stale reaction scope once; keep routine failures quiet."""
+        error_code = ""
+        response = getattr(error, "response", None)
+        response_get = getattr(response, "get", None)
+        if callable(response_get):
+            try:
+                error_code = str(response_get("error") or "")
+            except Exception:
+                pass
+
+        if error_code == "missing_scope" or "missing_scope" in str(error):
+            warned = getattr(self, "_reaction_scope_warned", None)
+            if warned is None:
+                warned = set()
+                self._reaction_scope_warned = warned
+            team_key = team_id or ""
+            if team_key not in warned:
+                warned.add(team_key)
+                logger.warning(
+                    "[Slack] Processing reactions are unavailable in workspace %s: "
+                    "the app is missing the 'reactions:write' bot scope. Run "
+                    "`hermes slack manifest --write`, apply the updated manifest, "
+                    "then reinstall the app to the workspace.",
+                    team_key or "this workspace",
+                )
+            return
+
+        logger.debug("[Slack] reactions.%s failed (%s): %s", operation, emoji, error)
+
     async def _add_reaction(
         self, channel: str, timestamp: str, emoji: str, team_id: str = ""
     ) -> bool:
@@ -3731,8 +3767,7 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return True
         except Exception as e:
-            # Don't log as error — may fail if already reacted or missing scope
-            logger.debug("[Slack] reactions.add failed (%s): %s", emoji, e)
+            self._log_reaction_failure("add", emoji, e, team_id)
             return False
 
     async def _remove_reaction(
@@ -3747,7 +3782,7 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return True
         except Exception as e:
-            logger.debug("[Slack] reactions.remove failed (%s): %s", emoji, e)
+            self._log_reaction_failure("remove", emoji, e, team_id)
             return False
 
     def _reactions_enabled(self) -> bool:

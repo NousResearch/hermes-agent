@@ -3886,8 +3886,14 @@ def _env_line_defines_key(line: str, key: str) -> bool:
     return stripped.startswith(f"{key}=")
 
 
-def save_env_value(key: str, value: str):
-    """Save or update a value in ~/.hermes/.env."""
+def save_env_value(key: str, value: str, *, home: Optional[Path] = None):
+    """Save or update a value in a Hermes ``.env`` file.
+
+    With no explicit ``home``, preserve the legacy behavior: write the active
+    Hermes home's ``.env`` and update ``os.environ``. An explicit home is for
+    profile-scoped writers in a multiplexed process; it writes only that
+    home's file and never mutates process-global environment state.
+    """
     if is_managed():
         managed_error(f"set {key}")
         return
@@ -3910,8 +3916,12 @@ def save_env_value(key: str, value: str):
     value = value.replace("\n", "").replace("\r", "")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
-    ensure_hermes_home()
-    env_path = get_env_path()
+    if home is None:
+        ensure_hermes_home()
+        env_path = get_env_path()
+    else:
+        env_path = Path(home) / ".env"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
 
     # On Windows, open() defaults to the system locale (cp1252) which can
     # cause OSError errno 22 on UTF-8 .env files.
@@ -3976,7 +3986,8 @@ def save_env_value(key: str, value: str):
             pass
         raise
 
-    os.environ[key] = value
+    if home is None:
+        os.environ[key] = value
     invalidate_env_cache()
 
 
@@ -3999,8 +4010,11 @@ def custom_endpoint_key_env(identity: str) -> str:
     return f"HERMES_CUSTOM_{slug}_API_KEY" if slug else "HERMES_CUSTOM_API_KEY"
 
 
-def remove_env_value(key: str) -> bool:
-    """Remove a key from ~/.hermes/.env and os.environ.
+def remove_env_value(key: str, *, home: Optional[Path] = None) -> bool:
+    """Remove a key from a Hermes ``.env`` file.
+
+    With no explicit ``home``, also remove the key from ``os.environ``. An
+    explicit profile home never mutates process-global environment state.
 
     Returns True if the key was found and removed, False otherwise.
     """
@@ -4021,9 +4035,10 @@ def remove_env_value(key: str) -> bool:
         return False
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
-    env_path = get_env_path()
+    env_path = get_env_path() if home is None else Path(home) / ".env"
     if not env_path.exists():
-        os.environ.pop(key, None)
+        if home is None:
+            os.environ.pop(key, None)
         return False
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
@@ -4067,7 +4082,8 @@ def remove_env_value(key: str) -> bool:
                 pass
             raise
 
-    os.environ.pop(key, None)
+    if home is None:
+        os.environ.pop(key, None)
     invalidate_env_cache()
     return found
 

@@ -74,6 +74,19 @@ def _reply_timeout() -> float:
         return 300.0
 
 
+def _late_result_grace() -> float:
+    """Seconds a task may keep running after its reply window expires.
+
+    While the grace runs the task stays WORKING and the eventual outcome is
+    recorded (visible to tasks/get, resubscribe watchers, and push
+    notifications) instead of being discarded. 0 restores the legacy
+    behavior: fail the task at the reply deadline and drop a late result."""
+    try:
+        return max(0.0, float(os.getenv("A2A_LATE_RESULT_GRACE", "1800")))
+    except (ValueError, TypeError):
+        return 1800.0
+
+
 def _default_agent_name() -> str:
     name = os.getenv("A2A_AGENT_NAME", "").strip()
     if name:
@@ -471,7 +484,9 @@ class A2AAdapter(BasePlatformAdapter):
         """Background thread that fails orphaned tasks (keeps them queryable)."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
+                with self._pending_lock:
+                    live = set(self._pending)
+                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT, skip=live):
                     logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
                     protocol.metrics.tasks_failed += 1
             except Exception:
@@ -931,6 +946,10 @@ class A2AAdapter(BasePlatformAdapter):
         ``keepalive`` is an optional zero-arg callable invoked every
         _SSE_KEEPALIVE seconds while waiting (used by the SSE paths); if it
         raises, the client is gone and we stop waiting.
+
+        May return a non-terminal (STATE_WORKING, note) when the waiter gives
+        up while the agent is still running — the caller must not finalize
+        the task in that case (see _deadline_outcome).
         """
         fut: Future = pending["future"]
         deadline = pending["started"] + _reply_timeout()
@@ -939,14 +958,64 @@ class A2AAdapter(BasePlatformAdapter):
                 return fut.result(timeout=_SSE_KEEPALIVE if keepalive else max(0.0, deadline - time.time()))
             except FuturesTimeout:
                 if time.time() >= deadline:
-                    return (protocol.STATE_FAILED, "[agent did not reply in time]")
+                    return self._deadline_outcome(pending)
                 if keepalive:
                     try:
                         keepalive()
                     except Exception:
-                        return (protocol.STATE_FAILED, "[client disconnected]")
+                        return self._deadline_outcome(pending, "[client disconnected]")
             except Exception:
                 return (protocol.STATE_FAILED, "[agent did not reply in time]")
+
+    def _deadline_outcome(self, pending: dict, reason: str = "[agent did not reply in time]") -> tuple[str, str]:
+        """Decide the waiter's answer when it gives up (reply window expired
+        or the streaming client disconnected) while the agent may still be
+        running.
+
+        With late results enabled the task is detached rather than failed: it
+        stays WORKING and _finalize_late() records the eventual outcome, so
+        tasks/get, resubscribe watchers, and push notifications observe the
+        real result instead of a synthetic failure."""
+        fut: Future = pending["future"]
+        if _late_result_grace() <= 0:
+            return (protocol.STATE_FAILED, reason)
+        # _resolve_task() sets results under _pending_lock, so between this
+        # done() check and the waiter thread starting no resolution can slip
+        # through unobserved.
+        with self._pending_lock:
+            if fut.done():
+                try:
+                    return fut.result(timeout=0)
+                except Exception:
+                    return (protocol.STATE_FAILED, reason)
+            waiter = threading.Thread(
+                target=self._finalize_late, args=(pending,), daemon=True,
+                name=f"a2a-late-{pending['task_id'][:12]}",
+            )
+        waiter.start()
+        return (protocol.STATE_WORKING, (
+            "[still working: the reply window expired but the task continues. "
+            f"Fetch the outcome later via tasks/get (id {pending['task_id']}), "
+            "tasks/resubscribe, or a registered push notification.]"
+        ))
+
+    def _finalize_late(self, pending: dict) -> None:
+        """Waiter thread for a detached task: block until the agent finishes
+        (bounded by the grace window) and record the real outcome."""
+        fut: Future = pending["future"]
+        try:
+            state, reply = fut.result(timeout=_late_result_grace())
+        except FuturesTimeout:
+            state, reply = protocol.STATE_FAILED, "[agent did not finish within the late-result grace window]"
+        except Exception:
+            state, reply = protocol.STATE_FAILED, "[agent did not reply in time]"
+        try:
+            state, reply = self._finalize_task(pending, state, reply)
+            if state in (protocol.STATE_COMPLETED, protocol.STATE_INPUT_REQUIRED):
+                protocol.metrics.tasks_late_results += 1
+                logger.info("A2A: recorded late result for task %s", pending["task_id"])
+        except Exception:
+            logger.exception("A2A: failed to record late result for task %s", pending["task_id"])
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         terminal, pending = self._prepare_task(params, peer, agent=agent)
@@ -954,7 +1023,8 @@ class A2AAdapter(BasePlatformAdapter):
             result = protocol.send_message_response(terminal) if v1_response else terminal
             return protocol.jsonrpc_result(req_id, result)
         state, reply = self._await_reply(pending)
-        state, reply = self._finalize_task(pending, state, reply)
+        if state != protocol.STATE_WORKING:
+            state, reply = self._finalize_task(pending, state, reply)
         task = protocol.build_task(
             pending["task_id"], pending["context_id"], state, reply,
             created_at=pending["created_iso"],
@@ -1021,7 +1091,8 @@ class A2AAdapter(BasePlatformAdapter):
 
             state, reply = self._await_reply(
                 pending, keepalive=lambda: self._sse_write(handler, ": keepalive\n\n"))
-            state, reply = self._finalize_task(pending, state, reply)
+            if state != protocol.STATE_WORKING:
+                state, reply = self._finalize_task(pending, state, reply)
             self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id)
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("A2A: stream client disconnected")

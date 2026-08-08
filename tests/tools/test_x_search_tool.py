@@ -312,3 +312,29 @@ def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
     assert result["degraded"] is False
     assert result["degraded_reason"] is None
 
+
+def test_x_search_non_string_query_returns_error_not_attribute_error():
+    """Int/list query must not AttributeError on ``.strip()``."""
+    from tools.x_search_tool import x_search_tool
+
+    for bad in (42, ["elon"], {"q": "xai"}):
+        result = json.loads(x_search_tool(query=bad))
+        assert "error" in result, bad
+        assert "query is required" in result["error"]
+
+
+def test_x_search_null_from_date_does_not_crash(monkeypatch):
+    """Present-but-null optional dates must not crash ``_validate_date_range``."""
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *a, **k: _FakeResponse({"output_text": "ok", "citations": []}),
+    )
+
+    result = json.loads(
+        x_search_tool(query="xai", from_date=None, to_date=None)
+    )
+    assert result["success"] is True
+

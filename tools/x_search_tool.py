@@ -297,8 +297,18 @@ def x_search_tool(
     enable_image_understanding: bool = False,
     enable_video_understanding: bool = False,
 ) -> str:
-    if not query or not query.strip():
+    # Strict providers may send int/list fillers; bare ``.strip()`` after a
+    # truthiness check AttributeErrors (null/"" already fail ``not query``).
+    # Require a real non-empty string — do not str()-coerce fillers into a search.
+    if not isinstance(query, str) or not query.strip():
         return tool_error("query is required for x_search")
+
+    # Optional date fields: present-but-null / non-string must not crash
+    # ``_validate_date_range``'s ``.strip()`` — treat as unset.
+    if not isinstance(from_date, str):
+        from_date = ""
+    if not isinstance(to_date, str):
+        to_date = ""
 
     try:
         api_key, base_url, source = _resolve_xai_bearer()

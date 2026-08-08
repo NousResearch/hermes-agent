@@ -357,10 +357,23 @@ def _docker_volume_uses_host_path(volume_spec: str) -> bool:
         return False
 
     vol = volume_spec.strip()
-    return bool(vol) and (
-        vol.startswith(("/", "~", "./", "../")) or
-        (len(vol) >= 3 and vol[1] == ":" and vol[2] in ("/", "\\"))
-    )
+    if not vol:
+        return False
+    # Short-form bind mount: /host:/container, ~/data:/data, ./src:/app
+    if vol.startswith(("/", "~", "./", "../")) or (
+        len(vol) >= 3 and vol[1] == ":" and vol[2] in ("/", "\\")
+    ):
+        return True
+    # --mount syntax: type=bind,source=/host,target=/container
+    lower = vol.lower()
+    if lower.startswith("type=bind") or ",type=bind" in lower:
+        import re
+        m = re.search(r"(?:^|,)source=([^,]+)", vol)
+        if m:
+            src = m.group(1).strip()
+            if src.startswith(("/", "~", "./", "../")):
+                return True
+    return False
 
 
 def _docker_has_host_access(config: Dict[str, Any]) -> bool:

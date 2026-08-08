@@ -2029,6 +2029,12 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
     api_key = getattr(platform_config, "api_key", None) or ""
     if isinstance(api_key, str) and api_key.strip():
         return True
+    # Matrix accepts password login (extra["password"]) instead of a token.
+    extra = getattr(platform_config, "extra", None) or {}
+    if isinstance(extra, dict):
+        password = extra.get("password") or ""
+        if isinstance(password, str) and password.strip():
+            return True
     return False
 
 

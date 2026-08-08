@@ -7738,10 +7738,13 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "env_vars": (
             "MATRIX_HOMESERVER",
             "MATRIX_ACCESS_TOKEN",
+            "MATRIX_PASSWORD",
             "MATRIX_USER_ID",
             "MATRIX_ALLOWED_USERS",
         ),
-        "required_env": ("MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN", "MATRIX_USER_ID"),
+        # Auth is MATRIX_ACCESS_TOKEN *or* MATRIX_USER_ID + MATRIX_PASSWORD,
+        # so only the homeserver is unconditionally required.
+        "required_env": ("MATRIX_HOMESERVER",),
     },
     "signal": {
         "name": "Signal",

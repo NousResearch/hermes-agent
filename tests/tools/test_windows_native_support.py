@@ -381,11 +381,15 @@ class TestWebServerPtyBridgeGuard:
 
 
 class TestEntryPointsConfigureStdio:
-    """cli.py, hermes_cli/main.py, gateway/run.py must call configure_windows_stdio."""
+    """cli.py, hermes_cli/main.py, gateway/entry.py must call configure_windows_stdio.
+
+    gateway/run.py's main() was extracted to gateway/entry.py (slice 31 of #54962);
+    run.py re-exports it, so the startup stdio contract now lives in entry.py.
+    """
 
     @pytest.mark.parametrize(
         "relpath",
-        ["cli.py", "hermes_cli/main.py", "gateway/run.py"],
+        ["cli.py", "hermes_cli/main.py", "gateway/entry.py"],
     )
     def test_entry_point_calls_configure_stdio(self, relpath):
         root = Path(__file__).resolve().parents[2]

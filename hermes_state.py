@@ -750,8 +750,8 @@ def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
         pass
 
 
-def _enforce_macos_synchronous_full(conn: sqlite3.Connection) -> None:
-    """Enforce ``PRAGMA synchronous=FULL`` on macOS to prevent btree corruption.
+def _enforce_synchronous_full(conn: sqlite3.Connection) -> None:
+    """Enforce ``PRAGMA synchronous=FULL`` (all platforms; overridable) on state.db.
 
     On Darwin, the default ``synchronous=NORMAL`` only calls ``fsync()``,
     which Apple's fsync(2) man page explicitly states does *not* guarantee
@@ -770,12 +770,27 @@ def _enforce_macos_synchronous_full(conn: sqlite3.Connection) -> None:
     an existing WAL mode). It ensures macOS connections always use FULL
     synchronous mode, even if a prior connection set ``synchronous=NORMAL``.
 
+    Non-macOS platforms now also get ``synchronous=FULL`` by default: the
+    WAL default of ``NORMAL`` means a committed transcript turn can be lost
+    on power loss / kernel panic (fine for a cache, not for the canonical
+    session store — ``hermes_cli/kanban_db.py`` and ``cron/executions.py``
+    already use FULL unconditionally; ``state.db`` was the outlier).
+    Operators on non-macOS platforms who prefer the old throughput
+    trade-off can set ``HERMES_DB_SYNCHRONOUS=normal`` (or ``off``) to
+    override. On Darwin the override is floored at FULL (``extra`` is still
+    allowed): weakening below FULL there re-opens the exact btree-corruption
+    window (#30636) this guard exists to close, so it must not be reachable
+    via an env var framed as a throughput knob.
+
     Best-effort: never raises.
     """
-    if sys.platform != "darwin":
-        return
+    level = os.getenv("HERMES_DB_SYNCHRONOUS", "full").strip().lower()
+    if level not in {"full", "normal", "off", "extra"}:
+        level = "full"
+    if sys.platform == "darwin" and level in {"normal", "off"}:
+        level = "full"
     try:
-        conn.execute("PRAGMA synchronous=FULL")
+        conn.execute(f"PRAGMA synchronous={level.upper()}")
     except sqlite3.OperationalError:
         pass
 
@@ -922,7 +937,7 @@ def apply_wal_with_fallback(
     current_mode = _on_disk_journal_mode(conn)
     if current_mode == "wal":
         _apply_macos_checkpoint_barrier(conn)
-        _enforce_macos_synchronous_full(conn)
+        _enforce_synchronous_full(conn)
         return "wal"
 
     # #68545: honor the canonical database.journal_mode setting. Existing
@@ -962,7 +977,7 @@ def apply_wal_with_fallback(
         mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
         if mode == "wal":
             _apply_macos_checkpoint_barrier(conn)
-            _enforce_macos_synchronous_full(conn)
+            _enforce_synchronous_full(conn)
             return "wal"
         # Silent refusal (macOS NFS / SMB / AgentFS overlay): WAL was not
         # honored, but nothing raised.
@@ -1010,7 +1025,7 @@ def apply_wal_with_fallback(
                 )
                 if mode == "wal":
                     _apply_macos_checkpoint_barrier(conn)
-                    _enforce_macos_synchronous_full(conn)
+                    _enforce_synchronous_full(conn)
                     return "wal"
                 break
         # Don't downgrade if another process already set WAL on disk, or if
@@ -1089,7 +1104,7 @@ def _apply_delete_for_wal_reset_bug(
         # still hold this WAL DB open — same safety rule as the NFS path.
         _log_wal_reset_bug_once(db_label, kept_wal=True)
         _apply_macos_checkpoint_barrier(conn)
-        _enforce_macos_synchronous_full(conn)
+        _enforce_synchronous_full(conn)
         return "wal"
 
     if current is None:

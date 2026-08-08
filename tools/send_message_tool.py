@@ -705,8 +705,14 @@ async def _send_via_adapter(
          ``PlatformEntry`` (used when the gateway is not in this process, so
          the runner weakref is ``None``).
       3. A descriptive error explaining both options.
+
+    Egress redaction already ran on the whole pre-chunk body in
+    ``_send_to_platform``; the live-adapter attempt below additionally passes
+    the wrapped ``adapter.send`` (redaction + plugin outbound_message
+    middleware).
     """
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
+
     runner = None
     try:
         from gateway.run import _gateway_runner_ref
@@ -790,6 +796,26 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.config import Platform
 
     media_files = media_files or []
+
+    # Egress guardrail on the WHOLE body, BEFORE chunking and BEFORE the
+    # platform branches below. Both orderings matter:
+    #   * chunking first would split a secret across a chunk boundary into
+    #     fragments too short to match the redaction patterns' length gates;
+    #   * most branches (_send_telegram, _send_signal, _send_matrix, ...)
+    #     talk to platform APIs directly and never pass a wrapped adapter
+    #     ``send``, so this is their only redaction boundary.
+    # Redaction only (idempotent): plugin outbound_message middleware runs at
+    # the adapter wrapper on the live-adapter path.
+    from hermes_durability.egress import EgressBlocked, guard_outbound_text
+
+    platform_label = platform.value if hasattr(platform, "value") else str(platform)
+    try:
+        message = guard_outbound_text(
+            message, platform=platform_label, category="send_message_tool",
+            apply_middleware=False,
+        )
+    except EgressBlocked as exc:
+        return {"error": f"Egress guardrail blocked send: {exc.reason}"}
 
     # Weixin handles text/media delivery inside its native helper and does not
     # need the optional platform adapter imports below. Keep this branch early

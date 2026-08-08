@@ -1185,6 +1185,54 @@ class TestProfileArg:
 
 
 
+    def test_launchd_plist_uses_hermes_console_script_when_present(self, tmp_path, monkeypatch):
+        """ProgramArguments[0] should be the venv `hermes` script so macOS Login Items
+        attributes the entry to "hermes" rather than "python".
+        """
+        venv = tmp_path / "venv"
+        venv_bin = venv / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "python").write_text("")
+        hermes_bin = venv_bin / "hermes"
+        hermes_bin.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path / ".hermes")
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(venv_bin / "python"))
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert f"<string>{hermes_bin}</string>" in plist
+        # No python -m hermes_cli.main invocation when the console script exists.
+        assert "<string>-m</string>" not in plist
+        assert "<string>hermes_cli.main</string>" not in plist
+
+    def test_launchd_plist_falls_back_to_python_module_when_console_script_missing(
+        self, tmp_path, monkeypatch
+    ):
+        """When the venv lacks the `hermes` console script, fall back to the
+        python -m hermes_cli.main invocation so installation still works.
+        """
+        venv = tmp_path / "venv"
+        venv_bin = venv / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "python").write_text("")
+        # Intentionally do NOT create venv_bin/hermes.
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path / ".hermes")
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(venv_bin / "python"))
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert f"<string>{venv_bin / 'python'}</string>" in plist
+        assert "<string>-m</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

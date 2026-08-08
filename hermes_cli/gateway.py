@@ -4111,12 +4111,23 @@ def generate_launchd_plist() -> str:
         )
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
+    # Build ProgramArguments array, including --profile when using a named profile.
+    #
+    # macOS Background Task Management uses basename(ProgramArguments[0]) as the
+    # display name in System Settings → Login Items & Extensions and in the
+    # "Background Items Added" notification. Using the venv's `hermes` console
+    # script (a thin shebang wrapper around the same interpreter) lets macOS
+    # attribute the entry to "hermes" instead of "python". Falls back to
+    # `python -m hermes_cli.main` if the console script isn't present.
+    hermes_bin = Path(venv_bin) / "hermes"
+    if hermes_bin.exists():
+        prog_args = [f"<string>{hermes_bin}</string>"]
+    else:
+        prog_args = [
+            f"<string>{python_path}</string>",
+            "<string>-m</string>",
+            "<string>hermes_cli.main</string>",
+        ]
     if profile_arg:
         for part in profile_arg.split():
             prog_args.append(f"<string>{part}</string>")

@@ -221,6 +221,18 @@ from agent.tool_dispatch_helpers import (
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
+# Mixin modules extracted from this god-file (shard plan s4): request-scoped
+# client lifecycle (c1+c2) and route client config (c3). Method bodies moved
+# verbatim; see plugins/agent/mixins/.  The route helpers are re-exported so
+# agent/agent_init.py (_ra()._routermint_headers/_qwen_portal_headers) and any
+# test reaching them through the run_agent namespace keep working.
+from plugins.agent.mixins.request_client_lifecycle_mixin import RequestClientLifecycleMixin
+from plugins.agent.mixins.route_client_config_mixin import (
+    RouteClientConfigMixin,
+    _QWEN_CODE_VERSION,  # noqa: F401  # re-exported for agent/agent_init.py
+    _qwen_portal_headers,  # noqa: F401  # re-exported for agent/agent_init.py
+    _routermint_headers,  # noqa: F401  # re-exported for agent/agent_init.py
+)
 
 
 # Internal flags that mark a message as ephemeral empty-response/prefill
@@ -290,21 +302,6 @@ _openrouter_prewarm_done = threading.Event()
 # =========================================================================
 
 
-# =========================================================================
-# Qwen Portal headers — mimics QwenCode CLI for portal.qwen.ai compatibility.
-# Extracted as a module-level helper so both __init__ and
-# _apply_client_headers_for_base_url can share it.
-# =========================================================================
-_QWEN_CODE_VERSION = "0.14.1"
-
-
-def _routermint_headers() -> dict:
-    """Return the User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
-    from hermes_cli import __version__ as _HERMES_VERSION
-
-    return {
-        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
-    }
 
 
 def _pool_may_recover_from_rate_limit(pool) -> bool:
@@ -331,18 +328,6 @@ def _pool_may_recover_from_rate_limit(pool) -> bool:
         return False
     return len(pool.entries()) > 1
 
-
-def _qwen_portal_headers() -> dict:
-    """Return default HTTP headers required by Qwen Portal API."""
-    import platform as _plat
-
-    _ua = f"QwenCode/{_QWEN_CODE_VERSION} ({_plat.system().lower()}; {_plat.machine()})"
-    return {
-        "User-Agent": _ua,
-        "X-DashScope-CacheControl": "enable",
-        "X-DashScope-UserAgent": _ua,
-        "X-DashScope-AuthType": "qwen-oauth",
-    }
 
 
 def _safe_session_filename_component(session_id: str) -> str:
@@ -409,7 +394,7 @@ class _StreamErrorEvent(Exception):
         }
 
 
-class AIAgent:
+class AIAgent(RequestClientLifecycleMixin, RouteClientConfigMixin):
     """
     AI Agent with tool calling capabilities.
 
@@ -4993,37 +4978,6 @@ class AIAgent:
         from agent.agent_runtime_helpers import cleanup_dead_connections
         return cleanup_dead_connections(self)
 
-    @staticmethod
-    def _api_kwargs_have_image_parts(api_kwargs: dict) -> bool:
-        """Return True when the outbound request still contains native image parts."""
-        if not isinstance(api_kwargs, dict):
-            return False
-        candidates = []
-        messages = api_kwargs.get("messages")
-        if isinstance(messages, list):
-            candidates.extend(messages)
-        # Responses API payloads use `input`; after conversion, image parts can
-        # still be present there instead of in `messages`.
-        response_input = api_kwargs.get("input")
-        if isinstance(response_input, list):
-            candidates.extend(response_input)
-
-        def _contains_image(value: Any) -> bool:
-            if isinstance(value, dict):
-                ptype = value.get("type")
-                if ptype in {"image_url", "input_image"}:
-                    return True
-                return any(_contains_image(v) for v in value.values())
-            if isinstance(value, list):
-                return any(_contains_image(v) for v in value)
-            return False
-
-        return any(_contains_image(item) for item in candidates)
-
-    def _copilot_headers_for_request(self, *, is_vision: bool) -> dict:
-        from hermes_cli.copilot_auth import copilot_request_headers
-
-        return copilot_request_headers(is_agent_turn=True, is_vision=is_vision)
 
     # Close reasons the request workers' own ``finally`` unwind reports for
     # a request that produced a response — the only closes that both come
@@ -5038,289 +4992,6 @@ class AIAgent:
         "stream_request_complete",
     })
 
-    def _request_client_cache_ref(self) -> dict:
-        # Lazy init — tests build agents via AIAgent.__new__ without __init__.
-        cache = getattr(self, "_request_client_cache", None)
-        if cache is None:
-            cache = {"client": None, "kwargs": None, "poisoned": False, "in_use": False}
-            self._request_client_cache = cache
-        return cache
-
-    def _create_request_openai_client(self, *, reason: str, api_kwargs: Optional[dict] = None) -> Any:
-        from unittest.mock import Mock
-
-        primary_client = self._ensure_primary_openai_client(reason=reason)
-        if self.provider == "moa":
-            return primary_client
-        if isinstance(primary_client, Mock):
-            return primary_client
-        with self._openai_client_lock():
-            request_kwargs = dict(self._client_kwargs)
-        # Per-request OpenAI-wire clients (used by both the non-streaming
-        # chat-completions path and the streaming chat-completions path
-        # in `_interruptible_api_call`) should not run the SDK's built-in
-        # retry loop: the agent's outer loop owns retries with credential
-        # rotation, provider fallback, and backoff that the SDK can't
-        # see. Leaving SDK retries on (default 2) compounds with our outer
-        # retries and lets a single hung provider request stretch to ~3x
-        # the per-call timeout before our stale detector reports it.
-        # Shared/primary clients and Anthropic / Bedrock paths are
-        # unaffected (they don't go through here).
-        request_kwargs["max_retries"] = 0
-        if (
-            base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
-            and self._api_kwargs_have_image_parts(api_kwargs or {})
-        ):
-            request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
-        # Reuse the cached wire client while the effective kwargs are
-        # unchanged: constructing openai.OpenAI + its httpx pool costs
-        # ~19-35ms per LLM call (fresh TCP+TLS handshake), ~5x per turn.
-        # The cache is a single checked-out slot: `in_use` prevents two
-        # concurrent calls from sharing one pool's close/abort lifecycle
-        # (a second concurrent call gets a fresh untracked client with
-        # the old build-per-request behavior).
-        stale = None
-        with self._openai_client_lock():
-            cache = self._request_client_cache_ref()
-            cached = cache["client"]
-            if cached is not None and not cache["in_use"]:
-                if (
-                    not cache["poisoned"]
-                    and cache["kwargs"] == request_kwargs
-                    and not self._is_openai_client_closed(cached)
-                ):
-                    cache["in_use"] = True
-                    return cached
-                # kwargs changed (credential rotation, provider failover),
-                # poisoned by a cross-thread abort (#29507), or externally
-                # closed — never reuse; discard and rebuild below.
-                stale = cached
-                cache["client"] = None
-                cache["kwargs"] = None
-                cache["poisoned"] = False
-        if stale is not None:
-            # Safe to close from this thread: in_use was False, so no
-            # worker thread owns the pool's FDs (#29507 concerns clients
-            # with an in-flight request on another thread).
-            self._close_openai_client(stale, reason=f"reuse_evict:{reason}", shared=False)
-        client = self._create_openai_client(request_kwargs, reason=reason, shared=False)
-        with self._openai_client_lock():
-            cache = self._request_client_cache_ref()
-            if cache["client"] is None:
-                cache["client"] = client
-                # Snapshot nested dicts (default_headers): rotation sites
-                # assign fresh inner dicts today, but an aliased inner
-                # object would compare equal even after in-place mutation.
-                cache["kwargs"] = {
-                    k: dict(v) if isinstance(v, dict) else v
-                    for k, v in request_kwargs.items()
-                }
-                cache["poisoned"] = False
-                cache["in_use"] = True
-            # else: a concurrent call holds the slot — hand this client
-            # out untracked; _close_request_openai_client fully closes
-            # untracked clients, preserving the per-request lifecycle.
-        return client
-
-    def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
-        with self._openai_client_lock():
-            cache = self._request_client_cache_ref()
-            if cache["client"] is client:
-                if reason in self._REQUEST_CLIENT_REUSE_REASONS and not cache["poisoned"]:
-                    # Clean finish on the owning thread — keep the wire client
-                    # (and its warm httpx pool) for the next sequential call.
-                    cache["in_use"] = False
-                    return
-                # Failure / kill / abort outcome: drop the slot and fall
-                # through to a real close. This runs on the owning worker
-                # thread, which is where the FD release belongs (#29507).
-                cache["client"] = None
-                cache["kwargs"] = None
-                cache["poisoned"] = False
-                cache["in_use"] = False
-        self._close_openai_client(client, reason=reason, shared=False)
-
-    def _close_cached_request_openai_client(self, *, reason: str) -> None:
-        """Teardown hook: really close the cached per-request wire client."""
-        with self._openai_client_lock():
-            cache = getattr(self, "_request_client_cache", None)
-            client = cache["client"] if cache else None
-            in_use = bool(cache["in_use"]) if cache else False
-            if cache is not None:
-                cache["client"] = None
-                cache["kwargs"] = None
-                cache["poisoned"] = False
-                cache["in_use"] = False
-        if client is None:
-            return
-        if in_use:
-            # A worker thread has this client checked out for an in-flight
-            # request (workers can outlive turns — see interruptible_api_call).
-            # client.close() here would release its FDs from a stranger thread,
-            # the #29507 race teardown must not reintroduce. Abort the sockets
-            # instead; the slot is already cleared, so the worker's own finally
-            # sees an untracked client and does the real close on its thread.
-            self._abort_request_openai_client(client, reason=f"{reason}_in_flight")
-            return
-        self._close_openai_client(client, reason=reason, shared=False)
-
-    def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:
-        """Cross-thread abort: shut sockets down without releasing FDs.
-
-        Companion to :meth:`_close_request_openai_client` for stranger-thread
-        callers (interrupt-check loop, stale-call detector). Calling
-        ``client.close()`` from a thread that does not own the active httpx
-        connection raced the still-live SSL BIO and corrupted unrelated file
-        descriptors when the kernel recycled the just-freed TCP FD (#29507).
-
-        Here we only ``shutdown(SHUT_RDWR)`` the pool's sockets. That unblocks
-        the owning worker thread's pending ``recv``/``send`` with an EOF or
-        ``EPIPE`` so it can unwind and close ``client`` from its own context
-        — which is where the FD release belongs.
-        """
-        if client is None:
-            return
-        # A pool whose sockets were shut down from a stranger thread must
-        # never be reused: poison the cache slot so the owner-thread close
-        # discards it and the next create builds a fresh client.
-        with self._openai_client_lock():
-            cache = self._request_client_cache_ref()
-            if cache["client"] is client:
-                cache["poisoned"] = True
-        try:
-            shutdown_count = self._force_close_tcp_sockets(client)
-            # tcp_force_closed=0 means the stranger-thread abort found no
-            # sockets to shut down — the worker stays blocked in recv and the
-            # provider keeps the slot (#72975). Surface that as WARNING so it
-            # cannot be mistaken for a successful abort in the logs.
-            _log = logger.warning if shutdown_count == 0 else logger.info
-            _log(
-                "OpenAI client aborted (%s, shared=False, tcp_force_closed=%d, "
-                "deferred_close=stranger_thread) %s%s",
-                reason,
-                shutdown_count,
-                self._client_log_context(),
-                (
-                    " — no sockets found; in-flight request may keep running "
-                    "until the provider finishes"
-                    if shutdown_count == 0
-                    else ""
-                ),
-            )
-        except Exception as exc:
-            logger.debug(
-                "OpenAI client abort failed (%s, shared=False) %s error=%s",
-                reason,
-                self._client_log_context(),
-                exc,
-            )
-
-    def _create_request_anthropic_client(self, *, reason: str) -> Any:
-        """Build a request-local Anthropic client for one in-flight call.
-
-        The shared ``_anthropic_client`` stays the long-lived primary, but the
-        stale/interrupt watchdog runs on the poll thread and must never call
-        ``close()`` on the client whose TLS socket a worker thread is still
-        reading: releasing that FD from a stranger thread lets the kernel
-        recycle it under a still-live SSL BIO, which then writes a TLS record
-        into an unrelated SQLite header (#29507 / #67142). A per-request client
-        lets the stranger thread ``shutdown()`` the socket while the owning
-        worker performs the SDK-level close from its own context — the same
-        ownership contract the OpenAI-wire path already uses.
-
-        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock,
-        1M-beta drop) but returns a fresh client instead of swapping the shared
-        one.
-        """
-        if self.api_mode == "anthropic_messages":
-            self._try_refresh_anthropic_client_credentials()
-        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
-        if getattr(self, "provider", None) == "bedrock":
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
-            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
-            client = build_anthropic_bedrock_client(region)
-        else:
-            from agent.anthropic_adapter import build_anthropic_client
-            client = build_anthropic_client(
-                self._anthropic_api_key,
-                getattr(self, "_anthropic_base_url", None),
-                timeout=get_provider_request_timeout(self.provider, self.model),
-                drop_context_1m_beta=_drop_1m,
-            )
-        logger.debug(
-            "Anthropic request client created (%s, shared=False) provider=%s model=%s",
-            reason,
-            getattr(self, "provider", None),
-            getattr(self, "model", None),
-        )
-        return client
-
-    def _close_request_anthropic_client(self, client: Any, *, reason: str) -> None:
-        """Owner-thread full close of a request-local Anthropic client.
-
-        Force-closes the pool's TCP sockets first (CLOSE-WAIT hygiene, parity
-        with ``_close_openai_client``), then does the graceful SDK close. Safe
-        because the caller owns the connection.
-        """
-        if client is None:
-            return
-        try:
-            self._force_close_tcp_sockets(client)
-            client.close()
-            logger.info(
-                "Anthropic client closed (%s, shared=False) provider=%s model=%s",
-                reason,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
-            )
-        except Exception as exc:
-            logger.debug(
-                "Anthropic client close failed (%s, shared=False) provider=%s model=%s error=%s",
-                reason,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
-                exc,
-            )
-
-    def _abort_request_anthropic_client(self, client: Any, *, reason: str) -> None:
-        """Cross-thread abort for request-local Anthropic clients.
-
-        Stranger threads (the interrupt-check / stale-stream detector loop)
-        must not call the SDK ``close()`` — that races the owning worker's live
-        SSL BIO and can recycle a TLS FD into a SQLite header (#29507 /
-        #67142). Only ``shutdown(SHUT_RDWR)`` the pool's sockets so the worker
-        unblocks and releases the FD from its own thread.
-        """
-        if client is None:
-            return
-        try:
-            shutdown_count = self._force_close_tcp_sockets(client)
-            # Same visibility contract as the OpenAI abort path (#72975):
-            # zero sockets shut down means the abort did not unblock the
-            # worker — log WARNING, not a success-shaped INFO.
-            _log = logger.warning if shutdown_count == 0 else logger.info
-            _log(
-                "Anthropic client aborted (%s, shared=False, tcp_force_closed=%d, "
-                "deferred_close=stranger_thread) provider=%s model=%s%s",
-                reason,
-                shutdown_count,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
-                (
-                    " — no sockets found; in-flight request may keep running "
-                    "until the provider finishes"
-                    if shutdown_count == 0
-                    else ""
-                ),
-            )
-        except Exception as exc:
-            logger.debug(
-                "Anthropic client abort failed (%s, shared=False) provider=%s model=%s error=%s",
-                reason,
-                getattr(self, "provider", None),
-                getattr(self, "model", None),
-                exc,
-            )
 
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Forwarder — see ``agent.codex_runtime.run_codex_stream``."""
@@ -5849,109 +5520,7 @@ class AIAgent:
         self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
         return True
 
-    def _apply_client_headers_for_base_url(
-        self,
-        base_url: str,
-        *,
-        apply_user_headers: bool = True,
-    ) -> None:
-        from agent.auxiliary_client import (
-            _AI_GATEWAY_HEADERS,
-            build_nvidia_nim_headers,
-            build_or_headers,
-        )
 
-        if base_url_host_matches(base_url, "openrouter.ai"):
-            self._client_kwargs["default_headers"] = build_or_headers()
-        elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
-            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
-        elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
-            self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)
-        elif base_url_host_matches(base_url, "api.routermint.com"):
-            self._client_kwargs["default_headers"] = _routermint_headers()
-        elif base_url_host_matches(base_url, "githubcopilot.com"):
-            from hermes_cli.models import copilot_default_headers
-
-            self._client_kwargs["default_headers"] = copilot_default_headers()
-        elif base_url_host_matches(base_url, "api.kimi.com"):
-            self._client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-        elif base_url_host_matches(base_url, "portal.qwen.ai"):
-            self._client_kwargs["default_headers"] = _qwen_portal_headers()
-        elif base_url_host_matches(base_url, "chatgpt.com"):
-            from agent.auxiliary_client import _codex_cloudflare_headers
-            self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
-                self._client_kwargs.get("api_key", "")
-            )
-        elif base_url_host_matches(base_url, "x.ai"):
-            # Cover both provider=xai and provider=xai-oauth (api.x.ai).
-            from tools.xai_http import hermes_xai_default_headers
-
-            self._client_kwargs["default_headers"] = hermes_xai_default_headers()
-        else:
-            # No URL-specific headers — check profile.default_headers before clearing.
-            _ph_headers = None
-            try:
-                from providers import get_provider_profile as _gpf2
-                _ph2 = _gpf2(self.provider)
-                if _ph2 and _ph2.default_headers:
-                    _ph_headers = dict(_ph2.default_headers)
-            except Exception:
-                pass
-            if _ph_headers:
-                self._client_kwargs["default_headers"] = _ph_headers
-            else:
-                self._client_kwargs.pop("default_headers", None)
-
-        # User-configured overrides win over URL/profile defaults for the same
-        # route. A credential swap to another endpoint must not inherit them.
-        if apply_user_headers:
-            self._apply_user_default_headers()
-
-        # Per-provider extra HTTP headers (providers.<name>.extra_headers /
-        # custom_providers[].extra_headers) — applied last so the most
-        # specific config level survives credential swaps and rebuilds too.
-        # SECURITY: values may carry credentials — never log them.
-        if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
-            try:
-                from hermes_cli.config import (
-                    apply_custom_provider_extra_headers_to_client_kwargs,
-                )
-
-                apply_custom_provider_extra_headers_to_client_kwargs(
-                    self._client_kwargs, base_url,
-                )
-            except Exception:
-                logger.debug("custom-provider extra_headers skipped", exc_info=True)
-
-    def _apply_user_default_headers(self) -> None:
-        """Merge user-configured request headers onto the OpenAI client.
-
-        Reads ``model.default_headers`` from config.yaml and merges it onto
-        ``self._client_kwargs["default_headers"]``, with user values taking
-        precedence over provider- and SDK-supplied defaults.
-
-        This exists for ``custom`` OpenAI-compatible endpoints sitting behind
-        a gateway/WAF that rejects the OpenAI Python SDK's identifying headers
-        (``User-Agent: OpenAI/Python ...``, ``X-Stainless-*``). Setting e.g.
-        ``model.default_headers: {User-Agent: curl/8.7.1}`` lets the request
-        reach such an upstream instead of failing with an opaque 4xx/502 even
-        though the same body works under ``curl``. (#40033)
-
-        Delegates the config read + merge to
-        ``agent.auxiliary_client._apply_user_default_headers`` so the main and
-        auxiliary clients can never drift on precedence or value handling.
-
-        No-op for Anthropic/Bedrock modes, which don't use the OpenAI client,
-        and when no overrides are configured.
-        """
-        if self.api_mode in ("anthropic_messages", "bedrock_converse"):
-            return
-        from agent.auxiliary_client import (
-            _apply_user_default_headers as _merge_user_headers,
-        )
-        merged = _merge_user_headers(self._client_kwargs.get("default_headers"))
-        if merged:
-            self._client_kwargs["default_headers"] = merged
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
@@ -5989,39 +5558,6 @@ class AIAgent:
         self._reapply_route_client_config(route_changed=route_changed)
         self._replace_primary_openai_client(reason="credential_rotation")
 
-    def _reapply_route_client_config(self, *, route_changed: bool) -> None:
-        """Recompute route-derived client kwargs for the current ``self.base_url``.
-
-        TLS material (``ssl_verify``/``ssl_ca_cert``) and default headers are
-        derived from the endpoint, not the credential — any client rebuild
-        that may have moved ``base_url`` must recompute them or the new
-        endpoint inherits configuration computed for the old one. Shared by
-        credential-pool rotation and the per-turn env refresh so the two
-        paths cannot drift.
-        """
-        self._client_kwargs.pop("ssl_verify", None)
-        self._client_kwargs.pop("ssl_ca_cert", None)
-        try:
-            from hermes_cli.config import (
-                apply_custom_provider_tls_to_client_kwargs,
-                get_compatible_custom_providers,
-                load_config_readonly,
-            )
-
-            apply_custom_provider_tls_to_client_kwargs(
-                self._client_kwargs,
-                str(self.base_url or ""),
-                get_compatible_custom_providers(load_config_readonly()),
-            )
-        except Exception:
-            logger.debug(
-                "custom-provider TLS resolution skipped on credential rotation",
-                exc_info=True,
-            )
-        self._apply_client_headers_for_base_url(
-            self.base_url,
-            apply_user_headers=not route_changed,
-        )
 
     def _recover_with_credential_pool(
         self,

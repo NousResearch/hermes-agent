@@ -1009,6 +1009,30 @@ def _mark_tui_input_modes_active() -> None:
     _tui_input_modes_active = True
 
 
+def _suppress_mouse_tracking_cli() -> None:
+    """Disable terminal mouse tracking for the classic CLI to prevent
+    mouse micro-movements from generating escape sequences that could
+    be misinterpreted as key presses (e.g. triggering 'deny' in approval prompts).
+
+    This is similar to _suppress_mouse_residue_early() for the TUI but runs
+    at the start of the classic CLI run() method.
+    """
+    try:
+        if not os.isatty(1):
+            return
+        # Disable all mouse tracking variants: SGR (1006), X10 (1000), button-event (1002),
+        # any-event (1003), focus (1004), and alternate scroll (1005/1015/1016)
+        # Also disable vt200 mouse (1001) and kitty mouse (2029)
+        os.write(
+            1,
+            b"\x1b[?1006l\x1b[?1005l\x1b[?1015l\x1b[?1016l"
+            b"\x1b[?1003l\x1b[?1002l\x1b[?1001l\x1b[?1000l"
+            b"\x1b[?1004l\x1b[?2029l",
+        )
+    except OSError:
+        pass
+
+
 def _prepare_deferred_agent_startup() -> None:
     """Run Termux-deferred agent discovery before the first real agent turn."""
     global _deferred_agent_startup_done
@@ -15086,6 +15110,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+
+        # Disable terminal mouse tracking to prevent mouse micro-movements
+        # from generating escape sequences that could interfere with
+        # approval prompts and other modal dialogs.
+        _suppress_mouse_tracking_cli()
 
         # Warm the /model picker's provider-models cache off-thread during this
         # idle window (banner shown, user about to type). The no-args picker

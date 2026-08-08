@@ -1530,6 +1530,20 @@ def run_curator_review(
     if consolidate is None:
         consolidate = get_consolidate()
     start = datetime.now(timezone.utc)
+    
+    # CRITICAL FIX: Persist state BEFORE snapshot creation so that if
+    # snapshot creation causes OOM, the curator won't immediately re-run
+    # on restart (which would create a vicious cycle of OOM -> restart -> OOM).
+    # See issue #81625: gateway balloons to 60GB RSS every ~2h.
+    if not dry_run:
+        state = load_state()
+        state["last_run_at"] = start.isoformat()
+        state["run_count"] = int(state.get("run_count", 0)) + 1
+        prefix = "auto: "
+        # We don't have auto_summary yet, use placeholder
+        state["last_run_summary"] = f"{prefix}starting (snapshot phase)"
+        save_state(state)
+    
     if dry_run:
         # Count candidates without mutating state.
         try:
@@ -1569,16 +1583,16 @@ def run_curator_review(
         auto_summary_parts.append(f"{counts['reactivated']} reactivated")
     auto_summary = ", ".join(auto_summary_parts) if auto_summary_parts else "no changes"
 
+    prefix = "dry-run auto: " if dry_run else "auto: "
+
     # Persist state before the LLM pass so a crash mid-review still records
     # the run and doesn't immediately re-trigger. In dry-run we do NOT bump
     # last_run_at or run_count — a preview shouldn't push the next scheduled
     # real pass out. We still record a summary so `hermes curator status`
     # shows that a preview ran.
+    # NOTE: State was already saved before snapshot creation (above).
+    # Here we just update the summary with the actual auto_summary.
     state = load_state()
-    if not dry_run:
-        state["last_run_at"] = start.isoformat()
-        state["run_count"] = int(state.get("run_count", 0)) + 1
-    prefix = "dry-run auto: " if dry_run else "auto: "
     state["last_run_summary"] = f"{prefix}{auto_summary}"
     save_state(state)
 

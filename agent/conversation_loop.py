@@ -90,6 +90,7 @@ from agent.trajectory import has_incomplete_scratchpad
 # finalizer at turn end.
 from agent.turn_finalizer import finalize_turn
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.errors import EmptyStreamError
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
@@ -2611,6 +2612,7 @@ def run_conversation(
                 elif _model_request_active is not None:
                     _model_request_active.set()
                 _redirect_crossed_response = False
+                streaming_error_handled = False
                 try:
                     response = run_llm_execution_middleware(
                         api_kwargs,
@@ -2628,6 +2630,45 @@ def run_conversation(
                         api_call_count=api_call_count,
                         middleware_trace=list(_llm_middleware_trace),
                     )
+                except (EmptyStreamError, TimeoutError) as e:
+                    # Handle streaming failures (empty stream, stalled stream) gracefully
+                    # instead of letting them propagate and cause deadlock/UI corruption.
+                    logger.warning(
+                        "Streaming API call failed (%s): %s",
+                        type(e).__name__,
+                        e,
+                    )
+                    # Set response to None so the validation logic below treats it as invalid
+                    response = None
+                    response_invalid = True
+                    error_details = [str(e)]
+                    streaming_error_handled = True
+                    # Invoke error hook immediately for streaming errors so retry/fallback logic runs
+                    agent._invoke_api_request_error_hook(
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        api_call_count=api_call_count,
+                        api_start_time=api_start_time,
+                        api_kwargs=api_kwargs,
+                        error_type=type(e).__name__,
+                        error_message=str(e),
+                        status_code=None,
+                        retry_count=retry_count,
+                        max_retries=max_retries,
+                        retryable=True,
+                        reason="stream_error",
+                    )
+                except InterruptedError:
+                    # Interrupts are handled by the redirect logic below
+                    raise
+                except BaseException as e:
+                    # Other exceptions (provider errors, etc.) - let them propagate
+                    # to the outer retry/fallback handler
+                    logger.exception("API call raised unexpected error: %s", e)
+                    response = None
+                    response_invalid = True
+                    error_details = [str(e)]
                 finally:
                     if _redirect_lock is not None:
                         with _redirect_lock:
@@ -2675,8 +2716,10 @@ def run_conversation(
                     logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
                 
                 # Validate response shape before proceeding
-                response_invalid = False
-                error_details = []
+                # response_invalid and error_details may have been set by the exception handler above
+                if 'response_invalid' not in locals():
+                    response_invalid = False
+                    error_details = []
                 if agent.api_mode == "codex_responses":
                     _ct_v = agent._get_transport()
                     if not _ct_v.validate_response(response):
@@ -2755,21 +2798,28 @@ def run_conversation(
                             error_details.append("response.choices is empty")
 
                 if response_invalid:
-                    agent._invoke_api_request_error_hook(
-                        task_id=effective_task_id,
-                        turn_id=turn_id,
-                        api_request_id=api_request_id,
-                        api_call_count=api_call_count,
-                        api_start_time=api_start_time,
-                        api_kwargs=api_kwargs,
-                        error_type="InvalidAPIResponse",
-                        error_message=", ".join(error_details) or "Invalid API response",
-                        status_code=getattr(getattr(response, "error", None), "code", None),
-                        retry_count=retry_count,
-                        max_retries=max_retries,
-                        retryable=True,
-                        reason="invalid_response",
-                    )
+                    # Skip duplicate error handling for streaming errors already handled above
+                    if locals().get('streaming_error_handled', False):
+                        # Streaming error was already handled in the except block
+                        # The error hook was invoked and fallback/retry logic may have been triggered
+                        # Just continue to the retry/fallback logic below
+                        pass
+                    else:
+                        agent._invoke_api_request_error_hook(
+                            task_id=effective_task_id,
+                            turn_id=turn_id,
+                            api_request_id=api_request_id,
+                            api_call_count=api_call_count,
+                            api_start_time=api_start_time,
+                            api_kwargs=api_kwargs,
+                            error_type="InvalidAPIResponse",
+                            error_message=", ".join(error_details) or "Invalid API response",
+                            status_code=getattr(getattr(response, "error", None), "code", None),
+                            retry_count=retry_count,
+                            max_retries=max_retries,
+                            retryable=True,
+                            reason="invalid_response",
+                        )
                     # Stop spinner silently — retry status is now buffered
                     # and only surfaced if every retry+fallback exhausts.
                     if thinking_spinner:

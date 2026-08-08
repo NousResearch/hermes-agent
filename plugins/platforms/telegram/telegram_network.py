@@ -63,12 +63,24 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     # on its own (#63311).
     _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
 
-    def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
+    def __init__(
+        self,
+        fallback_ips: Iterable[str],
+        *,
+        connect_timeout: float = 10.0,
+        read_timeout: float = 20.0,
+        **transport_kwargs,
+    ):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
         transport_kwargs.setdefault("limits", self._POOL_LIMITS)
+        # Configure timeouts at the transport level so they apply to socket
+        # connect/read operations directly, preventing indefinite hangs during
+        # DNS resolution or TCP connect (issue #78586).
+        timeout = httpx.Timeout(connect=connect_timeout, read=read_timeout)
+        transport_kwargs["timeout"] = timeout
         self._transport_kwargs = transport_kwargs
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
         # Built on demand and discarded on failure — see _reset_fallback.

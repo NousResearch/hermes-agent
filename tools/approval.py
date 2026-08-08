@@ -2802,6 +2802,20 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
+        # Disable mouse tracking to prevent mouse micro-movements from
+        # generating escape sequences that could be captured by input()
+        # and misinterpreted as user input.
+        try:
+            if os.isatty(1):
+                os.write(
+                    1,
+                    b"\x1b[?1006l\x1b[?1005l\x1b[?1015l\x1b[?1016l"
+                    b"\x1b[?1003l\x1b[?1002l\x1b[?1001l\x1b[?1000l"
+                    b"\x1b[?1004l\x1b[?2029l",
+                )
+        except OSError:
+            pass
+
         # Resolve the active UI language once per prompt so we don't re-read
         # config/YAML inside the retry loop below.
         from agent.i18n import t

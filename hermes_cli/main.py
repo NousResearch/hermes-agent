@@ -361,8 +361,9 @@ def _suppress_mouse_residue_early() -> None:
         # safe to send even when no tracking is currently asserted.
         os.write(
             1,
-            b"\x1b[?1003l\x1b[?1002l\x1b[?1001l\x1b[?1000l\x1b[?9l"
-            b"\x1b[?1006l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?2029l",
+            b"\x1b[?1006l\x1b[?1005l\x1b[?1015l\x1b[?1016l"
+            b"\x1b[?1003l\x1b[?1002l\x1b[?1001l\x1b[?1000l"
+            b"\x1b[?1004l\x1b[?2029l",
         )
     except OSError:
         pass

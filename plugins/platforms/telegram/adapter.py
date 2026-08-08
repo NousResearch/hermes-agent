@@ -3851,11 +3851,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 _transport_kwargs: dict = {}
                 if _pool_limits is not None:
                     _transport_kwargs["limits"] = _pool_limits
+                # Pass connect/read timeouts to the fallback transport so they
+                # apply at the socket level, preventing indefinite hangs during
+                # DNS resolution or TCP connect (issue #78586).
+                connect_timeout = request_kwargs.get("connect_timeout", 10.0)
+                read_timeout = request_kwargs.get("read_timeout", 20.0)
                 request = HTTPXRequest(
                     **request_kwargs,
                     httpx_kwargs={
                         "transport": TelegramFallbackTransport(
-                            fallback_ips, **_transport_kwargs
+                            fallback_ips,
+                            connect_timeout=connect_timeout,
+                            read_timeout=read_timeout,
+                            **_transport_kwargs,
                         )
                     },
                 )
@@ -3863,7 +3871,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     **request_kwargs,
                     httpx_kwargs={
                         "transport": TelegramFallbackTransport(
-                            fallback_ips, **_transport_kwargs
+                            fallback_ips,
+                            connect_timeout=connect_timeout,
+                            read_timeout=read_timeout,
+                            **_transport_kwargs,
                         )
                     },
                 )

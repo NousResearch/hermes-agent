@@ -37,17 +37,75 @@ def _no_installer(monkeypatch):
     monkeypatch.setattr(lazy_deps.subprocess, "run", _boom)
 
 
-def test_nixos_install_fails_fast_without_touching_the_installer(monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: "nixos")
+def test_managed_install_fails_fast_without_touching_the_installer(monkeypatch):
+    # get_managed_system() passes an unrecognised HERMES_MANAGED value
+    # through as-is, so a distro package can name itself here. Homebrew
+    # cannot: config.py maps "brew" and "homebrew" to None, because Hermes
+    # does not support brew installs.
+    monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: "apt")
     _no_installer(monkeypatch)
 
     with pytest.raises(FeatureUnavailable) as excinfo:
         lazy_deps.ensure(FEATURE, prompt=False)
 
-    assert "nixos" in excinfo.value.reason
+    assert "apt" in excinfo.value.reason
     # refresh_active_features classifies by this prefix — anything else is
     # reported to the user as a hard failure instead of a skip.
     assert excinfo.value.reason.startswith("unsupported ")
+
+
+def test_nix_names_the_extra_and_both_ways_to_set_the_option(monkeypatch):
+    """A Nix install gets a remedy it can act on, not a pip command.
+
+    The /nix/store is read-only, so a `uv pip install` hint always fails.
+    The message must name the extra to add and the option that adds it.
+
+    get_managed_system() returns "NixOS" for each Nix install, including
+    `nix profile install` and nix-darwin on a host that does not run NixOS.
+    The message must therefore say Nix, and must give the override form as
+    well as the NixOS module option.
+    """
+    monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: "NixOS")
+    _no_installer(monkeypatch)
+
+    with pytest.raises(FeatureUnavailable) as excinfo:
+        lazy_deps.ensure(FEATURE, prompt=False)
+
+    message = str(excinfo.value)
+    assert f'"{lazy_deps.LAZY_DEPS[FEATURE]}"' in message, (
+        "the message must name the extra to add, not just the feature"
+    )
+    assert "services.hermes-agent.extraDependencyGroups" in message
+    assert "pkgs.hermes-agent.override" in message, (
+        "a non-NixOS Nix user has no services.* option to set"
+    )
+    # A pip command cannot succeed against a read-only store.
+    assert "uv pip install" not in message
+
+
+def test_docker_says_the_image_is_probably_at_fault(monkeypatch):
+    """A sealed image contains each runnable extra, so this is a build bug."""
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: None)
+
+    message = lazy_deps.managed_install_reason(FEATURE, "some-extra")
+    assert "HERMES_DISABLE_LAZY_INSTALLS" in message
+    assert "bug in the image build" in message
+    assert "uv pip install" not in message
+
+
+def test_package_manager_wins_over_the_sealed_flag(monkeypatch):
+    """A NixOS host can also set the sealed flag; NixOS is the useful remedy.
+
+    Reporting "this is probably a bug in the image build" to someone who is
+    not running the image sends them to the wrong place.
+    """
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: "NixOS")
+
+    message = lazy_deps.managed_install_reason(FEATURE, "some-extra")
+    assert "services.hermes-agent.extraDependencyGroups" in message
+    assert "image build" not in message
 
 
 def test_reason_is_classified_as_skipped_not_failed(monkeypatch):
@@ -76,9 +134,14 @@ def test_unmanaged_install_is_not_blocked_by_the_guard(monkeypatch):
 def test_durable_install_target_overrides_the_guard(monkeypatch, tmp_path):
     """The container deployment sets HERMES_MANAGED *and* a writable target.
 
-    Dockerfile sets HERMES_LAZY_INSTALL_TARGET and the NixOS container module
-    passes HERMES_MANAGED=true; blocking there would break that deployment.
+    The NixOS container module passes HERMES_MANAGED=true, and the Dockerfile
+    sets HERMES_LAZY_INSTALL_TARGET. The managed guard must not stop an
+    install that has somewhere to write.
+
+    The sealed flag is a separate gate, and tests/conftest.py sets it for
+    each test, so clear it here to leave the managed guard on its own.
     """
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
     monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: "nixos")
     monkeypatch.setattr(lazy_deps, "_lazy_install_target", lambda: tmp_path)
 

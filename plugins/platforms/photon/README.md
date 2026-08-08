@@ -197,12 +197,10 @@ deliberate:
    `Space`/`Message`) and `@spectrum-ts/imessage` (the provider), so the source
    of truth is `sidecar/node_modules/@spectrum-ts/{core,imessage}/dist/*.d.ts`
    (the hosted docs can lag).
-4. Re-validate `sidecar/patch-spectrum-mixed-attachments.mjs`. It rewrites the
-   compiled iMessage inbound mappers in `@spectrum-ts/imessage/dist/index.js`
-   so a bubble with both text and attachments keeps its typed text; the anchors
-   are tied to that build's output. `npm install` runs it via `postinstall` and
-   fails loudly if the anchors no longer match — update them to the new output
-   (`test_spectrum_patch.py` covers the patch).
+4. Check that a bubble with both text and attachments still keeps its text.
+   `toOrderedParts` in `@spectrum-ts/imessage` builds that order upstream. It
+   was a Hermes patch until spectrum-ts 12, so a regression here means the
+   text is dropped again and the agent reads an attachment with no message.
 5. Run `pytest tests/plugins/platforms/photon/`.
 6. Verify end-to-end: `hermes photon status`, a DM and a group roundtrip,
    and an agent reply into a group right after a gateway restart (exercises

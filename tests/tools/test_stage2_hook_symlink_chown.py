@@ -126,3 +126,18 @@ def test_stage2_skips_recursive_repairs_when_tree_is_already_owned(
     assert 'if [ -d "$HERMES_HOME/cron" ] && tree_has_non_hermes_owner "$HERMES_HOME/cron"; then' in stage2_text
     assert 'if [ -d "$HERMES_HOME/platforms/pairing" ] && tree_has_non_hermes_owner "$HERMES_HOME/platforms/pairing"; then' in stage2_text
     assert 'if [ -d "$HERMES_HOME/pairing" ] && tree_has_non_hermes_owner "$HERMES_HOME/pairing"; then' in stage2_text
+    assert 'if [ -d "$HERMES_HOME/lazy-packages" ] && tree_has_non_hermes_owner "$HERMES_HOME/lazy-packages"; then' in stage2_text
+
+
+def test_stage2_seeds_and_heals_lazy_packages_dir(stage2_text: str) -> None:
+    """lazy-packages must be created on first boot AND re-owned on every
+    boot, same as pairing/ and cron/ (#10270-class docker-exec-as-root
+    regression: install_specs() writes there, and a container exec running
+    as root can create or dirty it between boots)."""
+    assert '"$HERMES_HOME/lazy-packages"' in stage2_text
+    mkdir_start = stage2_text.index("as_hermes mkdir -p")
+    mkdir_end = stage2_text.index("\n\n", mkdir_start)
+    assert '"$HERMES_HOME/lazy-packages"' in stage2_text[mkdir_start:mkdir_end], (
+        "lazy-packages must be seeded on first boot, not just chowned reactively"
+    )
+    assert 'chown_hermes_tree "$HERMES_HOME/lazy-packages"' in stage2_text

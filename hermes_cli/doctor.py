@@ -1449,6 +1449,36 @@ def run_doctor(args):
             fixed_count += 1
         else:
             check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
+
+    # Orphaned sidecar mirrors. The shared resolver (gateway/sidecar_runtime)
+    # mirrors the Node sidecars to $HERMES_HOME/sidecars/<name>. The old
+    # per-sidecar resolvers used $HERMES_HOME/photon/sidecar and
+    # $HERMES_HOME/scripts/whatsapp-bridge. Nothing reads those paths now,
+    # and each one can hold a node_modules of some hundred MB.
+    legacy_mirrors = [
+        hermes_home / "photon" / "sidecar",
+        hermes_home / "scripts" / "whatsapp-bridge",
+    ]
+    for legacy in legacy_mirrors:
+        if not legacy.is_dir() or legacy.is_symlink():
+            continue
+        rel = legacy.relative_to(hermes_home)
+        if should_fix:
+            import shutil as _shutil
+
+            _shutil.rmtree(legacy, ignore_errors=True)
+            # Drop the parent too when the mirror was its only content.
+            try:
+                legacy.parent.rmdir()
+            except OSError:
+                pass
+            check_ok(f"Removed orphaned sidecar mirror {_DHH}/{rel}/")
+            fixed_count += 1
+        else:
+            check_warn(
+                f"{_DHH}/{rel}/ is an orphaned sidecar mirror",
+                "(replaced by ~/.hermes/sidecars/ — run `hermes doctor --fix` to remove)",
+            )
     
     # Check for SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"

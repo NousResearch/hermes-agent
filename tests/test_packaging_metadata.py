@@ -1,12 +1,19 @@
-import ast
 import re
 import tomllib
 from pathlib import Path
 
 import pytest
 
+from tools import lazy_deps
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _extras_table() -> dict:
+    """``[project.optional-dependencies]`` as declared (unresolved)."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return data["project"]["optional-dependencies"]
 
 
 def _distribution_name(requirement: str) -> str:
@@ -52,8 +59,10 @@ def test_faster_whisper_is_not_a_base_dependency():
 
     assert not any(dep.startswith("faster-whisper") for dep in deps)
 
-    voice_extra = data["project"]["optional-dependencies"]["voice"]
-    assert any(dep.startswith("faster-whisper") for dep in voice_extra)
+    # Resolved, not literal: [voice] now carries faster-whisper by composing
+    # [stt-whisper] (the file-transcription half the Docker image bakes).
+    voice_specs = lazy_deps.extra_specs("voice")
+    assert any(dep.startswith("faster-whisper") for dep in voice_specs)
 
 
 # Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in
@@ -68,7 +77,7 @@ _UPDATE_DOWNGRADE_GUARD_FLOORS = {
     # `hermes update` reinstalls exact pins from pyproject/lazy_deps. These
     # reviewed CVE pins must not slide back to stale versions that downgrade
     # already-patched user environments.
-    "cryptography": (48, 0, 1),
+    "cryptography": (50, 0, 0),
     "starlette": (1, 3, 1),
     "python-multipart": (0, 0, 32),
 }
@@ -87,29 +96,31 @@ def _version_tuple(spec: str) -> tuple[int, ...]:
 
 
 def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
-    """Every extra that declares Starlette must pin a patched (>=1.0.1) version.
+    """Every extra that pulls Starlette must resolve a patched (>=1.0.1) version.
 
     Regression guard for #35067 / CVE-2026-48710. A future edit that drops the
     pin (re-exposing the unbounded transitive ``starlette>=0.27`` from mcp /
     ``>=0.40.0`` from fastapi) or pins a pre-1.0.1 version fails here instead of
     shipping a Host-header auth-bypass to dashboard / MCP-HTTP users.
-    """
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    extras = data["project"]["optional-dependencies"]
 
+    Checked against the RESOLVED specs, not the literal text of each extra: an
+    extra may now carry the pin by composing another (``[computer-use]`` is
+    ``hermes-agent[mcp]``). What matters is the version that actually gets
+    installed, which is what composition resolves to.
+    """
     found = {}
-    for extra, specs in extras.items():
-        for spec in specs:
+    for extra in _extras_table():
+        for spec in lazy_deps.extra_specs(extra):
             name = spec.split("==", 1)[0].split(">", 1)[0].split("<", 1)[0].split("[", 1)[0].strip()
             if name.lower() == "starlette":
                 assert "==" in spec, f"[{extra}] must exact-pin starlette, got {spec!r}"
                 ver = spec.split("==", 1)[1].split(";", 1)[0].strip()
                 found[extra] = ver
 
-    # The four server-surface extras must each carry the direct pin.
+    # The four server-surface extras must each resolve the pin.
     for extra in ("web", "mcp", "computer-use", "dev"):
         assert extra in found, (
-            f"[{extra}] no longer pins starlette directly — CVE-2026-48710 "
+            f"[{extra}] does not resolve a starlette pin. CVE-2026-48710 "
             f"regression risk (mcp/fastapi pull it transitively with no upper bound)"
         )
 
@@ -152,20 +163,20 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
 
 
 # ---------------------------------------------------------------------------
-# Dependency-pin consistency: pyproject extras <-> tools/lazy_deps.py
+# Dependency-pin consistency across every install path.
 #
-# The same package is exact-pinned in two hand-maintained places: the
-# [project.optional-dependencies] extras in pyproject.toml and the LAZY_DEPS
-# allowlist in tools/lazy_deps.py (the lazy-install path deliberately mirrors
-# the extras — see the comments on LAZY_DEPS: "match the corresponding extra
-# in pyproject.toml ... update both this map AND the corresponding extra").
+# Do not put the pins in two places written by hand. That was #31817: the
+# [project.optional-dependencies] extras in pyproject.toml and a LAZY_DEPS
+# table in tools/lazy_deps.py — and they silently drifted more than once: the
+# aiohttp Slack pin (3.13.3 vs 3.13.4) and the anthropic pin (0.86.0 vs
+# 0.87.0). The version a user ended up with depended on whether the backend
+# was installed eagerly or lazily, which for a one-sided CVE bump is a latent
+# security regression.
 #
-# They have silently drifted more than once: the aiohttp Slack pin (3.13.3 in
-# the extras vs 3.13.4 in lazy_deps) and the anthropic pin (0.86.0 vs 0.87.0).
-# The version a user ends up with then depends on whether the backend was
-# installed eagerly (extra) or lazily (lazy_deps) — and for a CVE bump applied
-# to only one side, that divergence is a latent security regression. These two
-# tests assert the documented contract: the two sources agree, in lockstep.
+# lazy_deps now READS the extras, so there is one source of truth and that
+# particular drift can't recur. These tests keep the surrounding invariants:
+# pyproject must be internally consistent, and the pins a lazy feature
+# resolves must be present on every mirrored install path.
 # ---------------------------------------------------------------------------
 
 # Matches "name==version" and "name[extra]==version", ignoring any trailing
@@ -210,27 +221,17 @@ def _pyproject_pinned_specs():
 
 
 def _lazy_deps_pinned_specs():
-    """Extract every string literal inside the LAZY_DEPS dict via AST.
+    """Every spec reachable through a lazy feature.
 
-    Parsing rather than importing keeps this test free of
-    tools/lazy_deps.py's runtime imports and side effects.
+    Do not read the source text of tools/lazy_deps.py to get these specs.
+    The specs now live in pyproject.toml and lazy_deps reads them, so calling
+    the real resolver both removes a source-reading test and exercises the
+    code path users actually hit.
     """
-    src = (REPO_ROOT / "tools" / "lazy_deps.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
     specs: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-        else:
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "LAZY_DEPS" for t in targets):
-            continue
-        for sub in ast.walk(node.value):
-            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
-                specs.append(sub.value)
-    assert specs, "could not extract specs from LAZY_DEPS — the AST parser drifted"
+    for feature in lazy_deps.LAZY_DEPS:
+        specs.extend(lazy_deps.feature_specs(feature))
+    assert specs, "no lazy feature resolved any specs"
     return specs
 
 
@@ -251,35 +252,13 @@ def test_pyproject_pins_are_internally_consistent():
 
 
 def _lazy_deps_by_feature():
-    """Parse LAZY_DEPS into {feature_name: [spec, ...]} via AST.
-
-    Same parse-don't-import rationale as _lazy_deps_pinned_specs, but keeps the
-    feature -> specs grouping so per-feature coverage can be asserted.
-    """
-    src = (REPO_ROOT / "tools" / "lazy_deps.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        targets = (
-            node.targets if isinstance(node, ast.Assign)
-            else [node.target] if isinstance(node, ast.AnnAssign)
-            else []
-        )
-        if not any(isinstance(t, ast.Name) and t.id == "LAZY_DEPS" for t in targets):
-            continue
-        if not isinstance(node.value, ast.Dict):
-            continue
-        by_feature: dict[str, list[str]] = {}
-        for key, value in zip(node.value.keys, node.value.values):
-            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
-                continue
-            by_feature[key.value] = [
-                sub.value
-                for sub in ast.walk(value)
-                if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
-            ]
-        assert by_feature, "could not extract features from LAZY_DEPS — AST parser drifted"
-        return by_feature
-    raise AssertionError("LAZY_DEPS dict literal not found in tools/lazy_deps.py")
+    """``{feature_name: [spec, ...]}`` as the installer resolves it."""
+    by_feature = {
+        feature: list(lazy_deps.feature_specs(feature))
+        for feature in lazy_deps.LAZY_DEPS
+    }
+    assert by_feature, "no lazy features are registered"
+    return by_feature
 
 
 # Security-critical packages whose patched floor must be enforced on EVERY

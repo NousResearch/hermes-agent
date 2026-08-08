@@ -1,0 +1,27 @@
+## Vulnerabilities acknowledged and deliberately left unpatched.
+##
+## Each entry names a specific GHSA/CVE with no fixed release upstream as of
+## the date below. Re-run `npm audit` in this directory before renewing —
+## remove the entry the moment a real fix exists.
+
+[[IgnoredVulns]]
+id = "GHSA-w3rx-r6r6-pgpr"
+ignoreUntil = 2026-11-07
+reason = """
+image-size <=2.0.2 (transitive via @docusaurus/mdx-loader, unpinned to
+2.0.2, the actual latest release). ICNS-parser infinite loop DoS. No
+fixed image-size release exists upstream; tracked at
+facebook/docusaurus#12231. This site never parses ICNS/user-supplied
+images at build or runtime -- only committed doc assets -- so the DoS
+surface is not reachable here.
+"""
+
+[[IgnoredVulns]]
+id = "GHSA-5p2g-fcmc-qvqq"
+ignoreUntil = 2026-11-07
+reason = """
+image-size <=2.0.2 (same dependency as GHSA-w3rx-r6r6-pgpr above).
+JXL/HEIF-parser infinite loop DoS. No fixed release upstream; same
+facebook/docusaurus#12231 tracking issue and same non-reachable surface
+(committed doc assets only, no untrusted image input).
+"""

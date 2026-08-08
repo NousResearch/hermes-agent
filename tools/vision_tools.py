@@ -789,24 +789,18 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         from PIL import Image
         import io as _io
     except ImportError:
-        # Pillow is a lazy-installable soft dependency. Try a best-effort
-        # install (respects security.allow_lazy_installs; no-op if disabled or
-        # offline), then re-import. If it still isn't importable, fall back to
-        # the raw bytes and let the caller raise the size error.
-        try:
-            from tools.lazy_deps import ensure as _ensure_dep
-            # prompt=False: never raise a blocking input() prompt mid-session.
-            # Under the interactive CLI prompt_toolkit owns stdin, so a bare
-            # input() deadlocks the terminal (#40490). The install is already
-            # gated by security.allow_lazy_installs, so reaching here is opt-in.
-            _ensure_dep("tool.vision", prompt=False)
-            from PIL import Image
-            import io as _io
-        except Exception:
-            logger.info("Pillow not installed — cannot auto-resize oversized image")
-            if data_url is None:
-                data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
-            return data_url  # caller will raise the size error
+        # Pillow is a core dependency, so this runs only on a damaged
+        # install. Do not add a lazy feature to install it: an extra that
+        # repeats a core pin can install nothing that the core does not
+        # already have. Return the raw bytes, and let the caller raise the
+        # size error.
+        logger.info(
+            "Pillow not importable — cannot auto-resize oversized image. "
+            "Pillow is a core dependency; reinstall Hermes to repair."
+        )
+        if data_url is None:
+            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+        return data_url  # caller will raise the size error
 
     logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB, max_dimension=%s), auto-resizing...",
                 file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),

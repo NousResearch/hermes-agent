@@ -262,16 +262,20 @@ fi
 # non-writable prevents an agent session from self-modifying the installed
 # source, venv, TUI bundle, or node_modules and bricking the gateway.
 #
-# Lazy-installable optional backends (Firecrawl, Exa, Feishu, etc.) cannot
-# install into the sealed venv, so they are redirected to the writable
-# $HERMES_HOME/lazy-packages dir on the data volume (Dockerfile sets
-# HERMES_LAZY_INSTALL_TARGET). That dir is appended to the END of sys.path,
-# so a package installed there can only ADD modules — it can never shadow or
-# break a core module, which is what keeps the sealed-venv guarantee intact
-# even though installs are re-enabled. The dir is seeded + chowned to hermes
-# in the mkdir/chown blocks above so first-use installs succeed as the
-# unprivileged runtime user, and it persists across container recreates /
-# image updates (an ABI stamp wipes it if a rebuild bumps the interpreter).
+# A LAZY_DEPS feature never installs here. The build puts each extra that a
+# container can run into the image, so Hermes raises an error instead of a
+# download from PyPI, and the error says the image should have shipped the
+# dependency.
+#
+# $HERMES_HOME/lazy-packages stays. install_specs writes there, for the
+# packages that no build can bake: a memory provider that a user installs
+# into ~/.hermes/plugins declares its own packages in plugin.yaml, and
+# pyproject.toml does not hold them. The directory goes on the END of
+# sys.path, so a package there can only add a module and can never shadow a
+# core one. That keeps the sealed venv intact. It is seeded and chowned to
+# hermes in the blocks above, so an install works as the unprivileged user,
+# and it survives a container restart. An ABI stamp clears it when a rebuild
+# moves the interpreter.
 
 # Always reset ownership of $HERMES_HOME/profiles to hermes on every
 # boot. Profile dirs and files can land owned by root when commands
@@ -326,6 +330,18 @@ fi
 # Legacy location (pre-consolidated layout).
 if [ -d "$HERMES_HOME/pairing" ] && tree_has_non_hermes_owner "$HERMES_HOME/pairing"; then
     chown_hermes_tree "$HERMES_HOME/pairing"
+fi
+
+# Always reset ownership of $HERMES_HOME/lazy-packages on every boot, same
+# docker-exec/root-write reason as profiles/, cron/, and pairing/ above.
+# install_specs() (tools/lazy_deps.py) can be triggered by `docker exec
+# <container> hermes ...` (root unless `-u` is passed), which creates or
+# writes into this dir as root and leaves it unreadable/unwritable by the
+# unprivileged hermes runtime on the next lazy install. The targeted
+# data-volume chown above only runs when the top-level $HERMES_HOME is
+# mis-owned, so a warm volume needs this dedicated per-boot heal.
+if [ -d "$HERMES_HOME/lazy-packages" ] && tree_has_non_hermes_owner "$HERMES_HOME/lazy-packages"; then
+    chown_hermes_tree "$HERMES_HOME/lazy-packages"
 fi
 
 # Reset ownership of hermes-owned top-level state files on every boot.

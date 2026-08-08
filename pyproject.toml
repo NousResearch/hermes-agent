@@ -22,10 +22,10 @@ dependencies = [
   # at any time without a code review on our side. Exact pins mean the
   # only way a new package version reaches a user is via an intentional
   # update on our end (bump the pin in this file, regenerate uv.lock).
-  # This was tightened on 2026-05-12 in response to the Mini Shai-Hulud
-  # worm hitting mistralai 2.4.6 on PyPI; if that release had been
-  # captured by `mistralai>=2.3.0,<3` rather than an exact pin, every
-  # install in the hours before the quarantine would have pulled it.
+  # The Mini Shai-Hulud worm shows why. It reached mistralai 2.4.6 on
+  # PyPI. A range such as `mistralai>=2.3.0,<3` accepts that release, so
+  # each install in the hours before the quarantine would have taken it.
+  # An exact pin does not.
   #
   # When updating: bump the version below AND regenerate uv.lock with
   # `uv lock` so the transitive resolution stays consistent. Don't
@@ -82,9 +82,18 @@ dependencies = [
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
-  # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
-  # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==48.0.1",  # CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf; ==48.0.1 (not 49.x): msal and alibabacloud-tea-openapi cap <49, hindsight-api-slim needs >=48.0.1
+  # PyJWT[crypto] pulls cryptography in transitively. Pin it here as well, so
+  # that the WeCom and Weixin crypto paths cannot fall below the patched
+  # version. 50.0.0 is the floor: it fixes CVE-2026-69247, a Bleichenbacher
+  # oracle in PKCS#7 EnvelopedData, and 49.0.0 fixed GHSA-m2h6-j472-rp4c,
+  # where a wildcard DNS name escapes permittedSubtrees, and
+  # GHSA-jwv3-5hgf-82ww, exponential path-building on duplicate self-signed
+  # intermediates.
+  #
+  # A pin here is not sufficient on its own. alibabacloud-tea-openapi caps
+  # cryptography<49, so [tool.uv] also holds an override. Read that comment
+  # before you move this version.
+  "cryptography==50.0.0",  # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -155,157 +164,44 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+
+# --------------------------------------------------------------------------
+# Model providers
+#
+# An extra for each inference backend that needs its own SDK. Each one
+# installs at first use, so a quarantined release of one SDK cannot stop a
+# fresh install of Hermes.
+# --------------------------------------------------------------------------
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
+bedrock = ["boto3==1.42.89"]
+# Vertex AI provider. It needs google-auth and no API client. This extra is
+# separate from [google], the Workspace skill stack, so that the provider
+# does not install the full Workspace SDK. pyasn1 has the same patched
+# version as [google], because google-auth permits older versions with
+# known faults.
+vertex = ["google-auth==2.55.1", "pyasn1==0.6.4"]
+# Voxtral STT and TTS. The `mistralai` project on PyPI carried a malicious
+# release once (the Mini Shai-Hulud worm), so this pin must stay exact and
+# must name a version that someone checked.
+#
+# It installs at first use, through tools/lazy_deps.py (stt.mistral and
+# tts.mistral). Keep it out of [all]: a quarantined release must not stop a
+# fresh install.
+mistral = ["mistralai==2.4.8"]
+azure-identity = ["azure-identity==1.25.3"]
+
+# --------------------------------------------------------------------------
+# Search, web and media tools
+#
+# Backends for the search, scrape and media tools. Each one is opt-in.
+# --------------------------------------------------------------------------
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
-# Image generation backends
-fal = ["fal-client==0.13.1"]
-# Edge TTS — default TTS provider but still optional (users can pick
-# ElevenLabs / OpenAI / MiniMax instead).
-edge-tts = ["edge-tts==7.2.7"]
-modal = ["modal==1.3.4"]
-daytona = ["daytona==0.155.0"]
-vercel = ["vercel==0.7.2"]
-hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
-messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.1: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
-cron = []  # croniter is now a core dependency; this extra kept for back-compat
-slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.1"]
-matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
-# WeCom callback-mode adapter — parses untrusted XML POST bodies from
-# WeCom-controlled callback endpoints, so we use defusedxml (drop-in
-# replacement for stdlib xml.etree.ElementTree) to block billion-laughs
-# and XXE. aiohttp/httpx are already in [messaging]; defusedxml lands
-# here to keep the dependency local to wecom_callback's threat model.
-wecom = ["defusedxml==0.7.1"]
-cli = ["simple-term-menu==1.6.6"]
-tts-premium = ["elevenlabs==1.59.0"]
-voice = [
-  # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime).
-  "faster-whisper==1.2.1",
-  "sounddevice==0.5.5",
-  "numpy==2.4.3",
-]
-# "Hey Hermes" wake word — on-device hotword detection. All engines are
-# optional; openWakeWord (ONNX) is the free default, sherpa-onnx adds
-# open-vocabulary phrases (any typed phrase, zero training), Porcupine is
-# the premium alternative. Desktop installs ([--include-desktop]) eager-install
-# [wake]+[voice] so the ear works instantly; CLI-only installs lazy-install on
-# first /wake; mirrored in tools/lazy_deps.py.
-wake = [
-  "openwakeword==0.6.0",
-  "onnxruntime==1.27.0",
-  "sherpa-onnx==1.13.4",
-  "sentencepiece==0.2.2",
-  "pvporcupine==4.0.3",
-  "sounddevice==0.5.5",
-  "numpy==2.4.3",
-  # openWakeWord's onnx embedding model scores near-zero on macOS ARM64
-  # (dscripka/openWakeWord#336), so the wake word runs on tflite there.
-  # Upstream declares tflite-runtime for Linux only; ai-edge-litert is the
-  # macOS equivalent, bridged in tools/wake_word.py.
-  "ai-edge-litert==2.1.6; platform_system == 'Darwin'",
-]
-honcho = ["honcho-ai==2.2.0"]
-# Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
-# (memory.supermemory / memory.mem0) at first use. Exact pins MUST match the
-# LAZY_DEPS pins (enforced by tests/test_project_metadata.py). Deliberately
-# excluded from [all] like honcho/hindsight so a quarantined upstream release
-# can't break fresh installs.
-supermemory = ["supermemory==3.50.0"]
-mem0 = ["mem0ai==2.0.10"]
-# Image resize recovery for the vision tools. Pillow is now a CORE dependency
-# (see the main `dependencies` list above) since the byte/pixel shrink paths are on
-# the default vision-embed path and the mid-session lazy install deadlocked the
-# CLI under prompt_toolkit (#40490). This extra is kept as a no-op back-compat
-# alias so existing requests for the `vision` extra resolve.
-vision = []
-# Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now
-# in the main `dependencies` list (with the same platform markers), so
-# any existing requests for the `pty` extra resolve cleanly
-# without pulling in extra packages.
-pty = []
-# CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's
-# sse-starlette / HTTP-SSE stack (and by fastapi in the `web` extra). Before
-# 1.0.1, a malformed Host header makes `request.url.path` desync from the path
-# the ASGI router actually dispatched, so middleware/endpoints that gate on
-# `request.url` can be bypassed. We pin a patched Starlette directly in every
-# extra that exposes a Starlette-backed server surface so pip/uv can't resolve
-# a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
-mcp = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
-# Backwards-compatible no-op alias. Relay is a core dependency on supported
-# wheel targets and intentionally unavailable on other platforms.
-nemo-relay = []
-homeassistant = ["aiohttp==3.14.1"]
-sms = ["aiohttp==3.14.1"]
-teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
-# Computer use — macOS background desktop control via cua-driver (MCP stdio).
-# The cua-driver binary itself is installed via `hermes tools` post-setup
-# (curl install script); this extra just pins the MCP client used to talk
-# to it, which is already provided by the `mcp` extra.
-computer-use = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
-acp = ["agent-client-protocol==0.9.0"]
-# mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
-# The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
-# 2.4.6 release (Mini Shai-Hulud worm); 2.4.6 was removed from PyPI and the
-# project is serving clean releases again (2.4.7 2026-05-25, 2.4.8 2026-05-28).
-# Like other opt-in TTS/STT backends, this is lazy-installed via
-# tools/lazy_deps.py (stt.mistral / tts.mistral) at first use — deliberately
-# NOT re-added to [all] so a future quarantined release can't break fresh
-# installs (see [all] policy comment below).
-mistral = ["mistralai==2.4.8"]
-# OTLP gateway monitoring export (optional). Provides the OpenTelemetry SDK +
-# OTLP/HTTP exporter for monitoring.gateway_health_export. Lazy-installed via
-# tools/lazy_deps.py on first use; never a core dependency and deliberately
-# NOT in [all].
-otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
-bedrock = ["boto3==1.42.89"]
-vertex = ["google-auth==2.55.1"]
-azure-identity = ["azure-identity==1.25.3"]
-termux = [
-  # Baseline Android / Termux path for reliable fresh installs.
-  "python-telegram-bot[webhooks]==22.6",
-  "hermes-agent[cron]",
-  "hermes-agent[cli]",
-  "hermes-agent[mcp]",
-  "hermes-agent[honcho]",
-  "hermes-agent[acp]",
-]
-termux-all = [
-  # Best-effort "install all" profile for Termux. Same policy as [all]:
-  # only includes extras that aren't covered by `tools/lazy_deps.py`.
-  # Backends like telegram/slack/dingtalk/feishu/honcho lazy-install at
-  # first use, so they're no longer eager-installed here.
-  "hermes-agent[termux]",
-  "hermes-agent[google]",
-  "hermes-agent[homeassistant]",
-  "hermes-agent[sms]",
-  "hermes-agent[web]",
-  "hermes-agent[pty]",
-]
-dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
-feishu = ["lark-oapi==1.6.8", "qrcode==7.4.2"]
-google = [
-  # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
-  # Sheets, Docs).  Declared here so dev environments (`uv sync --extra google`)
-  # and packagers ship them without hitting runtime `pip install` paths that
-  # fail in environments without pip (e.g. Nix-managed Python).
-  "google-api-python-client==2.194.0",
-  "google-auth==2.55.1",
-  "google-auth-oauthlib==1.3.1",
-  "google-auth-httplib2==0.3.1",
-  # The Google SDKs permit older vulnerable transitives, so unlocked installs
-  # must carry the same fixed floors as uv.lock and the runtime installers:
-  # httplib2 0.32.0 (GHSA-j5g9-f88f-gfj3 decompression bomb DoS),
-  # pyasn1 0.6.4, google-auth 2.55.1.
-  "httplib2==0.32.0",
-  "pyasn1==0.6.4",
-]
 youtube = [
   # Required by skills/media/youtube-content and
   # optional-skills/productivity/memento-flashcards (youtube_quiz.py).
@@ -317,31 +213,255 @@ youtube = [
 # starlette==1.3.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
 web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.3.1", "python-multipart==0.0.32"]
-all = [
-  # Policy (2026-05-12): `[all]` includes only extras that genuinely
-  # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
-  # session can use, things needed before the agent loop is alive
-  # (terminal/CLI), and skill deps that dev environments need.
-  # Anything an opt-in backend (provider, search, TTS, image, memory,
-  # messaging platform, terminal sandbox) needs MUST live exclusively in
-  # `LAZY_DEPS` and resolve at first use — otherwise one quarantined PyPI
-  # release breaks every fresh install.
+
+# --------------------------------------------------------------------------
+# Speech, audio and the wake word
+#
+# Speech to text, text to speech, and the on-device wake word. The engines
+# under [voice] and [wake] capture from a microphone through libportaudio2,
+# so a container cannot run them. [silk] is different: it is a codec for
+# voice notes that arrive over the network, and it needs no audio hardware.
+# --------------------------------------------------------------------------
+tts-premium = ["elevenlabs==1.59.0"]
+# Edge TTS — default TTS provider but still optional (users can pick
+# ElevenLabs / OpenAI / MiniMax instead).
+edge-tts = ["edge-tts==7.2.7"]
+# SILK audio decode for WeChat/WeCom voice messages (stt.silk).
+silk = ["pilk==0.2.4"]
+# Audio input for local STT and for the wake word. This is a separate extra
+# so that [voice] and the wake engines can contain it. Do not repeat these
+# two pins in each of those extras.
+audio-io = [
+  "sounddevice==0.5.5",
+  "numpy==2.4.3",
+]
+# faster-whisper on its own. It transcribes audio FILES and needs no
+# microphone and no PortAudio. It is separate from [voice] so the Docker
+# image can bake it (voice notes arrive over the network) and so
+# stt.faster_whisper does not pull the microphone stack in.
+stt-whisper = [
+  # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime).
+  "faster-whisper==1.2.1",
+]
+# The microphone stack on top of [stt-whisper].
+voice = [
+  "hermes-agent[stt-whisper]",
+  "hermes-agent[audio-io]",
+]
+# "Hey Hermes" wake word — on-device hotword detection. All engines are
+# optional; openWakeWord (ONNX) is the free default, sherpa-onnx adds
+# open-vocabulary phrases (any typed phrase, zero training), Porcupine is
+# the premium alternative. Desktop installs ([--include-desktop]) eager-install
+# [wake]+[voice] so the ear works instantly; CLI-only installs lazy-install on
+# first /wake; mirrored in tools/lazy_deps.py.
+#
+# Each engine has its own extra, so a lazy install gets only the engine that
+# the user selected. LAZY_DEPS in tools/lazy_deps.py maps
+# wake.openwakeword, wake.sherpa and wake.porcupine to these extras.
+# `[wake]` contains them all, for an install that wants each engine.
+wake-openwakeword = [
+  "hermes-agent[audio-io]",
+  "openwakeword==0.6.0",
+  "onnxruntime==1.27.0",
+]
+# openWakeWord's onnx embedding model scores near-zero on macOS ARM64
+# (dscripka/openWakeWord#336), so the wake word runs on tflite there.
+# Upstream declares tflite-runtime for Linux only; ai-edge-litert is the
+# macOS equivalent, bridged in tools/wake_word.py.
+#
+# The marker belongs on the pin, not on the reference in [wake]. A reader
+# of this extra can then see where the package applies, and lazy_deps skips
+# it on a host where the marker is false.
+wake-tflite = ["ai-edge-litert==2.1.6; platform_system == 'Darwin'"]
+wake-sherpa = [
+  "hermes-agent[audio-io]",
+  "sherpa-onnx==1.13.4",
+  "sentencepiece==0.2.2",
+]
+wake-porcupine = [
+  "hermes-agent[audio-io]",
+  "pvporcupine==4.0.3",
+]
+wake = [
+  "hermes-agent[wake-openwakeword]",
+  "hermes-agent[wake-sherpa]",
+  "hermes-agent[wake-porcupine]",
+  "hermes-agent[wake-tflite]",
+]
+
+# --------------------------------------------------------------------------
+# Image generation
+# --------------------------------------------------------------------------
+# Image generation backends
+fal = ["fal-client==0.13.1"]
+
+# --------------------------------------------------------------------------
+# Messaging platforms
+#
+# One extra for each gateway adapter, so tools/lazy_deps.py installs only
+# the platform that the user enabled. `[messaging]` contains the three that
+# a default install wants.
+#
+# aiohttp carries its patched version in each extra that pulls it in.
+# discord.py, slack-bolt, mautrix and aiohttp-socks each set an upper limit
+# and no lower one, so an installed aiohttp with a known fault would still
+# meet their requirement.
+# --------------------------------------------------------------------------
+telegram = ["python-telegram-bot[webhooks]==22.6"]
+discord = ["discord.py[voice]==2.7.1", "brotlicffi==1.2.0.1", "aiohttp==3.14.3"]
+slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.3"]
+messaging = [
+  "hermes-agent[telegram]",
+  "hermes-agent[discord]",
+  "hermes-agent[slack]",
+  "qrcode==7.4.2",
+]
+matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.3"] # aiohttp pinned to upgrade past CVEs (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
+# WeCom callback-mode adapter — parses untrusted XML POST bodies from
+# WeCom-controlled callback endpoints, so we use defusedxml (drop-in
+# replacement for stdlib xml.etree.ElementTree) to block billion-laughs
+# and XXE. aiohttp/httpx are already in [messaging]; defusedxml lands
+# here to keep the dependency local to wecom_callback's threat model.
+wecom = ["defusedxml==0.7.1"]
+dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
+feishu = ["lark-oapi==1.6.8", "qrcode==7.4.2"]
+teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"]    # aiohttp pinned to upgrade past CVEs
+sms = ["aiohttp==3.14.3"]
+# Google Chat gateway adapter (plugins/platforms/google_chat). It contains
+# [google] for the API and auth stack, and adds the Pub/Sub client for the
+# optional pull-subscription transport.
+#
+# Declare each of these packages here, not only in a list inside the plugin.
+# `uv audit` and the OSV-Scanner CI job read uv.lock. A package that the
+# plugin installs at run time, but that pyproject.toml does not declare,
+# never reaches uv.lock, and no scanner examines it.
+google-chat = [
+  "hermes-agent[google]",
+  "google-cloud-pubsub==2.39.0",
+]
+homeassistant = ["aiohttp==3.14.3"]
+
+# --------------------------------------------------------------------------
+# Memory providers
+#
+# Cloud memory backends. Each one installs at first use through
+# tools/lazy_deps.py, and each stays out of [all], so a quarantined upstream
+# release cannot stop a fresh install.
+# --------------------------------------------------------------------------
+honcho = ["honcho-ai==2.2.0"]
+hindsight = ["hindsight-client==0.6.1"]
+# supermemory and mem0 install at first use, through
+# tools/lazy_deps.py (memory.supermemory / memory.mem0).
+supermemory = ["supermemory==3.50.0"]
+mem0 = ["mem0ai==2.0.10"]
+
+# --------------------------------------------------------------------------
+# Terminal backends
+#
+# Remote sandboxes for the terminal tool.
+# --------------------------------------------------------------------------
+modal = ["modal==1.3.4"]
+daytona = ["daytona==0.155.0"]
+vercel = ["vercel==0.7.2"]
+
+# --------------------------------------------------------------------------
+# Editor and protocol integrations
+# --------------------------------------------------------------------------
+# CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's
+# sse-starlette / HTTP-SSE stack (and by fastapi in the `web` extra). Before
+# 1.0.1, a malformed Host header makes `request.url.path` desync from the path
+# the ASGI router actually dispatched, so middleware/endpoints that gate on
+# `request.url` can be bypassed. We pin a patched Starlette directly in every
+# extra that exposes a Starlette-backed server surface so pip/uv can't resolve
+# a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
+mcp = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
+acp = ["agent-client-protocol==0.9.0"]
+# Computer use — macOS background desktop control via cua-driver (MCP stdio).
+# The cua-driver binary itself is installed via `hermes tools` post-setup
+# (curl install script); this extra just pins the MCP client used to talk
+# to it, which is already provided by the `mcp` extra.
+# Same dependency set as [mcp] — the computer-use driver IS an MCP server.
+computer-use = ["hermes-agent[mcp]"]
+
+# --------------------------------------------------------------------------
+# Google Workspace
+# --------------------------------------------------------------------------
+google = [
+  # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
+  # Sheets, Docs).  Declared here so dev environments (`uv sync --extra google`)
+  # and packagers ship them without hitting runtime `pip install` paths that
+  # fail in environments without pip (e.g. Nix-managed Python).
   #
-  # Removed from [all] on 2026-05-12 (covered by lazy-install):
-  #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
-  #   modal, daytona, vercel, messaging (telegram/discord/slack),
-  #   matrix, slack, honcho, voice (faster-whisper),
-  #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
-  #
-  # Why: the matrix extra in particular pulls `mautrix[encryption]`
-  # which depends on `python-olm`. python-olm has Linux-only wheels and
-  # no native build path on Windows or modern macOS. With matrix in
-  # [all], `uv sync --locked` on Windows tried to build it from sdist
-  # and failed on `make`. Lazy-install routes that build to first use,
-  # where the user is expected to have a toolchain available.
-  "hermes-agent[cron]",
+  # [vertex] carries google-auth + pyasn1 (the provider needs only those);
+  # compose it rather than repeating the pins and risking drift.
+  "hermes-agent[vertex]",
+  "google-api-python-client==2.194.0",
+  "google-auth-oauthlib==1.3.1",
+  "google-auth-httplib2==0.3.1",
+  # The Google SDKs permit older vulnerable transitives, so unlocked installs
+  # must carry the same fixed floor as uv.lock and the runtime installers:
+  # httplib2 0.32.0 (GHSA-j5g9-f88f-gfj3 decompression bomb DoS).
+  "httplib2==0.32.0",
+]
+
+# --------------------------------------------------------------------------
+# Observability
+# --------------------------------------------------------------------------
+# OTLP gateway monitoring export (optional). Provides the OpenTelemetry SDK +
+# OTLP/HTTP exporter for monitoring.gateway_health_export. Lazy-installed via
+# tools/lazy_deps.py on first use; never a core dependency and deliberately
+# NOT in [all].
+otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
+# HF Agent Trace Viewer upload (`hermes trace upload` / /upload-trace).
+trace-upload = ["huggingface-hub==1.24.0"]
+# Document text extraction for read_file: PDF, legacy Office, OpenDocument,
+# RTF and EPUB. Imports as `anydoc`.
+doc-extract = ["firecrawl-anydoc==0.1.6"]
+
+# --------------------------------------------------------------------------
+# Interface and platform profiles
+#
+# [cli] holds the interactive menu. [termux] and [termux-all] give an
+# install profile for Android. [all] is the set that install.sh syncs.
+# --------------------------------------------------------------------------
+cli = ["simple-term-menu==1.6.6"]
+termux = [
+  # Baseline Android / Termux path for reliable fresh installs.
+  "hermes-agent[telegram]",
   "hermes-agent[cli]",
-  "hermes-agent[pty]",
+  "hermes-agent[mcp]",
+  "hermes-agent[honcho]",
+  "hermes-agent[acp]",
+]
+termux-all = [
+  # Best-effort "install all" profile for Termux. Same policy as [all]:
+  # include only the extras that `tools/lazy_deps.py` does not map. A
+  # backend such as telegram, slack, dingtalk, feishu or honcho installs at
+  # first use, so this list must not name it.
+  "hermes-agent[termux]",
+  "hermes-agent[google]",
+  "hermes-agent[homeassistant]",
+  "hermes-agent[sms]",
+  "hermes-agent[web]",
+]
+all = [
+  # [all] holds only the extras that CANNOT install at first use: what
+  # each session can use, what must exist before the agent loop starts
+  # (terminal, CLI), and the skill dependencies that a dev environment
+  # needs.
+  #
+  # An opt-in backend — provider, search, TTS, image, memory, messaging
+  # platform, terminal sandbox — MUST stay out of this list and get a
+  # `LAZY_DEPS` entry in tools/lazy_deps.py instead. One quarantined PyPI
+  # release must not stop each fresh install.
+  #
+  # [matrix] shows the second reason to keep this list small. It pulls
+  # `mautrix[encryption]`, which needs `python-olm`. python-olm has wheels
+  # for Linux only and no build path on Windows or on current macOS, so
+  # with [matrix] here `uv sync --locked` on Windows built it from an sdist
+  # and failed on `make`. An install at first use moves that build to a
+  # point where the user can have a toolchain.
+  "hermes-agent[cli]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
@@ -350,6 +470,12 @@ all = [
   "hermes-agent[web]",
   "hermes-agent[youtube]",
 ]
+# --------------------------------------------------------------------------
+# Development
+# --------------------------------------------------------------------------
+# setuptools: 83 (torch >=2.13 requires setuptools 83). mcp + starlette come
+# from [mcp] so the CVE-2026-48710 floor is pinned in exactly one place.
+dev = ["hermes-agent[mcp]", "debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]
 
 [build-system]
 requires = ["setuptools==83.0.0"]
@@ -367,9 +493,32 @@ override-dependencies = [
   # so, we force-override this to pynacl 1.6. here.
   # remove this when we update discord.py
   "pynacl>=1.6,<1.7",
+  # alibabacloud-tea-openapi caps cryptography<49, and its latest release
+  # still does. Without this override, that cap holds cryptography at 48.0.1
+  # and its three advisories (see the cryptography pin in
+  # [project].dependencies). The package uses cryptography only to sign
+  # requests with RSA and AES, and that API did not break in 49 or 50.
+  # Remove this line when alibabacloud-tea-openapi lifts the cap.
+  "cryptography>=50,<51",
 ]
 exclude-newer = "14 days"
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false }
+# Per-package overrides of the quarantine window above. Each package here
+# needs a version that the window would hide, so each gets its own cut-off
+# instead.
+#
+# Give a date, not `false`. `false` removes the cut-off for that package
+# altogether, so uv would accept a release published minutes ago — the exact
+# risk that exclude-newer exists to remove. A date holds the package at the
+# version we pinned while it keeps the guarantee for anything newer.
+#
+# Each timestamp is the last file upload for the pinned version, so uv can
+# see every wheel of that release and no later release. Move a timestamp
+# only when you move the matching pin.
+#
+# h2 is here for a fault, not a pin: 4.3.0 carries GHSA-6hr6-w5qg-qmwg and
+# the fix landed in 4.4.1, inside the quarantine window. A known fault in
+# the tree is the worse of the two risks.
+exclude-newer-package = { vercel = "2026-07-21T21:06:02Z", nemo-relay = "2026-08-07T03:18:12Z", huggingface_hub = "2026-07-17T09:54:02Z", aiohttp = "2026-07-23T01:57:28Z", cryptography = "2026-07-31T14:25:11Z", firecrawl-anydoc = "2026-08-05T18:29:24Z", h2 = "2026-08-03T11:45:10Z" }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's

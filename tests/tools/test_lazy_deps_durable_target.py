@@ -57,13 +57,71 @@ class TestGatingWithTarget:
         )
         assert ld._allow_lazy_installs() is False
 
-    def test_disable_env_allows_with_target(self, monkeypatch, tmp_path):
+    def test_a_target_permits_install_specs_in_a_sealed_image(
+        self, monkeypatch, tmp_path
+    ):
+        """install_specs must still work in the container.
+
+        A memory provider that a user installs into ~/.hermes/plugins names
+        its own packages in plugin.yaml, and pyproject.toml does not hold
+        them, so no image can bake them. The target directory is where those
+        go. ensure() is the one that must refuse — see
+        test_ensure_refuses_in_a_sealed_image_even_with_a_target.
+        """
         monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
         monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(tmp_path))
         monkeypatch.setattr(
             "hermes_cli.config.load_config", lambda: {}, raising=False
         )
         assert ld._allow_lazy_installs() is True
+
+    def test_ensure_refuses_in_a_sealed_image_even_with_a_target(
+        self, monkeypatch, tmp_path
+    ):
+        """A LAZY_DEPS feature never installs in the image.
+
+        The build bakes each extra that a container can run, so a feature
+        that reaches this point names a dependency the image should have
+        shipped. Report that instead of a download from PyPI. The target
+        directory must not change this: it exists for install_specs.
+        """
+        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+        monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(tmp_path))
+        monkeypatch.setattr(ld, "feature_missing", lambda _f: ("zzzpkg==1.0",))
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip must not run in a sealed image"),
+        )
+        feature = next(iter(ld.LAZY_DEPS))
+        with pytest.raises(ld.FeatureUnavailable) as excinfo:
+            ld.ensure(feature, prompt=False)
+        assert "HERMES_DISABLE_LAZY_INSTALLS" in str(excinfo.value)
+
+    def test_sealed_reason_does_not_blame_the_config_key(self, monkeypatch):
+        """The sealed message must not name a setting that the user never set.
+
+        The message must not say "security.allow_lazy_installs=false". That
+        key is not the cause, and the venv is read-only, so a
+        `uv pip install` command cannot succeed.
+        """
+        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+        reason = ld._sealed_venv_reason()
+        assert reason and "allow_lazy_installs" not in reason
+        assert "HERMES_DISABLE_LAZY_INSTALLS" in reason
+
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        assert ld._sealed_venv_reason() is None
+
+    def test_sealed_error_omits_the_manual_install_hint(self, monkeypatch):
+        """A `uv pip install` hint is useless against a read-only venv."""
+        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+        err = ld.FeatureUnavailable(
+            "some.feature", ("pkg==1.0",), ld._sealed_venv_reason(), actionable=False
+        )
+        assert "uv pip install" not in str(err)
+        # ...but the normal path keeps it.
+        actionable = ld.FeatureUnavailable("some.feature", ("pkg==1.0",), "nope")
+        assert "uv pip install" in str(actionable)
 
 
     def test_normal_mode_unaffected(self, monkeypatch):
@@ -156,11 +214,13 @@ class TestInstallArgConstruction:
         monkeypatch.setattr(ld.shutil, "which", lambda _: None)
 
         captured = {}
+        calls: list[list[str]] = []
 
         def fake_run(cmd, *a, **k):
             # The pip --version probe must look healthy so we reach install.
             if "--version" in cmd:
                 return subprocess.CompletedProcess(cmd, 0, "pip 24.0", "")
+            calls.append(list(cmd))
             captured["cmd"] = cmd
             return subprocess.CompletedProcess(cmd, 0, "ok", "")
 
@@ -170,7 +230,11 @@ class TestInstallArgConstruction:
 
         result = ld._venv_pip_install(("somepkg==1.2.3",))
         assert result.success
-        cmd = captured["cmd"]
+        # The backend install, not the --no-deps security-override repair pass
+        # that follows it (see tools/lazy_deps._pip_reassert_overrides).
+        backend = [c for c in calls if "--no-deps" not in c]
+        assert backend, f"no backend install captured: {calls}"
+        cmd = backend[0]
         # --target points at the durable dir...
         assert "--target" in cmd
         assert str(target) in cmd
@@ -179,8 +243,40 @@ class TestInstallArgConstruction:
         # ...and the spec is last.
         assert cmd[-1] == "somepkg==1.2.3"
 
+    def test_override_repair_pass_targets_the_durable_dir(self, tmp_path, monkeypatch):
+        """The pip override repair must land in the durable target too.
+
+        Without --target the repair would write the overridden package into
+        the sealed core venv, which is exactly what durable-target mode exists
+        to prevent.
+        """
+        target = tmp_path / "lazy-packages"
+        monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(target))
+        monkeypatch.setattr(ld.shutil, "which", lambda _: None)
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, *a, **k):
+            if "--version" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, "pip 24.0", "")
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        monkeypatch.setattr(ld, "_activate_target_on_syspath", lambda _t: None)
+
+        ld._venv_pip_install(("somepkg==1.2.3",))
+        repair = [c for c in calls if "--no-deps" in c]
+        if not ld._security_overrides():
+            pytest.skip("no security overrides configured")
+        assert repair, f"no override repair pass captured: {calls}"
+        assert "--target" in repair[0] and str(target) in repair[0], (
+            f"repair pass must write to the durable target: {repair[0]}"
+        )
+
     def test_no_target_args_in_venv_scoped_mode(self, monkeypatch):
-        # Env unset → plain venv-scoped install, no --target / --constraint.
+        # Env unset → plain venv-scoped install, no --target and no
+        # core-constraints file.
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
         monkeypatch.setattr(ld.shutil, "which", lambda _: None)
         captured = {}
@@ -194,8 +290,20 @@ class TestInstallArgConstruction:
         monkeypatch.setattr(ld.subprocess, "run", fake_run)
         result = ld._venv_pip_install(("somepkg==1.2.3",))
         assert result.success
-        assert "--target" not in captured["cmd"]
-        assert "--constraint" not in captured["cmd"]
+        cmd = captured["cmd"]
+        assert "--target" not in cmd
+        # The durable-target mode's core-constraints file must be absent. The
+        # pip tier does still carry a --constraint holding the security floor
+        # (see tools/lazy_deps._security_overrides), so assert on the file's
+        # role rather than on the flag's mere presence.
+        constraint_paths = [
+            Path(cmd[i + 1])
+            for i, tok in enumerate(cmd)
+            if tok == "--constraint"
+        ]
+        assert not any(
+            p.name.startswith("hermes-core-constraints-") for p in constraint_paths
+        ), f"venv-scoped install must not pin against a core-constraints file: {cmd}"
 
 
 @pytest.mark.skipif(

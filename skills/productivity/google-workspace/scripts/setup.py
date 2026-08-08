@@ -10,7 +10,6 @@ Commands:
   setup.py --auth-url                       # Print the OAuth URL for user to visit
   setup.py --auth-code CODE                 # Exchange auth code for token
   setup.py --revoke                         # Revoke and delete stored token
-  setup.py --install-deps                   # Install Python dependencies only
 
 Agent workflow:
   1. Run --check. If exit 0, auth is good — skip setup.
@@ -26,10 +25,7 @@ from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
 import argparse
 import json
 import os
-import shutil
-import subprocess
 import sys
-from importlib.metadata import version as _distribution_version
 from pathlib import Path
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
@@ -53,21 +49,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
-]
-
-# Exact pins: keep in sync with pyproject.toml [project.optional-dependencies].google
-# and tools/lazy_deps.py LAZY_DEPS['skill.google_workspace'].
-# Pinning all protects against version drift and ensures the security floors
-# (httplib2 GHSA-j5g9-f88f-gfj3, stale pyasn1/google-auth) are honoured
-# regardless of install path.
-REQUIRED_PACKAGES = [
-    "google-api-python-client==2.194.0",
-    "google-auth==2.55.1",
-    "google-auth-oauthlib==1.3.1",
-    "google-auth-httplib2==0.3.1",
-    # GHSA-j5g9-f88f-gfj3 — Decompression Bomb DoS via unbounded gzip/deflate
-    "httplib2==0.32.0",
-    "pyasn1==0.6.4",
 ]
 
 # OAuth redirect for "out of band" manual code copy flow.
@@ -107,85 +88,30 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
     )
 
 
-def _missing_required_packages() -> list[str]:
-    """Return exact requirements absent or stale in this interpreter.
+def _require_google_libs() -> None:
+    """Fail with an actionable message if the Google SDKs aren't importable.
 
-    All REQUIRED_PACKAGES entries are exact ``name==version`` pins, so a
-    direct version comparison is sufficient — no ``packaging`` dependency
-    needed in this standalone script.
+    These ship in the ``[google]`` extra, which is part of ``[all]`` — every
+    supported install path (install.sh, Docker, Nix) syncs it. So this only
+    fires on a partial/stripped environment, where the fix is to repair the
+    install rather than to pip-install packages behind the installer's back.
     """
-    missing = []
-    for spec in REQUIRED_PACKAGES:
-        name, _, wanted = spec.partition("==")
-        try:
-            if _distribution_version(name) != wanted:
-                missing.append(spec)
-        except Exception:
-            missing.append(spec)
-    return missing
-
-
-def install_deps():
-    """Install missing or stale Google API packages. Returns True on success."""
-    missing = _missing_required_packages()
-    if not missing:
-        print("Dependencies already installed.")
-        return True
-
-    print("Installing Google API dependencies...")
-
-    # First choice: pip in the current interpreter. Works for most installs.
     try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
-            stdout=subprocess.DEVNULL,
+        import googleapiclient  # noqa: F401
+        import google.auth  # noqa: F401
+        import google_auth_oauthlib  # noqa: F401
+    except ImportError as e:
+        print(
+            f"ERROR: Google Workspace libraries are not available ({e}).\n"
+            "\n"
+            "These ship with Hermes in the [google] extra (included in [all]),\n"
+            "so a supported install already has them. To repair:\n"
+            "  hermes update\n"
+            "\n"
+            "For a source checkout:\n"
+            "  uv sync --extra all",
+            file=sys.stderr,
         )
-        remaining = _missing_required_packages()
-        if remaining:
-            print(f"ERROR: Dependencies remain stale after pip install: {' '.join(remaining)}")
-            return False
-        print("Dependencies installed.")
-        return True
-    except subprocess.CalledProcessError as e:
-        pip_error = e
-
-    # Fallback: the interpreter has no pip (the Hermes Docker image's venv is
-    # built with `uv sync`, which does not bootstrap pip). `uv pip install
-    # --python <interpreter>` installs into that exact interpreter without
-    # needing pip present. Targeting sys.executable keeps us on the venv the
-    # script is actually running under, rather than guessing.
-    uv = shutil.which("uv")
-    if uv:
-        try:
-            subprocess.check_call(
-                [uv, "pip", "install", "--python", sys.executable, "--quiet"]
-                + missing,
-                stdout=subprocess.DEVNULL,
-            )
-            remaining = _missing_required_packages()
-            if remaining:
-                print(f"ERROR: Dependencies remain stale after uv install: {' '.join(remaining)}")
-                return False
-            print("Dependencies installed.")
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"ERROR: Failed to install dependencies via uv: {e}")
-            print(f"Manually: {uv} pip install --python {sys.executable} {' '.join(REQUIRED_PACKAGES)}")
-            return False
-
-    print(f"ERROR: Failed to install dependencies: {pip_error}")
-    print(
-        "On environments without pip (e.g. Nix, or the Hermes Docker image's "
-        "uv-managed venv), install the optional extra instead:"
-    )
-    print("  hermes setup")
-    print(f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
-    return False
-
-
-def _ensure_deps():
-    """Check exact dependency versions, install if stale, exit on failure."""
-    if _missing_required_packages() and not install_deps():
         sys.exit(1)
 
 
@@ -221,7 +147,7 @@ def check_auth(quiet: bool = False):
         print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
         return False
 
-    _ensure_deps()
+    _require_google_libs()
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
@@ -365,7 +291,7 @@ def get_auth_url():
         print("ERROR: No client secret stored. Run --client-secret first.")
         sys.exit(1)
 
-    _ensure_deps()
+    _require_google_libs()
     from google_auth_oauthlib.flow import Flow
 
     flow = Flow.from_client_secrets_file(
@@ -396,7 +322,7 @@ def exchange_auth_code(code: str):
         print("ERROR: OAuth state mismatch. Run --auth-url again to start a fresh session.")
         sys.exit(1)
 
-    _ensure_deps()
+    _require_google_libs()
     from google_auth_oauthlib.flow import Flow
     from urllib.parse import parse_qs, urlparse
 
@@ -455,7 +381,7 @@ def revoke():
         print("No token to revoke.")
         return
 
-    _ensure_deps()
+    _require_google_libs()
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
@@ -491,7 +417,6 @@ def main():
     group.add_argument("--auth-url", action="store_true", help="Print OAuth URL for user to visit")
     group.add_argument("--auth-code", metavar="CODE", help="Exchange auth code for token")
     group.add_argument("--revoke", action="store_true", help="Revoke and delete stored token")
-    group.add_argument("--install-deps", action="store_true", help="Install Python dependencies")
     args = parser.parse_args()
 
     if args.check:
@@ -506,8 +431,6 @@ def main():
         exchange_auth_code(args.auth_code)
     elif args.revoke:
         revoke()
-    elif args.install_deps:
-        sys.exit(0 if install_deps() else 1)
 
 
 if __name__ == "__main__":

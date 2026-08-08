@@ -27,11 +27,14 @@ def test_stale_google_transitives_are_reported_missing(monkeypatch):
 
     monkeypatch.setattr(oauth, "_distribution_version", fake_version)
 
-    assert oauth._missing_required_packages() == [
+    # The three stale ones, and only those. Compared as a set: the order
+    # follows the [google-chat] extra, and reordering that extra is not a
+    # fault worth failing a test over.
+    assert set(oauth._missing_required_packages()) == {
         "google-auth==2.55.1",
         "httplib2==0.32.0",
         "pyasn1==0.6.4",
-    ]
+    }
 
 
 def test_installer_repairs_stale_transitives(monkeypatch):

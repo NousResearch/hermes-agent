@@ -204,12 +204,15 @@ def harden_import_path(src_root: str | None = None) -> None:
 def activate_durable_lazy_target() -> None:
     """Put the durable lazy-install dir on ``sys.path`` if one is configured.
 
-    On immutable Docker images the agent venv is sealed and lazy installs
-    are redirected to a writable dir on the data volume
-    (``HERMES_LAZY_INSTALL_TARGET``, e.g. ``/opt/data/lazy-packages``).
-    Packages installed there on a previous run must be importable on this
-    run, so we activate the dir here — at the very first import, before any
-    backend module imports its SDK.
+    ``HERMES_LAZY_INSTALL_TARGET`` names a writable directory that holds
+    lazily installed packages. Hermes puts the directory on ``sys.path``
+    here, at the first import, so that a package installed on an earlier run
+    is importable on this run.
+
+    The published Docker image sets the variable to
+    ``/opt/data/lazy-packages`` on the data volume. Only ``install_specs``
+    writes there — packages a plugin manifest declares, which no image
+    build can bake.
 
     The activation appends to the END of ``sys.path`` so the core venv
     always wins name collisions (see ``tools.lazy_deps`` for the full

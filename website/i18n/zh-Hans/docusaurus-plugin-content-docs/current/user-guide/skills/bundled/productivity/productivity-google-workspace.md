@@ -315,7 +315,7 @@ $GAPI docs append DOC_ID --text "Additional content to append"
 | `HttpError 403: Insufficient Permission` | 缺少 API scope —— `$GSETUP --revoke` 后重新执行步骤 3-5 |
 | `AUTHENTICATED (partial)` 或「Token missing scopes」 | 新的写入功能（Drive 写入/删除、Docs 创建/编辑）需要重新授权。`$GSETUP --revoke` 后重新执行步骤 3-5 以授予升级后的 scope。 |
 | `HttpError 403: Access Not Configured` | API 未启用 —— 用户需在 Google Cloud Console 中启用 |
-| `ModuleNotFoundError` | 运行 `$GSETUP --install-deps` |
+| `ModuleNotFoundError` | 修复安装：`hermes update`（源码检出：`uv sync --extra all`）|
 | 高级保护阻止授权 | Workspace 管理员必须将 OAuth 客户端 ID 加入白名单 |
 
 ## 撤销访问权限

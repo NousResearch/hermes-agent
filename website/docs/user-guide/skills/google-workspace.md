@@ -188,4 +188,4 @@ All commands return JSON. Key fields per service:
 | `REFRESH_FAILED` | Token revoked — re-run authorization steps |
 | `HttpError 403: Insufficient Permission` | Missing scope — revoke and re-authorize with the right services |
 | `HttpError 403: Access Not Configured` | API not enabled in Google Cloud Console |
-| `ModuleNotFoundError` | Run setup script with `--install-deps` |
+| `ModuleNotFoundError` | Repair the install: `hermes update` (source checkout: `uv sync --extra all`) |

@@ -188,4 +188,4 @@ $GAPI contacts list --max 20
 | `REFRESH_FAILED` | Token 已被撤销——重新执行授权步骤 |
 | `HttpError 403: Insufficient Permission` | 缺少 scope（权限范围）——撤销并以正确的服务重新授权 |
 | `HttpError 403: Access Not Configured` | API 未在 Google Cloud Console 中启用 |
-| `ModuleNotFoundError` | 使用 `--install-deps` 运行配置脚本 |
+| `ModuleNotFoundError` | 修复安装：`hermes update`（源码检出：`uv sync --extra all`）|

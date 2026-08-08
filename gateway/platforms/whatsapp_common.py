@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -503,50 +504,19 @@ class WhatsAppBehaviorMixin:
 # Shared bridge directory resolution for CLI and adapter
 # ---------------------------------------------------------------------------
 
+SOURCE_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+
+
 def resolve_whatsapp_bridge_dir() -> Path:
-    """Resolve the WhatsApp bridge directory, mirroring to HERMES_HOME if needed.
+    """Return the directory the WhatsApp bridge should run from.
 
-    When the install tree is read-only (e.g., Docker /opt/hermes), this function
-    mirrors the bridge source to a writable HERMES_HOME location and returns that
-    path. This ensures npm install works in Docker environments.
+    gateway.sidecar_runtime holds the rungs and the reason a read-only tree
+    has to copy the bridge somewhere writable.
 
-    Returns the resolved bridge directory path.
+    The bridge keeps its Baileys credentials in ``$HERMES_HOME/whatsapp/session``,
+    which is a separate directory, so where the bridge itself runs from does
+    not affect a paired account.
     """
-    import shutil
-    from pathlib import Path as _Path
+    from gateway.sidecar_runtime import resolve_sidecar
 
-    # Default location in install tree (may be read-only)
-    from hermes_constants import get_hermes_home
-    install_bridge = _Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
-
-    # Try HERMES_HOME location first
-    hermes_home = get_hermes_home()
-    hermes_home_bridge = hermes_home / "scripts" / "whatsapp-bridge"
-
-    # Check if install dir is writable
-    try:
-        test_file = install_bridge / ".write_test"
-        test_file.touch()
-        test_file.unlink()
-        install_writable = True
-    except (OSError, PermissionError):
-        install_writable = False
-
-    if install_writable:
-        return install_bridge
-
-    # Install dir is read-only, mirror to HERMES_HOME if needed
-    if hermes_home_bridge.exists():
-        return hermes_home_bridge
-
-    # Mirror the bridge source to HERMES_HOME
-    try:
-        hermes_home_bridge.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(
-            install_bridge,
-            hermes_home_bridge,
-            dirs_exist_ok=False,
-        )
-        return hermes_home_bridge
-    except Exception:
-        return install_bridge
+    return resolve_sidecar("whatsapp", SOURCE_BRIDGE_DIR)

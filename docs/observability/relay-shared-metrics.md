@@ -6,8 +6,8 @@ into Hermes and does not require `hermes plugins enable
 observability/nemo_relay`. Hermes remains importable without Relay on other
 native targets. Those targets use an explicit reduced-capability no-op host:
 Hermes execution remains available, while Relay scopes, middleware, plugins,
-and subscribers are unavailable. The `hermes-agent[nemo-relay]` extra remains
-as a no-op compatibility alias for existing installation commands.
+and subscribers are unavailable. `nemo-relay` is a core dependency, with a
+marker for the targets that have a wheel, so there is no extra to install.
 
 Hermes requires NeMo Relay 0.6.0 or later within the 0.6 release line. That
 release establishes the lossless provider-codec contract used for Anthropic

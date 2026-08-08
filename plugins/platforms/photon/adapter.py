@@ -464,6 +464,12 @@ def _sidecar_deps_stale() -> bool:
     lockfile is newer than that marker, the install is out of date. This is the
     same signal ``npm ci`` uses. Returns False (do nothing) if either file is
     missing or unreadable, so a first-run or odd filesystem never blocks start.
+
+    ``gateway.sidecar_runtime.deps_are_current`` reads the same two files with
+    the OPPOSITE missing-file answer: the resolver treats a missing marker as
+    "install needed" and mirrors, this adapter treats it as "nothing to do"
+    because ``sidecar_deps_installed`` owns the missing case. Keep that
+    difference if you merge them.
     """
     lockfile = _sidecar_dir() / "package-lock.json"
     marker = _sidecar_dir() / "node_modules" / ".package-lock.json"
@@ -478,8 +484,7 @@ def _reinstall_sidecar_deps() -> None:
 
     Mirrors ``hermes photon install-sidecar``: ``npm ci`` for an exact,
     reproducible install, falling back to ``npm install`` if the lockfile is
-    missing or drifted. Runs the postinstall patch as part of the install.
-    Best-effort — a failure here just leaves the (stale) deps in place and the
+    missing or drifted. Best-effort — a failure here just leaves the (stale) deps in place and the
     normal ``_start_sidecar`` readiness check reports the real error.
     """
     npm = shutil.which("npm")
@@ -1609,38 +1614,6 @@ class PhotonAdapter(BasePlatformAdapter):
         # Windows: hide the child console (0 elsewhere). Same helper the
         # discord/whatsapp adapters use for their sidecar spawns.
         from hermes_cli._subprocess_compat import windows_hide_flags
-
-        try:
-            # Off the event loop, for the same reason the dep reinstall above
-            # hops to a thread: this spawns node and *waits* for it (up to 10s).
-            # Run inline it holds the shared gateway loop for that whole window,
-            # so every other platform's traffic stalls — and _start_sidecar runs
-            # on every reconnect (connect(is_reconnect=True)), not just startup,
-            # so the stall recurs on a live gateway.
-            patch = await asyncio.to_thread(
-                subprocess.run,  # noqa: S603
-                [
-                    self._node_bin,
-                    str(_sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"),
-                    str(_sidecar_dir()),
-                ],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=10,
-                check=False,
-                # Windows: suppress the brief console flash this short-lived
-                # node patch run would otherwise pop on every sidecar start.
-                creationflags=windows_hide_flags(),
-            )
-            if patch.returncode != 0:
-                raise RuntimeError((patch.stderr or patch.stdout or "").strip())
-            if patch.stderr.strip():
-                logger.debug("[photon] %s", patch.stderr.strip())
-        except Exception as exc:
-            logger.warning(
-                "[photon] failed to apply Spectrum mixed attachment patch: %s",
-                exc,
-            )
 
         self._sidecar_proc = subprocess.Popen(  # noqa: S603
             [self._node_bin, str(_sidecar_dir() / "index.mjs")],

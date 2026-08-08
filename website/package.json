@@ -38,7 +38,11 @@
   "overrides": {
     "serialize-javascript": "7.0.7",
     "uuid": "14.0.1",
-    "minimatch": "10.2.6"
+    "minimatch": "10.2.6",
+    "js-yaml": "4.3.1",
+    "nanoid": "3.3.17",
+    "dompurify": "3.4.13",
+    "mermaid": "11.16.1"
   },
   "browserslist": {
     "production": [

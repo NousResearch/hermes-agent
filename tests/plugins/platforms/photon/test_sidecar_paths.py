@@ -1,9 +1,8 @@
-"""Tests for the Photon sidecar directory resolver (NS-606).
+"""Photon's part of the sidecar resolver.
 
-Hosted/managed images keep the plugin tree under an immutable
-``/opt/hermes``; ``resolve_sidecar_dir`` must run in place when the deps are
-baked and current, and mirror the sidecar to the writable ``HERMES_HOME``
-volume when a runtime install is unavoidable.
+The rungs themselves are covered by tests/gateway/test_sidecar_runtime.py.
+What is Photon-specific, and tested here: the legacy ``PHOTON_SIDECAR_DIR``
+override, and that neither the adapter nor the CLI resolves at import time.
 """
 
 from __future__ import annotations
@@ -16,93 +15,46 @@ import pytest
 import plugins.platforms.photon.sidecar_paths as sidecar_paths
 
 
-def _seed_source(source: Path, *, with_node_modules: bool = False) -> None:
-    source.mkdir(parents=True, exist_ok=True)
-    for name in sidecar_paths._MIRROR_FILES:
-        (source / name).write_text(f"// {name}\n", encoding="utf-8")
-    if with_node_modules:
-        (source / "node_modules").mkdir()
-        (source / "node_modules" / ".package-lock.json").write_text(
-            "{}", encoding="utf-8"
-        )
+def test_legacy_override_still_works(tmp_path, monkeypatch) -> None:
+    """``PHOTON_SIDECAR_DIR`` predates the shared resolver.
 
-
-def _freeze_writability(monkeypatch, *, writable: bool) -> None:
-    monkeypatch.setattr(sidecar_paths, "_dir_writable", lambda _p: writable)
-
-
-def test_env_override_wins(tmp_path, monkeypatch) -> None:
+    Operators set it, so it keeps working alongside the shared
+    ``HERMES_PHOTON_SIDECAR_DIR``.
+    """
     override = tmp_path / "custom"
+    monkeypatch.delenv("HERMES_PHOTON_SIDECAR_DIR", raising=False)
     monkeypatch.setenv("PHOTON_SIDECAR_DIR", str(override))
     assert sidecar_paths.resolve_sidecar_dir(tmp_path / "src") == override
 
 
-def test_writable_source_runs_in_place(tmp_path, monkeypatch) -> None:
-    """Dev installs: writable tree keeps today's behavior exactly."""
+def test_shared_override_wins_over_the_legacy_one(tmp_path, monkeypatch) -> None:
+    """Both set means the operator moved to the shared name. Honour it."""
+    shared = tmp_path / "shared"
+    monkeypatch.setenv("PHOTON_SIDECAR_DIR", str(tmp_path / "legacy"))
+    monkeypatch.setenv("HERMES_PHOTON_SIDECAR_DIR", str(shared))
+    assert sidecar_paths.resolve_sidecar_dir(tmp_path / "src") == shared
+
+
+def test_the_source_dir_is_the_shipped_sidecar(monkeypatch) -> None:
+    """A resolve with no argument reads the sidecar inside the plugin."""
     monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
-    source = tmp_path / "src"
-    _seed_source(source)
-    _freeze_writability(monkeypatch, writable=True)
-    assert sidecar_paths.resolve_sidecar_dir(source) == source
+    monkeypatch.delenv("HERMES_PHOTON_SIDECAR_DIR", raising=False)
+    seen = {}
 
+    def _record(name, source):
+        seen["name"] = name
+        seen["source"] = source
+        return source
 
-def test_readonly_source_with_baked_fresh_deps_runs_in_place(
-    tmp_path, monkeypatch
-) -> None:
-    """Managed-image happy path: deps baked at build time, no mirror needed."""
-    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
-    source = tmp_path / "src"
-    _seed_source(source, with_node_modules=True)
-    # Marker newer than lockfile == fresh install.
-    lock = source / "package-lock.json"
-    marker = source / "node_modules" / ".package-lock.json"
-    os.utime(lock, (1000.0, 1000.0))
-    os.utime(marker, (2000.0, 2000.0))
-    _freeze_writability(monkeypatch, writable=False)
-    assert sidecar_paths.resolve_sidecar_dir(source) == source
-
-
-def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
-    tmp_path, monkeypatch
-) -> None:
-    """Image update changes index.mjs → re-copied; installed deps survive."""
-    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
-    home = tmp_path / "home"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    source = tmp_path / "src"
-    _seed_source(source)
-    _freeze_writability(monkeypatch, writable=False)
-
-    mirror = sidecar_paths.resolve_sidecar_dir(source)
-    # Simulate a completed npm install in the mirror.
-    (mirror / "node_modules").mkdir()
-    (mirror / "node_modules" / "installed.txt").write_text("x", encoding="utf-8")
-
-    # Image update rewrites a source file.
-    (source / "index.mjs").write_text("// index.mjs v2\n", encoding="utf-8")
-
-    resolved = sidecar_paths.resolve_sidecar_dir(source)
-
-    assert resolved == mirror
-    assert (mirror / "index.mjs").read_text(encoding="utf-8") == "// index.mjs v2\n"
-    assert (mirror / "node_modules" / "installed.txt").exists()
-
-
-def test_dir_writable_probe(tmp_path) -> None:
-    assert sidecar_paths.dir_writable(tmp_path) is True
-    ro = tmp_path / "ro"
-    ro.mkdir()
-    ro.chmod(0o555)
-    try:
-        if os.geteuid() == 0:  # pragma: no cover - root ignores perms
-            pytest.skip("root bypasses directory permissions")
-        assert sidecar_paths.dir_writable(ro) is False
-    finally:
-        ro.chmod(0o755)
+    monkeypatch.setattr(sidecar_paths, "resolve_sidecar", _record)
+    sidecar_paths.resolve_sidecar_dir()
+    assert seen["name"] == "photon"
+    assert seen["source"] == sidecar_paths.SOURCE_SIDECAR_DIR
+    assert seen["source"].name == "sidecar"
 
 
 def test_adapter_import_does_not_resolve_sidecar_dir(monkeypatch) -> None:
-    """Importing the adapter must not probe the filesystem or mirror files.
+    """Importing the adapter must not probe the filesystem or copy files.
 
     resolve_sidecar_dir() touch/unlink-probes the source tree and may copy
     files to HERMES_HOME; the adapter and CLI resolve lazily on first use so
@@ -137,3 +89,17 @@ def test_adapter_import_does_not_resolve_sidecar_dir(monkeypatch) -> None:
         monkeypatch.undo()
         importlib.reload(photon_adapter)
         importlib.reload(photon_cli)
+
+
+def test_dir_writable_probe(tmp_path) -> None:
+    """Re-exported for the adapter, which gates npm on it."""
+    assert sidecar_paths.dir_writable(tmp_path) is True
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o555)
+    try:
+        if os.geteuid() == 0:  # pragma: no cover - root ignores perms
+            pytest.skip("root bypasses directory permissions")
+        assert sidecar_paths.dir_writable(ro) is False
+    finally:
+        ro.chmod(0o755)

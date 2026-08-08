@@ -523,8 +523,9 @@ class _OpenWakeWordEngine(_Engine):
         # Install + bridge the runtime first, and refuse the downgrade rather
         # than ship a dead ear.
         if framework == "tflite" and not ensure_tflite_runtime():
-            # Same lazy-install contract as every other backend; the platform
-            # gate lives here because dep specs can't carry PEP 508 markers.
+            # Same lazy-install contract as every other backend. The pin in
+            # [wake-tflite] carries the macOS marker, so this is a no-op on a
+            # host where the package does not apply.
             try:
                 lazy_deps.ensure("wake.openwakeword.tflite", prompt=False)
             except Exception as e:

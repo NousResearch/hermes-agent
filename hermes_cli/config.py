@@ -4708,10 +4708,6 @@ _SCHEMA_DEFINED_DICT_KEYS = frozenset({
 _DYNAMIC_TOP_LEVEL_KEYS = frozenset({
     "custom_providers",  # list-shaped, but indexed by position
 })
-
-# Container keys whose immediate child IS a user-supplied platform name
-# (``platforms.<name>.<field>``).  These appear both at the top level and
-# nested under ``gateway`` — current docs configure platforms under
 # ``gateway.platforms.<name>`` (website/docs/developer-guide/
 # adding-platform-adapters.md) and ``gateway/config.py`` also resolves a
 # top-level ``platforms`` map.  Anything below the platform-name segment is
@@ -4934,6 +4930,16 @@ def set_config_value(key: str, value: str, force: bool = False):
             coerced_value = int(value)
         elif value.replace('.', '', 1).isdigit():
             coerced_value = float(value)
+        else:
+            # Try JSON parse for list/dict values (issue #60551)
+            stripped = value.strip()
+            if stripped.startswith(('{', '[')):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, (dict, list)):
+                        coerced_value = parsed
+                except (json.JSONDecodeError, ValueError):
+                    pass  # Keep original string value
 
     value = coerced_value
     # Normalize a scalar ``model`` key before writing sub-keys so that

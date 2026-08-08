@@ -24,7 +24,7 @@ def _isolated_hermes_home(tmp_path):
 
 
 def _read_env(tmp_path):
-    return (tmp_path / ".env").read_text()
+    return (tmp_path / ".env").read_text(encoding="utf-8")
 
 
 def _read_config(tmp_path):
@@ -192,6 +192,70 @@ class TestConfigGetUnset:
 
 
 # ---------------------------------------------------------------------------
+# JSON list/dict parsing — fix for #60551
+# ---------------------------------------------------------------------------
+
+class TestJsonListDictValues:
+    """hermes config set should parse JSON list/dict values into proper
+    YAML sequences/mappings instead of storing them as quoted strings."""
+
+    def test_json_list_value(self, _isolated_hermes_home):
+        """'[A,B,C]' should be parsed as a YAML list."""
+        set_config_value("terminal.docker_volumes", '["/host/src:/workspace/src","/host/data:/workspace/data"]')
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        val = reloaded["terminal"]["docker_volumes"]
+        assert isinstance(val, list), f"Expected list, got {type(val)}: {val}"
+        assert val == ["/host/src:/workspace/src", "/host/data:/workspace/data"]
+
+    def test_json_dict_value(self, _isolated_hermes_home):
+        """'{\"key\": \"value\"}' should be parsed as a YAML mapping."""
+        set_config_value("model.parameters", '{"temperature": 0.7, "max_tokens": 2048}')
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        val = reloaded["model"]["parameters"]
+        assert isinstance(val, dict), f"Expected dict, got {type(val)}: {val}"
+        assert val == {"temperature": 0.7, "max_tokens": 2048}
+
+    def test_json_list_single_quotes(self, _isolated_hermes_home):
+        """Values that look like JSON but use single quotes should NOT be
+        parsed as JSON (Python json.loads rejects single quotes). Keep as string."""
+        set_config_value("terminal.docker_volumes", "['/host/src']")
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        val = reloaded["terminal"]["docker_volumes"]
+        # Must remain a string — single quotes aren't valid JSON
+        assert isinstance(val, str), f"Expected str, got {type(val)}: {val}"
+
+    def test_json_parse_fallback_to_string(self, _isolated_hermes_home):
+        """Invalid JSON that starts with '{' or '[' should remain a string."""
+        set_config_value("some.key", "{broken: json}")
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        val = reloaded["some"]["key"]
+        assert isinstance(val, str), f"Expected str, got {type(val)}: {val}"
+        assert val == "{broken: json}"
+
+    def test_json_nested_list_in_value(self, _isolated_hermes_home):
+        """JSON lists containing nested objects."""
+        set_config_value("platforms.telegram.allowlist",
+                         '[{"name": "alice", "role": "admin"}, {"name": "bob", "role": "user"}]')
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        val = reloaded["platforms"]["telegram"]["allowlist"]
+        assert isinstance(val, list), f"Expected list, got {type(val)}: {val}"
+        assert val == [{"name": "alice", "role": "admin"}, {"name": "bob", "role": "user"}]
+
+    def test_json_boolean_false_not_parsed_as_list(self, _isolated_hermes_home):
+        """A plain string like '{something}' that doesn't start with
+        '[' or '{' should not trigger JSON parsing."""
+        set_config_value("model.default", "gpt-4o")
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["model"]["default"] == "gpt-4o"
+
+
+# ---------------------------------------------------------------------------
 # List navigation — regression tests for #17876
 # ---------------------------------------------------------------------------
 
@@ -202,7 +266,7 @@ class TestListNavigation:
     """
 
     def _write_config(self, tmp_path, body):
-        (tmp_path / "config.yaml").write_text(body)
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
 
     def test_indexed_set_preserves_sibling_list_entries(self, _isolated_hermes_home):
         """Setting custom_providers.0.api_key must not destroy entry 1."""
@@ -540,7 +604,7 @@ class TestDisplaySkinTouch:
         skins = _isolated_hermes_home / "skins"
         skins.mkdir()
         skin_file = skins / "synthwave.yaml"
-        skin_file.write_text("name: synthwave\ncolors:\n  background: '#1a1030'\n")
+        skin_file.write_text("name: synthwave\ncolors:\n  background: '#1a1030'\n", encoding="utf-8")
         # Age the file so an mtime bump is unambiguous even on coarse clocks.
         _os.utime(skin_file, (1_000_000_000, 1_000_000_000))
 
@@ -561,7 +625,7 @@ class TestDisplaySkinTouch:
         skins = _isolated_hermes_home / "skins"
         skins.mkdir()
         body = "name: neon\ncolors:\n  ui_accent: '#ff33aa'\n"
-        (skins / "neon.yaml").write_text(body)
+        (skins / "neon.yaml").write_text(body, encoding="utf-8")
 
         set_config_value("display.skin", "neon")
         assert (skins / "neon.yaml").read_text() == body

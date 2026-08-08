@@ -16,7 +16,10 @@ platform the gateway truncates it and points the user at the dashboard / file.
 from __future__ import annotations
 
 import json
+import logging
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 from tools import write_approval as wa
 
@@ -57,6 +60,7 @@ def handle_pending_subcommand(
     *,
     memory_store=None,
     set_mode_fn=None,
+    memory_manager=None,
 ) -> Optional[str]:
     """Dispatch a /memory or /skills subcommand.
 
@@ -69,6 +73,11 @@ def handle_pending_subcommand(
         set_mode_fn: optional callable ``(enabled: bool) -> None`` that
             persists the new write_approval boolean to config (gateway provides
             this; CLI uses its own ``save_config_value`` and passes a closure).
+        memory_manager: optional live MemoryManager — when provided, approved
+            memory writes are mirrored to external providers (e.g. Open Brain)
+            via ``notify_memory_tool_write``, mirroring the non-gated path.
+            Without this, approved writes land in MEMORY/USER.md but external
+            providers never see them (issue: write-approval breaks the mirror).
 
     Returns a text string to show the user. Returns None when the args are not
     a write-approval subcommand (caller falls through to its other handling,
@@ -85,7 +94,7 @@ def handle_pending_subcommand(
         return _fmt_pending_list(subsystem)
 
     if sub in {"approve", "apply"}:
-        return _approve(subsystem, rest, memory_store)
+        return _approve(subsystem, rest, memory_store, memory_manager=memory_manager)
 
     if sub in {"reject", "deny", "drop"}:
         return _reject(subsystem, rest)
@@ -105,7 +114,7 @@ def _resolve_one(subsystem: str, rest: List[str]):
     return rest[0], None
 
 
-def _approve(subsystem: str, rest: List[str], memory_store) -> str:
+def _approve(subsystem: str, rest: List[str], memory_store, *, memory_manager=None) -> str:
     target, err = _resolve_one(subsystem, rest)
     if err or target is None:
         return err or f"Usage: /{subsystem} approve <id>"
@@ -124,7 +133,7 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 
     applied, failed = 0, []
     for rec in targets:
-        ok, msg = _apply_one(subsystem, rec, memory_store)
+        ok, msg = _apply_one(subsystem, rec, memory_store, memory_manager=memory_manager)
         if ok:
             wa.discard_pending(subsystem, rec["id"])
             applied += 1
@@ -138,7 +147,7 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
     return "\n".join(out)
 
 
-def _apply_one(subsystem: str, rec, memory_store):
+def _apply_one(subsystem: str, rec, memory_store, *, memory_manager=None):
     payload = rec.get("payload", {})
     try:
         if subsystem == wa.MEMORY:
@@ -146,6 +155,19 @@ def _apply_one(subsystem: str, rec, memory_store):
                 return False, "memory store unavailable"
             from tools.memory_tool import apply_memory_pending
             result = apply_memory_pending(payload, memory_store)
+            # Mirror approved memory writes to external providers (e.g. Open
+            # Brain), exactly as the non-gated tool path does. Without this,
+            # write-approval silently breaks the external mirror: MEMORY.md
+            # is updated but on_memory_write never fires.
+            if result.get("success") and memory_manager is not None:
+                try:
+                    memory_manager.notify_memory_tool_write(
+                        json.dumps(result),
+                        payload,
+                        build_metadata=lambda: {},
+                    )
+                except Exception as e:
+                    logger.debug("mirror of approved write to external provider failed: %s", e)
             return bool(result.get("success")), result.get("error", "")
         else:
             from tools.skill_manager_tool import apply_skill_pending

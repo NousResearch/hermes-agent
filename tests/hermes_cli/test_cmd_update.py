@@ -198,6 +198,138 @@ class TestCmdUpdateTermuxUvBootstrap:
         mock_run.assert_not_called()
 
 
+class TestForkDetection:
+    """Official GitHub URL spelling must not turn the checkout into a fork."""
+
+    @pytest.mark.parametrize(
+        "origin_url",
+        [
+            "https://github.com/nousresearch/hermes-agent",
+            "https://GITHUB.COM/NousResearch/Hermes-Agent.GIT/",
+            "git@github.com:nousresearch/hermes-agent.git",
+        ],
+    )
+    def test_official_repo_urls_are_case_insensitive(self, origin_url):
+        from hermes_cli import main as hm
+
+        assert hm._is_fork(origin_url) is False
+
+    def test_other_owner_is_still_a_fork(self):
+        from hermes_cli import main as hm
+
+        assert hm._is_fork("https://github.com/example/hermes-agent.git") is True
+
+
+class TestForkUpstreamPrompt:
+    """Fork setup follows the update command's interaction mode."""
+
+    def test_assume_yes_adds_upstream_without_reading_stdin(self, tmp_path):
+        from hermes_cli import update_cmd
+
+        with patch.object(
+            update_cmd, "_has_upstream_remote", return_value=False
+        ), patch.object(
+            update_cmd, "_should_skip_upstream_prompt", return_value=False
+        ), patch.object(
+            update_cmd, "_add_upstream_remote", return_value=False
+        ) as add_upstream, patch("builtins.input") as terminal_input:
+            update_cmd._sync_with_upstream_if_needed(
+                ["git"], tmp_path, assume_yes=True
+            )
+
+        terminal_input.assert_not_called()
+        add_upstream.assert_called_once_with(["git"], tmp_path)
+
+    def test_skip_marker_wins_over_assume_yes(self, tmp_path):
+        from hermes_cli import update_cmd
+
+        with patch.object(
+            update_cmd, "_has_upstream_remote", return_value=False
+        ), patch.object(
+            update_cmd, "_should_skip_upstream_prompt", return_value=True
+        ), patch.object(update_cmd, "_add_upstream_remote") as add_upstream, patch(
+            "builtins.input"
+        ) as terminal_input:
+            update_cmd._sync_with_upstream_if_needed(
+                ["git"], tmp_path, assume_yes=True
+            )
+
+        terminal_input.assert_not_called()
+        add_upstream.assert_not_called()
+
+    def test_non_interactive_update_skips_without_persisting_decline(
+        self, tmp_path, capsys
+    ):
+        from hermes_cli import update_cmd
+
+        with patch.object(
+            update_cmd, "_has_upstream_remote", return_value=False
+        ), patch.object(
+            update_cmd, "_should_skip_upstream_prompt", return_value=False
+        ), patch.object(update_cmd, "_add_upstream_remote") as add_upstream, patch.object(
+            update_cmd, "_mark_skip_upstream_prompt"
+        ) as mark_skip, patch.object(
+            update_cmd.sys.stdin, "isatty", return_value=False
+        ), patch.object(
+            update_cmd.sys.stdout, "isatty", return_value=False
+        ), patch(
+            "builtins.input"
+        ) as terminal_input:
+            update_cmd._sync_with_upstream_if_needed(["git"], tmp_path)
+
+        terminal_input.assert_not_called()
+        add_upstream.assert_not_called()
+        mark_skip.assert_not_called()
+        assert "non-interactive session" in capsys.readouterr().out
+
+    def test_gateway_input_callback_handles_prompt(self, tmp_path):
+        from hermes_cli import update_cmd
+
+        prompts = []
+
+        def gateway_input(prompt, default):
+            prompts.append((prompt, default))
+            return "n"
+
+        with patch.object(
+            update_cmd, "_has_upstream_remote", return_value=False
+        ), patch.object(
+            update_cmd, "_should_skip_upstream_prompt", return_value=False
+        ), patch.object(
+            update_cmd, "_mark_skip_upstream_prompt"
+        ) as mark_skip, patch("builtins.input") as terminal_input:
+            update_cmd._sync_with_upstream_if_needed(
+                ["git"], tmp_path, input_fn=gateway_input
+            )
+
+        assert prompts == [("Add official repo as 'upstream' remote? [y/N]:", "n")]
+        terminal_input.assert_not_called()
+        mark_skip.assert_called_once_with()
+
+    def test_interactive_decline_keeps_existing_skip_behavior(self, tmp_path):
+        from hermes_cli import update_cmd
+
+        with patch.object(
+            update_cmd, "_has_upstream_remote", return_value=False
+        ), patch.object(
+            update_cmd, "_should_skip_upstream_prompt", return_value=False
+        ), patch.object(
+            update_cmd, "_mark_skip_upstream_prompt"
+        ) as mark_skip, patch.object(
+            update_cmd.sys.stdin, "isatty", return_value=True
+        ), patch.object(
+            update_cmd.sys.stdout, "isatty", return_value=True
+        ), patch(
+            "builtins.input", return_value="n"
+        ) as terminal_input:
+            update_cmd._sync_with_upstream_if_needed(["git"], tmp_path)
+
+        terminal_input.assert_called_once_with(
+            "Add official repo as 'upstream' remote? [Y/n]: "
+        )
+        mark_skip.assert_called_once_with()
+
+
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
 
@@ -230,9 +362,49 @@ class TestCmdUpdateBranchFallback:
         expected_git_cmd = (
             ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
         )
-        sync_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT)
+        sync_mock.assert_called_once_with(
+            expected_git_cmd,
+            PROJECT_ROOT,
+            assume_yes=False,
+            input_fn=None,
+        )
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_gateway_update_passes_gateway_prompt_to_fork_sync(
+        self, mock_run, _mock_which, capsys
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+        args = SimpleNamespace(gateway=True)
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+            cmd_update(args)
+
+        expected_git_cmd = (
+            ["git", "-c", "windows.appendAtomically=false"]
+            if hm._is_windows()
+            else ["git"]
+        )
+        sync_mock.assert_called_once()
+        assert sync_mock.call_args.args == (expected_git_cmd, PROJECT_ROOT)
+        assert sync_mock.call_args.kwargs["assume_yes"] is False
+        gateway_input = sync_mock.call_args.kwargs["input_fn"]
+        assert callable(gateway_input)
+
+        with patch("hermes_cli.update_cmd._gateway_prompt", return_value="n") as prompt:
+            assert gateway_input("Question?", "n") == "n"
+        prompt.assert_called_once_with("Question?", "n")
+        assert "Already up to date!" in capsys.readouterr().out
 
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):

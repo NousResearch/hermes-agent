@@ -1436,15 +1436,16 @@ def _is_fork(origin_url: Optional[str]) -> bool:
     """Check if the origin remote points to a fork (not the official repo)."""
     if not origin_url:
         return False
-    # Normalize URL for comparison (strip trailing .git if present)
-    normalized = origin_url.rstrip("/")
-    if normalized.endswith(".git"):
-        normalized = normalized[:-4]
+
+    def _normalize_repo_url(url: str) -> str:
+        normalized = url.rstrip("/").casefold()
+        if normalized.endswith(".git"):
+            normalized = normalized[:-4]
+        return normalized
+
+    normalized = _normalize_repo_url(origin_url)
     for official in OFFICIAL_REPO_URLS:
-        official_normalized = official.rstrip("/")
-        if official_normalized.endswith(".git"):
-            official_normalized = official_normalized[:-4]
-        if normalized == official_normalized:
+        if normalized == _normalize_repo_url(official):
             return False
     return True
 
@@ -1520,7 +1521,13 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
     except Exception:
         return False
 
-def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
+def _sync_with_upstream_if_needed(
+    git_cmd: list[str],
+    cwd: Path,
+    *,
+    assume_yes: bool = False,
+    input_fn=None,
+) -> None:
     """Check if fork is behind upstream and sync if safe.
 
     This implements the fork upstream sync logic:
@@ -1541,13 +1548,24 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("ℹ Your fork is not tracking the official Hermes repository.")
         print("  This means you may miss updates from NousResearch/hermes-agent.")
         print()
-        try:
-            response = (
-                input("Add official repo as 'upstream' remote? [Y/n]: ").strip().lower()
+        prompt = "Add official repo as 'upstream' remote? [Y/n]:"
+        if assume_yes:
+            response = "y"
+        elif input_fn is not None:
+            gateway_prompt = "Add official repo as 'upstream' remote? [y/N]:"
+            response = input_fn(gateway_prompt, "n").strip().lower()
+        elif not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print(
+                "  Skipping upstream setup in a non-interactive session. "
+                "Run again with --yes to add it automatically."
             )
-        except (EOFError, KeyboardInterrupt):
-            print()
-            response = "n"
+            return
+        else:
+            try:
+                response = input(f"{prompt} ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                response = "n"
 
         if response in {"", "y", "yes"}:
             print("→ Adding upstream remote...")
@@ -3845,7 +3863,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             # Even if origin is up to date, the fork may be behind upstream
             if is_fork and branch == "main":
-                _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
+                _m()._sync_with_upstream_if_needed(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    assume_yes=assume_yes,
+                    input_fn=gw_input_fn,
+                )
 
             # Restore stash and switch back to original branch if we moved
             if auto_stash_ref is not None:
@@ -4070,7 +4093,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
-            _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
+            _m()._sync_with_upstream_if_needed(
+                git_cmd,
+                _m().PROJECT_ROOT,
+                assume_yes=assume_yes,
+                input_fn=gw_input_fn,
+            )
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras

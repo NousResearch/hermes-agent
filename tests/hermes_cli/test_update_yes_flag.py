@@ -50,6 +50,42 @@ def _make_run_side_effect(
 class TestUpdateYesConfigMigration:
     """--yes auto-answers the config-migration prompt and skips API-key prompts."""
 
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_yes_is_forwarded_to_fork_sync_without_input(
+        self, mock_run, _mock_which
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+        args = SimpleNamespace(yes=True)
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(
+            hm, "_sync_with_upstream_if_needed"
+        ) as sync_mock, patch(
+            "builtins.input"
+        ) as terminal_input:
+            cmd_update(args)
+
+        expected_git_cmd = (
+            ["git", "-c", "windows.appendAtomically=false"]
+            if hm._is_windows()
+            else ["git"]
+        )
+        sync_mock.assert_called_once_with(
+            expected_git_cmd,
+            hm.PROJECT_ROOT,
+            assume_yes=True,
+            input_fn=None,
+        )
+        terminal_input.assert_not_called()
+
     @patch("hermes_cli.config.migrate_config")
     @patch("hermes_cli.config.check_config_version", return_value=(1, 2))
     @patch("hermes_cli.config.get_missing_config_fields", return_value=[])
@@ -134,4 +170,3 @@ class TestUpdateYesConfigMigration:
 
 class TestUpdateYesStashRestore:
     """--yes auto-restores the pre-update autostash without prompting."""
-

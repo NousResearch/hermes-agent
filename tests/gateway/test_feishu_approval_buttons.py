@@ -143,15 +143,34 @@ class TestFeishuExecApproval:
             await adapter.send_exec_approval(
                 chat_id="oc_12345",
                 command="echo test",
-                session_key="my-session-key",
+                session_key="agent:main:feishu:dm:oc_12345",
             )
 
         assert len(adapter._approval_state) == 1
         approval_id = list(adapter._approval_state.keys())[0]
         state = adapter._approval_state[approval_id]
-        assert state["session_key"] == "my-session-key"
+        assert state["session_key"] == "agent:main:feishu:dm:oc_12345"
         assert state["message_id"] == "msg_002"
         assert state["chat_id"] == "oc_12345"
+        assert state["chat_type"] == "dm"
+
+    @pytest.mark.parametrize(
+        ("session_key", "chat_id", "expected"),
+        [
+            ("agent:coder:feishu:dm:oc_12345", "oc_12345", "dm"),
+            ("not-a-gateway-session", "oc_12345", "group"),
+            ("agent:main:slack:dm:D12345", "D12345", "group"),
+            ("agent:main:feishu:thread:oc_12345", "oc_12345", "group"),
+            ("agent:main:feishu:dm:oc_other", "oc_12345", "group"),
+        ],
+    )
+    def test_only_matching_feishu_dm_session_context_is_trusted(
+        self,
+        session_key,
+        chat_id,
+        expected,
+    ):
+        assert FeishuAdapter._card_action_chat_type(session_key, chat_id) == expected
 
 
 # ===========================================================================
@@ -196,6 +215,9 @@ class TestFeishuUpdatePrompt:
         actions = card["elements"][1]["actions"]
         assert [a["value"]["hermes_update_prompt_action"] for a in actions] == ["y", "n"]
 
+        prompt_id = next(iter(adapter._update_prompt_state))
+        assert adapter._update_prompt_state[prompt_id]["chat_type"] == "group"
+
 
 # ===========================================================================
 # _resolve_approval — approval state pop + gateway resolution
@@ -208,17 +230,17 @@ class TestResolveApproval:
     async def test_resolves_once(self):
         adapter = _make_adapter()
         adapter._approval_state[1] = {
-            "session_key": "agent:main:feishu:group:oc_12345",
+            "session_key": "agent:main:feishu:dm:oc_12345",
             "message_id": "msg_001",
             "chat_id": "oc_12345",
+            "chat_type": "dm",
         }
 
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
             await adapter._resolve_approval(1, "once", "Norbert", open_id="ou_user1", chat_id="oc_12345")
 
-        mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once")
+        mock_resolve.assert_called_once_with("agent:main:feishu:dm:oc_12345", "once")
         assert 1 not in adapter._approval_state
-
 
     @pytest.mark.asyncio
     async def test_unauthorized_click_does_not_resolve(self):
@@ -235,6 +257,28 @@ class TestResolveApproval:
 
         mock_resolve.assert_not_called()
         assert 5 in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_group_click_fails_closed_when_allowlists_are_empty(self):
+        adapter = _make_adapter()
+        adapter._approval_state[6] = {
+            "session_key": "agent:main:feishu:group:oc_12345",
+            "message_id": "msg_006",
+            "chat_id": "oc_12345",
+            "chat_type": "group",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._resolve_approval(
+                6,
+                "once",
+                "Mallory",
+                open_id="ou_intruder",
+                chat_id="oc_12345",
+            )
+
+        mock_resolve.assert_not_called()
+        assert 6 in adapter._approval_state
 
 
 # ===========================================================================
@@ -314,6 +358,7 @@ class TestCardActionCallbackResponse:
             "session_key": "sess-1",
             "message_id": "msg-1",
             "chat_id": "oc_12345",
+            "chat_type": "group",
         }
         data = _make_card_action_data(
             {"hermes_action": "approve_once", "approval_id": 1},
@@ -332,6 +377,46 @@ class TestCardActionCallbackResponse:
         assert "Approved once" in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
 
+    def test_allows_approval_click_in_dm_with_empty_allowlists(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[2] = {
+            "session_key": "agent:main:feishu:dm:oc_12345",
+            "message_id": "msg-2",
+            "chat_id": "oc_12345",
+            "chat_type": "dm",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 2},
+            open_id="ou_dm_user",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response.card is not None
+
+    def test_rejects_approval_click_in_group_with_empty_allowlists(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[3] = {
+            "session_key": "agent:main:feishu:group:oc_12345",
+            "message_id": "msg-3",
+            "chat_id": "oc_12345",
+            "chat_type": "group",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 3},
+            open_id="ou_group_user",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response.card is None
+        mock_submit.assert_not_called()
 
     def test_ignores_expired_cached_name(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -378,7 +463,6 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
-
     def test_update_prompt_unauthorized_operator_returns_no_card(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()
@@ -387,6 +471,7 @@ class TestCardActionCallbackResponse:
             "session_key": "sess-up-1",
             "message_id": "msg_up_006",
             "chat_id": "oc_12345",
+            "chat_type": "group",
         }
         adapter._allowed_group_users = {"ou_allowed"}
         data = _make_card_action_data(
@@ -401,6 +486,46 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
+    def test_allows_update_prompt_click_in_dm_with_empty_allowlists(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._update_prompt_state[7] = {
+            "session_key": "agent:main:feishu:dm:oc_12345",
+            "message_id": "msg_up_007",
+            "chat_id": "oc_12345",
+            "chat_type": "dm",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 7},
+            open_id="ou_dm_user",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response.card is not None
+
+    def test_rejects_update_prompt_click_in_group_with_empty_allowlists(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._update_prompt_state[9] = {
+            "session_key": "agent:main:feishu:group:oc_12345",
+            "message_id": "msg_up_009",
+            "chat_id": "oc_12345",
+            "chat_type": "group",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 9},
+            open_id="ou_group_user",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response.card is None
+        mock_submit.assert_not_called()
 
     def test_update_prompt_chat_mismatch_returns_no_card(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -426,7 +551,6 @@ class TestCardActionCallbackResponse:
         assert 8 in adapter._update_prompt_state
         mock_submit.assert_not_called()
 
-
 class TestResolveUpdatePrompt:
     """Test update prompt resolution persists the response file."""
 
@@ -446,4 +570,52 @@ class TestResolveUpdatePrompt:
         assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
         assert 1 not in adapter._update_prompt_state
 
+    @pytest.mark.asyncio
+    async def test_dm_operator_with_empty_allowlists_writes_response(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+        adapter._update_prompt_state[2] = {
+            "session_key": "agent:main:feishu:dm:oc_12345",
+            "message_id": "msg_up_002",
+            "chat_id": "oc_12345",
+            "chat_type": "dm",
+        }
 
+        await adapter._resolve_update_prompt(
+            2,
+            "y",
+            "Alice",
+            open_id="ou_dm_user",
+            chat_id="oc_12345",
+        )
+
+        assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
+        assert 2 not in adapter._update_prompt_state
+
+    @pytest.mark.asyncio
+    async def test_group_operator_with_empty_allowlists_does_not_write_response(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        adapter = _make_adapter()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+        adapter._update_prompt_state[3] = {
+            "session_key": "agent:main:feishu:group:oc_12345",
+            "message_id": "msg_up_003",
+            "chat_id": "oc_12345",
+            "chat_type": "group",
+        }
+
+        await adapter._resolve_update_prompt(
+            3,
+            "y",
+            "Mallory",
+            open_id="ou_group_user",
+            chat_id="oc_12345",
+        )
+
+        assert not (tmp_path / ".hermes" / ".update_response").exists()
+        assert 3 in adapter._update_prompt_state

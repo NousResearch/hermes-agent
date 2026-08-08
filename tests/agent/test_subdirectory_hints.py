@@ -114,6 +114,26 @@ class TestSubdirectoryHintTracker:
         assert tracker.check_tool_call("read_file", {}) is None
         assert tracker.check_tool_call("terminal", {"command": ""}) is None
 
+    def test_windows_command_preserves_backslash_path(self, project):
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        candidates = set()
+        captured = []
+
+        with (
+            patch("agent.shell_hooks.IS_WINDOWS", True),
+            patch.object(
+                tracker,
+                "_add_path_candidate",
+                side_effect=lambda raw, _candidates: captured.append(raw),
+            ),
+        ):
+            tracker._extract_paths_from_command(
+                r"cd C:\Users\alice\project",
+                candidates,
+            )
+
+        assert captured == [r"C:\Users\alice\project"]
+
 
 
 class TestPermissionErrorHandling:

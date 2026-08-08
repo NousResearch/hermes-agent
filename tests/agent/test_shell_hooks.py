@@ -9,7 +9,9 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,7 +23,7 @@ from agent import shell_hooks
 
 def _write_script(tmp_path: Path, name: str, body: str) -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
     return path
 
@@ -142,6 +144,58 @@ class TestMatcher:
 # ── End-to-end subprocess behaviour ───────────────────────────────────────
 
 
+class TestCommandSplitting:
+    def test_windows_backslash_path_is_preserved(self, monkeypatch):
+        monkeypatch.setattr(shell_hooks, "IS_WINDOWS", True)
+
+        command = r"C:\Users\alice\.local\bin\dcg.exe --check"
+
+        assert shell_hooks._split_command(command) == [
+            r"C:\Users\alice\.local\bin\dcg.exe",
+            "--check",
+        ]
+        assert shell_hooks._command_script_path(command) == (
+            r"C:\Users\alice\.local\bin\dcg.exe"
+        )
+        assert shell_hooks._command_script_path(
+            r"powershell C:\Users\alice\hooks\check.ps1"
+        ) == r"C:\Users\alice\hooks\check.ps1"
+
+    def test_windows_quoted_path_and_argument_follow_runtime_rules(self, monkeypatch):
+        monkeypatch.setattr(shell_hooks, "IS_WINDOWS", True)
+        argv = [
+            r"C:\Program Files\dcg.exe",
+            "--label=a b",
+            r"C:\path\with\trailing\\",
+        ]
+
+        assert shell_hooks._split_command(subprocess.list2cmdline(argv)) == argv
+
+    def test_spawn_uses_windows_argv_without_losing_backslashes(self, monkeypatch):
+        monkeypatch.setattr(shell_hooks, "IS_WINDOWS", True)
+        monkeypatch.setattr(shell_hooks, "windows_hide_flags", lambda: 0)
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(shell_hooks.subprocess, "run", fake_run)
+        result = shell_hooks._spawn(
+            shell_hooks.ShellHookSpec(
+                event="pre_tool_call",
+                command=r"C:\Users\alice\.local\bin\dcg.exe --check",
+            ),
+            "{}",
+        )
+
+        assert result["returncode"] == 0
+        assert seen["argv"] == [
+            r"C:\Users\alice\.local\bin\dcg.exe",
+            "--check",
+        ]
+
+
 class TestCallbackSubprocess:
 
 
@@ -239,7 +293,7 @@ class TestCallbackSubprocess:
             session_id="sess-77",
             task_id="task-77",
         )
-        payload = json.loads(capture.read_text())
+        payload = json.loads(capture.read_text(encoding="utf-8"))
         assert payload["hook_event_name"] == "pre_tool_call"
         assert payload["tool_name"] == "terminal"
         assert payload["tool_input"] == {"command": "echo hi"}

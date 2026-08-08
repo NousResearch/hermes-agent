@@ -1192,6 +1192,10 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
+        # Status bar: which 📊 session-usage buckets render (requests, input,
+        # output, cache, total). Omit/empty → all buckets. Cost is separately
+        # gated by display.show_cost.
+        "session_usage_fields": None,
         # Show a color-coded battery read-out as the first status-bar element in
         # the CLI/TUI (off by default). No-op on machines without a battery.
         "battery": False,

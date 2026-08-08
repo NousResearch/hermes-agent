@@ -18116,6 +18116,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # streaming already delivered the body, we can't mutate the sent
             # text, so we fire a separate trailing send below.
             _footer_line = ""
+            _footer_session_usage = None
+            try:
+                # Session counters for the session_tokens footer field: read
+                # from the persisted session row so they survive agent rebuilds,
+                # with graceful fallback (field then renders model-only).
+                _footer_sid = getattr(session_entry, "session_id", None) or _run_start_session_id
+                _footer_sdb = getattr(self, "_session_db", None)
+                _footer_db = getattr(_footer_sdb, "_db", _footer_sdb) if _footer_sdb is not None else None
+                if _footer_sid and _footer_db is not None:
+                    _footer_row = _footer_db.get_session(_footer_sid)
+                    if isinstance(_footer_row, dict):
+                        _footer_session_usage = _footer_row
+            except Exception:
+                _footer_session_usage = None
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
                 _footer_line = _bfl(
@@ -18126,6 +18140,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
                     turn_seconds=_turn_seconds,
+                    session_usage=_footer_session_usage,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

@@ -510,6 +510,20 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
         pricing_version="deepseek-pricing-2026-07",
     ),
+    # Muse Spark — precios definidos localmente (session-stats model_costs.json);
+    # el relay opencode.ai/zen/go no publica pricing en /models. El fallback
+    # proxy de _lookup_official_docs_pricing lo encuentra por nombre de modelo.
+    (
+        "muse",
+        "muse-spark-1.2-contributor",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.10"),
+        output_cost_per_million=Decimal("0.20"),
+        cache_read_cost_per_million=Decimal("0.002"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/zen/go/v1/models",
+        pricing_version="opencode-relay-pricing-2026-08",
+    ),
     # Google Gemini
     (
         "google",
@@ -970,6 +984,14 @@ for _alias, _canonical in {
     ]
 del _alias, _canonical
 
+# Alibaba Cloud Model Studio "Token Plan" lists the model as
+# deepseek-v4-flash-0731 (a frozen 2026-07-31 snapshot of deepseek-v4-flash).
+# Price it at the base flash rate so a selection through the
+# alibaba-token-plan proxy (which is not a snapshot provider) is billable.
+_OFFICIAL_DOCS_PRICING[("deepseek", "deepseek-v4-flash-0731")] = _OFFICIAL_DOCS_PRICING[
+    ("deepseek", "deepseek-v4-flash")
+]
+
 
 def _to_decimal(value: Any) -> Optional[Decimal]:
     if value is None:
@@ -1095,6 +1117,13 @@ def _normalize_anthropic_model_name(model: str) -> str:
     return name
 
 
+# Providers that own entries in the official-docs snapshot. Any provider
+# outside this set (proxy gateways like opencode-go/meta-ai, custom base
+# URLs) routes third-party models whose snapshot entry is keyed by the REAL
+# provider — those get the bare model-name fallback in the lookup below.
+_SNAPSHOT_PROVIDERS = frozenset(p for p, _ in _OFFICIAL_DOCS_PRICING)
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
     # Direct lookup first
@@ -1116,6 +1145,34 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
             if entry:
                 return entry
+    # Proxy provider (opencode-go, meta-ai, custom base URLs, ...): the
+    # snapshot keys by the model's REAL provider, so fall back to a bare
+    # model-name match (e.g. deepseek-v4-flash via opencode-go finds the
+    # ("deepseek", "deepseek-v4-flash") entry). Skipped when the provider
+    # itself owns snapshot entries, where a name collision could pick the
+    # wrong price.
+    #
+    # Some model names are keyed under MULTIPLE snapshot providers with
+    # different rates (deepseek-v4-pro/flash under "deepseek" AND
+    # "fireworks", minimax-m2.7 under two vendors). Taking the first dict
+    # hit would pick whichever provider sorts first, not the one actually
+    # serving the model. Resolve by vendor prefix instead: among the
+    # snapshot providers carrying the model, keep those whose name is a
+    # prefix of the model name ("deepseek" prefixes "deepseek-v4-flash";
+    # "fireworks" does not). Exactly one candidate wins; anything else
+    # (none, or several) is ambiguous and stays unknown rather than guess.
+    if route.provider not in _SNAPSHOT_PROVIDERS:
+        candidates = [
+            snap_provider
+            for snap_provider, snap_model in _OFFICIAL_DOCS_PRICING
+            if snap_model == model
+        ]
+        if len(candidates) == 1:
+            return _OFFICIAL_DOCS_PRICING[(candidates[0], model)]
+        if candidates:
+            prefixed = [p for p in candidates if p and model.startswith(p)]
+            if len(prefixed) == 1:
+                return _OFFICIAL_DOCS_PRICING[(prefixed[0], model)]
     return None
 
 

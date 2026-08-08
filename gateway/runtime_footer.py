@@ -12,10 +12,12 @@ Config (``~/.hermes/config.yaml``)::
         fields: [model, context_pct, cwd]   # order shown; drop any to hide
 
 Available fields:
-    model        — bare model id, vendor prefix dropped (``gpt-5.4``)
-    context_pct  — last-call context occupancy as a percent (``5%``)
-    latency      — wall-clock duration of the turn (``22s``, ``1m05s``)
-    cwd          — home-relative working dir (``~``)
+    model           — bare model id, vendor prefix dropped (``gpt-5.4``)
+    context_pct     — last-call context occupancy as a percent (``5%``)
+    context_usage   — last-call context tokens + percent (``18.9K (9%)``)
+    session_tokens  — cumulative session usage (``📊 Sesión · N req · In · Out · Total``)
+    latency         — wall-clock duration of the turn (``22s``, ``1m05s``)
+    cwd             — home-relative working dir (``~``)
 
 ``latency`` is opt-in: it is NOT in the default field set, so a footer whose
 ``fields`` are unset renders exactly as before.
@@ -35,7 +37,7 @@ piecemeal, the footer is sent as a separate trailing message via
 from __future__ import annotations
 
 import os
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
@@ -60,6 +62,81 @@ def _model_short(model: Optional[str]) -> str:
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def _format_token_count(value: Any) -> str:
+    """Format token counts with compact units (``18.9K``, ``2.9M``)."""
+    try:
+        number = max(0, int(value or 0))
+    except (TypeError, ValueError):
+        number = 0
+    if number >= 1_000_000:
+        return f"{number / 1_000_000:.1f}M"
+    if number >= 1_000:
+        return f"{number / 1_000:.1f}K"
+    return str(number)
+
+
+def format_session_token_usage(usage: Mapping[str, Any] | None) -> str:
+    """Render cumulative token usage for one persisted Hermes session.
+
+    ``input_tokens`` excludes cache tokens in Hermes' canonical accounting, so
+    the displayed ``In`` value follows session-stats and includes read/write
+    cache tokens while also showing the cache amount separately.
+    """
+    if not isinstance(usage, Mapping):
+        return ""
+
+    input_tokens = max(0, int(usage.get("input_tokens", 0) or 0))
+    output_tokens = max(0, int(usage.get("output_tokens", 0) or 0))
+    cache_tokens = max(
+        0,
+        int(usage.get("cache_read_tokens", 0) or 0)
+        + int(usage.get("cache_write_tokens", 0) or 0),
+    )
+    request_count = max(0, int(usage.get("api_call_count", 0) or 0))
+    total_tokens = max(
+        0,
+        int(usage.get("total_tokens", 0) or 0)
+        or input_tokens + cache_tokens + output_tokens,
+    )
+
+    if not (request_count or input_tokens or output_tokens or cache_tokens or total_tokens):
+        return ""
+
+    parts = ["📊 Sesión"]
+    if request_count:
+        parts.append(f"{request_count} req")
+    parts.append(f"In: {_format_token_count(input_tokens + cache_tokens)}")
+    if cache_tokens:
+        parts[-1] += f" (cache: {_format_token_count(cache_tokens)})"
+    parts.append(f"Out: {_format_token_count(output_tokens)}")
+    parts.append(f"Total: {_format_token_count(total_tokens)}")
+    base = _SEP.join(parts)
+    # Cost — append when the persisted session row carries a cost. Prefer
+    # actual_cost_usd (provider-reported) over estimated_cost_usd so models
+    # that return real cost are exact and estimated ones still show.
+    try:
+        cost_val: float | None = None
+        actual = usage.get("actual_cost_usd")
+        estimated = usage.get("estimated_cost_usd")
+        if actual is not None and float(actual) > 0:
+            cost_val = float(actual)
+        elif estimated is not None and float(estimated) > 0:
+            cost_val = float(estimated)
+        # Fallback keys some call sites use
+        if cost_val is None:
+            for _k in ("cost", "total_cost", "cost_usd"):
+                _v = usage.get(_k)
+                if _v is not None and float(_v) > 0:
+                    cost_val = float(_v)
+                    break
+        if cost_val is not None and cost_val > 0:
+            cost_str = f"${cost_val:.4f}" if cost_val < 1 else f"${cost_val:.2f}"
+            return f"{base} {cost_str}"
+    except Exception:
+        pass
+    return base
 
 
 def resolve_footer_config(
@@ -116,6 +193,7 @@ def format_runtime_footer(
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    session_usage: Mapping[str, Any] | None = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -132,6 +210,14 @@ def format_runtime_footer(
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
                 parts.append(f"{pct}%")
+        elif field == "context_usage":
+            if context_length and context_length > 0 and context_tokens >= 0:
+                pct = max(0, min(100, round((context_tokens / context_length) * 100)))
+                parts.append(f"{_format_token_count(context_tokens)} ({pct}%)")
+        elif field == "session_tokens":
+            usage = format_session_token_usage(session_usage)
+            if usage:
+                parts.append(usage)
         elif field == "latency":
             # Wall-clock turn duration. Skipped when the caller supplied no
             # timing (call sites that don't measure) or the value is negative.
@@ -157,6 +243,7 @@ def build_footer_line(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
+    session_usage: Mapping[str, Any] | None = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -167,6 +254,9 @@ def build_footer_line(
     ``turn_seconds`` is the wall-clock duration of the agent run, measured by
     the caller with ``time.monotonic()``.  Callers that don't measure it leave
     it ``None`` and the ``latency`` field is skipped.
+
+    ``session_usage`` is a mapping of persisted session counters (from
+    ``state.db``) used by the ``session_tokens`` field; pass ``None`` to skip.
     """
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
@@ -178,4 +268,5 @@ def build_footer_line(
         cwd=cwd,
         turn_seconds=turn_seconds,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        session_usage=session_usage,
     )

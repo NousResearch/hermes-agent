@@ -332,6 +332,28 @@ When scheduling jobs, you specify where the output goes:
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
 
+### Sending failures to a separate destination
+
+By default, failed-run notices go to the job's normal `deliver` target. Operators
+can route those notices elsewhere at the profile level while keeping successful
+output at each job's intended destination:
+
+```yaml
+cron:
+  failure_deliver: "telegram:123456"
+```
+
+Or configure it from the CLI:
+
+```bash
+hermes config set cron.failure_deliver telegram:123456
+```
+
+`failure_deliver` accepts the same target syntax as a job's `deliver` setting,
+including platform home channels, explicit chats/topics, and comma-separated
+fan-out targets. It applies only when a run fails. If it is unset or blank,
+Hermes preserves the job's normal delivery behavior.
+
 ### Routing intent (`all`)
 
 `all` lets you ship one cron job to every messaging channel you have configured, without having to enumerate them by name. It is **resolved at fire time**, so a job created before you wired up Telegram will pick up Telegram on the next tick after you set `TELEGRAM_HOME_CHANNEL`.

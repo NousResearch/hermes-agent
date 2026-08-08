@@ -957,6 +957,13 @@ class TestWebServerEndpoints:
 
 
 
+    def test_get_dashboard_themes_includes_clarity_preset(self):
+        """The readable built-in theme is advertised by the dashboard API."""
+        resp = self.client.get("/api/dashboard/themes")
+        assert resp.status_code == 200
+        names = {theme["name"] for theme in resp.json()["themes"]}
+        assert "clarity" in names
+
     def _create_session_with_heavy_fields(self, session_id: str) -> None:
         from hermes_state import SessionDB
 
@@ -3049,6 +3056,20 @@ class TestNormaliseThemeDefinition:
         # foreground falls back to default (transparent white)
         assert result["palette"]["foreground"]["hex"] == "#ffffff"
         assert result["palette"]["foreground"]["alpha"] == 0.0
+
+    def test_default_typography_applied_when_missing(self):
+        from hermes_cli.web_server import _normalise_theme_definition
+
+        result = _normalise_theme_definition({"name": "minimal"})
+        typo = result["typography"]
+        assert "fontSans" in typo
+        assert "fontMono" in typo
+        assert "Malgun Gothic" in typo["fontSans"]
+        assert "Noto Sans KR" in typo["fontSans"]
+        assert "D2Coding" in typo["fontMono"]
+        assert typo["baseSize"] == "15px"
+        assert typo["lineHeight"] == "1.55"
+        assert typo["letterSpacing"] == "0"
 
 
 

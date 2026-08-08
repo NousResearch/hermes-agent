@@ -3186,7 +3186,14 @@ def compress_context(
 
         _session_commit_succeeded = False
         split_status = "not_applicable"
-        if agent._session_db:
+        # Persistence-isolated agents (/temp sessions, --no-session one-shots,
+        # background review forks) compress purely in memory: no in-place
+        # archive, no rotation publish, no title/goal/heartbeat migration —
+        # the same behaviour a db-less CLI temp chat already gets. Without
+        # this gate, a desktop temporary chat (which carries a live session_db
+        # handle) published its full compacted transcript as a durable
+        # compression child on every rotation.
+        if agent._session_db and not getattr(agent, "_persist_disabled", False):
             split_status = "pending"
             try:
                 # Trigger memory extraction on the current session before the

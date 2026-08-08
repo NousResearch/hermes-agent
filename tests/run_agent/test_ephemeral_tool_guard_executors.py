@@ -67,6 +67,11 @@ def _make_agent(*, ephemeral: bool):
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
+            # The REAL constructor wiring: init_agent derives
+            # _persist_disabled, _session_json_enabled, and the temporary-
+            # registry entry from this flag — stamping agent.ephemeral after
+            # construction would leave those untested.
+            ephemeral=ephemeral,
         )
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
@@ -74,12 +79,6 @@ def _make_agent(*, ephemeral: bool):
     agent.compression_enabled = False
     agent.save_trajectories = False
     agent._flush_messages_to_session_db = MagicMock()
-    # Mirror agent/agent_init.py for a /temp or --no-session agent:
-    # ephemeral implies persist_disabled and no JSON snapshot.
-    agent.ephemeral = ephemeral
-    if ephemeral:
-        agent._persist_disabled = True
-        agent._session_json_enabled = False
     # Inline memory branch dependencies: a mock store observes the write
     # attempt; no external providers.
     agent._memory_store = MagicMock()
@@ -365,6 +364,111 @@ def test_delegate_child_stays_persistent_for_normal_parent():
         )
     assert child_cls.call_count == 1
     assert child_cls.call_args.kwargs.get("ephemeral") is False
+
+
+# ---------------------------------------------------------------------------
+# Compression rotation. The observed leak (session 20260808_215424_903ac2):
+# a desktop temporary chat carries a live session_db, and auto-compaction's
+# durable commit published the full compacted transcript as a compression
+# child. Three layers now stop it, tested independently:
+#   1. init_agent registers the AGENT's session id in the hermes_state
+#      temporary registry (the TUI registered only its RPC handle, so the
+#      DB-layer refusals checked an id that never appeared in any write —
+#      token accounting then created its FK row and gave the first rotation
+#      a parent to chain from);
+#   2. the compression durable-commit block is skipped for
+#      persistence-isolated agents (memory-only compaction, id unchanged);
+#   3. publish_compression_child refuses registered ids outright.
+# ---------------------------------------------------------------------------
+def test_init_agent_registers_agent_session_id_and_close_releases_it():
+    from hermes_state import is_session_ephemeral
+
+    agent = _make_agent(ephemeral=True)
+    assert agent.session_id, "agent must have a session id"
+    assert is_session_ephemeral(agent.session_id), (
+        "ephemeral agent's own session id must be in the temporary registry — "
+        "DB rows are keyed by THIS id, not the TUI's RPC handle"
+    )
+    agent.close()
+    assert not is_session_ephemeral(agent.session_id)
+
+    normal = _make_agent(ephemeral=False)
+    assert not is_session_ephemeral(normal.session_id)
+
+
+def test_compression_rotation_publishes_nothing_for_temporary_chat(tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        agent = _make_agent(ephemeral=True)
+        agent._session_db = db
+        agent.compression_in_place = False
+        compressor = MagicMock()
+        compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail question"},
+        ]
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 0
+        compressor.last_completion_tokens = 0
+        compressor._last_summary_error = None
+        compressor._last_compress_aborted = False
+        agent.context_compressor = compressor
+        original_sid = agent.session_id
+
+        with patch.object(
+            db, "publish_compression_child", wraps=db.publish_compression_child
+        ) as publish:
+            agent._compress_context(
+                [{"role": "user", "content": f"m{i}"} for i in range(10)],
+                "sys",
+                approx_tokens=10_000,
+            )
+
+        publish.assert_not_called()
+        assert agent.session_id == original_sid, (
+            "temporary chats must compact in memory without rotating the id"
+        )
+        with db._read_ctx() as conn:
+            rows = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        assert rows == 0, "compression left durable rows for a temporary chat"
+    finally:
+        db.close()
+
+
+def test_publish_compression_child_refuses_registered_ids(tmp_path):
+    from hermes_state import (
+        SessionDB,
+        mark_session_ephemeral,
+        unmark_session_ephemeral,
+    )
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent = "publish-refusal-parent"
+    try:
+        # The leak's exact shape: a parent row EXISTS (created before the id
+        # was protected) — the registry must still refuse the publication.
+        db.create_session(parent, "desktop")
+        mark_session_ephemeral(parent)
+        with pytest.raises(RuntimeError, match="temporary"):
+            db.publish_compression_child(
+                parent_session_id=parent,
+                child_session_id="publish-refusal-child",
+                source="desktop",
+                messages=[{"role": "user", "content": "x"}],
+                require_compression_lease=False,
+            )
+        with db._read_ctx() as conn:
+            child_rows = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE id = ?",
+                ("publish-refusal-child",),
+            ).fetchone()[0]
+        assert child_rows == 0
+    finally:
+        unmark_session_ephemeral(parent)
+        unmark_session_ephemeral("publish-refusal-child")
+        db.close()
 
 
 # ---------------------------------------------------------------------------

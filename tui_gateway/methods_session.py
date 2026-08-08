@@ -87,6 +87,16 @@ def _(rid, params: dict) -> dict:
         from hermes_state import mark_session_ephemeral
 
         mark_session_ephemeral(sid)
+        # The RPC sid above is only the wire handle. Every DB row — and every
+        # DB-layer ephemeral refusal — is keyed by the session KEY, which is
+        # also the agent's session_id (_make_agent(session_id=session_key)).
+        # Register it here, BEFORE the session is reachable: the agent build
+        # registers the same id again (idempotent set add), but the build is
+        # asynchronous, and the whole point is that the first accounting
+        # write can never beat the registration. Registering only the sid
+        # left the key unprotected — token accounting then created its
+        # foreign-key row and compression chained full transcripts onto it.
+        mark_session_ephemeral(key)
 
     with _sessions_lock:
         _sessions[sid] = {

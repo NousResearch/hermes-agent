@@ -4285,6 +4285,18 @@ class AIAgent:
         """
         task_id = getattr(self, "session_id", None) or ""
 
+        # 0. Release the temporary-session registration for this agent's id —
+        # the counterpart of the mark in agent_init. Idempotent; a missed
+        # release only wastes a set entry (timestamped+random ids are never
+        # reused), but releasing keeps the registry's lifecycle exact.
+        if getattr(self, "ephemeral", False) and task_id:
+            try:
+                from hermes_state import unmark_session_ephemeral
+
+                unmark_session_ephemeral(task_id)
+            except Exception:
+                pass
+
         # 1. Kill background processes for this task
         try:
             from tools.process_registry import process_registry

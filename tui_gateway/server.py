@@ -905,6 +905,11 @@ def _pop_session_by_id(sid: str) -> dict | None:
             from hermes_state import unmark_session_ephemeral
 
             unmark_session_ephemeral(sid)
+            # The session KEY is registered alongside the sid at create (it is
+            # the id DB rows are actually keyed by) — release it through the
+            # same single exit point.
+            if session.get("session_key"):
+                unmark_session_ephemeral(session["session_key"])
         except Exception:  # never fail teardown over bookkeeping
             pass
     # The session is already out of _sessions here, so downstream teardown

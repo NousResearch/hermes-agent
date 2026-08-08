@@ -3858,6 +3858,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         a complete child, never an ended parent with a missing/empty child.
         """
         def _do(conn):
+            # Temporary chat: neither side of a compression rotation may touch
+            # disk. The compression path skips publication for
+            # persistence-isolated agents, but this INSERT does not go through
+            # _insert_session_row, so it needs the registry refusal itself —
+            # a future caller that misses the agent-side gate must fail here,
+            # not silently persist a compacted private transcript.
+            if is_session_ephemeral(parent_session_id) or is_session_ephemeral(
+                child_session_id
+            ):
+                raise RuntimeError(
+                    "Refusing to publish compression child for temporary "
+                    f"session {parent_session_id!r}: temporary chats leave "
+                    "no trace"
+                )
             lock_row = conn.execute(
                 "SELECT holder, expires_at FROM compression_locks WHERE session_id = ?",
                 (parent_session_id,),

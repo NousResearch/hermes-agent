@@ -1869,7 +1869,13 @@ DEFAULT_CONFIG = {
         #                     /skills diff <id> (full diff — CLI/dashboard/file,
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
-        "write_approval": False,
+        # New in config v34: expanded from a bare bool to a dict with sub-keys
+        #   enabled: true/false    — gate toggle (same semantic as the old bool)
+        #   only: [skill names]    — if non-empty, gate ONLY these skill names
+        #   exclude: [skill names] — if non-empty, gate ALL skills EXCEPT these
+        #                            only and exclude are mutually exclusive
+        #                            in effect: only takes precedence. 
+        "write_approval": {"enabled": False, "only": [], "exclude": []},
     },
 
     # Curator — background skill maintenance.
@@ -3204,7 +3210,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # Optional environment variables that enhance functionality

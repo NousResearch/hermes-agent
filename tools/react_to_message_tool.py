@@ -31,7 +31,9 @@ def _open_session_db():
         return None
 
 
-def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -> str:
+def react_to_message_tool(
+    emoji: str, message_row_id=None, messages_back=None, db=None
+) -> str:
     """Attach (or with an empty ``emoji`` retract) the agent's reaction."""
     emoji = (emoji or "").strip()
     session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env(
@@ -41,52 +43,64 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
     if not session_key:
         return tool_error("No active session — reactions need a persisted conversation.")
 
-    db = _open_session_db()
+    owns_db = db is None
+    if owns_db:
+        db = _open_session_db()
     if db is None:
         return tool_error("Session storage is unavailable.")
 
-    row_id = message_row_id
-    target_role = "user"
-    if row_id is None:
-        # Default target: the latest user message. `messages_back` steps to
-        # earlier user turns (1 = the one before, etc.) for retroactive
-        # reactions — quoting text would be ambiguous, ids aren't visible to
-        # the model, but "two messages ago" is how a person thinks about it.
-        back = max(0, int(messages_back or 0))
-        row_id = db.latest_message_row_id(session_key, role="user", offset=back)
+    try:
+        row_id = message_row_id
+        target_role = "user"
         if row_id is None:
-            return tool_error(
-                f"No user message found {back} back." if back else "No user message to react to yet."
+            # Default target: the latest user message. `messages_back` steps to
+            # earlier user turns (1 = the one before, etc.) for retroactive
+            # reactions — quoting text would be ambiguous, ids aren't visible to
+            # the model, but "two messages ago" is how a person thinks about it.
+            back = max(0, int(messages_back or 0))
+            row_id = db.latest_message_row_id(session_key, role="user", offset=back)
+            if row_id is None:
+                return tool_error(
+                    f"No user message found {back} back."
+                    if back
+                    else "No user message to react to yet."
+                )
+        else:
+            row = db.get_message_role(session_key, int(row_id))
+            target_role = row or "user"
+
+        try:
+            reactions = db.set_message_reaction(
+                session_key, int(row_id), emoji or None, author="agent"
             )
-    else:
-        row = db.get_message_role(session_key, int(row_id))
-        target_role = row or "user"
+        except Exception as exc:
+            return tool_error(f"Failed to set the reaction: {exc}")
 
-    try:
-        reactions = db.set_message_reaction(
-            session_key, int(row_id), emoji or None, author="agent"
+        if reactions is None:
+            return tool_error(f"Message {row_id} is not part of this conversation.")
+
+        # Paint it live. A missing bridge (non-desktop surface) is not an error —
+        # the reaction is persisted either way and shows on the next load.
+        # `role` lets the renderer match a live message that doesn't know its
+        # durable row id yet (it only learns rowId on resume).
+        try:
+            desktop_ui.emit(
+                "message.reaction",
+                {"row_id": int(row_id), "reactions": reactions, "role": target_role},
+            )
+        except Exception:
+            pass
+
+        return json.dumps(
+            {"success": True, "row_id": int(row_id), "reactions": reactions},
+            ensure_ascii=False,
         )
-    except Exception as exc:
-        return tool_error(f"Failed to set the reaction: {exc}")
-
-    if reactions is None:
-        return tool_error(f"Message {row_id} is not part of this conversation.")
-
-    # Paint it live. A missing bridge (non-desktop surface) is not an error —
-    # the reaction is persisted either way and shows on the next load.
-    # `role` lets the renderer match a live message that doesn't know its
-    # durable row id yet (it only learns rowId on resume).
-    try:
-        desktop_ui.emit(
-            "message.reaction",
-            {"row_id": int(row_id), "reactions": reactions, "role": target_role},
-        )
-    except Exception:
-        pass
-
-    return json.dumps(
-        {"success": True, "row_id": int(row_id), "reactions": reactions}, ensure_ascii=False
-    )
+    finally:
+        if owns_db:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def check_react_requirements() -> bool:
@@ -160,6 +174,7 @@ registry.register(
         emoji=args.get("emoji", ""),
         message_row_id=args.get("message_row_id"),
         messages_back=args.get("messages_back"),
+        db=kw.get("db"),
     ),
     check_fn=check_react_requirements,
     emoji="💛",

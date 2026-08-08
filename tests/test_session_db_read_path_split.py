@@ -1,11 +1,12 @@
-"""Tests for the SessionDB read-path split (per-thread read-only connections).
+"""Tests for the SessionDB read-path split (shared read-only connection).
 
 The gateway shares ONE SessionDB across every agent, so recall/browse reads
 used to queue behind writer flushes on self._lock — a measured production
 convoy (a 0.2s FTS query stretched to 112s while 6-8 concurrent turns
 flushed tool results). These tests pin the new contract: reads run on a
-per-thread read-only connection under WAL, never touch self._lock, and fall
-back to the legacy locked path when WAL or the read connection is missing.
+shared read-only connection under WAL, never touch self._lock, and fall back
+to the legacy locked path when WAL or the read connection is missing. Sharing
+the connection bounds file descriptors even when gateway worker threads churn.
 """
 
 import threading
@@ -25,18 +26,25 @@ def db(tmp_path):
     d.close()
 
 
-@pytest.mark.requires_wal
-def test_read_conn_is_per_thread(db):
-    conns = {}
+def test_short_lived_reader_threads_reuse_one_connection(db):
+    # Exercise the WAL-only split even on CI runtimes where Hermes' SQLite
+    # compatibility guard selects DELETE mode.
+    db._wal_active = True
+    conns = []
 
-    def grab(key):
-        conns[key] = db._get_read_conn()
+    def grab():
+        conns.append(db._get_read_conn())
 
-    t1 = threading.Thread(target=grab, args=(1,))
-    t2 = threading.Thread(target=grab, args=(2,))
-    t1.start(); t2.start(); t1.join(); t2.join()
-    assert conns[1] is not None and conns[2] is not None
-    assert conns[1] is not conns[2]
+    # The gateway's executor creates and retires worker threads over its
+    # lifetime. A per-thread connection retained by SessionDB leaked two file
+    # descriptors (state.db + WAL) for every thread until process shutdown.
+    for _ in range(64):
+        thread = threading.Thread(target=grab)
+        thread.start()
+        thread.join()
+
+    assert all(conn is not None for conn in conns)
+    assert len({id(conn) for conn in conns}) == 1
 
 
 def test_read_conn_reused_within_thread(db):
@@ -105,7 +113,7 @@ def test_read_conn_open_failure_marks_thread(db, monkeypatch, tmp_path):
         monkeypatch.setattr("hermes_state.sqlite3.connect", failing_connect)
         assert fresh.get_session("x")["id"] == "x"
         assert fresh.get_session("x")["id"] == "x"
-        assert calls["n"] == 1, "open failure should be remembered per thread"
+        assert calls["n"] == 1, "open failure should be remembered by SessionDB"
     finally:
         fresh.close()
 

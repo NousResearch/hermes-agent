@@ -173,3 +173,61 @@ def test_row_id_is_opt_in_and_never_reaches_the_provider(session, db):
     for message in db.get_messages_as_conversation(key, include_row_ids=True):
         assert "_row_id" in message
         assert all(not k.startswith("_") or k == "_row_id" for k in message)
+
+
+def test_reaction_tool_closes_session_db_it_opens(monkeypatch):
+    """A standalone reaction call deterministically releases its DB handles."""
+    from tools import react_to_message_tool as reaction_tool
+
+    class FakeDB:
+        close_calls = 0
+
+        def get_message_role(self, session_key, row_id):
+            return "user"
+
+        def set_message_reaction(self, session_key, row_id, emoji, author):
+            return [{"author": author, "emoji": emoji}]
+
+        def close(self):
+            self.close_calls += 1
+
+    fake = FakeDB()
+    monkeypatch.setattr(reaction_tool, "get_session_env", lambda key, default="": "react-test")
+    monkeypatch.setattr(reaction_tool, "_open_session_db", lambda: fake)
+    monkeypatch.setattr(reaction_tool.desktop_ui, "emit", lambda *args, **kwargs: None)
+
+    result = reaction_tool.react_to_message_tool("👍", message_row_id=1)
+
+    assert '"success": true' in result
+    assert fake.close_calls == 1
+
+
+def test_reaction_tool_reuses_caller_db_without_closing(monkeypatch):
+    """Agent calls reuse the turn's SessionDB instead of opening another one."""
+    from tools import react_to_message_tool as reaction_tool
+
+    class FakeDB:
+        close_calls = 0
+
+        def get_message_role(self, session_key, row_id):
+            return "user"
+
+        def set_message_reaction(self, session_key, row_id, emoji, author):
+            return [{"author": author, "emoji": emoji}]
+
+        def close(self):
+            self.close_calls += 1
+
+    fake = FakeDB()
+    monkeypatch.setattr(reaction_tool, "get_session_env", lambda key, default="": "react-test")
+    monkeypatch.setattr(
+        reaction_tool,
+        "_open_session_db",
+        lambda: pytest.fail("caller-provided DB should be reused"),
+    )
+    monkeypatch.setattr(reaction_tool.desktop_ui, "emit", lambda *args, **kwargs: None)
+
+    result = reaction_tool.react_to_message_tool("❤️", message_row_id=1, db=fake)
+
+    assert '"success": true' in result
+    assert fake.close_calls == 0

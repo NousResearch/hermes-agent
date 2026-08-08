@@ -145,15 +145,24 @@ def _ensure_required_array(node: Dict[str, Any]) -> Dict[str, Any]:
 
     Standard JSON Schema lets you omit ``required`` when nothing is required;
     Moonshot 400s on that ("required must be an array").  Ensure the key is a
-    list.  When ``properties`` is known, prune ``required`` entries that don't
-    name a real property — defensive against dangling names, which Moonshot
-    also rejects.  Mutates and returns ``node``.
+    list, and prune ``required`` entries that don't name a real property —
+    dangling names are rejected too.  Mutates and returns ``node``.
+
+    A node with no ``properties`` knows zero property names, so EVERY entry in
+    its ``required`` is dangling.  Pruning only when ``properties`` happened to
+    be a dict left exactly that shape untouched — and it is the shape that
+    actually occurs: MCP servers routinely emit array item schemas carrying
+    ``required`` without ``properties`` (the same class is called out in
+    ``agent/gemini_schema.py``).  The top-level parameters object was rescued
+    only incidentally, because ``sanitize_moonshot_tool_parameters`` injects
+    ``properties: {}`` before this runs; nested nodes had no such rescue and
+    shipped the dangling name, 400-ing the whole request.
     """
     props = node.get("properties")
     req = node.get("required")
     if isinstance(req, list):
-        if isinstance(props, dict):
-            node["required"] = [r for r in req if r in props]
+        known = set(props) if isinstance(props, dict) else set()
+        node["required"] = [r for r in req if r in known]
     else:
         node["required"] = []
     return node

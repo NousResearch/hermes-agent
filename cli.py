@@ -4837,6 +4837,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._last_invalidate = now
             self._app.invalidate()
 
+    def _invalidate_usage_status(self) -> None:
+        """Repaint once after an API response updates token accounting."""
+        # Model responses are infrequent compared with streaming/spinner frames,
+        # so do not let one of those background paints swallow this state change.
+        self._invalidate(min_interval=0.0)
+
     def _paint_now(self) -> None:
         """Immediate, unthrottled repaint for user-blocking modal prompts.
 

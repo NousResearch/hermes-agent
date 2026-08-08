@@ -547,6 +547,10 @@ class CLIAgentSetupMixin:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Refresh token/context status after every model response, including
+            # intermediate responses in tool loops. The dedicated helper forces
+            # this low-frequency repaint while preserving the resize guard.
+            self.agent._usage_updated_callback = self._invalidate_usage_status
             # Hydrate credits notices at session OPEN (parity with the TUI), so a
             # depletion / usage-band warning shows before the first message. The
             # notice_callback is bound above → _on_notice renders the line. Idempotent

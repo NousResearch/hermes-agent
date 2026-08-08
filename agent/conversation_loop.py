@@ -3679,6 +3679,20 @@ def run_conversation(
                             f"{cached:,}/{prompt:,} tokens "
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
+
+                    # Let interactive surfaces repaint usage-dependent chrome
+                    # after all per-call context and session counters are current.
+                    # UI callbacks are best-effort and must never fail a turn.
+                    usage_updated_callback = getattr(
+                        agent, "_usage_updated_callback", None
+                    )
+                    if usage_updated_callback:
+                        try:
+                            usage_updated_callback()
+                        except Exception:
+                            logger.debug(
+                                "Usage-updated callback failed", exc_info=True
+                            )
                 
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call

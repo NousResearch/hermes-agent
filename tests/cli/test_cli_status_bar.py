@@ -128,6 +128,16 @@ class TestCLIStatusBar:
 
 
 
+    def test_usage_status_repaint_bypasses_background_throttle(self):
+        cli_obj = _make_cli()
+        cli_obj._app = MagicMock()
+        cli_obj._last_invalidate = time.monotonic()
+        cli_obj._resize_recovery_pending = False
+
+        cli_obj._invalidate_usage_status()
+
+        cli_obj._app.invalidate.assert_called_once_with()
+
     def test_scheduled_unsuppress_debounces_resize_storm(self):
         """A fresh resize cancels the pending unsuppress and restarts it."""
         cli_obj = _make_cli()

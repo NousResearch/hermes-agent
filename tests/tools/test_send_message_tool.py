@@ -1824,3 +1824,174 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+# ---------------------------------------------------------------------------
+# Standalone sendRichMessage path (cron / hermes-send fallback parity)
+# ---------------------------------------------------------------------------
+
+_TABLE_BODY = (
+    "## Report\n"
+    "| Day | High |\n"
+    "| --- | --- |\n"
+    "| Mon | 80 |\n"
+)
+
+
+class TestStandaloneTelegramRich:
+    """Bot API 10.1 rich path for standalone ``_send_telegram``.
+
+    Cron prefers the live gateway adapter for rich delivery; when that path
+    is unavailable it falls through to ``_send_telegram``. Without a rich
+    attempt here, GFM tables degrade to MarkdownV2 bullet lists while the
+    job still reports ok — the intermittent Morning Report failure mode.
+    """
+
+    def _make_bot(self):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        bot.do_api_request = AsyncMock(
+            return_value={"message_id": 4242, "chat": {"id": 123}}
+        )
+        return bot
+
+    def test_table_body_uses_send_rich_when_opted_in(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+        monkeypatch.setattr(
+            "tools.send_message_tool._telegram_rich_messages_opt_in",
+            lambda: True,
+        )
+        recorded = []
+
+        def _record(chat_id, message_id, content):
+            recorded.append((str(chat_id), str(message_id), content))
+
+        monkeypatch.setattr(
+            "gateway.rich_sent_store.record", _record, raising=False
+        )
+        # Also patch the import site used inside _try_send_telegram_rich
+        import gateway.rich_sent_store as rss
+
+        monkeypatch.setattr(rss, "record", _record)
+
+        result = asyncio.run(_send_telegram("tok", "123", _TABLE_BODY))
+
+        assert result["success"] is True
+        assert result["message_id"] == "4242"
+        bot.do_api_request.assert_awaited_once()
+        call = bot.do_api_request.await_args
+        assert call.args[0] == "sendRichMessage"
+        api_kwargs = call.kwargs["api_kwargs"]
+        assert api_kwargs["chat_id"] == 123 or api_kwargs["chat_id"] == "123"
+        assert "markdown" in api_kwargs["rich_message"]
+        assert "| Day |" in api_kwargs["rich_message"]["markdown"]
+        bot.send_message.assert_not_awaited()
+        assert recorded and recorded[0][1] == "4242"
+
+    def test_plain_text_stays_on_markdown_v2_even_when_opted_in(self, monkeypatch):
+        """Ordinary replies must not force rich — font/spacing parity."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+        monkeypatch.setattr(
+            "tools.send_message_tool._telegram_rich_messages_opt_in",
+            lambda: True,
+        )
+
+        asyncio.run(_send_telegram("tok", "123", "Just a plain status update"))
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+        assert bot.send_message.await_args.kwargs["parse_mode"] == "MarkdownV2"
+
+    def test_opt_out_keeps_legacy_path_for_tables(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+        monkeypatch.setattr(
+            "tools.send_message_tool._telegram_rich_messages_opt_in",
+            lambda: False,
+        )
+
+        asyncio.run(_send_telegram("tok", "123", _TABLE_BODY))
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+    def test_permanent_rich_error_falls_back_to_markdown_v2(self, monkeypatch):
+        bot = self._make_bot()
+        bot.do_api_request = AsyncMock(
+            side_effect=Exception("Bad Request: can't parse entities")
+        )
+        _install_telegram_mock(monkeypatch, bot)
+        monkeypatch.setattr(
+            "tools.send_message_tool._telegram_rich_messages_opt_in",
+            lambda: True,
+        )
+
+        result = asyncio.run(_send_telegram("tok", "123", _TABLE_BODY))
+
+        assert result["success"] is True
+        bot.do_api_request.assert_awaited_once()
+        bot.send_message.assert_awaited_once()
+
+    def test_transient_rich_error_does_not_legacy_resend(self, monkeypatch):
+        bot = self._make_bot()
+        bot.do_api_request = AsyncMock(side_effect=TimeoutError("Timed out"))
+        _install_telegram_mock(monkeypatch, bot)
+        monkeypatch.setattr(
+            "tools.send_message_tool._telegram_rich_messages_opt_in",
+            lambda: True,
+        )
+        # Force classifier to treat TimeoutError as non-fallback (transient)
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        monkeypatch.setattr(
+            TelegramAdapter,
+            "_is_rich_fallback_error",
+            lambda self, exc: False,
+        )
+
+        result = asyncio.run(_send_telegram("tok", "123", _TABLE_BODY))
+
+        # Outer _send_telegram catches and returns error dict (no double send)
+        assert "error" in result or result.get("success") is not True
+        bot.send_message.assert_not_awaited()
+
+    def test_thread_id_forwarded_on_rich_send(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+        monkeypatch.setattr(
+            "tools.send_message_tool._telegram_rich_messages_opt_in",
+            lambda: True,
+        )
+
+        asyncio.run(
+            _send_telegram("tok", "-1001234567890", _TABLE_BODY, thread_id="111")
+        )
+
+        api_kwargs = bot.do_api_request.await_args.kwargs["api_kwargs"]
+        assert api_kwargs.get("message_thread_id") == 111
+
+    def test_cjk_table_skips_rich(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+        monkeypatch.setattr(
+            "tools.send_message_tool._telegram_rich_messages_opt_in",
+            lambda: True,
+        )
+        body = (
+            "## 報告\n"
+            "| 日 | 高 |\n"
+            "| --- | --- |\n"
+            "| 月 | 80 |\n"
+        )
+
+        asyncio.run(_send_telegram("tok", "123", body))
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()

@@ -44,6 +44,7 @@ Fixes #
 
 - [ ] I've read the [Contributing Guide](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md)
 - [ ] My commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) (`fix(scope):`, `feat(scope):`, etc.)
+- [ ] My commits are signed off (`git commit -s`) per the [DCO](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#sign-off-your-commits-dco)
 - [ ] I searched for [existing PRs](https://github.com/NousResearch/hermes-agent/pulls) to make sure this isn't a duplicate
 - [ ] My PR contains **only** changes related to this fix/feature (no unrelated commits)
 - [ ] I've run `pytest tests/ -q` and all tests pass

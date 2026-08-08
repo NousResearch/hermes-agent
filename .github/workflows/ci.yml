@@ -131,6 +131,12 @@ jobs:
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/contributor-check.yml
 
+  dco:
+    name: Check DCO sign-off
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request'
+    uses: ./.github/workflows/dco.yml
+
   uv-lockfile:
     name: Check uv.lock
     needs: detect
@@ -251,6 +257,7 @@ jobs:
       - docs-site
       - history-check
       - contributor-check
+      - dco
       - uv-lockfile
       - lockfile-diff
       - docker-lint

@@ -79,6 +79,23 @@ function fakeSsh(rules: any[] = []) {
   }
 }
 
+function cleanupSsh(pid, { ownershipResults = ['OWNED', 'OWNED'], termResult = 'ALIVE', killResult = 'DEAD' }: any = {}) {
+  let ownershipChecks = 0
+
+  return fakeSsh([
+    [
+      command => command.includes('print("OWNED"'),
+      () => {
+        const result = ownershipResults[Math.min(ownershipChecks++, ownershipResults.length - 1)] || 'FOREIGN'
+
+        return `${result}\n`
+      }
+    ],
+    [command => command.includes(`kill -9 ${pid}`), `${killResult}\n`],
+    [command => command.includes(`kill ${pid}`), `${termResult}\n`]
+  ])
+}
+
 test('locateHermes prefers the explicit profile path when executable', async () => {
   const ssh = fakeSsh([[/\[ -x .*\/opt\/hermes/, 'OK']])
   assert.equal(await locateHermes(ssh, '/opt/hermes'), '/opt/hermes')
@@ -255,7 +272,7 @@ test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', a
   assert.ok(!notOurs.calls.some(c => /kill 5\b/.test(c)), 'must not kill a pid that is not our dashboard')
   assert.ok(notOurs.calls.some(c => /rm -f/.test(c)))
 
-  const ours = fakeSsh([[/print\("OWNED"/, 'OWNED\n']])
+  const ours = cleanupSsh(9)
   await cleanupStale(ours, OWNERSHIP_ID, {
     pid: 9,
     spawnNonce: SPAWN_NONCE,
@@ -264,6 +281,74 @@ test('cleanupStale kills ONLY a provably-ours pid, always drops the lockfile', a
   })
   assert.ok(ours.calls.some(c => /kill 9\b/.test(c)))
   assert.ok(ours.calls.some(c => /rm -f/.test(c)))
+})
+
+test('cleanupStale escalates an owned pid after the SIGTERM grace period', async () => {
+  const ssh = cleanupSsh(9)
+
+  await cleanupStale(ssh, OWNERSHIP_ID, {
+    pid: 9,
+    spawnNonce: SPAWN_NONCE,
+    hermesPath: '/x/hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
+
+  const termCommand = ssh.calls.find(command => command.includes('kill 9 2>/dev/null'))
+  const killCommand = ssh.calls.find(command => command.includes('kill -9 9'))
+  assert.ok(termCommand)
+  assert.ok(killCommand)
+  assert.match(termCommand, /kill 9/)
+  assert.match(termCommand, /-ge 50/)
+  assert.match(killCommand, /kill -9 9/)
+  assert.match(killCommand, /-ge 10/)
+})
+
+test('cleanupStale preserves the lock when ownership changes before SIGKILL', async () => {
+  const ssh = cleanupSsh(9, { ownershipResults: ['OWNED', 'FOREIGN'] })
+
+  await assert.rejects(
+    () =>
+      cleanupStale(ssh, OWNERSHIP_ID, {
+        pid: 9,
+        spawnNonce: SPAWN_NONCE,
+        hermesPath: '/x/hermes',
+        logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+      }),
+    (error: any) => error.kind === 'transient-transport-error'
+  )
+  assert.ok(!ssh.calls.some(command => /kill -9 9/.test(command)))
+  assert.ok(!ssh.calls.some(command => /rm -f/.test(command)))
+})
+
+test('cleanupStale preserves the lock when SIGKILL does not confirm death', async () => {
+  const ssh = cleanupSsh(9, { killResult: 'ALIVE' })
+
+  await assert.rejects(
+    () =>
+      cleanupStale(ssh, OWNERSHIP_ID, {
+        pid: 9,
+        spawnNonce: SPAWN_NONCE,
+        hermesPath: '/x/hermes',
+        logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+      }),
+    (error: any) => error.kind === 'transient-transport-error'
+  )
+  assert.ok(ssh.calls.some(command => /kill -9 9/.test(command)))
+  assert.ok(!ssh.calls.some(command => /rm -f/.test(command)))
+})
+
+test('cleanupStale removes the lock without escalation when SIGTERM confirms death', async () => {
+  const ssh = cleanupSsh(9, { termResult: 'DEAD' })
+
+  await cleanupStale(ssh, OWNERSHIP_ID, {
+    pid: 9,
+    spawnNonce: SPAWN_NONCE,
+    hermesPath: '/x/hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
+  assert.ok(!ssh.calls.some(command => /kill -9 9/.test(command)))
+  assert.ok(ssh.calls.some(command => /rm -f/.test(command)))
+  assert.equal(ssh.calls.filter(command => command.includes('print("OWNED"')).length, 1)
 })
 
 test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
@@ -494,6 +579,7 @@ test('connect() respawns when the requested remote profile differs from the lock
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
     [/cat .*lock\.json/, JSON.stringify(lock)],
+    [command => command.includes('kill -9 333'), 'DEAD'],
     [/kill -0 333/, 'ALIVE'],
     [/print\("OWNED"/, 'OWNED\n'],
     [/kill 333/, ''],
@@ -981,7 +1067,7 @@ test('readLockfile rejects a log path outside the exact ownership and spawn path
 })
 
 test('cleanupStale never deletes a lock-supplied unexpected log path', async () => {
-  const ssh = fakeSsh([[/print\("OWNED"/, 'OWNED\n']])
+  const ssh = cleanupSsh(333)
   await cleanupStale(ssh, OWNERSHIP_ID, ownedLock({ logPath: '~/.hermes/unrelated.log' }))
   assert.ok(!ssh.calls.some(command => command.includes('unrelated.log')))
 })
@@ -1044,6 +1130,7 @@ test('connect replaces an exact-owned backend only after authenticated stale pro
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
     [/cat .*lock\.json/, JSON.stringify(lock)],
+    [command => command.includes('kill -9 333'), 'DEAD'],
     [/kill -0 333/, 'ALIVE'],
     [/print\("OWNED"/, 'OWNED\n'],
     [/grep -q ssh-session-token-file/, 'YES\n'],

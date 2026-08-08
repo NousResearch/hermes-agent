@@ -37,6 +37,8 @@ const REMOTE_LOCK_DIR = '~/.hermes/desktop-ssh'
 const SUPPORTED_REMOTE_OS = new Set(['Linux', 'Darwin'])
 const DEFAULT_READY_TIMEOUT_MS = 45_000
 const READY_POLL_INTERVAL_MS = 750
+const STALE_TERM_WAIT_ITERATIONS = 50
+const STALE_KILL_WAIT_ITERATIONS = 10
 
 function mintToken() {
   return crypto.randomBytes(32).toString('hex')
@@ -410,15 +412,37 @@ async function pidIsOurDashboard(ssh, pid, spawnNonce, hermesPath = '') {
 async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
   if (pidAlive && lock && (await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath))) {
     try {
-      const result = (
+      const pid = Number(lock.pid)
+
+      const termResult = (
         await ssh.exec(
-          `kill ${Number(lock.pid)} && ` +
-            `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
-            `i=$((i+1)); [ "$i" -ge 50 ] && exit 1; sleep 0.1; done`
+          `kill ${pid} 2>/dev/null || true; ` +
+            `i=0; while kill -0 ${pid} 2>/dev/null; do ` +
+            `i=$((i+1)); [ "$i" -ge ${STALE_TERM_WAIT_ITERATIONS} ] && break; sleep 0.1; done; ` +
+            `if kill -0 ${pid} 2>/dev/null; then printf ALIVE; else printf DEAD; fi`
         )
       ).trim()
 
-      void result
+      if (termResult === 'ALIVE') {
+        if (!(await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath))) {
+          throw new Error('SSH backend ownership changed before forced termination.')
+        }
+
+        const killResult = (
+          await ssh.exec(
+            `kill -9 ${pid} 2>/dev/null || true; ` +
+              `i=0; while kill -0 ${pid} 2>/dev/null; do ` +
+              `i=$((i+1)); [ "$i" -ge ${STALE_KILL_WAIT_ITERATIONS} ] && break; sleep 0.1; done; ` +
+              `if kill -0 ${pid} 2>/dev/null; then printf ALIVE; else printf DEAD; fi`
+          )
+        ).trim()
+
+        if (killResult !== 'DEAD') {
+          throw new Error('SSH backend remained alive after forced termination.')
+        }
+      } else if (termResult !== 'DEAD') {
+        throw new Error('Could not determine whether the stale SSH backend terminated.')
+      }
     } catch (cause) {
       const error: any = new Error('Could not terminate the stale SSH backend.')
       error.kind = 'transient-transport-error'

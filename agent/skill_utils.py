@@ -5,6 +5,7 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import json
 import logging
 import os
 import re
@@ -496,6 +497,24 @@ def _external_dirs_cache_clear() -> None:
     _raw_config_cache_clear()
 
 
+def _parse_external_dirs_scalar(raw: str) -> List[str]:
+    """Parse a scalar ``skills.external_dirs`` value into a list of entries.
+
+    ``hermes config set skills.external_dirs '["/a","/b"]'`` persists a JSON
+    array verbatim as one YAML scalar string. A plain single-directory value
+    stays a one-element list so a literal path is never mis-split.
+    """
+    text = raw.strip()
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = json.loads(text)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    return [raw]
+
+
 def get_external_skills_dirs() -> List[Path]:
     """Read ``skills.external_dirs`` from config.yaml and return validated paths.
 
@@ -541,7 +560,12 @@ def get_external_skills_dirs() -> List[Path]:
             _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
         return result
     if isinstance(raw_dirs, str):
-        raw_dirs = [raw_dirs]
+        # A JSON array can reach the config as one YAML scalar via
+        # `hermes config set skills.external_dirs '["/a","/b"]'` (the CLI
+        # persists the value verbatim). Parse it back into a sequence so the
+        # entries are discovered instead of being treated as one literal path
+        # that never exists and is silently skipped (#79270).
+        raw_dirs = _parse_external_dirs_scalar(raw_dirs)
     if not isinstance(raw_dirs, list):
         return []
 

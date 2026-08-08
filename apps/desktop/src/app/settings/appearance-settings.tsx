@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { useI18n } from '@/i18n'
@@ -18,7 +19,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
-import { $zoomPercent, setZoomPercent } from '@/store/zoom'
+import { $zoomPercent, refreshZoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
@@ -77,6 +78,85 @@ type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
 
 function matchUiScalePreset(percent: number): UiScalePreset | null {
   return UI_SCALE_PRESETS.find(preset => Number(preset) === percent) ?? null
+}
+
+// The numeric entry lets users set any zoom within the clamp range
+// (MIN_ZOOM_LEVEL=-9 → ~19%, MAX_ZOOM_LEVEL=9 → ~516%). Users who need
+// larger text than the 175% preset (e.g. for low vision) can type 200%,
+// 300%, etc. The min/max here are slightly tighter than the raw clamp to
+// avoid absurd values while still covering accessibility needs generously.
+const UI_SCALE_MIN = 25
+const UI_SCALE_MAX = 500
+
+/** Exported for testing. */
+export function sanitizeZoomInput(raw: string): number | null {
+  const trimmed = raw.trim()
+
+  if (!trimmed) {
+    return null
+  }
+
+  // Strip a trailing % if the user typed one.
+  const cleaned = trimmed.endsWith('%') ? trimmed.slice(0, -1) : trimmed
+  const num = Number(cleaned)
+
+  if (!Number.isFinite(num) || num < UI_SCALE_MIN || num > UI_SCALE_MAX) {
+    return null
+  }
+
+  return Math.round(num)
+}
+
+/**
+ * Numeric entry for the UI Scale row — lets users type any zoom percent
+ * (25–500) instead of being limited to the preset buttons. This is
+ * essential for low-vision users who need values above 175%. The field
+ * shows the live zoom percent, commits on Enter or blur, and reverts
+ * to the current zoom if the input is invalid or out of range.
+ */
+/** Exported for testing. */
+export function ZoomNumericEntry({ percent, onCommit }: { percent: number; onCommit: (value: number) => void }) {
+  const { t } = useI18n()
+  // Local text state so the user can type freely (including intermediate
+  // states like "20" before "200"). Synced from the prop when the zoom
+  // changes externally (preset click, Ctrl+/-, restore-on-focus).
+  const [text, setText] = useState(String(percent))
+
+  useEffect(() => {
+    setText(String(percent))
+  }, [percent])
+
+  const commit = () => {
+    const parsed = sanitizeZoomInput(text)
+
+    if (parsed != null && parsed !== percent) {
+      onCommit(parsed)
+    } else {
+      // Revert to the current zoom if invalid or unchanged.
+      setText(String(percent))
+    }
+  }
+
+  return (
+    <Input
+      aria-label={t.settings.appearance.uiScaleTitle}
+      className="w-16 text-center tabular-nums"
+      inputMode="numeric"
+      max={UI_SCALE_MAX}
+      min={UI_SCALE_MIN}
+      onBlur={commit}
+      onChange={event => setText(event.target.value)}
+      onKeyDown={event => {
+        if (event.key === 'Enter') {
+          event.currentTarget.blur()
+        }
+      }}
+      size="sm"
+      suffix="%"
+      type="number"
+      value={text}
+    />
+  )
 }
 
 function useDebounced<T>(value: T, delayMs: number): T {
@@ -261,6 +341,15 @@ export function AppearanceSettings() {
 
   const [query, setQuery] = useState('')
 
+  // The zoom store is lazily initialized (this module is the only importer,
+  // and it lives inside the lazily-loaded SettingsView). The initial zoom.get()
+  // IPC can race with restorePersistedZoomLevel, reading Chromium's baseline
+  // (100%) before the persisted level is reasserted. Re-fetch on mount so the
+  // preset and numeric entry reflect the actually-applied zoom.
+  useEffect(() => {
+    refreshZoomPercent()
+  }, [])
+
   // One box does double duty: filter installed themes live (below), and run a
   // name search against the VS Code Marketplace (the Cmd-K "Install theme…"
   // backend) for anything not already installed.
@@ -418,14 +507,23 @@ export function AppearanceSettings() {
 
           <ListRow
             action={
-              <SegmentedControl
-                onChange={id => {
-                  triggerHaptic('selection')
-                  setZoomPercent(Number(id))
-                }}
-                options={uiScaleOptions}
-                value={matchedScalePreset ?? ('' as UiScalePreset)}
-              />
+              <div className="flex items-center gap-2">
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
+                    setZoomPercent(Number(id))
+                  }}
+                  options={uiScaleOptions}
+                  value={matchedScalePreset ?? ('' as UiScalePreset)}
+                />
+                <ZoomNumericEntry
+                  percent={zoomPercent}
+                  onCommit={value => {
+                    triggerHaptic('selection')
+                    setZoomPercent(value)
+                  }}
+                />
+              </div>
             }
             description={a.uiScaleDesc(zoomPercent)}
             title={a.uiScaleTitle}

@@ -18,7 +18,31 @@ export function setZoomPercent(percent: number): void {
   window.hermesDesktop?.zoom?.setPercent(percent)
 }
 
-if (typeof window !== 'undefined' && window.hermesDesktop?.zoom) {
+let zoomInitialized = false
+
+function initZoomStore() {
+  if (zoomInitialized || typeof window === 'undefined' || !window.hermesDesktop?.zoom) {
+    return
+  }
+
+  zoomInitialized = true
   void window.hermesDesktop.zoom.get().then(({ percent }) => $zoomPercent.set(percent))
   window.hermesDesktop.zoom.onChanged(({ percent }) => $zoomPercent.set(percent))
 }
+
+/**
+ * Re-fetch the current zoom from the main process. The store is lazily
+ * initialized (the module is only imported when Settings opens), so the
+ * initial ``zoom.get()`` can race with ``restorePersistedZoomLevel`` —
+ * ``webContents.getZoomLevel()`` may still read Chromium's baseline (0 →
+ * 100%) before the persisted level is reasserted. Calling this from
+ * ``AppearanceSettings`` on mount gives the reassert time to land and
+ * corrects the displayed value.
+ */
+export function refreshZoomPercent(): void {
+  if (typeof window !== 'undefined' && window.hermesDesktop?.zoom) {
+    void window.hermesDesktop.zoom.get().then(({ percent }) => $zoomPercent.set(percent))
+  }
+}
+
+initZoomStore()

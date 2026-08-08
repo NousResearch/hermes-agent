@@ -65,7 +65,15 @@ export function applyZoomLevel(webContents, level) {
 export const ZOOM_RESIZE_REASSERT_DELAY_MS = 100
 
 export function zoomReassertWindowEvents(platform = process.platform) {
-  return platform === 'linux' ? ['show', 'restore', 'resize', 'move'] : ['show', 'restore', 'resized', 'moved']
+  // `focus` is included on Windows and macOS: Chromium can silently drop
+  // webContents zoom to 0 (its 100% baseline) when a window loses and regains
+  // focus, and without a reassert the next Ctrl+/- reads the stale 0 level
+  // and snaps the user back to 100% (#focus-zoom-drop). Linux uses the noisy
+  // `resize`/`move` pair (no trailing `d` variants) and already debounces;
+  // `focus` is added there too since the same Chromium drop occurs.
+  const base = platform === 'linux' ? ['show', 'restore', 'resize', 'move'] : ['show', 'restore', 'resized', 'moved']
+
+  return [...base, 'focus']
 }
 
 export function installZoomReassertOnWindowEvents(win, reassert, platform = process.platform) {

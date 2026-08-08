@@ -442,7 +442,7 @@ export const en: Translations = {
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
-        `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
+        `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works, or type a custom value. Current: ${percent}%.`,
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',

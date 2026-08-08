@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
+  restartCurrentBackend: () => ipcRenderer.invoke('hermes:backend:restart-current'),
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),
@@ -275,7 +276,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Soft gateway-mode apply finished tearing down the primary backend. Renderer
   // should wipe session lists + re-dial without a window reload.
   onConnectionApplied: callback => {
-    const listener = () => callback()
+    const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:connection:applied', listener)
 
     return () => ipcRenderer.removeListener('hermes:connection:applied', listener)

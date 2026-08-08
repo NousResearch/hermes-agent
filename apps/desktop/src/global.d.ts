@@ -91,6 +91,7 @@ declare global {
         onShown: (callback: () => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
+      restartCurrentBackend: () => Promise<DesktopRestartCurrentBackendResult>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -267,7 +268,7 @@ declare global {
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
       // Soft gateway-mode apply: primary backend was torn down without a window
       // reload. Wipe session lists (skeletons) and re-dial.
-      onConnectionApplied?: (callback: () => void) => () => void
+      onConnectionApplied?: (callback: (payload?: { preserveSession?: boolean }) => void) => () => void
       onPowerResume?: (callback: () => void) => () => void
       getOnBattery?: () => Promise<boolean>
       onBatteryChanged?: (callback: (onBattery: boolean) => void) => () => void
@@ -487,6 +488,15 @@ export interface HermesConnection {
   profile?: string
   windowButtonPosition: { x: number; y: number } | null
 }
+
+export type DesktopRestartCurrentBackendResult =
+  | { ok: true; mode: 'local' | 'ssh' }
+  | { ok: false; reason: 'cancelled' | 'remote-not-owned' }
+  | {
+      ok: false
+      reason: 'ownership-failed' | 'restart-failed' | 'not-ready'
+      message: string
+    }
 
 export interface HermesTitleBarTheme {
   background: string

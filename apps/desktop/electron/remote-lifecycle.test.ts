@@ -486,6 +486,84 @@ test('connect() reuses a healthy dashboard when fingerprint + probe pass', async
   assert.ok(!ssh.calls.some(c => /setsid/.test(c)), 'reuse path must not spawn a new dashboard')
 })
 
+function forceRestartSsh(lock: any, over: any = {}) {
+  return fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, JSON.stringify(lock)],
+    [/kill -0/, over.alive === false ? 'DEAD' : 'ALIVE'],
+    [/print\("OWNED"/, over.owned === false ? 'FOREIGN\n' : 'OWNED\n'],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/setsid/, '999\n'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=43000\n']
+  ])
+}
+
+test('force restart proves ownership, kills exact old pid, and returns fresh pid and nonce', async () => {
+  const ssh = forceRestartSsh(ownedLock())
+
+  const result = await connect(
+    connectDeps(ssh, {
+      forceRestart: true,
+      reuseToken: 'stored-token',
+      adoptServedToken: async (_baseUrl, token) =>
+        token === 'stored-token' ? 'fresh-served-token' : 'fresh-served-token'
+    })
+  )
+
+  assert.equal(result.reused, false)
+  assert.equal(result.pid, 999)
+  assert.notEqual(result.spawnNonce, SPAWN_NONCE)
+  assert.ok(
+    ssh.calls.some(command => /kill 333\b/.test(command)),
+    'must terminate exact owned pid'
+  )
+  assert.ok(
+    ssh.calls.some(command => /setsid/.test(command)),
+    'must spawn a fresh dashboard'
+  )
+})
+
+test('force restart never kills when lock ownership ID does not match', async () => {
+  const ssh = forceRestartSsh({ ...ownedLock(), ownershipId: 'f'.repeat(32) })
+
+  await assert.rejects(
+    () => connect(connectDeps(ssh, { forceRestart: true, reuseToken: 'stored-token' })),
+    (error: any) => error.kind === 'ownership-failed'
+  )
+  assert.ok(!ssh.calls.some(command => /\bkill 333\b/.test(command)))
+})
+
+test('force restart never kills a dead or foreign process', async () => {
+  for (const over of [{ alive: false }, { owned: false }]) {
+    const ssh = forceRestartSsh(ownedLock(), over)
+
+    await assert.rejects(
+      () => connect(connectDeps(ssh, { forceRestart: true, reuseToken: 'stored-token' })),
+      (error: any) => error.kind === 'ownership-failed'
+    )
+    assert.ok(!ssh.calls.some(command => /\bkill 333\b/.test(command)))
+  }
+})
+
+test('force restart never kills when served identity proof has gone stale', async () => {
+  const ssh = forceRestartSsh(ownedLock())
+
+  await assert.rejects(
+    () =>
+      connect(
+        connectDeps(ssh, {
+          forceRestart: true,
+          reuseToken: 'stored-token',
+          probeReuseProof: async () => 'authenticated-stale'
+        })
+      ),
+    (error: any) => error.kind === 'ownership-failed'
+  )
+  assert.ok(!ssh.calls.some(command => /\bkill 333\b/.test(command)))
+})
+
 test('connect() respawns when the requested remote profile differs from the lockfile profile', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ profile: 'desktop-work', tokenFingerprint: fingerprintToken(reuseToken) })

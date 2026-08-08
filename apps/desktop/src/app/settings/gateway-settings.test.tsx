@@ -6,6 +6,7 @@ import type { ProfileInfo } from '@/types/hermes'
 
 const getConnectionConfig = vi.fn()
 const saveConnectionConfig = vi.fn()
+const restartCurrentBackend = vi.fn()
 const profiles = atom<ProfileInfo[]>([])
 
 vi.mock('@/store/profile', () => ({
@@ -47,9 +48,10 @@ beforeEach(() => {
   ])
   getConnectionConfig.mockResolvedValue(localConnection)
   saveConnectionConfig.mockResolvedValue(localConnection)
+  restartCurrentBackend.mockResolvedValue({ ok: true, mode: 'local' })
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { getConnectionConfig, saveConnectionConfig }
+    value: { getConnectionConfig, saveConnectionConfig, restartCurrentBackend }
   })
 })
 
@@ -117,5 +119,26 @@ describe('GatewaySettings', () => {
         })
       )
     )
+  })
+
+  it('disables duplicate current-backend restart clicks while request is in flight', async () => {
+    let resolveRestart!: (value: { ok: true; mode: 'local' }) => void
+    restartCurrentBackend.mockReturnValue(
+      new Promise(resolve => {
+        resolveRestart = resolve as (value: { ok: true; mode: 'local' }) => void
+      })
+    )
+    const { GatewaySettings } = await import('./gateway-settings')
+
+    render(<GatewaySettings />)
+    const button = await screen.findByRole('button', { name: 'Restart current backend' })
+
+    fireEvent.click(button)
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(true))
+    fireEvent.click(button)
+    expect(restartCurrentBackend).toHaveBeenCalledTimes(1)
+
+    resolveRestart({ ok: true, mode: 'local' })
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
   })
 })

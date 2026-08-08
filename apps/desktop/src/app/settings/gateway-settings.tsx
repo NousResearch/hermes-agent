@@ -36,6 +36,7 @@ type AuthMode = 'oauth' | 'token'
 type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
 // Hermes Cloud discovery lifecycle for the cloud-mode panel.
 type CloudDiscoverStatus = 'idle' | 'loading' | 'done' | 'error'
+type RestartStatus = 'idle' | 'loading' | 'success' | 'cancelled' | 'remote' | 'ownership-failed' | 'failure'
 
 interface GatewaySettingsState {
   envOverride: boolean
@@ -157,6 +158,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [remoteToken, setRemoteToken] = useState('')
   const [lastTest, setLastTest] = useState<null | string>(null)
+  const [restartStatus, setRestartStatus] = useState<RestartStatus>('idle')
   const [sshHostSuggestions, setSshHostSuggestions] = useState<string[]>([])
   const [sshCustomHost, setSshCustomHost] = useState(false)
   const sshResolveSeq = useRef(0)
@@ -517,6 +519,47 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       if (seq === saveSeq.current) {
         setSaving(false)
       }
+    }
+  }
+
+  const restartCurrent = async () => {
+    if (
+      restartStatus === 'loading' ||
+      scope !== null ||
+      state.envOverride ||
+      !window.hermesDesktop?.restartCurrentBackend
+    ) {
+      return
+    }
+
+    setRestartStatus('loading')
+
+    try {
+      const result = await window.hermesDesktop.restartCurrentBackend()
+
+      if (result.ok) {
+        setRestartStatus('success')
+        notify({ kind: 'success', title: g.restartCurrentTitle, message: g.restartCurrentSuccess })
+
+        return
+      }
+
+      if (result.reason === 'cancelled') {
+        setRestartStatus('cancelled')
+        notify({ kind: 'warning', title: g.restartCurrentTitle, message: g.restartCurrentCancelled })
+      } else if (result.reason === 'remote-not-owned') {
+        setRestartStatus('remote')
+        notify({ kind: 'info', title: g.restartCurrentTitle, message: g.restartCurrentRemote })
+      } else if (result.reason === 'ownership-failed') {
+        setRestartStatus('ownership-failed')
+        notify({ kind: 'error', title: g.restartCurrentTitle, message: g.restartCurrentOwnershipFailed })
+      } else {
+        setRestartStatus('failure')
+        notify({ kind: 'error', title: g.restartCurrentTitle, message: g.restartCurrentFailed })
+      }
+    } catch (error) {
+      setRestartStatus('failure')
+      notifyError(error, g.restartCurrentFailed)
     }
   }
 
@@ -1456,6 +1499,41 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       ) : null}
 
       {lastTest ? <div className="mt-4 text-xs text-primary">{lastTest}</div> : null}
+
+      {scope === null && !embedded && !state.envOverride && (state.mode === 'local' || state.mode === 'ssh') ? (
+        <div className="mt-6 grid gap-1">
+          <ListRow
+            action={
+              <Button
+                disabled={restartStatus === 'loading'}
+                onClick={() => void restartCurrent()}
+                size="sm"
+                variant="textStrong"
+              >
+                {restartStatus === 'loading' ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                {restartStatus === 'loading' ? g.restartingCurrent : g.restartCurrent}
+              </Button>
+            }
+            description={g.restartCurrentDesc}
+            title={g.restartCurrentTitle}
+          />
+          {restartStatus !== 'idle' ? (
+            <div className="px-1 text-xs text-muted-foreground" role="status">
+              {restartStatus === 'loading'
+                ? g.restartingCurrent
+                : restartStatus === 'success'
+                  ? g.restartCurrentSuccess
+                  : restartStatus === 'cancelled'
+                    ? g.restartCurrentCancelled
+                    : restartStatus === 'remote'
+                      ? g.restartCurrentRemote
+                      : restartStatus === 'ownership-failed'
+                        ? g.restartCurrentOwnershipFailed
+                        : g.restartCurrentFailed}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Test/Save apply to local + remote. Cloud connects via the agent picker
           above (which applies a cloud connection on select), so its only

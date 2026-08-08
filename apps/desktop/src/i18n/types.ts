@@ -569,6 +569,15 @@ export interface Translations {
       testRemote: string
       saveForRestart: string
       saveAndReconnect: string
+      restartCurrent: string
+      restartCurrentTitle: string
+      restartCurrentDesc: string
+      restartingCurrent: string
+      restartCurrentSuccess: string
+      restartCurrentCancelled: string
+      restartCurrentRemote: string
+      restartCurrentOwnershipFailed: string
+      restartCurrentFailed: string
       diagnostics: string
       diagnosticsDesc: string
       openLogs: string

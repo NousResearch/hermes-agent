@@ -31,11 +31,14 @@ import {
   $activeSessionId,
   $connection,
   $currentCwd,
+  $selectedStoredSessionId,
   $sessions,
   ensureDefaultWorkspaceCwd,
+  sessionMatchesStoredId,
   setConnection,
   setCurrentBranch,
   setCurrentCwd,
+  setSelectedStoredSessionId,
   setSessionsLoading
 } from '@/store/session'
 import { $attentionSessionIds, $workingSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
@@ -280,10 +283,12 @@ export function useGatewayBoot({
 
     // Soft gateway-mode apply: main tore down the primary without reloading.
     // Wipe session lists so skeletons retrigger, then re-dial in place.
-    const softSwitch = async () => {
+    const softSwitch = async (preserveSelection = false) => {
       if (cancelled) {
         return
       }
+
+      const selectedStoredSessionId = preserveSelection ? $selectedStoredSessionId.get() : null
 
       $gatewaySwitching.set(true)
       clearReconnectTimer()
@@ -292,7 +297,7 @@ export function useGatewayBoot({
       escalated = false
       reauthNotified = false
       callbacksRef.current.beforeConnectionSwitch()
-      wipeSessionListsForGatewaySwitch()
+      wipeSessionListsForGatewaySwitch({ preserveSelectedSessionId: selectedStoredSessionId })
 
       try {
         gateway.close()
@@ -320,6 +325,12 @@ export function useGatewayBoot({
           callbacksRef.current.refreshHermesConfig().catch(() => undefined),
           callbacksRef.current.refreshSessions().catch(() => undefined)
         ])
+        setSelectedStoredSessionId(current =>
+          selectedStoredSessionId &&
+          $sessions.get().some(session => sessionMatchesStoredId(session, selectedStoredSessionId))
+            ? selectedStoredSessionId
+            : null
+        )
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {
@@ -420,7 +431,10 @@ export function useGatewayBoot({
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
     const offPowerResume = desktop.onPowerResume?.(() => reconnectNow())
-    const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
+
+    const offConnectionApplied = desktop.onConnectionApplied?.(
+      payload => void softSwitch(payload?.preserveSession === true)
+    )
 
     const onOnline = () => reconnectNow()
 

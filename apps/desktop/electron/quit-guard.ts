@@ -90,3 +90,42 @@ export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): nu
     message: work.count === 1 ? 'Hermes is still working on 1 chat.' : `Hermes is still working on ${work.count} chats.`
   }
 }
+
+/** Confirmation copy for restarting a backend while turns are in flight. */
+export function restartPromptFor(work: ActiveWork): null | QuitPrompt {
+  if (work.count < 1) {
+    return null
+  }
+
+  const listed = work.titles.slice(0, MAX_LISTED)
+  const remaining = work.count - listed.length
+  const lines = listed.map(title => `• ${title}`)
+
+  if (remaining > 0) {
+    lines.push(remaining === 1 ? '• 1 more' : `• ${remaining} more`)
+  }
+
+  return {
+    detail: [
+      lines.join('\n'),
+      lines.length > 0 ? '' : null,
+      'Restarting the backend interrupts active turns. Work not yet finished may be lost.'
+    ]
+      .filter(line => line !== null)
+      .join('\n')
+      .trim(),
+    message:
+      work.count === 1
+        ? 'Hermes has 1 active turn. Restart the backend now?'
+        : `Hermes has ${work.count} active turns. Restart the backend now?`
+  }
+}
+
+export async function confirmRestart(
+  work: ActiveWork,
+  confirm: (prompt: QuitPrompt) => Promise<boolean>
+): Promise<boolean> {
+  const prompt = restartPromptFor(work)
+
+  return prompt ? confirm(prompt) : true
+}

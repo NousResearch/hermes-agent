@@ -211,6 +211,56 @@ async function cleanupOwned(ssh, runtime, ownershipId, lock) {
   await attempt(() => helper(ssh, runtime, 'remove-lock', [ownershipId]))
 }
 
+function ownershipFailure(message) {
+  const error: any = new Error(message)
+  error.kind = 'ownership-failed'
+
+  return error
+}
+
+// Restart proof is strict: re-check process identity immediately before the
+// exact helper termination, then remove ownership artifacts only after it exits.
+async function terminateOwned(ssh, runtime, ownershipId, lock) {
+  const state = await processState(ssh, runtime, lock)
+
+  if (state.indeterminate || !state.alive || !state.owned) {
+    throw ownershipFailure('SSH backend ownership proof failed; no process was terminated.')
+  }
+
+  try {
+    const termination = await helper(ssh, runtime, 'terminate', [
+      String(lock.pid),
+      String(lock.creationTimeNs),
+      lock.hermesPath,
+      lock.spawnNonce
+    ])
+
+    if (termination?.terminated !== true) {
+      throw ownershipFailure('SSH backend termination proof failed; no process was terminated.')
+    }
+  } catch (cause) {
+    if (cause?.kind === 'ownership-failed') {
+      throw cause
+    }
+
+    const error: any = new Error('Could not terminate the owned SSH backend.')
+    error.kind = 'restart-failed'
+    error.cause = cause
+    throw error
+  }
+
+  try {
+    await helper(ssh, runtime, 'remove-token', [ownershipId, lock.spawnNonce])
+    await helper(ssh, runtime, 'remove-log', [ownershipId, lock.spawnNonce])
+    await helper(ssh, runtime, 'remove-lock', [ownershipId])
+  } catch (cause) {
+    const error: any = new Error('Could not remove the SSH backend ownership record.')
+    error.kind = 'restart-failed'
+    error.cause = cause
+    throw error
+  }
+}
+
 async function waitReady(ssh, runtime, ownershipId, lock, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs
 
@@ -283,7 +333,9 @@ async function connectWindowsRemote(deps) {
     waitForHermes,
     probeReuseProof,
     rememberLog = () => {},
-    readyTimeoutMs = 45_000
+    readyTimeoutMs = 45_000,
+    forceRestart = false,
+    skipExistingLock = false
   } = deps
 
   assertCurrent(signal)
@@ -301,7 +353,56 @@ async function connectWindowsRemote(deps) {
   rememberLog(`[ssh-lifecycle] remote platform Windows/${runtime.arch}`)
   rememberLog(`[ssh-lifecycle] located hermes at ${runtime.hermesPath}`)
 
-  const lock = await helper(ssh, runtime, 'read-lock', [ownershipId])
+  const lock = skipExistingLock ? null : await helper(ssh, runtime, 'read-lock', [ownershipId])
+
+  if (forceRestart) {
+    if (!validLock(lock, ownershipId)) {
+      throw ownershipFailure('SSH backend ownership record is missing; no process was terminated.')
+    }
+
+    const state = await processState(ssh, runtime, lock)
+
+    if (state.indeterminate || !state.alive || !state.owned) {
+      throw ownershipFailure('SSH backend ownership proof failed; no process was terminated.')
+    }
+
+    if (!reusableWindowsLock(lock, state, profile, reuseToken, runtime)) {
+      throw ownershipFailure('SSH backend ownership metadata changed; no process was terminated.')
+    }
+
+    assertCurrent(signal)
+    const localPort = await pickLocalPort()
+    await forward(localPort, lock.port)
+
+    try {
+      const classification = await probeReuseProof(`http://127.0.0.1:${localPort}`, reuseToken, lock.spawnNonce)
+
+      if (classification !== 'authenticated-ok') {
+        throw ownershipFailure('SSH backend served identity proof failed; no process was terminated.')
+      }
+    } catch (cause: any) {
+      if (cause?.kind === 'ownership-failed') {
+        throw cause
+      }
+
+      const error: any = new Error('Could not verify the owned SSH backend; no process was terminated.')
+      error.kind = 'ownership-failed'
+      error.cause = cause
+      throw error
+    } finally {
+      await cancelForward(localPort, lock.port)
+    }
+
+    assertCurrent(signal)
+    await terminateOwned(ssh, runtime, ownershipId, lock)
+
+    return connectWindowsRemote({
+      ...deps,
+      forceRestart: false,
+      reuseToken: '',
+      skipExistingLock: true
+    })
+  }
 
   if (validLock(lock, ownershipId)) {
     const state = await processState(ssh, runtime, lock)
@@ -458,5 +559,6 @@ export {
   probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,
+  terminateOwned,
   validLock
 }

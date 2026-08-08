@@ -440,6 +440,58 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
   await removeLockfile(ssh, ownershipId)
 }
 
+function ownershipFailure(message) {
+  const error: any = new Error(message)
+  error.kind = 'ownership-failed'
+
+  return error
+}
+
+// Restart proof is stricter than stale cleanup: no lock or log is removed until
+// the live process has passed every ownership check and the exact pid exits.
+async function terminateOwned(ssh, ownershipId, lock) {
+  if (!(await remotePidAlive(ssh, lock.pid))) {
+    throw ownershipFailure('SSH backend is no longer alive; no process was terminated.')
+  }
+
+  if (!(await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath))) {
+    throw ownershipFailure('SSH backend ownership proof failed; no process was terminated.')
+  }
+
+  try {
+    await ssh.exec(
+      `kill ${Number(lock.pid)} && ` +
+        `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
+        `i=$((i+1)); [ "$i" -ge 50 ] && exit 1; sleep 0.1; done`
+    )
+  } catch (cause) {
+    const error: any = new Error('Could not terminate the owned SSH backend.')
+    error.kind = 'restart-failed'
+    error.cause = cause
+    throw error
+  }
+
+  if (lock.logPath === spawnLogPath(ownershipId, lock.spawnNonce)) {
+    try {
+      await ssh.exec(`rm -f ${expandRemotePath(lock.logPath)}`)
+    } catch (cause) {
+      const error: any = new Error('Could not remove the SSH backend log after termination.')
+      error.kind = 'restart-failed'
+      error.cause = cause
+      throw error
+    }
+  }
+
+  try {
+    await ssh.exec(`rm -f ${expandRemotePath(lockfilePath(ownershipId))}`)
+  } catch (cause) {
+    const error: any = new Error('Could not remove the SSH backend ownership record.')
+    error.kind = 'restart-failed'
+    error.cause = cause
+    throw error
+  }
+}
+
 // Detach so the backend survives the SSH channel closing: setsid (Linux)
 // starts a new session; macOS has no setsid, so fall back to nohup (HUP-immune;
 // fd-detachment is already handled by </dev/null + redirect + &).
@@ -703,7 +755,65 @@ async function connect(deps) {
 
   const reuseToken = deps.reuseToken || ''
   const hermesHome = await probeRemoteHermesHome(ssh)
-  const lock = await readLockfile(ssh, ownershipId)
+  const lock = deps.skipExistingLock ? null : await readLockfile(ssh, ownershipId)
+
+  if (deps.forceRestart) {
+    if (!lock) {
+      throw ownershipFailure('SSH backend ownership record is missing; no process was terminated.')
+    }
+
+    const metadataMatches =
+      lock.port > 0 &&
+      lock.profile === profile &&
+      Boolean(reuseToken) &&
+      lock.tokenFingerprint === fingerprintToken(reuseToken) &&
+      lock.hermesPath === hermesPath &&
+      lock.hermesHome === hermesHome
+
+    if (!metadataMatches) {
+      throw ownershipFailure('SSH backend ownership metadata changed; no process was terminated.')
+    }
+
+    if (!(await remotePidAlive(ssh, lock.pid))) {
+      throw ownershipFailure('SSH backend is no longer alive; no process was terminated.')
+    }
+
+    if (!(await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath))) {
+      throw ownershipFailure('SSH backend ownership proof failed; no process was terminated.')
+    }
+
+    assertNotAborted(signal)
+    const localPort = await openForward(deps, lock.port)
+
+    try {
+      const classification = await probeReuseProof(`http://127.0.0.1:${localPort}`, reuseToken, lock.spawnNonce)
+
+      if (classification !== 'authenticated-ok') {
+        throw ownershipFailure('SSH backend served identity proof failed; no process was terminated.')
+      }
+    } catch (cause: any) {
+      if (cause?.kind === 'ownership-failed') {
+        throw cause
+      }
+
+      const error: any = new Error('Could not verify the owned SSH backend; no process was terminated.')
+      error.kind = 'ownership-failed'
+      error.cause = cause
+      throw error
+    } finally {
+      await cancelForwardSafe(deps, localPort, lock.port)
+    }
+
+    assertNotAborted(signal)
+    await terminateOwned(ssh, ownershipId, lock)
+
+    return connect({
+      ...deps,
+      forceRestart: false,
+      reuseToken: '',
+      skipExistingLock: true
+    })
+  }
 
   if (lock) {
     const pidAlive = await remotePidAlive(ssh, lock.pid)
@@ -902,6 +1012,7 @@ export {
   spawnLogPath,
   spawnRemoteDashboard,
   SUPPORTED_REMOTE_OS,
+  terminateOwned,
   validateRemotePath,
   writeLockfile
 }

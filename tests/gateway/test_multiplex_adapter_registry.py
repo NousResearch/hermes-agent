@@ -39,6 +39,38 @@ class TestCredentialFingerprint:
         assert fp1 is not None
         assert "shared-project-secret" not in fp1
 
+    def test_reads_feishu_app_id(self):
+        """Feishu/Lark authenticates via app_id/app_secret, not a token.
+
+        Without _app_id in the fingerprint attribute list, every Feishu
+        adapter in a multiplexed gateway returns None here and the
+        same-credential conflict check is silently skipped — N profiles
+        spawn WebSocket clients against the same app, which evict each
+        other in a 1000 bye loop until all go offline.
+        """
+        class _FeishuAdapter:
+            def __init__(self):
+                self._app_id = "cli_a1b2c3"
+                self._app_secret = "top-secret"
+
+        fp1 = GatewayRunner._adapter_credential_fingerprint(_FeishuAdapter())
+        fp2 = GatewayRunner._adapter_credential_fingerprint(_FeishuAdapter())
+
+        assert fp1 is not None
+        assert fp1 == fp2  # same app -> same fingerprint -> conflict detected
+        assert "cli_a1b2c3" not in fp1  # log-safe, never the raw credential
+
+    def test_distinct_feishu_app_ids_distinct_fp(self):
+        class _FeishuAdapter:
+            def __init__(self, app_id):
+                self._app_id = app_id
+                self._app_secret = "s"
+
+        fp_a = GatewayRunner._adapter_credential_fingerprint(_FeishuAdapter("app-A"))
+        fp_b = GatewayRunner._adapter_credential_fingerprint(_FeishuAdapter("app-B"))
+
+        assert fp_a is not None and fp_b is not None
+        assert fp_a != fp_b
 
     def test_reads_config_token(self):
         """Adapters like Discord store token on `config`, not on self.

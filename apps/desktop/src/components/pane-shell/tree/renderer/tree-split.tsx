@@ -626,7 +626,7 @@ function Sash({
     <div
       className={cn(
         'group absolute z-20 [-webkit-app-region:no-drag]',
-        horizontal ? 'inset-y-0 left-0 w-[9px] -translate-x-1/2' : 'inset-x-0 top-0 h-[9px] -translate-y-1/2',
+        horizontal ? 'inset-y-0 -left-[4.5px] w-[9px]' : 'inset-x-0 -top-[4.5px] h-[9px]',
         disabled ? 'pointer-events-none' : horizontal ? 'cursor-col-resize' : 'cursor-row-resize'
       )}
       onDoubleClick={disabled ? undefined : onDoubleClick}

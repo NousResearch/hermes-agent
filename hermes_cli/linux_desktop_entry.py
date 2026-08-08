@@ -57,16 +57,48 @@ def icon_path(project_root: Path) -> Path:
     return project_root / "apps" / "desktop" / "assets" / "icon.png"
 
 
-def resolve_exec_command() -> str:
+def _is_inside_checkout(path: Optional[str], project_root: Optional[Path]) -> bool:
+    """True when ``path`` lives inside the source checkout.
+
+    An entry point inside the checkout is the bare ``hermes`` launcher
+    script, not an installed wrapper. It runs under ``/usr/bin/env
+    python3`` and leans on the caller's interpreter and ``sys.path`` to
+    import ``hermes_cli``; a cold desktop-menu launch supplies neither.
+    """
+    if not path or project_root is None:
+        return False
+    try:
+        Path(path).resolve().relative_to(Path(project_root).resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def resolve_exec_command(project_root: Optional[Path] = None) -> str:
     """Build the absolute ``Exec=`` command line for ``hermes desktop``.
 
     Prefer the real ``hermes`` executable (argv[0] or PATH). When Hermes
     runs as a module with no launcher installed, use the current
     interpreter, also absolute.
+
+    ``resolve_hermes_bin()`` ranks ``sys.argv[0]`` first. That is right
+    for re-exec'ing *this* process, where argv[0] is runnable by
+    construction, and wrong for a value written to disk and run later by
+    the desktop environment. When this entry is what launched us, argv[0]
+    is the checkout's bare ``hermes`` script, so baking it back into
+    ``Exec`` breaks every later menu launch and never heals. It also makes
+    the rendered contents alternate between the wrapper and the script,
+    which defeats the unchanged-contents check below and rewrites the
+    entry on every other launch (#80439). Discard a checkout-internal
+    entry point and fall through to PATH, then to the interpreter.
     """
     from hermes_cli.relaunch import resolve_hermes_bin
 
     bin_path = resolve_hermes_bin()
+    if _is_inside_checkout(bin_path, project_root):
+        bin_path = shutil.which("hermes")
+        if _is_inside_checkout(bin_path, project_root):
+            bin_path = None
     if bin_path:
         argv = [str(Path(bin_path).resolve()), "desktop"]
     else:
@@ -154,7 +186,10 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     # Use the themed name when the checkout has no icon (a lite or
     # packaged install). A broken absolute path renders as no icon.
     icon_value = str(icon) if icon.is_file() else "hermes"
-    contents = render_desktop_entry(resolve_exec_command(), icon_value)
+    contents = render_desktop_entry(resolve_exec_command(project_root), icon_value)
+    # Imported inside the function so the module stays import-light for
+    # the uninstaller and the Electron main process.
+    from utils import atomic_write_text
 
     try:
         entry_path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,9 +197,15 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
         # churn the menu caches.
         if entry_path.is_file() and entry_path.read_text(encoding="utf-8") == contents:
             return entry_path
-        entry_path.write_text(contents, encoding="utf-8")
+        # Publish through the shared atomic writer: a truncate-then-write
+        # leaves a zero-length entry when the write is interrupted, which
+        # drops Hermes out of the menu and kills the taskbar pin for good.
+        # ``preserve_mode`` chmods the temp file before the replace, so an
+        # entry that is already 0o755 never transits mkstemp's 0o600.
+        atomic_write_text(entry_path, contents, preserve_mode=True, create_mode=0o755)
         # Some launchers (and older Plasma) offer the entry only when it
-        # is executable.
+        # is executable. Still forced here: preserve_mode carries over a
+        # mode the user (or an older Hermes) may have left non-executable.
         entry_path.chmod(0o755)
     except OSError:
         return None

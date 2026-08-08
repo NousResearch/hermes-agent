@@ -111,7 +111,7 @@ class _OpenAIProxy:
 
 OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
-from agent.credential_pool import load_pool
+from agent.credential_pool import FAILURE_REASON_BILLING, load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
@@ -4249,11 +4249,20 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return False
 
     if _is_payment_error(exc) or _is_rate_limit_error(exc):
-        fallback_status = 402 if _is_payment_error(exc) else 429
+        is_billing = _is_payment_error(exc)
+        fallback_status = 402 if is_billing else 429
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context,
             api_key_hint=hint,
+            # Without this, a billing 403 (OpenRouter "key limit exceeded",
+            # xAI spending limit) is indistinguishable from a transient
+            # edge-throttle 403 to _exhausted_ttl(), so a sole credential
+            # gets the short transient cooldown and the auxiliary path
+            # retries the depleted key every ~60s indefinitely (#78941-class
+            # bug, mirrors the primary path's FailoverReason.billing wiring
+            # in agent_runtime_helpers.recover_with_credential_pool).
+            failure_reason=FAILURE_REASON_BILLING if is_billing else None,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)

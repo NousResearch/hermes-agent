@@ -37,6 +37,7 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
+    _recover_provider_pool,
 )
 
 
@@ -2651,6 +2652,95 @@ class TestAuxiliaryPoolRotationRetry:
         assert pool.rotate_calls[0]["status_code"] == 429
         mock_fallback.assert_not_called()
 
+
+class TestRecoverProviderPoolFailureReason:
+    """_recover_provider_pool must thread failure_reason="billing" through to
+    mark_exhausted_and_rotate() for billing errors, mirroring the primary
+    runtime path (agent_runtime_helpers.recover_with_credential_pool). A sole
+    credential's cooldown is only benched for the full TTL when the pool can
+    tell a billing 403 apart from a transient edge-throttle 403 — without
+    failure_reason, _exhausted_ttl() can't make that distinction and applies
+    the short transient cooldown to a depleted billing key.
+    """
+
+    @staticmethod
+    def _make_pool():
+        class _Pool:
+            def __init__(self):
+                self.rotate_calls = []
+
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                self.rotate_calls.append(kwargs)
+                return SimpleNamespace(id="cred-b")
+
+        return _Pool()
+
+    def test_billing_403_threads_failure_reason_billing(self):
+        exc = Exception("insufficient funds: balance_depleted for this account")
+        exc.status_code = 403
+        pool = self._make_pool()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._evict_cached_clients"),
+        ):
+            recovered = _recover_provider_pool("openrouter", exc)
+
+        assert recovered is True
+        assert len(pool.rotate_calls) == 1
+        assert pool.rotate_calls[0]["status_code"] == 403
+        assert pool.rotate_calls[0]["failure_reason"] == "billing"
+
+    def test_billing_402_threads_failure_reason_billing(self):
+        exc = Exception("payment required")
+        exc.status_code = 402
+        pool = self._make_pool()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._evict_cached_clients"),
+        ):
+            recovered = _recover_provider_pool("openrouter", exc)
+
+        assert recovered is True
+        assert pool.rotate_calls[0]["failure_reason"] == "billing"
+
+    def test_transient_rate_limit_does_not_set_billing_reason(self):
+        exc = Exception("rate limit exceeded, please retry")
+        exc.status_code = 429
+        pool = self._make_pool()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._evict_cached_clients"),
+        ):
+            recovered = _recover_provider_pool("openrouter", exc)
+
+        assert recovered is True
+        assert pool.rotate_calls[0]["status_code"] == 429
+        assert pool.rotate_calls[0]["failure_reason"] is None
+
+    def test_transient_403_does_not_set_billing_reason(self):
+        """A 403 with no billing keywords (edge-throttle, generic forbidden)
+        must stay classified as transient, not billing."""
+        exc = Exception("forbidden")
+        exc.status_code = 403
+        pool = self._make_pool()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._evict_cached_clients"),
+        ):
+            recovered = _recover_provider_pool("openrouter", exc)
+
+        assert recovered is False
+        assert len(pool.rotate_calls) == 0
 
 
 class TestAnthropicAuxiliaryReasoningTranslation:

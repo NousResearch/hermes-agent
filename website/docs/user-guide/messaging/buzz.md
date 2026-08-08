@@ -34,6 +34,7 @@ gateway:
         cli_path: ""               # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""       # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []          # empty = allow all; hex pubkeys or npubs
+        profile_channel_sync: false # opt-in: create/restore/archive one managed channel per local profile
 ```
 
 Plus, in `~/.hermes/.env`:
@@ -55,6 +56,11 @@ BUZZ_PRIVATE_KEY=nsec1...
 | `BUZZ_POLL_INTERVAL` | — | Seconds between inbound poll sweeps (default: 4) |
 | `BUZZ_CLI_PATH` | — | Path to the `buzz` binary (default: `buzz` on PATH, then `~/bin/buzz`) |
 | `BUZZ_CREDENTIALS_FILE` | — | JSON credentials file holding the nsec, used when `BUZZ_PRIVATE_KEY` is unset |
+| `BUZZ_PROFILE_CHANNEL_SYNC` | — | Reconcile local Hermes profiles with same-named Buzz channels (default: false) |
+| `BUZZ_PROFILE_CHANNEL_ADOPT_EXISTING` | — | Allow the reconciler to take lifecycle ownership of an existing exact-name channel (default: false) |
+| `BUZZ_PROFILE_CHANNEL_ARCHIVE_ON_DELETE` | — | Archive managed channels when their profile is removed (default: true while sync is enabled) |
+| `BUZZ_PROFILE_CHANNEL_STATE_FILE` | — | Override the managed profile-to-channel registry path |
+| `BUZZ_PROFILE_CHANNEL_MAP_FILE` | — | Optionally publish an atomic flat map of active profile names to channel UUIDs for external jobs |
 
 ## Recommended default settings
 
@@ -81,6 +87,9 @@ gateway:
         allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
         require_mention: true             # in channels: only respond when addressed (@name, npub, or hex pubkey); DMs always dispatch regardless
         allow_all_users: false            # set true for community mode (everyone can chat, only owner is admin); false for private mode (only allowed_users)
+        auto_join_channels: false         # periodically discover and watch newly joined open channels
+        thread_sessions: false            # key Hermes sessions by Buzz thread root
+        profile_channel_sync: false        # opt-in lifecycle sync; channel name equals canonical profile id
 ```
 
 **Why these defaults:**
@@ -90,6 +99,9 @@ gateway:
 - `poll_interval: 4` — balances inbound latency (up to 4s delay) against relay load. Lower values increase polling frequency; higher values reduce it.
 - `allowed_users: []` + `allow_all_users: false` — private mode by default. Only listed users can interact. Set `allow_all_users: true` for community mode where everyone can chat (admin tier still restricted to the owner).
 - `require_mention: true` — in channels, the agent only responds when addressed. DMs always dispatch regardless of this setting.
+- `auto_join_channels: true` — every ~10s the adapter lists channels, joins any open channel the identity is not a member of, and starts watching it. Private channels remain invitation-only.
+- `thread_sessions: true` — the resolved Buzz thread root becomes the Hermes `thread_id`, so unrelated threads in one channel do not share context.
+- `profile_channel_sync: false` — lifecycle writes are opt-in. When enabled, each local profile maps to an exact same-name channel. The adapter creates missing channels, restores a previously archived channel when a profile is re-added, preserves the channel UUID across a normal profile rename, and archives only channels recorded in its managed registry. Existing exact-name channels are not adopted unless `profile_channel_adopt_existing` is also enabled.
 
 **Rationale:** Channels are for final results and conversation, not for the agent's internal tool execution log. Users see the final answer, not the steps taken to get there. This matches the behavior on Telegram and email, which already have these defaults.
 

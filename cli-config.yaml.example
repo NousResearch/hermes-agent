@@ -792,6 +792,26 @@ streaming:
   # cursor: " ▉"              # cursor shown during streaming
 
 # =============================================================================
+# Harness Dispatcher Integration
+# =============================================================================
+# Forward recognized slash commands to the harness dispatcher via Unix
+# socket.  When configured, commands listed below are forwarded instead
+# of being handled by the local agent.  The dispatcher is a soft
+# dependency: if it is unreachable the gateway falls through to normal
+# message handling.
+#
+# dispatcher:
+#   socket: /run/harness/dispatcher.sock
+#   commands: [echo, research, forge, ashare, replay, log]
+#
+# Socket path: dispatcher.socket in config.yaml (required for forwarding)
+# When not set, dispatcher commands are handled locally instead of forwarded.
+# Default socket: /run/harness/dispatcher.sock (only used when configured)
+#
+# commands REPLACES the default set (not additive).  An empty list
+# disables forwarding entirely.  Omit the key to use defaults.
+
+# =============================================================================
 # Skills Configuration
 # =============================================================================
 # Skills are reusable procedures the agent can load and follow. The agent can

@@ -197,3 +197,8 @@ native/fts5_cjk/*.so
 # interrupted; consumed by launch-time recovery. Never commit it (was tracked
 # by accident via 3a69e34702, removed in the #72002 salvage).
 .lazy-refresh-incomplete
+
+# code-forge local state (review receipts, advisory findings, gate config)
+.code-forge/
+# worktree symlink, not part of the repo (root-only)
+/CLAUDE.md

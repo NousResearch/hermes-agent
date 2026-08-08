@@ -955,6 +955,11 @@ class GatewayConfig:
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
 
+    # Harness dispatcher integration (Phase 2.6).  When set, the gateway
+    # forwards certain slash commands to the dispatcher via Unix socket.
+    dispatcher_socket: Optional[str] = None
+    dispatcher_commands: Optional[list] = None
+
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             self.systemd_watchdog_seconds
@@ -1079,6 +1084,8 @@ class GatewayConfig:
                 asdict(r) if is_dataclass(r) and not isinstance(r, type) else r
                 for r in self.profile_routes
             ],
+            "dispatcher_socket": self.dispatcher_socket,
+            "dispatcher_commands": self.dispatcher_commands,
         }
     
     @classmethod
@@ -1189,6 +1196,62 @@ class GatewayConfig:
         from gateway.profile_routing import parse_profile_routes
         profile_routes = parse_profile_routes(data.get("profile_routes") or [])
 
+        # Parse dispatcher config.  Accept flat keys (from
+        # load_gateway_config) or nested dict form.  Validate types
+        # so malformed values don't reach DispatcherClient.
+        _disp_socket = data.get("dispatcher_socket")
+        _disp_cmds = data.get("dispatcher_commands")
+        _disp = data.get("dispatcher")
+        # Validate flat socket: must be non-empty string or None.
+        if _disp_socket is not None:
+            if not isinstance(_disp_socket, str) or not _disp_socket.strip():
+                logger.warning(
+                    "Ignoring invalid dispatcher_socket=%r "
+                    "(expected non-empty string)",
+                    _disp_socket,
+                )
+                _disp_socket = None
+            else:
+                _disp_socket = _disp_socket.strip()
+        # Validate flat commands: must be list of strings or None.
+        if _disp_cmds is not None:
+            if not isinstance(_disp_cmds, list) or not all(
+                isinstance(c, str) for c in _disp_cmds
+            ):
+                logger.warning(
+                    "Ignoring invalid dispatcher_commands=%r "
+                    "(expected list of strings)",
+                    _disp_cmds,
+                )
+                _disp_cmds = None
+        # Fall back to nested dict if flat keys are absent.
+        # Validate nested values the same way as flat keys.
+        if isinstance(_disp, dict):
+            if _disp_socket is None:
+                _nested_socket = _disp.get("socket")
+                if _nested_socket is not None:
+                    if isinstance(_nested_socket, str) and _nested_socket.strip():
+                        _disp_socket = _nested_socket.strip()
+                    else:
+                        logger.warning(
+                            "Ignoring invalid nested dispatcher.socket=%r "
+                            "(expected non-empty string)",
+                            _nested_socket,
+                        )
+            if _disp_cmds is None:
+                _nested_cmds = _disp.get("commands")
+                if _nested_cmds is not None:
+                    if isinstance(_nested_cmds, list) and all(
+                        isinstance(c, str) for c in _nested_cmds
+                    ):
+                        _disp_cmds = _nested_cmds
+                    else:
+                        logger.warning(
+                            "Ignoring invalid nested dispatcher.commands=%r "
+                            "(expected list of strings)",
+                            _nested_cmds,
+                        )
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -1214,6 +1277,8 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=profile_routes,
+            dispatcher_socket=_disp_socket,
+            dispatcher_commands=_disp_cmds,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -1358,6 +1423,37 @@ def load_gateway_config() -> GatewayConfig:
                 _pr = gateway_section.get("profile_routes")
             if isinstance(_pr, list):
                 gw_data["profile_routes"] = _pr
+
+            # Harness dispatcher integration.  Accept either top-level
+            # ``dispatcher:`` or nested ``gateway.dispatcher:`` form.
+            # Flat keys (dispatcher_socket/dispatcher_commands) take
+            # precedence over nested values.
+            _disp = yaml_cfg.get("dispatcher")
+            if _disp is None and isinstance(gateway_section, dict):
+                _disp = gateway_section.get("dispatcher")
+            if isinstance(_disp, dict):
+                _socket = _disp.get("socket")
+                if _socket is not None and "dispatcher_socket" not in gw_data:
+                    if isinstance(_socket, str) and _socket.strip():
+                        gw_data["dispatcher_socket"] = _socket.strip()
+                    else:
+                        logger.warning(
+                            "Ignoring invalid dispatcher.socket=%r "
+                            "(expected non-empty string)",
+                            _socket,
+                        )
+                _cmds = _disp.get("commands")
+                if _cmds is not None and "dispatcher_commands" not in gw_data:
+                    if isinstance(_cmds, list) and all(
+                        isinstance(c, str) for c in _cmds
+                    ):
+                        gw_data["dispatcher_commands"] = _cmds
+                    else:
+                        logger.warning(
+                            "Ignoring invalid dispatcher.commands=%r "
+                            "(expected list of strings)",
+                            _cmds,
+                        )
 
             if isinstance(gateway_section, dict):
                 if "multiplex_profiles" in gateway_section and "multiplex_profiles" not in gw_data:

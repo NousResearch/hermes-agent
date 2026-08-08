@@ -8453,7 +8453,7 @@ def _dispatch_once_locked(
     # they sit in status='running' until the worker calls
     # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
     running_count = 0
-    if max_spawn is not None:
+    if max_in_progress is not None:
         running_count = int(
             conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
@@ -8468,15 +8468,13 @@ def _dispatch_once_locked(
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
-    # pile up and time out.
-    if max_in_progress is not None and ready_rows:
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
-        if in_progress >= max_in_progress:
+    # pile up and time out. Compute remaining capacity once per dispatch pass,
+    # before both ready and review candidate loops.
+    if max_in_progress is not None:
+        if running_count >= max_in_progress:
             return result
         # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
+        remaining = max_in_progress - running_count
         if max_spawn is None or max_spawn > remaining:
             max_spawn = remaining
     spawned = 0
@@ -8517,7 +8515,7 @@ def _dispatch_once_locked(
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
     for row in ready_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
+        if max_spawn is not None and spawned >= max_spawn:
             break
         row_assignee = row["assignee"]
         if not row_assignee:
@@ -8708,7 +8706,7 @@ def _dispatch_once_locked(
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     for row in review_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
+        if max_spawn is not None and spawned >= max_spawn:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])

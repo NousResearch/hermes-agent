@@ -60,13 +60,55 @@ export interface GatewayEventSessionRouteInput {
   activeSessionId: null | string
   eventType: string | undefined
   explicitSessionId: string
-  unscopedStreamSessionId: null | string
+  /**
+   * Sessions with an unscoped stream in flight, in ``message.start`` order.
+   *
+   * One pin per concurrent stream. A single shared pin could not represent two
+   * chats streaming at once: the second ``message.start`` overwrote the first,
+   * and every later unscoped event from the first stream then resolved to the
+   * second chat (#46194 / #62823).
+   */
+  unscopedStreamSessionIds: readonly string[]
 }
 
 export interface GatewayEventSessionRoute {
   drop: boolean
-  nextUnscopedStreamSessionId: null | string
+  nextUnscopedStreamSessionIds: readonly string[]
   sessionId: null | string
+}
+
+const withStreamPin = (pins: readonly string[], sessionId: string): readonly string[] =>
+  pins.includes(sessionId) ? pins : [...pins, sessionId]
+
+const withoutStreamPin = (pins: readonly string[], sessionId: string): readonly string[] =>
+  pins.includes(sessionId) ? pins.filter(pin => pin !== sessionId) : pins
+
+/**
+ * Which in-flight stream owns an unscoped stream event.
+ *
+ * Returns `null` when ownership is genuinely ambiguous, so the caller drops the
+ * event instead of grafting one chat's output onto another.
+ */
+function resolveUnscopedStreamOwner(pins: readonly string[], activeSessionId: null | string): null | string {
+  // No concurrent streams: preserve the established single-stream behaviour —
+  // the lone pin owns it, and with no pin at all the focused chat does. The
+  // late-event case for that second branch is #70376's subject, not this one.
+  if (pins.length <= 1) {
+    return pins[0] ?? activeSessionId
+  }
+
+  // Two or more streams are live. The gateway stamps background sessions'
+  // events with their own id, so an unscoped one is the focused turn's output —
+  // but only when the focused chat is itself mid-stream.
+  if (activeSessionId && pins.includes(activeSessionId)) {
+    return activeSessionId
+  }
+
+  // The focused chat is idle, so this belongs to one of several background
+  // streams and nothing in the event says which. Guessing is what painted A's
+  // deltas onto B; drop instead. The store keeps the correct rows, so the
+  // transcript recovers on refetch.
+  return null
 }
 
 /**
@@ -80,17 +122,18 @@ export function resolveGatewayEventSessionId({
   activeSessionId,
   eventType,
   explicitSessionId,
-  unscopedStreamSessionId
+  unscopedStreamSessionIds
 }: GatewayEventSessionRouteInput): GatewayEventSessionRoute {
-  if (explicitSessionId) {
-    const nextUnscopedStreamSessionId =
-      eventType && UNSCOPED_STREAM_END_EVENT_TYPES.has(eventType) && explicitSessionId === unscopedStreamSessionId
-        ? null
-        : unscopedStreamSessionId
+  const streamEnd = eventType ? UNSCOPED_STREAM_END_EVENT_TYPES.has(eventType) : false
 
+  if (explicitSessionId) {
     return {
       drop: false,
-      nextUnscopedStreamSessionId,
+      // Retire only the pin this event names. Streams still running in other
+      // chats keep theirs.
+      nextUnscopedStreamSessionIds: streamEnd
+        ? withoutStreamPin(unscopedStreamSessionIds, explicitSessionId)
+        : unscopedStreamSessionIds,
       sessionId: explicitSessionId
     }
   }
@@ -98,32 +141,47 @@ export function resolveGatewayEventSessionId({
   if (gatewayEventRequiresSessionId(eventType)) {
     return {
       drop: true,
-      nextUnscopedStreamSessionId: unscopedStreamSessionId,
+      nextUnscopedStreamSessionIds: unscopedStreamSessionIds,
       sessionId: null
     }
   }
 
-  const streamEvent = eventType ? UNSCOPED_STREAM_EVENT_TYPES.has(eventType) : false
+  if (eventType === 'message.start') {
+    return {
+      drop: false,
+      // Add a pin rather than replace one, so a second chat starting a turn
+      // cannot take ownership of a stream that is already running elsewhere.
+      nextUnscopedStreamSessionIds: activeSessionId
+        ? withStreamPin(unscopedStreamSessionIds, activeSessionId)
+        : unscopedStreamSessionIds,
+      sessionId: activeSessionId
+    }
+  }
 
-  const sessionId =
-    eventType === 'message.start'
-      ? activeSessionId
-      : streamEvent
-        ? unscopedStreamSessionId || activeSessionId
-        : activeSessionId
+  if (!(eventType && UNSCOPED_STREAM_EVENT_TYPES.has(eventType))) {
+    return {
+      drop: false,
+      nextUnscopedStreamSessionIds: unscopedStreamSessionIds,
+      sessionId: activeSessionId
+    }
+  }
 
-  let nextUnscopedStreamSessionId = unscopedStreamSessionId
+  const owner = resolveUnscopedStreamOwner(unscopedStreamSessionIds, activeSessionId)
 
-  if (eventType === 'message.start' && activeSessionId) {
-    nextUnscopedStreamSessionId = activeSessionId
-  } else if (eventType && UNSCOPED_STREAM_END_EVENT_TYPES.has(eventType)) {
-    nextUnscopedStreamSessionId = null
+  if (!owner) {
+    return {
+      drop: true,
+      nextUnscopedStreamSessionIds: unscopedStreamSessionIds,
+      sessionId: null
+    }
   }
 
   return {
     drop: false,
-    nextUnscopedStreamSessionId,
-    sessionId
+    nextUnscopedStreamSessionIds: streamEnd
+      ? withoutStreamPin(unscopedStreamSessionIds, owner)
+      : unscopedStreamSessionIds,
+    sessionId: owner
   }
 }
 

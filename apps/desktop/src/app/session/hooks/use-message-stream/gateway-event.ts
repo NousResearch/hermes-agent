@@ -255,7 +255,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     upsertToolCall
   } = deps
 
-  const unscopedStreamSessionIdRef = useRef<string | null>(null)
+  // One pin per concurrent unscoped stream, not a single shared slot: two chats
+  // streaming at once used to clobber each other's pin (#46194 / #62823).
+  const unscopedStreamSessionIdsRef = useRef<readonly string[]>([])
 
   // session.info arrives in bursts (agent build ready + turn end + title /
   // MCP / compress edges within the same second). Each used to fire its own
@@ -301,10 +303,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         activeSessionId: activeSessionIdRef.current,
         eventType: event.type,
         explicitSessionId: explicitSid,
-        unscopedStreamSessionId: unscopedStreamSessionIdRef.current
+        unscopedStreamSessionIds: unscopedStreamSessionIdsRef.current
       })
 
-      unscopedStreamSessionIdRef.current = route.nextUnscopedStreamSessionId
+      unscopedStreamSessionIdsRef.current = route.nextUnscopedStreamSessionIds
 
       if (route.drop) {
         return

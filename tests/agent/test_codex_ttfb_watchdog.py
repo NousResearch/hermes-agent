@@ -347,5 +347,94 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
         stop["flag"] = True
 
 
+def test_is_xai_responses_backend_detection():
+    from agent import chat_completion_helpers as h
+
+    assert h._is_xai_responses_backend(
+        SimpleNamespace(provider="xai-oauth", _base_url_hostname="api.x.ai", base_url="")
+    )
+    assert h._is_xai_responses_backend(
+        SimpleNamespace(provider="xai", _base_url_hostname="", base_url="https://api.x.ai/v1")
+    )
+    assert not h._is_xai_responses_backend(
+        SimpleNamespace(
+            provider="openai-codex",
+            _base_url_hostname="chatgpt.com",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+    )
 
 
+def test_xai_stream_survives_openai_codex_120s_event_idle(tmp_path, monkeypatch):
+    """Grok can go silent for minutes after the first SSE frame while reasoning.
+
+    The OpenAI-Codex event-idle budget (12–180s, often 120s) must not kill
+    healthy xAI streams. Regression for:
+    'Codex stream produced no SSE events for 120s after first byte'.
+    """
+    from agent import chat_completion_helpers as h
+
+    # Ensure code defaults apply (user env overrides would hide the bug/fix).
+    for key in (
+        "HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS",
+        "HERMES_CODEX_TTFB_TIMEOUT_SECONDS",
+        "HERMES_CODEX_TTFB_MAX_SECONDS",
+        "HERMES_CODEX_HARD_TIMEOUT_SECONDS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    agent.provider = "xai-oauth"
+    agent.model = "grok-4.5"
+    agent.base_url = "https://api.x.ai/v1"
+    agent._base_url_hostname = "api.x.ai"
+    agent._base_url_lower = "https://api.x.ai/v1"
+    # Keep wall stale high so only the event-idle path could fire.
+    monkeypatch.setattr(agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 3600.0)
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    real_time = time.time
+    t0 = real_time()
+
+    def accelerated_time():
+        # ~50x realtime so a few wall seconds cover >120s of watchdog clock.
+        return t0 + (real_time() - t0) * 50.0
+
+    monkeypatch.setattr(h.time, "time", accelerated_time)
+
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        # First byte arrives immediately, then silence past the old 120s budget.
+        agent._codex_stream_last_event_ts = h.time.time()
+        if on_first_delta:
+            on_first_delta()
+        deadline = real_time() + 3.2  # ~160s accelerated
+        while real_time() < deadline and not agent._interrupt_requested:
+            time.sleep(0.02)
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    # ~50k+ estimated tokens → old openai-codex idle default was 120s;
+    # xAI path must use a much higher budget and complete successfully.
+    large_input = "x" * 220_000
+    resp = h.interruptible_api_call(
+        agent, {"model": "grok-4.5", "input": large_input}
+    )
+    assert resp is sentinel
+    assert "codex_stream_idle_kill" not in closes
+    assert "codex_ttfb_kill" not in closes

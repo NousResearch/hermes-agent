@@ -141,6 +141,25 @@ def _is_openai_codex_backend(agent) -> bool:
     )
 
 
+def _is_xai_responses_backend(agent) -> bool:
+    """True when the request targets xAI's Responses API (Grok).
+
+    xAI reuses ``api_mode="codex_responses"`` transport, but its reasoning
+    models legitimately go silent for many minutes between SSE frames while
+    thinking. The hang-recovery watchdogs tuned for chatgpt.com/codex must
+    not apply those aggressive defaults here.
+    """
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    hostname = str(getattr(agent, "_base_url_hostname", "") or "").strip().lower()
+    if not hostname:
+        base_url = str(getattr(agent, "base_url", "") or "").strip().lower()
+        if "://" in base_url:
+            hostname = base_url.split("://", 1)[1].split("/", 1)[0]
+        else:
+            hostname = base_url.split("/", 1)[0]
+    return provider in {"xai", "xai-oauth"} or hostname == "api.x.ai"
+
+
 def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
     """Minimum wall-clock stale timeout for openai-codex by estimated context.
 
@@ -1020,11 +1039,23 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables each).
     _codex_watchdog_enabled = agent.api_mode == "codex_responses"
     _openai_codex_backend = _is_openai_codex_backend(agent)
+    _xai_responses_backend = _is_xai_responses_backend(agent)
     _est_tokens_for_codex_watchdog = estimate_request_context_tokens(api_kwargs)
     if _codex_watchdog_enabled and _openai_codex_backend:
         _codex_floor = openai_codex_stale_timeout_floor(_est_tokens_for_codex_watchdog)
         if _codex_floor:
             _stale_timeout = max(_stale_timeout, _codex_floor)
+    elif _codex_watchdog_enabled and _xai_responses_backend:
+        # Grok reasoning regularly spends several minutes in silent prefill /
+        # chain-of-thought before the next SSE frame. Raise the wall-clock
+        # stale floor so the non-stream detector doesn't abort healthy turns
+        # while the event-idle watchdog (below) uses its own xAI budget.
+        if _est_tokens_for_codex_watchdog > 100_000:
+            _stale_timeout = max(_stale_timeout, 1800.0)
+        elif _est_tokens_for_codex_watchdog > 10_000:
+            _stale_timeout = max(_stale_timeout, 1200.0)
+        else:
+            _stale_timeout = max(_stale_timeout, 900.0)
 
     # ── Codex absolute hard ceiling (#64507) ──────────────────────────
     # ``openai_codex_stale_timeout_floor`` *raises* the stale timeout (up to
@@ -1041,15 +1072,33 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # requests — it is a backstop against unbounded growth, not a tighter
     # limit. Tunable via HERMES_CODEX_HARD_TIMEOUT_SECONDS (set to 0 to
     # disable the ceiling entirely; that restores the pre-fix behavior).
-    _codex_hard_timeout = _env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
+    # xAI documents multi-hour client timeouts for reasoning models; use a
+    # higher default ceiling there so we don't clip long healthy Grok turns.
+    _codex_hard_timeout_default = 3600.0 if _xai_responses_backend else 1500.0
+    _codex_hard_timeout = _env_float(
+        "HERMES_CODEX_HARD_TIMEOUT_SECONDS", _codex_hard_timeout_default
+    )
     if (
         _codex_watchdog_enabled
-        and _openai_codex_backend
+        and (_openai_codex_backend or _xai_responses_backend)
         and _codex_hard_timeout > 0
     ):
         _stale_timeout = min(_stale_timeout, _codex_hard_timeout)
 
-    if _est_tokens_for_codex_watchdog > 100_000:
+    if _xai_responses_backend:
+        # OpenAI-Codex hang defaults (12–180s) false-positive-kill healthy
+        # Grok streams during long silent reasoning after the first SSE
+        # frame — the exact "no SSE events for 120s after first byte" error.
+        # xAI's own SDK examples set client timeout to 3600s for reasoning.
+        if _est_tokens_for_codex_watchdog > 100_000:
+            _codex_idle_timeout_default = 900.0
+        elif _est_tokens_for_codex_watchdog > 50_000:
+            _codex_idle_timeout_default = 720.0
+        elif _est_tokens_for_codex_watchdog > 10_000:
+            _codex_idle_timeout_default = 600.0
+        else:
+            _codex_idle_timeout_default = 300.0
+    elif _est_tokens_for_codex_watchdog > 100_000:
         _codex_idle_timeout_default = 180.0
     elif _est_tokens_for_codex_watchdog > 50_000:
         _codex_idle_timeout_default = 120.0
@@ -1065,8 +1114,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # clear normal backend admission / prompt prefill, short enough to still
     # reconnect promptly when the socket is genuinely wedged. Set
     # HERMES_CODEX_TTFB_TIMEOUT_SECONDS=0 to disable this watchdog entirely.
+    # xAI reasoning prefill is slower; default higher there.
     _ttfb_enabled = _codex_watchdog_enabled
-    _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
+    _ttfb_default = 300.0 if _xai_responses_backend else 120.0
+    _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", _ttfb_default)
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
     elif _openai_codex_backend:
@@ -1100,6 +1151,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 _ttfb_cap,
                 f"{_est_tokens_for_codex_watchdog:,}",
             )
+            _ttfb_timeout = _ttfb_cap
+    elif _xai_responses_backend:
+        # Don't clamp xAI TTFB back down to the openai-codex 120s cap.
+        _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 600.0)
+        if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
             _ttfb_timeout = _ttfb_cap
 
     _codex_idle_enabled = _codex_watchdog_enabled

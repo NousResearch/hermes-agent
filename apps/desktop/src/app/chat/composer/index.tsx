@@ -1124,11 +1124,11 @@ export function ChatBar({
               dragging && 'cursor-grabbing select-none touch-none'
             )}
             data-drag-active={dragActive ? '' : undefined}
+            data-hud-grabbing={hudGrabbing ? '' : undefined}
             data-popped-out={poppedOut ? '' : undefined}
             data-slot="composer-root"
             data-status-stack={statusStackVisible ? '' : undefined}
             data-thread-scrolled-up={scrolledUp ? '' : undefined}
-            data-hud-grabbing={hudGrabbing ? '' : undefined}
             onDragEnter={handleDragEnter}
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}

@@ -97,7 +97,6 @@ export function useHudComposerDrag(enabled: boolean) {
     [enabled]
   )
 
-  // eslint-disable-next-line no-restricted-syntax -- pointer session, not atom mirror
   useEffect(() => {
     if (!enabled) {
       return

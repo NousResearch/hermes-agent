@@ -62,7 +62,7 @@ _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 _DEFAULT_PREFETCH_JOIN_TIMEOUT = 5.0
 _MAX_PREFETCH_JOIN_TIMEOUT = 60.0
-_PREFETCH_SHUTDOWN_GRACE_TIMEOUT = 5.0
+
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -2186,7 +2186,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # 2. Invalidate in-flight prefetch before waiting so a timed-out old
         # worker cannot write stale recall into the new session's cache.
         with self._prefetch_lock:
-            self._prefetch_generation = getattr(self, "_prefetch_generation", 0) + 1
+            self._prefetch_generation += 1
             self._prefetch_result = ""
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=self._prefetch_join_timeout)
@@ -2227,11 +2227,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     "abandoning %d pending retain(s)",
                     self._retain_queue.qsize(),
                 )
-        with self._prefetch_lock:
-            self._prefetch_generation = getattr(self, "_prefetch_generation", 0) + 1
-            self._prefetch_result = ""
         if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=_PREFETCH_SHUTDOWN_GRACE_TIMEOUT)
+            self._prefetch_thread.join(timeout=5.0)
         if self._client is not None:
             try:
                 if self._mode == "local_embedded":

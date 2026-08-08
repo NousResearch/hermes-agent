@@ -641,6 +641,32 @@ class TestTimestampPreservation:
         assert raw[1:] == timestamps[-2:]
         assert raw[0] > timestamps[-1]  # summary stamped with a current time
 
+    def test_replace_messages_preserves_repeated_consecutive_user_messages(self, db):
+        """replace_messages must not silently drop consecutive user messages
+        with identical content — a legitimate repeated prompt (e.g. a retry)
+        is real user input, not a duplicate write, and callers that want to
+        merge/repair such sequences do so upstream (agent_runtime_helpers.py).
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": "hello duplicated"},
+                {"role": "user", "content": "hello duplicated"},
+                {"role": "assistant", "content": "how can I help?"},
+                {"role": "user", "content": "hello duplicated"},
+            ],
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert [m["role"] for m in conv] == ["user", "user", "assistant", "user"]
+        assert [m["content"] for m in conv] == [
+            "hello duplicated",
+            "hello duplicated",
+            "how can I help?",
+            "hello duplicated",
+        ]
+
 
 # =========================================================================
 # FTS5 search

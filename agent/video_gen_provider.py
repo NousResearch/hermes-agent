@@ -272,48 +272,51 @@ def save_url_video(
     import requests
 
     response = requests.get(url, timeout=timeout, stream=True)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
 
-    content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-    extension = _URL_VIDEO_CONTENT_TYPES.get(content_type)
-    if extension is None:
-        url_path = url.split("?", 1)[0].lower()
-        for ext in ("mp4", "webm", "mov", "mkv"):
-            if url_path.endswith(f".{ext}"):
-                extension = ext
-                break
-    if extension is None:
-        extension = "mp4"
+        content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        extension = _URL_VIDEO_CONTENT_TYPES.get(content_type)
+        if extension is None:
+            url_path = url.split("?", 1)[0].lower()
+            for ext in ("mp4", "webm", "mov", "mkv"):
+                if url_path.endswith(f".{ext}"):
+                    extension = ext
+                    break
+        if extension is None:
+            extension = "mp4"
 
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    short = uuid.uuid4().hex[:8]
-    path = _videos_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        short = uuid.uuid4().hex[:8]
+        path = _videos_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
 
-    bytes_written = 0
-    with path.open("wb") as fh:
-        for chunk in response.iter_content(chunk_size=256 * 1024):
-            if not chunk:
-                continue
-            bytes_written += len(chunk)
-            if bytes_written > max_bytes:
-                fh.close()
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-                raise ValueError(
-                    f"Video at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
-                )
-            fh.write(chunk)
+        bytes_written = 0
+        with path.open("wb") as fh:
+            for chunk in response.iter_content(chunk_size=256 * 1024):
+                if not chunk:
+                    continue
+                bytes_written += len(chunk)
+                if bytes_written > max_bytes:
+                    fh.close()
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+                    raise ValueError(
+                        f"Video at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
+                    )
+                fh.write(chunk)
 
-    if bytes_written == 0:
-        try:
-            path.unlink()
-        except OSError:
-            pass
-        raise ValueError(f"Video at {url} was empty (0 bytes).")
+        if bytes_written == 0:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            raise ValueError(f"Video at {url} was empty (0 bytes).")
 
-    return path
+        return path
+    finally:
+        response.close()
 
 
 def success_response(

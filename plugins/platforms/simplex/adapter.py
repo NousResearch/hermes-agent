@@ -949,23 +949,42 @@ class SimplexAdapter(BasePlatformAdapter):
             from PIL import Image
 
             img = Image.open(file_path)
-            if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
-                png_path = str(p.with_suffix(".png"))
-                img.save(png_path, "PNG")
-            thumb = img.copy()
-            thumb.thumbnail((128, 128))
-            import io
-
-            buf = io.BytesIO()
-            thumb.save(buf, "JPEG", quality=70)
-            thumb_uri = (
-                "data:image/jpg;base64,"
-                + base64.b64encode(buf.getvalue()).decode()
-            )
-        except ImportError:
+            generated_png = False
             try:
                 if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
-                    png_path = str(p.with_suffix(".png"))
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".png", prefix="simplex_image_", delete=False
+                    ) as converted:
+                        png_path = converted.name
+                    generated_png = True
+                    img.save(png_path, "PNG")
+                thumb = img.copy()
+                thumb.thumbnail((128, 128))
+                import io
+
+                buf = io.BytesIO()
+                thumb.save(buf, "JPEG", quality=70)
+                thumb_uri = (
+                    "data:image/jpg;base64,"
+                    + base64.b64encode(buf.getvalue()).decode()
+                )
+            except Exception:
+                if generated_png:
+                    try:
+                        os.remove(png_path)
+                    except OSError:
+                        pass
+                raise
+        except ImportError:
+            tmp_path = None
+            generated_png = False
+            try:
+                if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".png", prefix="simplex_image_", delete=False
+                    ) as converted:
+                        png_path = converted.name
+                    generated_png = True
                     subprocess.run(
                         ["convert", file_path, png_path],
                         check=True,
@@ -992,9 +1011,20 @@ class SimplexAdapter(BasePlatformAdapter):
                     thumb_uri = (
                         "data:image/jpg;base64," + base64.b64encode(f.read()).decode()
                     )
-                os.remove(tmp_path)
             except (FileNotFoundError, subprocess.SubprocessError) as exc:
                 logger.warning("SimpleX: image conversion unavailable: %s", exc)
+                if generated_png:
+                    try:
+                        os.remove(png_path)
+                    except OSError:
+                        pass
+                    png_path = file_path
+            finally:
+                if tmp_path:
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
 
         return png_path, thumb_uri
 
@@ -1023,32 +1053,39 @@ class SimplexAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Image file not found")
 
         png_path, thumb_uri = self._prepare_image(file_path)
+        generated_png = os.path.abspath(png_path) != os.path.abspath(file_path)
+        try:
+            # /_send addresses by numeric ID; /f only accepts display names
+            # which breaks for group IDs.
+            composed = json.dumps(
+                [
+                    {
+                        "filePath": png_path,
+                        "msgContent": {
+                            "type": "image",
+                            "image": thumb_uri,
+                            "text": caption or "",
+                        },
+                    }
+                ]
+            )
 
-        # /_send addresses by numeric ID; /f only accepts display names which
-        # breaks for group IDs.
-        composed = json.dumps(
-            [
-                {
-                    "filePath": png_path,
-                    "msgContent": {
-                        "type": "image",
-                        "image": thumb_uri,
-                        "text": caption or "",
-                    },
-                }
-            ]
-        )
+            if chat_id.startswith("group:"):
+                group_id = chat_id[6:]
+                command = f"/_send #{group_id} json {composed}"
+            else:
+                command = f"/_send @{chat_id} json {composed}"
 
-        if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            command = f"/_send #{group_id} json {composed}"
-        else:
-            command = f"/_send @{chat_id} json {composed}"
-
-        result = await self._send_command(command)
-        if result is not None:
-            return SendResult(success=True)
-        return SendResult(success=False, error="Failed to send image")
+            result = await self._send_command(command)
+            if result is not None:
+                return SendResult(success=True)
+            return SendResult(success=False, error="Failed to send image")
+        finally:
+            if generated_png:
+                try:
+                    os.remove(png_path)
+                except OSError:
+                    pass
 
     async def send_image_file(
         self,

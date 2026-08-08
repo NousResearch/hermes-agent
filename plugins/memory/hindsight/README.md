@@ -77,6 +77,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
 | `recall_types` | `observation` | Fact types surfaced by recall (both auto-recall and the `hindsight_recall` tool). Comma-separated string or JSON list. **Default narrowed to `observation` only** (see "Behavior change" below). Set to `observation,world,experience` to also include raw facts. |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
+| `prefetch_join_timeout` | `5.0` | Max seconds to wait for prefetch thread. Increase for slow Hindsight backends (typical recall latency: 1.5–4.4s). |
 
 > **Behavior change — `recall_types` defaults to `observation` only.**
 >

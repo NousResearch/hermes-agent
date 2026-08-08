@@ -8837,6 +8837,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    async def _maybe_ack_busy_queue_reaction(self, event: MessageEvent) -> None:
+        """#81632 — React with ``display.busy_queue_ack_emoji`` on enqueue.
+
+        When ``display.busy_queue_ack_emoji`` is set (default empty =
+        disabled), enqueuing a busy-mode follow-up acknowledges the message
+        with a platform reaction instead of staying silent. Mirrors the
+        ``busy_steer_ack_enabled`` acknowledgment for steer mode. Best-effort:
+        failures are logged at debug level and never break message flow.
+        """
+        from gateway.display_config import resolve_display_setting
+
+        emoji = resolve_display_setting(
+            _load_gateway_config(),
+            _platform_config_key(event.source.platform),
+            "busy_queue_ack_emoji",
+            "",
+        )
+        if not emoji:
+            return
+        adapter = self._adapter_for_source(event.source)
+        if not adapter:
+            return
+        send_reaction = getattr(adapter, "send_reaction", None)
+        if not callable(send_reaction):
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not chat_id or not message_id:
+            return
+        try:
+            await send_reaction(chat_id, message_id, str(emoji))
+        except Exception as exc:
+            logger.debug(
+                "Busy-queue reaction ack failed for session %s: %s",
+                event.source.chat_id,
+                exc,
+            )
+
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Return steerable text for a busy follow-up, transcribing voice first.
 
@@ -9131,6 +9169,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
         is_redirect_mode = effective_mode == "interrupt" and redirected
+
+        # #81632 — In queue mode the follow-up was enqueued for later; give
+        # the user instant visual confirmation via a platform reaction
+        # (display.busy_queue_ack_emoji, e.g. "⏳"). No-op when the setting
+        # is empty (default) or the adapter lacks reaction support.
+        if is_queue_mode and not steered and not redirected:
+            await self._maybe_ack_busy_queue_reaction(event)
 
         # If not in queue/steer mode, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit

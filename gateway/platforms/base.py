@@ -5070,6 +5070,15 @@ class BasePlatformAdapter(ABC):
                 await add(chat_id, message_id, self._FAIL_EMOJI)
         # CANCELLED: leave the message unreacted.
 
+    async def send_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+        """Best-effort emoji reaction on a platform message.
+
+        Base no-op returning ``False``; adapters with reaction support
+        (Telegram, Discord, ...) override. Used by the gateway for the
+        busy-queue acknowledgment flow (``display.busy_queue_ack_emoji``).
+        """
+        return False
+
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)

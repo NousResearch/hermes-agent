@@ -450,6 +450,121 @@ class TestBusySessionOnboardingHint:
         assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
 
 
+class TestBusyQueueAckEmojiReaction:
+    """#81632 — busy_input_mode=queue reacts with display.busy_queue_ack_emoji."""
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_reacts_when_emoji_configured(self, monkeypatch):
+        """Configured emoji → adapter.send_reaction called on enqueue."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"busy_queue_ack_emoji": "⏳"}},
+        )
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        event = _make_event(text="follow-up")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        # Message was enqueued AND acknowledged with the configured emoji.
+        assert adapter._pending_messages.get(sk) is event
+        adapter.send_reaction.assert_awaited_once_with("123", "msg1", "⏳")
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_no_reaction_when_emoji_empty(self, monkeypatch):
+        """Default (empty) emoji → no reaction, enqueueing stays silent."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        event = _make_event(text="follow-up")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        assert adapter._pending_messages.get(sk) is event
+        adapter.send_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_never_reacts(self, monkeypatch):
+        """Steer mode (not queue) must not trigger the queue reaction."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"busy_queue_ack_emoji": "⏳"}},
+        )
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        event = _make_event(text="steer me")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_called_once_with("steer me")
+        adapter.send_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reaction_failure_never_breaks_enqueue(self, monkeypatch):
+        """A failing adapter reaction must not break the busy-message flow."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"busy_queue_ack_emoji": "⏳"}},
+        )
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+        adapter.send_reaction = AsyncMock(side_effect=RuntimeError("reaction boom"))
+
+        event = _make_event(text="follow-up")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        # Enqueue still happened despite the reaction failure.
+        assert adapter._pending_messages.get(sk) is event
+
+
 class TestLongRunningNotificationOwnership:
     """The long-running heartbeat must stop once its run no longer owns the
     session slot or the executor finished — otherwise a stale

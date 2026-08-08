@@ -170,6 +170,53 @@ class TestPlatformDefaults:
 
 
 # ---------------------------------------------------------------------------
+# busy_queue_ack_emoji (feature #81632)
+# ---------------------------------------------------------------------------
+
+class TestBusyQueueAckEmoji:
+    """display.busy_queue_ack_emoji — reaction ack for busy_input_mode=queue."""
+
+    def test_default_empty_disabled(self):
+        """Unset config resolves to '' — reaction ack disabled by default."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "busy_queue_ack_emoji") == ""
+
+    def test_global_setting_resolved(self):
+        """display.busy_queue_ack_emoji is read from the global display block."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"busy_queue_ack_emoji": "⏳"}}
+        assert resolve_display_setting(config, "telegram", "busy_queue_ack_emoji") == "⏳"
+
+    def test_per_platform_override_wins(self):
+        """display.platforms.<plat>.busy_queue_ack_emoji beats the global value."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "busy_queue_ack_emoji": "⏳",
+                "platforms": {"telegram": {"busy_queue_ack_emoji": "📥"}},
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "busy_queue_ack_emoji") == "📥"
+        assert resolve_display_setting(config, "discord", "busy_queue_ack_emoji") == "⏳"
+
+    def test_empty_string_explicitly_disables(self):
+        """Explicit '' in config disables the ack even for the platform."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"busy_queue_ack_emoji": ""}}}}
+        assert resolve_display_setting(config, "telegram", "busy_queue_ack_emoji") == ""
+
+    def test_overrideable_keys_includes_it(self):
+        """The new key participates in per-platform override validation."""
+        from gateway.display_config import OVERRIDEABLE_KEYS
+
+        assert "busy_queue_ack_emoji" in OVERRIDEABLE_KEYS
+
+
+# ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms
 # ---------------------------------------------------------------------------
 

@@ -1125,6 +1125,10 @@ DEFAULT_CONFIG = {
         # "Steered into current run" confirmation bubble by setting this false.
         # The mid-turn steering itself still happens.
         "busy_steer_ack_enabled": True,
+        # When busy_input_mode="queue", react to each enqueued follow-up with
+        # this emoji (e.g. "⏳") for instant visual confirmation. Empty string
+        # (default) disables the reaction — enqueueing stays silent.
+        "busy_queue_ack_emoji": "",
         # Which interface bare `hermes` (and `hermes chat`) launches by default:
         #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
         #   "tui" — the modern Ink TUI (same as passing `--tui`)

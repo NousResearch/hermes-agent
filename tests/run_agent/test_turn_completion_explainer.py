@@ -177,6 +177,66 @@ def test_classify_persistence_error_categories():
     assert classify_persistence_error("") == "unknown"
 
 
+def test_classify_persistence_error_reuses_disk_full_markers():
+    """The disk bucket delegates to hermes_state.is_disk_full_error, so
+    every marker that helper recognizes (ENOSPC, 'not enough space', ...)
+    must classify as 'disk' — the two classifiers can never drift apart."""
+    import errno
+
+    from run_agent import classify_persistence_error
+
+    assert classify_persistence_error("ENOSPC writing state.db") == "disk"
+    assert classify_persistence_error(
+        "There is not enough space on the disk"
+    ) == "disk"
+    assert classify_persistence_error(
+        OSError(errno.ENOSPC, "No space left on device")
+    ) == "disk"
+
+
+def test_classify_persistence_error_compression_busy_is_locked():
+    """A live compression lease refusing the write is contention, not
+    storage damage — but its message contains neither 'locked' nor 'busy',
+    so it must classify by exception type (and by phrase for RPC-wrapped
+    strings). This is the exact failure mode of issue #81227."""
+    from hermes_state import (
+        CompressionSessionBusyError,
+        SessionCompressionInProgressError,
+    )
+    from run_agent import classify_persistence_error
+
+    assert classify_persistence_error(
+        SessionCompressionInProgressError(
+            "Session 'abc' is being compressed by another writer"
+        )
+    ) == "locked"
+    assert classify_persistence_error(
+        CompressionSessionBusyError("Compression lease lost before publication: abc")
+    ) == "locked"
+    # RPC-wrapped string forms (exception type lost in transit).
+    assert classify_persistence_error(
+        "Session 'abc' is being compressed by another writer"
+    ) == "locked"
+    assert classify_persistence_error(
+        "Compression lease lost before publication: abc"
+    ) == "locked"
+
+
+def test_persistence_error_causes_tuple_matches_classifier():
+    """PERSISTENCE_ERROR_CAUSES must cover every value the classifier can
+    return (consumers like cron suppression iterate it)."""
+    from hermes_state import PERSISTENCE_ERROR_CAUSES, classify_persistence_error
+
+    probes = (
+        "database is locked",
+        "database or disk is full",
+        "something else entirely",
+        None,
+    )
+    for probe in probes:
+        assert classify_persistence_error(probe) in PERSISTENCE_ERROR_CAUSES
+
+
 # --------------------------------------------------------------------------
 # 2. Enable/disable seam
 # --------------------------------------------------------------------------

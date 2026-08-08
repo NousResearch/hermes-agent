@@ -282,32 +282,18 @@ _DB_PERSISTED_MARKER = "_db_persisted"
 def classify_persistence_error(exc_or_str) -> str:
     """Classify a session-persistence failure into a coarse cause bucket.
 
-    Fast-failing a turn on a SessionDB write error is deliberate (the
-    transcript would otherwise be lost on restart), but the *guidance* the
-    user gets must match the cause: sustained SQLite write-lock contention
-    ("database is locked" on a shared state.db) needs "storage was busy,
-    send it again", while a full disk or read-only database needs the
-    disk-space/permissions advice. Returns one of:
-
-    * ``"locked"``  — lock/busy contention (another process holds the write
-      lock); transient, retry-later guidance applies.
-    * ``"disk"``    — disk full / read-only / permission-shaped failures.
-    * ``"unknown"`` — anything else (or no visible exception at all).
+    Thin delegating wrapper: the canonical implementation lives in
+    ``hermes_state`` (beside ``is_disk_full_error``, whose disk-full
+    patterns it reuses so the two classifiers can never drift apart).
+    Kept importable from this module because the turn-finalizer contract
+    and existing callers reference ``run_agent.classify_persistence_error``.
+    The import stays lazy to preserve this module's fast import path —
+    every real caller already has hermes_state loaded (the error being
+    classified came from a SessionDB write).
     """
-    if exc_or_str is None:
-        return "unknown"
-    text = str(exc_or_str).lower()
-    if "locked" in text or "busy" in text:
-        return "locked"
-    if (
-        "disk" in text
-        or "readonly" in text
-        or "read-only" in text
-        or "no space" in text
-        or "database or disk is full" in text
-    ):
-        return "disk"
-    return "unknown"
+    from hermes_state import classify_persistence_error as _impl
+
+    return _impl(exc_or_str)
 
 
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per

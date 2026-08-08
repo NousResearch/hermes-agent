@@ -3511,8 +3511,8 @@ def _normalize_empty_agent_response(
             return (
                 "⚠️ Session storage was temporarily unavailable, so this "
                 "turn was stopped to protect your conversation history. "
-                "Your message was recorded — please send it again in a "
-                "moment."
+                "Your message should already be saved — please send it "
+                "again in a moment."
             )
         is_context_failure = any(
             p in error_str

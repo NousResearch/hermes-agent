@@ -4255,7 +4255,11 @@ def run_job(
             # one-argument render would let cause-refined explainer text slip
             # through and be delivered as a cron warning.
             _explainer_variants = []
-            for _cause in (None, "locked", "disk", "unknown"):
+            try:
+                from hermes_state import PERSISTENCE_ERROR_CAUSES as _causes
+            except Exception:
+                _causes = ("locked", "disk", "unknown")
+            for _cause in (None, *_causes):
                 try:
                     _variant = AIAgent._format_turn_completion_explanation(
                         turn_exit_reason, _cause

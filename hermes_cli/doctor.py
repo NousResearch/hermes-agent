@@ -219,7 +219,6 @@ def check_info(text: str):
 # ── state.db health/stats thresholds (advisory only — module constants,
 # deliberately NOT config: doctor warnings are guidance, not policy) ──
 STATE_DB_SIZE_WARN_BYTES = 1 * 1024 * 1024 * 1024   # 1 GiB logical size
-STATE_DB_WAL_WARN_BYTES = 256 * 1024 * 1024          # 256 MiB WAL
 
 
 def _human_bytes(n) -> str:
@@ -312,8 +311,7 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
     # WAL runaway is deliberately NOT warned here: the pre-existing WAL
     # check later in the state.db section already warns above 50 MB and
     # offers a checkpoint via --fix; a second warning at a higher threshold
-    # would only duplicate it. STATE_DB_WAL_WARN_BYTES remains for callers
-    # (dashboards) that consume the stats dict without that legacy check.
+    # would only duplicate it.
 
     return lines
 

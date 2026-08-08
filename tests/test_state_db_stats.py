@@ -212,10 +212,10 @@ def test_render_does_not_duplicate_legacy_wal_warning():
     """A large WAL must NOT warn here: doctor's pre-existing WAL check
     (50 MB threshold, with a --fix checkpoint) already covers it, and a
     second warning at a higher threshold would duplicate the output."""
-    from hermes_cli.doctor import STATE_DB_WAL_WARN_BYTES, _render_state_db_stats
+    from hermes_cli.doctor import _render_state_db_stats
 
     lines = _render_state_db_stats(
-        _base_stats(wal_size_bytes=STATE_DB_WAL_WARN_BYTES + 1), holders=None
+        _base_stats(wal_size_bytes=256 * 1024 * 1024 + 1), holders=None
     )
     warns = [line for line in lines if line[0] == "warn"]
     blob = " ".join(" ".join(str(p) for p in line) for line in warns).lower()

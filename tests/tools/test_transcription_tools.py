@@ -13,6 +13,8 @@ import types
 import wave
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
+from types import SimpleNamespace
+
 
 import pytest
 
@@ -205,6 +207,31 @@ class TestTranscribeGroq:
 # ============================================================================
 # _transcribe_openai — additional tests
 # ============================================================================
+
+def test_openai_transcription_error_object_is_not_returned_as_text(
+    monkeypatch,
+    sample_wav,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    mock_client = MagicMock()
+    mock_client.audio.transcriptions.create.return_value = SimpleNamespace(
+        text=None,
+        error="Transcription failed",
+    )
+
+    with (
+        patch("tools.transcription_tools._HAS_OPENAI", True),
+        patch("openai.OpenAI", return_value=mock_client),
+    ):
+        from tools.transcription_tools import _transcribe_openai
+
+        result = _transcribe_openai(sample_wav, "gpt-4o-transcribe")
+
+    assert result["success"] is False
+    assert result["transcript"] == ""
+    assert "Transcription failed" in result["error"]
+    assert "text=None" not in result["error"]
+
 
 class TestTranscribeLocalCommand:
     def test_command_provider_uses_sanitized_child_env(self, monkeypatch):
@@ -928,6 +955,19 @@ class TestExtractTranscriptText:
 
         assert result == "The user literally said <asr_text> while reading markup."
 
+    def test_rejects_structured_error_instead_of_stringifying_repr(self):
+        from tools.transcription_tools import _extract_transcript_text
+
+        transcription = SimpleNamespace(
+            text=None,
+            logprobs=None,
+            usage=None,
+            error="Transcription failed",
+        )
+
+        with pytest.raises(ValueError, match="Transcription failed"):
+            _extract_transcript_text(transcription)
+
 
 # Shell safety — shlex.split on auto-detected templates
 # ============================================================================
@@ -1159,7 +1199,7 @@ class TestTranscribeCredentialReadGuard:
         from agent.file_safety import get_read_block_error
 
         env_file = tmp_path / ".env"
-        env_file.write_text("OPENAI_API_KEY=sk-secret\n")
+        env_file.write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")
 
         expected = get_read_block_error(str(env_file))
         assert expected, "test setup: a .env file should be read-blocked"

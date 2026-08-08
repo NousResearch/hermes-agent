@@ -2988,19 +2988,32 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
 def _extract_transcript_text(transcription: Any) -> str:
     """Normalize text and JSON transcription responses to a plain string."""
     text: Optional[str] = None
+    structured_response = False
 
     if isinstance(transcription, str):
         text = transcription.strip()
 
     if text is None and hasattr(transcription, "text"):
+        structured_response = True
         value = getattr(transcription, "text")
         if isinstance(value, str):
             text = value.strip()
 
     if text is None and isinstance(transcription, dict):
+        structured_response = True
         value = transcription.get("text")
         if isinstance(value, str):
             text = value.strip()
+
+    if text is None and structured_response:
+        error = (
+            transcription.get("error")
+            if isinstance(transcription, dict)
+            else getattr(transcription, "error", None)
+        )
+        if error:
+            raise ValueError(str(error))
+        return ""
 
     if text is None:
         text = str(transcription).strip()

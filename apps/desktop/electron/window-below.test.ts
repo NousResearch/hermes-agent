@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { pickWindowBelow, type EnumeratedWindow } from './window-below'
+import { type EnumeratedWindow, pickWindowBelow } from './window-below'
 
 const win = (
   pid: number,
@@ -24,6 +24,7 @@ describe('pickWindowBelow', () => {
   it('picks the first overlapping window behind ours in z-order', () => {
     const chrome = win(1, 120, 120)
     const spotify = win(2, 130, 130)
+
     const { below, frontmost } = pickWindowBelow(
       [win(SELF_PID, 100, 100), chrome, spotify],
       SELF_PID,
@@ -37,6 +38,7 @@ describe('pickWindowBelow', () => {
   it('skips windows behind ours that do not overlap', () => {
     const elsewhere = win(1, 5000, 5000)
     const covered = win(2, 200, 200)
+
     const { below } = pickWindowBelow(
       [win(SELF_PID, 100, 100), elsewhere, covered],
       SELF_PID,
@@ -49,6 +51,7 @@ describe('pickWindowBelow', () => {
   it('skips our own other windows (same pid) while walking down', () => {
     const secondHermesWindow = win(SELF_PID, 150, 150)
     const target = win(7, 160, 160)
+
     const { below } = pickWindowBelow(
       [win(SELF_PID, 100, 100), secondHermesWindow, target],
       SELF_PID,
@@ -60,6 +63,7 @@ describe('pickWindowBelow', () => {
 
   it('reports frontmost even when nothing overlaps', () => {
     const elsewhere = win(1, 5000, 5000)
+
     const { below, frontmost } = pickWindowBelow(
       [win(SELF_PID, 100, 100), elsewhere],
       SELF_PID,
@@ -73,6 +77,7 @@ describe('pickWindowBelow', () => {
   it('windows in front of ours are never "below", even overlapping', () => {
     const inFront = win(3, 110, 110)
     const behind = win(4, 120, 120)
+
     const { below, frontmost } = pickWindowBelow(
       [inFront, win(SELF_PID, 100, 100), behind],
       SELF_PID,
@@ -100,6 +105,7 @@ describe('pickWindowBelow', () => {
 
   it('edge-adjacent bounds do not count as overlap', () => {
     const adjacent = win(1, 900, 100) // starts exactly at our right edge
+
     const { below } = pickWindowBelow(
       [win(SELF_PID, 100, 100), adjacent],
       SELF_PID,

@@ -61,12 +61,25 @@ export function pickWindowBelow(
   return { below, frontmost }
 }
 
-type GetWindowsModule = typeof import('get-windows')
+type GetWindowsModule = {
+  openWindows: (options?: {
+    accessibilityPermission?: boolean
+    screenRecordingPermission?: boolean
+  }) => Promise<
+    Array<{
+      bounds?: { height?: number; width?: number; x?: number; y?: number }
+      id?: number
+      owner?: { name?: string; processId?: number }
+      title?: string
+    }>
+  >
+}
 
 let getWindowsModule: Promise<GetWindowsModule> | null = null
 
 const loadGetWindows = (): Promise<GetWindowsModule> => {
   getWindowsModule ??= import('get-windows')
+
   return getWindowsModule
 }
 
@@ -84,6 +97,7 @@ export async function readWindowBelow(
   titlesAvailable: boolean
 ): Promise<WindowBelowResult | null> {
   let raw
+
   try {
     const { openWindows } = await loadGetWindows()
     raw = await openWindows(
@@ -95,7 +109,9 @@ export async function readWindowBelow(
     return null
   }
 
-  if (!Array.isArray(raw)) return null
+  if (!Array.isArray(raw)) {
+    return null
+  }
 
   // get-windows documents openWindows() as front-to-back, and macOS/Windows
   // honor that (CGWindowList / EnumWindows order). Its lib/linux.js, however,

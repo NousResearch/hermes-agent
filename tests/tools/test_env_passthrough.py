@@ -411,3 +411,176 @@ class TestTerminalIntegration:
         assert "OPENAI_API_KEY" not in child_env
         assert "ANTHROPIC_API_KEY" not in child_env
         assert child_env["PATH"] == "/usr/bin"
+
+
+class TestProvenanceScrub:
+    """#77164: the child-env scrub must be provenance-aware — any env value
+    present in the current home's applied-secrets snapshot
+    (hermes_cli.env_loader._SECRET_SOURCE_VALUES_BY_HOME) is stripped from
+    spawned children even under non-credential-shaped names (DATABASE_URL,
+    FOO, 1Password item keys), while explicitly registered env_passthrough
+    vars still receive their value.
+    """
+
+    def _seed_applied_secrets(self, home, values):
+        from hermes_cli import env_loader
+
+        home_key = str(home.resolve())
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[home_key] = dict(values)
+        return home_key
+
+    def test_hermes_subprocess_env_strips_arbitrarily_named_applied_secret(self, tmp_path, monkeypatch):
+        """The non-terminal factory (hermes_subprocess_env) must strip an
+        externally-applied secret value from a real spawned child even when
+        the env var name has no credential shape."""
+        import json
+        import subprocess
+        import sys
+
+        from hermes_cli import env_loader
+        from tools.environments.local import hermes_subprocess_env
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        applied = {
+            "DATABASE_URL": "postgres://svc:«redacted:db-pass»@db.internal:5432/app",
+            "FOO": "«redacted:op-item-value»",
+        }
+        home_key = self._seed_applied_secrets(hermes_home, applied)
+        try:
+            for name, value in applied.items():
+                monkeypatch.setenv(name, value)
+
+            env = hermes_subprocess_env()  # no passthrough concept here
+
+            code = (
+                "import os, json; print(json.dumps({"
+                "'k1': 'DATABASE_URL' in os.environ, "
+                "'k2': 'FOO' in os.environ}))"
+            )
+            out = subprocess.run(
+                [sys.executable, "-c", code],
+                env=env, capture_output=True, text=True, timeout=60, check=True,
+            )
+            result = json.loads(out.stdout)
+            assert result["k1"] is False, "DATABASE_URL leaked via hermes_subprocess_env"
+            assert result["k2"] is False, "FOO leaked via hermes_subprocess_env"
+        finally:
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+
+    def test_hermes_subprocess_env_still_strips_on_inherit_credentials(self, tmp_path, monkeypatch):
+        """The provenance scrub is Tier-1-like: it must apply even when the
+        caller opts into inherit_credentials=True (model-driving CLIs)."""
+        from hermes_cli import env_loader
+        from tools.environments.local import hermes_subprocess_env
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        applied = {"FOO": "«redacted:op-item-value»"}
+        home_key = self._seed_applied_secrets(hermes_home, applied)
+        try:
+            monkeypatch.setenv("FOO", "«redacted:op-item-value»")
+            env = hermes_subprocess_env(inherit_credentials=True)
+            assert "FOO" not in env
+        finally:
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+
+    def test_scrub_never_uses_another_profiles_snapshot(self, tmp_path, monkeypatch):
+        """Cross-profile isolation: values snapshotted for home A must never
+        be used to scrub a child built for home B."""
+        from hermes_cli import env_loader
+        from tools.environments.local import _sanitize_subprocess_env
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        home_a.mkdir()
+        home_b.mkdir()
+
+        key_a = self._seed_applied_secrets(home_a, {"FOO": "«redacted:profile-a-secret»"})
+        try:
+            monkeypatch.setenv("HERMES_HOME", str(home_b))
+            # Same value as profile-a's secret, but we're building for B.
+            result = _sanitize_subprocess_env(
+                {"FOO": "«redacted:profile-a-secret»", "PATH": "/usr/bin"}
+            )
+            assert result["FOO"] == "«redacted:profile-a-secret»"
+            assert result["PATH"] == "/usr/bin"
+        finally:
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME.pop(key_a, None)
+
+    def test_empty_snapshot_degrades_gracefully(self, tmp_path, monkeypatch):
+        """No snapshot for the current home → no value-based scrubbing, and
+        ordinary vars keep flowing to the child."""
+        from hermes_cli import env_loader
+        from tools.environments.local import _sanitize_subprocess_env
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        # Deliberately NOT seeded.
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME.pop(str(hermes_home.resolve()), None)
+        result = _sanitize_subprocess_env(
+            {"DATABASE_URL": "postgres://user:pass@db:5432/app", "PATH": "/usr/bin"}
+        )
+        assert result["DATABASE_URL"] == "postgres://user:pass@db:5432/app"
+        assert result["PATH"] == "/usr/bin"
+
+    def test_passthrough_wins_over_provenance_scrub_e2e(self, tmp_path, monkeypatch):
+        """A var registered in env_passthrough still reaches a real spawned
+        child even though its value also appears in the applied-secrets
+        snapshot — the explicit passthrough contract outranks the scrub."""
+        import subprocess
+        import sys
+
+        from hermes_cli import env_loader
+        from tools.environments.local import build_subprocess_env
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        db_url = "postgres://svc:«redacted:db-pass»@db.internal:5432/app"
+        home_key = self._seed_applied_secrets(hermes_home, {"DATABASE_URL": db_url})
+        try:
+            monkeypatch.setenv("DATABASE_URL", db_url)
+            register_env_passthrough(["DATABASE_URL"])
+            env = build_subprocess_env()  # scrub on (default)
+            out = subprocess.run(
+                [sys.executable, "-c",
+                 "import os; print(os.environ.get('DATABASE_URL', 'MISSING'))"],
+                env=env, capture_output=True, text=True, timeout=60, check=True,
+            )
+            assert out.stdout.strip() == db_url
+        finally:
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+
+    def test_make_run_env_scrubs_applied_value_and_passthrough_wins(self, tmp_path, monkeypatch):
+        """The terminal run-env path (_make_run_env) applies the same
+        provenance scrub — applied secret values are stripped, and a
+        passthrough-registered var keeps its value."""
+        from hermes_cli import env_loader
+        from tools.environments.local import _make_run_env
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        secret = "«redacted:make-run-env-secret»"
+        home_key = self._seed_applied_secrets(hermes_home, {"DATABASE_URL": secret})
+        try:
+            monkeypatch.setenv("DATABASE_URL", secret)
+            monkeypatch.setenv("PATH", "/usr/bin")
+
+            run_env = _make_run_env({})
+            assert "DATABASE_URL" not in run_env
+
+            register_env_passthrough(["DATABASE_URL"])
+            run_env2 = _make_run_env({})
+            assert run_env2.get("DATABASE_URL") == secret
+        finally:
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)

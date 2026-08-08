@@ -30,11 +30,16 @@ class TestPerJobToolsetMcpMerge:
     def _enabled_names(self):
         return {"finnhub", "playwright", "string_enabled"}
 
-    def test_native_only_list_gets_all_enabled_mcp_servers(self):
+    def test_native_only_list_gets_no_mcp_servers(self):
+        """A native-only list gets no MCP servers — enabled_toolsets is restrictive."""
         result = _merge_mcp_into_per_job_toolsets(["web", "terminal"], self.CFG)
-        assert result[:2] == ["web", "terminal"]
-        assert set(result) == {"web", "terminal"} | self._enabled_names()
+        assert result == ["web", "terminal"]
+        assert not (set(result) & self._enabled_names())
 
+    def test_disabled_servers_are_not_added(self):
+        result = _merge_mcp_into_per_job_toolsets(["web"], self.CFG)
+        assert result == ["web"]
+        assert "disabled_one" not in result
 
     def test_explicit_mcp_name_is_treated_as_allowlist(self):
         # User named one server -> add nothing further.
@@ -47,6 +52,19 @@ class TestPerJobToolsetMcpMerge:
         assert result == ["web"]
         assert not (set(result) & self._enabled_names())
 
+    def test_no_mcp_config_adds_nothing(self):
+        result = _merge_mcp_into_per_job_toolsets(["web"], {})
+        assert result == ["web"]
+
+    def test_no_duplicate_when_listed_name_also_globally_enabled(self):
+        result = _merge_mcp_into_per_job_toolsets(["finnhub", "finnhub"], self.CFG)
+        assert result.count("finnhub") == 2  # input dups preserved, none added
+
+    def test_resolver_uses_merge_for_per_job_lists(self):
+        job = {"enabled_toolsets": ["web", "terminal"]}
+        result = _resolve_cron_enabled_toolsets(job, self.CFG)
+        assert set(result) == {"web", "terminal"}
+        assert not (set(result) & self._enabled_names())
 
     def test_resolver_empty_per_job_falls_through_to_platform(self):
         # No per-job list -> must delegate to _get_platform_tools (the platform
@@ -1974,5 +1992,3 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
-

@@ -500,6 +500,19 @@ export function useGatewayBoot({
           progress: 95
         })
         publish(conn)
+        // Seed the workspace BEFORE the gateway opens: every session-restore
+        // path is gated on gatewayState === 'open', so nothing can be active yet
+        // and ensureDefaultWorkspaceCwd's live-session guard passes. The
+        // post-connect seed could lose that race on a slow start (#71873). A
+        // resumed session's own cwd still supersedes this once its runtime
+        // arrives. Non-fatal: the remembered cwd is a fine fallback and the
+        // post-connect pass retries the sync.
+        try {
+          await ensureDefaultWorkspaceCwd()
+        } catch (err) {
+          console.warn('Failed to seed default workspace cwd pre-connect', err)
+        }
+
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
@@ -526,7 +539,10 @@ export function useGatewayBoot({
         })
 
         await Promise.all([
-          seedDefaultCwd(),
+          // The pre-connect seed already applied the configured default; this
+          // post-connect pass covers the remote backend default. Non-fatal: a
+          // failed sync must not abort boot (the remembered cwd remains).
+          seedDefaultCwd().catch(err => console.warn('Failed to sync default workspace cwd post-connect', err)),
           callbacksRef.current.refreshHermesConfig(),
           // Session-list population is never boot-fatal. The gateway WS is
           // already open by this point — a failed sidebar fetch (transient

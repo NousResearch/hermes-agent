@@ -13,7 +13,7 @@ import {
   releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
   setCurrentBranch,
-  setCurrentCwd,
+  setCurrentCwdTransient,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -968,9 +968,8 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
       commitWorkspaceCwdForSelectedSession(state.cwd)
     } else {
       // A detached session: the path on screen is provably still the previous
-      // conversation's. Release rather than write `''` — `setCurrentCwd`
-      // persists, so blanking here would also wipe the remembered workspace
-      // that seeds `$currentCwd` on next boot.
+      // conversation's. Release rather than write `''` — clearing it collapses
+      // the workspace/review panes on every switch.
       releaseWorkspaceCwdOwner()
     }
   }
@@ -1098,7 +1097,7 @@ export function applyStoredSessionPreviewRuntimeInfo(
   const storedCwd = stored?.cwd?.trim() || ''
 
   if (storedCwd) {
-    setCurrentCwd(storedCwd)
+    setCurrentCwdTransient(storedCwd)
     setWorkspaceCwdOwner(storedSessionId)
   } else {
     // Either a genuinely detached session, or a row outside the loaded sidebar

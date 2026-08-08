@@ -51,7 +51,7 @@ import {
   $sessions,
   sessionMatchesStoredId,
   setCurrentBranch,
-  setCurrentCwd,
+  setCurrentCwdTransient,
   setCurrentFastMode,
   setCurrentPersonality,
   setCurrentReasoningEffort,
@@ -446,7 +446,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             const sameSession = !!sessionId && sessionId === lastCwdInfoSessionRef.current
 
             lastCwdInfoSessionRef.current = sessionId
-            setCurrentCwd(payload.cwd)
+            setCurrentCwdTransient(payload.cwd)
 
             // The backend just confirmed the selected conversation's real
             // workspace, so it owns the path we wrote. Without the claim the

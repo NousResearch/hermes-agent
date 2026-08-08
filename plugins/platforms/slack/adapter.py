@@ -2555,6 +2555,9 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": chunk,
                     "mrkdwn": True,
                 }
+                for unfurl_option in ("unfurl_links", "unfurl_media"):
+                    if unfurl_option in self.config.extra:
+                        kwargs[unfurl_option] = self.config.extra[unfurl_option]
                 if blocks and i == 0:
                     kwargs["blocks"] = blocks
                 if thread_ts:

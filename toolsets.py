@@ -41,7 +41,7 @@ _HERMES_CORE_TOOLS = [
     # _load_enabled_toolsets) — never keyed on a process env var, which is
     # blind to a desktop client talking to a remote/cloud backend.
     # File manipulation
-    "read_file", "write_file", "patch", "search_files",
+    "read_file", "write_file", "patch", "search_files", "read_code_structure",
     # Vision + image generation
     "vision_analyze", "image_generate",
     # BFL FLUX 3 video generation

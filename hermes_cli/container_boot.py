@@ -350,16 +350,23 @@ def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
     return len(args) >= 2 and args[0] == "gateway" and args[1] == "run"
 
 
-def _is_dashboard_container(argv: Sequence[str]) -> bool:
-    """Return True when the container's command is the dashboard.
+def _is_non_gateway_container(argv: Sequence[str]) -> bool:
+    """Return True when the container's command is a non-gateway role.
 
-    A dashboard-only container (``hermes dashboard ...``) never spawns or
-    supervises per-profile gateways — that is the gateway container's job.
-    Reconciling profile gateway s6 slots there is not just wasted work: when
-    the gateway and dashboard containers share a bind-mounted HERMES_HOME,
+    A non-gateway container (``hermes dashboard ...``, ``hermes serve ...``,
+    ``hermes gui ...``, ``hermes desktop ...``) never spawns or supervises
+    per-profile gateways — that is the gateway container's job. Reconciling
+    profile gateway s6 slots there is not just wasted work: when the gateway
+    container and a non-gateway container share a bind-mounted HERMES_HOME,
     both race to ``flock()`` the same ``logs/gateways/<profile>/lock`` files,
-    producing "Resource busy" failures and an s6-log restart storm. So the
-    dashboard container skips reconciliation entirely.
+    producing "Resource busy" failures and an s6-log restart storm — and a
+    ``serve`` container even registers and auto-starts its own
+    ``gateway-default`` slot (see issue #78810). So non-gateway containers
+    skip reconciliation entirely.
+
+    The role set mirrors the GUI-mode entrypoints in
+    ``hermes_cli.main`` (``{"dashboard", "serve", "gui", "desktop"}``):
+    every one of them boots the dashboard/desktop server, never the gateway.
 
     Detected from PID 1 argv (``/proc/1/cmdline``) rather than an operator
     flag: the role is a fact about the container's command, not a tunable,
@@ -368,7 +375,13 @@ def _is_dashboard_container(argv: Sequence[str]) -> bool:
     in :func:`_is_legacy_gateway_run_request`.
     """
     args = _strip_container_argv_prefix(argv)
-    return bool(args) and args[0] == "dashboard"
+    return bool(args) and args[0] in _NON_GATEWAY_CONTAINER_ROLES
+
+
+# Non-gateway container roles that share HERMES_HOME with the gateway
+# container and must never reconcile per-profile gateway s6 slots.
+# Keep in sync with the GUI-mode entrypoint set in hermes_cli/main.py.
+_NON_GATEWAY_CONTAINER_ROLES = frozenset({"dashboard", "serve", "gui", "desktop"})
 
 
 def _read_desired_state(profile_dir: Path) -> str | None:
@@ -582,18 +595,20 @@ _LOG_ROTATE_BYTES = 256 * 1024
 
 def main() -> int:
     """Entry point invoked from /etc/cont-init.d/02-reconcile-profiles."""
-    # A dashboard-only container never spawns or supervises per-profile
-    # gateways, so reconciling their s6 slots here is pure waste — and
-    # actively harmful: when the gateway and dashboard containers share a
-    # bind-mounted HERMES_HOME, both race to flock() the same s6-log lock
-    # files under logs/gateways/<profile>/lock, producing "Resource busy"
-    # failures and a restart storm. Detect the role from PID 1 argv and
-    # skip reconciliation in the dashboard container. No operator flag:
+    # A non-gateway container (dashboard, serve, gui, desktop) never spawns
+    # or supervises per-profile gateways, so reconciling their s6 slots here
+    # is pure waste — and actively harmful: when the gateway container and a
+    # non-gateway container share a bind-mounted HERMES_HOME, both race to
+    # flock() the same s6-log lock files under logs/gateways/<profile>/lock,
+    # producing "Resource busy" failures and a restart storm — and a serve
+    # container even auto-starts its own duplicate gateway-default slot
+    # (issue #78810). Detect the role from PID 1 argv and skip
+    # reconciliation in every non-gateway container. No operator flag:
     # the role is a fact about the container's command, and a flag can be
     # forgotten in a hand-written manifest, reintroducing the storm.
-    if _is_dashboard_container(_read_container_argv()):
+    if _is_non_gateway_container(_read_container_argv()):
         print(
-            "reconcile: skipping (dashboard container — does not need "
+            "reconcile: skipping (non-gateway container — does not need "
             "per-profile gateways)"
         )
         return 0

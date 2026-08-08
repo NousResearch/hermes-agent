@@ -283,7 +283,51 @@ def test_main_skips_reconcile_in_dashboard_container_s6v3(
     assert rc == 0
     assert not (scandir / "gateway-worker").exists()
     assert not (scandir / "gateway-default").exists()
-    assert "skipping (dashboard container" in capsys.readouterr().out
+    assert "skipping (non-gateway container" in capsys.readouterr().out
+
+
+def test_main_skips_reconcile_in_serve_container_s6v3(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A `serve` container must skip reconciliation like the dashboard.
+
+    Regression test for issue #78810: `serve` (the desktop-app headless
+    backend) boots the same server as `dashboard` and shares a bind-mounted
+    HERMES_HOME with the gateway container. Before the fix it was not
+    exempt, so it registered and auto-started its own `gateway-default`
+    slot — a duplicate live gateway racing on the dispatcher lock and the
+    s6-log lock files. Asserting the slot is absent proves the skip fires
+    for the serve role under the s6-overlay v3 argv shape.
+    """
+    from hermes_cli import container_boot
+
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "worker", state="running")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("S6_PROFILE_GATEWAY_SCANDIR", str(scandir))
+    monkeypatch.setattr(
+        container_boot,
+        "_read_container_argv",
+        lambda: (
+            "/bin/sh",
+            "-e",
+            "/run/s6/basedir/scripts/rc.init",
+            "top",
+            "/opt/hermes/docker/main-wrapper.sh",
+            "serve",
+            "--host",
+            "0.0.0.0",
+        ),
+    )
+
+    rc = container_boot.main()
+
+    assert rc == 0
+    assert not (scandir / "gateway-worker").exists()
+    assert not (scandir / "gateway-default").exists()
+    assert "skipping (non-gateway container" in capsys.readouterr().out
 
 
 

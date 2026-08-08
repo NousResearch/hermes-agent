@@ -1538,7 +1538,7 @@ def _get_env_config() -> Dict[str, Any]:
             )
     
     mount_docker_cwd = terminal_env.get("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in {"docker", "singularity", "modal", "daytona"}
+    container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
     docker_backend = env_type == "docker"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
@@ -1613,6 +1613,7 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": terminal_env.get("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": terminal_env.get("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": terminal_env.get("TERMINAL_DAYTONA_IMAGE", default_image),
+        "vercel_runtime": terminal_env.get("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,

@@ -341,7 +341,11 @@ class TestWebSearchSchema:
             result = json.loads(tools.web_tools.web_search_tool("docs", limit=500))
 
         assert result == {"success": True, "data": {"web": []}}
-        fake_search.assert_called_once_with("docs", 100)
+        fake_search.assert_called_once_with(
+            "docs",
+            100,
+            search_depth=None,
+        )
 
 
 class TestWebSearchErrorHandling:

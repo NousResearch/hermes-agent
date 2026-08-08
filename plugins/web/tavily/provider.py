@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.web_search_provider import WebSearchProvider
 
@@ -150,20 +150,33 @@ class TavilyWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a Tavily search."""
+    def search(self, query: str, limit: int = 5, search_depth: Optional[str] = None) -> Dict[str, Any]:
+        """Execute a Tavily search.
+
+        search_depth maps to Tavily's parameters:
+            "fast" / "auto" / None → search_depth="basic", include_answer=False
+            "deep" → search_depth="advanced", include_answer=False
+            "deepest" → search_depth="advanced", include_answer=True
+        """
         try:
             from tools.interrupt import is_interrupted
 
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
 
-            logger.info("Tavily search: '%s' (limit=%d)", query, limit)
+            _depth = (search_depth or "").lower()
+            tvly_depth = "advanced" if _depth in ("deep", "deepest") else "basic"
+            include_answer = _depth == "deepest"
+
+            logger.info("Tavily search: '%s' (limit=%d, depth=%s, answer=%s)",
+                        query, limit, tvly_depth, include_answer)
             raw = _tavily_request(
                 "search",
                 {
                     "query": query,
                     "max_results": min(limit, 20),
+                    "search_depth": tvly_depth,
+                    "include_answer": include_answer,
                     "include_raw_content": False,
                     "include_images": False,
                 },

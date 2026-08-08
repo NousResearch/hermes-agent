@@ -615,7 +615,13 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def web_search_tool(
+    query: str,
+    limit: int = 5,
+    search_depth: str = None,
+    intent_hint: str = None,
+    provider_override: str = None,
+) -> str:
     """
     Search the web for information using available search API backend.
 
@@ -628,6 +634,18 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Args:
         query (str): The search query to look up
         limit (int): Maximum number of results to return (default: 5)
+        search_depth (str, optional): Search depth/quality level.
+            "fast"   — lowest latency, basic results
+            "auto"   — balanced speed/quality (default if not specified)
+            "deep"   — thorough search, multi-step, higher quality
+            "deepest" — maximum depth, reasoning-grade results (slowest)
+        intent_hint (str, optional): Router-only hint (SIMPLE_DISCOVERY /
+            GENERAL_RESEARCH / TECHNICAL_RESEARCH / CURRENT_INFORMATION).
+            NOT exposed to the model — used only when the Web Capability
+            Router (web.router.enabled) is active; the router otherwise
+            classifies the query locally.
+        provider_override (str, optional): Router-only explicit provider name
+            (ddgs/parallel/exa/tavily/firecrawl). NOT exposed to the model.
     
     Returns:
         str: JSON string containing search results with the following structure:
@@ -658,7 +676,8 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     debug_call_data = {
         "parameters": {
             "query": query,
-            "limit": limit
+            "limit": limit,
+            "search_depth": search_depth,
         },
         "error": None,
         "results_count": 0,
@@ -683,6 +702,28 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         )
 
         backend = _get_search_backend()
+        # ── Web Capability Router (V0.1, Stage B1) — feature-flagged ──────
+        # When web.router.enabled is false (default), this block is skipped
+        # entirely: legacy backend resolution, output shape, and error paths
+        # are preserved byte-for-byte, and no router state is instantiated.
+        # When enabled, a single deterministic provider is selected via the
+        # Layer-B Search Provider Router; a decision object is the only
+        # telemetry (no query-content logging). No fallback, no verification,
+        # no Browser invocation happens here.
+        _router_cfg = (_load_web_config().get("router") or {})
+        if _router_cfg.get("enabled"):
+            try:
+                from tools.web_search_router import select_search_provider
+
+                _decision = select_search_provider(
+                    query,
+                    intent_hint=intent_hint,
+                    provider_override=provider_override,
+                )
+                if _decision.selected_provider:
+                    backend = _decision.selected_provider
+            except Exception as _router_exc:  # noqa: BLE001 — router must never break search
+                logger.debug("Web search router skipped (%s)", _router_exc)
         provider = _wsp_get_provider(backend) if backend else None
         if provider is None or not provider.supports_search():
             # Fall back to availability-walked active provider when the
@@ -719,7 +760,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
-            response_data = provider.search(query, limit)
+            response_data = provider.search(query, limit, search_depth=search_depth)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -855,6 +896,44 @@ async def web_extract_tool(
             results = []
         else:
             backend = _get_extract_backend()
+            # ── Web Capability Router (V0.1, Stage B1) — feature-flagged ──
+            # When web.router.enabled is false (default), this block is
+            # skipped entirely: legacy backend resolution, output shape, and
+            # error paths are preserved byte-for-byte. When enabled, the
+            # Layer-B Extract Provider Router classifies the URL boundary
+            # BEFORE any external extractor: browser-only / login /
+            # interaction / sensitive-parameter URLs yield a structured
+            # Browser escalation recommendation (never an automatic Browser
+            # call), and public URLs select Firecrawl. At most ONE extractor
+            # per call; no secondary extract fallback in B1.
+            _router_cfg = (_load_web_config().get("router") or {})
+            if _router_cfg.get("enabled"):
+                try:
+                    from tools.web_extract_router import select_extract_provider
+
+                    _decision = select_extract_provider(
+                        safe_urls,
+                        browser_only_domains=_router_cfg.get("browser_only_domains"),
+                    )
+                    if _decision.escalation_recommended:
+                        return json.dumps(
+                            {
+                                "success": False,
+                                "error": (
+                                    "Page requires browser interaction. Use "
+                                    "browser_navigate instead of web_extract."
+                                ),
+                                "escalation": {
+                                    "recommended_tool": _decision.escalation_tool,
+                                    "reason": _decision.escalation_reason,
+                                },
+                            },
+                            ensure_ascii=False,
+                        )
+                    if _decision.selected_provider:
+                        backend = _decision.selected_provider
+                except Exception as _router_exc:  # noqa: BLE001 — router must never break extract
+                    logger.debug("Web extract router skipped (%s)", _router_exc)
 
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
             # tavily, firecrawl) now live as plugins. The dispatcher is a

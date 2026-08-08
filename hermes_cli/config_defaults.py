@@ -400,6 +400,19 @@ DEFAULT_CONFIG = {
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
+        # Web Capability Router (V0.1). Feature flag defaults to FALSE: when
+        # disabled (default), web_search/web_extract behave exactly as before
+        # and no router code runs. When enabled, deterministic intent-based
+        # provider selection (Layer B) applies inside the web tools.
+        "router": {
+            "enabled": False,
+            # Domain suffixes that must always be handled by the Browser
+            # (authenticated/session-dependent), via safe suffix matching.
+            # Shipped empty: operators opt in with their own
+            # interactive-only domains (e.g. via user config); no vendor
+            # domain is hard-coded into production defaults.
+            "browser_only_domains": [],
+        },
     },
 
     "browser": {

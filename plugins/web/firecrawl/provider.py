@@ -388,12 +388,15 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5, search_depth: Optional[str] = None) -> Dict[str, Any]:
         """Execute a Firecrawl search.
 
         Sync; matches the legacy ``_get_firecrawl_client().search(...)``
         call directly. Normalizes the response across SDK/direct/gateway
         shapes via :func:`_extract_web_search_results`.
+
+        When search_depth="deep" or "deepest", passes scrapeOptions to also
+        extract full content from each search result (search+scrape in one call).
 
         Pre-flight errors (``ValueError`` from configuration check,
         ``ImportError`` from missing SDK) propagate to the dispatcher's
@@ -407,12 +410,23 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         if is_interrupted():
             return {"success": False, "error": "Interrupted"}
 
-        logger.info("Firecrawl search: '%s' (limit=%d)", query, limit)
+        _depth = (search_depth or "").lower()
+        scrape_options = None
+        if _depth in ("deep", "deepest"):
+            scrape_options = {
+                "formats": ["markdown"],
+                "onlyMainContent": True,
+            }
+
+        logger.info("Firecrawl search: '%s' (limit=%d, depth=%s)", query, limit, _depth or "default")
         # _get_firecrawl_client() raises ValueError on unconfigured systems —
         # let it propagate so the dispatcher emits the legacy envelope shape.
         client = _get_firecrawl_client()
         try:
-            response = client.search(query=query, limit=limit)
+            kwargs = {"query": query, "limit": limit}
+            if scrape_options:
+                kwargs["scrapeOptions"] = scrape_options
+            response = client.search(**kwargs)
             web_results = _extract_web_search_results(response)
             logger.info("Firecrawl: found %d search results", len(web_results))
             return {"success": True, "data": {"web": web_results}}

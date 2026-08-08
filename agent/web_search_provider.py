@@ -139,12 +139,17 @@ class WebSearchProvider(abc.ABC):
         """
         return False
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5, search_depth: Optional[str] = None) -> Dict[str, Any]:
         """Execute a web search.
 
         Override when :meth:`supports_search` returns True. The default
         raises NotImplementedError; callers should gate on
         :meth:`supports_search` before calling.
+
+        Args:
+            query: The search query string.
+            limit: Maximum number of results.
+            search_depth: Optional depth hint — "fast", "auto", "deep", or "deepest".
         """
         raise NotImplementedError(
             f"{self.name} does not support search (override supports_search)"

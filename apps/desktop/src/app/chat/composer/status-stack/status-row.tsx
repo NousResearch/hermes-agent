@@ -99,7 +99,7 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
   const running = item.state === 'running'
 
   const action =
-    item.type === 'background'
+    item.type === 'background' || item.type === 'subagent'
       ? running
         ? onStop && { label: s.stop, onClick: () => onStop(item.id) }
         : onDismiss && { label: s.dismiss, onClick: () => onDismiss(item.id) }

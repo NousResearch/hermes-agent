@@ -37,8 +37,19 @@ def test_self_heals_on_stale_refresh_token(monkeypatch):
             relogin_required=True,
         )
 
+    # Mock _read_codex_tokens to return the stale token so that the CAS
+    # check inside _recover_codex_tokens_from_cli sees a match.
+    def _read_stale(*, _lock=True):
+        return {"tokens": dict(STALE), "last_refresh": None}
+
     monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _rejected)
     monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda: dict(fresh))
+    monkeypatch.setattr(auth, "_read_codex_tokens", _read_stale)
+    monkeypatch.setattr(
+        auth,
+        "_read_codex_access_token_observation",
+        lambda *, _lock=True: STALE["access_token"],
+    )
     monkeypatch.setattr(auth, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
 
     out = _refresh_codex_auth_tokens(STALE, 20.0)
@@ -92,3 +103,36 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
     assert tokens["refresh_token"] == "fresh-refresh"
 
 
+def test_self_heals_missing_singleton_refresh_token_from_codex_cli(tmp_path, monkeypatch):
+    """Recovery CAS carries the valid access token from the rejected snapshot."""
+    hermes_home = tmp_path / "hermes"
+    codex_home = tmp_path / "codex"
+    hermes_home.mkdir()
+    codex_home.mkdir()
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "observed-access"},
+                "last_refresh": "2026-06-01T00:00:00Z",
+                "auth_mode": "chatgpt",
+            },
+        },
+    }))
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": "fresh-access",
+            "refresh_token": "fresh-refresh",
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == "fresh-access"
+    assert resolved["source"] == "hermes-auth-store"
+    stored = json.loads((hermes_home / "auth.json").read_text())
+    tokens = stored["providers"]["openai-codex"]["tokens"]
+    assert tokens["access_token"] == "fresh-access"
+    assert tokens["refresh_token"] == "fresh-refresh"

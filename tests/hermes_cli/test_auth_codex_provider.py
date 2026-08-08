@@ -15,6 +15,7 @@ from hermes_cli.auth import (
     _read_codex_tokens,
     _save_codex_tokens,
     _import_codex_cli_tokens,
+    _recover_codex_tokens_from_cli,
     _login_openai_codex,
     refresh_codex_oauth_pure,
     resolve_codex_runtime_credentials,
@@ -607,6 +608,367 @@ def _patch_httpx_post(monkeypatch, responses):
             return next(seq)
 
     monkeypatch.setattr("hermes_cli.auth.httpx.Client", lambda *a, **k: _FakeClient())
+
+
+# ---------------------------------------------------------------------------
+# #73667 / #73677 — locked-CAS recovery for Codex CLI token import
+# ---------------------------------------------------------------------------
+
+def _codex_jwt_with_account(account_id=None, exp_offset=3600):
+    """Build a synthetic Codex OAuth JWT carrying a chatgpt_account_id claim.
+
+    Mirrors the claim layout codex-rs places under the namespaced
+    ``https://api.openai.com/auth`` object.  Pass ``account_id=None`` to omit
+    the claim entirely (for the missing-identity compatibility cases).
+
+    Each call includes a monotonically-incrementing ``iat`` claim so that
+    successive calls under the same second produce distinct JWT strings —
+    critical for CAS-race tests that compare token identity.
+    """
+    import itertools
+    _codex_jwt_with_account._counter = getattr(_codex_jwt_with_account, "_counter", itertools.count())
+    payload: dict = {"exp": int(time.time()) + exp_offset, "iat": next(_codex_jwt_with_account._counter)}
+    if account_id is not None:
+        payload["https://api.openai.com/auth"] = {"chatgpt_account_id": account_id}
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("utf-8")
+    return f"h.{encoded}.s"
+
+
+def _seed_codex_store(hermes_home, access_token, refresh_token="rt-stored"):
+    """Write a Codex provider singleton into a temp HERMES_HOME auth.json."""
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_store = {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                },
+                "last_refresh": "2026-07-28T00:00:00Z",
+                "auth_mode": "chatgpt",
+            },
+        },
+    }
+    auth_file = hermes_home / "auth.json"
+    auth_file.write_text(json.dumps(auth_store, indent=2))
+    return auth_file
+
+
+# --- _codex_chatgpt_account_id unit tests ---
+
+def test_codex_chatgpt_account_id_extracts_claim():
+    """Direct unit test for the identity-extraction helper (#73667)."""
+    from hermes_cli.auth import _codex_chatgpt_account_id
+
+    assert _codex_chatgpt_account_id(_codex_jwt_with_account("acct-1")) == "acct-1"
+    assert _codex_chatgpt_account_id(_codex_jwt_with_account(None)) is None
+    assert _codex_chatgpt_account_id("not-a-jwt") is None
+    assert _codex_chatgpt_account_id(None) is None
+
+
+# --- Workspace guard tests ---
+
+def test_recover_codex_refuses_cross_workspace_mismatch(tmp_path, monkeypatch):
+    """A Team-workspace import must NOT overwrite a Personal credential.
+
+    After the fix it refuses, returns None, and leaves the auth store
+    byte-for-byte unchanged.
+    """
+    hermes_home = tmp_path / "hermes"
+    personal_jwt = _codex_jwt_with_account("acct-personal")
+    team_jwt = _codex_jwt_with_account("acct-team")
+    auth_file = _seed_codex_store(hermes_home, personal_jwt)
+    before = auth_file.read_text()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": team_jwt, "refresh_token": "***"},
+    )
+
+    result = _recover_codex_tokens_from_cli(
+        "refresh_token rejected: test",
+        observed_access_token=personal_jwt,
+    )
+
+    assert result is None  # recovery refused
+    assert auth_file.read_text() == before  # store byte-for-byte unchanged
+    assert (
+        json.loads(before)["providers"]["openai-codex"]["tokens"]["access_token"]
+        == personal_jwt
+    )
+
+
+def test_recover_codex_allows_same_workspace(tmp_path, monkeypatch):
+    """Same workspace id → recovery proceeds and persists the import."""
+    hermes_home = tmp_path / "hermes"
+    personal_jwt = _codex_jwt_with_account("acct-personal")
+    refreshed_jwt = _codex_jwt_with_account("acct-personal")  # same workspace
+    _seed_codex_store(hermes_home, personal_jwt)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": refreshed_jwt, "refresh_token": "***"},
+    )
+
+    result = _recover_codex_tokens_from_cli(
+        "refresh_token rejected: test",
+        observed_access_token=personal_jwt,
+    )
+
+    assert result is not None
+    assert result["access_token"] == refreshed_jwt
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == refreshed_jwt
+
+
+def test_recover_codex_allows_when_imported_lacks_identity(tmp_path, monkeypatch):
+    """Imported token with no chatgpt_account_id → compatibility allow."""
+    hermes_home = tmp_path / "hermes"
+    personal_jwt = _codex_jwt_with_account("acct-personal")
+    no_id_jwt = _codex_jwt_with_account(None)
+    _seed_codex_store(hermes_home, personal_jwt)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": no_id_jwt, "refresh_token": "***"},
+    )
+
+    assert _recover_codex_tokens_from_cli(
+        "test", observed_access_token=personal_jwt,
+    ) is not None
+
+
+def test_recover_codex_allows_when_store_lacks_identity(tmp_path, monkeypatch):
+    """Stored token with no chatgpt_account_id → compatibility allow."""
+    hermes_home = tmp_path / "hermes"
+    no_id_jwt = _codex_jwt_with_account(None)
+    team_jwt = _codex_jwt_with_account("acct-team")
+    _seed_codex_store(hermes_home, no_id_jwt)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": team_jwt, "refresh_token": "***"},
+    )
+
+    assert _recover_codex_tokens_from_cli(
+        "test", observed_access_token=no_id_jwt,
+    ) is not None
+
+
+def test_recover_codex_allows_into_empty_store(tmp_path, monkeypatch):
+    """No codex provider in store → recovery proceeds (missing-token path)."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    team_jwt = _codex_jwt_with_account("acct-team")
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": team_jwt, "refresh_token": "***"},
+    )
+
+    assert _recover_codex_tokens_from_cli(
+        "test", observed_access_token=None,
+    ) is not None
+
+
+# --- CAS-race regression tests ---
+
+def test_recover_codex_cas_skips_when_token_changed_same_workspace(tmp_path, monkeypatch):
+    """Existing-token path: concurrent same-workspace reauth must be preserved.
+
+    Scenario:
+    1. Store has token A (workspace=personal).
+    2. Caller observes token A under lock, decides recovery is needed.
+    3. Before recovery commits, a concurrent ``hermes auth`` writes token B
+       (same workspace, different access_token) into the store.
+    4. Recovery is called with ``observed_access_token=A``.
+    5. Under the reacquired lock, the CAS read sees token B ≠ A.
+    6. Recovery is skipped; token B is preserved.
+    """
+    hermes_home = tmp_path / "hermes"
+    token_a = _codex_jwt_with_account("acct-personal", exp_offset=7200)
+    token_b = _codex_jwt_with_account("acct-personal", exp_offset=7200)
+    _seed_codex_store(hermes_home, token_a)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Simulate concurrent reauth: before calling recovery, write token B
+    # directly into the store (same workspace, different token).
+    _seed_codex_store(hermes_home, token_b)
+
+    token_c = _codex_jwt_with_account("acct-personal", exp_offset=7200)
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": token_c, "refresh_token": "***"},
+    )
+
+    # Recovery called with the *original* observation (token A)
+    result = _recover_codex_tokens_from_cli(
+        "refresh_token rejected: test",
+        observed_access_token=token_a,
+    )
+
+    # CAS check: stored token B ≠ observed token A → recovery skipped
+    # Recovery returns the current valid state (token B)
+    assert result is not None
+    assert result["access_token"] == token_b
+    # Token B must still be in the store (not overwritten by token C)
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == token_b
+
+
+def test_recover_codex_cas_skips_when_token_changed_different_workspace(tmp_path, monkeypatch):
+    """Existing-token path: concurrent different-workspace reauth survives.
+
+    Scenario:
+    1. Store has token A (workspace=personal).
+    2. Caller observes token A.
+    3. Concurrent reauth writes token B (workspace=team) into the store.
+    4. Recovery imports token C (workspace=personal, matching A).
+    5. CAS check: stored B ≠ observed A → recovery skipped.
+    6. Token B is preserved (the concurrent reauth survives).
+    """
+    hermes_home = tmp_path / "hermes"
+    token_a = _codex_jwt_with_account("acct-personal", exp_offset=7200)
+    token_b = _codex_jwt_with_account("acct-team", exp_offset=7200)
+    _seed_codex_store(hermes_home, token_a)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Simulate concurrent reauth with a different workspace
+    _seed_codex_store(hermes_home, token_b)
+
+    token_c = _codex_jwt_with_account("acct-personal", exp_offset=7200)
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": token_c, "refresh_token": "***"},
+    )
+
+    result = _recover_codex_tokens_from_cli(
+        "refresh_token rejected: test",
+        observed_access_token=token_a,
+    )
+
+    # CAS check fails first (store changed), so workspace guard is never reached
+    # Recovery returns the current valid state (the concurrent reauth preserves)
+    assert result is not None
+    assert result["access_token"] == token_b
+    # Concurrent reauth (token B) is preserved
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == token_b
+
+
+def test_recover_codex_cas_preserves_concurrent_reauth_missing_token_path(tmp_path, monkeypatch):
+    """Missing-token/None path: concurrent reauth must survive recovery.
+
+    Scenario:
+    1. Store has NO Codex tokens (empty providers).
+    2. Caller observes None, decides recovery is needed.
+    3. Before recovery commits, a concurrent reauth populates token X.
+    4. Recovery is called with ``observed_access_token=None``.
+    5. CAS check: stored X ≠ None → change detected.
+    6. Recovery returns current valid state (token X); never overwrites it.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    # Initial state: empty store (no Codex provider)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Simulate concurrent reauth: write a valid token into the store
+    token_x = _codex_jwt_with_account("acct-personal", exp_offset=7200)
+    _seed_codex_store(hermes_home, token_x)
+
+    token_y = _codex_jwt_with_account("acct-personal", exp_offset=7200)
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": token_y, "refresh_token": "***"},
+    )
+
+    # Recovery called with observed_access_token=None (missing-token path)
+    result = _recover_codex_tokens_from_cli(
+        "test",
+        observed_access_token=None,
+    )
+
+    # CAS check: stored X ≠ observed None → recovery skipped
+    # Recovery returns the current valid state (the concurrent reauth)
+    assert result is not None
+    assert result["access_token"] == token_x
+    # Store still has token X (not overwritten by token Y)
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == token_x
+
+
+def test_recover_codex_cas_allows_when_none_unchanged(tmp_path, monkeypatch):
+    """Missing-token path: recovery proceeds when store is still empty.
+
+    Scenario:
+    1. Store has NO Codex tokens (empty providers).
+    2. Caller observes None.
+    3. No concurrent reauth happens.
+    4. Recovery is called with observed_access_token=None.
+    5. CAS check: stored None == observed None → proceed.
+    6. Recovery saves imported tokens successfully.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    token_y = _codex_jwt_with_account("acct-personal", exp_offset=7200)
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": token_y, "refresh_token": "***"},
+    )
+
+    result = _recover_codex_tokens_from_cli(
+        "test",
+        observed_access_token=None,
+    )
+
+    # CAS check: stored None == observed None → proceed
+    assert result is not None
+    assert result["access_token"] == token_y
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == token_y
+
+
+def test_recover_codex_cas_allows_when_token_unchanged(tmp_path, monkeypatch):
+    """Existing-token path: recovery proceeds when store is unchanged.
+
+    Scenario:
+    1. Store has token A.
+    2. No concurrent reauth happens.
+    3. Recovery is called with observed_access_token=A.
+    4. CAS check: stored A == observed A → proceed.
+    5. Recovery saves imported tokens successfully.
+    """
+    hermes_home = tmp_path / "hermes"
+    token_a = _codex_jwt_with_account("acct-personal", exp_offset=7200)
+    _seed_codex_store(hermes_home, token_a)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    token_b = _codex_jwt_with_account("acct-personal", exp_offset=7200)
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": token_b, "refresh_token": "***"},
+    )
+
+    result = _recover_codex_tokens_from_cli(
+        "refresh_token rejected: test",
+        observed_access_token=token_a,
+    )
+
+    assert result is not None
+    assert result["access_token"] == token_b
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == token_b
 
 
 

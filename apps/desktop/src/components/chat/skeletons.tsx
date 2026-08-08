@@ -25,7 +25,7 @@ export function TreeSkeleton() {
           key={`${index}-${row.width}`}
           style={{ paddingLeft: `${row.indent * 12}px` }}
         >
-          <Skeleton className="size-3.5 shrink-0 rounded-[3px]" />
+          <Skeleton className="size-3.5 shrink-0 rounded-[var(--radius-sm)]" />
           <Skeleton className="h-3" style={{ width: row.width }} />
         </div>
       ))}

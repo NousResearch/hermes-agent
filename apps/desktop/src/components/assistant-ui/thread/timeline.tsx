@@ -2,6 +2,8 @@ import { useAui, useAuiState } from '@assistant-ui/react'
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { Codicon } from '@/components/ui/codicon'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 
@@ -18,7 +20,10 @@ const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 const HOVER_CLOSE_MS = 140
 
 const ROW_CLASS =
-  'row-hover relative flex w-full min-w-0 max-w-full select-none overflow-hidden rounded-md px-2 py-1 text-left outline-hidden'
+  'row-hover relative flex w-full min-w-0 max-w-full select-none overflow-hidden rounded-[var(--radius-sm)] px-2.5 py-1.5 text-left text-[0.75rem] outline-hidden hover:bg-(--ui-row-hover-background)'
+
+const HISTORY_TRIGGER_CLASS =
+  'grid size-7 place-items-center rounded-[var(--radius-sm)] border border-(--ui-stroke-tertiary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_84%,transparent)] text-(--ui-text-tertiary) shadow-[0_1px_2px_rgb(0_0_0/0.04)] transition-[background-color,border-color,color,transform] duration-200 ease-out hover:-translate-y-px hover:border-(--ui-stroke-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-[0.1875rem] focus-visible:ring-ring/50'
 
 // Surface (border-color/bg/shadow/blur) comes from the shared
 // `[data-slot='thread-timeline-popover']` rule in styles.css, so it's 1:1 with
@@ -74,7 +79,7 @@ const hoverProps = (index: number, paint: (index: number, on: boolean) => void) 
 // Constant-duration jump (eased), NOT native `behavior:'smooth'` — Chromium's
 // smooth scroll animates proportional to distance, so jumping across a long
 // thread crawls for seconds. A fixed ~260ms feels instant near or far. A
-// shared rAF handle cancels a prior jump so rapid tick clicks don't fight.
+// shared rAF handle cancels a prior jump so rapid history selections don't fight.
 let jumpRaf = 0
 
 function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
@@ -125,7 +130,9 @@ function scrollToPrompt(root: HTMLElement | null, id: string) {
 }
 
 /**
- * Right-edge prompt rail — hover previews, click to jump. ≥4 user turns only.
+ * Right-edge conversation history — hover previews, click to jump. ≥4 user
+ * turns only. A single named control keeps long chats discoverable without
+ * covering the transcript edge in anonymous tick marks.
  *
  * Everything here is DEFERRED until it can actually be seen. A chat surface
  * stays mounted while its tab is in the background (keep-alive, see
@@ -135,8 +142,8 @@ function scrollToPrompt(root: HTMLElement | null, id: string) {
  *
  *  1. INACTIVE PANE → render null and subscribe to nothing. The transcript
  *     selector, the scroll listener, and the popover markup all stand down.
- *  2. ACTIVE BUT UNHOVERED → the ticks paint, but the popover's rows are not
- *     built at all; the previews only exist once the pointer opens it.
+ *  2. ACTIVE BUT UNHOVERED → the history control paints, but the popover's
+ *     rows are not built at all; previews only exist once it is opened.
  *  3. BELOW THE THRESHOLD → the rail renders null, so the measure effect never
  *     touches layout for it.
  *  4. FOLLOWING THE BOTTOM → the active prompt is the last one by definition,
@@ -148,9 +155,11 @@ export const ThreadTimeline: FC = () => {
   return usePaneVisible() ? <ActiveThreadTimeline /> : null
 }
 
-/** Derived prompt rail for a VISIBLE surface. Split out so the hook body — and
+/** Derived conversation history for a VISIBLE surface. Split out so the hook body — and
  *  the transcript subscription it opens — never runs for a background tab. */
 const ActiveThreadTimeline: FC = () => {
+  const { t } = useI18n()
+
   // Cheap in the selector, expensive only when it changes: the ids alone tell
   // us whether the RAIL changed. Prompt text is immutable once sent, and an
   // edit rewinds the transcript (dropping every id after it) and re-appends a
@@ -214,21 +223,11 @@ const ActiveThreadTimeline: FC = () => {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const jump = useCallback((id: string) => scrollToPrompt(rootRef.current, id), [])
 
-  // Hover sync lives on the DOM, not in React state — the tick and its popover
-  // row are siblings in different subtrees, so a shared index-keyed paint() lights
-  // both without a re-render (and without coupling them through a parent atom).
-  const tickRefs = useRef<(HTMLSpanElement | null)[]>([])
   const rowRefs = useRef<(HTMLButtonElement | null)[]>([])
 
-  // Hover sync: light the tick + its popover row, and scroll that row into view
-  // when the list overflows so the hovered prompt is always visible.
+  // Hover sync stays on the DOM: it lights the matching preview row and keeps it
+  // visible in a long list without coupling every pointer movement to React.
   const paint = useCallback((index: number, on: boolean) => {
-    const tick = tickRefs.current[index]
-
-    if (tick) {
-      tick.style.opacity = on ? '1' : ''
-    }
-
     const row = rowRefs.current[index]
     row?.classList.toggle('bg-(--ui-row-hover-background)', on)
 
@@ -321,8 +320,8 @@ const ActiveThreadTimeline: FC = () => {
 
   return (
     <div
-      aria-label="Conversation timeline"
-      className="group/timeline pointer-events-auto absolute right-0 top-1/2 z-40 flex -translate-y-1/2 flex-col items-end"
+      aria-label={t.assistant.thread.conversationHistory}
+      className="group/timeline pointer-events-auto absolute right-3 top-1/2 z-40 flex -translate-y-1/2 flex-col items-end"
       data-slot="thread-timeline"
       data-suppress-pane-reveal=""
       onMouseEnter={keepOpen}
@@ -330,7 +329,18 @@ const ActiveThreadTimeline: FC = () => {
       ref={rootRef}
       role="navigation"
     >
-      <TimelineTicks activeIndex={activeIndex} entries={entries} onHover={paint} onJump={jump} tickRefs={tickRefs} />
+      <button
+        aria-expanded={open}
+        aria-label={t.assistant.thread.browseConversationHistory}
+        className={HISTORY_TRIGGER_CLASS}
+        data-slot="thread-timeline-trigger"
+        onBlur={closeSoon}
+        onClick={keepOpen}
+        onFocus={keepOpen}
+        type="button"
+      >
+        <Codicon name="history" size="0.875rem" />
+      </button>
       <TimelinePopover
         activeIndex={activeIndex}
         entries={entries}
@@ -351,7 +361,7 @@ const TimelinePopover: FC<{
   open: boolean
   rowRefs: React.RefObject<(HTMLButtonElement | null)[]>
 }> = ({ activeIndex, entries, onHover, onJump, open, rowRefs }) => {
-  // The rail is the always-visible part; this list is not built until the
+  // The history control is always present; this list is not built until the
   // pointer first opens it. The SHELL always renders so the opacity/translate
   // transition has a node to animate — only the N rows are deferred, and they
   // stay mounted afterwards so the close fade still has content.
@@ -388,32 +398,3 @@ const TimelinePopover: FC<{
     </div>
   )
 }
-
-const TimelineTicks: FC<{
-  activeIndex: number
-  entries: TimelineEntry[]
-  onHover: (index: number, on: boolean) => void
-  onJump: (id: string) => void
-  tickRefs: React.RefObject<(HTMLSpanElement | null)[]>
-}> = ({ activeIndex, entries, onHover, onJump, tickRefs }) => (
-  <div className="flex flex-col items-end py-1" data-slot="thread-timeline-ticks">
-    {entries.map((entry, index) => (
-      <button
-        aria-label={entry.preview}
-        className="flex h-2 w-7 cursor-pointer items-center justify-end pr-1"
-        key={entry.id}
-        onClick={() => onJump(entry.id)}
-        type="button"
-        {...hoverProps(index, onHover)}
-      >
-        <span
-          className={cn(
-            'block h-px w-3 transition-opacity duration-100 ease-out',
-            index === activeIndex ? 'bg-(--theme-primary)' : 'dither text-(--ui-text-quaternary) opacity-70'
-          )}
-          ref={listRef(tickRefs, index)}
-        />
-      </button>
-    ))}
-  </div>
-)

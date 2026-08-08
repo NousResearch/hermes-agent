@@ -142,7 +142,7 @@ export function ModelVisibilityDialog({
                   </div>
                   {!collapsed &&
                     models.map(family => {
-                      const { name, tag } = modelDisplayParts(family.id)
+                      const { free, name, tag } = modelDisplayParts(family.id)
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (
@@ -154,6 +154,11 @@ export function ModelVisibilityDialog({
                             <HighlightMatches query={search} text={name} />
                             {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                           </span>
+                          {free ? (
+                            <span className="shrink-0 rounded-[var(--radius-sm)] bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase leading-none tracking-wide text-emerald-600 dark:text-emerald-400">
+                              {t.common.free}
+                            </span>
+                          ) : null}
                           <Switch
                             checked={visible.has(key)}
                             onCheckedChange={() => toggle(provider, family.id)}

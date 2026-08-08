@@ -69,9 +69,9 @@ function prettifyBase(base: string): string {
   return titleCase(base.replace(/-/g, ' '))
 }
 
-/** Split a model id into a clean display name plus an optional grayed variant
- *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string): { name: string; tag: string } {
+/** Split a model id into a clean display name, an optional grayed variant tag,
+ *  and a free-route flag, so compact menus can lay each concern out separately. */
+export function modelDisplayParts(model: string): { free: boolean; name: string; tag: string } {
   let base = modelBaseId(model)
   let tag = ''
 
@@ -87,7 +87,12 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
   base = base.replace(/-\d{8}$/, '')
 
-  return { name: prettifyBase(base) || model.trim() || 'No model', tag }
+  // A `:free` suffix selects a free route. It is meaningful model metadata,
+  // but not part of the human-readable model name.
+  const free = /:free$/i.test(base)
+  base = base.replace(/:free$/i, '')
+
+  return { free, name: prettifyBase(base) || model.trim() || 'No model', tag }
 }
 
 /** Friendly one-line model name for menus and the status bar. */
@@ -102,23 +107,25 @@ export function formatModelStatusLabel(
   model: string,
   options?: { defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string }
 ): string {
-  const name = displayModelName(model)
+  const { free, name } = modelDisplayParts(model)
 
   if (!model.trim()) {
     return name
   }
 
-  const parts: string[] = []
+  const sessionState: string[] = []
 
   // Fast is shown when the speed=fast param is on (options.fastMode) OR the
   // active model is a `…-fast` variant (fast via a separate model id).
   if (options?.fastMode || /-fast$/i.test(modelBaseId(model))) {
-    parts.push('Fast')
+    sessionState.push('Fast')
   }
 
   // Always surface the effort so the current reasoning level is visible at a
   // glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || DEFAULT_REASONING_EFFORT))
+  sessionState.push(
+    reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || DEFAULT_REASONING_EFFORT)
+  )
 
-  return `${name} · ${parts.join(' ')}`
+  return `${name} · ${[free ? 'Free' : '', sessionState.join(' ')].filter(Boolean).join(' · ')}`
 }

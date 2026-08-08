@@ -23,7 +23,7 @@ export function ProfileTag({ className, profile }: { className?: string; profile
       <span
         aria-label={label}
         className={cn(
-          'grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none',
+          'grid size-4 shrink-0 place-items-center rounded-[var(--radius-sm)] text-[0.5rem] font-semibold uppercase leading-none',
           className
         )}
         role="img"

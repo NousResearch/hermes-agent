@@ -46,7 +46,7 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
         // Narrow: one column, and pin rows to [nav-bar auto | main 1fr] — without
         // an explicit template the grid's default align-content:stretch splits the
         // height evenly across the two rows, shoving the content to mid-screen.
-        'grid h-full min-h-0 flex-1 grid-cols-[13rem_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1 max-[47.5rem]:grid-rows-[auto_minmax(0,1fr)]',
+        'grid h-full min-h-0 flex-1 grid-cols-[14rem_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1 max-[47.5rem]:grid-rows-[auto_minmax(0,1fr)]',
         className
       )}
     >
@@ -63,7 +63,7 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
         // they ride up via the shorter shared OVERLAY_TOP_CLEARANCE (same line
         // as a Panel header) instead of main's taller X-clearance. The bg still
         // fills from the card's top edge, so there's no gap above the sidebar.
-        'flex min-h-0 flex-col gap-0.5 overflow-y-auto bg-(--ui-sidebar-surface-background) px-2.5 pb-3',
+        'flex min-h-0 flex-col gap-1 overflow-y-auto bg-(--ui-sidebar-surface-background) px-3 pb-4',
         OVERLAY_TOP_CLEARANCE,
         className
       )}
@@ -105,13 +105,13 @@ export const OverlayNavItem = memo(function OverlayNavItem({
   return (
     <button
       className={cn(
-        'flex h-7 w-full items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
+        'flex h-8 w-full items-center justify-start gap-2.5 rounded-[var(--radius-sm)] border px-2.5 text-left text-[0.8125rem] font-medium transition-[transform,background-color,border-color,color] duration-200 ease-out hover:translate-x-px active:translate-x-0',
         nested
           ? active
-            ? 'border-transparent bg-(--chrome-action-hover) font-medium text-foreground'
+            ? 'border-transparent bg-(--chrome-action-hover) text-foreground'
             : 'border-transparent bg-transparent text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
           : active
-            ? 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) text-foreground'
+            ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.04)]'
             : 'border-transparent bg-transparent text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
       )}
       onClick={onClick}

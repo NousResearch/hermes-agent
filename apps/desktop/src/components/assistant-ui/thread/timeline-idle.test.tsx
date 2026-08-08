@@ -99,7 +99,10 @@ describe('ThreadTimeline popover', () => {
     const { container } = renderTimeline()
     const popover = container.querySelector('[data-slot="thread-timeline-popover"]')
 
-    // The shell renders (it owns the fade transition); its rows do not.
+    // A single named history control replaces the old column of anonymous
+    // ticks. The shell renders (it owns the fade transition); its rows do not.
+    expect(screen.getByRole('button', { name: 'Browse conversation history' })).toBeTruthy()
+    expect(container.querySelector('[data-slot="thread-timeline-ticks"]')).toBeNull()
     expect(popover).not.toBeNull()
     expect(popover?.querySelectorAll('button')).toHaveLength(0)
     expect(screen.queryByText('prompt 0')).toBeNull()

@@ -28,9 +28,8 @@ interface SearchFieldProps {
 
 /**
  * Shared search field used everywhere (sessions sidebar, pages, overlays,
- * command center, cron). No box — borderless until focus, then an underline.
- * Rests at low opacity until focused or filled. Width/placement come from
- * `containerClassName`.
+ * command center, cron). Quiet at rest, then gains the shared rounded hover and
+ * focus surface. Width/placement come from `containerClassName`.
  */
 export function SearchField({
   placeholder,
@@ -60,9 +59,9 @@ export function SearchField({
         // min-w-0 is load-bearing: without it the content-sized input sets the
         // container's flex min-width and the field bulldozes its siblings
         // instead of shrinking to fit its context.
-        'inline-flex min-w-0 max-w-full items-center gap-1.5 border-b border-transparent px-0.5 transition-[color,border-color,opacity]',
+        'inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-[var(--radius-sm)] border border-transparent px-2 transition-[background-color,border-color,box-shadow,color,opacity] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:bg-(--chrome-action-hover) focus-within:border-(--ui-stroke-secondary) focus-within:bg-(--ui-bg-elevated) focus-within:shadow-sm',
         // Recede until the user reaches for it.
-        !value && 'opacity-30 focus-within:opacity-100',
+        !value && 'opacity-60 hover:opacity-100 focus-within:opacity-100',
         containerClassName
       )}
     >
@@ -73,7 +72,7 @@ export function SearchField({
           // `field-sizing: content` grows the input to fit the placeholder/typed
           // text; min-w-0 lets it shrink back below content size when the
           // context is narrower — long queries scroll inside the field.
-          // text-xs matches the form controls (Input/Select via controlVariants).
+          // Search stays compact inside headers while preserving readable contrast.
           'h-7 min-w-0 max-w-full bg-transparent text-xs text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none',
           inputClassName
         )}

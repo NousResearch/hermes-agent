@@ -105,4 +105,18 @@ describe('the catalog owns model curation', () => {
 
     expect($modelVisibilityOpen.get()).toBe(true)
   })
+
+  it('keeps a routed free suffix separate from its model name and effort', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['hy3:free'], name: 'Tencent', slug: 'tencent' }]
+    })
+
+    renderMenu()
+
+    const name = await screen.findByText('Hy3')
+
+    expect(name.getAttribute('data-slot')).toBe('model-catalog-name')
+    expect(screen.getByText('Free').getAttribute('data-slot')).toBe('model-free-badge')
+    expect(screen.getByText('Med').getAttribute('data-slot')).toBe('model-catalog-meta')
+  })
 })

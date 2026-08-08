@@ -11,7 +11,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Package } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
-import { EmptyState, ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
+import { EmptyState, ListRow, Pill, SettingsContent, SettingsGroup, SettingsSection } from './primitives'
 
 const KIND_ORDER: Record<PluginRecord['kind'], number> = { disk: 0, runtime: 1, bundled: 2 }
 
@@ -97,36 +97,37 @@ export function PluginsSettings() {
 
   return (
     <SettingsContent>
-      <SectionHeading icon={Package} meta={p.count(rows.length)} title={p.title} />
-      <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{p.blurb}</p>
+      <SettingsSection icon={Package} meta={p.count(rows.length)} title={p.title}>
+        <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{p.blurb}</p>
 
-      <div className="mb-4 flex items-center gap-2">
-        <Button onClick={() => void revealPluginsDir()} size="sm" variant="outline">
-          <Codicon name="folder-opened" size="0.8rem" />
-          {p.openFolder}
-        </Button>
-        <Button
-          onClick={() => {
-            triggerHaptic('selection')
-            void discoverRuntimePlugins()
-          }}
-          size="sm"
-          variant="outline"
-        >
-          <Codicon name="refresh" size="0.8rem" />
-          {p.rescan}
-        </Button>
-      </div>
-
-      {rows.length === 0 ? (
-        <EmptyState title={p.empty} />
-      ) : (
-        <div className="divide-y divide-(--ui-stroke-tertiary)">
-          {rows.map(record => (
-            <PluginRow key={record.id} record={record} />
-          ))}
+        <div className="mb-4 flex items-center gap-2">
+          <Button onClick={() => void revealPluginsDir()} size="sm" variant="outline">
+            <Codicon name="folder-opened" size="0.8rem" />
+            {p.openFolder}
+          </Button>
+          <Button
+            onClick={() => {
+              triggerHaptic('selection')
+              void discoverRuntimePlugins()
+            }}
+            size="sm"
+            variant="outline"
+          >
+            <Codicon name="refresh" size="0.8rem" />
+            {p.rescan}
+          </Button>
         </div>
-      )}
+
+        {rows.length === 0 ? (
+          <EmptyState title={p.empty} />
+        ) : (
+          <SettingsGroup>
+            {rows.map(record => (
+              <PluginRow key={record.id} record={record} />
+            ))}
+          </SettingsGroup>
+        )}
+      </SettingsSection>
     </SettingsContent>
   )
 }

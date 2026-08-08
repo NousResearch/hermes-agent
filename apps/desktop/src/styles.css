@@ -404,11 +404,10 @@
     --dt-spacing-mul: 1;
 
     --radius: 0.75rem;
-    /* Effective value everywhere: the chat backdrop used to force 0.2 onto the
-       root element at runtime (an ungated leva slider default), so this 0.6
-       only ever applied to the windows that don't mount the backdrop. Pinned
-       to the value the app actually renders at. */
-    --radius-scalar: 0.2;
+    /* Shared corner scale. A value below 1 keeps compact desktop controls from
+       becoming pill-like while still giving buttons, rows, cards, and floating
+       surfaces the same visibly softened geometry. */
+    --radius-scalar: 0.8;
 
     /* Space under last message vs overlay composer — driven by the measured composer DOCK height (see
        composer/index.tsx), which covers the micro-action strip, the status stack, the composer, and the
@@ -445,6 +444,10 @@
     --file-tree-row-height: 1.375rem;
 
     --composer-width: 48.75rem;
+    /* The main composer is the primary input surface: use a larger shared
+       radius than ordinary controls so its text area, action row, drag margin,
+       and attached status stack read as one calm, rounded object. */
+    --composer-surface-radius: var(--radius-3xl);
     --composer-control-size: 1.5rem;
     --composer-control-primary-size: 1.625rem;
     --composer-control-gap: 0.25rem;
@@ -1042,6 +1045,93 @@ button,
   user-select: none;
 }
 
+/* Button chrome uses one generous system radius so borders, hover fills, and
+   inset outlines read as a single, polished shape. This intentionally reaches
+   native buttons too: a number of lightweight controls render without the
+   shared Button primitive. Explicit pill controls keep their full radius. */
+button,
+[role='button'] {
+  border-radius: var(--radius-sm);
+}
+
+button[class*='rounded-full'],
+[role='button'][class*='rounded-full'] {
+  border-radius: calc(var(--radius-scalar) * 9999rem);
+}
+
+/* Full-page overlays use one compact, spring-like transition. The backdrop is
+   animated independently so the card remains crisp as it enters and exits. */
+[data-overlay-surface]::before {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  content: '';
+  background: rgb(0 0 0 / 22%);
+  backdrop-filter: blur(0.125rem);
+  -webkit-backdrop-filter: blur(0.125rem);
+}
+
+@keyframes overlay-backdrop-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes overlay-backdrop-out {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes overlay-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.625rem) scale(0.986);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes overlay-card-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(0.375rem) scale(0.992);
+  }
+}
+
+[data-overlay-surface][data-motion='open']::before {
+  animation: overlay-backdrop-in 180ms ease-out both;
+}
+
+[data-overlay-surface][data-motion='closing']::before {
+  animation: overlay-backdrop-out 180ms ease-in both;
+}
+
+[data-overlay-surface][data-motion='open'] > [data-slot='overlay-card'] {
+  animation: overlay-card-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+[data-overlay-surface][data-motion='closing'] > [data-slot='overlay-card'] {
+  animation: overlay-card-out 180ms ease-in both;
+}
+
 /* User bubbles are <button>s (click → edit), so the rule above would kill
    drag-to-select and leave ⌘C with nothing to grab. Message text stays
    selectable; chrome controls outside the bubble keep user-select: none. */
@@ -1098,7 +1188,9 @@ code {
   background: color-mix(in srgb, var(--dt-card) var(--dt-input-bg), transparent);
   border-color: color-mix(in srgb, var(--dt-composer-ring) var(--dt-input-border), transparent);
   box-shadow: var(--dt-input-inset);
-  transition: border-color 200ms ease-out;
+  transition:
+    border-color 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .desktop-input-chrome:hover {
@@ -1162,6 +1254,26 @@ code {
   .scrollbar-dt::-webkit-scrollbar-button,
   .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-button {
     display: none;
+  }
+
+  /* Session history needs a little more room than generic panes: selected rows
+     must stop before the thumb instead of painting beneath it, especially in a
+     narrow split. The 6px thumb remains subtle but is materially easier to see
+     and grab than the app-wide 4px default. */
+  #root .sidebar-history-scroll {
+    scrollbar-gutter: stable;
+  }
+
+  #root .sidebar-history-scroll::-webkit-scrollbar {
+    width: 0.375rem;
+  }
+
+  #root .sidebar-history-scroll::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--dt-midground) 24%, transparent);
+  }
+
+  #root .sidebar-history-scroll::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--dt-midground) 44%, transparent);
   }
 
   /* Variant for portaled overlays (Radix DropdownMenu, Popover, etc.) that
@@ -1420,6 +1532,14 @@ code {
   padding-inline: 5px;
 }
 
+/* The home chat mirrors the roomy two-row composer: prompt on top, controls
+   below. Pane/tile composers stay compact so they do not crowd working space. */
+[data-slot='composer-root'][data-spacious] {
+  --composer-surface-pad-x: 0.75rem;
+  --composer-surface-pad-y: 0.5rem;
+  --composer-input-min-height: 2.25rem;
+}
+
 /* Popped-out (floating) composer: compact width + an even 5px transparent grab
    platform. The higher-specificity selector resets the base rule's padding-bottom
    so the inset is equal on all four sides (not 5px sides / shell-pad bottom). */
@@ -1447,8 +1567,8 @@ code {
    the transparent grab margin on hover (and stays while dragging) to signal the
    composer is draggable. Inherits the root radius so it clips to the corners. */
 [data-slot='composer-drag-region'] {
-  /* Hatch frame radius (tuned by hand). */
-  border-radius: 0.4rem;
+  /* The hover affordance follows the composer's visible rounded silhouette. */
+  border-radius: inherit;
   opacity: 0;
   transition: opacity 150ms ease;
   background-image: repeating-linear-gradient(
@@ -1799,7 +1919,7 @@ code {
 [data-slot='aui_msg-actions'] button,
 button[data-slot='aui_msg-reactions'] {
   border: 0;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   background: transparent;
   box-shadow: none;
   padding: 0;

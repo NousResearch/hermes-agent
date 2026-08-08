@@ -29,6 +29,7 @@ _PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v2"
 _STORE_SCHEMA_VERSION = "2"
 _BUSY_TIMEOUT_MS = 250
 _SCHEMA_BUSY_TIMEOUT_MS = 5_000
+_WRITE_BUSY_TIMEOUT_MS = 5_000
 _LOCAL_HISTORY_RETENTION_DAYS = 30
 _ACTIVE_INSTALL_STATE_KEY = "client_active_recorded_at"
 _ACTIVE_INSTALL_INTERVAL = timedelta(hours=24)
@@ -73,7 +74,7 @@ class SharedMetricsStore:
         dimensions: dict[str, str] = {}
         self._validate_counter(CLIENT_ACTIVE_METRIC, dimensions, resource)
         now = _utc_now()
-        with self._connection() as connection:
+        with self._connection(busy_timeout_ms=_WRITE_BUSY_TIMEOUT_MS) as connection:
             with write_txn(connection):
                 row = connection.execute(
                     "SELECT value FROM telemetry_state WHERE key = ?",
@@ -125,14 +126,19 @@ class SharedMetricsStore:
     ) -> None:
         """Increment one allowlisted counter for the current UTC day."""
         self._validate_counter(metric_name, dimensions, resource)
-        with self._connection() as connection:
-            self._record_counter_in_transaction(
-                connection,
-                metric_name,
-                dimensions,
-                resource,
-                period_start=_utc_now().date().isoformat(),
-            )
+        # Counter updates are expected to contend when multiple Hermes
+        # processes share a profile. Acquire the write lock up front and wait
+        # through short bursts instead of letting SQLite's implicit deferred
+        # transaction fail after the low-latency read timeout.
+        with self._connection(busy_timeout_ms=_WRITE_BUSY_TIMEOUT_MS) as connection:
+            with write_txn(connection):
+                self._record_counter_in_transaction(
+                    connection,
+                    metric_name,
+                    dimensions,
+                    resource,
+                    period_start=_utc_now().date().isoformat(),
+                )
 
     @staticmethod
     def _validate_counter(

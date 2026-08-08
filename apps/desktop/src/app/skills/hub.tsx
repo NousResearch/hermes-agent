@@ -17,7 +17,9 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
+  getMcpCatalog,
   getSkillHubSources,
   previewSkillHub,
   scanSkillHub,
@@ -27,7 +29,7 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
-import { Loader2 } from '@/lib/icons'
+import { FileText, Loader2, Package } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $hubActions,
@@ -41,41 +43,40 @@ import {
   updateHubSkills
 } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
-// Dedup rank when the same skill surfaces from multiple sources — higher trust
-// wins. Mirrors the backend's unified_search `_TRUST_RANK`.
+import { prettyName } from '../settings/helpers'
+import { IntegrationsCatalog, matchesIntegrationCatalogQuery } from '../settings/integrations-catalog'
+import { ListRow, Pill, SettingsGroup, SettingsSection } from '../settings/primitives'
+
 const TRUST_RANK: Record<string, number> = { builtin: 2, trusted: 1, community: 0 }
 
-function trustTone(level: string): string {
-  switch (level) {
-    case 'builtin':
-      return 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)'
+type HubFilter = 'all' | 'integrations' | 'skills'
 
-    case 'trusted':
-      return 'bg-emerald-500/15 text-emerald-400'
-
-    default:
-      return 'bg-amber-500/15 text-amber-400'
+function trustTone(level: string): 'muted' | 'primary' | 'warn' {
+  if (level === 'builtin') {
+    return 'primary'
   }
+
+  if (level === 'community') {
+    return 'warn'
+  }
+
+  return 'muted'
 }
 
 function verdictTone(policy: string): string {
-  switch (policy) {
-    case 'allow':
-      return 'text-emerald-400'
-
-    case 'block':
-      return 'text-destructive'
-
-    default:
-      return 'text-amber-400'
+  if (policy === 'allow') {
+    return 'text-emerald-400'
   }
+
+  if (policy === 'block') {
+    return 'text-destructive'
+  }
+
+  return 'text-amber-400'
 }
 
-// One hub result — a self-contained row that installs/uninstalls ITSELF and
-// reads its own action status from the store, so parallel installs never desync.
-// `rawInstalled` is the sources/search truth; the store's optimistic override
-// wins so the row flips the instant its own action resolves.
 function HubSkillRow({
   installedName,
   onPreview,
@@ -96,42 +97,68 @@ function HubSkillRow({
 
   const doInstall = () => {
     notify({ kind: 'success', title: h.installStarted(skill.name), message: h.actionLog })
-    void installHubSkill(skill.identifier).catch(err => notifyError(err, h.actionFailed))
+    void installHubSkill(skill.identifier).catch(error => notifyError(error, h.actionFailed))
   }
 
   const doUninstall = () => {
     notify({ kind: 'success', title: h.uninstallStarted(skill.name), message: h.actionLog })
-    void uninstallHubSkill(skill.identifier, installedName || skill.name).catch(err => notifyError(err, h.actionFailed))
+    void uninstallHubSkill(skill.identifier, installedName || skill.name).catch(error =>
+      notifyError(error, h.actionFailed)
+    )
   }
 
   return (
-    <div className="row-hover flex items-start gap-3 rounded-md px-2 py-2.5">
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="truncate text-[0.78rem] font-medium text-foreground/85">{skill.name}</span>
-          <span className={cn('rounded px-1.5 py-0.5 text-[0.6rem]', trustTone(skill.trust_level))}>
-            {h.trust[skill.trust_level] ?? skill.trust_level}
-          </span>
-          {installed && <span className="text-[0.6rem] text-emerald-400">{h.installed}</span>}
+    <ListRow
+      action={
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button onClick={() => onPreview(skill)} size="xs" variant="text">
+            {h.preview}
+          </Button>
+          {installed ? (
+            <Button
+              className="hover:text-destructive"
+              disabled={running}
+              onClick={doUninstall}
+              size="xs"
+              variant="text"
+            >
+              {running && <Loader2 className="size-3 animate-spin" />}
+              {running ? h.uninstalling : h.uninstall}
+            </Button>
+          ) : (
+            <Button disabled={running} onClick={doInstall} size="xs">
+              {running && <Loader2 className="size-3 animate-spin" />}
+              {running ? h.installing : h.install}
+            </Button>
+          )}
         </div>
-        <p className="mt-0.5 line-clamp-2 text-[0.68rem] text-muted-foreground/70">{skill.description}</p>
+      }
+      description={skill.description}
+      title={
+        <span className="flex flex-wrap items-center gap-1.5">
+          <span>{skill.name}</span>
+          <Pill>{h.skill}</Pill>
+          <Pill tone={trustTone(skill.trust_level)}>{h.trust[skill.trust_level] ?? skill.trust_level}</Pill>
+          {installed && <span className="text-[0.6875rem] font-medium text-emerald-500">{h.installed}</span>}
+        </span>
+      }
+    />
+  )
+}
+
+function InstalledChip({ kind, name }: { kind: 'integration' | 'skill'; name: string }) {
+  const { t } = useI18n()
+  const h = t.skills.hub
+  const Icon = kind === 'skill' ? FileText : Package
+  const label = kind === 'integration' ? prettyName(name) : name
+
+  return (
+    <div className="flex min-w-0 items-center gap-2 rounded-[var(--radius-md)] border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary)/55 px-2.5 py-2">
+      <div className="grid size-7 shrink-0 place-items-center rounded-[var(--radius-sm)] bg-background text-(--ui-text-secondary)">
+        <Icon className="size-3.5" />
       </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <Button onClick={() => onPreview(skill)} size="xs" variant="text">
-          {h.preview}
-        </Button>
-        {installed ? (
-          <Button className="hover:text-destructive" disabled={running} onClick={doUninstall} size="xs" variant="text">
-            {running && <Loader2 className="size-3 animate-spin" />}
-            {running ? h.uninstalling : h.uninstall}
-          </Button>
-        ) : (
-          <Button disabled={running} onClick={doInstall} size="xs" variant="textStrong">
-            {running && <Loader2 className="size-3 animate-spin" />}
-            {running ? h.installing : h.install}
-          </Button>
-        )}
-      </div>
+      <span className="max-w-40 truncate text-[0.75rem] font-medium text-foreground">{label}</span>
+      <span className="text-[0.625rem] text-(--ui-text-tertiary)">{kind === 'skill' ? h.skill : h.integration}</span>
     </div>
   )
 }
@@ -143,24 +170,22 @@ interface SkillsHubProps {
 export function SkillsHub({ query }: SkillsHubProps) {
   const { t } = useI18n()
   const h = t.skills.hub
+  const activeProfile = useStore($activeGatewayProfile)
+  const [filter, setFilter] = useState<HubFilter>('all')
+  const term = useDebounced(query.trim(), 350)
 
-  // Sources + featured + the installed map — one cached fetch, revalidated on
-  // mount and re-fetched (from the store) after an action lands.
   const sourcesQuery = useQuery({
     queryKey: HUB_SOURCES_KEY,
     queryFn: getSkillHubSources,
     staleTime: 5 * 60_000
   })
 
-  // Debounced hub search, keyed on the settled query so RQ dedupes/caches per
-  // term and abandons stale terms for us (no hand-rolled sequence guard).
-  const term = useDebounced(query.trim(), 350)
+  const integrationsQuery = useQuery({
+    queryKey: ['integrations-catalog', normalizeProfileKey(activeProfile)],
+    queryFn: getMcpCatalog,
+    staleTime: 5 * 60_000
+  })
 
-  // Progressive per-source search: one query per source the backend says is
-  // worth hitting individually (it marks index-covered API sources unsearchable
-  // so we don't re-hammer ~70 GitHub calls). Each resolves independently, so the
-  // list fills in as sources return instead of blocking on the slowest one, and
-  // each source shows its own spinner. Stale terms key out and are abandoned.
   const searchableSources = useMemo(
     () => (sourcesQuery.data?.sources ?? []).filter(source => source.searchable !== false),
     [sourcesQuery.data]
@@ -170,22 +195,15 @@ export function SkillsHub({ query }: SkillsHubProps) {
     queries: searchableSources.map(source => ({
       queryKey: ['skill-hub-search', term, source.id],
       queryFn: () => searchSkillsHub(term, source.id),
-      enabled: term.length > 0,
+      enabled: term.length > 0 && filter !== 'integrations',
       staleTime: 60_000
     }))
   })
 
-  // Per-item action lifecycle + log live in the store (store/hub-actions): each
-  // row reads ITS own entry, so concurrent installs never desync each other,
-  // and an optimistic installed-override flips a row the instant its own action
-  // resolves rather than racing the sources refetch.
   const actions = useStore($hubActions)
   const overrides = useStore($hubInstalledOverride)
   const activeLogKey = useStore($hubActiveLog)
   const activeLog = activeLogKey ? actions[activeLogKey] : undefined
-
-  // Preview/scan dialog. Preview is cache-worthy (keyed by identifier); scan is
-  // an explicit, on-demand security pass so it stays imperative.
   const [detail, setDetail] = useState<null | SkillHubResult>(null)
   const [scan, setScan] = useState<null | SkillHubScanResult>(null)
   const [scanning, setScanning] = useState(false)
@@ -201,14 +219,14 @@ export function SkillsHub({ query }: SkillsHubProps) {
     (identifier: string, name: string) => {
       setDetail(null)
       notify({ kind: 'success', title: h.installStarted(name), message: h.actionLog })
-      void installHubSkill(identifier).catch(err => notifyError(err, h.actionFailed))
+      void installHubSkill(identifier).catch(error => notifyError(error, h.actionFailed))
     },
     [h]
   )
 
   const updateAll = useCallback(() => {
     notify({ kind: 'success', title: h.updateStarted, message: h.actionLog })
-    void updateHubSkills().catch(err => notifyError(err, h.actionFailed))
+    void updateHubSkills().catch(error => notifyError(error, h.actionFailed))
   }, [h])
 
   const runScan = useCallback(
@@ -216,7 +234,7 @@ export function SkillsHub({ query }: SkillsHubProps) {
       setScanning(true)
       scanSkillHub(identifier)
         .then(setScan)
-        .catch(err => notifyError(err, h.scanFailed))
+        .catch(error => notifyError(error, h.scanFailed))
         .finally(() => setScanning(false))
     },
     [h]
@@ -227,25 +245,25 @@ export function SkillsHub({ query }: SkillsHubProps) {
     setScan(null)
   }, [])
 
-  // Per-source progress, keyed by source id (drives the connected-hub chips'
-  // spinner/degraded tint while a search is streaming in).
   const searchStateById = new Map<string, { failed: boolean; fetching: boolean }>()
-  searchableSources.forEach((source, i) => {
-    const q = sourceSearches[i]
-    searchStateById.set(source.id, { failed: q.isError, fetching: term.length > 0 && q.isFetching })
+  searchableSources.forEach((source, index) => {
+    const sourceQuery = sourceSearches[index]
+
+    searchStateById.set(source.id, {
+      failed: sourceQuery.isError,
+      fetching: term.length > 0 && filter !== 'integrations' && sourceQuery.isFetching
+    })
   })
 
-  // Merge every source's results, deduped by identifier preferring higher trust
-  // (mirrors the backend's unified_search rank). Recomputes as each source lands.
-  const results = useMemo(() => {
+  const searchResults = useMemo(() => {
     const seen = new Map<string, SkillHubResult>()
 
-    for (const q of sourceSearches) {
-      for (const r of q.data?.results ?? []) {
-        const prev = seen.get(r.identifier)
+    for (const sourceQuery of sourceSearches) {
+      for (const result of sourceQuery.data?.results ?? []) {
+        const previous = seen.get(result.identifier)
 
-        if (!prev || (TRUST_RANK[r.trust_level] ?? 0) > (TRUST_RANK[prev.trust_level] ?? 0)) {
-          seen.set(r.identifier, r)
+        if (!previous || (TRUST_RANK[result.trust_level] ?? 0) > (TRUST_RANK[previous.trust_level] ?? 0)) {
+          seen.set(result.identifier, result)
         }
       }
     }
@@ -255,124 +273,169 @@ export function SkillsHub({ query }: SkillsHubProps) {
     )
   }, [sourceSearches])
 
-  // Installed map: sources seeds it, search results patch it (a term can surface
-  // installs the sources list didn't feature); the optimistic override wins so a
-  // just-(un)installed row reflects its own outcome without the refetch race.
   const installed = { ...(sourcesQuery.data?.installed ?? {}) }
 
-  for (const q of sourceSearches) {
-    Object.assign(installed, q.data?.installed ?? {})
+  for (const sourceQuery of sourceSearches) {
+    Object.assign(installed, sourceQuery.data?.installed ?? {})
   }
 
   const isInstalled = (identifier: string) => overrides[identifier] ?? Boolean(installed[identifier])
-
   const sources = sourcesQuery.data?.sources ?? []
   const featured = sourcesQuery.data?.featured ?? []
-
-  // Still fetching from at least one source; "done" only once every source has
-  // settled (so "No results" doesn't flash while slower sources are still in).
-  const anyFetching = term.length > 0 && sourceSearches.some(q => q.isFetching)
-  const searched = term.length > 0 && sourceSearches.length > 0 && sourceSearches.every(q => !q.isFetching)
+  const integrationEntries = integrationsQuery.data?.entries ?? []
+  const matchingIntegrations = integrationEntries.filter(entry => matchesIntegrationCatalogQuery(entry, term))
   const showLanding = term.length === 0
-  const listed = showLanding ? featured : results
-  // Only block the whole pane on the first sources landing; after that results
-  // stream in progressively while a subtle footer shows more are coming.
-  const searching = anyFetching && results.length === 0
-  const hasInstalled = Object.keys(installed).length > 0
+
+  const anySearching =
+    term.length > 0 && filter !== 'integrations' && sourceSearches.some(sourceQuery => sourceQuery.isFetching)
+
+  const skillLoading = sourcesQuery.isLoading || (anySearching && searchResults.length === 0)
+  const skillItems = filter === 'integrations' ? [] : showLanding ? featured : searchResults
+  const integrationItems = filter === 'skills' ? [] : matchingIntegrations
+  const hasInstalledSkills = Object.keys(installed).length > 0
+
+  const installedItems = [
+    ...Object.entries(installed).map(([identifier, entry]) => ({
+      id: identifier,
+      kind: 'skill' as const,
+      name: entry.name || identifier.split('/').pop() || identifier
+    })),
+    ...integrationEntries
+      .filter(entry => entry.installed)
+      .map(entry => ({ id: entry.name, kind: 'integration' as const, name: entry.name }))
+  ].filter(item => filter === 'all' || (filter === 'skills' ? item.kind === 'skill' : item.kind === 'integration'))
+
+  const showSkillSection = filter !== 'integrations' && (skillLoading || sourcesQuery.isError || skillItems.length > 0)
+  const showIntegrations = filter !== 'skills'
+  const skillsSettled = !skillLoading && !sourcesQuery.isError
+  const integrationsSettled = !integrationsQuery.isLoading && !integrationsQuery.isError
+  const noMatchingSkills = filter !== 'integrations' && skillItems.length === 0 && skillsSettled
+  const noMatchingIntegrations = filter !== 'skills' && integrationItems.length === 0 && integrationsSettled
+
+  const showEmpty =
+    (filter === 'skills'
+      ? noMatchingSkills
+      : filter === 'integrations'
+        ? noMatchingIntegrations
+        : noMatchingSkills && noMatchingIntegrations) && !(showLanding && installedItems.length > 0)
+
+  const filterOptions = [
+    { id: 'all', label: h.filterAll },
+    { id: 'skills', label: h.filterSkills },
+    { id: 'integrations', label: h.filterIntegrations }
+  ] as const
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Connected hubs — label on its own line, chips below, roomy padding. */}
-      <div className="shrink-0 px-4 pt-5 pb-8 text-[0.68rem] text-(--ui-text-tertiary)">
-        <span className="mb-1.5 block">{h.connectedHubs}</span>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {sourcesQuery.isLoading
-            ? null
-            : sources.map(source => {
-                const state = searchStateById.get(source.id)
-                const degraded = source.available === false || source.rate_limited === true || state?.failed
-                const fetching = state?.fetching ?? false
+      <div className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+        <div className="mx-auto w-full max-w-[52rem] px-5 pb-20 pt-5">
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <SegmentedControl onChange={setFilter} options={filterOptions} value={filter} />
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-1.5 text-[0.6875rem] text-(--ui-text-tertiary)">
+              <span className="mr-0.5">{h.sources}</span>
+              {sourcesQuery.isLoading ? (
+                <span>{h.connectingHubs}</span>
+              ) : (
+                sources.map(source => {
+                  const state = searchStateById.get(source.id)
+                  const degraded = source.available === false || source.rate_limited === true || state?.failed
 
-                return (
-                  <span
-                    className={cn(
-                      'relative rounded px-1.5 py-0.5 text-[0.6rem] transition-opacity',
-                      degraded ? 'bg-amber-500/15 text-amber-400' : 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)',
-                      // While searching, un-hit sources dim so the active ones read clearly.
-                      term.length > 0 && !fetching && !state?.failed && 'opacity-55'
-                    )}
-                    key={source.id}
-                  >
-                    {/* Spinner overlays the (dimmed) label rather than pushing it,
-                        so a chip never resizes as its search starts/finishes. */}
-                    <span className={cn(fetching && 'opacity-30')}>{source.label}</span>
-                    {fetching && (
-                      <span className="absolute inset-0 grid place-items-center">
-                        <Loader2 className="size-2.5 animate-spin" />
-                      </span>
-                    )}
-                  </span>
-                )
-              })}
-        </div>
-      </div>
+                  return (
+                    <span
+                      className={cn(
+                        'inline-flex h-6 items-center gap-1 rounded-[var(--radius-sm)] border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary)/55 px-2 text-[0.625rem] font-medium transition-opacity duration-200',
+                        degraded ? 'text-amber-500' : 'text-(--ui-text-secondary)',
+                        term.length > 0 &&
+                          filter !== 'integrations' &&
+                          !state?.fetching &&
+                          !state?.failed &&
+                          'opacity-55'
+                      )}
+                      key={source.id}
+                    >
+                      {state?.fetching && <Loader2 className="size-2.5 animate-spin" />}
+                      {source.label}
+                    </span>
+                  )
+                })
+              )}
+            </div>
+          </div>
 
-      {/* Result summary (left) + Update installed (right) — only when a results
-          table is actually on screen, and update only if something's installed. */}
-      {listed.length > 0 && (
-        <div className="flex shrink-0 items-center justify-between gap-3 px-4 pb-1.5 text-[0.68rem] text-(--ui-text-tertiary)">
-          <span className="min-w-0 truncate">
-            {term.length > 0 ? h.resultCount(results.length, null) : h.featured}
-            {anyFetching && results.length > 0 && (
-              <span className="ml-2 text-(--ui-text-quaternary)">{h.searching}</span>
-            )}
-          </span>
+          {showLanding && installedItems.length > 0 && (
+            <SettingsSection icon={Package} meta={h.installedCount(installedItems.length)} title={h.installedTitle}>
+              <SettingsGroup>
+                <div className="flex flex-wrap gap-2 px-4 py-4 sm:px-5">
+                  {installedItems.map(item => (
+                    <InstalledChip key={item.kind + '-' + item.id} kind={item.kind} name={item.name} />
+                  ))}
+                </div>
+              </SettingsGroup>
+            </SettingsSection>
+          )}
 
-          {hasInstalled && (
-            <Button
-              className="shrink-0"
-              disabled={actions[UPDATE_ALL_KEY]?.running}
-              onClick={updateAll}
-              size="xs"
-              variant="text"
+          {showSkillSection && (
+            <SettingsSection
+              aside={
+                hasInstalledSkills ? (
+                  <Button disabled={actions[UPDATE_ALL_KEY]?.running} onClick={updateAll} size="xs" variant="text">
+                    {actions[UPDATE_ALL_KEY]?.running && <Loader2 className="size-3 animate-spin" />}
+                    {actions[UPDATE_ALL_KEY]?.running ? h.updating : h.updateAll}
+                  </Button>
+                ) : undefined
+              }
+              icon={FileText}
+              meta={showLanding ? undefined : h.resultCount(searchResults.length, null)}
+              title={showLanding ? h.featured : h.results}
             >
-              {actions[UPDATE_ALL_KEY]?.running && <Loader2 className="size-3 animate-spin" />}
-              {actions[UPDATE_ALL_KEY]?.running ? h.updating : h.updateAll}
-            </Button>
+              {skillLoading ? (
+                <SettingsGroup>
+                  <PageLoader className="min-h-28" label={h.searching} />
+                </SettingsGroup>
+              ) : sourcesQuery.isError ? (
+                <SettingsGroup>
+                  <ListRow description={h.loadFailed} title={showLanding ? h.featured : h.results} />
+                </SettingsGroup>
+              ) : (
+                <SettingsGroup>
+                  {skillItems.map(skill => (
+                    <HubSkillRow
+                      installedName={installed[skill.identifier]?.name ?? null}
+                      key={skill.identifier}
+                      onPreview={openDetail}
+                      rawInstalled={Boolean(installed[skill.identifier])}
+                      skill={skill}
+                    />
+                  ))}
+                </SettingsGroup>
+              )}
+            </SettingsSection>
+          )}
+
+          {showIntegrations && (
+            <IntegrationsCatalog
+              description={showLanding ? h.integrationsDescription : null}
+              hideInstalled={showLanding}
+              hideWhenEmpty
+              meta={null}
+              query={term}
+              title={h.integrationsTitle}
+            />
+          )}
+
+          {showEmpty && (
+            <SettingsGroup>
+              <ListRow
+                description={showLanding ? h.landingHint : h.noResults}
+                title={showLanding ? h.featured : h.results}
+              />
+            </SettingsGroup>
           )}
         </div>
-      )}
-
-      {/* Scrollable results. */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 [scrollbar-gutter:stable]">
-        {searching ? (
-          <div className="grid min-h-40 place-items-center">
-            <PageLoader label={h.searching} />
-          </div>
-        ) : listed.length === 0 ? (
-          <div className="grid min-h-40 place-items-center px-6 text-center">
-            <p className="max-w-md text-[0.72rem] text-(--ui-text-tertiary)">
-              {searched ? h.noResults : h.landingHint}
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col">
-            {listed.map(skill => (
-              <HubSkillRow
-                installedName={installed[skill.identifier]?.name ?? null}
-                key={skill.identifier}
-                onPreview={openDetail}
-                rawInstalled={Boolean(installed[skill.identifier])}
-                skill={skill}
-              />
-            ))}
-          </div>
-        )}
       </div>
 
-      {/* Action log — same resizable, flush-width bottom pane + LogTail surface
-          as the MCP logs. ANSI stripped so spawn output reads clean. Tails the
-          latest-started action ($hubActiveLog). */}
       {activeLogKey && (
         <DetailPane
           defaultCollapsed
@@ -397,7 +460,16 @@ export function SkillsHub({ query }: SkillsHubProps) {
               <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
                   <span className="truncate">{detail.name}</span>
-                  <Badge className={trustTone(detail.trust_level)}>
+                  <Badge
+                    className="capitalize"
+                    variant={
+                      detail.trust_level === 'builtin'
+                        ? 'default'
+                        : detail.trust_level === 'community'
+                          ? 'warn'
+                          : 'muted'
+                    }
+                  >
                     {h.trust[detail.trust_level] ?? detail.trust_level}
                   </Badge>
                 </DialogTitle>
@@ -406,10 +478,10 @@ export function SkillsHub({ query }: SkillsHubProps) {
 
               <div className="min-h-0 space-y-3 overflow-y-auto">
                 {scan && (
-                  <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 text-xs">
+                  <div className="rounded-[var(--radius-md)] border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 text-xs">
                     <div className={cn('font-medium', verdictTone(scan.policy))}>
                       {scan.policy === 'allow' ? h.policyAllow : scan.policy === 'block' ? h.policyBlock : h.policyAsk}
-                      {' · '}
+                      {' - '}
                       {scan.verdict === 'safe'
                         ? h.verdictSafe
                         : scan.verdict === 'dangerous'
@@ -422,7 +494,7 @@ export function SkillsHub({ query }: SkillsHubProps) {
                     {scan.findings.slice(0, 12).map((finding, index) => (
                       <div className="mt-1.5 font-mono text-[0.65rem] text-(--ui-text-tertiary)" key={index}>
                         [{finding.severity}] {finding.file}
-                        {finding.line !== null ? `:${finding.line}` : ''} — {finding.description}
+                        {finding.line !== null ? ':' + finding.line : ''} - {finding.description}
                       </div>
                     ))}
                   </div>
@@ -433,7 +505,7 @@ export function SkillsHub({ query }: SkillsHubProps) {
                 ) : previewQuery.data ? (
                   <>
                     <pre
-                      className="max-h-72 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.68rem] leading-relaxed"
+                      className="max-h-72 overflow-auto whitespace-pre-wrap wrap-break-word rounded-[var(--radius-md)] border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.68rem] leading-relaxed"
                       data-selectable-text="true"
                     >
                       {previewQuery.data.skill_md || h.noReadme}

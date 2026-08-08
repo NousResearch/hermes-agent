@@ -243,7 +243,7 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
         <Tip label={k.reset}>
           <button
             aria-label={k.reset}
-            className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-all hover:bg-(--ui-control-active-background) hover:text-foreground group-hover:opacity-100"
+            className="grid size-6 shrink-0 place-items-center rounded-[var(--radius-sm)] text-muted-foreground/70 opacity-0 transition-[background-color,color,opacity,transform] duration-150 hover:bg-(--ui-control-active-background) hover:text-foreground active:scale-95 group-hover:opacity-100"
             onClick={() => resetBinding(action.id)}
             type="button"
           >

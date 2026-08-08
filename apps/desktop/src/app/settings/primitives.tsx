@@ -15,10 +15,40 @@ import { PAGE_INSET_X } from '../layout-constants'
 export function SettingsContent({ children, bare = false }: { children: ReactNode; bare?: boolean }) {
   return (
     <section className="min-h-0 overflow-hidden">
-      <div className={cn('h-full min-h-0 overflow-y-auto', bare ? 'px-5 pb-6' : cn('pb-20', PAGE_INSET_X))}>
-        {children}
+      <div className="h-full min-h-0 overflow-y-auto">
+        <div className={cn('mx-auto w-full', bare ? 'px-5 pb-6' : cn('max-w-[52rem] pb-20 pt-6', PAGE_INSET_X))}>
+          {children}
+        </div>
       </div>
     </section>
+  )
+}
+
+/** A quiet, bounded page introduction that makes settings pages scannable. */
+export function SettingsPageHeader({ description, title }: { description?: ReactNode; title: ReactNode }) {
+  return (
+    <header className="mb-5">
+      <h1 className="text-lg font-semibold tracking-tight text-foreground">{title}</h1>
+      {description && (
+        <p className="mt-1.5 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {description}
+        </p>
+      )}
+    </header>
+  )
+}
+
+/** A visually unified set of settings rows, with one surface and clear dividers. */
+export function SettingsGroup({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div
+      className={cn(
+        'divide-y divide-(--ui-stroke-quaternary) overflow-hidden rounded-2xl border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_72%,transparent)] shadow-[0_1px_2px_rgb(0_0_0/0.04)]',
+        className
+      )}
+    >
+      {children}
+    </div>
   )
 }
 
@@ -126,21 +156,19 @@ export function ListRow({
     // Container-queried, not viewport-queried: the label/control split keys on
     // the row's own pane width, so a narrow detail column (messaging, split
     // views) stacks instead of squishing the label against minmax(15rem,…).
-    <div className={cn('@container', className)}>
+    <div className={cn('@container px-4 sm:px-5', className)} data-slot="settings-row">
       <div
         className={cn(
-          'grid gap-3 py-3',
-          !wide && '@2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center'
+          'grid gap-3 py-3.5',
+          !wide && '@2xl:grid-cols-[minmax(0,1fr)_minmax(11rem,18rem)] @2xl:items-center'
         )}
       >
         <div className="min-w-0">
-          <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{title}</div>
+          <div className="text-[0.8125rem] font-semibold text-foreground">{title}</div>
           {description && (
-            <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-              {description}
-            </div>
+            <div className="mt-1 text-[0.75rem] leading-[1.35] text-(--ui-text-tertiary)">{description}</div>
           )}
-          {hint && <div className="mt-1 block font-mono text-[0.68rem] text-muted-foreground/45">{hint}</div>}
+          {hint && <div className="mt-1.5 block font-mono text-[0.68rem] text-muted-foreground/55">{hint}</div>}
           {below}
         </div>
         {action && <div className={cn('min-w-0', !wide && '@2xl:justify-self-end')}>{action}</div>}
@@ -195,11 +223,11 @@ export function SectionHeadingSkeleton() {
 
 export function ListRowSkeleton({ wide = false }: { wide?: boolean }) {
   return (
-    <div className="@container">
+    <div className="@container px-4 sm:px-5">
       <div
         className={cn(
-          'grid gap-3 py-3',
-          !wide && '@2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center'
+          'grid gap-3 py-3.5',
+          !wide && '@2xl:grid-cols-[minmax(0,1fr)_minmax(11rem,18rem)] @2xl:items-center'
         )}
       >
         <div className="min-w-0 space-y-1.5">
@@ -228,11 +256,11 @@ export function SettingsSkeleton({
       {sections.map((section, i) => (
         <section className={cn(i > 0 && 'mt-6')} key={i}>
           {section.heading && <SectionHeadingSkeleton />}
-          <div className="grid gap-1">
+          <SettingsGroup className="grid gap-0">
             {Array.from({ length: section.rows }, (_, r) => (
               <ListRowSkeleton key={r} />
             ))}
-          </div>
+          </SettingsGroup>
         </section>
       ))}
     </SettingsContent>

@@ -18,8 +18,8 @@ interface SegmentedControlProps<T extends string> {
 
 /**
  * Grouped one-row toggle used for small mutually-exclusive choices
- * (color mode, tool-call display, usage period, etc.). Flat by design —
- * no per-option borders, just a tinted track with a raised active pill.
+ * (color mode, tool-call display, usage period, etc.). A quiet shared track and
+ * raised active segment keep state readable without boxing every option.
  */
 export function SegmentedControl<T extends string>({
   className,
@@ -31,7 +31,7 @@ export function SegmentedControl<T extends string>({
   return (
     <div
       className={cn(
-        'inline-grid w-fit auto-cols-fr grid-flow-col gap-0.5 rounded-[5px] bg-(--ui-bg-tertiary) p-0.5',
+        'inline-grid w-fit auto-cols-fr grid-flow-col gap-0.5 rounded-[var(--radius-sm)] border border-(--ui-stroke-tertiary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_82%,transparent)] p-0.5 shadow-xs transition-opacity duration-200',
         disabled && 'opacity-50',
         className
       )}
@@ -43,15 +43,17 @@ export function SegmentedControl<T extends string>({
           <button
             aria-pressed={active}
             className={cn(
-              'flex items-center justify-center gap-1 rounded-[3px] px-2.5 py-0.5 text-[0.6875rem] font-medium transition-colors disabled:cursor-default',
-              active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              'flex min-h-7 items-center justify-center gap-1 rounded-[var(--radius-sm)] px-3 py-1 text-xs font-medium transition-[background-color,box-shadow,color,transform] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.98] disabled:cursor-default',
+              active
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
             )}
             disabled={disabled}
             key={id}
             onClick={() => onChange(id)}
             type="button"
           >
-            {Icon && <Icon className="size-3" />}
+            {Icon && <Icon className="size-3.5" />}
             {label}
           </button>
         )

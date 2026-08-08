@@ -6,6 +6,7 @@ import {
   getMemoryStatus,
   getSkillHubSources,
   getToolsetModels,
+  installMcpCatalogEntry,
   installSkillFromHub,
   resetMemory,
   runDebugShare,
@@ -86,6 +87,19 @@ describe('Hermes REST parity helpers (hub / mcp / maintenance)', () => {
     await getMcpCatalog()
 
     expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/mcp/catalog' }))
+  })
+
+  it('installs and enables a catalog MCP in one request', async () => {
+    await installMcpCatalogEntry('linear', { LINEAR_API_KEY: 'not-a-real-key' })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/mcp/catalog/install',
+        method: 'POST',
+        body: { name: 'linear', env: { LINEAR_API_KEY: 'not-a-real-key' }, enable: true },
+        timeoutMs: 60_000
+      })
+    )
   })
 
   it('reads memory status and resets a specific target', async () => {

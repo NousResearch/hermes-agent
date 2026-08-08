@@ -2,7 +2,7 @@ import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeSessionId, $busy, $messages } from '@/store/session'
+import { $activeSessionId, $busy, $messages, setCurrentUsage } from '@/store/session'
 import { $sessionStates, dropSessionState, publishSessionState } from '@/store/session-states'
 
 import { PRIMARY_SESSION_VIEW } from './session-view'
@@ -34,6 +34,7 @@ describe('primary session view reads its own session slice', () => {
     $activeSessionId.set(null)
     $messages.set([])
     $busy.set(false)
+    setCurrentUsage({ calls: 0, input: 0, output: 0, total: 0 })
   })
 
   afterEach(cleanup)
@@ -84,5 +85,16 @@ describe('primary session view reads its own session slice', () => {
 
     expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([])
     expect(PRIMARY_SESSION_VIEW.$messagesEmpty.get()).toBe(true)
+  })
+
+  it('reads context usage from the active session instead of a previous draft', () => {
+    setCurrentUsage({ calls: 0, context_max: 128_000, context_used: 4_000, input: 0, output: 0, total: 0 })
+    publishSessionState('runtime-a', {
+      ...stateWith('runtime-a', 'session A turn', false),
+      usage: { calls: 0, context_max: 200_000, context_used: 50_000, input: 0, output: 0, total: 0 }
+    })
+    $activeSessionId.set('runtime-a')
+
+    expect(PRIMARY_SESSION_VIEW.$usage.get()).toMatchObject({ context_max: 200_000, context_used: 50_000 })
   })
 })

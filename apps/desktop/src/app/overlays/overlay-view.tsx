@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useEffect } from 'react'
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,16 @@ import { cn } from '@/lib/utils'
 // overlay (settings, system, agents, cron, …) — change it here, not per-surface.
 // Main content sits *under* the X (top-right) and keeps its own taller pad.
 export const OVERLAY_TOP_CLEARANCE = 'pt-[calc(var(--titlebar-height)/2-0.4375rem)]'
+
+const OVERLAY_EXIT_DURATION_MS = 180
+
+function prefersReducedMotion() {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+}
 
 interface OverlayViewProps {
   children: ReactNode
@@ -33,10 +43,40 @@ export function OverlayView({
   headerContent,
   rootClassName
 }: OverlayViewProps) {
-  const closeOverlay = () => {
+  const [isClosing, setIsClosing] = useState(false)
+  const closeTimerRef = useRef<number | null>(null)
+  const closeRequestedRef = useRef(false)
+
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current)
+      }
+    },
+    []
+  )
+
+  const closeOverlay = useCallback(() => {
+    if (closeRequestedRef.current) {
+      return
+    }
+
+    closeRequestedRef.current = true
     triggerHaptic('close')
-    onClose()
-  }
+
+    if (prefersReducedMotion()) {
+      onClose()
+
+      return
+    }
+
+    setIsClosing(true)
+
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null
+      onClose()
+    }, OVERLAY_EXIT_DURATION_MS)
+  }, [onClose])
 
   // Esc dismisses every OverlayView-based overlay. Nested Radix dialogs
   // stop propagation themselves, so opening (e.g.) the model picker inside
@@ -50,8 +90,7 @@ export function OverlayView({
       }
 
       event.preventDefault()
-      triggerHaptic('close')
-      onClose()
+      closeOverlay()
     }
 
     window.addEventListener('keydown', onKeyDown)
@@ -60,12 +99,12 @@ export function OverlayView({
       window.removeEventListener('keydown', onKeyDown)
       releaseLayer()
     }
-  }, [onClose])
+  }, [closeOverlay])
 
   return (
     <div
       className={cn(
-        'fixed inset-0 z-50 bg-black/22 backdrop-blur-[0.125rem]',
+        'fixed inset-0 z-50',
         // Equidistant inset on every side. The top value is driven by the
         // titlebar height so the card clears the OS traffic-lights vertically;
         // since the card top already sits below them, the left needs no extra
@@ -79,6 +118,7 @@ export function OverlayView({
       // the global type-to-focus / soft `/` / Enter down, so keystrokes don't
       // leak into the hidden composer (and the overlay's own bare-key shortcuts,
       // e.g. star map's Space, keep working).
+      data-motion={isClosing ? 'closing' : 'open'}
       data-overlay-surface=""
       onClick={event => {
         if (event.target === event.currentTarget) {
@@ -95,9 +135,10 @@ export function OverlayView({
     >
       <div
         className={cn(
-          'relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) shadow-md',
+          'relative z-10 flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius-2xl)] border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) shadow-md',
           rootClassName
         )}
+        data-slot="overlay-card"
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)] [-webkit-app-region:drag]">
           {headerContent && (
@@ -109,6 +150,7 @@ export function OverlayView({
           <Button
             aria-label={closeLabel}
             className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
+            motion="none"
             onClick={closeOverlay}
             size="icon-titlebar"
             variant="ghost"

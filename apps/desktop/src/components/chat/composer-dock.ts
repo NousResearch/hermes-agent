@@ -15,7 +15,12 @@ export const composerSurfaceGlass = cn(
 )
 
 const composerDockEdge = (edge: 'bottom' | 'top') =>
-  cn('border border-border/65', edge === 'top' ? 'rounded-t-2xl border-b-0' : 'rounded-b-2xl border-t-0')
+  cn(
+    'border border-border/65',
+    edge === 'top'
+      ? 'rounded-t-[var(--composer-surface-radius)] border-b-0'
+      : 'rounded-b-[var(--composer-surface-radius)] border-t-0'
+  )
 
 /** Glassy docked card — the status stack / queue. Paints the SAME
  *  `--composer-fill` as the surface, so rest / scrolled / focused / drawer-open
@@ -29,7 +34,7 @@ export const composerDockCard = (edge: 'bottom' | 'top' = 'top') =>
  *  so it renders identically whether mounted inside the composer or portaled out
  *  of it. Visual skin only — consumers add their own size/position/padding. */
 export const composerPanelCard = cn(
-  'rounded-2xl border border-border/65 shadow-nous text-[length:var(--conversation-tool-font-size)]',
+  'rounded-[var(--composer-surface-radius)] border border-border/65 shadow-nous text-[length:var(--conversation-tool-font-size)]',
   'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
   composerSurfaceGlass
 )

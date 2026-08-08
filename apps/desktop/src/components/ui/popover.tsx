@@ -18,9 +18,9 @@ function PopoverAnchor({ ...props }: React.ComponentProps<typeof PopoverPrimitiv
 
 function PopoverContent({
   align = 'center',
-  // Keeps the arrow clear of the rounded corners (rounded-lg = 8px): Radix
-  // clamps the arrow this far from each edge and shifts the popover to
-  // compensate, so the arrow never jams into a corner on start/end alignment.
+  // Keeps the arrow clear of the shared rounded corners: Radix clamps it this
+  // far from each edge and shifts the popover to compensate, so the arrow
+  // never jams into a corner on start/end alignment.
   arrowPadding = 12,
   children,
   className,
@@ -38,9 +38,9 @@ function PopoverContent({
         align={align}
         arrowPadding={arrowPadding}
         // Themed glass surface, viewport-aware (Radix flips/shifts off edges),
-        // standard open/close motion. Border-only (no shadow).
+        // standard open/close motion and the same soft shadow as menus.
         className={cn(
-          'z-50 w-72 origin-(--radix-popover-content-transform-origin) rounded-lg border border-(--ui-stroke-secondary) bg-[var(--popover-surface)] p-2 text-popover-foreground backdrop-blur-md outline-hidden data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 [--popover-surface:color-mix(in_srgb,var(--ui-bg-elevated)_92%,transparent)]',
+          'z-50 w-72 origin-(--radix-popover-content-transform-origin) rounded-[var(--radius-md)] border border-(--ui-stroke-secondary) bg-[var(--popover-surface)] p-2 text-popover-foreground shadow-md backdrop-blur-md outline-hidden data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 [--popover-surface:color-mix(in_srgb,var(--ui-bg-elevated)_92%,transparent)]',
           className
         )}
         collisionPadding={collisionPadding}

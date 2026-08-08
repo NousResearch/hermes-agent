@@ -27,7 +27,8 @@ function SheetOverlay({ className, ...props }: React.ComponentProps<typeof Sheet
   return (
     <SheetPrimitive.Overlay
       className={cn(
-        'fixed inset-0 z-50 bg-black/22 backdrop-blur-[0.125rem] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
+        'fixed inset-0 z-50 bg-black/22 backdrop-blur-[0.125rem]',
+        'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-[160ms] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-[180ms]',
         className
       )}
       data-slot="sheet-overlay"
@@ -53,7 +54,8 @@ function SheetContent({
       <SheetOverlay />
       <SheetPrimitive.Content
         className={cn(
-          'fixed z-50 flex flex-col gap-3 border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) text-[length:var(--conversation-text-font-size)] shadow-md transition ease-in-out data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:animate-in data-[state=open]:duration-500',
+          'fixed z-50 flex flex-col gap-3 border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) text-[length:var(--conversation-text-font-size)] shadow-md',
+          'ease-[cubic-bezier(0.16,1,0.3,1)] data-[state=closed]:animate-out data-[state=closed]:duration-[180ms] data-[state=open]:animate-in data-[state=open]:duration-[220ms]',
           side === 'right' &&
             'inset-y-0 right-0 h-full w-3/4 border-l data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right sm:max-w-sm',
           side === 'left' &&

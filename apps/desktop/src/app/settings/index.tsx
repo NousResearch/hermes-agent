@@ -62,17 +62,14 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
 
-  // MCP moved out of Settings into Capabilities (/skills?tab=mcp). Keep old
+  // Keep legacy MCP links working by redirecting them to Installed MCP.
   // `/settings?tab=mcp` deep links working — `useRouteEnumParam` would silently
-  // coerce the unknown tab to the default view otherwise. Preserve `server=` so
-  // an old bookmark still lands on (and highlights) the selected server.
+  // coerce the unknown tab to the default view otherwise.
   useEffect(() => {
     const params = new URLSearchParams(search)
 
     if (params.get('tab') === 'mcp') {
-      const server = params.get('server')
-      const suffix = server ? `&server=${encodeURIComponent(server)}` : ''
-      navigate(`${SKILLS_ROUTE}?tab=mcp${suffix}`, { replace: true })
+      navigate(SKILLS_ROUTE + '?tab=installed&installed=mcp', { replace: true })
     }
   }, [navigate, search])
 
@@ -143,7 +140,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
   const navGroups: OverlayNavGroup[] = useMemo(
     () => [
-      ...SECTIONS.map(s => {
+      ...SECTIONS.filter(s => s.id !== 'advanced').map(s => {
         const view = `config:${s.id}` as SettingsViewId
 
         return {
@@ -200,13 +197,6 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView('providers')
       },
       {
-        active: activeView === 'gateway',
-        icon: Globe,
-        id: 'gateway',
-        label: t.settings.nav.gateway,
-        onSelect: () => setActiveView('gateway')
-      },
-      {
         active: activeView === 'keybinds',
         icon: Keyboard,
         id: 'keybinds',
@@ -237,18 +227,39 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView('keys')
       },
       {
-        active: activeView === 'plugins',
-        icon: Package,
-        id: 'plugins',
-        label: t.settings.nav.plugins,
-        onSelect: () => setActiveView('plugins')
-      },
-      {
-        active: activeView === 'sessions',
-        icon: Archive,
-        id: 'sessions',
-        label: t.settings.nav.archivedChats,
-        onSelect: () => setActiveView('sessions')
+        active:
+          activeView === 'config:advanced' ||
+          activeView === 'gateway' ||
+          activeView === 'plugins' ||
+          activeView === 'sessions',
+        children: [
+          {
+            active: activeView === 'gateway',
+            icon: Globe,
+            id: 'gateway',
+            label: t.settings.nav.gateway,
+            onSelect: () => setActiveView('gateway')
+          },
+          {
+            active: activeView === 'plugins',
+            icon: Package,
+            id: 'plugins',
+            label: t.settings.nav.plugins,
+            onSelect: () => setActiveView('plugins')
+          },
+          {
+            active: activeView === 'sessions',
+            icon: Archive,
+            id: 'sessions',
+            label: t.settings.nav.archivedChats,
+            onSelect: () => setActiveView('sessions')
+          }
+        ],
+        gapBefore: true,
+        icon: Wrench,
+        id: 'config:advanced',
+        label: t.settings.sections.advanced ?? 'Advanced',
+        onSelect: () => setActiveView('config:advanced')
       },
       {
         active: activeView === 'about',

@@ -146,8 +146,8 @@ context-dependent (e.g. "Show" / "Hide"). Never hardcode combos; always use
 `useKeybindHint` or `TipKeybindLabel`.
 
 Notes:
-- Text buttons are square (no radius) and sized by padding + line-height (no
-  fixed heights). Only icon buttons carry the shared 4px radius.
+- Boxed buttons, icon buttons, and their hover/focus surfaces use the shared
+  system radius. Inline text/link actions remain visually boxless.
 - SVGs inherit `size-3.5` (`size-3` at `xs`). Don't re-set icon size.
 - Polymorph with `asChild` when the button must render as a link/Slot.
 
@@ -155,8 +155,8 @@ Notes:
 
 - **`controlVariants`** (`src/components/ui/control.ts`) is the shared shape for
   `Input` / `Textarea` / `SelectTrigger`. New text-entry controls compose it.
-- **`SearchField`** — borderless, underline-on-focus, auto-width. The only
-  search input. Don't build boxed search bars; don't wrap it in a bordered tile.
+- **`SearchField`** — quiet, auto-width search with the shared rounded
+  hover/focus surface. The only search input; don't wrap it in another tile.
   Empty lists hide their search field.
 - **`SegmentedControl`** — the choice control for small mutually-exclusive sets
   (color mode, tool-call display, usage period). Replaces radio piles and
@@ -237,7 +237,8 @@ Notes:
 
 ## Motion
 
-- Quick, functional transitions (~100ms on controls). Respect
+- Quick, functional transitions (150–200ms on controls). Use the shared
+  `(0.2, 0.8, 0.2, 1)` easing for direct UI feedback and respect
   `prefers-reduced-motion` for anything beyond a fade.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element
   then settle the surface — the outer container's fade is *delayed* so it

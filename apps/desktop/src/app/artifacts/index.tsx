@@ -289,6 +289,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     <PageSearchShell
       {...props}
       activeTab={kindFilter}
+      description={t.commandCenter.nav.artifacts.detail}
       onSearchChange={setQuery}
       onTabChange={id => setKindFilter(id as typeof kindFilter)}
       searchHidden={counts.all === 0}
@@ -315,6 +316,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         { id: 'file', label: a.tabFiles, meta: artifacts ? counts.file : null },
         { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
       ]}
+      title={t.commandCenter.nav.artifacts.title}
     >
       {!artifacts ? (
         <PageLoader label={a.indexing} />
@@ -327,7 +329,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         </div>
       ) : (
         <div className="h-full overflow-y-auto [scrollbar-gutter:stable]">
-          <div className="flex flex-col gap-3 px-3 pb-2">
+          <div className="mx-auto flex w-full max-w-[75rem] flex-col gap-5 px-[clamp(1.25rem,4vw,4rem)] py-5">
             {visibleImageArtifacts.length > 0 && (
               <section className="flex flex-col">
                 <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
@@ -366,7 +368,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     total={visibleFileArtifacts.length}
                   />
                 </div>
-                <div className="overflow-x-auto rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
+                <div className="overflow-x-auto rounded-[var(--radius-xl)] border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_72%,transparent)] shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
                   <ArtifactTable artifacts={pagedFileArtifacts} ctx={cellCtx} filter={kindFilter} />
                 </div>
               </section>
@@ -466,7 +468,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
   }, [artifact.href, artifact.id, artifact.value, onImageError])
 
   return (
-    <article className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
+    <article className="group/artifact overflow-hidden rounded-[var(--radius-xl)] border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_72%,transparent)] shadow-[0_1px_2px_rgb(0_0_0/0.04)] transition-[border-color,box-shadow,transform] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:-translate-y-px hover:border-(--ui-stroke-primary) hover:shadow-sm">
       <div
         className={cn(
           'relative flex h-40 w-full items-center justify-center overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-1.5',
@@ -476,7 +478,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
         {!failedImage && src && (
           <ZoomableImage
             alt={artifact.label}
-            className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain"
+            className="max-h-40 max-w-full cursor-zoom-in rounded-[var(--radius-md)] object-contain"
             containerClassName="max-h-full"
             decoding="async"
             loading="lazy"
@@ -487,15 +489,13 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
         )}
       </div>
 
-      <div className="space-y-1.5 p-2">
+      <div className="space-y-2 p-3">
         <div className="min-w-0">
           <div className="mb-0.5 flex items-center gap-1 text-[0.625rem] uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
             <FileImage className="size-3" />
             {kindLabel}
           </div>
-          <div className="truncate text-[length:var(--conversation-caption-font-size)] font-medium">
-            {artifact.label}
-          </div>
+          <div className="truncate text-[0.8125rem] font-semibold text-foreground">{artifact.label}</div>
           <div className="mt-0.5 truncate text-[0.625rem] text-(--ui-text-tertiary)">{artifact.value}</div>
         </div>
 
@@ -564,7 +564,7 @@ const PrimaryCell = memo(function PrimaryCell({ artifact, ctx }: { artifact: Art
       onClick={isLink ? undefined : () => void ctx.onOpen(artifact.href)}
       title={label}
     >
-      <span className="mt-0.5 grid size-6 shrink-0 place-items-center self-start rounded-md bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">
+      <span className="mt-0.5 grid size-7 shrink-0 place-items-center self-start rounded-[var(--radius-sm)] bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">
         <Icon className="size-3.5" />
       </span>
       <span className={cn('min-w-0 flex-1', isLink ? 'wrap-anywhere' : 'truncate')}>

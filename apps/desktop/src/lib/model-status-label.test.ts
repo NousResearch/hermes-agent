@@ -9,6 +9,7 @@ describe('model-status-label', () => {
     expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
     expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
+    expect(displayModelName('tencent/hy3:free')).toBe('Hy3')
   })
 
   it('strips trailing date-pin snapshots from the display name', () => {
@@ -28,6 +29,7 @@ describe('model-status-label', () => {
     expect(formatModelStatusLabel('openai/gpt-5.5', { fastMode: true, reasoningEffort: 'high' })).toBe(
       'GPT-5.5 · Fast High'
     )
+    expect(formatModelStatusLabel('tencent/hy3:free', { reasoningEffort: 'xhigh' })).toBe('Hy3 · Free · XHigh')
   })
 
   it('falls back to the profile default effort, then to medium', () => {

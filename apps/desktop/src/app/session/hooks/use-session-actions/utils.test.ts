@@ -22,6 +22,7 @@ import {
   chatMessageArraysEquivalent,
   chatMessagesEquivalent,
   chatPartsEquivalent,
+  hydrateStoredSessionUsage,
   isSessionGoneError,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
@@ -49,6 +50,26 @@ const streamingMsg = (id: string, text: string, extra: Partial<ChatMessage> = {}
   }) as ChatMessage
 
 const session = (over: Partial<SessionInfo>): SessionInfo => over as SessionInfo
+
+describe('hydrateStoredSessionUsage', () => {
+  it('clears a prior live context snapshot while retaining the stored token totals', () => {
+    const usage = hydrateStoredSessionUsage(
+      {
+        calls: 8,
+        context_max: 200_000,
+        context_percent: 25,
+        context_used: 50_000,
+        cost_usd: 1.2,
+        input: 50_000,
+        output: 20_000,
+        total: 70_000
+      },
+      { input_tokens: 1_500, output_tokens: 250 }
+    )
+
+    expect(usage).toEqual({ calls: 8, cost_usd: 1.2, input: 1_500, output: 250, total: 1_750 })
+  })
+})
 
 describe('applyRuntimeInfo approval mode', () => {
   beforeEach(() => {
@@ -117,6 +138,15 @@ describe('applyRuntimeInfo foreground scoping', () => {
     expect($currentBranch.get()).toBe('main')
     // ...while the caller still gets everything it needs for its own session.
     expect(patch).toMatchObject({ branch: 'bb/tile', cwd: '/other-worktree' })
+  })
+
+  it('keeps reported context usage with the owning session patch', () => {
+    const patch = applyRuntimeInfo(
+      { usage: { calls: 0, context_max: 200_000, context_used: 50_000, input: 0, output: 0, total: 0 } },
+      { foreground: false }
+    )
+
+    expect(patch?.usage).toMatchObject({ context_max: 200_000, context_used: 50_000 })
   })
 
   // #71254: `if (info.cwd)` treated '' as "no opinion", so a detached session

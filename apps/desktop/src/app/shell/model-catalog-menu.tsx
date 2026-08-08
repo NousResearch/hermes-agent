@@ -390,7 +390,7 @@ export function ModelCatalogMenu({
                         : null
 
                     const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
+                    const { free, name } = modelDisplayParts(family.id)
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Effective settings for this row: the live choice when it's
@@ -437,10 +437,25 @@ export function ModelCatalogMenu({
                           }}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
-                          <span className="min-w-0 flex-1 truncate">
+                          <span className="min-w-0 flex-1 truncate" data-slot="model-catalog-name">
                             <HighlightMatches query={search} text={name} />
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                           </span>
+                          {free ? (
+                            <span
+                              className="shrink-0 rounded-[var(--radius-sm)] bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase leading-none tracking-wide text-emerald-600 dark:text-emerald-400"
+                              data-slot="model-free-badge"
+                            >
+                              {t.common.free}
+                            </span>
+                          ) : null}
+                          {meta ? (
+                            <span
+                              className="shrink-0 whitespace-nowrap text-[0.6875rem] text-(--ui-text-tertiary)"
+                              data-slot="model-catalog-meta"
+                            >
+                              {meta}
+                            </span>
+                          ) : null}
                           {isCurrent ? (
                             <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
                           ) : null}

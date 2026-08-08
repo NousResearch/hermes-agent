@@ -14,8 +14,8 @@ function TextTab({ active = false, children, className, type = 'button', ...prop
   return (
     <button
       className={cn(
-        'group/text-tab inline-flex h-7 items-center gap-1 bg-transparent px-1 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary) transition-colors hover:bg-transparent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring disabled:pointer-events-none disabled:opacity-50',
-        active && 'text-foreground',
+        'group/text-tab inline-flex h-7 items-center gap-1 rounded-[var(--radius-sm)] bg-transparent px-2 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary) transition-[background-color,color] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring disabled:pointer-events-none disabled:opacity-50',
+        active && 'bg-(--ui-bg-quinary) text-foreground',
         className
       )}
       data-active={active}

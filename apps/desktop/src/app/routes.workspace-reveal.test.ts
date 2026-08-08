@@ -68,8 +68,8 @@ afterEach(() => {
 describe('routePathname', () => {
   it('keeps a bare path and drops a query or hash', () => {
     expect(routePathname(SKILLS_ROUTE)).toBe('/skills')
-    expect(routePathname('/skills?tab=mcp')).toBe('/skills')
-    expect(routePathname('/skills?tab=mcp&server=ctx7')).toBe('/skills')
+    expect(routePathname('/skills?tab=toolsets')).toBe('/skills')
+    expect(routePathname('/settings?tab=plugins')).toBe('/settings')
     expect(routePathname('/settings#keys')).toBe('/settings')
   })
 
@@ -82,14 +82,14 @@ describe('routePathname', () => {
 })
 
 describe('classification of targets carrying a query', () => {
-  // The palette navigates to every one of these (Capabilities tabs, MCP
-  // servers), and Settings redirects old /settings?tab=mcp deep links to the
-  // last one. Unstripped, they parsed as SESSION ids and read as 'chat'.
+  // The palette navigates to every one of these. Unstripped, they parsed as
+  // SESSION ids and read as 'chat'.
   it.each([
-    [`${SKILLS_ROUTE}?tab=skills`, 'skills'],
-    [`${SKILLS_ROUTE}?tab=toolsets`, 'skills'],
-    [`${SKILLS_ROUTE}?tab=mcp&server=ctx7`, 'skills'],
-    [`${SETTINGS_ROUTE}?tab=keys`, 'settings']
+    [`${SKILLS_ROUTE}?tab=installed&installed=skills`, 'skills'],
+    [`${SKILLS_ROUTE}?tab=installed&installed=tools`, 'skills'],
+    [`${SKILLS_ROUTE}?tab=installed&installed=mcp`, 'skills'],
+    [`${SKILLS_ROUTE}?tab=hub`, 'skills'],
+    [`${SETTINGS_ROUTE}?tab=plugins`, 'settings']
   ])('%s is not a session route', (to, view) => {
     expect(routeSessionId(to)).toBeNull()
     expect(appViewForPath(to)).toBe(view)
@@ -105,7 +105,7 @@ describe('syncWorkspaceRoute', () => {
   })
 
   it('fronts on a page route reached with a query', () => {
-    syncWorkspaceRoute(`${SKILLS_ROUTE}?tab=mcp`)
+    syncWorkspaceRoute(`${SKILLS_ROUTE}?tab=hub`)
 
     expect($workspaceIsPage.get()).toBe(true)
     expect(fronted()).toBe(true)
@@ -160,14 +160,16 @@ describe('navigateToWorkspacePage', () => {
     expect(fronted()).toBe(true)
   })
 
-  it.each([`${SKILLS_ROUTE}?tab=skills`, `${SKILLS_ROUTE}?tab=toolsets`, `${SKILLS_ROUTE}?tab=mcp&server=ctx7`])(
-    'fronts for the palette target %s',
-    to => {
-      navigateToWorkspacePage(vi.fn(), to)
+  it.each([
+    `${SKILLS_ROUTE}?tab=installed&installed=skills`,
+    `${SKILLS_ROUTE}?tab=installed&installed=tools`,
+    `${SKILLS_ROUTE}?tab=installed&installed=mcp`,
+    `${SKILLS_ROUTE}?tab=hub`
+  ])('fronts for the palette target %s', to => {
+    navigateToWorkspacePage(vi.fn(), to)
 
-      expect(fronted()).toBe(true)
-    }
-  )
+    expect(fronted()).toBe(true)
+  })
 
   it('passes navigation options through', () => {
     const navigate = vi.fn()

@@ -36,7 +36,9 @@ interface ProviderPrefix {
 }
 
 export const EMPTY_SELECT_VALUE = '__hermes_empty__'
-export const CONTROL_TEXT = 'text-xs'
+// Form controls match the setting labels at a comfortable reading size rather
+// than collapsing into dense utility text.
+export const CONTROL_TEXT = 'text-[0.8125rem]'
 
 export const PROVIDER_GROUPS: ProviderPrefix[] = [
   {

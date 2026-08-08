@@ -896,6 +896,8 @@ export const ar = defineLocale({
     }
   },
   skills: {
+    title: 'الإمكانات',
+    description: 'المهارات والأدوات',
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',
     all: 'الكل',
@@ -2277,6 +2279,8 @@ export const ar = defineLocale({
   assistant: {
     thread: {
       loadingSession: 'جار تحميل الجلسة...',
+      conversationHistory: 'سجل المحادثة',
+      browseConversationHistory: 'تصفح سجل المحادثة',
       showEarlier: 'عرض الرسائل الأقدم',
       loadingResponse: 'جار تحميل الرد...',
       resumeWhenBackgroundDone: count =>

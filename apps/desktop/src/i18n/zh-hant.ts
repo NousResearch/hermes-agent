@@ -982,6 +982,8 @@ export const zhHant = defineLocale({
   },
 
   skills: {
+    title: '功能',
+    description: '技能與工具',
     tabSkills: '技能',
     tabToolsets: '工具集',
     tabMcp: 'MCP',
@@ -1796,6 +1798,12 @@ export const zhHant = defineLocale({
     wakeWordListening: phrase => `喚醒詞:「${phrase}」— 正在聆聽`,
     wakeWordOff: phrase => `喚醒詞:「${phrase}」— 已關閉`,
     wakeWordPausedVoice: phrase => `喚醒詞:「${phrase}」— 語音對話期間暫停`,
+    contextRemaining: tokens => `剩餘 ${tokens}`,
+    contextRemainingDetail: (remaining, total) => `${total} 個詞元中剩餘 ${remaining}`,
+    contextWindow: '內容脈絡視窗',
+    contextWindowFull: percent => `已使用 ${percent}%`,
+    contextWindowUnavailable: '內容脈絡視窗資料暫時無法使用。',
+    contextWindowUsage: (used, total) => `已使用 ${used} / ${total} 個詞元`,
     lookupLoading: '查詢中…',
     lookupNoMatches: '沒有相符項目。',
     lookupTry: '試試',
@@ -2214,7 +2222,7 @@ export const zhHant = defineLocale({
       manualDescription: '執行需要核准的操作前詢問',
       smart: '智慧',
       smartDescription: '自動評估操作，並在需要時詢問',
-      off: '關閉',
+      off: '完整存取',
       offDescription: '不顯示核准提示，直接執行'
     },
     statusbar: {
@@ -2456,6 +2464,8 @@ export const zhHant = defineLocale({
   assistant: {
     thread: {
       loadingSession: '正在載入工作階段',
+      conversationHistory: '對話記錄',
+      browseConversationHistory: '瀏覽對話記錄',
       showEarlier: '顯示較早的訊息',
       loadingResponse: 'Hermes 正在載入回覆',
       resumeWhenBackgroundDone: count =>

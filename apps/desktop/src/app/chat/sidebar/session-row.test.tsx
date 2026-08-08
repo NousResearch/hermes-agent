@@ -135,6 +135,24 @@ describe('SidebarSessionRow', () => {
     expect(tipTrigger(kebab)).toBeNull()
   })
 
+  it('keeps enough vertical room for history titles and row actions to coexist', () => {
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={true}
+        isWorking={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        session={makeSession({ title: 'A long previous conversation title' })}
+      />
+    )
+
+    const shell = screen.getByText('A long previous conversation title').closest('button')?.parentElement
+    expect(shell?.className).toContain('min-h-7')
+  })
+
   it('does not render a handoff avatar for a locally-started session', () => {
     const { container } = render(
       <SidebarSessionRow

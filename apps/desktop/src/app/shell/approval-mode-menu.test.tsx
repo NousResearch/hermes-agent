@@ -57,7 +57,7 @@ describe('approval mode statusbar item', () => {
     expect(await screen.findByRole('menuitemradio', { name: /manual/i })).toBeTruthy()
     expect(trigger.getAttribute('aria-haspopup')).toBe('menu')
     expect(screen.getByRole('menuitemradio', { name: /smart/i })).toBeTruthy()
-    expect(screen.getByRole('menuitemradio', { name: /off/i })).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: /full access/i })).toBeTruthy()
   })
 
   it('writes the selected mode through the gateway and updates its shared trigger label', async () => {

@@ -1315,7 +1315,7 @@ export function ChatSidebar({
                 activeSessionId={activeSidebarSessionId}
                 collapsible={!inProject}
                 contentClassName={cn(
-                  'flex min-h-0 flex-1 flex-col pb-1.75',
+                  'sidebar-history-scroll flex min-h-0 flex-1 flex-col pb-1.75',
                   SCROLL_Y,
                   // Separate profile sections clearly in the ALL view; rows inside
                   // each group keep their own tight gap-px rhythm.
@@ -1498,7 +1498,7 @@ export function ChatSidebar({
                     label={group.label}
                     labelIcon={
                       <PlatformAvatar
-                        className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
+                        className="size-4 rounded-[var(--radius-sm)] text-[0.5625rem] [&_svg]:size-3"
                         platformId={group.sourceId}
                         platformName={group.label}
                       />

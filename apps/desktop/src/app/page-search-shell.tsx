@@ -14,11 +14,16 @@ export interface PageShellTab {
   meta?: string | number | null
 }
 
-interface PageSearchShellProps extends React.ComponentProps<'section'> {
+type PageSearchContentWidth = 'reading' | 'wide'
+
+interface PageSearchShellProps extends Omit<React.ComponentProps<'section'>, 'title'> {
   children: ReactNode
+  /** Optional page identity above the search and tab controls. */
+  description?: ReactNode
   tabs?: PageShellTab[]
   activeTab?: string
   onTabChange?: (id: string) => void
+  title?: ReactNode
   /** Secondary filters shown full-width on their own row below (expands). */
   filters?: ReactNode
   onSearchChange: (value: string) => void
@@ -31,6 +36,10 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   /** Right-aligned control in the header's trailing cell (e.g. a refresh button)
    *  so mouse users get a visible affordance for the refresh hotkey. */
   searchTrailingAction?: ReactNode
+  /** Centers prose-like catalog pages more tightly than operational wide views. */
+  contentWidth?: PageSearchContentWidth
+  /** Places the search field on its own readable row below a page introduction. */
+  searchBelowTitle?: boolean
 }
 
 function ShellTabs({
@@ -58,6 +67,8 @@ export function PageSearchShell({
   tabs,
   activeTab,
   onTabChange,
+  title,
+  description,
   filters,
   onSearchChange,
   searchPlaceholder,
@@ -65,9 +76,14 @@ export function PageSearchShell({
   searchValue,
   searchHidden = false,
   searchTrailingAction,
+  contentWidth = 'wide',
+  searchBelowTitle = false,
   ...props
 }: PageSearchShellProps) {
   const hasTabs = (tabs?.length ?? 0) > 0
+  const shellWidth = contentWidth === 'reading' ? 'max-w-[52rem]' : 'max-w-[75rem]'
+  const shellGutter = contentWidth === 'reading' ? 'px-5' : 'px-[clamp(1.25rem,4vw,4rem)]'
+  const hasInlineControls = hasTabs || (!searchHidden && !searchBelowTitle)
 
   return (
     <section
@@ -77,8 +93,8 @@ export function PageSearchShell({
       {/*
         Header lives in the page body, below the window chrome (the shell floats
         traffic lights over the top titlebar-height strip, which the `pt` clears
-        and leaves draggable). Search left, tabs centered on the page via the
-        1fr/auto/1fr grid; the trailing 1fr keeps the center honest.
+        and leaves draggable). Catalog pages can place a broad search row below
+        the intro; operational pages retain the compact search/tabs grid.
       */}
       {/*
         IMPORTANT: do NOT put `-webkit-app-region: drag` on this header. It spans
@@ -89,14 +105,49 @@ export function PageSearchShell({
         draggable titlebar strip that is `calc()`'d around the icon clusters
         (see app-shell.tsx), so window dragging still works here.
       */}
-      <div className="shrink-0">
-        {(hasTabs || !searchHidden) && (
-          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]">
+      <div className="shrink-0 border-b border-(--ui-stroke-quaternary) bg-(--ui-chat-surface-background)">
+        {title && (
+          <div
+            className={cn(
+              'mx-auto w-full pt-[calc(var(--titlebar-height)+0.875rem)]',
+              shellGutter,
+              shellWidth,
+              searchBelowTitle ? 'pb-3' : 'pb-4'
+            )}
+          >
+            <h1 className="text-[1.375rem] leading-tight font-semibold tracking-tight text-foreground">{title}</h1>
+            {description && (
+              <p className="mt-1 text-[0.8125rem] leading-relaxed text-(--ui-text-tertiary)">{description}</p>
+            )}
+          </div>
+        )}
+        {searchBelowTitle && !searchHidden && (
+          <div className={cn('mx-auto w-full pb-3', shellGutter, shellWidth)}>
+            <SearchField
+              containerClassName="w-full border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_78%,transparent)] px-3 py-0.5 opacity-100 shadow-[0_1px_2px_rgb(0_0_0/0.04)]"
+              hints={searchHints}
+              inputClassName="h-8 w-full text-[0.8125rem] [field-sizing:auto]"
+              onChange={onSearchChange}
+              placeholder={searchPlaceholder}
+              value={searchValue}
+            />
+          </div>
+        )}
+        {hasInlineControls && (
+          <div
+            className={cn(
+              'mx-auto grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 pb-3',
+              shellGutter,
+              shellWidth,
+              title ? 'pt-0' : 'pt-[calc(var(--titlebar-height)+0.75rem)]'
+            )}
+          >
             <div className="flex min-w-0 items-center justify-start">
-              {!searchHidden && (
+              {!searchHidden && !searchBelowTitle && (
                 <SearchField
-                  containerClassName="max-w-[45vw]"
+                  containerClassName="w-full max-w-[32rem]"
                   hints={searchHints}
+                  inputClassName="w-full [field-sizing:auto]"
                   onChange={onSearchChange}
                   placeholder={searchPlaceholder}
                   value={searchValue}

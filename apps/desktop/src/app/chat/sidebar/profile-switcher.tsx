@@ -428,7 +428,7 @@ function AddProfileButton({ label, onClick }: { label: string; onClick: () => vo
     <Tip label={label}>
       <button
         aria-label={label}
-        className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
+        className="grid size-5 shrink-0 place-items-center rounded-[var(--radius-sm)] text-(--ui-text-tertiary) opacity-60 transition-[background-color,color,opacity,transform] duration-150 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 active:scale-95"
         onClick={onClick}
         type="button"
       >
@@ -446,7 +446,7 @@ function ImportProfileButton({ label }: { label: string }) {
     <Tip label={label}>
       <button
         aria-label={label}
-        className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
+        className="grid size-5 shrink-0 place-items-center rounded-[var(--radius-sm)] text-(--ui-text-tertiary) opacity-60 transition-[background-color,color,opacity,transform] duration-150 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 active:scale-95"
         onClick={() => void runImportProfileFlow()}
         type="button"
       >
@@ -504,7 +504,7 @@ function ProfileDropdownItem({ color, name }: { color: null | string; name: stri
       <span className="flex min-w-0 items-center gap-1.5">
         <span
           aria-hidden="true"
-          className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
+          className="grid size-4 shrink-0 place-items-center rounded-[var(--radius-sm)] text-[0.5rem] font-semibold uppercase leading-none"
           style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
         >
           {name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
@@ -627,7 +627,7 @@ function ProfileSquare({
                 <TooltipTrigger asChild>
                   <button
                     className={cn(
-                      'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                      'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[var(--radius-sm)] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity duration-150 hover:opacity-100',
                       active ? 'opacity-100' : 'opacity-55',
                       isDragging && 'z-10 cursor-grabbing opacity-100'
                     )}

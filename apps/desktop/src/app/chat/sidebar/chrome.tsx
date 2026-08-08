@@ -15,11 +15,13 @@ export function SidebarSectionMeta({ children }: { children: React.ReactNode }) 
 
 // ── Row geometry (session row is canonical — everything composes these) ─────
 //
-// Height lives ONLY on SidebarRowShell (min-h-[1.625rem]). Inset children
+// Height lives ONLY on SidebarRowShell (min-h-7 / 28px). Inset children
 // stretch to fill the cell and center content internally — never items-center
 // on the shell grid, or short clusters (projects) float 1–2px off sessions.
 
-const rowMinH = 'min-h-[1.625rem]'
+// Match VirtualSessionList's 28px estimate so history rows have enough visual
+// breathing room without causing the virtual scroll position to drift.
+const rowMinH = 'min-h-7'
 const rowPadX = 'pl-2 pr-1'
 const rowGap = 'gap-1.5'
 const rowLead = 'grid size-3.5 shrink-0 place-items-center'

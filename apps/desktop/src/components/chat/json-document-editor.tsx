@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 // Kept a string (not a shared CSS utility): the `size-5` prefix lets
 // tailwind-merge override <Button size="icon">'s larger built-in size.
 const ICON_BUTTON =
-  'size-5 cursor-pointer rounded-[4px] text-muted-foreground/70 hover:bg-(--ui-control-active-background) hover:text-foreground'
+  'size-5 cursor-pointer rounded-[var(--radius-sm)] text-muted-foreground/70 transition-[background-color,color,transform] duration-150 hover:bg-(--ui-control-active-background) hover:text-foreground active:scale-95'
 
 interface JsonDocumentEditorProps {
   apiRef?: RefObject<CodeEditorApi | null>

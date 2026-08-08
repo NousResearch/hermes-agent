@@ -341,8 +341,9 @@ async def set_mcp_server_enabled(
 async def list_mcp_catalog(profile: Optional[str] = None):
     """Browse the Nous-approved MCP catalog (the optional-mcps/ manifests).
 
-    Each entry reports whether it's already installed and enabled so the UI
-    can show install / enabled state inline.  This is the same catalog
+    Each entry reports whether it's already installed, enabled, and (for
+    OAuth entries) authenticated so the UI can show one-time setup state
+    inline. This is the same catalog
     `hermes mcp catalog` / `hermes mcp install` read.  ``profile`` scopes
     the installed/enabled annotations (the catalog itself is repo-shipped
     and identical for every profile).
@@ -355,12 +356,24 @@ async def list_mcp_catalog(profile: Optional[str] = None):
 
     entries = []
     try:
+        from hermes_cli.mcp_config import _oauth_tokens_present
+
         with _profile_scope(profile):
             catalog_entries = list(mcp_catalog.list_catalog())
-            installed_state = {
-                e.name: (mcp_catalog.is_installed(e.name), mcp_catalog.is_enabled(e.name))
-                for e in catalog_entries
-            }
+            installed_state = {}
+            for catalog_entry in catalog_entries:
+                installed = mcp_catalog.is_installed(catalog_entry.name)
+                installed_state[catalog_entry.name] = {
+                    "installed": installed,
+                    "enabled": mcp_catalog.is_enabled(catalog_entry.name),
+                    # A token is deliberately a one-bit status only; never
+                    # expose token material or token metadata to the client.
+                    "authenticated": (
+                        _oauth_tokens_present(catalog_entry.name)
+                        if catalog_entry.auth.type == "oauth" and installed
+                        else None
+                    ),
+                }
         for entry in catalog_entries:
             auth = entry.auth
             transport = entry.transport
@@ -393,8 +406,9 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                 else None,
                 "post_install": entry.post_install or "",
                 "needs_install": entry.install is not None,
-                "installed": installed_state.get(entry.name, (False, False))[0],
-                "enabled": installed_state.get(entry.name, (False, False))[1],
+                "installed": installed_state.get(entry.name, {}).get("installed", False),
+                "enabled": installed_state.get(entry.name, {}).get("enabled", False),
+                "authenticated": installed_state.get(entry.name, {}).get("authenticated"),
             })
     except HTTPException:
         # Unknown/invalid profile → 404, not a silently-empty catalog.

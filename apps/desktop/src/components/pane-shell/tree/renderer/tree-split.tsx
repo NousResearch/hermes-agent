@@ -127,10 +127,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
   const trackCtx: TrackContext = { paneFor, paneGone, overrides }
 
-  // Chrome-toggle collapse: a subtree whose every pane is gone renders
-  // display:none (content stays MOUNTED — toggling back is instant), and its
-  // siblings absorb the space. Narrow-collapse UNMOUNTS instead, so the edge
-  // overlay owns the single live instance of the pane's content.
+  // Chrome-toggle collapse: a subtree whose every pane is gone contracts to zero.
+  // Content stays mounted while the flex track animates, so its siblings
+  // absorb space continuously. Narrow collapse still hands off to the edge
+  // overlay, which owns the single live instance of the pane's content.
   // EMPTY zones only exist in editor-authored trees (normalize prunes them on
   // every structural op) — they take space in edit mode as drop targets.
   const isEmptyZone = (child: LayoutNode) => child.type === 'group' && child.panes.length === 0
@@ -562,11 +562,18 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
         return (
           <div
-            className="relative flex min-h-0 min-w-0"
+            aria-hidden={collapsed || undefined}
+            className={cn(
+              'relative flex min-h-0 min-w-0 overflow-hidden transition-[flex-basis,flex-grow,opacity] duration-250 ease-[cubic-bezier(0.16,1,0.3,1)]',
+              collapsed && 'pointer-events-none'
+            )}
+            data-collapsed={collapsed || undefined}
+            data-tree-track={child.id}
+            inert={collapsed}
             key={child.id}
             style={
               collapsed
-                ? { display: 'none' }
+                ? { flex: '0 0 0px', minHeight: 0, minWidth: 0, opacity: 0 }
                 : minimized
                   ? { flex: '0 0 auto' }
                   : {

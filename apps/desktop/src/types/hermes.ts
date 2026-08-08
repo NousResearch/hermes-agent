@@ -1363,6 +1363,8 @@ export interface McpCatalogEntry {
   needs_install: boolean
   installed: boolean
   enabled: boolean
+  /** OAuth credential persisted for this profile; null when the integration does not use OAuth. */
+  authenticated: boolean | null
 }
 
 export interface McpCatalogResponse {

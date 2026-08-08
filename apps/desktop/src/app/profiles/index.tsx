@@ -238,7 +238,7 @@ function ProfileGlyph({ color, isDefault, name }: { color: null | string; isDefa
   return (
     <span
       aria-hidden="true"
-      className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
+      className="grid size-4 shrink-0 place-items-center rounded-[var(--radius-sm)] text-[0.5rem] font-semibold uppercase leading-none"
       style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
     >
       {initial}

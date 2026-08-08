@@ -12,10 +12,12 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $currentUsage,
   $messages,
   $selectedStoredSessionId
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import type { UsageStats } from '@/types/hermes'
 
 import { lastVisibleMessageIsUser } from './thread-loading'
 
@@ -53,6 +55,7 @@ export interface SessionView {
   $provider: ReadableAtom<string>
   $fast: ReadableAtom<boolean>
   $reasoningEffort: ReadableAtom<string>
+  $usage: ReadableAtom<UsageStats | null>
 }
 
 /** The active session's own slice, or `undefined` while it's a draft. */
@@ -76,6 +79,10 @@ function primaryField<T>(select: (state: ClientSessionState) => T, $draft: Reada
 
 const $primaryMessages = primaryField<ChatMessage[]>(state => state.messages, $messages)
 
+const $primaryUsage: ReadableAtom<UsageStats | null> = computed([$primaryState, $currentUsage], (state, usage) =>
+  state ? state.usage : usage
+)
+
 export const PRIMARY_SESSION_VIEW: SessionView = {
   kind: 'primary',
   $awaitingResponse: primaryField<boolean>(state => state.awaitingResponse, $awaitingResponse),
@@ -89,7 +96,8 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $provider: primaryField<string>(state => state.provider, $currentProvider),
   $reasoningEffort: primaryField<string>(state => state.reasoningEffort, $currentReasoningEffort),
   $runtimeId: $activeSessionId,
-  $storedId: $selectedStoredSessionId
+  $storedId: $selectedStoredSessionId,
+  $usage: $primaryUsage
 }
 
 const SessionViewContext = createContext<SessionView>(PRIMARY_SESSION_VIEW)

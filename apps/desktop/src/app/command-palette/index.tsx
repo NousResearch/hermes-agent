@@ -17,7 +17,7 @@ import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { KbdCombo } from '@/components/ui/kbd'
-import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
+import { listAllProfileSessions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -37,7 +37,6 @@ import {
   type IconComponent,
   Info,
   KeyRound,
-  Layers3,
   MessageCircle,
   Monitor,
   Moon,
@@ -603,11 +602,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // exists while the palette is open, so the queries are inherently lazy — no
   // `enabled` gate needed. react-query handles caching/dedup/staleness, so a
   // reopen paints from cache and revalidates in the background.
-  const configQuery = useQuery({
-    queryKey: ['command-palette', 'config'],
-    queryFn: getHermesConfigRecord
-  })
-
   const sessionsQuery = useQuery({
     queryKey: ['command-palette', 'sessions'],
     queryFn: () => listAllProfileSessions(200, 1, 'exclude')
@@ -617,14 +611,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     queryKey: ['command-palette', 'archived'],
     queryFn: () => listAllProfileSessions(200, 0, 'only')
   })
-
-  const mcpServers = useMemo(() => {
-    const raw = configQuery.data?.mcp_servers
-
-    return raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? Object.keys(raw as Record<string, unknown>).sort()
-      : []
-  }, [configQuery.data])
 
   const sessions = useMemo(() => (sessionsQuery.data?.sessions ?? []).map(toSessionEntry), [sessionsQuery.data])
   const archivedSessions = useMemo(() => (archivedQuery.data?.sessions ?? []).map(toSessionEntry), [archivedQuery.data])
@@ -780,7 +766,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             action: 'nav.skills',
             icon: Wrench,
             id: 'nav-skills',
-            keywords: ['skills', 'tools', 'toolsets', 'mcp', 'capabilities'],
+            keywords: ['skills', 'tools', 'toolsets', 'capabilities'],
             label: cc.nav.skills.title,
             run: go(SKILLS_ROUTE)
           },
@@ -997,9 +983,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       })
     }
 
-    // Deep-link straight to a Capabilities sub-tab. The root "Go to" entry only
-    // lands on the top-level Skills view; typing "mcp"/"tools"/"skills" should
-    // jump to the exact tab (matches the "not just the top lvl" ask).
+    // Deep-link straight to an Installed category. The root "Go to" entry only
+    // lands on Capabilities; typing a specific kind should open its section.
     const capLabel = t.commandCenter.nav.skills.title
 
     result.push({
@@ -1010,21 +995,28 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           id: 'cap-skills',
           keywords: ['skills', 'capabilities'],
           label: `${capLabel}: ${t.skills.tabSkills}`,
-          run: go(`${SKILLS_ROUTE}?tab=skills`)
+          run: go(`${SKILLS_ROUTE}?tab=installed&installed=skills`)
         },
         {
           icon: SlidersHorizontal,
           id: 'cap-toolsets',
           keywords: ['tools', 'toolsets', 'capabilities'],
           label: `${capLabel}: ${t.skills.tabToolsets}`,
-          run: go(`${SKILLS_ROUTE}?tab=toolsets`)
+          run: go(`${SKILLS_ROUTE}?tab=installed&installed=tools`)
         },
         {
-          icon: Layers3,
+          icon: Package,
           id: 'cap-mcp',
-          keywords: ['mcp', 'servers', 'tools', 'capabilities', 'model context protocol'],
+          keywords: ['mcp', 'servers', 'integrations', 'model context protocol', 'capabilities'],
           label: `${capLabel}: ${t.skills.tabMcp}`,
-          run: go(`${SKILLS_ROUTE}?tab=mcp`)
+          run: go(`${SKILLS_ROUTE}?tab=installed&installed=mcp`)
+        },
+        {
+          icon: Package,
+          id: 'cap-hub',
+          keywords: ['hub', 'skills', 'plugins', 'integrations', 'extensions', 'model context protocol'],
+          label: capLabel + ': ' + t.skills.tabHub,
+          run: go(SKILLS_ROUTE + '?tab=hub')
         }
       ]
     })
@@ -1096,19 +1088,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
     result.push({ heading: t.commandCenter.settingsFields, items: fieldItems })
 
-    if (mcpServers.length > 0) {
-      result.push({
-        heading: t.commandCenter.mcpServers,
-        items: mcpServers.map(name => ({
-          icon: Wrench,
-          id: `mcp-${name}`,
-          keywords: ['mcp', 'server', 'tool'],
-          label: name,
-          run: go(`${SKILLS_ROUTE}?tab=mcp&server=${encodeURIComponent(name)}`)
-        }))
-      })
-    }
-
     if (archivedSessions.length > 0) {
       result.push({
         heading: t.commandCenter.archivedChats,
@@ -1135,7 +1114,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     configFieldLabel,
     go,
     goSession,
-    mcpServers,
     mode,
     resolvedMode,
     search,

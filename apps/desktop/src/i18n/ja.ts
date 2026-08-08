@@ -1016,6 +1016,8 @@ export const ja = defineLocale({
   },
 
   skills: {
+    title: '機能',
+    description: 'スキルとツール',
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
     tabMcp: 'MCP',
@@ -1854,6 +1856,12 @@ export const ja = defineLocale({
     wakeWordListening: phrase => `ウェイクワード:「${phrase}」— 待機中`,
     wakeWordOff: phrase => `ウェイクワード:「${phrase}」— オフ`,
     wakeWordPausedVoice: phrase => `ウェイクワード:「${phrase}」— 音声チャット中は一時停止`,
+    contextRemaining: tokens => `残り${tokens}`,
+    contextRemainingDetail: (remaining, total) => `${total}トークン中、残り${remaining}`,
+    contextWindow: 'コンテキストウィンドウ',
+    contextWindowFull: percent => `${percent}% 使用中`,
+    contextWindowUnavailable: 'コンテキストウィンドウのデータはまだ利用できません。',
+    contextWindowUsage: (used, total) => `${used} / ${total} トークン使用中`,
     lookupLoading: '検索中…',
     lookupNoMatches: '一致なし。',
     lookupTry: '試す',
@@ -2291,7 +2299,7 @@ export const ja = defineLocale({
       manualDescription: '承認が必要な操作の前に確認します',
       smart: 'スマート',
       smartDescription: '必要な場合にのみ確認します',
-      off: 'オフ',
+      off: 'フルアクセス',
       offDescription: '承認プロンプトなしで実行します'
     },
     statusbar: {
@@ -2536,6 +2544,8 @@ export const ja = defineLocale({
   assistant: {
     thread: {
       loadingSession: 'セッションを読み込み中',
+      conversationHistory: '会話履歴',
+      browseConversationHistory: '会話履歴を表示',
       showEarlier: '以前のメッセージを表示',
       loadingResponse: 'Hermes が応答を読み込み中',
       resumeWhenBackgroundDone: count =>

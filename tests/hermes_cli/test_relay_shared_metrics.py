@@ -1423,9 +1423,11 @@ def test_concurrent_model_call_updates_are_transactional(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
     SharedMetricsStore(database_path, outbox_directory)
+    ready = threading.Barrier(2)
 
     def record_calls(count: int) -> None:
         store = SharedMetricsStore(database_path, outbox_directory)
+        ready.wait(timeout=5)
         for _ in range(count):
             store.record_model_call(_dimensions(), _resource())
 

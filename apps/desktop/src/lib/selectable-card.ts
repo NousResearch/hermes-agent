@@ -21,11 +21,11 @@ export interface SelectableCardState {
  */
 export function selectableCardClass({ active, prominent }: SelectableCardState): string {
   return cn(
-    'rounded-lg border transition-colors',
+    'rounded-[var(--radius-md)] border transition-[background-color,border-color,box-shadow,color,transform] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:-translate-y-px',
     active
-      ? 'border-primary bg-primary/[0.06] ring-2 ring-primary/20'
+      ? 'border-primary bg-primary/[0.06] text-foreground shadow-sm ring-2 ring-primary/20'
       : prominent
         ? 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) hover:bg-(--chrome-action-hover)'
-        : 'border-transparent bg-transparent text-(--ui-text-tertiary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-bg-quinary)'
+        : 'border-transparent bg-transparent text-(--ui-text-secondary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-bg-quinary)'
   )
 }

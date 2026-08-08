@@ -31,7 +31,7 @@ function Input({ className, containerClassName, prefix, suffix, size, type, ...p
         // glow) and the input goes transparent so the whole thing reads as one
         // box; otherwise the input carries the chrome itself.
         grouped
-          ? 'min-w-0 flex-1 border-0 bg-transparent p-0 text-xs leading-4 text-foreground outline-none placeholder:text-muted-foreground'
+          ? 'min-w-0 flex-1 border-0 bg-transparent p-0 text-[inherit] leading-4 text-foreground outline-none placeholder:text-muted-foreground'
           : controlVariants({ size }),
         'selection:bg-primary selection:text-primary-foreground file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-xs file:font-medium file:text-foreground',
         className

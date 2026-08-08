@@ -28,11 +28,20 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
+import { SECTIONS } from './constants'
 import { enumOptionsFor, getNested, isExternalMemoryProvider, sectionFieldEntries, setNested } from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
-import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import {
+  EmptyState,
+  ListRow,
+  SettingsContent,
+  SettingsGroup,
+  SettingsPageHeader,
+  SettingsSkeleton,
+  ToggleRow
+} from './primitives'
 import { QuickEntrySettings } from './quick-entry-settings'
 
 // On the Voice page, only surface the sub-fields of the *selected* TTS/STT
@@ -295,8 +304,14 @@ export function ConfigSettings({
 
   const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
 
+  const sectionTitle =
+    t.settings.sections[activeSectionId] ??
+    SECTIONS.find(section => section.id === activeSectionId)?.label ??
+    activeSectionId
+
   return (
     <SettingsContent>
+      {activeSectionId !== 'model' && <SettingsPageHeader title={sectionTitle} />}
       {activeSectionId === 'model' && (
         <div className="mb-6">
           <ModelSettings onMainModelChanged={onMainModelChanged} />
@@ -306,7 +321,7 @@ export function ConfigSettings({
           keeping the machine awake and the global Quick Entry chord are both
           power-user, this-computer-only knobs. */}
       {activeSectionId === 'advanced' && (
-        <>
+        <SettingsGroup className="mb-5">
           <ToggleRow
             checked={keepAwake}
             description={c.keepAwakeDesc}
@@ -314,7 +329,7 @@ export function ConfigSettings({
             onChange={setKeepAwake}
           />
           <QuickEntrySettings />
-        </>
+        </SettingsGroup>
       )}
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
           where image-attachment behavior already lives, so this sits above the
@@ -323,7 +338,7 @@ export function ConfigSettings({
       {visibleFields.length === 0 && activeSectionId !== 'chat' ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : (
-        <div className="grid gap-1">
+        <SettingsGroup>
           {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               <ConfigField
@@ -348,7 +363,7 @@ export function ConfigSettings({
               ) : null}
             </div>
           ))}
-        </div>
+        </SettingsGroup>
       )}
       <input
         accept=".json,application/json"
@@ -401,32 +416,34 @@ function AttachmentSizeSetting() {
   }
 
   return (
-    <ListRow
-      action={
-        <div className="flex items-center gap-2">
-          <Input
-            aria-label={c.attachmentSizeLabel}
-            className="w-20"
-            inputMode="numeric"
-            max={DATA_URL_READ_MAX_MAX_MB}
-            min={DATA_URL_READ_MIN_MAX_MB}
-            onBlur={commit}
-            onChange={event => setDraft(event.target.value)}
-            onKeyDown={event => {
-              if (event.key === 'Enter') {
-                event.currentTarget.blur()
-              }
-            }}
-            type="number"
-            value={draft}
-          />
-          <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            {c.attachmentSizeUnit}
-          </span>
-        </div>
-      }
-      description={c.attachmentSizeDesc}
-      title={c.attachmentSizeTitle}
-    />
+    <SettingsGroup className="mb-5">
+      <ListRow
+        action={
+          <div className="flex items-center gap-2">
+            <Input
+              aria-label={c.attachmentSizeLabel}
+              className="w-20"
+              inputMode="numeric"
+              max={DATA_URL_READ_MAX_MAX_MB}
+              min={DATA_URL_READ_MIN_MAX_MB}
+              onBlur={commit}
+              onChange={event => setDraft(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  event.currentTarget.blur()
+                }
+              }}
+              type="number"
+              value={draft}
+            />
+            <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              {c.attachmentSizeUnit}
+            </span>
+          </div>
+        }
+        description={c.attachmentSizeDesc}
+        title={c.attachmentSizeTitle}
+      />
+    </SettingsGroup>
   )
 }

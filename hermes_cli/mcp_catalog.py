@@ -797,7 +797,7 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
     print(color(
         f"  ✓ Installed '{entry.name}' "
         f"({'enabled' if enable else 'disabled'}). "
-        f"Start a new Hermes session to load its tools.",
+        f"Hermes will start it automatically in your next session.",
         Colors.GREEN,
     ))
     if entry.post_install:

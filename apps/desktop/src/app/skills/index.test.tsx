@@ -15,6 +15,7 @@ const setToolsetEnabled = vi.fn()
 const getToolsetConfig = vi.fn()
 const selectToolsetProvider = vi.fn()
 const getUsageAnalytics = vi.fn()
+const getMcpCatalog = vi.fn()
 
 // Partial mock: keep the real module (SkillsView pulls in @/store/profile,
 // whose import-time subscription calls setApiRequestProfile) and stub only the
@@ -27,7 +28,8 @@ vi.mock('@/hermes', async importOriginal => ({
   setToolsetEnabled: (name: string, enabled: boolean) => setToolsetEnabled(name, enabled),
   getToolsetConfig: (name: string) => getToolsetConfig(name),
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
-  getUsageAnalytics: (days: number) => getUsageAnalytics(days)
+  getUsageAnalytics: (days: number) => getUsageAnalytics(days),
+  getMcpCatalog: () => getMcpCatalog()
 }))
 
 // Notifications hit nanostores/timers we don't care about here.
@@ -58,14 +60,14 @@ function toolset(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function renderSkills() {
+async function renderSkills(initialRoute = '/skills?tab=installed&installed=tools') {
   const { SkillsView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
       // SkillsView reads skills/toolsets via useQuery, so it needs a provider.
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+        <MemoryRouter initialEntries={[initialRoute]}>
           <SkillsView />
         </MemoryRouter>
       </QueryClientProvider>
@@ -81,6 +83,7 @@ beforeEach(() => {
   setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })
   getToolsetConfig.mockResolvedValue({ has_category: true, active_provider: null, providers: [] })
   getUsageAnalytics.mockResolvedValue({ tools: [] })
+  getMcpCatalog.mockResolvedValue({ diagnostics: [], entries: [] })
 })
 
 afterEach(() => {
@@ -91,6 +94,67 @@ afterEach(() => {
 })
 
 describe('SkillsView toolset management', () => {
+  it('redirects a retired MCP deep link to Installed MCP', async () => {
+    await renderSkills('/skills?tab=mcp&server=linear')
+
+    await waitFor(() =>
+      expect(navigateSpy).toHaveBeenCalledWith('/skills?tab=installed&installed=mcp&server=linear', { replace: true })
+    )
+  })
+
+  it('shows installed MCP servers as a third Installed category', async () => {
+    getMcpCatalog.mockResolvedValue({
+      diagnostics: [],
+      entries: [
+        {
+          args: [],
+          authenticated: null,
+          auth_type: 'none',
+          bootstrap: [],
+          command: null,
+          default_enabled: null,
+          description: 'Work with Notion pages.',
+          enabled: true,
+          install_ref: null,
+          install_url: null,
+          installed: true,
+          name: 'notion',
+          needs_install: false,
+          post_install: '',
+          required_env: [],
+          source: 'https://notion.so',
+          transport: 'http',
+          url: 'https://mcp.notion.com'
+        },
+        {
+          args: [],
+          authenticated: null,
+          auth_type: 'none',
+          bootstrap: [],
+          command: null,
+          default_enabled: null,
+          description: 'Work with Linear issues.',
+          enabled: false,
+          install_ref: null,
+          install_url: null,
+          installed: false,
+          name: 'linear',
+          needs_install: false,
+          post_install: '',
+          required_env: [],
+          source: 'https://linear.app',
+          transport: 'http',
+          url: 'https://mcp.linear.app'
+        }
+      ]
+    })
+
+    await renderSkills('/skills?tab=installed&installed=mcp')
+
+    expect(await screen.findByRole('button', { name: 'Ready Notion' })).toBeTruthy()
+    expect(screen.queryByText('Linear')).toBeNull()
+  })
+
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
 

@@ -26,7 +26,7 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 
 import { MODE_OPTIONS } from './constants'
 import { PetSettings } from './pet-settings'
-import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { ListRow, SectionHeading, SettingsContent, SettingsGroup } from './primitives'
 import { TerminalFontSetting } from './terminal-font-setting'
 
 function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) {
@@ -309,7 +309,7 @@ export function AppearanceSettings() {
           {a.intro}
         </p>
 
-        <div className="mt-2">
+        <SettingsGroup className="mt-4">
           <ListRow
             action={<LanguageSwitcher />}
             description={isSavingLocale ? t.language.saving : t.language.description}
@@ -538,7 +538,7 @@ export function AppearanceSettings() {
             description={a.embedsDesc}
             title={a.embedsTitle}
           />
-        </div>
+        </SettingsGroup>
       </div>
 
       <div className="mt-6">

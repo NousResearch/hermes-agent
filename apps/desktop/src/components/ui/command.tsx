@@ -9,7 +9,7 @@ function Command({ className, ...props }: React.ComponentProps<typeof CommandPri
   return (
     <CommandPrimitive
       className={cn(
-        'flex h-full w-full flex-col overflow-hidden rounded-md bg-popover text-popover-foreground',
+        'flex h-full w-full flex-col overflow-hidden rounded-[var(--radius-md)] bg-popover text-popover-foreground',
         className
       )}
       data-slot="command"
@@ -29,7 +29,7 @@ function CommandInput({ className, right, ...props }: CommandInputProps) {
       <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
       <CommandPrimitive.Input
         className={cn(
-          'flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
+          'flex h-10 w-full rounded-[var(--radius-sm)] bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
           className
         )}
         data-slot="command-input"
@@ -93,7 +93,7 @@ function CommandItem({ className, ...props }: React.ComponentProps<typeof Comman
   return (
     <CommandPrimitive.Item
       className={cn(
-        'relative flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none data-[disabled=true]:pointer-events-none data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground data-[disabled=true]:opacity-50',
+        'relative flex cursor-default select-none items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-[0.8125rem] outline-none transition-[background-color,color] duration-150 data-[disabled=true]:pointer-events-none data-[selected=true]:bg-(--ui-control-active-background) data-[selected=true]:text-foreground data-[disabled=true]:opacity-50',
         className
       )}
       data-slot="command-item"

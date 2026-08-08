@@ -402,11 +402,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   return (
     <PageSearchShell
       {...props}
+      description={t.commandCenter.nav.messaging.detail}
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
       searchHints={platforms?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
       searchPlaceholder={m.search}
       searchValue={query}
+      title={t.commandCenter.nav.messaging.title}
     >
       {!platforms ? (
         <PageLoader label={m.loading} />
@@ -497,15 +499,17 @@ function PlatformRow({
   return (
     <button
       className={cn(
-        'row-hover flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:text-foreground',
-        active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
+        'row-hover flex w-full items-center gap-2 rounded-[var(--radius-sm)] border border-transparent px-2.5 py-2 text-left transition-[background-color,border-color,box-shadow,color,transform] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:border-(--ui-stroke-quaternary) hover:bg-(--chrome-action-hover) hover:text-foreground',
+        active
+          ? 'border-(--ui-stroke-secondary) bg-(--ui-row-active-background) text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.04)]'
+          : 'text-(--ui-text-secondary)'
       )}
       onClick={onSelect}
       type="button"
     >
       <PlatformAvatar platformId={platform.id} platformName={platform.name} />
       <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
-        <span className="truncate text-[length:var(--conversation-text-font-size)] font-normal">{platform.name}</span>
+        <span className="truncate text-[0.8125rem] font-medium">{platform.name}</span>
         <span className="flex shrink-0 items-center gap-1.5">
           {/* Someone is waiting to be let in — the only way this page tells
               you so before you open the platform. */}

@@ -372,7 +372,7 @@ export function ZoneEditor() {
 
           return (
             <div
-              className="absolute flex items-center justify-center rounded-[3px] border transition-colors"
+              className="absolute flex items-center justify-center rounded-[var(--radius-sm)] border transition-colors duration-200"
               key={zone.index}
               style={{
                 left: pct(zone.left),

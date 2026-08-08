@@ -16,7 +16,7 @@ import { $paneHeightOverride, $paneState, setPaneHeightOverride } from '@/store/
 export function ToolChip({ children, title }: { children: ReactNode; title?: string }) {
   return (
     <span
-      className="rounded-md bg-(--ui-bg-quinary) px-1.5 py-0.5 font-mono text-[0.65rem] text-(--ui-text-tertiary)"
+      className="rounded-[var(--radius-sm)] bg-(--ui-bg-quinary) px-1.5 py-0.5 font-mono text-[0.65rem] text-(--ui-text-tertiary)"
       title={title}
     >
       {children}
@@ -24,10 +24,10 @@ export function ToolChip({ children, title }: { children: ReactNode; title?: str
   )
 }
 
-// Master–detail page scaffolding (14rem rail, p-2, centered max-w-2xl detail):
-// dense uniform rows on the left, roomy inspector on the right. Shared by the
-// Capabilities and Messaging pages — pages bring their own row/detail content
-// (CapRow here is the toggle-row flavor; Messaging has its own avatar rows).
+// Master–detail page scaffolding: one calm, bordered work surface with a
+// compact rail and a roomy inspector. Shared by Capabilities and Messaging;
+// pages bring their own row/detail content (CapRow here is the toggle-row
+// flavor; Messaging has its own avatar rows).
 
 // `pane` docks a full-bleed work surface (editor, log viewer, terminal) below
 // the whole master–detail grid — the app's bottom-pane pattern, page-local.
@@ -49,23 +49,29 @@ export function MasterDetail({
   split?: 'rail' | 'wide'
 }) {
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col px-[clamp(1.25rem,4vw,4rem)] py-5">
       <div
         className={cn(
-          'grid min-h-0 flex-1 grid-cols-1',
-          split === 'wide' ? MASTER_DETAIL_WIDE_COLS : 'sm:grid-cols-[14rem_minmax(0,1fr)]'
+          'flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--radius-xl)] border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_72%,transparent)] shadow-[0_1px_2px_rgb(0_0_0/0.04)]'
         )}
       >
-        {children}
+        <div
+          className={cn(
+            'grid min-h-0 flex-1 grid-cols-1',
+            split === 'wide' ? MASTER_DETAIL_WIDE_COLS : 'sm:grid-cols-[14rem_minmax(0,1fr)]'
+          )}
+        >
+          {children}
+        </div>
+        {pane}
       </div>
-      {pane}
     </div>
   )
 }
 
 export function ListColumn({ children, header }: { children: ReactNode; header?: ReactNode }) {
   return (
-    <aside className="flex min-h-0 flex-col p-2">
+    <aside className="flex min-h-0 flex-col border-b border-(--ui-stroke-quaternary) bg-[color-mix(in_srgb,var(--ui-bg-tertiary)_36%,transparent)] p-2.5 sm:border-b-0 sm:border-r sm:p-3">
       {header}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">{children}</div>
     </aside>
@@ -85,17 +91,17 @@ export function DetailColumn({
   footer?: ReactNode
 }) {
   return (
-    <main className="flex min-h-0 flex-col overflow-hidden">
+    <main className="flex min-h-0 flex-col overflow-hidden bg-[color-mix(in_srgb,var(--ui-bg-elevated)_48%,transparent)]">
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
-        <div className="mx-auto max-w-2xl space-y-5 px-5 py-4">{children}</div>
+        <div className="mx-auto w-full max-w-3xl space-y-7 px-5 py-6 sm:px-7">{children}</div>
       </div>
       {footer && (
-        <div className="mx-auto w-full max-w-2xl shrink-0 px-5 pb-3 pt-1.5 text-right text-[0.65rem] text-muted-foreground/50">
+        <div className="mx-auto w-full max-w-2xl shrink-0 px-5 pb-3 pt-2 text-right text-[0.65rem] text-muted-foreground/50">
           {footer}
         </div>
       )}
       {actionBar && (
-        <footer className="shrink-0 bg-(--ui-chat-surface-background) px-5 py-2.5">
+        <footer className="shrink-0 border-t border-(--ui-stroke-quaternary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_86%,transparent)] px-5 py-3">
           <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">{actionBar}</div>
         </footer>
       )}
@@ -119,7 +125,7 @@ const DETAIL_PANE_COLLAPSED_PX = 4
 // isn't size-merge-aware, so Button's icon size would leak and blow it up.
 // Compose extra state (data-[state=open], hover:text-destructive) with cn().
 export const ICON_BUTTON =
-  'size-5 cursor-pointer rounded-[4px] text-muted-foreground/70 hover:bg-(--ui-control-active-background) hover:text-foreground'
+  'size-5 cursor-pointer rounded-[var(--radius-sm)] text-muted-foreground/70 transition-[background-color,color,transform] duration-150 hover:bg-(--ui-control-active-background) hover:text-foreground active:scale-95'
 
 export function DetailPane({
   actions,
@@ -225,10 +231,30 @@ export function DetailPane({
 
 // One-line control strip pinned above the list: sort/primary action on the
 // left, overflow kebab on the right.
-export function ListStrip({ left, right }: { left?: ReactNode; right?: ReactNode }) {
+export function ListStrip({
+  label,
+  left,
+  meta,
+  right
+}: {
+  label?: ReactNode
+  left?: ReactNode
+  meta?: ReactNode
+  right?: ReactNode
+}) {
   return (
-    <div className="mb-1 flex h-6 shrink-0 items-center justify-between gap-2 pl-2 pr-1">
-      <div className="flex min-w-0 items-center gap-1.5">{left}</div>
+    <div className="mb-2 flex h-7 shrink-0 items-center justify-between gap-2 px-1">
+      <div className="flex min-w-0 items-center gap-1.5">
+        {label && (
+          <span className="truncate text-[0.72rem] font-semibold tracking-[0.01em] text-foreground">{label}</span>
+        )}
+        {meta !== undefined && (
+          <span className="rounded-[var(--radius-sm)] bg-(--ui-bg-quinary) px-1.5 py-0.5 text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">
+            {meta}
+          </span>
+        )}
+        {left}
+      </div>
       <div className="flex shrink-0 items-center gap-1.5">{right}</div>
     </div>
   )
@@ -317,7 +343,7 @@ export function ListStripButton({
   return (
     <button
       className={cn(
-        'cursor-pointer text-[0.68rem] font-medium transition-colors disabled:opacity-40',
+        'cursor-pointer text-[0.7rem] font-medium transition-colors disabled:opacity-40',
         active ? 'text-foreground' : 'text-muted-foreground/70 hover:text-foreground'
       )}
       disabled={disabled}
@@ -361,33 +387,35 @@ export function CapRow({
   return (
     <div
       className={cn(
-        'group/row row-hover flex w-full shrink-0 items-center rounded-md hover:text-foreground',
-        subtitle ? 'h-11' : 'h-8',
-        active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
+        'group/row row-hover mb-1 flex w-full shrink-0 items-center rounded-[var(--radius-sm)] border border-transparent transition-[background-color,border-color,box-shadow,color,transform] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:border-(--ui-stroke-quaternary) hover:bg-(--chrome-action-hover) hover:text-foreground',
+        subtitle ? 'min-h-12' : 'h-9',
+        active
+          ? 'border-(--ui-stroke-secondary) bg-(--ui-row-active-background) text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.04)]'
+          : 'text-(--ui-text-secondary)'
       )}
       id={rowId}
     >
       <RowButton
-        className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md pl-2 pr-1.5 text-left"
+        className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] pl-2.5 pr-2 text-left"
         onClick={onSelect}
       >
         <span className="min-w-0 flex-1">
           <span
             className={cn(
-              'block truncate text-[0.78rem]',
+              'block truncate text-[0.8125rem]',
               enabled ? 'font-medium text-foreground/85' : 'font-normal text-muted-foreground/60'
             )}
           >
             {title}
           </span>
           {subtitle != null && (
-            <span className="flex min-w-0 items-center gap-1 text-[0.62rem] text-muted-foreground/50">
+            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[0.68rem] text-muted-foreground/65">
               {typeof subtitle === 'string' ? <span className="truncate">{subtitle}</span> : subtitle}
             </span>
           )}
         </span>
         {meta != null && (
-          <span className="shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-px text-[0.6rem] tabular-nums leading-3.5 text-(--ui-text-tertiary)">
+          <span className="shrink-0 rounded-[var(--radius-sm)] bg-(--ui-bg-quinary) px-1.5 py-0.5 text-[0.62rem] tabular-nums leading-3.5 text-(--ui-text-tertiary)">
             {meta}
           </span>
         )}
@@ -395,7 +423,7 @@ export function CapRow({
       <Switch
         aria-label={toggleLabel}
         checked={enabled}
-        className={cn('mr-1.5 shrink-0 cursor-pointer', !enabled && 'opacity-60')}
+        className={cn('mr-2 shrink-0 cursor-pointer', !enabled && 'opacity-60')}
         disabled={busy}
         onCheckedChange={onToggle}
         size="xs"

@@ -13,9 +13,8 @@ import { OVERLAY_TOP_CLEARANCE, OverlayView } from './overlay-view'
 
 // Overlay "panel" primitive — the centered, capped card + framed chrome lifted
 // straight from the trace / agents overlay so every non-settings overlay (cron,
-// profiles, …) speaks the same visual language: tight type scale, muted
-// opacities, NO container borders (rows separate via the row-hover/active bg
-// vars + gaps, exactly like the trace waterfall labels).
+// profiles, …) speaks the same visual language: a clear title hierarchy,
+// compact readable rows, and quiet rounded groups.
 //
 // Compose it as:
 //   <Panel onClose>
@@ -71,10 +70,10 @@ export function PanelHeader({ actions, subtitle, title }: PanelHeaderProps) {
     // layout space, so header actions would otherwise slide right up against it.
     // Reserve clearance (button footprint from the card edge + a small gap) on
     // the right whenever actions are present.
-    <header className={cn('mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}>
+    <header className={cn('mb-4 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}>
       <div className="min-w-0">
-        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-        {subtitle ? <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p> : null}
+        <h2 className="text-[1.375rem] leading-tight font-semibold tracking-tight text-foreground">{title}</h2>
+        {subtitle ? <p className="mt-1 truncate text-[0.8125rem] text-(--ui-text-tertiary)">{subtitle}</p> : null}
       </div>
       {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
     </header>
@@ -88,7 +87,7 @@ export function PanelBody({ children, className }: { children: ReactNode; classN
         // Side-by-side master/detail on a wide card; once it narrows (same
         // threshold the other overlays collapse at) stack the list above the
         // detail so the detail keeps full width instead of being squished.
-        'flex min-h-0 flex-1 flex-col gap-4 overflow-hidden min-[47.5rem]:flex-row min-[47.5rem]:gap-5',
+        'flex min-h-0 flex-1 flex-col gap-3 overflow-hidden min-[47.5rem]:flex-row min-[47.5rem]:gap-4',
         className
       )}
     >
@@ -110,9 +109,8 @@ interface PanelListProps {
   searchValue?: string
 }
 
-// Left master list. Dense + borderless, like the trace waterfall's label tree:
-// single-line rows that touch, separated from the detail only by the body gap.
-// An optional search field pins to the top, full-bleed, above the scroll.
+// Left master list. An optional search field pins above the scroll, while the
+// rounded group keeps a busy list readable without boxing every individual row.
 export function PanelList({
   children,
   className,
@@ -125,18 +123,26 @@ export function PanelList({
   return (
     // Full-width and height-capped when stacked (narrow); a fixed 13rem rail
     // beside the detail when wide.
-    <div className={cn('flex w-full shrink-0 flex-col max-[47.5rem]:max-h-[40%] min-[47.5rem]:w-52', className)}>
+    <div
+      className={cn(
+        'flex w-full shrink-0 flex-col overflow-hidden rounded-[var(--radius-xl)] border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_72%,transparent)] shadow-[0_1px_2px_rgb(0_0_0/0.04)] max-[47.5rem]:max-h-[40%] min-[47.5rem]:w-56',
+        className
+      )}
+    >
       {onSearchChange ? (
-        <SearchField
-          aria-label={searchLabel ?? searchPlaceholder ?? ''}
-          containerClassName="mb-1 w-full shrink-0"
-          hints={searchHints}
-          onChange={onSearchChange}
-          placeholder={searchPlaceholder ?? ''}
-          value={searchValue ?? ''}
-        />
+        <div className="border-b border-(--ui-stroke-quaternary) p-2.5">
+          <SearchField
+            aria-label={searchLabel ?? searchPlaceholder ?? ''}
+            containerClassName="w-full"
+            hints={searchHints}
+            inputClassName="w-full [field-sizing:auto]"
+            onChange={onSearchChange}
+            placeholder={searchPlaceholder ?? ''}
+            value={searchValue ?? ''}
+          />
+        </div>
       ) : null}
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">{children}</div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain p-1.5">{children}</div>
     </div>
   )
 }
@@ -183,13 +189,15 @@ export function PanelListRow({
   const row = (
     <div
       className={cn(
-        'group/row row-hover relative flex h-7 w-full items-center rounded-md text-[0.78rem] hover:text-foreground',
-        active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
+        'group/row row-hover relative flex min-h-9 w-full items-center rounded-[var(--radius-sm)] border border-transparent text-[0.8125rem] transition-[background-color,border-color,box-shadow,color,transform] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:border-(--ui-stroke-quaternary) hover:bg-(--chrome-action-hover) hover:text-foreground',
+        active
+          ? 'border-(--ui-stroke-secondary) bg-(--ui-row-active-background) text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.04)]'
+          : 'text-(--ui-text-secondary)'
       )}
       data-panel-row={rowKey}
     >
       <RowButton
-        className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-md pl-2 pr-1 text-left"
+        className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-sm)] pl-2.5 pr-1.5 text-left"
         onClick={onSelect}
       >
         {lead ??
@@ -264,7 +272,7 @@ export function PanelRowMenu({ items, label = 'Actions' }: { items: PanelMenuIte
     <ActionsMenu ariaLabel={label} contentClassName="w-40" items={renderPanelMenuItems(items)}>
       <Button
         aria-label={label}
-        className="size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) opacity-0 transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:opacity-100 focus-visible:ring-0 group-hover/row:opacity-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
+        className="size-5 rounded-[var(--radius-sm)] bg-transparent text-(--ui-text-tertiary) opacity-0 transition-[background-color,color,opacity,transform] duration-150 hover:bg-(--ui-control-active-background) hover:text-foreground active:scale-95 focus-visible:opacity-100 focus-visible:ring-0 group-hover/row:opacity-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
         size="icon"
         variant="ghost"
       >
@@ -278,8 +286,13 @@ export function PanelRowMenu({ items, label = 'Actions' }: { items: PanelMenuIte
 // trace inspector), so the content stretches the full available width.
 export function PanelDetail({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn('min-h-0 flex-1 overflow-y-auto overscroll-contain', className)}>
-      <div className="space-y-4 pb-6 pl-1 pr-2">{children}</div>
+    <div
+      className={cn(
+        'min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-[var(--radius-xl)] border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_72%,transparent)] shadow-[0_1px_2px_rgb(0_0_0/0.04)]',
+        className
+      )}
+    >
+      <div className="space-y-5 p-5 sm:p-6">{children}</div>
     </div>
   )
 }
@@ -334,13 +347,13 @@ export function PanelMeta({ className, rows }: { className?: string; rows: Panel
   )
 }
 
-// Monospace content block (job prompt, etc.) — mirrors the inspector's
-// input/output <pre> blocks: subtle bg, no border.
+// Monospace content block (job prompt, etc.) with the same quiet bordered
+// treatment as other supporting content.
 export function PanelBlock({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <pre
       className={cn(
-        'max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-foreground/5 p-2.5 text-[0.68rem] leading-relaxed text-foreground/80',
+        'max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-md)] border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 text-[0.68rem] leading-relaxed text-foreground/80',
         className
       )}
     >
@@ -362,7 +375,7 @@ export function PanelPill({ children, tone = 'muted' }: { children: ReactNode; t
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.62rem] font-medium capitalize',
+        'inline-flex items-center rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[0.62rem] font-medium capitalize',
         PILL_TONE[tone]
       )}
     >

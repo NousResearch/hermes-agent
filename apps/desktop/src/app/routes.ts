@@ -137,9 +137,9 @@ export function isOverlayView(view: AppView): boolean {
 }
 
 /** The pathname of a router target. Every classifier below reasons about a
- *  PATH, but callers navigate to full targets (`/skills?tab=mcp`), and an
+ *  PATH, but callers navigate to full targets (`/skills?tab=toolsets`), and an
  *  unstripped query reaches the session-id parser — `/skills?tab=mcp` reads as
- *  the session `skills?tab=mcp`, so Capabilities classifies as a chat.
+ *  the session `skills?tab=toolsets`, so Capabilities classifies as a chat.
  *  `sessionRoute` percent-encodes ids, so `?`/`#` can only start a query or a
  *  hash. */
 export function routePathname(to: string): string {

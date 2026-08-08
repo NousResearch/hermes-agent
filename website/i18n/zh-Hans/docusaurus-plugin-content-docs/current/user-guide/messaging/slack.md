@@ -294,6 +294,19 @@ platforms:
       # 已在话题中的消息仍在话题中回复。
       reply_in_thread: true
 
+      # 可选的按频道覆盖。"channel" 让顶层消息平铺回复；"thread" 保持
+      # 每条顶层消息一个话题；"project" 让项目内消息平铺，明显偏题的新事项
+      # 自动进入独立话题和会话。真实话题中的回复始终留在话题内。
+      channel_reply_modes:
+        C0123456789: channel
+        C9876543210: thread
+        C0111222333: project
+
+      # project 模式采用保守策略：不确定或模型调用失败时继续留在频道。
+      # “单独开个话题”/“继续留在频道”等明确指令不调用模型，直接生效。
+      project_route_min_confidence: 0.85
+      project_route_timeout: 10
+
       # 同时将话题回复发布到主频道
       # （Slack 的"同时发送到频道"功能）。
       # 仅广播第一条回复的第一个分块。
@@ -319,6 +332,9 @@ platforms:
 |-----|---------|-------------|
 | `platforms.slack.reply_to_mode` | `"first"` | 多部分消息的话题模式：`"off"`、`"first"` 或 `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | 为 `false` 时，频道消息直接回复而非话题。已在话题中的消息仍在话题中回复。 |
+| `platforms.slack.extra.channel_reply_modes` | `{}` | 可选的 Slack 频道 ID 到 `"channel"`、`"thread"` 或 `"project"` 的映射。project 模式会在选择会话前调用辅助主题分类：项目内消息共享频道会话，明显无关的事项以当前消息为根进入新话题；真实话题仍保持独立会话。 |
+| `platforms.slack.extra.project_route_min_confidence` | `0.85` | project 模式自动转入话题所需的最低置信度；低于阈值时留在频道。 |
+| `platforms.slack.extra.project_route_timeout` | `10` | project 主题分类调用的超时秒数；失败时留在频道。可通过 `auxiliary.topic_router` 配置提供商和模型。 |
 | `platforms.slack.extra.reply_broadcast` | `false` | 为 `true` 时，话题回复也会发布到主频道。仅广播第一个分块。 |
 | `platforms.slack.extra.rich_blocks` | `false` | 为 `true` 时，Agent 消息会渲染为 [Block Kit](https://docs.slack.dev/block-kit/) 区块（标题、分隔线、真正的嵌套列表以及原生表格）。始终附带纯文本回退。超出 Slack 限制的表格会回退为对齐的等宽文本。无需重新安装应用——这仅是发送端的改动。 |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | [可继续 cron 任务](../features/cron.md)的投递方式。`"thread"` 为每次投递新建专用话题（默认）；`"in_channel"` 直接平铺投递到频道时间线。使用 `in_channel` 时需搭配 `reply_in_thread: false`（及 `require_mention: false`），纯文本回复即可继续任务。 |

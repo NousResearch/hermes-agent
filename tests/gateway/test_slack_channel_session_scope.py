@@ -162,3 +162,85 @@ class TestThreadReplyAlwaysScopesByThread:
             f"thread reply dropped with reply_in_thread={reply_in_thread}"
         )
         assert captured[0].source.thread_id == "1700000000.000009"
+
+
+class TestChannelReplyModeOverrides:
+    """Per-channel modes override the global default for both session scope
+    and outbound placement without affecting genuine Slack threads."""
+
+    @pytest.mark.asyncio
+    async def test_channel_mode_overrides_global_thread_default(self, adapter):
+        adapter.config.extra.update({
+            "reply_in_thread": True,
+            "channel_reply_modes": {"C_CHAN": "channel"},
+        })
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")
+        ):
+            await adapter._handle_slack_message(
+                _channel_event("<@U_BOT> hello", ts="1700000000.000020")
+            )
+
+        assert captured[0].source.thread_id is None
+        assert adapter._resolve_thread_ts(
+            reply_to="1700000000.000020",
+            metadata={"thread_id": "1700000000.000020"},
+            chat_id="C_CHAN",
+        ) is None
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_overrides_global_channel_default(self, adapter):
+        adapter.config.extra.update({
+            "reply_in_thread": False,
+            "channel_reply_modes": {"C_CHAN": "thread"},
+        })
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")
+        ):
+            await adapter._handle_slack_message(
+                _channel_event("<@U_BOT> hello", ts="1700000000.000021")
+            )
+
+        assert captured[0].source.thread_id == "1700000000.000021"
+        assert adapter._resolve_thread_ts(
+            reply_to="1700000000.000021",
+            metadata={"thread_id": "1700000000.000021"},
+            chat_id="C_CHAN",
+        ) == "1700000000.000021"
+
+    @pytest.mark.asyncio
+    async def test_genuine_thread_survives_channel_mode(self, adapter):
+        adapter.config.extra["channel_reply_modes"] = {"C_CHAN": "channel"}
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")
+        ):
+            await adapter._handle_slack_message(
+                _channel_event(
+                    "<@U_BOT> follow-up",
+                    ts="1700000000.000023",
+                    thread_ts="1700000000.000022",
+                )
+            )
+
+        assert captured[0].source.thread_id == "1700000000.000022"
+        assert adapter._resolve_thread_ts(
+            reply_to="1700000000.000023",
+            metadata={"thread_id": "1700000000.000022"},
+            chat_id="C_CHAN",
+        ) == "1700000000.000022"
+
+    def test_invalid_mode_falls_back_to_global(self, adapter):
+        adapter.config.extra.update({
+            "reply_in_thread": True,
+            "channel_reply_modes": {"C_CHAN": "sideways"},
+        })
+        assert adapter._reply_in_thread_for_channel("C_CHAN") is True

@@ -2386,6 +2386,7 @@ class SessionStore:
         self,
         source: SessionSource,
         force_new: bool = False,
+        fork_from_session_id: Optional[str] = None,
     ) -> SessionEntry:
         """Single-flight session lookup/create per routing key.
 
@@ -2417,7 +2418,11 @@ class SessionStore:
             return slot.result
 
         try:
-            result = self._get_or_create_session_impl(source, force_new=force_new)
+            result = self._get_or_create_session_impl(
+                source,
+                force_new=force_new,
+                fork_from_session_id=fork_from_session_id,
+            )
             slot.result = result
             return result
         except BaseException as exc:
@@ -2432,6 +2437,7 @@ class SessionStore:
         self,
         source: SessionSource,
         force_new: bool = False,
+        fork_from_session_id: Optional[str] = None,
     ) -> SessionEntry:
         """Perform one session routing transition for the single-flight owner.
 
@@ -2490,6 +2496,8 @@ class SessionStore:
 
         db_end_session_id = None
         db_create_kwargs = None
+        db_fork_precreated = False
+        db_fork_session_id = None
         existing_session_id = None
         force_new_observed_entry = None
 
@@ -2663,7 +2671,49 @@ class SessionStore:
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
                 prev_session_id=prev_session_id,
+                metadata=(
+                    {"fork_parent_session_id": fork_from_session_id}
+                    if fork_from_session_id
+                    else {}
+                ),
             )
+            candidate_db_create_kwargs = {
+                "session_id": session_id,
+                "source": source.platform.value,
+                "user_id": source.user_id,
+                "session_key": session_key,
+                "chat_id": source.chat_id,
+                "chat_type": source.chat_type,
+                "thread_id": source.thread_id,
+                "profile_name": source.profile,
+                "parent_session_id": fork_from_session_id,
+                "model_config": (
+                    {"_branched_from": fork_from_session_id}
+                    if fork_from_session_id
+                    else None
+                ),
+            }
+            # Fork durability precedes route publication: child row + active
+            # transcript are one SQLite transaction, so a crash cannot leave a
+            # published mapping to a partially-copied child.
+            if self._db and fork_from_session_id:
+                try:
+                    self._db.fork_session_with_transcript(
+                        **candidate_db_create_kwargs
+                    )
+                    db_fork_precreated = True
+                    db_fork_session_id = session_id
+                except Exception as exc:
+                    logger.warning(
+                        "Session fork failed for %s from %s; falling back to an "
+                        "empty isolated child: %s",
+                        session_id,
+                        fork_from_session_id,
+                        exc,
+                    )
+                    candidate.metadata.pop("fork_parent_session_id", None)
+                    candidate_db_create_kwargs["parent_session_id"] = None
+                    candidate_db_create_kwargs["model_config"] = None
             with self._lock:
                 current = self._entries.get(session_key)
                 may_publish = current is None or (
@@ -2677,17 +2727,8 @@ class SessionStore:
             assert published is not None
             entry = published
             _needs_save = True
-            if entry is candidate:
-                db_create_kwargs = {
-                    "session_id": session_id,
-                    "source": source.platform.value,
-                    "user_id": source.user_id,
-                    "session_key": session_key,
-                    "chat_id": source.chat_id,
-                    "chat_type": source.chat_type,
-                    "thread_id": source.thread_id,
-                    "profile_name": source.profile,
-                }
+            if entry is candidate and not db_fork_precreated:
+                db_create_kwargs = candidate_db_create_kwargs
 
         if _needs_save:
             if _metadata_only_save:
@@ -2715,7 +2756,17 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
-        if self._db and db_create_kwargs:
+        if self._db and db_fork_precreated and db_fork_session_id:
+            try:
+                self._record_gateway_session_peer(
+                    db_fork_session_id,
+                    session_key,
+                    source,
+                    display_name=entry.display_name,
+                )
+            except Exception as e:
+                logger.debug("Session DB peer record failed: %s", e)
+        elif self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
                 self._record_gateway_session_peer(

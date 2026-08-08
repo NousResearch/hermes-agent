@@ -375,9 +375,27 @@ class RelayAdapter(BasePlatformAdapter):
             return raw
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
-    def _effective_reply_in_thread(self) -> bool:
-        """Resolve the thread-per-message vs flat-DM mode for fronted Slack."""
+    def _slack_channel_reply_modes(self) -> Dict[str, bool]:
+        """Return relay-fronted Slack per-channel placement overrides."""
+        raw = self._relay_slack_extra().get("channel_reply_modes")
+        if not isinstance(raw, dict):
+            return {}
+        modes: Dict[str, bool] = {}
+        for channel_id, mode in raw.items():
+            normalized_id = str(channel_id).strip()
+            normalized_mode = str(mode).strip().lower()
+            if not normalized_id or normalized_mode not in {"thread", "channel"}:
+                continue
+            modes[normalized_id] = normalized_mode == "thread"
+        return modes
+
+    def _effective_reply_in_thread(self, chat_id: Optional[str] = None) -> bool:
+        """Resolve global/per-channel reply mode for relay-fronted Slack."""
         try:
+            if chat_id:
+                override = self._slack_channel_reply_modes().get(str(chat_id))
+                if override is not None:
+                    return override
             return self._coerce_flag(
                 self._relay_slack_extra().get("reply_in_thread"), True
             )
@@ -435,7 +453,7 @@ class RelayAdapter(BasePlatformAdapter):
             )
             if not message_id:
                 return
-            if not self._effective_reply_in_thread():
+            if not self._effective_reply_in_thread(getattr(src, "chat_id", None)):
                 return
             if not self._dm_top_level_threads_as_sessions():
                 return  # opt-out: threaded replies, one rolling session
@@ -1049,12 +1067,16 @@ class RelayAdapter(BasePlatformAdapter):
             return None
         if self._platform_by_chat.get(str(chat_id)) != Platform.SLACK.value:
             return reply_to
-        if self._chat_type_by_chat.get(str(chat_id)) != "dm":
-            return reply_to
         md = metadata or {}
         if md.get("thread_id") or md.get("thread_ts"):
-            # A real thread was resolved by run.py — honour it.
+            # A real thread was resolved by run.py — honour it regardless of
+            # the top-level channel policy.
             return reply_to
+        if self._chat_type_by_chat.get(str(chat_id)) != "dm":
+            # For a top-level channel turn, reply_to is the triggering message
+            # ts. Keep it only when this channel's effective policy requests a
+            # thread; a real in-thread turn was handled above.
+            return reply_to if self._effective_reply_in_thread(chat_id) else None
         # Mode gate (native _resolve_thread_ts parity). The final-reply lane
         # (gateway/platforms/base.py) builds metadata from source.thread_id
         # ONLY — for a top-level DM that is None, so in thread-per-message
@@ -1064,7 +1086,7 @@ class RelayAdapter(BasePlatformAdapter):
         # message to the DM root while progress stayed threaded (2026-07-27
         # report, same class as the prompt-placement bug). Native SlackAdapter only
         # suppresses the anchor when reply_in_thread=false; mirror that.
-        reply_in_thread = self._effective_reply_in_thread()
+        reply_in_thread = self._effective_reply_in_thread(chat_id)
         if reply_in_thread:
             # Thread-per-message: the triggering ts is the thread anchor.
             return reply_to

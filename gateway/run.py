@@ -818,6 +818,37 @@ def _resolve_progress_thread_id(
     return None
 
 
+def _slack_reply_in_thread_for_progress(
+    adapter: Any,
+    chat_id: Any,
+    source_thread_id: Any = None,
+) -> bool:
+    """Resolve native/relay Slack reply mode for progress/status delivery."""
+    if adapter is None:
+        return True
+    try:
+        source_mode = getattr(adapter, "_reply_in_thread_for_source", None)
+        if callable(source_mode):
+            return bool(source_mode(chat_id, source_thread_id))
+
+        channel_mode = getattr(adapter, "_reply_in_thread_for_channel", None)
+        if callable(channel_mode):
+            return bool(channel_mode(chat_id))
+
+        relay_mode = getattr(adapter, "_effective_reply_in_thread", None)
+        if callable(relay_mode):
+            try:
+                return bool(relay_mode(chat_id))
+            except TypeError:
+                # Compatibility with relay/plugin adapters that implemented
+                # the historical zero-argument resolver.
+                return bool(relay_mode())
+
+        return bool(adapter.config.extra.get("reply_in_thread", True))
+    except Exception:
+        return True
+
+
 def _has_platform_display_override(user_config: dict, platform_key: str, setting: str) -> bool:
     """Return True when display.platforms.<platform> explicitly sets setting."""
     display = user_config.get("display") if isinstance(user_config, dict) else None
@@ -16691,6 +16722,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    async def _get_or_create_inbound_session(
+        self,
+        event,
+        source,
+        session_key: str,
+        run_generation: int,
+    ):
+        """Resolve an inbound lane, forking project-routed Slack threads.
+
+        The adapter supplies only a boolean marker. The trusted parent source is
+        derived here, so an inbound payload cannot name an arbitrary transcript.
+        """
+        event_metadata = getattr(event, "metadata", None) or {}
+        should_fork = bool(
+            event_metadata.get("slack_project_session_fork")
+            and source.platform == Platform.SLACK
+            and source.thread_id
+        )
+        if not should_fork:
+            return await self.async_session_store.get_or_create_session(source)
+
+        parent_source = dataclasses.replace(source, thread_id=None)
+        parent_entry = await self.async_session_store.get_or_create_session(
+            parent_source
+        )
+        # Snapshot only after any already-running parent turn has flushed. The
+        # child receives a committed prefix rather than racing a parent agent
+        # between history load and transcript persistence.
+        parent_lease = None
+        lease_registry = getattr(self, "_turn_leases", None)
+        if lease_registry is not None:
+            parent_lease = await lease_registry.acquire(
+                parent_entry.session_id,
+                owner_key=f"{session_key}:project-fork-parent",
+                generation=run_generation,
+                timeout=_float_env("HERMES_AGENT_TIMEOUT", 1800),
+            )
+        try:
+            # A parent turn may have compressed and rebound its lease while we
+            # waited. Resolve once more under the lease so lineage and snapshot
+            # target the live compression tip, never the retired parent row.
+            snapshot_parent_entry = (
+                await self.async_session_store.get_or_create_session(parent_source)
+            )
+            return await self.async_session_store.get_or_create_session(
+                source,
+                fork_from_session_id=snapshot_parent_entry.session_id,
+            )
+        finally:
+            if lease_registry is not None:
+                lease_registry.release(parent_lease)
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -16720,7 +16803,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        session_entry = await self.async_session_store.get_or_create_session(source)
+        session_entry = await self._get_or_create_inbound_session(
+            event,
+            source,
+            _quick_key,
+            run_generation,
+        )
         session_key = session_entry.session_key
         pinned_session_id = str(
             (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
@@ -25215,26 +25303,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _progress_reply_in_thread = True
         if source.platform == Platform.SLACK:
             _slack_adapter_for_progress = self._adapter_for_source(source)
-            if _slack_adapter_for_progress is not None:
-                try:
-                    # Relay lane: the adapter owns mode resolution (nested
-                    # platforms.relay.extra.slack subset with flat-key
-                    # fallback). Native lane: read the flat extra as before.
-                    _mode_fn = getattr(
-                        _slack_adapter_for_progress,
-                        "_effective_reply_in_thread",
-                        None,
-                    )
-                    if callable(_mode_fn):
-                        _progress_reply_in_thread = bool(_mode_fn())
-                    else:
-                        _progress_reply_in_thread = bool(
-                            _slack_adapter_for_progress.config.extra.get(
-                                "reply_in_thread", True
-                            )
-                        )
-                except Exception:
-                    _progress_reply_in_thread = True
+            _progress_reply_in_thread = _slack_reply_in_thread_for_progress(
+                _slack_adapter_for_progress,
+                source.chat_id,
+                source.thread_id,
+            )
         _progress_thread_id = _resolve_progress_thread_id(
             source.platform, source.thread_id, event_message_id,
             reply_in_thread=_progress_reply_in_thread,

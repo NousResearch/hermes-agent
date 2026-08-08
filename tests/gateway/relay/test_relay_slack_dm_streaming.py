@@ -27,6 +27,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from gateway.run import _slack_reply_in_thread_for_progress
 from gateway.session import SessionSource
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
@@ -131,6 +132,114 @@ async def test_slack_channel_top_level_reply_keeps_autothread_anchor():
     frame = stub.sent[0]
     assert frame["reply_to"] == "1700.0003"
     assert frame["metadata"]["thread_id"] == "1700.0003"
+
+
+def _wire_channel_modes():
+    desc = _slack_desc(supported_ops=("send", "send_media"))
+    stub = StubConnector(desc)
+    config = PlatformConfig(
+        extra={
+            "slack": {
+                "reply_in_thread": True,
+                "channel_reply_modes": {
+                    "C-flat": "channel",
+                    "C-thread": "thread",
+                    "C-invalid": "sideways",
+                },
+            }
+        }
+    )
+    adapter = RelayAdapter(config, desc, transport=stub)
+    for chat_id in ("C-flat", "C-thread", "C-fallback"):
+        adapter._capture_scope(
+            MessageEvent(
+                text="hi",
+                source=SessionSource(
+                    platform=Platform.SLACK,
+                    chat_id=chat_id,
+                    chat_type="channel",
+                    user_id="U1",
+                    scope_id="T1",
+                ),
+                message_type=MessageType.TEXT,
+            )
+        )
+    return adapter, stub
+
+
+def test_relay_slack_channel_modes_drive_session_scope_and_progress():
+    adapter, _ = _wire_channel_modes()
+
+    flat_source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C-flat",
+        chat_type="channel",
+        user_id="U1",
+    )
+    threaded_source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C-thread",
+        chat_type="channel",
+        user_id="U1",
+    )
+    flat_event = MessageEvent(
+        text="flat",
+        source=flat_source,
+        message_type=MessageType.TEXT,
+        message_id="1700.1000",
+    )
+    threaded_event = MessageEvent(
+        text="threaded",
+        source=threaded_source,
+        message_type=MessageType.TEXT,
+        message_id="1700.2000",
+    )
+
+    adapter._stamp_slack_session_thread(flat_event)
+    adapter._stamp_slack_session_thread(threaded_event)
+
+    assert flat_source.thread_id is None
+    assert threaded_source.thread_id == "1700.2000"
+    assert _slack_reply_in_thread_for_progress(adapter, "C-flat") is False
+    assert _slack_reply_in_thread_for_progress(adapter, "C-thread") is True
+    assert _slack_reply_in_thread_for_progress(adapter, "C-fallback") is True
+
+
+@pytest.mark.asyncio
+async def test_relay_slack_channel_modes_control_text_and_media_placement():
+    adapter, stub = _wire_channel_modes()
+
+    await adapter.send("C-flat", "flat", reply_to="1700.3000")
+    flat_text = stub.sent[-1]
+    assert flat_text["reply_to"] is None
+    assert "thread_id" not in (flat_text["metadata"] or {})
+
+    await adapter.send("C-thread", "threaded", reply_to="1700.4000")
+    threaded_text = stub.sent[-1]
+    assert threaded_text["reply_to"] == "1700.4000"
+    assert threaded_text["metadata"]["thread_id"] == "1700.4000"
+
+    await adapter.send_image(
+        "C-flat", "https://example.com/image.png", reply_to="1700.5000"
+    )
+    flat_media = stub.sent[-1]
+    assert flat_media["op"] == "send_media"
+    assert flat_media["reply_to"] is None
+    assert "thread_id" not in (flat_media["metadata"] or {})
+
+
+@pytest.mark.asyncio
+async def test_relay_slack_channel_mode_preserves_real_thread():
+    adapter, stub = _wire_channel_modes()
+    await adapter.send(
+        "C-flat",
+        "real thread",
+        reply_to="1700.6001",
+        metadata={"thread_id": "1700.6000"},
+    )
+    frame = stub.sent[-1]
+    assert frame["reply_to"] == "1700.6001"
+    assert frame["metadata"]["thread_id"] == "1700.6000"
 
 
 @pytest.mark.asyncio

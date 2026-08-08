@@ -3609,6 +3609,119 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
 
+    def fork_session_with_transcript(
+        self,
+        session_id: str,
+        source: str,
+        *,
+        parent_session_id: str,
+        user_id: str = None,
+        session_key: str = None,
+        chat_id: str = None,
+        chat_type: str = None,
+        thread_id: str = None,
+        model: str = None,
+        model_config: Dict[str, Any] = None,
+        system_prompt: str = None,
+        cwd: str = None,
+        profile_name: str = None,
+        git_repo_root: str = None,
+    ) -> str:
+        """Atomically create a child session and snapshot its parent's live rows.
+
+        Unlike the interactive ``/branch`` best-effort copy loop, the child row
+        and every active transcript row commit together or not at all. Message
+        columns are copied directly in SQLite so ``api_content`` and all tool /
+        reasoning sidecars remain byte-identical.
+        """
+        if not session_id or not parent_session_id:
+            raise ValueError("session_id and parent_session_id are required")
+
+        def _do(conn):
+            parent = conn.execute(
+                "SELECT id FROM sessions WHERE id = ?",
+                (parent_session_id,),
+            ).fetchone()
+            if parent is None:
+                raise ValueError(f"parent session not found: {parent_session_id}")
+
+            conn.execute(
+                """INSERT INTO sessions (
+                   id, source, user_id, session_key, chat_id, chat_type, thread_id,
+                   model, model_config, system_prompt, parent_session_id, cwd,
+                   profile_name, git_repo_root, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    source,
+                    user_id,
+                    session_key,
+                    chat_id,
+                    chat_type,
+                    thread_id,
+                    model,
+                    json.dumps(model_config) if model_config else None,
+                    system_prompt,
+                    parent_session_id,
+                    cwd,
+                    profile_name,
+                    git_repo_root,
+                    time.time(),
+                ),
+            )
+            conn.execute(
+                """UPDATE sessions
+                   SET cwd = COALESCE(cwd, (SELECT cwd FROM sessions WHERE id = ?)),
+                       git_repo_root = COALESCE(git_repo_root,
+                           (SELECT git_repo_root FROM sessions WHERE id = ?)),
+                       git_branch = COALESCE(git_branch,
+                           (SELECT git_branch FROM sessions WHERE id = ?)),
+                       profile_name = COALESCE(profile_name,
+                           (SELECT profile_name FROM sessions WHERE id = ?))
+                   WHERE id = ?""",
+                (
+                    parent_session_id,
+                    parent_session_id,
+                    parent_session_id,
+                    parent_session_id,
+                    session_id,
+                ),
+            )
+            conn.execute(
+                """INSERT INTO messages (
+                   session_id, role, content, tool_call_id, tool_calls, tool_name,
+                   effect_disposition, timestamp, token_count, finish_reason,
+                   reasoning, reasoning_content, reasoning_details,
+                   codex_reasoning_items, codex_message_items, platform_message_id,
+                   observed, active, compacted, api_content, display_kind,
+                   display_metadata
+                )
+                SELECT ?, role, content, tool_call_id, tool_calls, tool_name,
+                       effect_disposition, timestamp, token_count, finish_reason,
+                       reasoning, reasoning_content, reasoning_details,
+                       codex_reasoning_items, codex_message_items,
+                       platform_message_id, observed, active, compacted,
+                       api_content, display_kind, display_metadata
+                  FROM messages
+                 WHERE session_id = ? AND active = 1
+                 ORDER BY id""",
+                (session_id, parent_session_id),
+            )
+            conn.execute(
+                """UPDATE sessions
+                   SET message_count = COALESCE((
+                           SELECT message_count FROM sessions WHERE id = ?
+                       ), 0),
+                       tool_call_count = COALESCE((
+                           SELECT tool_call_count FROM sessions WHERE id = ?
+                       ), 0)
+                   WHERE id = ?""",
+                (parent_session_id, parent_session_id, session_id),
+            )
+
+        self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        return session_id
+
     def record_gateway_session_peer(
         self,
         session_id: str,

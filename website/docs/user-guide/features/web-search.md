@@ -342,10 +342,34 @@ web:
 
 When per-capability keys are empty, both fall through to `web.backend`. When `web.backend` is also empty, the backend is auto-detected from whichever API key/URL is present.
 
+### Ordered fallback chains
+
+Use plural `search_backends` / `extract_backends` when you want Hermes to try providers in a fixed order. These lists are empty by default, so existing scalar and auto-detected setups do not start retrying or spending another provider after an upgrade.
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backends:
+    - brave-free    # BRAVE_SEARCH_API_KEY
+    - searxng
+    - ddgs
+  extract_backends:
+    - firecrawl
+    - exa
+    - tavily
+    - parallel
+  fallback_on_empty_search: false
+```
+
+Search chains fall through when a provider raises or returns `success: false`. By default, a clean empty result does **not** spend the next backend; set `fallback_on_empty_search: true` only when empty results should trigger fallback.
+
+Extract chains fail over per URL: successful pages stay fixed while only failed or missing pages move to the next provider. Results are correlated to exact requested URLs; one remaining redirected row can fill one remaining request, but ambiguous multi-redirect batches are left unresolved rather than assigned by position. An uncorrelated safety denial stops fallback for every unresolved URL in that batch. Provider-level safety or policy denials and user interruption are terminal and never fall through. Unknown, incapable, or unavailable entries are reported as skipped; configured disabled plugins are named with the exact `hermes plugins enable …` recovery command. If an explicit chain has no usable provider, Hermes returns an error instead of silently switching to auto-detection.
+
 **Priority order (per capability):**
-1. `web.search_backend` / `web.extract_backend` (explicit per-capability)
-2. `web.backend` (shared fallback)
-3. Auto-detect from environment variables
+1. Non-empty `web.search_backends` / `web.extract_backends` (explicit ordered policy)
+2. `web.search_backend` / `web.extract_backend` (explicit per-capability scalar)
+3. `web.backend` (shared scalar fallback)
+4. Auto-detect from environment variables
 
 ### Auto-detection
 

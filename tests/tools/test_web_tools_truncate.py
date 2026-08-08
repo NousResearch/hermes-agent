@@ -82,6 +82,7 @@ class TestEndToEnd:
                          "raw_content": big, "metadata": {}}]
 
         with patch("tools.web_tools._ensure_web_plugins_loaded"), \
+             patch("tools.web_tools._load_web_config", return_value={}), \
              patch("tools.web_tools._get_extract_backend", return_value="fake"), \
              patch("tools.web_tools.async_is_safe_url", new=_AsyncTrue()), \
              patch("agent.web_search_registry.get_provider", return_value=FakeProvider()):

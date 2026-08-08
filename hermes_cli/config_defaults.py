@@ -399,6 +399,11 @@ DEFAULT_CONFIG = {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        # Opt-in ordered fallback chains. Empty lists preserve the legacy
+        # scalar/auto-detection behavior for existing installs.
+        "search_backends": [],
+        "extract_backends": [],
+        "fallback_on_empty_search": False,
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
     },
 

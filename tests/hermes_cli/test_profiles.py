@@ -114,6 +114,71 @@ class TestGetProfileDir:
 class TestCreateProfile:
     """Tests for create_profile()."""
 
+    def test_interrupted_clone_all_cleans_partial_tree_and_can_retry(
+        self, profile_env, monkeypatch
+    ):
+        default_home = profile_env / ".hermes"
+        (default_home / "payload.txt").write_text("complete", encoding="utf-8")
+        target = get_profile_dir("coder")
+        profiles_root = _get_profiles_root()
+        real_copytree = shutil.copytree
+        copy_destinations = []
+
+        def interrupting_copytree(source, destination, *args, **kwargs):
+            destination = Path(destination)
+            copy_destinations.append(destination)
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / "partial.txt").write_text("partial", encoding="utf-8")
+            raise KeyboardInterrupt
+
+        register_service = MagicMock()
+        monkeypatch.setattr(profiles, "_maybe_register_gateway_service", register_service)
+        monkeypatch.setattr(profiles.shutil, "copytree", interrupting_copytree)
+
+        with pytest.raises(KeyboardInterrupt):
+            create_profile("coder", clone_all=True, no_alias=True)
+
+        assert copy_destinations
+        assert copy_destinations[0] != target
+        assert not target.exists()
+        assert list(profiles_root.glob(".coder.creating-*")) == []
+        register_service.assert_not_called()
+
+        monkeypatch.setattr(profiles.shutil, "copytree", real_copytree)
+        created = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert created == target
+        assert (created / "payload.txt").read_text(encoding="utf-8") == "complete"
+        assert list(profiles_root.glob(".coder.creating-*")) == []
+        register_service.assert_called_once_with("coder")
+
+        monkeypatch.setattr(profiles, "_check_gateway_running", lambda _path: False)
+        monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_args: None)
+        monkeypatch.setattr(
+            profiles, "_maybe_unregister_gateway_service", lambda *_args: None
+        )
+        monkeypatch.setattr(profiles, "_stop_profile_backends", lambda *_args: None)
+
+        assert delete_profile("coder", yes=True) == target
+        assert not target.exists()
+
+    def test_profile_staging_cleanup_rejects_unbounded_path(
+        self, profile_env
+    ):
+        profiles_root = _get_profiles_root()
+        profiles_root.mkdir(parents=True)
+        unrelated = profile_env / "unrelated"
+        unrelated.mkdir()
+        sentinel = unrelated / "keep.txt"
+        sentinel.write_text("keep", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="unbounded profile staging path"):
+            profiles._discard_profile_staging_root(
+                unrelated, profiles_root, "coder"
+            )
+
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+
 
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env
@@ -918,6 +983,4 @@ class TestProfilesToServe:
         assert set(serve) == {"default", "coder", "writer"}
         assert serve["default"] == _get_default_hermes_home()
         assert serve["coder"] == get_profile_dir("coder")
-
-
 

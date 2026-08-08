@@ -22,6 +22,7 @@ Usage::
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -995,75 +996,50 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
     return serve
 
 
-def create_profile(
-    name: str,
-    clone_from: Optional[str] = None,
-    clone_all: bool = False,
-    clone_config: bool = False,
-    no_alias: bool = False,
-    no_skills: bool = False,
-    description: Optional[str] = None,
-) -> Path:
-    """Create a new profile directory.
+def _new_profile_staging_root(profiles_root: Path, canon: str) -> Path:
+    """Create a private, uniquely owned staging root below ``profiles_root``."""
+    profiles_root.mkdir(parents=True, exist_ok=True)
+    prefix = f".{canon}.creating-"
+    for _ in range(10):
+        staging_root = profiles_root / f"{prefix}{secrets.token_hex(8)}"
+        try:
+            staging_root.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        return staging_root
+    raise FileExistsError(f"Could not allocate a staging directory for profile '{canon}'")
 
-    Parameters
-    ----------
-    name:
-        Profile identifier (lowercase, alphanumeric, hyphens, underscores).
-    clone_from:
-        Source profile to clone from. If ``None`` and clone_config/clone_all
-        is True, defaults to the currently active profile.
-    clone_all:
-        If True, do a full copytree of the source (all state).
-    clone_config:
-        If True, copy config files (config.yaml, .env, SOUL.md), installed
-        skills, and selected profile identity files from the source profile.
-    no_alias:
-        If True, skip wrapper script creation.
-    no_skills:
-        If True, create an empty profile with no bundled skills, and write
-        a marker file so ``hermes update`` skips re-seeding this profile's
-        skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
-        explicitly copy skills from the source).
 
-    Returns
-    -------
-    Path
-        The newly created profile directory.
-    """
-    if no_skills and (clone_from is not None or clone_config or clone_all):
-        raise ValueError(
-            "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
-            "(cloning explicitly copies skills from the source profile)."
-        )
-    canon = normalize_profile_name(name)
-    validate_profile_name(canon)
+def _discard_profile_staging_root(
+    staging_root: Path, profiles_root: Path, canon: str
+) -> None:
+    """Remove only the staging root allocated for this profile creation."""
+    prefix = f".{canon}.creating-"
+    suffix = staging_root.name.removeprefix(prefix)
+    if (
+        staging_root.parent != profiles_root
+        or not staging_root.name.startswith(prefix)
+        or re.fullmatch(r"[0-9a-f]{16}", suffix) is None
+    ):
+        raise RuntimeError(f"Refusing to remove unbounded profile staging path: {staging_root}")
 
-    if canon == "default":
-        raise ValueError(
-            "Cannot create a profile named 'default' — it is the built-in profile (~/.hermes)."
-        )
+    if not os.path.lexists(staging_root):
+        return
+    if staging_root.is_symlink():
+        staging_root.unlink()
+        return
+    _rmtree_with_retry(staging_root, _make_rmtree_path_writable)
 
-    profile_dir = get_profile_dir(canon)
-    if profile_dir.exists():
-        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
 
-    # Resolve clone source
-    source_dir = None
-    if clone_from is not None or clone_all or clone_config:
-        if clone_from is None:
-            # Default: clone from active profile
-            from hermes_constants import get_hermes_home
-            source_dir = get_hermes_home()
-        else:
-            clone_from = normalize_profile_name(clone_from)
-            validate_profile_name(clone_from)
-            source_dir = get_profile_dir(clone_from)
-        if not source_dir.is_dir():
-            raise FileNotFoundError(
-                f"Source profile '{clone_from or 'active'}' does not exist at {source_dir}"
-            )
-
+def _populate_profile_directory(
+    profile_dir: Path,
+    source_dir: Optional[Path],
+    *,
+    clone_all: bool,
+    no_skills: bool,
+    description: Optional[str],
+) -> None:
+    """Build a complete profile inside an unpublished staging directory."""
     if clone_all and source_dir:
         # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
         shutil.copytree(
@@ -1104,7 +1080,12 @@ def create_profile(
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+                shutil.copytree(
+                    source_skills,
+                    profile_dir / "skills",
+                    symlinks=True,
+                    dirs_exist_ok=True,
+                )
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
@@ -1176,6 +1157,103 @@ def create_profile(
             )
         except Exception:
             pass  # non-fatal — user can describe later with `hermes profile describe`
+
+
+def create_profile(
+    name: str,
+    clone_from: Optional[str] = None,
+    clone_all: bool = False,
+    clone_config: bool = False,
+    no_alias: bool = False,
+    no_skills: bool = False,
+    description: Optional[str] = None,
+) -> Path:
+    """Create a new profile directory.
+
+    Parameters
+    ----------
+    name:
+        Profile identifier (lowercase, alphanumeric, hyphens, underscores).
+    clone_from:
+        Source profile to clone from. If ``None`` and clone_config/clone_all
+        is True, defaults to the currently active profile.
+    clone_all:
+        If True, do a full copytree of the source (all state).
+    clone_config:
+        If True, copy config files (config.yaml, .env, SOUL.md), installed
+        skills, and selected profile identity files from the source profile.
+    no_alias:
+        If True, skip wrapper script creation.
+    no_skills:
+        If True, create an empty profile with no bundled skills, and write
+        a marker file so ``hermes update`` skips re-seeding this profile's
+        skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
+        explicitly copy skills from the source).
+
+    Returns
+    -------
+    Path
+        The newly created profile directory.
+    """
+    if no_skills and (clone_from is not None or clone_config or clone_all):
+        raise ValueError(
+            "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
+            "(cloning explicitly copies skills from the source profile)."
+        )
+    canon = normalize_profile_name(name)
+    validate_profile_name(canon)
+
+    if canon == "default":
+        raise ValueError(
+            "Cannot create a profile named 'default' — it is the built-in profile (~/.hermes)."
+        )
+
+    profile_dir = get_profile_dir(canon)
+    if os.path.lexists(profile_dir):
+        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+
+    # Resolve clone source
+    source_dir = None
+    if clone_from is not None or clone_all or clone_config:
+        if clone_from is None:
+            # Default: clone from active profile
+            from hermes_constants import get_hermes_home
+            source_dir = get_hermes_home()
+        else:
+            clone_from = normalize_profile_name(clone_from)
+            validate_profile_name(clone_from)
+            source_dir = get_profile_dir(clone_from)
+        if not source_dir.is_dir():
+            raise FileNotFoundError(
+                f"Source profile '{clone_from or 'active'}' does not exist at {source_dir}"
+            )
+
+    profiles_root = _get_profiles_root()
+    staging_root = _new_profile_staging_root(profiles_root, canon)
+    candidate_dir = staging_root / "profile"
+
+    try:
+        _populate_profile_directory(
+            candidate_dir,
+            source_dir,
+            clone_all=clone_all,
+            no_skills=no_skills,
+            description=description,
+        )
+
+        # Re-check immediately before publication to catch a destination that
+        # appeared while staging. A dangling symlink also counts as occupied.
+        if os.path.lexists(profile_dir):
+            raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+        candidate_dir.rename(profile_dir)
+    except BaseException as exc:
+        try:
+            _discard_profile_staging_root(staging_root, profiles_root, canon)
+        except Exception as cleanup_error:
+            exc.add_note(f"Could not remove profile staging directory: {cleanup_error}")
+        raise
+    else:
+        _discard_profile_staging_root(staging_root, profiles_root, canon)
 
     # Phase 4: when running inside a container under s6, register the
     # new profile's gateway as a runtime s6 service so
@@ -1438,6 +1516,28 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     print(f"✓ Stopped {len(pids)} profile backend process(es)")
 
 
+def _make_rmtree_path_writable(func, path, exc) -> None:
+    """Retry an rmtree operation after making its path and parent writable."""
+    if isinstance(exc, tuple):
+        exc = exc[1]
+
+    if not isinstance(exc, PermissionError):
+        raise exc
+
+    try:
+        os.chmod(path, os.stat(path).st_mode | stat.S_IWUSR)
+    except OSError:
+        pass
+
+    parent = os.path.dirname(path)
+    if parent:
+        try:
+            os.chmod(parent, os.stat(parent).st_mode | stat.S_IWUSR)
+        except OSError:
+            pass
+    func(path)
+
+
 def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
     """``shutil.rmtree`` with a short retry loop for transient races.
 
@@ -1560,44 +1660,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # 4. Remove profile directory
     remove_error: Exception | None = None
     try:
-        def _make_writable(func, path, exc):
-            """onexc/onerror handler: add +w on PermissionError so rmtree can proceed.
-
-            Handles two cases on NixOS (and other systems with read-only
-            copies from immutable stores):
-            1. The path itself isn't writable (e.g. a file with mode 0444)
-            2. The *parent* directory isn't writable (e.g. mode 0555)
-
-            Compatible with both the ``onexc`` API (3.12+, receives an
-            exception instance) and the ``onerror`` API (3.11-, receives
-            ``sys.exc_info()`` tuple).
-            """
-            import stat as _stat
-
-            # Normalise the two callback signatures:
-            #   onexc(func, path, exc_instance)   — 3.12+
-            #   onerror(func, path, exc_info_tuple) — 3.11
-            if isinstance(exc, tuple):
-                exc = exc[1]  # exc_info → actual exception object
-
-            if isinstance(exc, PermissionError):
-                # Make the path writable
-                try:
-                    os.chmod(path, os.stat(path).st_mode | _stat.S_IWUSR)
-                except OSError:
-                    pass
-                # Also make the parent writable (needed for unlink/rmdir)
-                parent = os.path.dirname(path)
-                if parent:
-                    try:
-                        os.chmod(parent, os.stat(parent).st_mode | _stat.S_IWUSR)
-                    except OSError:
-                        pass
-                func(path)
-            else:
-                raise
-
-        _rmtree_with_retry(profile_dir, _make_writable)
+        _rmtree_with_retry(profile_dir, _make_rmtree_path_writable)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")

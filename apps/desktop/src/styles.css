@@ -2393,7 +2393,7 @@ button[data-slot='aui_msg-reactions'] svg {
      The height below still tracks the transcript; only the offset animates on
      exit, and it finishes ahead of the fade so the panel has left while the last
      of the text is still going. */
-  height: min(100%, calc(var(--hud-band-height, 0px) + var(--hud-sheet-overhang, 0.75rem)));
+  height: min(100%, var(--hud-band-height, 0px));
   translate: 0 var(--hud-exit-shift, 2.5rem);
   opacity: 0;
   transition:

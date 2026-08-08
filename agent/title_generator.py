@@ -25,6 +25,14 @@ TitleCallback = Callable[[str], None]
 # the request would reload a model the runtime already evicted (#19027).
 RuntimeValidator = Callable[[], bool]
 
+# Upper bound on accepted title word count. Titling is a 3-7 word task; a
+# small tiny-model sometimes ignores the task and answers the user's message
+# instead — that answer must never become the session title (see the
+# answer-shaped output guard in generate_title; port of
+# can1357/oh-my-pi#7306). 12 leaves headroom for legitimate wordy titles
+# while excluding full-sentence answers.
+_MAX_TITLE_WORDS = 12
+
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
     "following exchange. The title should capture the main topic or intent. "
@@ -169,7 +177,22 @@ def generate_title(
         # otherwise be stored verbatim and truncated mid-command. Keep the first
         # non-empty line — the closest thing to a title in that response.
         title = next((line.strip() for line in title.splitlines() if line.strip()), "")
-        # Enforce reasonable length
+        # Answer-shaped output guard: titling is a 3-7 word task, so a first
+        # line with many words is a model that ignored the task and answered
+        # the user's message instead ("I don't have context on X — that's
+        # not something I recognize..."). Truncating would store half an
+        # assistant blob as the session title, which is still an assistant
+        # blob — reject instead so the caller retries on the next exchange
+        # (maybe_auto_title fires for the first two exchanges).
+        # Port of can1357/oh-my-pi#7306.
+        if len(title.split()) > _MAX_TITLE_WORDS:
+            logger.debug(
+                "Rejecting answer-shaped title output (%d words > %d)",
+                len(title.split()), _MAX_TITLE_WORDS,
+            )
+            return None
+        # Enforce reasonable length for genuine-but-wordy titles that pass
+        # the word bound (e.g. one long identifier/path).
         if len(title) > 80:
             title = title[:77] + "..."
         return title if title else None

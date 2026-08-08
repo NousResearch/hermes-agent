@@ -605,11 +605,35 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
       term.focus();
     };
+    // Dedupe identical uploads. A single paste gesture can reach this
+    // twice: the Ctrl+Shift+V keydown handler (navigator.clipboard.read)
+    // and the DOM paste event (ev.clipboardData) both upload. Calling
+    // preventDefault() on the keydown does not cancel the paste event the
+    // browser dispatches afterward, so one Ctrl+Shift+V writes the same
+    // image twice (same second, different token_hex suffix). Clipboard
+    // File objects carry empty name and lastModified=0, so fingerprint on
+    // type+size and drop any repeat inside the window.
+    const recentlyUploaded = new Map<string, number>();
+    const UPLOAD_DEDUP_WINDOW_MS = 1500;
     const uploadAndAttachImages = (files: File[]) => {
       if (!files.length) return;
+      const now = Date.now();
+      const fresh = files.filter((file) => {
+        const key = `${file.type}\0${file.size}`;
+        const last = recentlyUploaded.get(key);
+        if (last !== undefined && now - last < UPLOAD_DEDUP_WINDOW_MS) {
+          return false;
+        }
+        recentlyUploaded.set(key, now);
+        return true;
+      });
+      for (const [key, ts] of recentlyUploaded) {
+        if (now - ts > UPLOAD_DEDUP_WINDOW_MS) recentlyUploaded.delete(key);
+      }
+      if (!fresh.length) return;
       void (async () => {
         const paths: string[] = [];
-        for (const file of files) {
+        for (const file of fresh) {
           const uploaded = await uploadChatImage(file, scopedProfile);
           if (imageUploadDisposed) return;
           paths.push(uploaded.path);

@@ -569,3 +569,137 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
             run_task.cancel()
 
     asyncio.run(_scenario())
+
+
+def test_reset_server_error_clears_both_count_and_timestamp():
+    """_reset_server_error must clear error count AND breaker timestamp."""
+    from tools.mcp_tool import (
+        _bump_server_error,
+        _reset_server_error,
+        _server_error_counts,
+        _server_breaker_opened_at,
+        _lock,
+    )
+
+    name = "test_reset_breaker_srv"
+
+    for _ in range(3):
+        _bump_server_error(name)
+
+    with _lock:
+        assert _server_error_counts.get(name, 0) >= 3
+        assert name in _server_breaker_opened_at
+
+    _reset_server_error(name)
+
+    with _lock:
+        assert _server_error_counts.get(name, 0) == 0
+        assert name not in _server_breaker_opened_at
+
+
+def test_handle_session_expired_retry_clears_breaker(monkeypatch):
+    """After a tripped breaker, a successful retry via
+    _handle_session_expired_and_retry must clear both the error count
+    and the breaker timestamp — including the two code paths at
+    tools/mcp_tool.py:3414 and 3417 that the lock-change touched.
+    """
+    import tools.mcp_tool as mcp
+
+    name = "test_retry_clears_breaker_srv"
+
+    # --- setup: tripped breaker state ---
+    for _ in range(mcp._CIRCUIT_BREAKER_THRESHOLD):
+        mcp._bump_server_error(name)
+    with mcp._lock:
+        assert mcp._server_error_counts[name] >= mcp._CIRCUIT_BREAKER_THRESHOLD
+        assert name in mcp._server_breaker_opened_at
+
+    # --- mock so handle retry succeeds without real I/O ---
+    monkeypatch.setattr(mcp, "_is_session_expired_error", lambda _e: True)
+    monkeypatch.setattr(mcp, "_signal_reconnect_and_wait", lambda *a, **kw: True)
+    mock_loop = MagicMock()
+    mock_loop.is_running.return_value = True
+    monkeypatch.setattr(mcp, "_mcp_loop", mock_loop)
+    monkeypatch.setattr(mcp, "_servers", {name: MagicMock()})
+
+    # Path 1: valid JSON with no error → line ~3414-3417 in mcp_tool.py
+    def retry_valid_json():
+        return json.dumps({"result": "ok"})
+
+    result = mcp._handle_session_expired_and_retry(
+        server_name=name,
+        exc=Exception("session expired"),
+        retry_call=retry_valid_json,
+        op_description="call_tool",
+    )
+    assert result is not None
+
+    with mcp._lock:
+        assert mcp._server_error_counts.get(name, 0) == 0, "error count not cleared"
+        assert name not in mcp._server_breaker_opened_at, "timestamp not cleared"
+
+    # Reset and test path 2: non-JSON response or decode error → line ~3418-3419
+    for _ in range(mcp._CIRCUIT_BREAKER_THRESHOLD):
+        mcp._bump_server_error(name)
+
+    def retry_plain_text():
+        return "not json"
+
+    result2 = mcp._handle_session_expired_and_retry(
+        server_name=name,
+        exc=Exception("session expired"),
+        retry_call=retry_plain_text,
+        op_description="call_tool",
+    )
+    assert result2 is not None
+
+    with mcp._lock:
+        assert mcp._server_error_counts.get(name, 0) == 0, "error count not cleared (path 2)"
+        assert name not in mcp._server_breaker_opened_at, "timestamp not cleared (path 2)"
+
+    # Cleanup
+    mcp._reset_server_error(name)
+    mcp._servers.pop(name, None)
+
+
+def test_concurrent_bump_server_error_is_race_free():
+    """Concurrent _bump_server_error calls must not lose increments.
+    With the lock in place, final count == number of threads."""
+    import threading
+
+    from tools.mcp_tool import (
+        _bump_server_error,
+        _reset_server_error,
+        _server_error_counts,
+        _lock,
+    )
+
+    name = "test_concurrent_bump_srv"
+    _reset_server_error(name)
+
+    n_threads = 8
+    bumps_per_thread = 10
+    errors = []
+
+    def bumper():
+        try:
+            for _ in range(bumps_per_thread):
+                _bump_server_error(name)
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=bumper) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"unexpected errors during concurrent bumps: {errors}"
+
+    with _lock:
+        count = _server_error_counts.get(name, 0)
+    assert count == n_threads * bumps_per_thread, (
+        f"expected {n_threads * bumps_per_thread}, got {count}"
+    )
+
+    _reset_server_error(name)

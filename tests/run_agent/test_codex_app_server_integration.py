@@ -462,6 +462,57 @@ class TestRunConversationCodexPath:
         assert routing.auto_approve_exec is False
         assert routing.auto_approve_apply_patch is False
 
+    def test_gateway_manual_approval_reaches_registered_notifier(
+        self, monkeypatch
+    ):
+        """A Codex approval in a gateway turn must use the gateway's live
+        approval queue instead of being silently declined when no CLI callback
+        is installed."""
+        from tools import approval
+
+        captured = self._capture_routing_agent(monkeypatch)
+        session_key = "telegram:codex-approval-test"
+        prompts: list[dict] = []
+
+        def notify(approval_data: dict) -> None:
+            prompts.append(approval_data)
+            approval.resolve_gateway_approval(session_key, "session")
+
+        token = approval.set_current_session_key(session_key)
+        approval.register_gateway_notify(session_key, notify)
+        try:
+            with patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"approvals": {"mode": "manual"}},
+            ):
+                agent = _make_codex_agent()
+                with patch.object(
+                    agent, "_spawn_background_review", return_value=None
+                ):
+                    agent.run_conversation("fetch the dashboard branch")
+
+            callback = captured["approval_callback"]
+            choice = callback(
+                "git fetch origin codex/agent-os-dashboard",
+                "Codex requests exec in /repo",
+                allow_permanent=False,
+            )
+        finally:
+            approval.unregister_gateway_notify(session_key)
+            approval.reset_current_session_key(token)
+
+        assert choice == "session"
+        assert prompts == [
+            {
+                "command": "git fetch origin codex/agent-os-dashboard",
+                "description": "Codex requests exec in /repo",
+                "pattern_key": "codex_app_server",
+                "pattern_keys": ["codex_app_server"],
+                "allow_permanent": False,
+                "allow_session": True,
+            }
+        ]
+
     def test_frozen_yolo_env_auto_approves_codex_server_requests(
         self, monkeypatch
     ):

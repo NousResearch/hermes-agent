@@ -644,18 +644,30 @@ def run_codex_app_server_turn(
 
         cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
         # Approval callback: defer to Hermes' standard prompt flow if a
-        # CLI thread has installed one. Gateway / cron contexts get the
-        # codex-side fail-closed default.
+        # CLI thread has installed one. Gateway contexts expose the same
+        # decision contract through their per-session approval queue.
         try:
             from tools.terminal_tool import _get_approval_callback
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
+        if approval_callback is None:
+            try:
+                from tools.approval import make_gateway_approval_callback
 
-        # Gateway / cron contexts have no UI to surface codex's approval
-        # requests through, so codex app-server exec / apply_patch requests
-        # fail closed (silently decline) by default. When the user has
-        # explicitly opted out of Hermes approvals — via `approvals.mode: off`
+                approval_callback = make_gateway_approval_callback()
+            except Exception:
+                logger.debug(
+                    "codex app-server: gateway approval callback lookup failed; "
+                    "keeping fail-closed default",
+                    exc_info=True,
+                )
+                approval_callback = None
+
+        # Cron and other unattended contexts have no UI to surface codex's
+        # approval requests through, so exec / apply_patch requests fail
+        # closed by default. When the user has explicitly opted out of Hermes
+        # approvals — via `approvals.mode: off`
         # in config, the /yolo session toggle, or --yolo / HERMES_YOLO_MODE —
         # honor that and let codex's own sandbox permission profile
         # (~/.codex/config.toml) be the policy gate instead of double-gating

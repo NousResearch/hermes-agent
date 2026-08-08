@@ -7,10 +7,15 @@ import {
   mergeInFlightMessages,
   persistInFlightTurnState,
   readInFlightTurnJournal,
-  recoverInFlightTurnJournal
+  recoverInFlightTurnJournal,
+  resetInFlightTurnJournalForTests
 } from '@/lib/inflight-turn-journal'
 
-const STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
+const LEGACY_KEY = 'hermes.desktop.inflightTurnJournal.v1'
+const KEY_PREFIX = 'hermes.desktop.inflightTurnJournal.v2.'
+const KILL_SWITCH_KEY = 'hermes.desktop.inflightTurnJournal.disabled'
+
+const sessionKey = (id: string) => `${KEY_PREFIX}${id}`
 
 function user(id: string, text: string): ChatMessage {
   return { id, role: 'user', parts: [{ type: 'text', text }] }
@@ -47,6 +52,7 @@ function journalState(overrides: Partial<JournalableSessionState> = {}): Journal
 beforeEach(() => {
   vi.useFakeTimers()
   window.localStorage.clear()
+  resetInFlightTurnJournalForTests()
 })
 
 afterEach(() => {
@@ -67,6 +73,19 @@ describe('persistInFlightTurnState', () => {
     expect(entry?.streamId).toBe('assistant-stream-1')
     expect(entry?.turnStartedAt).toBe(1000)
     expect(entry?.messages.map(m => m.role)).toEqual(['user', 'assistant'])
+  })
+
+  it('writes one v2 key per session and never an aggregate key', () => {
+    persistInFlightTurnState(journalState())
+    persistInFlightTurnState(journalState({ storedSessionId: 'stored-2' }))
+
+    vi.advanceTimersByTime(400)
+
+    expect(window.localStorage.getItem(sessionKey('stored-1'))).not.toBeNull()
+    expect(window.localStorage.getItem(sessionKey('stored-2'))).not.toBeNull()
+    expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull()
+
+    clearInFlightTurnJournal('stored-2')
   })
 
   it('coalesces rapid updates into one write carrying the latest state', () => {
@@ -112,11 +131,205 @@ describe('persistInFlightTurnState', () => {
     persistInFlightTurnState(journalState())
     vi.advanceTimersByTime(400)
 
-    const raw = JSON.parse(window.localStorage.getItem(STORAGE_KEY)!)
-    raw.entries['stored-1'].updatedAt = Date.now() - 8 * 24 * 60 * 60 * 1000
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(raw))
+    const raw = JSON.parse(window.localStorage.getItem(sessionKey('stored-1'))!)
+    raw.updatedAt = Date.now() - 8 * 24 * 60 * 60 * 1000
+    window.localStorage.setItem(sessionKey('stored-1'), JSON.stringify(raw))
 
     expect(readInFlightTurnJournal('stored-1')).toBeNull()
+    expect(window.localStorage.getItem(sessionKey('stored-1'))).toBeNull()
+  })
+
+  it('honors the kill switch without touching storage', () => {
+    window.localStorage.setItem(KILL_SWITCH_KEY, '1')
+    resetInFlightTurnJournalForTests()
+
+    persistInFlightTurnState(journalState())
+    vi.advanceTimersByTime(400)
+
+    expect(window.localStorage.getItem(sessionKey('stored-1'))).toBeNull()
+  })
+})
+
+describe('bounded projection', () => {
+  it('bounds a multi-megabyte tool result while preserving tool identity and recovery', () => {
+    const hugeResult = 'x'.repeat(5 * 1024 * 1024)
+
+    const messages: ChatMessage[] = [
+      user('u1', 'run the big thing'),
+      {
+        id: 'assistant-stream-1',
+        role: 'assistant',
+        pending: true,
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'tc-big',
+            toolName: 'terminal',
+            args: { command: 'dump' },
+            argsText: '{"command":"dump"}',
+            result: hugeResult,
+            isError: false
+          },
+          { type: 'text', text: 'digesting the output' }
+        ]
+      }
+    ]
+
+    persistInFlightTurnState(journalState({ messages }))
+    vi.advanceTimersByTime(400)
+
+    const raw = window.localStorage.getItem(sessionKey('stored-1'))!
+    expect(raw.length).toBeLessThan(256 * 1024)
+
+    const entry = readInFlightTurnJournal('stored-1')!
+    const tool = entry.messages.at(-1)!.parts[0] as { isError: boolean; result?: string; toolCallId: string; toolName: string }
+    expect(tool.toolCallId).toBe('tc-big')
+    expect(tool.toolName).toBe('terminal')
+    expect(tool.isError).toBe(false)
+    expect((tool.result ?? '').length).toBeLessThanOrEqual(2 * 1024 + 20)
+
+    // The bounded entry still merges back onto a restored transcript.
+    const recovered = recoverInFlightTurnJournal('stored-1', [user('db-u1', 'run the big thing')])
+    expect(recovered.applied).toBe(true)
+    expect(recovered.messages.at(-1)!.parts[0]).toMatchObject({ type: 'tool-call', toolCallId: 'tc-big' })
+  })
+
+  it('keeps the user prompt in full so recovery matching still works', () => {
+    const longPrompt = 'p'.repeat(100 * 1024)
+
+    persistInFlightTurnState(
+      journalState({
+        messages: [user('u1', longPrompt), assistant('assistant-stream-1', 'ok', { pending: true })]
+      })
+    )
+    vi.advanceTimersByTime(400)
+
+    const recovered = recoverInFlightTurnJournal('stored-1', [
+      user('db-u1', longPrompt),
+      assistant('db-a1', 'full committed reply')
+    ])
+
+    expect(recovered.caughtUp).toBe(true)
+  })
+})
+
+describe('boot migration from the v1 aggregate blob', () => {
+  it('migrates non-expired entries to bounded v2 keys and deletes the v1 key', () => {
+    const hugeResult = 'y'.repeat(3 * 1024 * 1024)
+
+    const v1 = {
+      version: 1,
+      entries: {
+        'stored-normal': {
+          messages: [user('u1', 'small turn'), assistant('assistant-stream-1', 'partial', { pending: true })],
+          streamId: 'assistant-stream-1',
+          turnStartedAt: 111,
+          updatedAt: Date.now()
+        },
+        'stored-oversized': {
+          messages: [
+            user('u2', 'big turn'),
+            {
+              id: 'assistant-stream-2',
+              role: 'assistant',
+              pending: true,
+              parts: [
+                { type: 'tool-call', toolCallId: 'tc-2', toolName: 'terminal', args: {}, result: hugeResult },
+                { type: 'text', text: 'working' }
+              ]
+            }
+          ],
+          streamId: 'assistant-stream-2',
+          turnStartedAt: 222,
+          updatedAt: Date.now()
+        },
+        'stored-expired': {
+          messages: [user('u3', 'old'), assistant('a3', 'stale')],
+          streamId: null,
+          turnStartedAt: null,
+          updatedAt: Date.now() - 8 * 24 * 60 * 60 * 1000
+        }
+      }
+    }
+
+    window.localStorage.setItem(LEGACY_KEY, JSON.stringify(v1))
+    resetInFlightTurnJournalForTests()
+
+    // Any journal entry point boots the module.
+    expect(readInFlightTurnJournal('stored-normal')).not.toBeNull()
+
+    expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull()
+    expect(window.localStorage.getItem(sessionKey('stored-expired'))).toBeNull()
+
+    const oversized = window.localStorage.getItem(sessionKey('stored-oversized'))!
+    expect(oversized.length).toBeLessThan(256 * 1024)
+    expect(readInFlightTurnJournal('stored-oversized')?.turnStartedAt).toBe(222)
+
+    clearInFlightTurnJournal('stored-normal')
+    clearInFlightTurnJournal('stored-oversized')
+  })
+
+  it('respects new-key-wins when a v2 key already exists', () => {
+    persistInFlightTurnState(journalState({ storedSessionId: 'stored-dup' }))
+    vi.advanceTimersByTime(400)
+    const existing = window.localStorage.getItem(sessionKey('stored-dup'))!
+
+    window.localStorage.setItem(
+      LEGACY_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          'stored-dup': {
+            messages: [user('legacy-u', 'legacy turn'), assistant('legacy-a', 'legacy partial')],
+            streamId: null,
+            turnStartedAt: 999,
+            updatedAt: Date.now()
+          }
+        }
+      })
+    )
+    resetInFlightTurnJournalForTests()
+
+    expect(readInFlightTurnJournal('stored-dup')).not.toBeNull()
+    expect(window.localStorage.getItem(sessionKey('stored-dup'))).toBe(existing)
+    expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull()
+
+    clearInFlightTurnJournal('stored-dup')
+  })
+
+  it('deletes an unparseable v1 blob instead of keeping it around', () => {
+    window.localStorage.setItem(LEGACY_KEY, '{not json at all')
+    resetInFlightTurnJournalForTests()
+
+    expect(readInFlightTurnJournal('anything')).toBeNull()
+    expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull()
+  })
+})
+
+describe('quota and write failures', () => {
+  it('keeps streaming unaffected when setItem throws', () => {
+    persistInFlightTurnState(journalState())
+
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError')
+    })
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      expect(() => vi.advanceTimersByTime(400)).not.toThrow()
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      spy.mockRestore()
+      warn.mockRestore()
+    }
+
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+
+    // A later write (storage healthy again) succeeds.
+    persistInFlightTurnState(journalState())
+    vi.advanceTimersByTime(400)
+    expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
   })
 })
 
@@ -263,6 +476,7 @@ describe('mergeInFlightMessages', () => {
 describe('mid-turn redirect corrections', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    resetInFlightTurnJournalForTests()
     vi.useFakeTimers()
   })
 
@@ -317,5 +531,166 @@ describe('mid-turn redirect corrections', () => {
     const journaled = readInFlightTurnJournal('stored-boundary')?.messages ?? []
 
     expect(journaled.map(message => message.id)).toEqual(['user-1', 'assistant-stream-1'])
+  })
+})
+
+describe('external review hardening', () => {
+  it('previews object-valued tool results without traversing the full structure', () => {
+    let elementReads = 0
+    const bigArray = Array.from({ length: 200_000 }, (_, index) => `row-${index}-${'z'.repeat(24)}`)
+
+    const counted = new Proxy(bigArray, {
+      get(target, prop, receiver) {
+        if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+          elementReads += 1
+        }
+
+        return Reflect.get(target, prop, receiver)
+      }
+    })
+
+    persistInFlightTurnState(
+      journalState({
+        messages: [
+          user('u1', 'run it'),
+          {
+            id: 'assistant-stream-1',
+            role: 'assistant',
+            pending: true,
+            parts: [
+              {
+                type: 'tool-call',
+                toolCallId: 'tc-obj',
+                toolName: 'terminal',
+                args: {},
+                result: counted as unknown as string
+              },
+              { type: 'text', text: 'reading' }
+            ]
+          }
+        ]
+      })
+    )
+    vi.advanceTimersByTime(400)
+
+    const raw = window.localStorage.getItem(sessionKey('stored-1'))!
+    expect(raw.length).toBeLessThan(256 * 1024)
+    // The 2KB preview budget stops the walk after ~70 rows of ~30 chars; a
+    // full JSON.stringify of the object would have read all 200k elements.
+    expect(elementReads).toBeLessThan(1000)
+
+    const entry = readInFlightTurnJournal('stored-1')!
+    const tool = entry.messages.at(-1)!.parts[0] as { result?: string; toolCallId: string }
+    expect(tool.toolCallId).toBe('tc-obj')
+    expect((tool.result ?? '').length).toBeLessThanOrEqual(2 * 1024 + 20)
+  })
+
+  it('skips the write entirely when even the tight projection exceeds the hard ceiling', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // Only an un-truncatable user prompt can defeat the tight caps.
+    const enormousPrompt = 'w'.repeat(600 * 1024)
+
+    try {
+      persistInFlightTurnState(
+        journalState({
+          messages: [user('u1', enormousPrompt), assistant('assistant-stream-1', 'ok', { pending: true })]
+        })
+      )
+      vi.advanceTimersByTime(400)
+
+      expect(window.localStorage.getItem(sessionKey('stored-1'))).toBeNull()
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0][0])).toContain('hard size ceiling')
+
+      // Once per session, not once per tick.
+      persistInFlightTurnState(
+        journalState({
+          messages: [user('u1', enormousPrompt), assistant('assistant-stream-1', 'ok then', { pending: true })]
+        })
+      )
+      vi.advanceTimersByTime(400)
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('degrades to no journal when a storage read fails during recovery', () => {
+    persistInFlightTurnState(journalState())
+    vi.advanceTimersByTime(400)
+    expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError')
+    })
+
+    try {
+      expect(() => readInFlightTurnJournal('stored-1')).not.toThrow()
+      expect(readInFlightTurnJournal('stored-1')).toBeNull()
+
+      const recovered = recoverInFlightTurnJournal('stored-1', [user('db-u1', 'do the thing')])
+      expect(recovered.applied).toBe(false)
+      expect(recovered.messages).toHaveLength(1)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('enforces the global entry cap at runtime, not only at boot', () => {
+    for (let index = 0; index < 25; index += 1) {
+      persistInFlightTurnState(journalState({ storedSessionId: `stored-cap-${index}` }))
+      // Each write lands at a distinct Date.now() so eviction order is stable.
+      vi.advanceTimersByTime(401)
+    }
+
+    const journalKeys = Object.keys(window.localStorage).filter(key => key.startsWith(KEY_PREFIX))
+    expect(journalKeys).toHaveLength(24)
+    // The oldest write was evicted by the sweep the 25th session triggered.
+    expect(window.localStorage.getItem(sessionKey('stored-cap-0'))).toBeNull()
+    expect(window.localStorage.getItem(sessionKey('stored-cap-24'))).not.toBeNull()
+
+    for (let index = 0; index < 25; index += 1) {
+      clearInFlightTurnJournal(`stored-cap-${index}`)
+    }
+  })
+
+  it('does nothing at boot when the kill switch is set — no migration, no sweep', () => {
+    const legacyBlob = JSON.stringify({
+      version: 1,
+      entries: {
+        'stored-legacy': {
+          messages: [user('u1', 'legacy'), assistant('a1', 'legacy partial')],
+          streamId: null,
+          turnStartedAt: 1,
+          updatedAt: Date.now()
+        }
+      }
+    })
+
+    window.localStorage.setItem(LEGACY_KEY, legacyBlob)
+    window.localStorage.setItem(KILL_SWITCH_KEY, '1')
+    resetInFlightTurnJournalForTests()
+
+    const getItem = vi.spyOn(Storage.prototype, 'getItem')
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const removeItem = vi.spyOn(Storage.prototype, 'removeItem')
+
+    try {
+      persistInFlightTurnState(journalState())
+      vi.advanceTimersByTime(1000)
+
+      // The kill-switch probe is the subsystem's ONLY storage access.
+      expect(getItem).toHaveBeenCalledTimes(1)
+      expect(getItem).toHaveBeenCalledWith(KILL_SWITCH_KEY)
+      expect(setItem).not.toHaveBeenCalled()
+      expect(removeItem).not.toHaveBeenCalled()
+    } finally {
+      getItem.mockRestore()
+      setItem.mockRestore()
+      removeItem.mockRestore()
+    }
+
+    // The legacy blob is untouched, preserved for the revert case.
+    expect(window.localStorage.getItem(LEGACY_KEY)).toBe(legacyBlob)
   })
 })

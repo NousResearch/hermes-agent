@@ -158,8 +158,20 @@ async function main() {
 
   // Steady-state scenarios share one persistent connection.
   if (liveNames.length) {
+    // Needing a gateway-side fault injector is a property of the scenario
+    // (hitch-classify), so the runner reads it off the registry rather than
+    // taking a flag — and it only reaches the backend of an instance we spawn.
+    const gatewayTestHooks = liveNames.some(n => SCENARIOS[n].gatewayTestHooks)
+
+    if (gatewayTestHooks && !flags.spawn) {
+      console.error(
+        'hitch-classify requires --spawn: its gateway test hook is enabled through the spawned backend’s environment'
+      )
+      process.exit(2)
+    }
+
     const connection = flags.spawn
-      ? await startIsolatedInstance({ port, devPort, prod })
+      ? await startIsolatedInstance({ port, devPort, prod, gatewayTestHooks })
       : await attach({ port, match: prod ? undefined : String(devPort) })
 
     const { cdp, teardown } = connection

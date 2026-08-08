@@ -3,6 +3,7 @@
 
 import coldStart from './cold-start.mjs'
 import firstToken from './first-token.mjs'
+import hitchClassify from './hitch-classify.mjs'
 import idleCost from './idle-cost.mjs'
 import keystroke from './keystroke.mjs'
 import multitab from './multitab.mjs'
@@ -23,6 +24,7 @@ export const SCENARIOS = {
   [transcript.name]: transcript,
   [multitab.name]: multitab,
   [renderChurn.name]: renderChurn,
+  [hitchClassify.name]: hitchClassify,
   [rightPane.name]: rightPane,
   [idleCost.name]: idleCost,
   [coldStart.name]: coldStart,

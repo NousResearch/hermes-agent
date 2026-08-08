@@ -12034,10 +12034,81 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
         )
 
-        # Make sure there's an entry in the session_store for this key. If
-        # the home channel has never been used, get_or_create_session
-        # creates one; switch_session then re-points it.
-        await self.async_session_store.get_or_create_session(dest_source)
+        # Source/ownership check (#81513): never hijack a live gateway
+        # session. The destination key may already be bound to a session
+        # the gateway is actively serving (e.g. an ongoing QQ conversation
+        # on the home channel). switch_session would END that session and
+        # rebind the key to the CLI session — silently replacing a live
+        # conversation with the CLI's, making the old history unreachable
+        # from the platform. Only proceed when the destination is unbound,
+        # bound to the CLI session itself (Case B — already gateway-owned),
+        # or bound to a session that is confirmed closed or an empty fresh
+        # reset. The check FAILS CLOSED: if the bound session's state
+        # cannot be verified (DB unavailable / read error), the handoff is
+        # refused rather than risking a live-session hijack.
+        #
+        # The check runs on the entry get_or_create_session resolves for
+        # the destination key — the same entry switch_session would end —
+        # so an inbound message that created a live session during the
+        # earlier awaits is seen here, not skipped.
+        await self.async_session_store._ensure_loaded()
+        dest_entry = await self.async_session_store.get_or_create_session(dest_source)
+        if dest_entry.session_id == cli_session_id:
+            # The CLI session is already the gateway session for this key
+            # (the user resumed the gateway session in the CLI/desktop).
+            # Handing it off again is a no-op — refuse instead of running
+            # the switch + synthetic turn on a live channel.
+            raise RuntimeError(
+                f"session {cli_session_id} is already the gateway session "
+                f"for {session_key}; nothing to hand off"
+            )
+        bound_session_id = dest_entry.session_id
+
+        # In-flight agent work on the destination key must never be
+        # hijacked, regardless of what the DB row says (a session can
+        # be mid-first-turn before any message is persisted).
+        if await self.async_session_store._has_active_processes_safe(
+            session_key, context="handoff"
+        ):
+            raise RuntimeError(
+                f"destination {session_key} has active agent work; "
+                f"refusing handoff"
+            )
+
+        # Verify the bound session's state when the DB is available.
+        # Fail closed: an unreadable DB row means we cannot prove the
+        # session is closed, so refuse rather than risk a hijack.
+        bound_row: Optional[Dict[str, Any]] = None
+        if self._session_db is not None:
+            verified = False
+            try:
+                bound_row = cast(
+                    Optional[Dict[str, Any]],
+                    await self._session_db.get_session(bound_session_id),
+                )
+                verified = True
+            except Exception:
+                verified = False
+            if not verified:
+                raise RuntimeError(
+                    f"cannot verify session state for destination {session_key} "
+                    f"(bound to {bound_session_id}); refusing handoff"
+                )
+
+        # Live = session row exists, not ended, and has conversation
+        # content. An empty fresh /new session (0 messages, no active
+        # work) is safe to replace; a missing row (in-memory/JSONL
+        # fallback session) is likewise replaceable.
+        if (
+            bound_row is not None
+            and bound_row.get("ended_at") is None
+            and (bound_row.get("message_count") or 0) > 0
+        ):
+            raise RuntimeError(
+                f"destination {session_key} is already bound to live gateway "
+                f"session {bound_session_id}; end that conversation first "
+                f"(e.g. /new on the platform) before handing off"
+            )
 
         # Re-bind the destination key to the CLI session_id. switch_session
         # ends the prior session in SQLite and reopens the CLI session under

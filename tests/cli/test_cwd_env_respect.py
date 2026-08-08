@@ -97,3 +97,137 @@ class TestGatewayLazyImport:
         d = {"terminal": {"cwd": "/home/user"}}
         result = _resolve_cwd(tc, d, env)
         assert result == "/fake/getcwd"
+
+
+# ---------------------------------------------------------------------------
+# Kanban worker workspace pin (real load_cli_config, not the mirror above).
+#
+# The dispatcher pins TERMINAL_CWD to the task workspace in
+# hermes_cli/kanban_db.py::_default_spawn (#41312 / #34619). The child CLI's
+# config bridge then force-exports the assignee profile's terminal.cwd over
+# it, which silently replaces the task-scoped boundary — and with
+# docker_mount_cwd_to_workspace that becomes a broad host mount (#73556).
+# ---------------------------------------------------------------------------
+
+
+def _write_terminal_config(hermes_home, cwd, backend="docker"):
+    import yaml
+
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump({"terminal": {"backend": backend, "cwd": cwd}}),
+        encoding="utf-8",
+    )
+
+
+class TestKanbanWorkerWorkspacePin:
+    def test_profile_cwd_does_not_override_task_workspace(self, tmp_path, monkeypatch):
+        """A dispatcher-owned worker keeps its task workspace as TERMINAL_CWD."""
+        import os
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        workspace = tmp_path / "task-repair"
+        workspace.mkdir()
+        profile_cwd = tmp_path / "home-example"
+        profile_cwd.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _write_terminal_config(hermes_home, str(profile_cwd))
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        import cli
+
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cli.load_cli_config()
+
+        assert os.environ["TERMINAL_CWD"] == str(workspace)
+
+    def test_plain_cli_still_exports_profile_cwd(self, tmp_path, monkeypatch):
+        """Without a dispatcher task the profile cwd keeps winning."""
+        import os
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        profile_cwd = tmp_path / "home-example"
+        profile_cwd.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _write_terminal_config(hermes_home, str(profile_cwd))
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_WORKSPACE", raising=False)
+        monkeypatch.setenv("TERMINAL_CWD", "/stale/from/dotenv")
+
+        import cli
+
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cli.load_cli_config()
+
+        assert os.environ["TERMINAL_CWD"] == str(profile_cwd)
+
+    def test_unusable_workspace_falls_back_to_profile_cwd(self, tmp_path, monkeypatch):
+        """Only a real absolute directory pins — mirrors _default_spawn's own rule."""
+        import os
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        profile_cwd = tmp_path / "home-example"
+        profile_cwd.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _write_terminal_config(hermes_home, str(profile_cwd))
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path / "does-not-exist"))
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+        import cli
+
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cli.load_cli_config()
+
+        assert os.environ["TERMINAL_CWD"] == str(profile_cwd)
+
+    def test_docker_mount_source_is_the_task_workspace(self, tmp_path, monkeypatch):
+        """The bind-mount source follows TERMINAL_CWD, so pin it end-to-end.
+
+        ``docker_mount_cwd_to_workspace`` mounts ``os.getenv("TERMINAL_CWD")``
+        into the container at /workspace (rw). If the profile cwd wins, the
+        worker gets the whole profile directory instead of its task worktree.
+        """
+        import os
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        workspace = tmp_path / "task-repair"
+        workspace.mkdir()
+        profile_cwd = tmp_path / "home-example"
+        profile_cwd.mkdir()
+
+        import yaml
+
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({
+                "terminal": {
+                    "backend": "docker",
+                    "cwd": str(profile_cwd),
+                    "docker_mount_cwd_to_workspace": True,
+                }
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        import cli
+
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cli.load_cli_config()
+
+        from tools.terminal_tool import _get_env_config
+
+        cfg = _get_env_config()
+        assert cfg["host_cwd"] == str(workspace)
+        assert cfg["docker_mount_cwd_to_workspace"] is True

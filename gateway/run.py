@@ -7817,6 +7817,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str,
         adapter: Any,
         pending_event: Optional["MessageEvent"],
+        *,
+        stage_next: bool = True,
     ) -> Optional["MessageEvent"]:
         """Promote the next overflow item after the slot was drained.
 
@@ -7832,6 +7834,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _q_state = self._peek_session_state(session_key)
         overflow = _q_state.conversation.queued_events if _q_state else None
         if not overflow:
+            return pending_event
+        if pending_event is not None and not stage_next:
             return pending_event
         next_queued = overflow.pop(0)
         if pending_event is None:
@@ -8998,7 +9002,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and busy_text_mode == "queue"
             and effective_mode != "steer"
         ):
-            return False
+            effective_mode = "queue"
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
@@ -25999,7 +26003,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # occupied for the full FIFO chain, which (a) preserves
                 # order, and (b) causes any mid-chain /queue to correctly
                 # route to overflow rather than jumping the queue.
-                pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+                pending_event = self._promote_queued_event(
+                    session_key,
+                    adapter,
+                    pending_event,
+                    stage_next=not (
+                        result.get("interrupted")
+                        and _interrupt_depth >= self._MAX_INTERRUPT_DEPTH
+                    ),
+                )
                 if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                     interrupt_message = result.get("interrupt_message")
                     if _is_control_interrupt_message(interrupt_message):
@@ -26087,7 +26099,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 # Cap recursion depth to prevent resource exhaustion when the
                 # user sends multiple messages while the agent keeps failing. (#816)
-                if _interrupt_depth >= self._MAX_INTERRUPT_DEPTH:
+                if (
+                    result.get("interrupted")
+                    and _interrupt_depth >= self._MAX_INTERRUPT_DEPTH
+                ):
                     logger.warning(
                         "Interrupt recursion depth %d reached for session %s — "
                         "queueing message instead of recursing.",

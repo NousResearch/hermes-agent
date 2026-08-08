@@ -149,6 +149,55 @@ class TestBusySessionAck:
         agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_legacy_busy_text_queue_override_uses_runner_fifo(self):
+        """The legacy text override must preserve individual FIFO turns."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._busy_text_mode = "queue"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        session_key = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[session_key] = agent
+        runner._running_agents_ts[session_key] = time.time()
+
+        events = [
+            MessageEvent(
+                text=f"follow-up-{index}",
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=f"m-{index}",
+            )
+            for index in range(3)
+        ]
+        handled = [
+            await runner._handle_active_session_busy_message(event, session_key)
+            for event in events
+        ]
+
+        assert handled == [True, True, True]
+        queued = [
+            adapter._pending_messages[session_key],
+            *runner._queued_events[session_key],
+        ]
+        assert [event.text for event in queued] == [
+            "follow-up-0",
+            "follow-up-1",
+            "follow-up-2",
+        ]
+        agent.interrupt.assert_not_called()
+        assert adapter._send_with_retry.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
         """First message during busy session should get a status ack."""
         runner, sentinel = _make_runner()
@@ -469,5 +518,4 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-
 

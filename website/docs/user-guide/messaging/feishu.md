@@ -127,7 +127,9 @@ FEISHU_WEBHOOK_PORT=8765         # default: 8765
 FEISHU_WEBHOOK_PATH=/feishu/webhook  # default: /feishu/webhook
 ```
 
-When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console. The challenge response is gated on `FEISHU_VERIFICATION_TOKEN` when set — challenge requests with a missing or mismatched token are rejected so an unauthenticated remote cannot prove endpoint control by echoing attacker-controlled challenge data.
+When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console. You must configure `FEISHU_VERIFICATION_TOKEN` before registering or re-registering the callback URL. Challenge requests with a missing or mismatched token are rejected so an unauthenticated remote cannot prove endpoint control by echoing attacker-controlled challenge data. When `FEISHU_ENCRYPT_KEY` is configured in Feishu, the challenge arrives inside an encrypted outer object; Hermes decrypts it before checking the verification token. The challenge remains unsigned after decryption, so the Encrypt Key does not replace the verification token during onboarding.
+
+Already-onboarded webhook deployments that configure only `FEISHU_ENCRYPT_KEY` remain supported for encrypted, correctly signed ordinary event deliveries. They need to add `FEISHU_VERIFICATION_TOKEN` only before repeating URL verification.
 
 ## Step 3: Configure Hermes
 
@@ -191,19 +193,19 @@ If you leave the allowlist empty, anyone who can reach the bot may be able to us
 
 ### Webhook Encryption Key
 
-When running in webhook mode, set an encryption key to enable signature verification of inbound webhook payloads:
+When running in webhook mode, set an encryption key so Hermes can decrypt encrypted callback bodies and verify signatures on ordinary inbound webhook event deliveries:
 
 ```bash
 FEISHU_ENCRYPT_KEY=your-encrypt-key
 ```
 
-This key is found in the **Event Subscriptions** section of your Feishu app configuration. When set, the adapter verifies every webhook request using the signature algorithm:
+This key is found in the **Event Subscriptions** section of your Feishu app configuration. Feishu sends an outer JSON object containing `encrypt`; Hermes derives an AES key with SHA-256, decrypts the IV-prefixed AES-CBC payload, and validates PKCS7 padding before parsing the event. For ordinary events, Hermes also verifies the original encrypted request body using:
 
 ```
 SHA256(timestamp + nonce + encrypt_key + body)
 ```
 
-The computed hash is compared against the `x-lark-signature` header using timing-safe comparison. Requests with invalid or missing signatures are rejected with HTTP 401.
+The computed hash is compared against the `x-lark-signature` header using timing-safe comparison. Ordinary event deliveries with invalid or missing signatures are rejected with HTTP 401 before delivery quota or dispatch. Feishu's URL-verification challenge is unsigned after decryption, so onboarding is authenticated with `FEISHU_VERIFICATION_TOKEN` instead.
 
 :::tip
 In WebSocket mode, signature verification is handled by the SDK itself, so `FEISHU_ENCRYPT_KEY` is optional. In webhook mode, it is strongly recommended for production.
@@ -211,15 +213,15 @@ In WebSocket mode, signature verification is handled by the SDK itself, so `FEIS
 
 ### Verification Token
 
-An additional layer of authentication that checks the `token` field inside webhook payloads:
+Set the verification token before registering or re-registering a webhook callback URL:
 
 ```bash
 FEISHU_VERIFICATION_TOKEN=your-verification-token
 ```
 
-This token is also found in the **Event Subscriptions** section of your Feishu app. When set, every inbound webhook payload must contain a matching `token` in its `header` object. Mismatched tokens are rejected with HTTP 401.
+This token is also found in the **Event Subscriptions** section of your Feishu app. It is required for URL-verification onboarding: Hermes rejects a challenge when no verification token is configured or when the token in the plaintext or decrypted challenge does not match. For ordinary event deliveries, configuring the token adds a payload-token check; the plaintext or decrypted `header.token` must match or Hermes returns HTTP 401.
 
-Both `FEISHU_ENCRYPT_KEY` and `FEISHU_VERIFICATION_TOKEN` can be used together for defense in depth.
+For new webhook deployments, configure both secrets: `FEISHU_VERIFICATION_TOKEN` authenticates URL verification and checks event tokens, while `FEISHU_ENCRYPT_KEY` decrypts callback bodies and verifies signatures on ordinary event deliveries. Already-onboarded encrypt-key-only deployments continue to accept encrypted, correctly signed ordinary events, but must add the verification token before repeating URL verification.
 
 ## Group Message Policy
 
@@ -454,13 +456,13 @@ Messages within the same chat are processed serially (one at a time) to maintain
 
 ## Rate Limiting (Webhook Mode)
 
-In webhook mode, the adapter enforces per-IP rate limiting to protect against abuse:
+In webhook mode, the adapter enforces a per-IP authenticated-delivery quota after a request passes the configured authentication checks. Requests rejected before authentication do not consume this quota:
 
-- **Window:** 60-second sliding window
-- **Limit:** 120 requests per window per (app_id, path, IP) triple
+- **Window:** 60-second fixed window starting with the first authenticated request for the (app_id, path, IP) triple
+- **Limit:** 120 authenticated requests per window per (app_id, path, IP) triple
 - **Tracking cap:** Up to 4096 unique keys tracked (prevents unbounded memory growth)
 
-Requests that exceed the limit receive HTTP 429 (Too Many Requests).
+Authenticated requests that exceed the limit receive HTTP 429 (Too Many Requests). If the webhook endpoint is exposed to the network, configure request and concurrency limits at the ingress or reverse proxy to protect against unauthenticated network abuse.
 
 ### Webhook Anomaly Tracking
 
@@ -548,7 +550,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_ALLOW_BOTS` | — | `none` | Accept messages from other bots: `none`, `mentions`, or `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | Whether group messages must @mention the bot |
 | `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
-| `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |
+| `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for callback decryption and ordinary-event signature verification |
 | `FEISHU_VERIFICATION_TOKEN` | — | _(empty)_ | Verification token for webhook payload auth |
 | `FEISHU_GROUP_POLICY` | — | `allowlist` | Group message policy: `open`, `allowlist`, `disabled` |
 | `FEISHU_BOT_OPEN_ID` | — | _(empty)_ | Bot's open_id (for @mention detection) |
@@ -583,7 +585,7 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | Peer bot messages still ignored after enabling `FEISHU_ALLOW_BOTS` | Hermes can't identify itself yet — set `FEISHU_BOT_OPEN_ID` (and `FEISHU_BOT_USER_ID` if your app uses `sender_id_type=user_id`). |
 | Peer bots show as `ou_xxxxxx` instead of by name | Grant the `application:bot.basic_info:read` scope. |
 | Error 200340 when clicking approval buttons | Enable **Interactive Card** capability and configure **Card Request URL** in the Feishu Developer Console. See [Required Feishu App Configuration](#required-feishu-app-configuration) above. |
-| `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |
+| `Webhook rate limit exceeded` | More than 120 authenticated requests arrived from the same IP during its current 60-second fixed window. This is usually a misconfiguration or loop. |
 
 ## Toolset
 

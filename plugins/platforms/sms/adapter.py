@@ -278,7 +278,7 @@ class SmsAdapter(BasePlatformAdapter):
         mac = hmac.new(
             self._auth_token.encode("utf-8"),
             data_to_sign.encode("utf-8"),
-            hashlib.sha1,
+            lambda *a, **kw: hashlib.sha1(*a, usedforsecurity=False, **kw),
         )
         computed = base64.b64encode(mac.digest()).decode("utf-8")
         # Compare as bytes: compare_digest raises TypeError on a str with

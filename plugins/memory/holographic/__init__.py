@@ -20,7 +20,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List
+import sqlite3
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -242,14 +243,91 @@ class HolographicMemoryProvider(MemoryProvider):
             return
         self._auto_extract_facts(messages)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes as facts."""
-        if action == "add" and self._store and content:
-            try:
-                category = "user_pref" if target == "user" else "general"
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror built-in memory writes as facts.
+
+        Handles all three mutating actions forwarded by the bridge
+        (MemoryManager.notify_memory_tool_write):
+
+        - ``add`` → mirror as a new fact.
+        - ``replace`` → find the existing fact by ``old_text`` (from metadata)
+          and update its content; fall back to ``add`` if not found.
+        - ``remove`` → find the existing fact by ``old_text`` and delete it;
+          silent no-op if not found (idempotent).
+
+        ``metadata`` carries ``old_text`` for replace/remove, supplied by the
+        bridge from the built-in memory tool's ``old_text`` argument.
+
+        Fact lookup uses a direct SQL exact-content match on the ``content``
+        column (which has a UNIQUE constraint) rather than FTS5 search. This
+        avoids two problems with FTS5 for this maintenance path:
+
+        1. FTS5 tokenizes the query into OR tokens, ranks by relevance, and
+           caps results — the exact old fact can be absent from the top-N,
+           causing a replace to add a duplicate or a remove to silently no-op.
+        2. ``search_facts`` increments ``retrieval_count`` for candidate facts,
+           corrupting the retrieval-popularity metric as a side effect of a
+           maintenance lookup.
+        """
+        if not self._store:
+            return
+
+        category = "user_pref" if target == "user" else "general"
+        old_text = (metadata or {}).get("old_text", "")
+
+        try:
+            if action == "add" and content:
                 self._store.add_fact(content, category=category)
-            except Exception as e:
-                logger.debug("Holographic memory_write mirror failed: %s", e)
+
+            elif action == "replace" and content:
+                fact_id = self._find_fact_id_by_content(old_text) if old_text else None
+                if fact_id is not None:
+                    try:
+                        self._store.update_fact(fact_id, content=content)
+                    except sqlite3.IntegrityError:
+                        # The new content already exists as a different fact
+                        # (UNIQUE constraint). The replace intent is "old
+                        # becomes new" — if new already exists, the old fact is
+                        # now redundant. Remove it rather than leaving a stale
+                        # duplicate.
+                        self._store.remove_fact(fact_id)
+                else:
+                    # Fact not found in holographic store — mirror as new add
+                    # rather than dropping the write silently.
+                    self._store.add_fact(content, category=category)
+
+            elif action == "remove":
+                if old_text:
+                    fact_id = self._find_fact_id_by_content(old_text)
+                    if fact_id is not None:
+                        self._store.remove_fact(fact_id)
+                # No match → idempotent no-op
+
+        except Exception as e:
+            logger.warning("Holographic memory_write mirror failed: %s", e, exc_info=True)
+
+    def _find_fact_id_by_content(self, text: str) -> Optional[int]:
+        """Find a fact ID by exact content match.
+
+        Uses a direct SQL ``WHERE content = ?`` query on the facts table,
+        leveraging the UNIQUE constraint on the ``content`` column. Returns at
+        most one row. This avoids the FTS5 tokenization, ranking limits, and
+        ``retrieval_count`` side effects of ``search_facts`` — none of which
+        belong in a maintenance lookup path.
+        """
+        if not text or not self._store:
+            return None
+        with self._store._lock:
+            row = self._store._conn.execute(
+                "SELECT fact_id FROM facts WHERE content = ?", (text.strip(),)
+            ).fetchone()
+            return int(row["fact_id"]) if row else None
 
     def shutdown(self) -> None:
         # Release the shared SQLite connection deterministically on the

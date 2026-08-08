@@ -14,6 +14,7 @@ import re
 import select
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -1385,6 +1386,16 @@ class BaseEnvironment(ABC):
 
     def __del__(self):
         try:
+            # During interpreter shutdown builtins and modules are torn down,
+            # so cleanup()'s best-effort sync_back (tar pipe plus `open` and
+            # lazy imports) raises NameError on `open` and ImportError
+            # ("sys.meta_path is None"). Skip it then: the OS reclaims sockets
+            # and files, and pulling remote changes back to the host at
+            # teardown serves no purpose. Normal GC (env dropped without an
+            # explicit cleanup()) still runs cleanup() while the runtime is
+            # intact.
+            if sys.meta_path is None:
+                return
             self.cleanup()
         except Exception:
             pass

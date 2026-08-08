@@ -64,6 +64,29 @@ describe('tokenizer state-aware flush', () => {
   })
 })
 
+describe('tokenizer control-byte boundaries', () => {
+  it('splits DEL out of surrounding text so backspace stays parseable', () => {
+    const tokenizer = createTokenizer()
+
+    expect(tokenizer.feed('ㅎ\x7fㅏ')).toEqual([
+      { type: 'text', value: 'ㅎ' },
+      { type: 'text', value: '\x7f' },
+      { type: 'text', value: 'ㅏ' }
+    ])
+  })
+
+  it('keeps escape sequences intact while splitting adjacent control bytes', () => {
+    const tokenizer = createTokenizer()
+
+    expect(tokenizer.feed(`ab\x7f\x1b[Acd`)).toEqual([
+      { type: 'text', value: 'ab' },
+      { type: 'text', value: '\x7f' },
+      { type: 'sequence', value: '\x1b[A' },
+      { type: 'text', value: 'cd' }
+    ])
+  })
+})
+
 // Battle-test: prove the leak class is structurally impossible, not just that
 // the known cases are patched. We hammer the tokenizer with the worst stalls a
 // terminal can produce (split + flush at every byte) and assert the two hard

@@ -40,6 +40,17 @@ describe('parseMultipleKeypresses bracketed paste recovery', () => {
   })
 })
 
+describe('parseMultipleKeypresses control-byte boundaries', () => {
+  it('preserves DEL as a standalone backspace between adjacent IME text chunks', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'ㅎ\x7fㅏ')
+
+    expect(keys).toHaveLength(3)
+    expect(keys[0]).toMatchObject({ kind: 'key', raw: 'ㅎ' })
+    expect(keys[1]).toMatchObject({ kind: 'key', name: 'backspace', raw: '\x7f' })
+    expect(keys[2]).toMatchObject({ kind: 'key', raw: 'ㅏ' })
+  })
+})
+
 describe('mouse wheel modifier decoding', () => {
   // SGR mouse format: ESC [ < button ; col ; row M
   // Wheel up = 64 (0x40), wheel down = 65 (0x41).

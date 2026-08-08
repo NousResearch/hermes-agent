@@ -71,6 +71,41 @@ class TestResolveToken:
         assert source == ""
         mock_cli.assert_not_called()
 
+    def test_classic_pat_in_shared_var_does_not_warn(self, monkeypatch, caplog):
+        """A classic PAT in the general-purpose GITHUB_TOKEN/GH_TOKEN vars is
+        expected (they feed the gh CLI etc.), so it must not log at WARNING —
+        that was pure noise when Copilot was unused (#75687)."""
+        import logging
+
+        from hermes_cli.copilot_auth import resolve_copilot_token
+
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.setenv("GH_TOKEN", "ghp_classic_shared")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value=None):
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.copilot_auth"):
+                token, source = resolve_copilot_token()
+
+        assert (token, source) == ("", "")
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_classic_pat_in_dedicated_var_warns(self, monkeypatch, caplog):
+        """A classic PAT in the Copilot-dedicated COPILOT_GITHUB_TOKEN is a real
+        misconfiguration, so it must still surface at WARNING (#75687)."""
+        import logging
+
+        from hermes_cli.copilot_auth import resolve_copilot_token
+
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghp_classic_dedicated")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value=None):
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.copilot_auth"):
+                resolve_copilot_token()
+
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("COPILOT_GITHUB_TOKEN" in r.getMessage() for r in warnings)
+
 
 class TestRequestHeaders:
     """Copilot API header generation."""

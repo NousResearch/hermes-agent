@@ -151,9 +151,54 @@ _BINARY_SNIFF_BYTES = 4096
 _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 
+# A heredoc redirect (`<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<-EOF`) introduces a
+# literal data block terminated by a line containing only the delimiter.
+# shlex has no concept of this: it tokenizes the heredoc body as if it were
+# additional shell commands, and any bare-looking token in that body (e.g. a
+# file path embedded in Python/JS source passed via heredoc) gets treated as
+# a "referenced script" by `_iter_referenced_shell_scripts` below — which
+# then reads that unrelated file from disk and recursively scans its
+# contents for lifecycle patterns. On a large third-party payload (e.g. a
+# downloaded HTML page) that is a false-positive generator: the regex
+# branches use unbounded `[^\n]*`, so incidental substrings in a big
+# minified blob can coincidentally satisfy a match. The heredoc body is
+# data, not shell commands, so segment-tokenization must skip it entirely.
+# `contains_gateway_lifecycle_command`'s direct substring scan still covers
+# the full raw text (heredoc body included), so a real lifecycle command
+# written inside a heredoc payload is still caught by that separate check.
+_HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Remove heredoc payload lines so they aren't tokenized as commands."""
+    lines = command.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        match = _HEREDOC_START.search(line)
+        if match is None:
+            out.append(line)
+            i += 1
+            continue
+        out.append(line)
+        delimiter = match.group(2)
+        i += 1
+        # Skip body lines until an exact delimiter line (heredoc terminator
+        # lines allow leading tabs only with the `<<-` form; a plain
+        # stripped-equality check covers both forms safely).
+        while i < len(lines) and lines[i].strip() != delimiter:
+            i += 1
+        if i < len(lines):
+            out.append(lines[i])  # keep the terminator line itself
+            i += 1
+    return "\n".join(out)
+
+
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
     """Yield shell-tokenized command segments, honoring quotes and comments."""
     normalized = command.replace("\\\n", "")
+    normalized = _strip_heredoc_bodies(normalized)
     for line in normalized.splitlines() or [normalized]:
         try:
             lexer = shlex.shlex(

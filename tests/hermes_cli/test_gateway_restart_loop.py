@@ -892,6 +892,157 @@ class TestLifecycleGuardModule:
         check_gateway_lifecycle("daily ops", "relative-script.sh")
 
 
+class TestHeredocFalsePositive:
+    """A real production false positive: a terminal command piping a heredoc
+    payload to `python3 -` got blocked as a gateway-lifecycle command.
+
+    shlex has no concept of heredoc syntax (`<<'EOF' ... EOF`): it tokenized
+    the heredoc BODY (arbitrary Python/shell source) as if it were additional
+    shell commands. A bare-looking token inside that body — e.g. a file path
+    literal from `open('/tmp/vids.html')` embedded in the Python source — was
+    then picked up by `_iter_referenced_shell_scripts` as "a script being
+    executed", read from disk, and recursively scanned. When the referenced
+    file was large third-party content (a downloaded HTML page, in the field
+    report), the regex branches' unbounded `[^\\n]*` spans meant an incidental
+    substring inside that big blob could coincidentally satisfy a match —
+    blocking a completely unrelated, benign command.
+
+    The fix strips heredoc body lines before tokenizing (they are literal
+    stdin data, never additional shell commands to parse), while leaving
+    `contains_gateway_lifecycle_command`'s direct full-text substring scan
+    untouched — that scan still covers heredoc bodies, so a genuine lifecycle
+    command written *inside* a heredoc payload is still caught (see
+    `test_lifecycle_command_inside_heredoc_still_blocked` below).
+    """
+
+    def test_field_report_command_not_blocked(self, tmp_path):
+        """The exact command shape that triggered the false positive: a
+        `grep | head` pipeline followed by `python3 - <<'EOF' ... EOF`,
+        where the heredoc body references a file by *absolute path* via
+        `open(...)` (the referenced-script walk only treats a bare token as
+        a script reference when it contains a `/` or a `.sh`/`.bash`/`.zsh`
+        suffix — a relative filename would never trigger the walk at all,
+        so the repro must use an absolute path to match the field report)."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        html_path = tmp_path / "vids.html"
+        # Simulates the real downloaded-page payload: large unrelated content
+        # that incidentally contains a lifecycle-shaped substring somewhere
+        # inside it (e.g. a quoted doc snippet on the page) — exactly what
+        # made the unbounded regex spans a false-positive generator once the
+        # heredoc body caused this file to be read and scanned as "a script".
+        noise = "x" * 5000
+        html_path.write_text(
+            noise + " unrelated page text mentions hermes   gateway   restart "
+            "in passing " + noise,
+            encoding="utf-8",
+        )
+        command = (
+            f"grep -oP 'ytInitialData = .{{0,50}}' {html_path} | head -1; "
+            "python3 - <<'EOF'\n"
+            "import re, json\n"
+            f"html = open('{html_path}').read()\n"
+            "m = re.search(r'var ytInitialData = (\\{.*?\\});</script>', html)\n"
+            "print(m)\n"
+            "EOF"
+        )
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        )
+        assert result is False, (
+            "Heredoc body referencing a file by absolute path must not be "
+            "tokenized as a referenced script and scanned"
+        )
+
+    @pytest.mark.parametrize("quote_style", ["'EOF'", '"EOF"', "EOF", "-EOF"])
+    def test_heredoc_variants_not_blocked(self, quote_style, tmp_path):
+        """All heredoc introducer forms (`<<EOF`, `<<'EOF'`, `<<"EOF"`,
+        `<<-EOF`) must have their body skipped during tokenization. The
+        referenced file must exist on disk with real lifecycle-shaped noise
+        content, otherwise `_read_referenced_script` short-circuits on a
+        missing path and the test proves nothing about the actual fix."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        target = tmp_path / "file.txt"
+        noise = "x" * 5000
+        target.write_text(
+            noise + " hermes   gateway   restart " + noise, encoding="utf-8"
+        )
+        delimiter = quote_style.lstrip("-").strip("'\"")
+        redirect = f"<<{quote_style}"
+        command = (
+            f"python3 - {redirect}\n"
+            f"path = open('{target}').read()\n"
+            f"{delimiter}"
+        )
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        )
+        assert result is False, f"heredoc form {quote_style!r} should not trip the guard"
+
+    def test_lifecycle_command_inside_heredoc_still_blocked(self):
+        """The fix must not weaken the guard: a real lifecycle command
+        written as data inside a heredoc payload is still caught by the
+        separate direct full-text substring scan."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        command = (
+            "python3 - <<'EOF'\n"
+            "import os\n"
+            "os.system('systemctl restart hermes-gateway')\n"
+            "EOF"
+        )
+        result = contains_gateway_lifecycle_command_or_referenced_script(command)
+        assert result is True, (
+            "A lifecycle command embedded inside heredoc data must still "
+            "be blocked by the direct substring scan"
+        )
+
+    def test_command_after_heredoc_still_scanned(self):
+        """Content after a heredoc's closing delimiter is a real shell
+        command again and must still be tokenized/scanned normally."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        command = (
+            "cat <<'EOF'\n"
+            "just some data\n"
+            "EOF\n"
+            "hermes gateway restart"
+        )
+        result = contains_gateway_lifecycle_command_or_referenced_script(command)
+        assert result is True, (
+            "A real command following a heredoc block must still be scanned"
+        )
+
+    def test_multiple_heredocs_in_one_command(self, tmp_path):
+        """Two separate heredoc blocks in one command line must both have
+        their bodies skipped, without bleeding into each other."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        noise = "x" * 5000
+        one = tmp_path / "one.txt"
+        two = tmp_path / "two.txt"
+        one.write_text(noise + " hermes   gateway   restart " + noise, encoding="utf-8")
+        two.write_text(noise + " hermes   gateway   stop " + noise, encoding="utf-8")
+        command = (
+            "cat <<'A'\n"
+            f"open('{one}')\n"
+            "A\n"
+            "cat <<'B'\n"
+            f"open('{two}')\n"
+            "B"
+        )
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        )
+        assert result is False
+
+
 # ---------------------------------------------------------------------------
 # Defense 2 (chokepoint): cron.jobs.create_job blocks the AGENT model-tool path
 # ---------------------------------------------------------------------------

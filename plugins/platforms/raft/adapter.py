@@ -56,6 +56,16 @@ DEFAULT_PATH = "/wake"
 DEFAULT_RUNTIME_SESSION = "default"
 DEFAULT_MAX_BODY_BYTES = 16_384
 DEFAULT_ACTIVITY_QUEUE_CAP = 500
+
+
+def _coerce_int(value: object, *, default: int) -> int:
+    """Parse config/env ints; malformed values must not crash adapter init."""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 ACTIVITY_CONTENT_CAP = 4096
 ACTIVITY_EVENT_SCHEMA = "raft-activity.v1"
 ACTIVITY_DRAIN_SCHEMA = "raft-activity-drain.v1"
@@ -450,15 +460,16 @@ class RaftAdapter(BasePlatformAdapter):
         super().__init__(config, Platform("raft"))
         extra = config.extra or {}
         self._host: str = str(extra.get("host", DEFAULT_HOST))
-        self._port: int = int(extra.get("port", DEFAULT_PORT))
+        self._port: int = _coerce_int(extra.get("port", DEFAULT_PORT), default=DEFAULT_PORT)
         self._path: str = _path_value(extra.get("path", DEFAULT_PATH))
         self._bridge_token: str = str(extra.get("bridge_token", ""))
         self._runtime_session: str = str(
             extra.get("runtime_session", DEFAULT_RUNTIME_SESSION)
             or DEFAULT_RUNTIME_SESSION
         )
-        self._max_body_bytes: int = int(
-            extra.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES)
+        self._max_body_bytes: int = _coerce_int(
+            extra.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES),
+            default=DEFAULT_MAX_BODY_BYTES,
         )
         self._runner = None
         self._bridge_process: Optional[subprocess.Popen] = None

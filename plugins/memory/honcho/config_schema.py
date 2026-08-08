@@ -75,6 +75,18 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             inline=True,
             group="Connection",
         ),
+        ProviderField(
+            key="defaultHeaders",
+            label="Default headers",
+            kind=KIND_JSON,
+            description=(
+                "Custom HTTP headers sent with every Honcho request "
+                "(e.g. proxy auth for CF Access). "
+                "ONLY sent to the Honcho server — never leaked to LLM providers."
+            ),
+            placeholder='{"CF-Access-Client-Id": "…", "CF-Access-Client-Secret": "…"}',
+            group="Connection",
+        ),
         # — Identity —
         ProviderField(
             key="peerName",

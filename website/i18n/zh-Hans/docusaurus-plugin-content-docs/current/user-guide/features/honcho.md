@@ -110,6 +110,7 @@ Honcho 在 `~/.honcho/config.json`（全局）或 `$HERMES_HOME/honcho.json`（p
 
 | 键 | 默认值 | 说明 |
 |-----|---------|-------------|
+| `defaultHeaders` | `{}` | 每次 Honcho 请求携带的自定义 HTTP 头（代理认证）。仅发送到 Honcho 服务器，不会泄露到 LLM 供应商。Host 级别覆盖 root 级别 |
 | `contextTokens` | `null`（不限制） | 每轮自动注入上下文的 token 预算。设为整数（如 1200）以限制上限，按词边界截断 |
 | `contextCadence` | `1` | `context()` API 调用之间的最小轮数（基础层刷新） |
 | `dialecticCadence` | `2` | `peer.chat()` LLM 调用之间的最小轮数（辩证层）。推荐 1–5。在 `tools` 模式下无关——由模型显式调用 |

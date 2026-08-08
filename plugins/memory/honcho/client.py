@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import logging
 import hashlib
 import ipaddress
@@ -188,6 +189,42 @@ def _parse_string_map(host_obj: dict, root_obj: dict, key: str) -> dict[str, str
         alias_value = str(raw_value).strip() if raw_value is not None else ""
         if alias_key and alias_value:
             result[alias_key] = alias_value
+    return result
+
+
+# RFC 7230 token characters for HTTP header field names:
+#   "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
+#   "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+
+def _parse_headers(host_obj: dict, root_obj: dict, key: str) -> dict[str, str]:
+    """Parse HTTP headers from config with host-level whole-map override.
+
+    Unlike _parse_string_map, this:
+    - Does NOT strip whitespace from values (auth tokens are sensitive)
+    - Validates header names against RFC 7230 token rules
+    - Skips invalid entries with a warning instead of crashing
+    """
+    source = host_obj[key] if key in host_obj else root_obj.get(key)
+    if not isinstance(source, dict):
+        return {}
+
+    result: dict[str, str] = {}
+    for raw_key, raw_value in source.items():
+        name = str(raw_key).strip()
+        if not name:
+            continue
+        if not _HEADER_NAME_RE.match(name):
+            logger.warning(
+                "Skipping invalid HTTP header name in %s: %r "
+                "(must be ASCII token characters per RFC 7230)",
+                key, name,
+            )
+            continue
+        # Preserve value exactly — auth tokens can contain trailing whitespace
+        value = str(raw_value) if raw_value is not None else ""
+        result[name] = value
     return result
 
 
@@ -455,6 +492,11 @@ class HonchoClientConfig:
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
+    # Custom HTTP headers sent exclusively with Honcho API requests (e.g. proxy
+    # auth tokens for CF Access, Tailscale, nginx basic auth).  SECURITY: these
+    # headers MUST NOT leak to LLM providers or any other HTTP client — they are
+    # isolated inside the Honcho SDK's own httpx.Client instance.
+    default_headers: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
     raw: dict[str, Any] = field(default_factory=dict)
     # True when Honcho was explicitly configured for this host (hosts.hermes
@@ -731,6 +773,7 @@ class HonchoClientConfig:
             session_strategy=session_strategy,
             session_peer_prefix=session_peer_prefix,
             sessions=raw.get("sessions", {}),
+            default_headers=_parse_headers(host_block, raw, "defaultHeaders"),
             raw=raw,
             explicitly_configured=_explicitly_configured,
         )
@@ -1098,6 +1141,12 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             kwargs["base_url"] = resolved_base_url
         if resolved_timeout is not None:
             kwargs["timeout"] = resolved_timeout
+        # SECURITY: These headers carry proxy auth secrets (CF Access tokens,
+        # JWT credentials, etc.) and MUST only be sent to the Honcho server.
+        # They are isolated by the Honcho SDK's own httpx.Client instance.
+        # Do NOT merge these into any shared header dict or pass to LLM clients.
+        if config.default_headers:
+            kwargs["default_headers"] = config.default_headers
 
         global _cached_timeout
         _cached_timeout = resolved_timeout

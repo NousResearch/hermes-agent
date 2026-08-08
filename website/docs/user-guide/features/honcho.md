@@ -110,10 +110,43 @@ Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho
 
 When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and `hermes memory setup`) ask for a **local JWT / bearer token** after the base URL. Paste a JWT signed with the server's `AUTH_JWT_SECRET` (the Honcho compose env var) to enable authenticated access; leave it blank for servers running with `AUTH_USE_AUTH=false`. The local token is stored under the host block (`hosts.<host>.apiKey` in `honcho.json`), separate from any cloud `apiKey`, so you can flip the `Cloud or local?` prompt back to `cloud` later without losing either credential.
 
+#### Proxy Authentication (defaultHeaders)
+
+When your self-hosted Honcho instance sits behind a reverse proxy that requires its own authentication (Cloudflare Access, Tailscale auth, nginx basic auth, custom API gateways), use `defaultHeaders` to send custom HTTP headers with every Honcho request:
+
+```json
+{
+  "baseUrl": "https://honcho.example.com",
+  "defaultHeaders": {
+    "CF-Access-Client-Id": "your-service-token-id.access",
+    "CF-Access-Client-Secret": "your-service-token-secret"
+  }
+}
+```
+
+These headers are:
+- **Sent exclusively to the Honcho server** — they never leak to LLM providers (OpenAI, Anthropic, etc.) or any other HTTP client
+- **Validated at config parse time** — invalid header names (non-ASCII, spaces, control characters) are rejected with a warning
+- **Not whitespace-stripped** — auth tokens are preserved exactly as configured
+
+Host-level `defaultHeaders` replaces root-level entirely (same as `userPeerAliases`):
+
+```json
+{
+  "defaultHeaders": {"X-Root": "used-by-default"},
+  "hosts": {
+    "hermes": {
+      "defaultHeaders": {"X-Override": "used-for-this-host"}
+    }
+  }
+}
+```
+
 ### Full Config Reference
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `defaultHeaders` | `{}` | Custom HTTP headers sent with every Honcho request (proxy auth). Only sent to Honcho — never to LLM providers. Host-level overrides root |
 | `contextTokens` | `null` (uncapped) | Token budget for auto-injected context per turn. Set to an integer (e.g. 1200) to cap. Truncates at word boundaries |
 | `contextCadence` | `1` | Minimum turns between `context()` API calls (base layer refresh) |
 | `dialecticCadence` | `2` | Minimum turns between `peer.chat()` LLM calls (dialectic layer). Recommended 1–5. In `tools` mode, irrelevant — model calls explicitly |

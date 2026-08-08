@@ -149,6 +149,21 @@ export class GatewayClient extends EventEmitter {
   private drainGeneration = 0
   private stdoutRl: ReturnType<typeof createInterface> | null = null
   private stderrRl: ReturnType<typeof createInterface> | null = null
+  // One-way latch set by kill(). A killed child can take a real, observable
+  // amount of time to actually exit (the Python side's own shutdown grace
+  // window — see tui_gateway/entry.py's `_shutdown_grace_seconds`, ~1s by
+  // default — during which it is still alive and doing real work). Every
+  // start() call site (request()'s auto-respawn, the websocket
+  // attach-reconnect path, and the app-level "unexpected exit" crash
+  // recovery in useMainApp.ts) previously treated `proc.killed` as "already
+  // gone, safe to replace" and spawned a brand-new child immediately —
+  // producing two live `tui_gateway.entry` processes for the same terminal
+  // at once, with no guarantee which one a subsequent request would land on.
+  // kill() is only ever invoked as part of intentionally ending this
+  // client's lifecycle (graceful-exit cleanup, die()/dieWithCode()), so once
+  // set there is no legitimate reason for this same instance to spin up a
+  // replacement child — start() below is a permanent no-op afterward.
+  private shuttingDown = false
 
   constructor() {
     super()
@@ -521,6 +536,16 @@ export class GatewayClient extends EventEmitter {
   }
 
   start() {
+    if (this.shuttingDown) {
+      // See the `shuttingDown` field comment: kill() already fired for this
+      // instance, so a subsequent respawn attempt (from any of the four
+      // call sites) would race a child that may still be mid-graceful-exit.
+      // No-op rather than spawn a second, uncoordinated child.
+      this.lifecycle('[lifecycle] start() ignored — client is shutting down (kill() already called)')
+
+      return
+    }
+
     const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
     const attachUrl = resolveGatewayAttachUrl()
     const sidecarUrl = resolveSidecarUrl()
@@ -666,6 +691,10 @@ export class GatewayClient extends EventEmitter {
   }
 
   private async ensureAttachedWebSocket(method: string): Promise<WebSocket> {
+    if (this.shuttingDown) {
+      throw new Error('gateway is shutting down')
+    }
+
     if (!this.attachUrl) {
       throw new Error('gateway not running')
     }
@@ -722,6 +751,19 @@ export class GatewayClient extends EventEmitter {
   }
 
   request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    if (this.shuttingDown) {
+      // Fail fast and explicitly rather than falling through to the
+      // stdin-write below: `this.proc` can still be a non-null, non-exited
+      // child here (kill() intentionally leaves it in place so its own late
+      // exit/close events are still identity-matched), so without this
+      // guard a request issued after kill() would be written straight to a
+      // half-dead child's stdin — a write that may never be read (the child
+      // is unwinding its own shutdown, not servicing new RPCs) and would
+      // otherwise silently hang the caller until REQUEST_TIMEOUT_MS instead
+      // of failing immediately.
+      return Promise.reject(new Error('gateway is shutting down'))
+    }
+
     const attachUrl = resolveGatewayAttachUrl()
 
     if (attachUrl) {
@@ -741,7 +783,7 @@ export class GatewayClient extends EventEmitter {
       this.start()
     }
 
-    if (!this.proc?.stdin) {
+    if (!this.proc?.stdin || this.proc.killed || this.proc.exitCode !== null) {
       return Promise.reject(new Error('gateway not running'))
     }
 
@@ -776,6 +818,14 @@ export class GatewayClient extends EventEmitter {
   }
 
   kill(reason = 'requested') {
+    // Set BEFORE anything else: a signal-forwarded child can take up to its
+    // own shutdown grace window to actually exit (still alive, still doing
+    // real work), so anything that runs synchronously below — or any
+    // request()/start() call that lands in the gap before this client's own
+    // process actually terminates — must see this instance as done for good
+    // rather than eligible for an implicit respawn.
+    this.shuttingDown = true
+
     const proc = this.proc
     const killed = proc?.kill()
 

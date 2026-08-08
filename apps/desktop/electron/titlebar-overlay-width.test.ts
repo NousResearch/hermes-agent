@@ -6,7 +6,8 @@ import {
   MACOS_TAHOE_DARWIN_MAJOR,
   macTitleBarOverlayHeight,
   nativeOverlayWidth,
-  OVERLAY_FALLBACK_WIDTH
+  OVERLAY_FALLBACK_WIDTH,
+  scaledTitleBarOverlayHeight
 } from './titlebar-overlay-width'
 
 // This static reservation is only the pre-layout FALLBACK. Once laid out the
@@ -52,4 +53,23 @@ test('Tahoe (Darwin 25+) drops the overlay height to 0 to avoid electron#49183',
 
 test('macTitleBarOverlayHeight tolerates missing args (unknown platform → 0)', () => {
   assert.equal(macTitleBarOverlayHeight(), 0)
+})
+
+test('scaledTitleBarOverlayHeight is a no-op at 1x (actual size)', () => {
+  assert.equal(scaledTitleBarOverlayHeight({ titlebarHeight: 34, zoomFactor: 1 }), 34)
+})
+
+test('scaledTitleBarOverlayHeight grows the overlay in proportion with zoom-in (#81086)', () => {
+  // Windows/GNOME/KDE paint the min/max/close glyphs to fill the overlay
+  // height; without scaling this by the page zoom factor, those native
+  // controls stay pinned at the un-zoomed size while the rest of the UI grows.
+  assert.equal(scaledTitleBarOverlayHeight({ titlebarHeight: 34, zoomFactor: 1.5 }), 51)
+})
+
+test('scaledTitleBarOverlayHeight shrinks the overlay in proportion with zoom-out', () => {
+  assert.equal(scaledTitleBarOverlayHeight({ titlebarHeight: 34, zoomFactor: 0.9 }), 31)
+})
+
+test('scaledTitleBarOverlayHeight tolerates missing args', () => {
+  assert.equal(scaledTitleBarOverlayHeight(), 0)
 })

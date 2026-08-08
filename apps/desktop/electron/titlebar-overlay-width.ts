@@ -40,3 +40,18 @@ export const MACOS_TAHOE_DARWIN_MAJOR = 25
 export function macTitleBarOverlayHeight({ darwinMajor = 0, titlebarHeight = 0 } = {}) {
   return darwinMajor >= MACOS_TAHOE_DARWIN_MAJOR ? 0 : titlebarHeight
 }
+
+/**
+ * Height (px) to pass to `titleBarOverlay` on Windows/Linux (WCO). Page zoom
+ * (webContents.setZoomLevel) scales the renderer's own DOM but never the
+ * native min/max/close glyphs the OS paints into the overlay region, so at
+ * higher zoom levels the app's own titlebar content grows while those native
+ * controls stay pinned at the un-zoomed size (#81086). Scaling the overlay
+ * height by the same factor keeps the native buttons in proportion with the
+ * rest of the UI.
+ *
+ * @param {{ titlebarHeight?: number, zoomFactor?: number }} opts
+ */
+export function scaledTitleBarOverlayHeight({ titlebarHeight = 0, zoomFactor = 1 } = {}) {
+  return Math.round(titlebarHeight * zoomFactor)
+}

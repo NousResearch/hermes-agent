@@ -17,6 +17,7 @@ import {
   ZOOM_RESIZE_REASSERT_DELAY_MS,
   ZOOM_STEP,
   ZOOM_STORAGE_KEY,
+  zoomLevelToFactor,
   zoomLevelToPercent,
   zoomReassertWindowEvents,
   zoomWiringForWindowKind
@@ -45,6 +46,20 @@ test('clampZoomLevel rejects garbage and enforces bounds', () => {
 test('level 0 is exactly 100 percent (Chromium actual-size baseline)', () => {
   assert.equal(zoomLevelToPercent(0), 100)
   assert.equal(percentToZoomLevel(100), 0)
+})
+
+test('zoomLevelToFactor matches the percent conversion (both derive from the same factor)', () => {
+  assert.equal(zoomLevelToFactor(0), 1)
+
+  for (const percent of [90, 100, 110, 125, 150, 175]) {
+    const level = percentToZoomLevel(percent)
+    assert.equal(Math.round(zoomLevelToFactor(level) * 100), percent)
+  }
+})
+
+test('zoomLevelToFactor clamps garbage the same way clampZoomLevel does', () => {
+  assert.equal(zoomLevelToFactor(NaN), zoomLevelToFactor(DEFAULT_ZOOM_LEVEL))
+  assert.equal(zoomLevelToFactor(999), zoomLevelToFactor(9))
 })
 
 test('percentToZoomLevel rejects garbage by falling back to the shipped default', () => {

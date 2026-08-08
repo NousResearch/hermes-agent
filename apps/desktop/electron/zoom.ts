@@ -29,8 +29,15 @@ export function clampZoomLevel(value) {
   return Math.min(Math.max(value, MIN_ZOOM_LEVEL), MAX_ZOOM_LEVEL)
 }
 
+/** Raw scale factor (1.0 = actual size) a zoom level maps to; the same factor
+ * used to keep the Windows/Linux titlebar overlay's native buttons in
+ * proportion with the zoomed page (see scaledTitleBarOverlayHeight). */
+export function zoomLevelToFactor(level) {
+  return Math.pow(ZOOM_FACTOR_BASE, clampZoomLevel(level))
+}
+
 export function zoomLevelToPercent(level) {
-  return Math.round(Math.pow(ZOOM_FACTOR_BASE, clampZoomLevel(level)) * 100)
+  return Math.round(zoomLevelToFactor(level) * 100)
 }
 
 export function percentToZoomLevel(percent) {

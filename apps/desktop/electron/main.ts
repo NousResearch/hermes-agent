@@ -186,7 +186,11 @@ import {
   SshConnection
 } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
-import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
+import {
+  nativeOverlayWidth as computeNativeOverlayWidth,
+  macTitleBarOverlayHeight,
+  scaledTitleBarOverlayHeight
+} from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
@@ -802,7 +806,7 @@ function getWindowBackgroundColor() {
 // to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
 const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 
-function getTitleBarOverlayOptions() {
+function getTitleBarOverlayOptions(zoomFactor = 1) {
   if (IS_MAC) {
     // Tahoe (Darwin 25+) misplaces the traffic lights when the overlay has a
     // nonzero height (electron#49183); 0 there keeps them at the configured
@@ -819,7 +823,10 @@ function getTitleBarOverlayOptions() {
 
   return {
     color: TITLEBAR_OVERLAY_COLOR,
-    height: TITLEBAR_HEIGHT,
+    // Page zoom never touches these OS-painted min/max/close glyphs on its
+    // own (#81086) — scale the overlay height by the same factor so they
+    // stay in proportion with the rest of the zoomed UI.
+    height: scaledTitleBarOverlayHeight({ titlebarHeight: TITLEBAR_HEIGHT, zoomFactor }),
     symbolColor:
       rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground)
         ? rendererTitleBarTheme.foreground
@@ -830,11 +837,17 @@ function getTitleBarOverlayOptions() {
 }
 
 // Push refreshed overlay options to a live window after a theme/appearance
-// change. No-op only on plain (non-WSL) Linux, where getTitleBarOverlayOptions()
-// returns false; the try/catch additionally guards builds where
-// setTitleBarOverlay isn't supported.
+// change or a zoom change (see setAndPersistZoomLevel/restorePersistedZoomLevel
+// below — zoom.ts).  No-op only on plain (non-WSL) Linux, where
+// getTitleBarOverlayOptions() returns false; the try/catch additionally
+// guards builds where setTitleBarOverlay isn't supported.
 function applyTitleBarOverlay(win) {
-  const options = getTitleBarOverlayOptions()
+  const zoomFactor =
+    win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()
+      ? zoomLevelToFactor(win.webContents.getZoomLevel())
+      : 1
+
+  const options = getTitleBarOverlayOptions(zoomFactor)
 
   if (!options || typeof options !== 'object') {
     return
@@ -5535,6 +5548,7 @@ import {
   percentToZoomLevel,
   ZOOM_STEP,
   ZOOM_STORAGE_KEY,
+  zoomLevelToFactor,
   zoomLevelToPercent,
   zoomWiringForWindowKind
 } from './zoom'
@@ -5547,6 +5561,9 @@ function setAndPersistZoomLevel(window, zoomLevel) {
   // Apply + notify in one funnel so the settings UI stays in sync, including
   // changes made via the keyboard shortcuts or the View menu.
   const next = applyZoomLevel(window.webContents, zoomLevel)
+  // Keep the native Windows/Linux titlebar overlay (min/max/close) in
+  // proportion with the newly zoomed page — see getTitleBarOverlayOptions.
+  applyTitleBarOverlay(window)
 
   // Primary store: main-process JSON (survives crash recovery — #56726).
   writeZoomState(next)
@@ -5573,6 +5590,7 @@ function restorePersistedZoomLevel(window) {
 
   if (saved != null) {
     applyZoomLevel(window.webContents, saved)
+    applyTitleBarOverlay(window)
 
     return
   }
@@ -5581,6 +5599,7 @@ function restorePersistedZoomLevel(window) {
   // doesn't flash Chromium 100%, then try localStorage for pre-JSON installs
   // and overwrite if a legacy value is there.
   applyZoomLevel(window.webContents, DEFAULT_ZOOM_LEVEL)
+  applyTitleBarOverlay(window)
 
   window.webContents
     .executeJavaScript(
@@ -5593,6 +5612,7 @@ function restorePersistedZoomLevel(window) {
 
       const level = stored == null ? DEFAULT_ZOOM_LEVEL : Number(stored)
       const applied = applyZoomLevel(window.webContents, level)
+      applyTitleBarOverlay(window)
       writeZoomState(applied)
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))

@@ -67,6 +67,12 @@ import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
+import {
+  getPtyTabId,
+  ptyClearStoredSessionId,
+  ptyStoredSessionId,
+  ptyStoreSessionId,
+} from "@/lib/pty-session-storage";
 
 // Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
 // Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
@@ -332,6 +338,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const handleSessionTitleChange = useCallback(
     (title: string | null) => setSessionTitleState({ scope: titleScope, title }),
     [titleScope],
+  );
+
+  // Persist the session ID to localStorage so a browser-kill/reopen can
+  // resume the conversation even if the PTY process died.
+  // Uses the per-tab id so two same-profile tabs never overwrite each other.
+  const handleSessionIdChange = useCallback(
+    (sessionId: string) => {
+      ptyStoreSessionId(scopedProfile || "default", getPtyTabId(), sessionId);
+    },
+    [scopedProfile],
   );
 
   useEffect(() => {
@@ -969,8 +985,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     void (async () => {
       if (unmounting) return;
       const params: Record<string, string> = { channel };
-      if (resumeParam) params.resume = resumeParam;
-      if (forceFresh) params.fresh = "1";
+      // Resume priority: explicit ?resume= URL param > localStorage fallback.
+      // The localStorage fallback covers browser-kill/reopen: without it the
+      // new PTY spawns with no session context, losing the conversation.
+      if (forceFresh) {
+        params.fresh = "1";
+        ptyClearStoredSessionId(scopedProfile || "default", getPtyTabId());
+      } else if (resumeParam) {
+        params.resume = resumeParam;
+      } else {
+        const stored = ptyStoredSessionId(scopedProfile || "default", getPtyTabId());
+        if (stored) params.resume = stored;
+      }
       // Keep-alive identity: reattach to this tab's living PTY across
       // refresh/transient drops. A forced-fresh start rotates the token so
       // the previous keep-alive PTY is not reattached (registry reaps it).
@@ -1483,6 +1509,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onSessionIdChange={handleSessionIdChange}
               />
             </div>
             <ChatSessionList
@@ -1616,6 +1643,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onSessionIdChange={handleSessionIdChange}
               />
             </div>
 

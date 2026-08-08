@@ -243,6 +243,54 @@ def sanitize_moonshot_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return sanitized if any_change else tools
 
 
+def _ensure_properties_recursive(node: Any) -> Any:
+    """Deep-walk a schema; every object-typed node gets a ``properties`` key."""
+    if isinstance(node, dict):
+        out = {k: _ensure_properties_recursive(v) for k, v in node.items()}
+        if out.get("type") == "object" and "properties" not in out:
+            out["properties"] = {}
+        return out
+    if isinstance(node, list):
+        return [_ensure_properties_recursive(item) for item in node]
+    return node
+
+
+def ensure_object_properties_in_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Add ``properties: {}`` to every object-typed node in all tool schemas.
+
+    Perplexity's Chat Completions endpoint validates tool schemas strictly
+    and 400s ("invalid request") on any object-typed parameter that omits
+    ``properties`` — Hermes's ``tool_call.arguments`` (a schemaless free-form
+    object) is the canonical offender.  Input is not mutated; the original
+    list is returned unchanged when nothing needed repair.
+    """
+    if not tools:
+        return tools
+
+    sanitized: List[Dict[str, Any]] = []
+    any_change = False
+    for tool in tools:
+        if not isinstance(tool, dict):
+            sanitized.append(tool)
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            sanitized.append(tool)
+            continue
+        params = fn.get("parameters")
+        if not isinstance(params, dict):
+            sanitized.append(tool)
+            continue
+        repaired = _ensure_properties_recursive(copy.deepcopy(params))
+        if repaired != params:
+            any_change = True
+            sanitized.append({**tool, "function": {**fn, "parameters": repaired}})
+        else:
+            sanitized.append(tool)
+
+    return sanitized if any_change else tools
+
+
 def is_moonshot_model(model: str | None) -> bool:
     """True for any Kimi / Moonshot model slug, regardless of aggregator prefix.
 

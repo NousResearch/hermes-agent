@@ -78,6 +78,13 @@ class ProviderProfile:
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
 
+    # True when the provider's Chat Completions endpoint validates tool
+    # parameter schemas strictly and rejects object-typed parameters that
+    # omit ``properties`` (e.g. Perplexity, HTTP 400 "invalid request").
+    # The transport runs the shared schema-repair pass
+    # (agent.moonshot_schema.sanitize_moonshot_tools) on outgoing tools.
+    sanitize_tool_schemas: bool = False
+
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.

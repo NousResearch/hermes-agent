@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from agent.moonshot_schema import (
+    ensure_object_properties_in_tools,
     is_moonshot_model,
     sanitize_moonshot_tool_parameters,
     sanitize_moonshot_tools,
@@ -393,3 +394,84 @@ class TestUnionTypeList:
         assert sort["type"] == "string"
         assert sort["enum"] == ["asc", "desc"]
         assert params["properties"]["sort"]["type"] == ["string", "null"]
+
+
+class TestEnsureObjectPropertiesInTools:
+    """ensure_object_properties_in_tools() — strict-schema providers (Perplexity).
+
+    Perplexity's Chat Completions endpoint 400s ("invalid request") on any
+    object-typed tool parameter that omits ``properties``. Hermes's
+    ``tool_call.arguments`` (a schemaless free-form object) is the canonical
+    offender. These tests pin the repair contract.
+    """
+
+    @staticmethod
+    def _tool_call_tool():
+        return {
+            "type": "function",
+            "function": {
+                "name": "tool_call",
+                "description": "Invoke a deferred tool.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "arguments": {"type": "object"},
+                    },
+                    "required": ["name", "arguments"],
+                },
+            },
+        }
+
+    def test_schemaless_object_param_gains_empty_properties(self):
+        out = ensure_object_properties_in_tools([self._tool_call_tool()])
+        args = out[0]["function"]["parameters"]["properties"]["arguments"]
+        assert args["properties"] == {}
+
+    def test_does_not_mutate_input(self):
+        tool = self._tool_call_tool()
+        ensure_object_properties_in_tools([tool])
+        assert "properties" not in tool["function"]["parameters"]["properties"]["arguments"]
+
+    def test_nested_objects_repaired_recursively(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "nested",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "items": {"type": "object"},
+                            },
+                        },
+                    },
+                },
+            }
+        ]
+        out = ensure_object_properties_in_tools(tools)
+        items = out[0]["function"]["parameters"]["properties"]["items"]["items"]
+        assert items["properties"] == {}
+
+    def test_already_valid_schema_is_passthrough(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "fine",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"x": {"type": "object", "properties": {}}},
+                    },
+                },
+            }
+        ]
+        assert ensure_object_properties_in_tools(tools) is tools
+
+    def test_empty_and_malformed_inputs_are_safe(self):
+        assert ensure_object_properties_in_tools([]) == []
+        assert ensure_object_properties_in_tools(None) is None
+        out = ensure_object_properties_in_tools(["not-a-dict", {"no": "function"}])
+        assert out[0] == "not-a-dict"

@@ -8,7 +8,6 @@ import {
   COMPOSER_SURFACE_HEIGHT_VAR,
   setSurfaceVar
 } from '@/app/chat/surface-vars'
-import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 
 import { COMPOSER_COMPACT_PILL_PX, COMPOSER_SINGLE_LINE_MAX_PX, COMPOSER_STACK_BREAKPOINT_PX } from '../composer-utils'
@@ -43,7 +42,6 @@ export function useComposerMetrics({
   const [tight, setTight] = useState(false)
   // Wider than `tight`: the pill goes icon-only before the row has to stack.
   const [compactPill, setCompactPill] = useState(false)
-  const narrow = useMediaQuery('(max-width: 30rem)')
 
   // Edge signals, not the live text: these only re-render when emptiness / the
   // presence of a non-trailing newline actually flips, so typing within a line
@@ -191,7 +189,17 @@ export function useComposerMetrics({
     }
   }, [composerRef])
 
-  // Pill compacts on real width (tile/pane), OR when stacked for any reason
-  // (viewport-narrow / wrapped) so the controls row never over-runs.
-  return { compactPill: compactPill || narrow || tight, stacked: expanded || narrow || tight }
+  // Both decisions come from the composer's OWN measured width, never the
+  // viewport's. There used to be a `(max-width: 30rem)` media query in here as
+  // well, and it quietly outranked everything: any window under 480px stacked
+  // the row AND compacted the pill in the same instant, regardless of how much
+  // room the composer actually had. That collapsed the whole progressive ladder
+  // into one step for small windows — HUD mode is ~470px, so it never saw the
+  // ladder at all — and it disagreed with the measured breakpoints (320 to
+  // stack) by 160px. The ResizeObserver knows the real width; the viewport is
+  // not a proxy for it.
+  //
+  // The pill still compacts whenever the row stacks, so the controls row can't
+  // over-run once it has the width to itself.
+  return { compactPill: compactPill || tight, stacked: expanded || tight }
 }

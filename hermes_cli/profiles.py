@@ -1003,6 +1003,7 @@ def create_profile(
     no_alias: bool = False,
     no_skills: bool = False,
     description: Optional[str] = None,
+    preset: Optional[str] = None,
 ) -> Path:
     """Create a new profile directory.
 
@@ -1025,6 +1026,11 @@ def create_profile(
         a marker file so ``hermes update`` skips re-seeding this profile's
         skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
         explicitly copy skills from the source).
+    preset:
+        Optional assistant-preset key (see ``hermes_cli.assistant_presets``).
+        Writes the preset's persona to the new profile's SOUL.md and sets its
+        profile description. Validated before any directory is created so a
+        typo can't strand a half-configured profile.
 
     Returns
     -------
@@ -1038,6 +1044,19 @@ def create_profile(
         )
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
+
+    # Resolve the preset up front so a typo'd key fails before any directory
+    # is created (never strand a half-configured profile).
+    preset_obj = None
+    if preset:
+        from hermes_cli.assistant_presets import get_preset, preset_keys
+
+        preset_obj = get_preset(preset)
+        if preset_obj is None:
+            raise ValueError(
+                f"Unknown preset '{preset}'. Available: {', '.join(preset_keys())} "
+                "(see `hermes profile presets`)."
+            )
 
     if canon == "default":
         raise ValueError(
@@ -1142,6 +1161,18 @@ def create_profile(
             soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
         except Exception:
             pass  # best-effort — don't fail profile creation over this
+
+    # Apply the assistant preset (Energy-inspired one-command role profiles):
+    # overwrite SOUL.md with the preset persona and set the profile
+    # description so the kanban decomposer can route by role. An explicit
+    # --description below still wins over the preset's.
+    if preset_obj is not None:
+        try:
+            from hermes_cli.assistant_presets import apply_preset_files
+
+            apply_preset_files(profile_dir, preset_obj)
+        except Exception:
+            pass  # best-effort — the profile itself is intact without it
 
     # Write the opt-out marker so seed_profile_skills() and `hermes update`'s
     # all-profile sync loop both skip this profile for bundled-skill seeding.

@@ -9351,6 +9351,13 @@ def cmd_profile(args):
             print(f"Error: {e}")
             sys.exit(1)
 
+    elif action == "presets":
+        from hermes_cli.assistant_presets import format_preset_catalog
+
+        print()
+        print(format_preset_catalog())
+        print()
+
     elif action == "create":
         name = args.profile_name
         clone = getattr(args, "clone", False)
@@ -9361,6 +9368,7 @@ def cmd_profile(args):
         try:
             clone_from = getattr(args, "clone_from", None)
             clone_config = clone or clone_from is not None
+            preset_key = getattr(args, "preset", None)
 
             profile_dir = create_profile(
                 name=name,
@@ -9370,8 +9378,28 @@ def cmd_profile(args):
                 no_alias=no_alias,
                 no_skills=no_skills,
                 description=getattr(args, "description", None),
+                preset=preset_key,
             )
             print(f"\nProfile '{name}' created at {profile_dir}")
+
+            if preset_key:
+                from hermes_cli.assistant_presets import (
+                    get_preset,
+                    seed_preset_automations,
+                    suggested_automation_commands,
+                )
+
+                preset_obj = get_preset(preset_key)
+                if preset_obj is not None:
+                    print(f"Preset applied: {preset_obj.title} — {preset_obj.tagline}")
+                    if getattr(args, "with_automations", False):
+                        created = seed_preset_automations(profile_dir, preset_obj)
+                        for job_name in created:
+                            print(f"  Automation created: {job_name}")
+                    elif preset_obj.automations:
+                        print("  Suggested automations (add with --with-automations, or later):")
+                        for cmd in suggested_automation_commands(preset_obj, name):
+                            print(f"    {cmd}")
 
             if clone_config or clone_all:
                 source_label = (

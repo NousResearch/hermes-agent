@@ -1024,6 +1024,11 @@ platform_toolsets:
 #     # guest_mode lets explicit @mentions from non-allowlisted groups through.
 #     # Default false; ordinary messages, replies, and regex wake words stay blocked.
 #     guest_mode: false
+#     # Bot API Guest Queries are separate from guest_mode and are OFF by default.
+#     # Enabling them lets already-authorized users summon the full configured agent
+#     # from chats where Telegram exposes a Guest Query; normal chat/topic gates apply.
+#     allow_guest_queries: false
+#     guest_query_rate_limit_per_minute: 5  # Per sender+chat; clamped to 1..60
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages

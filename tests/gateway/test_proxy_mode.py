@@ -222,6 +222,51 @@ class TestRunAgentViaProxy:
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
 
+    @pytest.mark.asyncio
+    async def test_guest_query_proxy_buffers_one_shot_without_typing(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        runner.config.streaming = StreamingConfig(enabled=True, transport="edit")
+        adapter = MagicMock()
+        adapter.SUPPORTS_MESSAGE_EDITING = True
+        adapter.send_typing = AsyncMock()
+        adapter.send = AsyncMock()
+        runner._adapter_for_source = lambda _source: adapter
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            user_id="123",
+            thread_id="guest:query-123",
+        )
+        response = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":" world"}}]}\n\n'
+                "data: [DONE]\n\n"
+            ],
+        )
+        session = _FakeSession(response)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="question",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="guest-session",
+                    )
+
+        assert result["final_response"] == "Hello world"
+        assert result["response_previewed"] is False
+        adapter.send_typing.assert_not_awaited()
+        adapter.send.assert_not_awaited()
+
 
     @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):

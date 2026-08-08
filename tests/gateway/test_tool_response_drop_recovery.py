@@ -21,6 +21,7 @@ Salvaged and de-scoped from the superseded Discord-only PR #33842.
 
 import asyncio
 import logging
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -47,7 +48,9 @@ class _DummyAdapter(BasePlatformAdapter):
         return None
 
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
-        self.sent.append({"chat_id": chat_id, "content": content})
+        self.sent.append(
+            {"chat_id": chat_id, "content": content, "metadata": metadata}
+        )
         return SendResult(success=True, message_id="msg-1")
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -124,6 +127,108 @@ class TestExtractStripRecoveryAllPlatforms:
             "response_delivery_recovered" in r.getMessage()
             for r in caplog.records
         ), [r.getMessage() for r in caplog.records]
+
+
+class TestTelegramGuestFinalDelivery:
+    @staticmethod
+    def _guest_event() -> MessageEvent:
+        return MessageEvent(
+            text="send the report",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="111",
+                chat_type="dm",
+                thread_id="guest:query-1",
+            ),
+            message_id="m1",
+        )
+
+    @pytest.mark.parametrize("response", [None, "", "   "])
+    @pytest.mark.asyncio
+    async def test_empty_agent_response_becomes_one_terminal_answer(self, response):
+        adapter = _DummyAdapter(Platform.TELEGRAM)
+        adapter._keep_typing = AsyncMock()
+        adapter.set_message_handler(AsyncMock(return_value=response))
+
+        event = self._guest_event()
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert len(adapter.sent) == 1
+        delivered = adapter.sent[0]
+        assert "couldn't produce a response" in delivered["content"].lower()
+        assert delivered["metadata"]["telegram_guest_query_id"] == "query-1"
+        assert delivered["metadata"]["notify"] is True
+        adapter._keep_typing.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_attachment_only_response_becomes_one_text_answer(
+        self, monkeypatch
+    ):
+        adapter = _DummyAdapter(Platform.TELEGRAM)
+        adapter._keep_typing = AsyncMock()
+        adapter.send_document = AsyncMock()
+        adapter.send_multiple_images = AsyncMock()
+        adapter.set_message_handler(
+            AsyncMock(return_value="MEDIA:/tmp/report.pdf")
+        )
+        monkeypatch.setattr(
+            type(adapter),
+            "filter_media_delivery_paths",
+            staticmethod(lambda items: items),
+        )
+        ledger_record = MagicMock()
+        monkeypatch.setattr(
+            "gateway.delivery_ledger.record_obligation", ledger_record
+        )
+
+        event = self._guest_event()
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert len(adapter.sent) == 1
+        assert "attachments" in adapter.sent[0]["content"].lower()
+        adapter._keep_typing.assert_not_awaited()
+        adapter.send_document.assert_not_awaited()
+        adapter.send_multiple_images.assert_not_awaited()
+        ledger_record.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_text_with_attachment_sends_only_text(self, monkeypatch):
+        adapter = _DummyAdapter(Platform.TELEGRAM)
+        adapter._keep_typing = AsyncMock()
+        adapter.send_document = AsyncMock()
+        adapter.set_message_handler(
+            AsyncMock(return_value="Here is the report.\nMEDIA:/tmp/report.pdf")
+        )
+        monkeypatch.setattr(
+            type(adapter),
+            "filter_media_delivery_paths",
+            staticmethod(lambda items: items),
+        )
+
+        event = self._guest_event()
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert [item["content"] for item in adapter.sent] == ["Here is the report."]
+        adapter._keep_typing.assert_not_awaited()
+        adapter.send_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_agent_failure_sends_one_terminal_guest_error(self):
+        adapter = _DummyAdapter(Platform.TELEGRAM)
+        adapter._keep_typing = AsyncMock()
+        adapter.set_message_handler(
+            AsyncMock(side_effect=RuntimeError("guest processing failed"))
+        )
+
+        event = self._guest_event()
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert len(adapter.sent) == 1
+        delivered = adapter.sent[0]
+        assert "RuntimeError" in delivered["content"]
+        assert delivered["metadata"]["telegram_guest_query_id"] == "query-1"
+        assert delivered["metadata"]["notify"] is True
+        adapter._keep_typing.assert_not_awaited()
 
 
 class TestRecoveryDoesNotLeakMediaFragments:

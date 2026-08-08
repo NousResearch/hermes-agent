@@ -229,6 +229,14 @@ def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
     assert event.source.thread_id == "1"
 
 
+def test_guest_thread_id_is_omitted_but_malformed_topic_id_fails_closed():
+    adapter = _make_adapter()
+    assert adapter._message_thread_id_for_send("guest:query-123") is None
+
+    with pytest.raises(ValueError):
+        adapter._message_thread_id_for_send("not-a-telegram-topic")
+
+
 @pytest.mark.asyncio
 async def test_private_chat_explicit_thread_id_uses_message_thread_id_without_anchor():
     """Cron-resolved private-chat forum topics route by message_thread_id."""

@@ -236,6 +236,11 @@ async def _shutdown_abandoned_app(app) -> None:
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     try:
+        from telegram import InlineQueryResultArticle, InputTextMessageContent
+    except ImportError:
+        InlineQueryResultArticle = None
+        InputTextMessageContent = None
+    try:
         from telegram import LinkPreviewOptions
     except ImportError:
         LinkPreviewOptions = None
@@ -247,6 +252,10 @@ try:
         ContextTypes,
         filters,
     )
+    try:
+        from telegram.ext import TypeHandler
+    except ImportError:
+        TypeHandler = None
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -257,11 +266,14 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    InlineQueryResultArticle = Any
+    InputTextMessageContent = Any
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    TypeHandler = Any
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -828,6 +840,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # (cron live-adapter branch) fall through to standalone delivery.
         self._send_path_degraded: bool = False
         self._general_request_drain_lock = asyncio.Lock()
+        # Bounded sliding-window intake state for explicitly enabled Bot API
+        # Guest Queries. Keys are sender+chat pairs; stale buckets are removed
+        # on intake and the table is capped to prevent attacker-driven growth.
+        self._guest_query_intake: Dict[str, List[float]] = {}
+        self._guest_query_seen: Dict[str, float] = {}
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # Track forum chats where we've already registered bot commands
@@ -1288,11 +1305,22 @@ class TelegramAdapter(BasePlatformAdapter):
             }
         return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
 
+    @staticmethod
+    def _numeric_message_thread_id(thread_id: Optional[str]) -> Optional[int]:
+        """Return a Bot API topic id, omitting only Guest synthetic lanes."""
+        if not thread_id:
+            return None
+        if str(thread_id).startswith("guest:"):
+            return None
+        # Preserve the pre-Guest fail-closed behavior for malformed ordinary
+        # topic IDs. Silently returning None would reroute them to General.
+        return int(thread_id)
+
     @classmethod
     def _message_thread_id_for_send(cls, thread_id: Optional[str]) -> Optional[int]:
         if not thread_id or str(thread_id) == cls._GENERAL_TOPIC_THREAD_ID:
             return None
-        return int(thread_id)
+        return cls._numeric_message_thread_id(thread_id)
 
     @classmethod
     def _message_thread_id_for_typing(cls, thread_id: Optional[str]) -> Optional[int]:
@@ -1305,7 +1333,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # sends still map "1" → None via _message_thread_id_for_send.
         if not thread_id:
             return None
-        return int(thread_id)
+        return cls._numeric_message_thread_id(thread_id)
 
     @staticmethod
     def _is_thread_not_found_error(error: Exception) -> bool:
@@ -3889,24 +3917,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._bot = self._app.bot
             
             # Register handlers
-            self._app.add_handler(TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self._handle_text_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.COMMAND,
-                self._handle_command
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                self._handle_location_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
-            ))
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            self._register_handlers(self._app)
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -4522,6 +4533,28 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    def _format_guest_answer(self, content: str) -> str:
+        """Format one Guest Mode answer within Telegram's message limit."""
+        raw = content.strip()
+        formatted = self.format_message(raw)
+        if utf16_len(formatted) <= self.MAX_MESSAGE_LENGTH:
+            return formatted
+
+        suffix = "\n\n[Response truncated for Telegram Guest Mode]"
+        low = 0
+        high = len(raw)
+        best = self.format_message(suffix.strip())
+        while low <= high:
+            midpoint = (low + high) // 2
+            candidate = raw[:midpoint].rstrip() + suffix
+            candidate_formatted = self.format_message(candidate)
+            if utf16_len(candidate_formatted) <= self.MAX_MESSAGE_LENGTH:
+                best = candidate_formatted
+                low = midpoint + 1
+            else:
+                high = midpoint - 1
+        return best
+
     async def send(
         self,
         chat_id: str,
@@ -4533,6 +4566,12 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        guest_query_id = (metadata or {}).get("telegram_guest_query_id")
+        if guest_query_id and not (metadata or {}).get("notify"):
+            # Guest Queries permit exactly one answer. Suppress status and
+            # streaming sends so only the final notify delivery can consume it.
+            return SendResult(success=True, message_id=None)
+
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
             return SendResult(success=False, error="send_path_degraded", retryable=True)
@@ -4540,7 +4579,34 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
+        if guest_query_id:
+            try:
+                formatted = self._format_guest_answer(content)
+                result = InlineQueryResultArticle(
+                    id=str(guest_query_id),
+                    title="Response",
+                    input_message_content=InputTextMessageContent(
+                        formatted,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    ),
+                )
+                sent = await self._bot.answer_guest_query(str(guest_query_id), result)
+                # PTB returns SentGuestMessage, whose only identifier is
+                # inline_message_id. Preserve it for delivery accounting; guest
+                # turns suppress every edit/delete path, so it is never treated
+                # as a normal Telegram chat message id.
+                inline_message_id = getattr(sent, "inline_message_id", None)
+                return SendResult(
+                    success=True,
+                    message_id=(
+                        str(inline_message_id) if inline_message_id is not None else None
+                    ),
+                )
+            except Exception as exc:
+                logger.exception("[%s] Failed to answer Telegram guest query", self.name)
+                return SendResult(success=False, error=str(exc), retryable=False)
+
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
@@ -7899,6 +7965,127 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_GUEST_MODE", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _telegram_allow_guest_queries(self) -> bool:
+        """Return whether Bot API Guest Query intake is explicitly enabled."""
+        env_value = _scoped_gate_env("TELEGRAM_ALLOW_GUEST_QUERIES")
+        if env_value:
+            return env_value.lower() in {"true", "1", "yes", "on"}
+        configured = self.config.extra.get("allow_guest_queries")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return False
+
+    def _allow_guest_query_intake(self, message: Message) -> bool:
+        """Deduplicate Guest Query IDs and apply a bounded sender/chat limit."""
+        configured = self.config.extra.get("guest_query_rate_limit_per_minute", 5)
+        try:
+            limit = max(1, min(int(configured), 60))
+        except (TypeError, ValueError):
+            limit = 5
+
+        now = time.monotonic()
+        cutoff = now - 60.0
+        query_id = str(getattr(message, "guest_query_id", "") or "")
+        seen = getattr(self, "_guest_query_seen", None)
+        if seen is None:
+            seen = self._guest_query_seen = {}
+        dedupe_cutoff = now - 600.0
+        for existing_query_id, timestamp in list(seen.items()):
+            if timestamp <= dedupe_cutoff:
+                seen.pop(existing_query_id, None)
+        if query_id and query_id in seen:
+            return False
+
+        buckets = getattr(self, "_guest_query_intake", None)
+        if buckets is None:
+            buckets = self._guest_query_intake = {}
+        for existing_key, timestamps in list(buckets.items()):
+            retained = [timestamp for timestamp in timestamps if timestamp > cutoff]
+            if retained:
+                buckets[existing_key] = retained
+            else:
+                buckets.pop(existing_key, None)
+
+        user_id = getattr(getattr(message, "from_user", None), "id", None)
+        chat_id = getattr(getattr(message, "chat", None), "id", None)
+        key = f"{user_id}:{chat_id}"
+        timestamps = buckets.setdefault(key, [])
+        if len(timestamps) >= limit:
+            return False
+        timestamps.append(now)
+        if query_id:
+            seen[query_id] = now
+            if len(seen) > 512:
+                oldest_query_id = min(seen, key=lambda item: seen[item])
+                if oldest_query_id != query_id:
+                    seen.pop(oldest_query_id, None)
+
+        if len(buckets) > 256:
+            oldest_key = min(buckets, key=lambda item: buckets[item][-1])
+            if oldest_key != key:
+                buckets.pop(oldest_key, None)
+        return True
+
+    def _should_process_guest_query(self, message: Message) -> bool:
+        """Apply Telegram scope and trigger gates to a Guest Query message.
+
+        PTB exposes Guest Query chats as ``Chat.SENDER``. The ordinary message
+        gate treats every non-group chat as a DM and returns early, so it cannot
+        enforce group/topic/mention policy for this distinct trust boundary.
+        """
+        self._observe_bot_identity_from_message(message)
+        if self._is_own_message(message):
+            return False
+
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        allowed_chats = self._telegram_allowed_chats()
+        if allowed_chats and chat_id not in allowed_chats:
+            return False
+
+        # The generic normalizer discards thread IDs on unknown/non-group chat
+        # types. Guest Queries use ``sender``, so keep the raw Bot API thread.
+        raw_thread_id = getattr(message, "message_thread_id", None)
+        thread_id = str(raw_thread_id) if raw_thread_id is not None else None
+        allowed_topics = self._telegram_allowed_topics()
+        if allowed_topics:
+            topic_id = (
+                str(thread_id)
+                if thread_id is not None
+                else self._GENERAL_TOPIC_THREAD_ID
+            )
+            if topic_id not in allowed_topics:
+                return False
+        if thread_id is not None:
+            try:
+                if int(thread_id) in self._telegram_ignored_threads():
+                    return False
+            except (TypeError, ValueError):
+                logger.warning(
+                    "[%s] Ignoring non-numeric Telegram message_thread_id: %r",
+                    self.name,
+                    thread_id,
+                )
+
+        if (
+            self._telegram_exclusive_bot_mentions()
+            and self._explicit_bot_mentions_exclude_self(message)
+        ):
+            return False
+        if chat_id in self._telegram_free_response_chats():
+            return True
+        free_topic_id = thread_id or self._GENERAL_TOPIC_THREAD_ID
+        if f"{chat_id}:{free_topic_id}" in self._telegram_free_response_topics():
+            return True
+        if not self._telegram_require_mention():
+            return True
+        if self._is_reply_to_bot(message):
+            return True
+        if self._message_mentions_bot(message):
+            return True
+        return self._message_matches_mention_patterns(message)
+
     def _telegram_exclusive_bot_mentions(self) -> bool:
         """Return whether explicit @...bot mentions exclusively route group messages."""
         configured = self.config.extra.get("exclusive_bot_mentions")
@@ -8876,6 +9063,52 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
 
+    def _register_handlers(self, app) -> None:
+        """Register all Telegram update handlers on ``app``.
+
+        Extracted so the registration wiring — in particular the group
+        assignment that controls dispatch order — is unit-testable without
+        standing up a live Application. See the group-ordering note on the
+        Guest Mode handler below.
+        """
+        app.add_handler(TelegramMessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self._handle_text_message
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.COMMAND,
+            self._handle_command
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+            self._handle_location_message
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+            self._handle_media_message
+        ))
+        # Handle inline keyboard button callbacks (update prompts)
+        app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        if (
+            self._telegram_allow_guest_queries()
+            and TypeHandler is not None
+            and hasattr(Update, "GUEST_MESSAGE")
+            and InlineQueryResultArticle is not None
+            and InputTextMessageContent is not None
+        ):
+            # Register the Guest Mode catch-all in a LATER group (1), after
+            # the normal text/command/media handlers in the default group
+            # (0). PTB evaluates each group independently and runs at most
+            # one matching handler per group, so a TypeHandler(Update) —
+            # which matches every update — must not sit in a group that is
+            # evaluated before normal intake. Group 1 makes it a strict
+            # fallback: ordinary updates are handled by group 0 first, and
+            # this handler only does real work for guest updates (guarded
+            # below). The generic text/command handlers keep their own
+            # guest_message guards so a guest update that also matches a
+            # group-0 filter is not double-processed.
+            app.add_handler(TypeHandler(Update, self._handle_guest_message), group=1)
+
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.
 
@@ -8886,6 +9119,20 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    @staticmethod
+    def _guest_message_from_update(update):
+        """Return a real Guest Query payload without accepting loose mocks.
+
+        PTB Guest Query messages always carry a non-empty string query ID.
+        Checking that discriminator avoids treating unconstrained MagicMock
+        attributes (and malformed update-like objects) as guest messages.
+        """
+        message = getattr(update, "guest_message", None)
+        query_id = getattr(message, "guest_query_id", None)
+        if isinstance(query_id, str) and query_id:
+            return message
+        return None
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -8893,6 +9140,12 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
+        # Bot API 10.0 guest messages have their own one-shot answer endpoint
+        # and are handled by _handle_guest_message. PTB also exposes them as
+        # effective_message, so exclude them here to prevent duplicate turns and
+        # an invalid fallback sendMessage into a chat where the bot is absent.
+        if self._guest_message_from_update(update) is not None:
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -8919,8 +9172,62 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
 
+    async def _handle_guest_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Route an explicitly enabled Bot API Guest Query through the agent loop."""
+        if not self._telegram_allow_guest_queries():
+            return
+        msg = self._guest_message_from_update(update)
+        if not msg:
+            return
+        guest_query_id = getattr(msg, "guest_query_id", None)
+        if not guest_query_id:
+            return
+        if not self._is_user_authorized_from_message(msg):
+            logger.warning(
+                "[Telegram] Blocked unauthorized guest query from user %s",
+                getattr(getattr(msg, "from_user", None), "id", None),
+            )
+            return
+        # Guest Queries use Telegram's special ``sender`` chat type, so apply
+        # their dedicated fail-closed scope/trigger gate instead of the normal
+        # non-group fast path. The feature opt-in never replaces user auth.
+        if not self._should_process_guest_query(msg):
+            logger.warning(
+                "[Telegram] Blocked out-of-scope guest query from user %s in chat %s",
+                getattr(getattr(msg, "from_user", None), "id", None),
+                getattr(getattr(msg, "chat", None), "id", None),
+            )
+            return
+        if not self._allow_guest_query_intake(msg):
+            logger.warning(
+                "[Telegram] Rate-limited guest query from user %s in chat %s",
+                getattr(getattr(msg, "from_user", None), "id", None),
+                getattr(getattr(msg, "chat", None), "id", None),
+            )
+            return
+        # Guest Query delivery is text-only. Do not let PTB's generic
+        # media/location handlers attempt a normal sendMessage into a chat where
+        # the bot may not be a member, and do not leave the query unanswered.
+        if not getattr(msg, "text", None):
+            await self.send(
+                str(getattr(getattr(msg, "chat", None), "id", "")),
+                "Telegram Guest Queries currently support text only; media, captions, and locations are not available.",
+                metadata={
+                    "telegram_guest_query_id": str(guest_query_id),
+                    "notify": True,
+                },
+            )
+            return
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        event.source.thread_id = f"guest:{guest_query_id}"
+        event.source.chat_topic = "Guest Bot Mention"
+        event.text = self._clean_bot_trigger_text(event.text)
+        self._enqueue_text_event(event)
+
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
+        if self._guest_message_from_update(update) is not None:
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -8955,6 +9262,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
+        if self._guest_message_from_update(update) is not None:
+            return
         msg = self._effective_update_message(update)
         if not msg:
             return
@@ -9160,6 +9469,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
+        if self._guest_message_from_update(update) is not None:
+            return
         if not update.message:
             return
         if not self._is_user_authorized_from_message(update.message):
@@ -10140,6 +10451,12 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         os.environ["TELEGRAM_ALLOW_BOTS"] = str(telegram_cfg["allow_bots"]).lower()
     if "guest_mode" in telegram_cfg and not os.getenv("TELEGRAM_GUEST_MODE"):
         os.environ["TELEGRAM_GUEST_MODE"] = str(telegram_cfg["guest_mode"]).lower()
+    if (
+        "allow_guest_queries" in telegram_cfg
+        and not _skip_env_bridge
+        and not os.getenv("TELEGRAM_ALLOW_GUEST_QUERIES")
+    ):
+        os.environ["TELEGRAM_ALLOW_GUEST_QUERIES"] = str(telegram_cfg["allow_guest_queries"]).lower()
     if "observe_unmentioned_group_messages" in telegram_cfg and not os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
         os.environ["TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(telegram_cfg["observe_unmentioned_group_messages"]).lower()
     frc = telegram_cfg.get("free_response_chats")
@@ -10209,7 +10526,10 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         # extras seed intentionally omitted (shared-key loop bridges group_allowed_chats).
         if not _skip_env_bridge and not os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"):
             os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
+    for _key in (
+        "guest_mode", "allow_guest_queries", "guest_query_rate_limit_per_minute",
+        "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics",
+    ):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys (e.g. base_url proxy override),

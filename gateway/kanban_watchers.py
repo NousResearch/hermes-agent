@@ -642,7 +642,11 @@ class GatewayKanbanWatchersMixin:
                         _session_key = ""
                         _synth = ""
                         if _wake_kinds:
-                            _session_key = getattr(task, "session_id", None) or ""
+                            _session_key = (
+                                getattr(task, "session_id", None)
+                                if _is_push_adapter
+                                else sub["chat_id"]
+                            ) or ""
                         if _wake_kinds and _session_key:
                             _title = (task.title if task else sub["task_id"])[:120]
                             _assignee = task.assignee if task else ""

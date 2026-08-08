@@ -360,10 +360,27 @@ class MemoryStore:
         self._set_entries(target, fresh)
         return bak
 
-    def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
+    def save_to_disk(self, target: str, entries: Optional[List[str]] = None):
+        """Persist either a candidate state or the current live entries."""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        persisted_entries = self._entries_for(target) if entries is None else entries
+        self._write_file(self._path_for(target), persisted_entries)
+
+    def _commit_entries(
+        self, target: str, entries: List[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Persist a candidate state before publishing it to the live store."""
+        path = self._path_for(target)
+        try:
+            self.save_to_disk(target, entries)
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "path": str(path),
+            }
+        self._set_entries(target, entries)
+        return None
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -440,9 +457,9 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries.append(content)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            write_error = self._commit_entries(target, new_entries)
+            if write_error:
+                return write_error
 
         return self._success_response(target, "Entry added.")
 
@@ -511,9 +528,9 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries[idx] = new_content
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            write_error = self._commit_entries(target, test_entries)
+            if write_error:
+                return write_error
 
         return self._success_response(target, "Entry replaced.")
 
@@ -553,9 +570,11 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
-            entries.pop(idx)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            new_entries = entries.copy()
+            new_entries.pop(idx)
+            write_error = self._commit_entries(target, new_entries)
+            if write_error:
+                return write_error
 
         return self._success_response(target, "Entry removed.")
 
@@ -663,8 +682,9 @@ class MemoryStore:
                 })
 
             # Commit.
-            self._set_entries(target, working)
-            self.save_to_disk(target)
+            write_error = self._commit_entries(target, working)
+            if write_error:
+                return write_error
 
         return self._success_response(target, f"Applied {len(operations)} operation(s).")
 
@@ -720,6 +740,7 @@ class MemoryStore:
             "success": True,
             "done": True,
             "target": target,
+            "path": str(self._path_for(target)),
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
         }

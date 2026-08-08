@@ -11,7 +11,7 @@ import pytest
 from unittest.mock import patch
 
 
-def _run_cmd_status(capfd, mem_config=None, memory_tools=None):
+def _run_cmd_status(capfd, mem_config=None, memory_tools=None, platform_toolsets=None):
     """Run cmd_status with a mocked config and return captured stdout.
 
     Args:
@@ -21,7 +21,10 @@ def _run_cmd_status(capfd, mem_config=None, memory_tools=None):
     """
     from hermes_cli.memory_setup import cmd_status
 
-    config = {"memory": mem_config or {}}
+    config = {
+        "memory": mem_config or {},
+        "platform_toolsets": platform_toolsets or {},
+    }
     if memory_tools is None:
         memory_tools = {"memory"}
 
@@ -52,6 +55,20 @@ class TestMemoryStatusLabels:
         out = _run_cmd_status(capfd, mem_config={"memory_enabled": False})
         assert "Memory injection:" in out
         assert "disabled ✗" in out
+
+    def test_labels_cli_tool_scope_and_shows_profile_storage(
+        self, capfd, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+
+        out = _run_cmd_status(
+            capfd,
+            memory_tools={"memory"},
+            platform_toolsets={"cli": ["file"], "telegram": ["memory"]},
+        )
+
+        assert "Memory tool (CLI):" in out
+        assert f"Storage:            {tmp_path / 'profile' / 'memories'}" in out
 
 
 

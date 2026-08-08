@@ -489,9 +489,12 @@ def cmd_status(args) -> None:
     mem_mark = "enabled ✓" if memory_enabled else "disabled ✗"
     user_mark = "enabled ✓" if user_profile_enabled else "disabled ✗"
 
-    # Check if the memory tool is enabled for the CLI platform via the
-    # canonical resolver (handles composite toolsets like hermes-cli).
+    # This command runs on the CLI, so qualify the platform instead of
+    # presenting this as a global tool state. Messaging platforms can have
+    # independent platform_toolsets selections.
     from hermes_cli.tools_config import _get_platform_tools
+    from tools.memory_tool import get_memory_dir
+
     cli_tools = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
     memory_tool_enabled = "memory" in cli_tools
     tool_mark = "enabled ✓" if memory_tool_enabled else "disabled ✗"
@@ -500,7 +503,8 @@ def cmd_status(args) -> None:
     print("  Built-in (MEMORY.md / USER.md):")
     print(f"    Memory injection:   {mem_mark}")
     print(f"    User profile:       {user_mark}")
-    print(f"    Memory tool:        {tool_mark}")
+    print(f"    Memory tool (CLI):  {tool_mark}")
+    print(f"    Storage:            {get_memory_dir()}")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
     providers = _get_available_providers()

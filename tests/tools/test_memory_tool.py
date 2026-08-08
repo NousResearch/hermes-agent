@@ -142,6 +142,53 @@ class TestMemoryStoreAdd:
         assert result["success"] is False
         assert "Blocked" in result["error"]
 
+    def test_write_failure_returns_error_without_advancing_live_state(
+        self, store, monkeypatch
+    ):
+        def fail_write(*_args, **_kwargs):
+            raise RuntimeError("disk unavailable")
+
+        monkeypatch.setattr(store, "_write_file", fail_write)
+
+        result = json.loads(
+            memory_tool(action="add", target="memory", content="durable fact", store=store)
+        )
+
+        assert result["success"] is False
+        assert "disk unavailable" in result["error"]
+        assert store.memory_entries == []
+
+    def test_unicode_write_failure_returns_error_without_advancing_live_state(
+        self, store
+    ):
+        store.add("memory", "existing fact")
+        path = store._path_for("memory")
+        before = path.read_text(encoding="utf-8")
+        unpaired_surrogate = json.loads('"\\ud800"')
+
+        result = json.loads(
+            memory_tool(
+                action="add",
+                target="memory",
+                content=unpaired_surrogate,
+                store=store,
+            )
+        )
+
+        assert result["success"] is False
+        assert "surrogates not allowed" in result["error"]
+        assert store.memory_entries == ["existing fact"]
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_success_reports_the_persisted_file(self, store, tmp_path):
+        result = json.loads(
+            memory_tool(action="add", target="memory", content="durable fact", store=store)
+        )
+
+        assert result["success"] is True
+        assert result["path"] == str(tmp_path / "MEMORY.md")
+        assert "durable fact" in (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+
 
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):

@@ -1653,6 +1653,10 @@ export interface Translations {
       renameTitle: string
       renameDesc: string
       untitledPlaceholder: string
+      deleteTitle: string
+      deleteDesc: (title: string) => string
+      deleting: string
+      deleted: string
       untitledChat: (id: string) => string
       ageNow: string
       ageDay: string

@@ -16,6 +16,7 @@ call time (run.py fully loaded by then), avoiding an import cycle.
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import hashlib
 import inspect
@@ -4628,12 +4629,63 @@ class GatewaySlashCommandsMixin:
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
 
+        # Telegram DM topics keep a second durable topic -> session binding,
+        # and the normal-message path treats that binding as authoritative.
+        # Move it first so uniqueness/DB failures leave the generic route and
+        # session lifecycle untouched; if the generic switch then fails, put
+        # the binding back before reporting failure.
+        is_topic_lane = getattr(self, "_is_telegram_topic_lane", None)
+        record_topic_binding = getattr(self, "_record_telegram_topic_binding", None)
+        topic_binding_moved = False
+        if callable(is_topic_lane) and await asyncio.to_thread(is_topic_lane, source):
+            if not callable(record_topic_binding):
+                return t("gateway.resume.switch_failed")
+            target_entry = copy.copy(current_entry)
+            target_entry.session_id = target_id
+            try:
+                await asyncio.to_thread(record_topic_binding, source, target_entry)
+                topic_binding_moved = True
+            except Exception:
+                logger.warning(
+                    "Failed to rebind Telegram topic before /resume",
+                    exc_info=True,
+                )
+                return t("gateway.resume.switch_failed")
+
         # Clear any running agent for this session key
         self._release_running_agent_state(session_key)
 
-        # Switch the session entry to point at the old session
-        new_entry = await self.async_session_store.switch_session(session_key, target_id)
+        async def _restore_topic_binding_after_switch_failure() -> None:
+            if not topic_binding_moved or not callable(record_topic_binding):
+                return
+            try:
+                await asyncio.to_thread(
+                    record_topic_binding, source, current_entry
+                )
+            except Exception:
+                logger.error(
+                    "Failed to restore Telegram topic binding after /resume "
+                    "session switch failed: key=%s target=%s previous=%s",
+                    session_key, target_id, current_entry.session_id,
+                    exc_info=True,
+                )
+
+        # Switch the session entry to point at the old session. Both a falsey
+        # return and an exception are failures; either must restore the binding
+        # before the command reports failure.
+        try:
+            new_entry = await self.async_session_store.switch_session(
+                session_key, target_id
+            )
+        except Exception:
+            logger.warning(
+                "Session route switch raised after Telegram topic rebind",
+                exc_info=True,
+            )
+            await _restore_topic_binding_after_switch_failure()
+            return t("gateway.resume.switch_failed")
         if not new_entry:
+            await _restore_topic_binding_after_switch_failure()
             return t("gateway.resume.switch_failed")
 
         # Conversation boundary: clear ALL conversation-scoped per-session

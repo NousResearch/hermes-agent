@@ -83,6 +83,11 @@ _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # every slash command — not just the overflow ones. We keep the desired set
 # at or below this limit at registration time.
 _DISCORD_MAX_APP_COMMANDS = 100
+# The Discord JSON error code returned with that rejection. It arrives as
+# HTTP 400 with ``{"code": 30032}`` in the body — the status alone is not
+# distinctive (50035 "Invalid Form Body" is also a 400), so detection keys
+# on the code.
+_DISCORD_COMMAND_CAP_ERROR_CODE = 30032
 _DISCORD_SELECT_FIELD_LIMIT = 100
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 _DISCORD_ELLIPSIS = "\u2026"
@@ -1996,6 +2001,46 @@ class DiscordAdapter(BasePlatformAdapter):
         return False
 
     @staticmethod
+    def _is_discord_command_cap_error(exc: BaseException) -> bool:
+        """True only for Discord's global-application-command cap rejection.
+
+        Discord refuses the whole batch with **HTTP 400 / error code 30032**
+        ("Maximum number of application commands reached") once an app is at
+        ``_DISCORD_MAX_APP_COMMANDS``. That is the one known cause of an
+        otherwise-inexplicable sync failure on a loaded install, and it is
+        worth telling the operator about in plain words rather than a stack
+        trace.
+
+        Deliberately narrow, mirroring ``_is_discord_rate_limit``: the 400
+        status alone proves nothing (50035 "Invalid Form Body" is also a
+        400), so a match requires the 30032 code, or — for older discord.py
+        forks, mocks, and exotic transports that don't expose one — a 400
+        *plus* the specific cap message. Arbitrary 400s keep raising, so
+        unrelated bugs still surface with their traceback.
+        """
+        code = getattr(exc, "code", None)
+        if code is None:
+            data = getattr(exc, "data", None)
+            if isinstance(data, dict):
+                code = data.get("code")
+        try:
+            code = int(code)
+        except (TypeError, ValueError):
+            code = None
+        if code == _DISCORD_COMMAND_CAP_ERROR_CODE:
+            return True
+
+        status = getattr(exc, "status", None)
+        if status is None:
+            response = getattr(exc, "response", None)
+            if response is not None:
+                status = getattr(response, "status", None) or getattr(response, "status_code", None)
+        if status != 400:
+            return False
+        text = getattr(exc, "text", "") or str(exc) or ""
+        return "Maximum number of application commands reached" in text
+
+    @staticmethod
     def _is_discord_unknown_interaction(exc: BaseException) -> bool:
         """True for Discord's expired interaction token error."""
         code = getattr(exc, "code", None)
@@ -2064,6 +2109,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 # persist Discord's retry-after when it refuses the batch.
                 summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
             except Exception as e:
+                # The command cap is checked before the rate-limit branch:
+                # it is neither a 429 nor a transient condition, so it would
+                # otherwise fall through to the outer handler and reach the
+                # operator as a "Slash command sync failed" stack trace with
+                # no hint that the fix is to free command slots.
+                if self._is_discord_command_cap_error(e):
+                    logger.warning(
+                        "[%s] Discord slash command sync rejected: app is at the "
+                        "%d global command cap (HTTP 400 / error code %d). "
+                        "Disable unused plugins or trim COMMAND_REGISTRY to free "
+                        "slots; the sync will retry on the next reconnect.",
+                        self.name,
+                        _DISCORD_MAX_APP_COMMANDS,
+                        _DISCORD_COMMAND_CAP_ERROR_CODE,
+                    )
+                    return
                 if not self._is_discord_rate_limit(e):
                     raise
                 retry_after = self._extract_discord_retry_after(e)

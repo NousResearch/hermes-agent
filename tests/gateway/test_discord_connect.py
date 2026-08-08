@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import sys
 from types import SimpleNamespace
@@ -622,3 +623,126 @@ class TestDiscordUnconfiguredNonRetryable:
         assert adapter.fatal_error_retryable is False
         assert adapter.fatal_error_code == "missing_dependency"
 
+
+
+# ============================================================================
+# #48087: the 100-global-command cap (HTTP 400 / error code 30032) is reported
+# as itself, not as a generic "Slash command sync failed" stack trace
+# ============================================================================
+
+class TestDiscordCommandCapDiagnostic:
+    """Discord rejects the whole sync batch with HTTP 400 / code 30032 once an
+    app holds 100 global commands. Without a dedicated branch it is neither a
+    429 (so the rate-limit handler skips it) nor recognisable in the outer
+    handler's traceback, leaving the operator with no hint that the fix is to
+    free command slots."""
+
+    class _CapError(Exception):
+        """HTTPException-shaped 30032, as discord.py raises it."""
+
+        code = 30032
+        status = 400
+        text = "Maximum number of application commands reached (100)."
+
+        def __str__(self):
+            return self.text
+
+    def test_detects_code_30032(self):
+        assert DiscordAdapter._is_discord_command_cap_error(self._CapError()) is True
+
+    def test_detects_code_from_payload_when_attr_absent(self):
+        """Some transports expose the JSON body rather than a ``code`` attr."""
+
+        class _PayloadCapError(Exception):
+            data = {"code": 30032, "message": "Maximum number of application commands reached"}
+            status = 400
+
+        assert DiscordAdapter._is_discord_command_cap_error(_PayloadCapError()) is True
+
+    def test_detects_via_message_on_legacy_exception(self):
+        """Older forks / mocks expose no code — fall back to 400 + the message."""
+
+        class _LegacyCapError(Exception):
+            response = SimpleNamespace(status=400, status_code=400)
+            text = "Maximum number of application commands reached (100)."
+
+        assert DiscordAdapter._is_discord_command_cap_error(_LegacyCapError()) is True
+
+    def test_ignores_unrelated_400(self):
+        """A 400 alone proves nothing — 50035 must keep raising."""
+
+        class _InvalidFormBody(Exception):
+            code = 50035
+            status = 400
+            text = "Invalid Form Body"
+
+        assert DiscordAdapter._is_discord_command_cap_error(_InvalidFormBody()) is False
+
+    def test_ignores_rate_limit(self):
+        class _RateLimited(Exception):
+            status = 429
+            text = "Too Many Requests"
+
+        assert DiscordAdapter._is_discord_command_cap_error(_RateLimited()) is False
+        assert DiscordAdapter._is_discord_command_cap_error(RuntimeError("boom")) is False
+
+    @pytest.mark.asyncio
+    async def test_cap_error_logs_http_400_and_error_code(self, tmp_path, monkeypatch, caplog):
+        """The warning must name both the HTTP status and the Discord error
+        code — ``30032`` is not an HTTP status, and conflating the two sends
+        an operator looking in the wrong place."""
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+        class _DesiredCommand:
+            def to_dict(self, tree):
+                return {"name": "status", "description": "Show status", "type": 1, "options": []}
+
+        adapter._client = SimpleNamespace(
+            tree=SimpleNamespace(get_commands=lambda: [_DesiredCommand()]),
+            application_id=4242,
+            user=SimpleNamespace(id=4242),
+        )
+        sync = AsyncMock(side_effect=self._CapError())
+        monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+
+        with caplog.at_level(logging.WARNING, logger="plugins.platforms.discord.adapter"):
+            # Must not raise: the cap branch absorbs it after reporting.
+            await adapter._run_post_connect_initialization()
+
+        sync.assert_awaited_once()
+        messages = [r.getMessage() for r in caplog.records]
+        cap_lines = [m for m in messages if "global command cap" in m]
+        assert cap_lines, f"expected a cap-specific warning, got: {messages!r}"
+        assert "HTTP 400" in cap_lines[0], f"status missing: {cap_lines[0]!r}"
+        assert "error code 30032" in cap_lines[0], f"error code missing: {cap_lines[0]!r}"
+        assert "100 global command cap" in cap_lines[0]
+        assert not any("Slash command sync failed" in m for m in messages), (
+            f"cap error fell through to the generic handler: {messages!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_unrelated_failure_still_hits_generic_handler(self, tmp_path, monkeypatch, caplog):
+        """The narrow branch must not swallow anything else."""
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+        class _DesiredCommand:
+            def to_dict(self, tree):
+                return {"name": "status", "description": "Show status", "type": 1, "options": []}
+
+        adapter._client = SimpleNamespace(
+            tree=SimpleNamespace(get_commands=lambda: [_DesiredCommand()]),
+            application_id=4243,
+            user=SimpleNamespace(id=4243),
+        )
+        monkeypatch.setattr(
+            adapter, "_safe_sync_slash_commands", AsyncMock(side_effect=RuntimeError("boom"))
+        )
+
+        with caplog.at_level(logging.WARNING, logger="plugins.platforms.discord.adapter"):
+            await adapter._run_post_connect_initialization()
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("Slash command sync failed" in m for m in messages), messages
+        assert not any("global command cap" in m for m in messages), messages

@@ -221,6 +221,47 @@ class TestConvertMessagesToConverse:
 # Response normalization: Converse → OpenAI
 # ---------------------------------------------------------------------------
 
+    def test_input_image_part_converted_to_converse_image(self):
+        """Responses-style input_image parts must become Converse image blocks.
+
+        The Anthropic converter accepts input_image; the Bedrock converter
+        only handled image_url and silently dropped these, so the image was
+        invisible to Claude-on-Bedrock.
+        """
+        from agent.bedrock_adapter import _convert_content_to_converse
+        data_url = "data:image/png;base64,iVBORw0KGgo="
+        # Bare-string form (OpenAI Responses).
+        blocks = _convert_content_to_converse([
+            {"type": "input_image", "image_url": data_url},
+        ])
+        image_blocks = [b for b in blocks if "image" in b]
+        assert len(image_blocks) == 1
+        assert image_blocks[0]["image"]["format"] == "png"
+        # Dict form.
+        blocks = _convert_content_to_converse([
+            {"type": "input_image", "image_url": {"url": data_url}},
+        ])
+        assert any("image" in b for b in blocks)
+
+    def test_anthropic_image_source_block_converted_to_converse_image(self):
+        """Anthropic-native image source blocks must become Converse images."""
+        import base64
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([
+            {"type": "image", "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": "/9j/4AAQ",
+            }},
+        ])
+        image_blocks = [b for b in blocks if "image" in b]
+        assert len(image_blocks) == 1
+        assert image_blocks[0]["image"]["format"] == "jpeg"
+        # Raw decoded bytes, not the base64 string - boto3 re-encodes at the
+        # wire layer (ref: #33317).
+        assert image_blocks[0]["image"]["source"]["bytes"] == base64.b64decode("/9j/4AAQ")
+
+
 class TestNormalizeConverseResponse:
     """Test Bedrock Converse response → OpenAI format conversion."""
 

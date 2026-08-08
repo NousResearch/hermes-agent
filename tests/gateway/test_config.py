@@ -789,6 +789,36 @@ class TestLoadGatewayConfig:
         )
 
 
+    def test_shared_key_loop_bridges_per_channel_channels_map(self, tmp_path, monkeypatch):
+        """``slack.channels.<id>.thread_mentions_enabled`` must reach
+        PlatformConfig.extra[\"channels\"] via the shared-key loop so the
+        adapter's per-channel resolver can read it (mirrors channel_prompts).
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "slack:\n"
+            "  channels:\n"
+            "    C123:\n"
+            "      thread_mentions_enabled: false\n"
+            "    G7890:\n"
+            "      thread_mentions_enabled: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        slack = config.platforms[Platform.SLACK]
+        channels = slack.extra.get("channels")
+        assert channels == {
+            "C123": {"thread_mentions_enabled": False},
+            "G7890": {"thread_mentions_enabled": True},
+        }
+
+
     def test_bridges_unauthorized_dm_behavior_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

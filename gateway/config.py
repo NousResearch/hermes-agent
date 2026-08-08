@@ -1590,6 +1590,20 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                # Per-channel settings map (e.g. slack.channels.<id>.thread_mentions_enabled).
+                # Bridged verbatim into config.extra so plugins read it from `.extra`
+                # (mirrors the channel_prompts dict precedent above). Channel ids are
+                # stringified for consistency; absent map is a no-op (back-compat).
+                if "channels" in platform_cfg:
+                    channels_cfg = platform_cfg["channels"]
+                    if isinstance(channels_cfg, dict):
+                        bridged["channels"] = {
+                            str(cid): ov_data
+                            for cid, ov_data in channels_cfg.items()
+                            if isinstance(ov_data, dict)
+                        }
+                    else:
+                        bridged["channels"] = channels_cfg
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
                 if "typing_indicator" in platform_cfg:

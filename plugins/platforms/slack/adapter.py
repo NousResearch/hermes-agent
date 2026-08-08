@@ -5693,7 +5693,7 @@ class SlackAdapter(BasePlatformAdapter):
                 # replies: top-level messages stay free-response, but a bot
                 # must be re-mentioned to join thread follow-ups.
                 if (
-                    self._slack_thread_require_mention()
+                    self._slack_thread_mentions_enabled(channel_id)
                     and is_thread_reply
                     and not is_mentioned
                 ):
@@ -5707,7 +5707,7 @@ class SlackAdapter(BasePlatformAdapter):
             elif self._slack_strict_mention() and not is_mentioned:
                 return  # Strict mode: ignore until @-mentioned again
             elif (
-                self._slack_thread_require_mention()
+                self._slack_thread_mentions_enabled(channel_id)
                 and is_thread_reply
                 and not is_mentioned
             ):
@@ -5763,7 +5763,7 @@ class SlackAdapter(BasePlatformAdapter):
             if (
                 thread_ts
                 and not self._slack_strict_mention()
-                and not self._slack_thread_require_mention()
+                and not self._slack_thread_mentions_enabled(channel_id)
             ):
                 self._register_mentioned_thread(thread_ts, team_id=team_id)
 
@@ -8320,6 +8320,28 @@ class SlackAdapter(BasePlatformAdapter):
             "yes",
             "on",
         }
+
+    def _slack_thread_mentions_enabled(self, channel_id: Optional[str]) -> bool:
+        """Per-channel override for ``thread_require_mention``.
+
+        Reads ``slack.channels.<channel_id>.thread_mentions_enabled`` from
+        ``config.extra``. When the channel is unlisted (or the map is absent)
+        it falls back to the global ``_slack_thread_require_mention()`` so
+        behavior is unchanged when config is absent (back-compat).
+
+        Semantics: True ⇒ thread replies in this channel require a fresh
+        @-mention; False ⇒ thread auto-follow applies even when the global
+        flag is on.
+        """
+        channels_cfg = self.config.extra.get("channels")
+        if isinstance(channels_cfg, dict):
+            channel_cfg = channels_cfg.get(str(channel_id))
+            if isinstance(channel_cfg, dict) and "thread_mentions_enabled" in channel_cfg:
+                val = channel_cfg["thread_mentions_enabled"]
+                if isinstance(val, str):
+                    return val.lower() in {"true", "1", "yes", "on"}
+                return bool(val)
+        return self._slack_thread_require_mention()
 
     def _slack_message_addressed_to_other_user(self, text: str, self_uids: set) -> bool:
         """Return True when ``text`` opens by @-mentioning a non-bot user.

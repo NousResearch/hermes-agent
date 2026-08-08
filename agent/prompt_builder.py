@@ -1114,7 +1114,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
             timeout=config.get("timeout", 180),
             ssh_config=ssh_config,
             container_config=container_config,
-            task_id="prompt-backend-probe",
+            task_id="default",
             host_cwd=config.get("host_cwd"),
         )
         # Single-line POSIX probe — works on any Unixy backend. Wrapped in

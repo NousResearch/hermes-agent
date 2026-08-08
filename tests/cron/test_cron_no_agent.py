@@ -105,6 +105,26 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert "RAM 92% on host" in doc
 
 
+def test_run_job_no_agent_does_not_invoke_skill_integrity_validator(hermes_env):
+    """Script-only jobs retain their no-agent fast path and need no skill package preflight."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "alert.sh"
+    script_path.write_text("#!/bin/bash\necho 'still script only'\n")
+    job = create_job(
+        prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
+    )
+
+    with patch("cron.scheduler._validate_cron_skill_dependencies") as validate:
+        success, _, final_response, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert final_response == "still script only"
+    validate.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # _run_job_script: shell-script support
 # ---------------------------------------------------------------------------

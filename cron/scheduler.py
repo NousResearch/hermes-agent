@@ -164,6 +164,109 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+_CRON_SKILL_VALIDATOR_RELATIVE_PATH = Path(
+    "skills/tools/cron-skill-control/cron_skill_control.py"
+)
+_CRON_SKILL_VALIDATOR_TIMEOUT_SECONDS = 30
+
+
+def _validate_cron_skill_dependencies() -> list[dict[str, str]]:
+    """Run the installed canonical format-2 skill validator for an agent cron run.
+
+    The validator owns the manifest, job-binding, top-level hash, package-tree,
+    and package-worktree rules.  This scheduler seam deliberately treats an
+    unavailable or malformed validator result as a dependency-integrity finding:
+    an agent cron must not construct a prompt from an unverified skill package.
+    """
+    hermes_home = _get_hermes_home()
+    validator = hermes_home / _CRON_SKILL_VALIDATOR_RELATIVE_PATH
+    if not validator.is_file():
+        return [{
+            "code": "validator_unavailable",
+            "detail": f"canonical validator is missing: {validator}",
+        }]
+
+    popen_kwargs: dict[str, Any] = {}
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = windows_hide_flags()
+        popen_kwargs["encoding"] = "utf-8"
+        popen_kwargs["errors"] = "replace"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(validator), "validate", "--home", str(hermes_home)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_CRON_SKILL_VALIDATOR_TIMEOUT_SECONDS,
+            **popen_kwargs,
+        )
+    except subprocess.TimeoutExpired:
+        return [{
+            "code": "validator_timeout",
+            "detail": "canonical validator did not finish before the scheduler timeout",
+        }]
+    except OSError as exc:
+        return [{
+            "code": "validator_unavailable",
+            "detail": f"canonical validator could not start: {exc}",
+        }]
+
+    try:
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return [{
+            "code": "validator_invalid_output",
+            "detail": f"canonical validator returned exit={result.returncode} without valid JSON",
+        }]
+    findings = payload.get("findings") if isinstance(payload, dict) else None
+    if not isinstance(findings, list) or not all(
+        isinstance(item, dict)
+        and isinstance(item.get("code"), str)
+        and isinstance(item.get("detail"), str)
+        for item in findings
+    ):
+        return [{
+            "code": "validator_invalid_output",
+            "detail": "canonical validator findings were not a list of code/detail objects",
+        }]
+    if result.returncode == 0 and payload.get("command") == "validate" and payload.get("status") == "ok" and not findings:
+        return []
+    if (
+        result.returncode == 3
+        and payload.get("command") == "validate"
+        and payload.get("status") == "dependency_integrity_failure"
+        and findings
+    ):
+        return findings
+    return [{
+        "code": "validator_invalid_result",
+        "detail": (
+            "canonical validator returned an unexpected result "
+            f"(exit={result.returncode}, command={payload.get('command')!r}, "
+            f"status={payload.get('status')!r})"
+        ),
+    }]
+
+
+def _dependency_integrity_failure_artifact(
+    job_id: str, job_name: str, findings: list[dict[str, str]]
+) -> tuple[str, str]:
+    """Build the persisted failure artifact used when canonical skill validation fails."""
+    finding_codes = sorted({item["code"] for item in findings})
+    error = f"dependency_integrity_failure: {', '.join(finding_codes)}"
+    document = (
+        f"# Cron Job: {job_name}\n\n"
+        f"**Job ID:** {job_id}\n"
+        f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        "**Status:** Dependency integrity failure\n\n"
+        "The canonical skill validator failed before prompt or agent construction. "
+        "No degraded report was produced.\n\n"
+        "**Findings:**\n"
+        f"```json\n{json.dumps(findings, sort_keys=True)}\n```\n"
+    )
+    return document, error
+
+
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
@@ -3275,6 +3378,17 @@ def run_job(
             f"{output}\n"
         )
         return True, doc, output, None
+
+    # Agent-backed cron runs must validate their canonical skill packages before
+    # importing agent machinery or assembling a prompt.  A failed package is a
+    # dependency-integrity failure, not a degraded successful report.
+    dependency_findings = _validate_cron_skill_dependencies()
+    if dependency_findings:
+        document, error = _dependency_integrity_failure_artifact(
+            job_id, job_name, dependency_findings
+        )
+        logger.error("Job '%s': %s", job_id, error)
+        return False, document, "", error
 
     # ---------------------------------------------------------------
     # Monitor gate — hash-suppressed change detection (see cron/monitor.py).

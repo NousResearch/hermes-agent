@@ -941,6 +941,47 @@ class TestRunJobSkillBacked:
         assert final_response == "ok"
 
 
+class TestRunJobDependencyIntegrity:
+    """Agent-backed jobs must stop before prompt or agent construction on a bad skill package."""
+
+    @pytest.mark.parametrize(
+        "finding_code",
+        [
+            "skill_missing",
+            "skill_hash_mismatch",
+            "binding_mismatch",
+            "package_tree_mismatch",
+            "package_worktree_dirty",
+        ],
+    )
+    def test_skill_integrity_finding_returns_explicit_failure_before_prompt_build(
+        self, finding_code
+    ):
+        job = {
+            "id": "integrity-job",
+            "name": "integrity check",
+            "prompt": "produce a report",
+            "skills": ["alpha"],
+        }
+        findings = [{"code": finding_code, "detail": "skill=alpha"}]
+
+        with patch(
+            "cron.scheduler._validate_cron_skill_dependencies", return_value=findings
+        ) as validate, patch("cron.scheduler._build_job_prompt") as build_prompt, patch(
+            "run_agent.AIAgent"
+        ) as agent_cls:
+            success, document, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error == f"dependency_integrity_failure: {finding_code}"
+        assert "Dependency integrity failure" in document
+        assert finding_code in document
+        validate.assert_called_once_with()
+        build_prompt.assert_not_called()
+        agent_cls.assert_not_called()
+
+
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
 

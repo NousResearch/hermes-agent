@@ -657,6 +657,30 @@ class BaseEnvironment(ABC):
             )
         return tuple(sorted(self._snapshot_passthrough_names))
 
+    @staticmethod
+    def _snapshot_saved_passthrough_state_names(name: str) -> tuple[str, str]:
+        """Return the shell-private names used to restore *name* after source()."""
+        marker = f"_HERMES_RUNTIME_PASSTHROUGH_{name}"
+        return f"{marker}_PRESENT", f"{marker}_VALUE"
+
+    def _snapshot_runtime_passthrough_names(self) -> tuple[str, ...]:
+        """Return values restored after sourcing a shared command snapshot."""
+        # Keep this import lazy: environment backends are imported before most
+        # agent runtime setup, while this state is only needed at command time.
+        from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+
+        return tuple(sorted({
+            *self._snapshot_excluded_passthrough_names(),
+            DELEGATED_CHILD_ENV_MARKER,
+        }))
+
+    def _snapshot_dump_excluded_names(self, passthrough_names: Iterable[str]) -> tuple[str, ...]:
+        """Return transient names that must never be serialized into a snapshot."""
+        excluded_names = set(passthrough_names)
+        for name in passthrough_names:
+            excluded_names.update(self._snapshot_saved_passthrough_state_names(name))
+        return tuple(sorted(excluded_names))
+
     def init_session(self):
         """Capture login shell environment into a snapshot file.
 
@@ -703,7 +727,9 @@ class BaseEnvironment(ABC):
         # every later expansion is consistent.
         _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
         _snap_tmp = '"$__hermes_snap_tmp"'
-        snapshot_excluded = self._snapshot_excluded_passthrough_names()
+        snapshot_excluded = self._snapshot_dump_excluded_names(
+            self._snapshot_runtime_passthrough_names()
+        )
         bootstrap = (
             f"umask 077\n"
             f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) || exit 1\n"
@@ -824,7 +850,18 @@ class BaseEnvironment(ABC):
         _snap_tmp = '"$__hermes_snap_tmp"'
 
         parts = []
-        passthrough_names = self._snapshot_excluded_passthrough_names()
+        # SSH and other remote backends begin each command in a fresh shell,
+        # so a ContextVar alone cannot cross that process boundary. Install the
+        # delegated-child marker before saving and restoring snapshot values;
+        # the existing runtime exclusion keeps it out of the persisted snapshot.
+        from agent.delegation_context import (
+            DELEGATED_CHILD_ENV_MARKER,
+            is_delegated_child_process_context,
+        )
+        if is_delegated_child_process_context():
+            parts.append(f"export {DELEGATED_CHILD_ENV_MARKER}=1")
+        passthrough_names = self._snapshot_runtime_passthrough_names()
+        snapshot_excluded = self._snapshot_dump_excluded_names(passthrough_names)
 
         # A shared snapshot may contain the previous profile's value. Save
         # the current process environment before sourcing it, then restore the
@@ -833,12 +870,15 @@ class BaseEnvironment(ABC):
         # string, so secrets are not exposed through process arguments/logs.
         saved_names: list[tuple[str, str, str]] = []
         for name in passthrough_names:
-            marker = f"_HERMES_RUNTIME_PASSTHROUGH_{name}"
-            present = f"{marker}_PRESENT"
-            value = f"{marker}_VALUE"
+            present, value = self._snapshot_saved_passthrough_state_names(name)
             saved_names.append((name, present, value))
-            parts.append(f"{present}=${{{name}+x}}")
-            parts.append(f"{value}=${{{name}-}}")
+            # The snapshot is executable shell code and may contain stale
+            # declarations for our fixed bookkeeping names.  Readonly shell
+            # variables retain the current process state across source(), so
+            # a legacy or hostile snapshot cannot replace restoration data.
+            # They are deliberately unexported and excluded from every dump.
+            parts.append(f"readonly {present}=${{{name}+x}}")
+            parts.append(f"readonly {value}=${{{name}-}}")
 
         # Source snapshot (env vars from previous commands).
         # Redirect stdout to /dev/null: on macOS (bash 3.2 and certain
@@ -856,7 +896,6 @@ class BaseEnvironment(ABC):
                 f'if [ "${present}" = x ]; then export {name}="${value}"; '
                 f'else unset {name}; fi'
             )
-            parts.append(f"unset {present} {value}")
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.
@@ -882,7 +921,7 @@ class BaseEnvironment(ABC):
         if self._snapshot_ready:
             parts.append(
                 f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) && "
-                f"{{ {_export_dump_excluding_session_vars(_snap_tmp, passthrough_names)} "
+                f"{{ {_export_dump_excluding_session_vars(_snap_tmp, snapshot_excluded)} "
                 f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )

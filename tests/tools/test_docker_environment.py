@@ -357,6 +357,69 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
         ss.set_multiplex_active(False)
 
 
+def test_delegated_marker_is_runtime_only_for_docker(monkeypatch, tmp_path):
+    """Daemon-less docker-exec semantics keep the child marker per-command."""
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, delegated_child_context
+
+    marker = DELEGATED_CHILD_ENV_MARKER
+    env = _make_execute_only_env()
+    env.cwd = str(tmp_path)
+    env._snapshot_path = str(tmp_path / "snapshot.sh")
+    env._cwd_file = str(tmp_path / "cwd.txt")
+    env._snapshot_passthrough_names = set()
+    (tmp_path / "snapshot.sh").write_text("", encoding="utf-8")
+    # Keep profile forwarding out of this proof: the delegated marker must be
+    # injected by Docker's shell-exec boundary itself.
+    env._build_runtime_env_args_with_unsets = lambda: ([], ())
+    captured = []
+    container_env = {
+        "HOME": str(tmp_path),
+        "LANG": "C.UTF-8",
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        marker: "parent-marker",
+    }
+
+    def _run_fake_docker_exec(cmd, stdin_data=None):
+        """Run docker exec argv locally with its per-command -e semantics."""
+        captured.append(list(cmd))
+        container_index = cmd.index(env._container_id)
+        child_env = container_env.copy()
+        index = 2
+        while index < container_index:
+            if cmd[index] == "-i":
+                index += 1
+                continue
+            assert cmd[index] == "-e", cmd
+            key, value = cmd[index + 1].split("=", 1)
+            child_env[key] = value
+            index += 2
+        return subprocess.Popen(
+            cmd[container_index + 1 :],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env,
+        )
+
+    monkeypatch.setattr(docker_env, "_popen_bash", _run_fake_docker_exec)
+    command = f'printf "[%s]" "${{{marker}:-absent}}"'
+
+    with delegated_child_context():
+        child = env.execute(command)
+    ordinary = env.execute(command)
+
+    assert child["returncode"] == 0
+    assert child["output"] == "[1]"
+    assert ordinary["returncode"] == 0
+    assert ordinary["output"] == "[parent-marker]"
+    assert f"{marker}=1" in captured[0]
+    assert f"{marker}=1" not in captured[1]
+    assert marker not in (tmp_path / "snapshot.sh").read_text(encoding="utf-8")
+
+
 # ── docker_env tests ──────────────────────────────────────────────
 
 

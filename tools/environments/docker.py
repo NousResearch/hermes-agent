@@ -1612,6 +1612,21 @@ class DockerEnvironment(BaseEnvironment):
             runtime_args, unset_names = self._build_runtime_env_args_with_unsets()
             cmd.extend(runtime_args)
 
+        if not login:
+            # ContextVars do not cross the docker-exec process boundary.
+            # Inject this transient marker at the shell-exec boundary itself
+            # so it remains effective even when profile forwarding is absent.
+            from agent.delegation_context import (
+                DELEGATED_CHILD_ENV_MARKER,
+                is_delegated_child_process_context,
+            )
+
+            if is_delegated_child_process_context():
+                cmd.extend(["-e", f"{DELEGATED_CHILD_ENV_MARKER}=1"])
+                unset_names = tuple(
+                    name for name in unset_names if name != DELEGATED_CHILD_ENV_MARKER
+                )
+
         if login:
             unset_names = getattr(self, "_init_unset_passthrough_names", ())
         if unset_names:

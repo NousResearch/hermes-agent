@@ -195,6 +195,60 @@ class TestCleanupResetsEngineCache:
 
 
 # ---------------------------------------------------------------------------
+# Chrome fallback behavior
+# ---------------------------------------------------------------------------
+
+class TestChromeFallback:
+    """Chrome fallback must hand off from Lightpanda without leaking engine policy."""
+
+    def test_uses_non_recursive_lightpanda_get_url(self):
+        import tools.browser_tool as bt
+
+        with patch("tools.browser_tool._run_browser_command", return_value={
+                 "success": True, "data": {"url": "https://example.com/"}
+             }) as run_command, \
+             patch("tools.browser_tool._find_agent_browser", side_effect=FileNotFoundError("stop")):
+            result = bt._run_chrome_fallback_command(
+                "task1", "screenshot", [], timeout=30
+            )
+
+        run_command.assert_called_once_with(
+            "task1", "get", ["url"], timeout=10, _engine_override="lightpanda"
+        )
+        assert result == {"success": False, "error": "stop"}
+
+    def test_chrome_fallback_injects_required_sandbox_args(self):
+        import tools.browser_tool as bt
+
+        captured_envs = []
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = None
+        mock_proc.returncode = 1
+
+        def capture_popen(_cmd, **kwargs):
+            captured_envs.append(kwargs["env"])
+            return mock_proc
+
+        with patch("tools.browser_tool._run_browser_command", return_value={
+                 "success": True, "data": {"url": "https://example.com/"}
+             }), \
+             patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch("tools.browser_tool._chromium_installed", return_value=True), \
+             patch("tools.browser_tool._needs_chromium_sandbox_bypass", return_value=True), \
+             patch("subprocess.Popen", side_effect=capture_popen):
+            result = bt._run_chrome_fallback_command(
+                "task1", "screenshot", [], timeout=30
+            )
+
+        assert result["success"] is False
+        assert captured_envs
+        assert all(
+            env.get("AGENT_BROWSER_ARGS") == "--no-sandbox,--disable-dev-shm-usage"
+            for env in captured_envs
+        )
+
+
+# ---------------------------------------------------------------------------
 # fallback warning annotation
 # ---------------------------------------------------------------------------
 
@@ -346,7 +400,7 @@ class TestEngineOverride:
     def test_no_override_uses_cached_engine(
         self, _camofox, _cdp, _cloud, _chromium, _local, _find, _session
     ):
-        """Without _engine_override, the cached engine is used."""
+        """Lightpanda gets neither auto-injected nor inherited Chrome arguments."""
         import tools.browser_tool as bt
 
         bt._cached_browser_engine = "lightpanda"
@@ -355,12 +409,14 @@ class TestEngineOverride:
         _session.return_value = {"session_name": "test-sess"}
 
         captured_cmds = []
+        captured_envs = []
         mock_proc = MagicMock()
         mock_proc.wait.return_value = None
         mock_proc.returncode = 0
 
         def capture_popen(cmd, **kwargs):
             captured_cmds.append(cmd)
+            captured_envs.append(kwargs["env"])
             return mock_proc
 
         # Return a substantive snapshot so the LP fallback does NOT trigger.
@@ -375,14 +431,26 @@ class TestEngineOverride:
                  __exit__=MagicMock(return_value=False),
              ))), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("tools.browser_tool._write_owner_pid"):
+             patch("tools.browser_tool._needs_chromium_sandbox_bypass", return_value=True), \
+             patch("tools.browser_tool._write_owner_pid"), \
+             patch.dict(os.environ, {}, clear=True):
+            # AppArmor/root detection would normally auto-inject Chromium args.
             bt._run_browser_command("task1", "snapshot", [])
 
-        # SHOULD contain "--engine lightpanda"
-        assert len(captured_cmds) == 1
-        assert "--engine" in captured_cmds[0]
-        engine_idx = captured_cmds[0].index("--engine")
-        assert captured_cmds[0][engine_idx + 1] == "lightpanda"
+            # User-supplied current and legacy Chromium knobs must also be removed.
+            with patch.dict(os.environ, {
+                "AGENT_BROWSER_ARGS": "--no-sandbox",
+                "AGENT_BROWSER_CHROME_FLAGS": "--disable-dev-shm-usage",
+            }):
+                bt._run_browser_command("task1", "snapshot", [])
+
+        assert len(captured_cmds) == 2
+        for command, environment in zip(captured_cmds, captured_envs):
+            assert "--engine" in command
+            engine_idx = command.index("--engine")
+            assert command[engine_idx + 1] == "lightpanda"
+            assert "AGENT_BROWSER_ARGS" not in environment
+            assert "AGENT_BROWSER_CHROME_FLAGS" not in environment
 
     def test_hybrid_local_sidecar_injects_engine_even_with_cloud_provider(self):
         """A task::local sidecar is local even when global cloud config exists."""

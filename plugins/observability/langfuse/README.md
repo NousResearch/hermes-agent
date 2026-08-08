@@ -20,11 +20,26 @@ hermes plugins enable observability/langfuse
 
 Set these in `~/.hermes/.env` (or via `hermes tools`):
 
+**Langfuse Cloud** — keys are issued by the platform in this format:
+
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...
 HERMES_LANGFUSE_SECRET_KEY=sk-lf-...
-HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com   # or your self-hosted URL
+HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
+
+**Self-hosted / custom endpoint** — use credentials issued by your endpoint:
+
+```bash
+HERMES_LANGFUSE_PUBLIC_KEY=<your-endpoint-public-key>
+HERMES_LANGFUSE_SECRET_KEY=<your-endpoint-secret-key>
+HERMES_LANGFUSE_BASE_URL=https://your-langfuse-endpoint.example.com
+```
+
+> The `pk-lf-` / `sk-lf-` prefix is validated only when the base URL
+> points at Langfuse Cloud (`*.langfuse.com`). For custom endpoints,
+> any non-empty credentials are accepted and authenticated by the
+> endpoint itself.
 
 Without the SDK or credentials the hooks no-op silently — the plugin fails
 open.

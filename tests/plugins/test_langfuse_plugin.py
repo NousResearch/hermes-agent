@@ -22,7 +22,7 @@ PLUGIN_DIR = REPO_ROOT / "plugins" / "observability" / "langfuse"
 class TestManifest:
 
     def test_manifest_fields(self):
-        data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
+        data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8"))
         assert data["name"] == "langfuse"
         assert data["version"]
         # All six hooks the plugin implements.
@@ -414,6 +414,7 @@ class TestPlaceholderKeyDetection:
         for k in (
             "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+            "HERMES_LANGFUSE_BASE_URL", "LANGFUSE_BASE_URL",
         ):
             monkeypatch.delenv(k, raising=False)
 
@@ -505,6 +506,145 @@ class TestPlaceholderKeyDetection:
             f"Warning fired {len(warnings)} times across 15 calls; "
             "expected 1 (cached via _INIT_FAILED)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Custom-endpoint credential pass-through (#72484).
+#
+# The pk-lf- / sk-lf- prefix is only guaranteed for keys issued by Langfuse
+# Cloud.  Custom / self-hosted Langfuse-compatible ingestion endpoints may
+# issue operator-defined credentials in any format; rejecting those as
+# "placeholders" broke valid deployments and — because the failure is cached
+# via _INIT_FAILED — permanently disabled tracing until restart.  The fix
+# scopes the prefix guard to Langfuse Cloud hosts (langfuse.com and its
+# subdomains) and passes non-empty credentials through for any other
+# configured base URL, letting the endpoint authenticate them itself.
+# ---------------------------------------------------------------------------
+
+
+class TestCustomEndpointCredentials:
+    LOGGER_NAME = "plugins.observability.langfuse"
+
+    def _fresh_plugin(self, monkeypatch=None):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        mod = importlib.import_module(mod_name)
+        if monkeypatch is not None:
+            _FakeLangfuse.instances.clear()
+            monkeypatch.setattr(mod, "Langfuse", _FakeLangfuse, raising=False)
+        return mod
+
+    _clear_env = staticmethod(TestPlaceholderKeyDetection._clear_env)
+
+    # -- host classification helper ------------------------------------------
+
+    @pytest.mark.parametrize("base_url", [
+        "https://cloud.langfuse.com",
+        "https://cloud.langfuse.com.",          # dns root dot notation
+        "https://us.cloud.langfuse.com",
+        "https://us.cloud.langfuse.com.",       # dns root dot on subdomain
+        "https://eu.cloud.langfuse.com",
+        "https://langfuse.com",
+        "https://CLOUD.LANGFUSE.COM",           # case-insensitive host match
+        "https://cloud.langfuse.com:443/path",
+    ])
+    def test_cloud_hosts_detected(self, monkeypatch, base_url):
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        assert plugin._is_langfuse_cloud_host(base_url) is True
+
+    @pytest.mark.parametrize("base_url", [
+        "https://langfuse-compatible.example.internal",
+        "https://langfuse.mycompany.com",
+        "http://localhost:3000",
+        "https://notlangfuse.com",             # suffix must match on a dot boundary
+        "https://evil-langfuse.com",
+        "https://langfuse.com.evil.example",   # cloud host must END the hostname
+        "not a url at all",
+    ])
+    def test_non_cloud_hosts_detected(self, monkeypatch, base_url):
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        assert plugin._is_langfuse_cloud_host(base_url) is False
+
+    # -- end-to-end _get_langfuse() behaviour --------------------------------
+
+    def test_custom_endpoint_accepts_non_prefixed_credentials(self, monkeypatch, caplog):
+        """The exact repro from #72484: a custom base URL with valid
+        operator-issued (non-``pk-lf-``/``sk-lf-``) credentials must
+        construct the SDK client and must NOT warn about placeholders."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "custom-public-key")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "custom-secret-key")
+        monkeypatch.setenv(
+            "HERMES_LANGFUSE_BASE_URL",
+            "https://langfuse-compatible.example.internal",
+        )
+        plugin = self._fresh_plugin(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            client = plugin._get_langfuse()
+        assert isinstance(client, _FakeLangfuse)
+        assert client.kwargs["public_key"] == "custom-public-key"
+        assert client.kwargs["secret_key"] == "custom-secret-key"
+        assert client.kwargs["base_url"] == "https://langfuse-compatible.example.internal"
+        assert "placeholders" not in caplog.text.lower(), (
+            f"Custom-endpoint credentials tripped the placeholder guard: {caplog.text!r}"
+        )
+
+    def test_custom_endpoint_via_legacy_base_url_env(self, monkeypatch, caplog):
+        """The legacy bare ``LANGFUSE_BASE_URL`` alias must scope the
+        prefix guard exactly like the canonical HERMES_-prefixed var."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "custom-public-key")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "custom-secret-key")
+        monkeypatch.setenv("LANGFUSE_BASE_URL", "http://localhost:3000")
+        plugin = self._fresh_plugin(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            client = plugin._get_langfuse()
+        assert isinstance(client, _FakeLangfuse)
+        assert client.kwargs["base_url"] == "http://localhost:3000"
+        assert "placeholders" not in caplog.text.lower()
+
+    def test_custom_endpoint_still_requires_non_empty_credentials(self, monkeypatch, caplog):
+        """Skipping the prefix guard must NOT weaken the missing-credentials
+        gate: a custom base URL with empty keys still silently opts out."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv(
+            "HERMES_LANGFUSE_BASE_URL",
+            "https://langfuse-compatible.example.internal",
+        )
+        plugin = self._fresh_plugin(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._get_langfuse() is None
+        assert _FakeLangfuse.instances == []
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                    and r.name == self.LOGGER_NAME]
+        assert warnings == []
+
+    def test_default_base_url_still_enforces_prefix_guard(self, monkeypatch, caplog):
+        """No base URL configured → defaults to Langfuse Cloud → the #23823
+        placeholder guard must keep firing exactly as before."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "placeholder")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "placeholder")
+        plugin = self._fresh_plugin(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._get_langfuse() is None
+        assert "placeholders" in caplog.text.lower()
+        assert _FakeLangfuse.instances == []
+
+    def test_explicit_cloud_base_url_still_enforces_prefix_guard(self, monkeypatch, caplog):
+        """Explicitly pointing at Langfuse Cloud (including regional
+        subdomains) keeps the prefix guard active."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "custom-public-key")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "custom-secret-key")
+        monkeypatch.setenv("HERMES_LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
+        plugin = self._fresh_plugin(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            assert plugin._get_langfuse() is None
+        assert "placeholders" in caplog.text.lower()
+        assert _FakeLangfuse.instances == []
 
 
 class TestRequestMessageCoercion:

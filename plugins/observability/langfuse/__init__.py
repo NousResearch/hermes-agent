@@ -68,16 +68,28 @@ _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
 
-# Langfuse-issued keys always carry these prefixes (cloud or self-hosted —
-# the prefix is baked into the server-side issuance flow, not a UI hint).
-# Anything else (`placeholder`, `test-key`, `your-langfuse-key`, etc.) is a
-# leftover template value and would cause the SDK to silently accept the
-# credentials at construction time but drop every trace at flush time.
+# Langfuse Cloud always issues keys with these prefixes (the prefix is baked
+# into the server-side issuance flow, not a UI hint). Anything else
+# (`placeholder`, `test-key`, `your-langfuse-key`, etc.) is a leftover
+# template value and would cause the SDK to silently accept the credentials
+# at construction time but drop every trace at flush time.
 # See #23823 — the silent-failure bug this guard fixes.
+#
+# The prefix check only applies when the configured base URL is a known
+# Langfuse Cloud host. Custom / self-hosted Langfuse-compatible endpoints may
+# issue operator-defined credentials in any format, so their non-empty keys
+# are passed through to the SDK and authenticated by the endpoint itself
+# (#72484).
 _LANGFUSE_KEY_PREFIXES: Dict[str, str] = {
     "HERMES_LANGFUSE_PUBLIC_KEY": "pk-lf-",
     "HERMES_LANGFUSE_SECRET_KEY": "sk-lf-",
 }
+
+# Hosts (and subdomains) for which Langfuse-issued key prefixes are
+# guaranteed. cloud.langfuse.com / us.cloud.langfuse.com / eu.cloud.langfuse.com
+# all fall under langfuse.com.
+_LANGFUSE_CLOUD_HOST_SUFFIX = "langfuse.com"
+_DEFAULT_LANGFUSE_BASE_URL = "https://cloud.langfuse.com"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -126,9 +138,39 @@ def _redact_key_preview(value: str) -> str:
     return repr(value[:6] + "...")
 
 
+def _is_langfuse_cloud_host(base_url: str) -> bool:
+    """Return ``True`` when ``base_url`` points at Langfuse Cloud.
+
+    Only Langfuse Cloud (``langfuse.com`` and its subdomains, e.g.
+    ``cloud.langfuse.com`` / ``us.cloud.langfuse.com``) is guaranteed to
+    issue ``pk-lf-`` / ``sk-lf-`` prefixed keys, so the placeholder
+    prefix guard is scoped to those hosts. Custom or self-hosted
+    Langfuse-compatible endpoints may use operator-issued credentials
+    in any format — for them this returns ``False`` and the endpoint
+    authenticates the credentials itself (#72484). Unparseable URLs are
+    treated as custom endpoints: the operator explicitly configured
+    them, and the SDK will surface any connection problem.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        # urlparse preserves a terminal dot (DNS root notation, e.g.
+        # https://cloud.langfuse.com.), so strip it before comparison
+        # so the placeholder guard still fires for Cloud URLs typed
+        # with an explicit root (#72484 review).
+        host = (urlparse(base_url).hostname or "").lower().rstrip(".")
+    except Exception:
+        return False
+    return host == _LANGFUSE_CLOUD_HOST_SUFFIX or host.endswith(
+        "." + _LANGFUSE_CLOUD_HOST_SUFFIX
+    )
+
+
 def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
     """Return an error message if ``value`` is not a real Langfuse key.
 
+    Only meaningful for Langfuse Cloud endpoints — the caller must skip
+    this check for custom base URLs (see :func:`_is_langfuse_cloud_host`).
     Returns ``None`` when the value matches the documented Langfuse
     prefix for ``env_name``, or when no prefix is registered for the
     name (in which case we trust the operator).  When validation
@@ -171,6 +213,12 @@ def _get_langfuse() -> Optional[Langfuse]:
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 
+    base_url = (
+        _env("HERMES_LANGFUSE_BASE_URL")
+        or _env("LANGFUSE_BASE_URL")
+        or _DEFAULT_LANGFUSE_BASE_URL
+    )
+
     # Reject placeholder credentials with a one-shot warning so the
     # operator sees the misconfiguration instead of silently shipping a
     # broken observability stack (#23823).  The SDK does not validate
@@ -179,26 +227,31 @@ def _get_langfuse() -> Optional[Langfuse]:
     # to post them, by which point the warning is buried under whatever
     # else the process is logging.  Catch it here, surface it once, and
     # short-circuit via the same _INIT_FAILED path as the empty case.
-    placeholder_issues = [
-        msg
-        for msg in (
-            _validate_langfuse_key("HERMES_LANGFUSE_PUBLIC_KEY", public_key),
-            _validate_langfuse_key("HERMES_LANGFUSE_SECRET_KEY", secret_key),
-        )
-        if msg
-    ]
-    if placeholder_issues:
-        logger.warning(
-            "Langfuse plugin: credentials look like placeholders, traces will "
-            "NOT be emitted (%s). Set real Langfuse keys (pk-lf-... / sk-lf-...) "
-            "or unset HERMES_LANGFUSE_PUBLIC_KEY / HERMES_LANGFUSE_SECRET_KEY to "
-            "silence this warning.",
-            "; ".join(placeholder_issues),
-        )
-        _LANGFUSE_CLIENT = _INIT_FAILED
-        return None
+    #
+    # The prefix heuristic is only valid for Langfuse Cloud — custom /
+    # self-hosted Langfuse-compatible endpoints may issue credentials in
+    # any format, so for them non-empty keys are passed straight to the
+    # SDK and the endpoint authenticates them (#72484).
+    if _is_langfuse_cloud_host(base_url):
+        placeholder_issues = [
+            msg
+            for msg in (
+                _validate_langfuse_key("HERMES_LANGFUSE_PUBLIC_KEY", public_key),
+                _validate_langfuse_key("HERMES_LANGFUSE_SECRET_KEY", secret_key),
+            )
+            if msg
+        ]
+        if placeholder_issues:
+            logger.warning(
+                "Langfuse plugin: credentials look like placeholders, traces will "
+                "NOT be emitted (%s). Set real Langfuse keys (pk-lf-... / sk-lf-...) "
+                "or unset HERMES_LANGFUSE_PUBLIC_KEY / HERMES_LANGFUSE_SECRET_KEY to "
+                "silence this warning.",
+                "; ".join(placeholder_issues),
+            )
+            _LANGFUSE_CLIENT = _INIT_FAILED
+            return None
 
-    base_url = _env("HERMES_LANGFUSE_BASE_URL") or _env("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
     environment = _env("HERMES_LANGFUSE_ENV") or _env("LANGFUSE_ENV")
     release = _env("HERMES_LANGFUSE_RELEASE") or _env("LANGFUSE_RELEASE")
     sample_rate = _env("HERMES_LANGFUSE_SAMPLE_RATE")

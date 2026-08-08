@@ -161,13 +161,15 @@ pip install langfuse
 hermes plugins enable observability/langfuse
 ```
 
-Then put the credentials in `~/.hermes/.env`:
+Then put the credentials in `~/.hermes/.env`. For **Langfuse Cloud**, keys use the platform-issued `pk-lf-` / `sk-lf-` format:
 
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...
 HERMES_LANGFUSE_SECRET_KEY=sk-lf-...
-HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com   # or your self-hosted URL
+HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
+
+For a **self-hosted or custom endpoint**, use the credentials issued by that endpoint and set `HERMES_LANGFUSE_BASE_URL` to its address:
 
 **How it works:**
 

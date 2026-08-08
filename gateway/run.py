@@ -2599,6 +2599,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
     }
 
 
@@ -2621,6 +2622,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
     }
 
 
@@ -2680,6 +2682,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
                     "model": entry.get("model"),
+                    "request_overrides": dict(runtime.get("request_overrides") or {}),
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -7156,16 +7159,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
         }
 
+        request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = {}
+            route["request_overrides"] = request_overrides
             return route
 
         try:
             overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
             overrides = None
-        route["request_overrides"] = overrides or {}
+        if overrides:
+            request_overrides.update(overrides)
+        route["request_overrides"] = request_overrides
         return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
@@ -22821,6 +22827,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
         ("model", "context_length"),
         ("model", "max_tokens"),
+        ("model", "extra_body"),
         ("compression", "enabled"),
         ("compression", "progress_notices"),
         ("compression", "threshold"),

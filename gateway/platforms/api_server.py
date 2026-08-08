@@ -254,6 +254,7 @@ _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "args",
     "credential_pool",
     "max_tokens",
+    "request_overrides",
 )
 
 
@@ -365,6 +366,7 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
     }
 
 

@@ -10,6 +10,18 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse
 
 
+def _merge_extra_body(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge request-body mappings, with ``override`` winning."""
+    merged = dict(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _merge_extra_body(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 class AnthropicTransport(ProviderTransport):
     """Transport for api_mode='anthropic_messages'.
 
@@ -59,10 +71,11 @@ class AnthropicTransport(ProviderTransport):
             base_url: str | None
             fast_mode: bool
             drop_context_1m_beta: bool
+            request_overrides: dict | None — model-level extra_body fields
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
-        return build_anthropic_kwargs(
+        kwargs = build_anthropic_kwargs(
             model=model,
             messages=messages,
             tools=tools,
@@ -76,6 +89,14 @@ class AnthropicTransport(ProviderTransport):
             fast_mode=params.get("fast_mode", False),
             drop_context_1m_beta=params.get("drop_context_1m_beta", False),
         )
+        overrides = params.get("request_overrides")
+        extra_body = overrides.get("extra_body") if isinstance(overrides, dict) else None
+        if isinstance(extra_body, dict):
+            kwargs["extra_body"] = _merge_extra_body(
+                kwargs.get("extra_body") if isinstance(kwargs.get("extra_body"), dict) else {},
+                extra_body,
+            )
+        return kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize Anthropic response to NormalizedResponse.

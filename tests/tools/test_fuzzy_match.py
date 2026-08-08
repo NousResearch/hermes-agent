@@ -25,6 +25,15 @@ class TestExactMatch:
         assert count == 0
         assert err is not None
 
+    def test_identical_strings(self):
+        new, count, _, err = fuzzy_find_and_replace("abc", "abc", "abc")
+        assert count == 0
+        assert new == "abc"
+        assert err == (
+            "No edit was applied because old_string and new_string are identical. "
+            "Provide the existing text to replace in old_string and the changed "
+            "replacement text in new_string."
+        )
 
     def test_multiline_exact(self):
         content = "line1\nline2\nline3"
@@ -431,6 +440,28 @@ class TestFormatNoMatchHint:
         )
         assert result == ""
 
+    def test_silent_on_identical_strings(self):
+        """old_string == new_string — hint irrelevant."""
+        result = self.fmt(
+            "No edit was applied because old_string and new_string are identical. "
+            "Provide the existing text to replace in old_string and the changed "
+            "replacement text in new_string.",
+            0, "foo", "foo bar\n",
+        )
+        assert result == ""
+
+    def test_silent_when_match_count_nonzero(self):
+        """If match succeeded, we shouldn't be in the error path — defense in depth."""
+        result = self.fmt(
+            "Could not find a match for old_string in the file",
+            1, "foo", "foo bar\n",
+        )
+        assert result == ""
+
+    def test_silent_on_none_error(self):
+        """No error at all — no hint."""
+        result = self.fmt(None, 0, "foo", "bar\n")
+        assert result == ""
 
     def test_silent_when_no_similar_content(self):
         """Even for a valid no-match error, skip hint when nothing similar exists."""

@@ -3440,9 +3440,22 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # tool result. This is the final pre-API chokepoint, so dedup defensively
     # here even though repair_message_sequence also consumes matched ids.
     #   (a) collapse duplicate tool_calls WITHIN an assistant message
-    #   (b) drop later tool result messages reusing an already-seen id
+    #   (b) drop tool results that answer no OUTSTANDING tool call
+    #
+    # (b) tracks OUTSTANDING calls rather than every id ever seen, because
+    # ``tool_call_id`` is NOT globally unique in practice. Hermes reuses
+    # local counters (`image_generate:0..N` on successive turns) and some
+    # servers (llama.cpp) emit one constant id for every call (#66429,
+    # #70734), so the same id legitimately appears in MULTIPLE assistant
+    # messages. A seen-once-drop-forever rule misreads the second legitimate
+    # call as a duplicate, strips it, and re-writes ``tool_calls: []`` (the
+    # #58755 HTTP 400, since the normalization above already ran). So: an
+    # assistant call ARMS its id, a tool result CONSUMES it, and a result
+    # answering nothing outstanding is still dropped — while a fresh call
+    # reuses the id by re-arming it first. Answering also retires the id
+    # from the seen-set so the re-arm is possible.
     seen_assistant_call_ids: set = set()
-    seen_result_call_ids: set = set()
+    outstanding_call_ids: set = set()
     deduped: List[Dict[str, Any]] = []
     removed_dupes = 0
     for msg in messages:
@@ -3456,17 +3469,22 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     continue
                 if cid:
                     seen_assistant_call_ids.add(cid)
+                    outstanding_call_ids.add(cid)
                 kept_tcs.append(tc)
             if len(kept_tcs) != len(msg.get("tool_calls") or []):
                 msg = {**msg, "tool_calls": kept_tcs}
             deduped.append(msg)
         elif role == "tool":
             cid = (msg.get("tool_call_id") or "").strip()
-            if cid and cid in seen_result_call_ids:
+            if cid and cid not in outstanding_call_ids:
                 removed_dupes += 1
                 continue
             if cid:
-                seen_result_call_ids.add(cid)
+                # Answered: no longer outstanding, so a replayed result is
+                # still caught above. Retire from the seen-set too so a
+                # later assistant call may legitimately re-arm the id.
+                outstanding_call_ids.discard(cid)
+                seen_assistant_call_ids.discard(cid)
             deduped.append(msg)
         else:
             deduped.append(msg)

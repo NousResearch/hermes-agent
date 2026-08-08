@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
+import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
 import {
   blurComposerInput,
@@ -50,6 +50,7 @@ afterEach(() => {
   // would otherwise decide the next one.
   markActiveComposer('main')
   $hoveredTreeGroup.set(null)
+  $activeTreeGroup.set(null)
 })
 
 describe('blurComposerInput', () => {
@@ -73,6 +74,19 @@ describe('blurComposerInput', () => {
     blurComposerInput()
 
     expect(document.activeElement).toBe(outside)
+  })
+
+  it('blurs the focused input when a split leaves several visible', () => {
+    // Both zones of a split are visible, so matching the first one and then
+    // testing it against activeElement no-ops for every zone but the leftmost.
+    const left = mountInput()
+    const right = mountInput()
+
+    right.focus()
+    blurComposerInput()
+
+    expect(document.activeElement).not.toBe(right)
+    expect(document.activeElement).not.toBe(left)
   })
 })
 
@@ -211,6 +225,16 @@ describe('resolveActive / keep-alive tab heal', () => {
     expect(mainSaw).toEqual(['main'])
   })
 
+  it('does not adopt a present-but-empty composer target as a routing key', () => {
+    // `[data-composer-target]` matches on attribute presence, so a surface
+    // stamped with an empty value is a candidate. Routing to '' would address a
+    // composer that cannot exist and drop the keystroke — fall back to main.
+    mountSurface('')
+    markActiveComposer('tile:closed')
+
+    expect(getActiveComposer()).toBe('main')
+  })
+
   it('holds an edit claim while the edit composer root is mounted', () => {
     const root = document.createElement('div')
     root.dataset.slot = 'aui_edit-composer-root'
@@ -236,6 +260,98 @@ function mountZonedSurface(target: string, zone: string, hidden = false) {
 
   return surface
 }
+
+/**
+ * A split renders one chat surface per zone and BOTH are visible, so resolving
+ * "the" visible surface by first DOM match answers document order — always the
+ * leftmost zone. Work in the right-hand zone and the composer routing key is
+ * handed to the left one: Enter, type-to-focus, Esc, voice and soft `/` are all
+ * preventDefault'd and dropped in the pane the user is actually looking at.
+ */
+describe('visibleChatTarget / split-zone identity', () => {
+  /** Two visible chat surfaces, one per split zone. */
+  function mountSplit() {
+    mountZonedSurface('tile:left', 'zone-a')
+    mountZonedSurface('tile:right', 'zone-b')
+  }
+
+  it('releases the routing key into the active zone, not the leftmost surface', () => {
+    mountSplit()
+    $activeTreeGroup.set('zone-b')
+    markActiveComposer('edit')
+
+    releaseActiveComposer('edit')
+
+    expect(getActiveComposer()).toBe('tile:right')
+  })
+
+  it('releases into zone-a when zone-a is the active zone', () => {
+    // The mirror of the case above: proves the resolver reads the zone rather
+    // than simply preferring the last-mounted surface.
+    mountSplit()
+    $activeTreeGroup.set('zone-a')
+    markActiveComposer('edit')
+
+    releaseActiveComposer('edit')
+
+    expect(getActiveComposer()).toBe('tile:left')
+  })
+
+  it('prefers the hovered zone over the active one (ladder order)', () => {
+    mountSplit()
+    $activeTreeGroup.set('zone-a')
+    $hoveredTreeGroup.set('zone-b')
+    markActiveComposer('edit')
+
+    releaseActiveComposer('edit')
+
+    expect(getActiveComposer()).toBe('tile:right')
+  })
+
+  it('falls through to the active zone when the hovered zone holds no chat surface', () => {
+    // Pointer parked on the sidebar / titlebar — a zone that cannot serve the
+    // verb must hand off to the next rung, not swallow the key.
+    mountSplit()
+    $hoveredTreeGroup.set('zone-sidebar')
+    $activeTreeGroup.set('zone-b')
+    markActiveComposer('edit')
+
+    releaseActiveComposer('edit')
+
+    expect(getActiveComposer()).toBe('tile:right')
+  })
+
+  it('still answers a visible surface when neither rung resolves', () => {
+    // Nothing hovered and nothing activated yet: there is no identity to
+    // resolve, so the fallback stays document order rather than null. Answering
+    // null would route the key at a possibly-buried 'main' and drop every
+    // keystroke — strictly worse than naming a surface the user can see.
+    mountSplit()
+    markActiveComposer('tile:closed')
+
+    expect(getActiveComposer()).toBe('tile:left')
+  })
+
+  it('heals a stale claim into the active zone rather than document order', () => {
+    // The reported repro: user works in the right zone, its claim goes stale
+    // (tab switch / tile close), and type-to-focus heals onto the left zone.
+    mountSplit()
+    $activeTreeGroup.set('zone-b')
+    markActiveComposer('tile:closed')
+
+    expect(getActiveComposer()).toBe('tile:right')
+  })
+
+  it('answers the only visible surface whatever the zone state says', () => {
+    // The non-split path must not start depending on the layout store.
+    mountZonedSurface('tile:only', 'zone-a')
+    $hoveredTreeGroup.set('zone-elsewhere')
+    $activeTreeGroup.set('zone-elsewhere')
+    markActiveComposer('tile:closed')
+
+    expect(getActiveComposer()).toBe('tile:only')
+  })
+})
 
 const collectModelMenuTargets = async (): Promise<string[]> => {
   const saw: string[] = []

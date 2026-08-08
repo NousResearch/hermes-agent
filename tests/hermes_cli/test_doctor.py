@@ -926,8 +926,8 @@ class TestGitHubTokenCheck:
             run_doctor(Namespace(fix=False))
         out = buf.getvalue()
 
-        assert "No GITHUB_TOKEN" in out
-        assert "60 req/hr" in out
+        assert "No GitHub credential" in out
+        assert "public reads remain available" in out
 
 
     def test_gh_authenticated_without_env_token_shows_ok(self, monkeypatch, tmp_path):

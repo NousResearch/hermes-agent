@@ -21,27 +21,14 @@ Create, clone, fork, configure, and manage GitHub repositories. Each section sho
 
 ### Setup
 
-```bash
-if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-  AUTH="gh"
-else
-  AUTH="git"
-  if [ -z "$GITHUB_TOKEN" ]; then
-    if _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
-    elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(uv run python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
-    fi
-  fi
-fi
+Use the canonical Hermes GitHub workflow from `github-auth` first. Do not
+recreate authentication by probing `gh`, reading `.git-credentials`, or
+extracting tokens from `.env` manually. The workflow resolves the logical
+`GITHUB_TOKEN` through Hermes' active secret scope and reports the verified
+identity or an actionable remediation.
 
-# Get your GitHub username (needed for several operations)
-if [ "$AUTH" = "gh" ]; then
-  GH_USER=$(gh api user --jq '.login')
-else
-  GH_USER=$(curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user | python3 -c "import sys,json; print(json.load(sys.stdin)['login'])")
-fi
-```
+The canonical workflow supplies the authenticated identity to the agent. Do not
+extract it through a second shell authentication path.
 
 If you're inside a repo already:
 

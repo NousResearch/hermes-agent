@@ -2820,7 +2820,28 @@ def run_doctor(args):
     elif _gh_authenticated():
         check_ok("GitHub authenticated via gh CLI", "(full API access — no GITHUB_TOKEN needed)")
     else:
-        check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
+        check_warn(
+            "No GitHub credential",
+            "(public reads remain available — configure GITHUB_TOKEN in a supported Hermes secret source for authenticated access)",
+        )
+
+    # The CLI workflow capability is provider-neutral and reads the active
+    # profile's secret scope. Keep this diagnostic separate from the existing
+    # gh probe so newer/older gh compatibility fixes remain independently
+    # reviewable.
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.github_workflow import resolve_github_capability
+        capability = resolve_github_capability(load_config_readonly(), perform_preflight=False)
+        if capability.workflow_enabled:
+            if capability.credential_available:
+                check_ok("GitHub workflow available", "(Hermes secret scope configured)")
+            else:
+                check_warn("GitHub workflow credential unavailable", f"({capability.remediation})")
+        else:
+            check_ok("GitHub workflow disabled", "(github.workflow.enabled=false)")
+    except Exception as exc:
+        check_warn("GitHub workflow diagnostic unavailable", f"({exc})")
 
     _section("Memory Provider")
     _active_memory_provider = ""

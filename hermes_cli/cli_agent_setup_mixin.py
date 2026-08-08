@@ -14,6 +14,7 @@ loaded) so this module never imports ``cli`` at import time -> no import cycle.
 
 from __future__ import annotations
 
+import os
 import sys
 
 from rich.markup import escape as _escape
@@ -345,6 +346,30 @@ class CLIAgentSetupMixin:
         _prepare_deferred_agent_startup()
         self._install_tool_callbacks()
         self._ensure_tirith_security()
+
+        # Activate the canonical GitHub workflow before the first agent/tool
+        # snapshot when the CLI is opened inside a GitHub repository. This
+        # changes the prompt only during initial construction; later turns see
+        # the same cached system prompt.
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.github_workflow import repository_context, resolve_github_capability
+            from agent.skill_commands import build_preloaded_skills_prompt
+            repo = repository_context(os.getenv("TERMINAL_CWD", os.getcwd()))
+            capability = resolve_github_capability(load_config(), perform_preflight=False)
+            if capability.workflow_enabled and repo.owner and repo.name:
+                github_prompt, loaded, _missing = build_preloaded_skills_prompt(
+                    ["github-auth"], task_id=self.session_id
+                )
+                if github_prompt and "github-auth" not in getattr(self, "preloaded_skills", []):
+                    self.system_prompt = "\n\n".join(
+                        part for part in (self.system_prompt, github_prompt) if part
+                    ).strip()
+                    self.preloaded_skills = [*getattr(self, "preloaded_skills", []), *loaded]
+        except Exception:
+            # GitHub bootstrap is advisory; a malformed remote or skill must
+            # never prevent the normal CLI agent from starting.
+            pass
 
         if not self._ensure_runtime_credentials():
             return False

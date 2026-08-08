@@ -7,6 +7,13 @@ verbatim from hermes_cli/config.py. Must not import from hermes_cli.config.
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
+    "github": {
+        "workflow": {
+            "enabled": True,
+            "api_timeout_seconds": 10,
+            "preflight_cache_seconds": 900,
+        },
+    },
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],

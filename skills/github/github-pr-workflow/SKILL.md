@@ -22,23 +22,11 @@ Complete guide for managing the PR lifecycle. Each section shows the `gh` way fi
 
 ### Quick Auth Detection
 
-```bash
-# Determine which method to use throughout this workflow
-if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-  AUTH="gh"
-else
-  AUTH="git"
-  # Ensure we have a token for API calls
-  if [ -z "$GITHUB_TOKEN" ]; then
-    if _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
-    elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(uv run python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
-    fi
-  fi
-fi
-echo "Using: $AUTH"
-```
+Use the canonical Hermes GitHub workflow from `github-auth`. It resolves the
+logical `GITHUB_TOKEN` through Hermes' active secret scope and verifies the
+identity before authenticated API or Git operations. Do not probe `gh`, read
+`.git-credentials`, or extract tokens from `.env` manually. Public reads may
+proceed without a credential when GitHub permits them.
 
 ### Extracting Owner/Repo from the Git Remote
 

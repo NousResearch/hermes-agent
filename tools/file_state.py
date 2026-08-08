@@ -45,7 +45,10 @@ from typing import Dict, Iterable, List, Optional, Tuple
 # (mtime, read_ts, partial).  partial=True when read_file returned a
 # windowed view (offset > 1 or limit < total_lines) — writes that happen
 # after a partial read should still warn so the model re-reads in full.
-ReadStamp = Tuple[float, float, bool]
+# mtime is None when the caller reported that no host mtime describes the
+# file (remote backend): the sibling/partial/never-read checks still apply,
+# only the mtime-drift comparison is skipped.
+ReadStamp = Tuple[Optional[float], float, bool]
 
 # Number of resolved-path entries retained per agent.  Bounded to keep
 # long sessions from accumulating unbounded state.  On overflow we drop
@@ -97,10 +100,18 @@ class FileStateRegistry:
         *,
         partial: bool = False,
         mtime: Optional[float] = None,
+        host_mtime: bool = True,
     ) -> None:
+        """Record that *task_id* has read *resolved*.
+
+        ``host_mtime=False`` means the path lives on a remote backend, so a
+        host ``getmtime`` would describe a different (or missing) file.  The
+        read is still recorded — sibling-write coordination keys off task ids
+        and timestamps, not mtimes — just without an mtime stamp.
+        """
         if _disabled():
             return
-        if mtime is None:
+        if mtime is None and host_mtime:
             try:
                 mtime = os.path.getmtime(resolved)
             except OSError:
@@ -108,7 +119,11 @@ class FileStateRegistry:
         now = time.time()
         with self._state_lock:
             agent_reads = self._reads[task_id]
-            agent_reads[resolved] = (float(mtime), now, bool(partial))
+            agent_reads[resolved] = (
+                float(mtime) if mtime is not None else None,
+                now,
+                bool(partial),
+            )
             _cap_dict(agent_reads, _MAX_PATHS_PER_AGENT)
 
     def note_write(
@@ -117,16 +132,18 @@ class FileStateRegistry:
         resolved: str,
         *,
         mtime: Optional[float] = None,
+        host_mtime: bool = True,
     ) -> None:
         """Record a successful write.
 
         Updates the global last-writer map AND this agent's own read stamp
         (a write is an implicit read — the agent now knows the current
-        content).
+        content).  ``host_mtime=False`` (remote backend) skips the host stat;
+        the last-writer entry is still recorded so siblings keep coordinating.
         """
         if _disabled():
             return
-        if mtime is None:
+        if mtime is None and host_mtime:
             try:
                 mtime = os.path.getmtime(resolved)
             except OSError:
@@ -136,10 +153,20 @@ class FileStateRegistry:
             self._last_writer[resolved] = (task_id, now)
             _cap_dict(self._last_writer, _MAX_GLOBAL_WRITERS)
             # Writer's own view is now up-to-date.
-            self._reads[task_id][resolved] = (float(mtime), now, False)
+            self._reads[task_id][resolved] = (
+                float(mtime) if mtime is not None else None,
+                now,
+                False,
+            )
             _cap_dict(self._reads[task_id], _MAX_PATHS_PER_AGENT)
 
-    def check_stale(self, task_id: str, resolved: str) -> Optional[str]:
+    def check_stale(
+        self,
+        task_id: str,
+        resolved: str,
+        *,
+        host_mtime: bool = True,
+    ) -> Optional[str]:
         """Return a model-facing warning if this write would be stale.
 
         Three staleness classes, in order of severity:
@@ -147,6 +174,11 @@ class FileStateRegistry:
           1. Sibling subagent wrote this file after this agent's last read.
           2. External/unknown change (mtime differs from our last read).
           3. Agent never read the file (write-without-read).
+
+        ``host_mtime=False`` (remote backend) drops case 2 only: the host path
+        is a different file from the sandboxed one, so comparing its mtime
+        invents drift that never happened.  Cases 1 and 3 are backend-agnostic
+        and still apply.
 
         Returns ``None`` when the write is safe.  Does not raise — callers
         decide whether to block or warn.
@@ -163,11 +195,13 @@ class FileStateRegistry:
         if stamp is None and last_writer is None:
             return None
 
-        try:
-            current_mtime = os.path.getmtime(resolved)
-        except OSError:
-            # File doesn't exist — write will create it; not stale.
-            return None
+        current_mtime: Optional[float] = None
+        if host_mtime:
+            try:
+                current_mtime = os.path.getmtime(resolved)
+            except OSError:
+                # File doesn't exist — write will create it; not stale.
+                return None
 
         # Case 1: sibling subagent modified after our last read.
         if last_writer is not None:
@@ -189,10 +223,15 @@ class FileStateRegistry:
                         "Re-read the file before writing."
                     )
 
-        # Case 2: external / unknown modification (mtime drifted).
+        # Case 2: external / unknown modification (mtime drifted).  Needs an
+        # mtime on both sides — a remote read/write leaves neither.
         if stamp is not None:
             read_mtime, _read_ts, partial = stamp
-            if current_mtime != read_mtime:
+            if (
+                current_mtime is not None
+                and read_mtime is not None
+                and current_mtime != read_mtime
+            ):
                 return (
                     f"{resolved} was modified since you last read it "
                     "on disk (external edit or unrecorded writer). "
@@ -292,16 +331,29 @@ def _cap_dict(d: dict, limit: int) -> None:
 
 
 # ── Convenience wrappers (short names used at call sites) ────────────
-def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False) -> None:
-    _registry.record_read(task_id, str(resolved_or_path), partial=partial)
+def record_read(
+    task_id: str,
+    resolved_or_path: str | Path,
+    *,
+    partial: bool = False,
+    host_mtime: bool = True,
+) -> None:
+    _registry.record_read(
+        task_id, str(resolved_or_path), partial=partial, host_mtime=host_mtime
+    )
 
 
-def note_write(task_id: str, resolved_or_path: str | Path) -> None:
-    _registry.note_write(task_id, str(resolved_or_path))
+def note_write(task_id: str, resolved_or_path: str | Path, *, host_mtime: bool = True) -> None:
+    _registry.note_write(task_id, str(resolved_or_path), host_mtime=host_mtime)
 
 
-def check_stale(task_id: str, resolved_or_path: str | Path) -> Optional[str]:
-    return _registry.check_stale(task_id, str(resolved_or_path))
+def check_stale(
+    task_id: str,
+    resolved_or_path: str | Path,
+    *,
+    host_mtime: bool = True,
+) -> Optional[str]:
+    return _registry.check_stale(task_id, str(resolved_or_path), host_mtime=host_mtime)
 
 
 def lock_path(resolved_or_path: str | Path):

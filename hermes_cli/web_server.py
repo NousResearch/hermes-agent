@@ -6177,22 +6177,40 @@ def get_model_info(profile: Optional[str] = None):
     try:
         with _profile_scope(profile):
             cfg = load_config()
-        model_cfg = cfg.get("model", "")
+            model_cfg = cfg.get("model", "")
 
-        # Extract model name and provider from the config
-        if isinstance(model_cfg, dict):
-            model_name = model_cfg.get("default", model_cfg.get("name", ""))
-            provider = model_cfg.get("provider", "")
-            base_url = model_cfg.get("base_url", "")
-            config_ctx = model_cfg.get("context_length")
-        else:
-            model_name = str(model_cfg) if model_cfg else ""
-            provider = ""
-            base_url = ""
-            config_ctx = None
+            # Extract model name and provider from the config
+            if isinstance(model_cfg, dict):
+                model_name = model_cfg.get("default", model_cfg.get("name", ""))
+                provider = model_cfg.get("provider", "")
+                base_url = model_cfg.get("base_url", "")
+                config_ctx = model_cfg.get("context_length")
+            else:
+                model_name = str(model_cfg) if model_cfg else ""
+                provider = ""
+                base_url = ""
+                config_ctx = None
+
+            display_provider = provider
+            if str(provider or "").strip().lower() == "custom":
+                try:
+                    from hermes_cli.runtime_provider import canonical_custom_identity
+
+                    display_provider = (
+                        canonical_custom_identity(
+                            base_url=base_url or None,
+                            model=model_name or None,
+                        )
+                        or provider
+                    )
+                except Exception:
+                    _log.debug(
+                        "Failed to resolve custom provider identity for model info",
+                        exc_info=True,
+                    )
 
         if not model_name:
-            return dict(_EMPTY_MODEL_INFO, provider=provider)
+            return dict(_EMPTY_MODEL_INFO, provider=display_provider)
 
         # Resolve auto-detected context length (pass config_ctx=None to get
         # purely auto-detected value, then separately report the override)
@@ -6233,7 +6251,7 @@ def get_model_info(profile: Optional[str] = None):
 
         return {
             "model": model_name,
-            "provider": provider,
+            "provider": display_provider,
             "auto_context_length": auto_ctx,
             "config_context_length": config_ctx_int,
             "effective_context_length": effective_ctx,

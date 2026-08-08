@@ -5106,6 +5106,31 @@ def _project_info_for_cwd(cwd: str) -> dict | None:
         return None
 
 
+def _session_provider_identity(agent, session: dict | None, mirror: dict) -> str:
+    """Return the catalog identity for a live session's resolved provider."""
+    provider = str(
+        mirror.get("provider") or getattr(agent, "provider", "") or ""
+    ).strip()
+    if provider.lower() != "custom":
+        return provider
+
+    override = (session or {}).get("model_override")
+    override_provider = (
+        override.get("provider") if isinstance(override, dict) else ""
+    )
+    # ``agent.provider`` is the runtime/billing class (bare ``custom``), while
+    # the requested provider and session override retain the routable catalog
+    # identity. Prefer the live agent because a successful in-place model switch
+    # updates it before the session override is committed.
+    for candidate in (getattr(agent, "requested_provider", ""), override_provider):
+        normalized = str(candidate or "").strip().lower()
+        if normalized.startswith("custom:"):
+            return normalized
+
+    # A genuine ad-hoc custom endpoint has no named catalog row.
+    return provider
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         for candidate in _sessions.values():
@@ -5157,10 +5182,10 @@ def _session_info(agent, session: dict | None = None) -> dict:
     pending_switch = (session or {}).get("pending_model_switch") or {}
     pending_model = str(pending_switch.get("display_model") or "").strip()
     pending_provider = str(pending_switch.get("display_provider") or "").strip()
+    session_provider = _session_provider_identity(agent, session, mirror)
     info: dict = {
         "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
-        "provider": pending_provider
-        or mirror.get("provider", getattr(agent, "provider", "")),
+        "provider": pending_provider or session_provider,
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
@@ -6533,11 +6558,34 @@ def _make_agent(
             if not resolution.selected_model:
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
+    agent_requested_provider = None
+    if str(runtime.get("provider") or "").strip().lower() == "custom":
+        agent_requested_provider = str(
+            runtime.get("requested_provider") or requested_provider or ""
+        ).strip()
+        try:
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            agent_requested_provider = (
+                canonical_custom_identity(
+                    base_url=runtime.get("base_url") or None,
+                    config_provider=agent_requested_provider or None,
+                    model=model or None,
+                )
+                or agent_requested_provider
+            )
+        except Exception:
+            logger.debug(
+                "custom provider identity recovery failed (agent build)",
+                exc_info=True,
+            )
+
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
         provider=runtime.get("provider"),
+        requested_provider=agent_requested_provider or None,
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
         api_mode=runtime.get("api_mode"),

@@ -2647,6 +2647,33 @@ class TestModelInfoEndpoint:
         assert data["config_context_length"] == 100000
         assert data["effective_context_length"] == 100000  # override wins
 
+    def test_model_info_returns_named_custom_provider_identity(self):
+        from hermes_cli.config import save_config
+
+        save_config(
+            {
+                "model": {
+                    "default": "gpt-5.3-codex-spark",
+                    "provider": "custom",
+                    "base_url": "https://api.aixyzs.com/v1",
+                },
+                "providers": {
+                    "api.aixyzs.com": {
+                        "api": "https://api.aixyzs.com/v1/",
+                        "models": ["gpt-5.3-codex-spark"],
+                    }
+                },
+            }
+        )
+
+        with (
+            patch("agent.model_metadata.get_model_context_length", return_value=0),
+            patch("agent.models_dev.get_model_capabilities", return_value=None),
+        ):
+            resp = self.client.get("/api/model/info")
+
+        assert resp.status_code == 200
+        assert resp.json()["provider"] == "custom:api.aixyzs.com"
 
     def test_model_info_graceful_on_metadata_error(self, monkeypatch):
         """Endpoint should return zeros on import/resolution errors, not 500."""

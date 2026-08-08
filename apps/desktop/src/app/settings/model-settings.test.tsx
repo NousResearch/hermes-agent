@@ -115,6 +115,40 @@ describe('ModelSettings', () => {
     expect(screen.queryByText(/DeepSeek/)).toBeNull()
   })
 
+  it('selects the saved custom provider identity returned by the backend', async () => {
+    getGlobalModelInfo.mockResolvedValueOnce({
+      provider: 'custom:api.aixyzs.com',
+      model: 'gpt-5.3-codex-spark'
+    })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Custom endpoint',
+          slug: 'custom',
+          models: [],
+          authenticated: false,
+          auth_type: 'api_key'
+        },
+        {
+          name: 'API.AIXYZS.COM',
+          slug: 'custom:api.aixyzs.com',
+          api_url: 'https://api.aixyzs.com/v1',
+          models: ['gpt-5.3-codex-spark'],
+          authenticated: true,
+          is_user_defined: true
+        }
+      ]
+    })
+
+    await renderModelSettings()
+
+    const providerSelect = (await screen.findAllByRole('combobox'))[0]
+
+    expect(providerSelect.textContent).toContain('API.AIXYZS.COM')
+    expect(screen.queryByText(/needs an API key/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Set up Custom endpoint/ })).toBeNull()
+  })
+
   it.each(['custom', 'local', 'custom:lab'])(
     'opens local endpoint setup when %s has no inventory row',
     async provider => {

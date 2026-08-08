@@ -4,7 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
+import { $activeSessionId, $currentModel, $currentProvider, $currentReasoningEffort } from '@/store/session'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -39,12 +39,20 @@ const GOOGLE_PROVIDER = {
   slug: 'google'
 }
 
+const CUSTOM_PROVIDER = {
+  capabilities: { 'gpt-5.3-codex-spark': { fast: false, reasoning: true } },
+  models: ['gpt-5.3-codex-spark'],
+  name: 'API.AIXYZS.COM',
+  slug: 'custom:api.aixyzs.com'
+}
+
 const MOCK_PROVIDERS = [DEEPSEEK_PROVIDER, GOOGLE_PROVIDER, MOA_PROVIDER]
 
 beforeEach(() => {
   $activeSessionId.set('runtime-1')
   $currentModel.set('')
   $currentProvider.set('')
+  $currentReasoningEffort.set('')
   $collapsedProviders.set([])
   getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
 })
@@ -54,20 +62,20 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderPanel(onSelectModel = vi.fn()) {
+function renderPanel(onSelectModel = vi.fn(), requestGateway = vi.fn(async () => ({}) as never)) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   const content = render(
     <QueryClientProvider client={client}>
       <DropdownMenu open>
         <DropdownMenuContent>
-          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={vi.fn() as never} />
+          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={requestGateway as never} />
         </DropdownMenuContent>
       </DropdownMenu>
     </QueryClientProvider>
   )
 
-  return { onSelectModel, content }
+  return { onSelectModel, requestGateway, content }
 }
 
 describe('ModelMenuPanel MoA presets', () => {
@@ -141,6 +149,29 @@ describe('ModelMenuPanel current selection', () => {
 
     expect(currentRow?.querySelector('.codicon-check')).not.toBeNull()
     expect(staleRow?.querySelector('.codicon-check')).toBeNull()
+  })
+
+  it('writes reasoning changes for the active named custom provider row', async () => {
+    $currentProvider.set('custom:api.aixyzs.com')
+    $currentModel.set('gpt-5.3-codex-spark')
+    $currentReasoningEffort.set('max')
+    getGlobalModelOptions.mockResolvedValue({ providers: [CUSTOM_PROVIDER] })
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const { content } = renderPanel(vi.fn(), requestGateway)
+
+    const row = (await content.findByText('GPT-5.3-codex-spark')).closest('[role="menuitem"]')
+
+    expect(row?.querySelector('.codicon-check')).not.toBeNull()
+    fireEvent.keyDown(row!, { key: 'ArrowRight' })
+    fireEvent.click(await screen.findByText('Extra High'))
+
+    await vi.waitFor(() => {
+      expect(requestGateway).toHaveBeenCalledWith('config.set', {
+        key: 'reasoning',
+        session_id: 'runtime-1',
+        value: 'xhigh'
+      })
+    })
   })
 })
 

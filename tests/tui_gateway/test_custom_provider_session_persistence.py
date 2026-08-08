@@ -57,10 +57,13 @@ def _custom_agent(base_url=MIMO_URL):
     return types.SimpleNamespace(
         model="mimo-v2.5-pro",
         provider="custom",
+        requested_provider="custom:mimo-v2.5-pro",
         base_url=base_url,
         api_mode="chat_completions",
         reasoning_config=None,
         service_tier=None,
+        session_id="",
+        tools=[],
     )
 
 
@@ -152,6 +155,7 @@ class TestResumeRoundTrip:
         )
 
         assert kwargs["provider"] == "custom"
+        assert kwargs["requested_provider"] == "custom:mimo-v2.5-pro"
         assert kwargs["base_url"] == MIMO_URL
         assert kwargs["api_key"] == MIMO_KEY
 
@@ -261,6 +265,7 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
 
         assert kwargs["base_url"] == MIMO_URL
         assert kwargs["api_key"] == MIMO_KEY
+        assert kwargs["requested_provider"] == "custom:mimo-v2.5-pro"
         assert "openrouter.ai" not in (kwargs.get("base_url") or "")
 
     def test_first_db_row_persists_entry_identity_not_bare_custom(self, monkeypatch):
@@ -342,4 +347,32 @@ class TestModelNameRecoversEntryIdentity:
             == "custom:hermes-ultra"
         )
 
+
+class TestLiveSessionProviderIdentity:
+    def test_session_info_reports_requested_custom_catalog_identity(self, monkeypatch):
+        from tui_gateway import server
+
+        monkeypatch.setattr(server, "_load_cfg", lambda: {})
+        agent = _custom_agent()
+
+        info = server._session_info(agent, {"history": [], "session_key": ""})
+
+        assert info["provider"] == "custom:mimo-v2.5-pro"
+
+    def test_session_info_uses_override_for_pre_identity_agents(self, monkeypatch):
+        from tui_gateway import server
+
+        monkeypatch.setattr(server, "_load_cfg", lambda: {})
+        agent = _custom_agent()
+        agent.requested_provider = "custom"
+        session = {
+            "history": [],
+            "session_key": "",
+            "model_override": {
+                "model": "mimo-v2.5-pro",
+                "provider": "custom:mimo-v2.5-pro",
+            },
+        }
+
+        assert server._session_info(agent, session)["provider"] == "custom:mimo-v2.5-pro"
 

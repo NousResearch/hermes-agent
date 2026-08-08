@@ -317,20 +317,67 @@ async def _exec_buzz(
     )
 
 
-def _cli_error_message(stderr: str, returncode: int) -> str:
-    """Extract the human-readable message from the CLI's JSON error contract.
+_MAX_CLI_MESSAGE_CHARS = 900
 
-    stderr is ``{"error": "<category>", "message": "<detail>"}`` on failure;
-    fall back to the raw (stripped) stderr when it isn't JSON.
-    """
+
+def _bounded_cli_message(message: str, redact_path: Optional[Path] = None) -> str:
+    if redact_path is not None:
+        message = message.replace(str(redact_path), redact_path.name)
+    if len(message) <= _MAX_CLI_MESSAGE_CHARS:
+        return message
+    return f"{message[: _MAX_CLI_MESSAGE_CHARS - 3]}..."
+
+
+def _cli_error_message(
+    stderr: str,
+    returncode: int,
+    *,
+    redact_path: Optional[Path] = None,
+) -> str:
+    """Extract a bounded human-readable message from the CLI error contract."""
     text = (stderr or "").strip()
     try:
         data = json.loads(text)
         if isinstance(data, dict) and data.get("message"):
-            return f"{data.get('error', 'error')}: {data['message']} (exit {returncode})"
+            return _bounded_cli_message(
+                f"{data.get('error', 'error')}: {data['message']} (exit {returncode})",
+                redact_path,
+            )
     except ValueError:
         pass
-    return text or f"buzz CLI failed with exit code {returncode}"
+    return _bounded_cli_message(
+        text or f"buzz CLI failed with exit code {returncode}",
+        redact_path,
+    )
+
+
+def _cli_retryable(raw: str, exit_code: int) -> bool:
+    """Honor structured CLI retry guidance, with legacy exit-code fallback."""
+    try:
+        payload = json.loads((raw or "").strip())
+    except (TypeError, ValueError):
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("retryable"), bool):
+        return payload["retryable"]
+    return exit_code == 2
+
+
+_MAX_DOCUMENT_RECEIPT_ERROR_CHARS = 900
+
+
+def _document_receipt_error(data: Dict[str, Any], local: Path) -> str:
+    """Return useful, bounded detail for an invalid document-send receipt."""
+    message = data.get("message")
+    if isinstance(message, str) and message.strip():
+        detail = message.strip()
+    elif data.get("accepted") is False:
+        detail = "Buzz CLI rejected the document"
+    else:
+        detail = "Incomplete response from Buzz CLI"
+    detail = detail.replace(str(local), local.name)
+    if len(detail) > _MAX_DOCUMENT_RECEIPT_ERROR_CHARS:
+        detail = f"{detail[: _MAX_DOCUMENT_RECEIPT_ERROR_CHARS - 3]}..."
+    return detail
 
 
 def _parse_json_list(stdout: str) -> List[dict]:
@@ -663,6 +710,61 @@ class BuzzAdapter(BasePlatformAdapter):
             )
             return False
         return True
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Upload a local document through the Buzz CLI."""
+        local = Path(file_path).expanduser()
+        if not local.is_file():
+            return SendResult(success=False, error="Attachment file is unavailable")
+
+        args = [
+            "messages", "send",
+            "--channel", str(chat_id),
+            "--file", str(local),
+            "--content", "-",
+        ]
+        reply_target = reply_to or (metadata or {}).get("thread_id")
+        if reply_target:
+            args += ["--reply-to", str(reply_target)]
+        code, out, err = await self._run_cli(args, input_text=caption or "")
+        if code != 0:
+            error = _cli_error_message(err, code, redact_path=local)
+            return SendResult(
+                success=False,
+                error=error,
+                retryable=_cli_retryable(err, code),
+            )
+        try:
+            data = json.loads(out or "")
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            return SendResult(success=False, error="Invalid response from Buzz CLI")
+        event_id = data.get("event_id")
+        if (
+            data.get("accepted") is not True
+            or not isinstance(event_id, str)
+            or not event_id.strip()
+        ):
+            return SendResult(
+                success=False,
+                error=_document_receipt_error(data, local),
+            )
+        self._mark_seen(str(chat_id), event_id)
+        return SendResult(
+            success=True,
+            message_id=event_id,
+            raw_response=data,
+        )
 
     async def send_image(
         self,

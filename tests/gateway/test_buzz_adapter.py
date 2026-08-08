@@ -152,8 +152,16 @@ class TestCliErrorContract:
         msg = _cli_error_message('{"error":"relay_error","message":"boom","retryable":false}', 2)
         assert "relay_error" in msg and "boom" in msg and "exit 2" in msg
 
+    def test_bounds_untrusted_nonzero_cli_error(self):
+        msg = _cli_error_message(
+            json.dumps({"error": "relay_error", "message": "x" * 100_000}),
+            2,
+        )
+        assert msg.startswith("relay_error:")
+        assert len(msg) <= 900
 
-# ── Seeding / high-water mark / de-dupe ───────────────────────────────────
+
+# ── Seeding / high-water mark / de-dupe ────────────────────────────────────
 
 
 class TestPollingDedupe:
@@ -420,6 +428,273 @@ class TestBuzzAdapterSend:
         assert result.success is True
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
+
+    @pytest.mark.asyncio
+    async def test_send_document_uploads_file_with_caption_and_reply(self, tmp_path):
+        document = tmp_path / "handoff.txt"
+        document.write_text("safe handoff", encoding="utf-8")
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-document"})
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(
+            CHANNEL,
+            str(document),
+            caption="handoff",
+            reply_to="root-event",
+        )
+
+        assert result.success is True
+        assert result.message_id == "evt-document"
+        args, stdin_text = cli.calls[0]
+        assert args[:2] == ["messages", "send"]
+        assert args[args.index("--channel") + 1] == CHANNEL
+        assert args[args.index("--file") + 1] == str(document)
+        assert args[args.index("--content") + 1] == "-"
+        assert args[args.index("--reply-to") + 1] == "root-event"
+        assert stdin_text == "handoff"
+        assert "handoff" not in args
+        assert "evt-document" in adapter._channel_state[CHANNEL]["seen"]
+
+    @pytest.mark.asyncio
+    async def test_send_document_uses_metadata_thread_when_reply_omitted(self, tmp_path):
+        document = tmp_path / "handoff.txt"
+        document.write_text("safe handoff", encoding="utf-8")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-thread"})
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(
+            CHANNEL,
+            str(document),
+            metadata={"thread_id": "metadata-root"},
+        )
+
+        assert result.success is True
+        args, _stdin_text = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "metadata-root"
+
+    @pytest.mark.asyncio
+    async def test_send_document_explicit_reply_overrides_metadata_thread(self, tmp_path):
+        document = tmp_path / "handoff.txt"
+        document.write_text("safe handoff", encoding="utf-8")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-explicit"})
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(
+            CHANNEL,
+            str(document),
+            reply_to="explicit-root",
+            metadata={"thread_id": "metadata-root"},
+        )
+
+        assert result.success is True
+        args, _stdin_text = cli.calls[0]
+        assert args.count("--reply-to") == 1
+        assert args[args.index("--reply-to") + 1] == "explicit-root"
+
+    @pytest.mark.asyncio
+    async def test_send_document_sanitizes_cli_error_path(self, tmp_path):
+        document = tmp_path / "private" / "handoff.txt"
+        document.parent.mkdir()
+        document.write_text("safe handoff", encoding="utf-8")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=2,
+            stderr=json.dumps(
+                {
+                    "error": "network",
+                    "message": f"upload failed for {document}: relay unavailable",
+                    "retryable": True,
+                }
+            ),
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(CHANNEL, str(document))
+
+        assert result.success is False
+        assert result.retryable is True
+        assert str(document) not in result.error
+        assert "handoff.txt" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_document_redacts_long_path_before_bounding(self, tmp_path):
+        parent = tmp_path
+        private_parts = []
+        for index in range(6):
+            part = f"private-{index}-" + ("x" * 150)
+            private_parts.append(part)
+            parent = parent / part
+            parent.mkdir()
+        document = parent / "handoff.txt"
+        document.write_text("safe handoff", encoding="utf-8")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=2,
+            stderr=json.dumps(
+                {
+                    "error": "network",
+                    "message": f"upload failed for {document}: " + ("z" * 1_000),
+                    "retryable": True,
+                }
+            ),
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(CHANNEL, str(document))
+
+        assert result.success is False
+        assert all(part not in result.error for part in private_parts)
+        assert "handoff.txt" in result.error
+        assert len(result.error) <= 900
+
+    @pytest.mark.asyncio
+    async def test_send_document_honors_non_retryable_cli_error(self, tmp_path):
+        document = tmp_path / "handoff.txt"
+        document.write_text("safe handoff", encoding="utf-8")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=2,
+            stderr=json.dumps(
+                {
+                    "error": "delivery_unknown",
+                    "message": "relay may already have accepted the event",
+                    "retryable": False,
+                }
+            ),
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(CHANNEL, str(document))
+
+        assert result.success is False
+        assert result.retryable is False
+
+    @pytest.mark.asyncio
+    async def test_send_document_rejects_missing_path_without_cli(self, tmp_path):
+        missing = tmp_path / "private" / "missing.txt"
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(CHANNEL, str(missing))
+
+        assert result.success is False
+        assert str(missing) not in result.error
+        assert cli.calls == []
+
+    @pytest.mark.asyncio
+    async def test_send_document_rejects_malformed_success_output(self, tmp_path):
+        document = tmp_path / "handoff.txt"
+        document.write_text("safe handoff", encoding="utf-8")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", "not-json")
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(CHANNEL, str(document))
+
+        assert result.success is False
+        assert result.retryable is False
+        assert "response" in result.error.lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "receipt",
+        [
+            [],
+            {},
+            {"event_id": "evt-without-acceptance"},
+            {"accepted": True},
+            {"accepted": True, "event_id": ""},
+            {"accepted": True, "event_id": "   "},
+            {"accepted": 1, "event_id": "evt-non-boolean-acceptance"},
+        ],
+        ids=[
+            "non-dict",
+            "missing-accepted-and-id",
+            "missing-accepted",
+            "missing-event-id",
+            "empty-event-id",
+            "blank-event-id",
+            "non-boolean-accepted",
+        ],
+    )
+    async def test_send_document_rejects_invalid_zero_exit_receipt(self, tmp_path, receipt):
+        document = tmp_path / "handoff.txt"
+        document.write_text("safe handoff", encoding="utf-8")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", receipt)
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(CHANNEL, str(document))
+
+        assert result.success is False
+        assert result.message_id is None
+        assert result.retryable is False
+
+    @pytest.mark.asyncio
+    async def test_send_document_rejection_is_useful_and_bounded(self, tmp_path):
+        document = tmp_path / "handoff.txt"
+        document.write_text("safe handoff", encoding="utf-8")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        external_message = "relay rejected: " + ("x" * 100_000)
+        cli.script(
+            "messages",
+            "send",
+            {
+                "accepted": False,
+                "event_id": "evt-rejected",
+                "message": external_message,
+                "external": "y" * 100_000,
+            },
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(CHANNEL, str(document))
+
+        assert result.success is False
+        assert result.message_id is None
+        assert result.retryable is False
+        assert result.error.startswith("relay rejected:")
+        assert len(result.error) <= 1_024
+        assert result.raw_response is None
+
+    @pytest.mark.asyncio
+    async def test_send_document_valid_receipt_preserves_success_payload(self, tmp_path):
+        document = tmp_path / "handoff.txt"
+        document.write_text("safe handoff", encoding="utf-8")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        receipt = {"accepted": True, "event_id": "evt-valid", "message": "delivered"}
+        cli.script("messages", "send", receipt)
+        adapter._run_cli = cli
+
+        result = await adapter.send_document(CHANNEL, str(document))
+
+        assert result.success is True
+        assert result.message_id == "evt-valid"
+        assert result.raw_response == receipt
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────

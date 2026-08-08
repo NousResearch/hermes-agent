@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import importlib
+import ipaddress
 import json
 import logging
 import os
@@ -43,6 +44,7 @@ import time
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 from agent.secret_scope import get_secret
 
@@ -125,6 +127,67 @@ def _export_port_health_grace_timeout(config: dict[str, Any]) -> None:
         return
     # setdefault: an explicit env var the operator set wins over config.
     os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, repr(seconds))
+
+
+_NO_PROXY_ENV_LOCK = threading.Lock()
+
+
+def _is_loopback_api_url(api_url: str) -> bool:
+    """Return whether ``api_url`` names localhost or a loopback IP."""
+    try:
+        host = urlparse(api_url).hostname
+    except (TypeError, ValueError):
+        return False
+    if not host:
+        return False
+    normalized = host.rstrip(".").lower()
+    if normalized == "localhost" or normalized.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _split_no_proxy(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [
+        item.strip()
+        for item in value.replace(";", ",").split(",")
+        if item.strip()
+    ]
+
+
+def _ensure_local_api_proxy_bypass(api_url: str) -> None:
+    """Add loopback Hindsight endpoints to both NO_PROXY environment forms.
+
+    ``hindsight-client`` 0.6.1 builds its generated aiohttp session with
+    ``trust_env=True``. Without a bypass, process-level HTTP(S)/ALL_PROXY
+    settings intercept even localhost requests. Remote endpoints are never
+    changed.
+    """
+    if not _is_loopback_api_url(api_url):
+        return
+
+    host = urlparse(api_url).hostname or ""
+    required = [host.rstrip(".").lower(), "localhost", "127.0.0.1", "::1"]
+    with _NO_PROXY_ENV_LOCK:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for entry in (
+            _split_no_proxy(os.environ.get("NO_PROXY"))
+            + _split_no_proxy(os.environ.get("no_proxy"))
+            + required
+        ):
+            key = entry.lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(entry)
+        value = ",".join(merged)
+        os.environ["NO_PROXY"] = value
+        os.environ["no_proxy"] = value
 
 
 def _check_local_runtime() -> tuple[bool, str | None]:
@@ -1140,6 +1203,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
             else:
+                # The generated client uses aiohttp ``trust_env=True``. Ensure
+                # local-external endpoints bypass process proxy variables before
+                # its lazily-created session handles the first request.
+                _ensure_local_api_proxy_bypass(self._api_url)
                 _ensure_cloud_client_dependency()
                 from hindsight_client import Hindsight
                 timeout = self._timeout or _DEFAULT_TIMEOUT
@@ -1527,6 +1594,16 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_key = self._config.get("apiKey") or self._config.get("api_key") or get_secret("HINDSIGHT_API_KEY", "")
         default_url = _DEFAULT_LOCAL_URL if self._mode in {"local_embedded", "local_external"} else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
+        if self._mode != "local_embedded":
+            # Install the loopback proxy bypass now, before the first network
+            # call to the API. sync_turn() probes ``<api_url>/version`` through
+            # urllib (proxy-aware) in _resolve_retain_target() *before* the
+            # generated client is created, so a bypass applied only inside
+            # _get_client() would miss that probe: a process proxy would
+            # misroute it, the failure is cached for the process lifetime
+            # (_append_capability_cache), and the provider silently degrades to
+            # the legacy full-resend retain path. See issue #40006.
+            _ensure_local_api_proxy_bypass(self._api_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
 
         banks = cfg_get(self._config, "banks", "hermes", default={})

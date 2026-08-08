@@ -23,6 +23,7 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _ensure_local_api_proxy_bypass,
     _load_config,
     _load_simple_env,
     _build_embedded_profile_env,
@@ -48,8 +49,18 @@ def _clean_env(tmp_path, monkeypatch):
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_OBSERVATION_SCOPES",
         "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "all_proxy",
+        "NO_PROXY", "no_proxy",
     ):
         monkeypatch.delenv(key, raising=False)
+    yield
+    # _ensure_local_api_proxy_bypass() writes NO_PROXY/no_proxy through a raw
+    # os.environ assignment, which monkeypatch cannot undo when the key was
+    # absent at setup. Drop them here so the bypass never leaks into later
+    # tests; monkeypatch's own teardown then restores any ambient value.
+    for key in ("NO_PROXY", "no_proxy"):
+        os.environ.pop(key, None)
 
     # On Windows pathlib.Path.home() resolves USERPROFILE/HOMEDRIVE+HOMEPATH,
     # not the POSIX HOME alias that these tests historically monkeypatched.
@@ -250,6 +261,170 @@ class TestSchemas:
 
 
 class TestConfig:
+    def test_loopback_proxy_bypass_merges_existing_env_entries(self, monkeypatch):
+        monkeypatch.setenv("NO_PROXY", "example.com;localhost")
+        monkeypatch.setenv("no_proxy", "internal.test,example.com")
+
+        _ensure_local_api_proxy_bypass("http://127.0.0.42:8888")
+
+        entries = os.environ["NO_PROXY"].split(",")
+        assert entries[:3] == ["example.com", "localhost", "internal.test"]
+        assert "127.0.0.42" in entries
+        assert "127.0.0.1" in entries
+        assert "::1" in entries
+        assert os.environ["no_proxy"] == os.environ["NO_PROXY"]
+
+    def test_remote_api_does_not_mutate_proxy_bypass(self, monkeypatch):
+        monkeypatch.setenv("NO_PROXY", "example.com")
+        monkeypatch.delenv("no_proxy", raising=False)
+
+        _ensure_local_api_proxy_bypass("https://api.hindsight.vectorize.io")
+
+        assert os.environ["NO_PROXY"] == "example.com"
+        assert "no_proxy" not in os.environ
+
+    @pytest.mark.asyncio
+    async def test_local_external_generated_client_bypasses_loopback_proxy(
+        self, tmp_path, monkeypatch
+    ):
+        """The real generated aiohttp client must reach loopback directly.
+
+        ``hindsight-client`` creates ``ClientSession(trust_env=True)`` lazily.
+        A process proxy therefore captures localhost unless the plugin adds the
+        configured loopback host to NO_PROXY before the first request.
+        """
+        pytest.importorskip("hindsight_client")
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        requests: list[str] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args, **kwargs):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        api_url = f"http://127.0.0.1:{server.server_port}"
+
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps({
+                "mode": "local_external",
+                "api_url": api_url,
+                "bank_id": "test-bank",
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        dead_proxy = "http://127.0.0.1:1"
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                    "http_proxy", "https_proxy", "all_proxy"):
+            monkeypatch.setenv(key, dead_proxy)
+
+        client = None
+        try:
+            provider = HindsightMemoryProvider()
+            provider.initialize(
+                session_id="proxy-test", hermes_home=str(tmp_path), platform="cli"
+            )
+            client = provider._get_client()
+            response = await client._api_client.rest_client.request(
+                "GET", f"{api_url}/probe", _request_timeout=1
+            )
+            assert response.status == 200
+            assert requests == ["/probe"]
+        finally:
+            if client is not None:
+                await client.aclose()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_local_external_version_probe_bypasses_loopback_proxy(
+        self, tmp_path, monkeypatch
+    ):
+        """The /version capability probe must reach loopback directly.
+
+        ``sync_turn`` -> ``_resolve_retain_target`` probes ``<api_url>/version``
+        through urllib *before* the generated client is created, so the proxy
+        bypass is installed at ``initialize()`` time. Without it a process proxy
+        misroutes the probe, the failure is cached for the process lifetime, and
+        the provider silently degrades to the legacy full-resend retain path
+        (issue #40006). This path is plain urllib, so it needs no hindsight
+        extra and exercises the ordering that ``_get_client``-only placement
+        would miss.
+        """
+        import threading
+        import plugins.memory.hindsight as hindsight_module
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        requests: list[str] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"version": "9.9.9"}')
+
+            def log_message(self, *args, **kwargs):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        api_url = f"http://127.0.0.1:{server.server_port}"
+
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps({
+                "mode": "local_external",
+                "api_url": api_url,
+                "bank_id": "test-bank",
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        # Force a cold probe so a stale cache entry can't mask misrouting.
+        monkeypatch.setattr(hindsight_module, "_append_capability_cache", {})
+        dead_proxy = "http://127.0.0.1:1"
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                    "http_proxy", "https_proxy", "all_proxy"):
+            monkeypatch.setenv(key, dead_proxy)
+
+        try:
+            provider = HindsightMemoryProvider()
+            provider.initialize(
+                session_id="probe-test", hermes_home=str(tmp_path), platform="cli"
+            )
+            # Mirrors the first sync_turn(): resolving the retain target fires
+            # the /version probe. With the bypass installed at initialize(), it
+            # reaches loopback directly instead of the dead proxy.
+            document_id, update_mode = provider._resolve_retain_target("fallback-doc")
+            assert requests == ["/version"]
+            assert update_mode == "append"
+            assert document_id == "probe-test"
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_cloud_client_lazy_installs_dependency_before_import(self, tmp_path, monkeypatch):
         _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, "cloud")
 

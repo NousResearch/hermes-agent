@@ -1762,6 +1762,7 @@ def _play_audio_file_impl(file_path: str) -> bool:
     for cmd in players:
         exe = shutil.which(cmd[0])
         if exe:
+            proc = None
             try:
                 # Sibling of TTS/STT credential scrub (#70342 / #56332): system
                 # audio players must not inherit gateway tokens / API keys.
@@ -1788,12 +1789,19 @@ def _play_audio_file_impl(file_path: str) -> bool:
                 logger.debug("System player %s exited with code %d, trying next", cmd[0], rc)
             except subprocess.TimeoutExpired:
                 logger.warning("System player %s timed out, killing process", cmd[0])
-                proc.kill()
-                proc.wait()
+                if proc is not None:
+                    proc.kill()
+                    proc.wait()
                 with _playback_lock:
                     _active_playback = None
             except Exception as e:
                 logger.debug("System player %s failed: %s", cmd[0], e)
+                if proc is not None:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=5)
+                    except Exception:
+                        pass
                 with _playback_lock:
                     _active_playback = None
 

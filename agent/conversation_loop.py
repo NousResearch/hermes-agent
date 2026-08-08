@@ -1964,6 +1964,18 @@ def run_conversation(
             drop_codex_reasoning_items=agent.api_mode != "codex_responses",
         )
 
+        # Copilot Gemini rejects any content block that isn't text/image_url
+        # (HTTP 400 "type has to be either 'image_url' or 'text'").
+        try:
+            from agent.agent_runtime_helpers import (
+                _model_requires_text_image_blocks_only as _needs_textonly,
+                strip_unsupported_content_blocks as _strip_blocks,
+            )
+            if _needs_textonly(getattr(agent, "model", ""), getattr(agent, "base_url", "")):
+                api_messages = _strip_blocks(api_messages)
+        except Exception:
+            pass
+
         # Normalize message whitespace and tool-call JSON for consistent
         # prefix matching.  Ensures bit-perfect prefixes across turns,
         # which enables KV cache reuse on local inference servers

@@ -1456,6 +1456,81 @@ def drop_thinking_only_and_merge_users(
 
 
 
+_TEXTONLY_ALLOWED_BLOCK_TYPES = {"text", "image_url"}
+
+
+def _model_requires_text_image_blocks_only(model: str, base_url: str = "") -> bool:
+    """True for endpoints that reject any content block other than text/image_url.
+
+    GitHub Copilot's Gemini models reject a request whose content list contains
+    an Anthropic-style ``{"type": "thinking", ...}`` block with HTTP 400
+    "type has to be either 'image_url' or 'text'". This bites when a session
+    that ran on a Claude model is switched mid-conversation to Copilot Gemini.
+
+    Requires **affirmative Copilot evidence**: either the request targets the
+    Copilot host, or the model carries the ``github_copilot/`` namespace that
+    litellm uses to route these same models. An unknown or empty base URL is
+    NOT treated as Copilot — the 400 was only ever observed on that endpoint,
+    so stripping blocks for an unverified endpoint would discard reasoning
+    content no provider asked us to drop.
+    """
+    m = (model or "").strip().lower()
+    # Strip a provider namespace prefix (litellm routes these models as
+    # ``github_copilot/gemini-3.5-flash``).
+    bare = m.rsplit("/", 1)[-1]
+    if not bare.startswith("gemini"):
+        return False
+    url = (base_url or "").strip().lower()
+    return "githubcopilot.com" in url or "github_copilot/" in m
+
+
+def strip_unsupported_content_blocks(
+    messages: List[Dict[str, Any]],
+    *,
+    allowed: Optional[set] = None,
+) -> List[Dict[str, Any]]:
+    """Drop content blocks whose ``type`` the target endpoint won't accept.
+
+    Operates on the per-call ``api_messages`` copy only — stored history keeps
+    the full reasoning trace for the UI transcript and session persistence.
+    """
+    allowed = allowed or _TEXTONLY_ALLOWED_BLOCK_TYPES
+    if not messages:
+        return messages
+
+    out: List[Dict[str, Any]] = []
+    stripped = 0
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            out.append(msg)
+            continue
+        kept = []
+        for block in content:
+            if isinstance(block, dict):
+                btype = str(block.get("type") or "").strip().lower()
+                if btype and btype not in allowed:
+                    stripped += 1
+                    continue
+            kept.append(block)
+        if len(kept) == len(content):
+            out.append(msg)
+            continue
+        new_msg = dict(msg)
+        new_msg["content"] = kept if kept else ""
+        out.append(new_msg)
+
+    if stripped:
+        _ra().logger.debug(
+            "Pre-call sanitizer: stripped %d unsupported content block(s) "
+            "(allowed=%s)",
+            stripped,
+            sorted(allowed),
+        )
+        return out
+    return messages
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn.
 
@@ -4067,6 +4142,8 @@ __all__ = [
     "invoke_tool",
     "repair_tool_call",
     "sanitize_api_messages",
+    "strip_unsupported_content_blocks",
+    "_model_requires_text_image_blocks_only",
     "looks_like_codex_intermediate_ack",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",

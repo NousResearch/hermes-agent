@@ -2393,6 +2393,19 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # turns so Anthropic-family providers don't 400 the summary call.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
 
+        # Copilot Gemini rejects any content block that isn't text/image_url
+        # (HTTP 400 "type has to be either 'image_url' or 'text'").
+        try:
+            from agent.agent_runtime_helpers import (
+                _model_requires_text_image_blocks_only as _needs_textonly,
+                strip_unsupported_content_blocks as _strip_blocks,
+            )
+            if _needs_textonly(getattr(agent, "model", ""), getattr(agent, "base_url", "")):
+                api_messages = _strip_blocks(api_messages)
+        except Exception:
+            pass
+
+
         summary_extra_body = {}
         try:
             from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP

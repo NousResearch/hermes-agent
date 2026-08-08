@@ -732,6 +732,22 @@ export const zh: Translations = {
           'Hermes 从应用内更新时（无终端提示），保留本地源码修改（暂存）或丢弃（放弃）。通过终端更新时始终会询问。'
       }
     }),
+    personalities: {
+      helpful: '乐于助人',
+      concise: '言简意赅',
+      technical: '技术派',
+      creative: '脑洞创意',
+      teacher: '循循善诱',
+      kawaii: '可爱风',
+      catgirl: '猫娘',
+      pirate: '海盗船长',
+      shakespeare: '莎翁风',
+      surfer: '冲浪少年',
+      noir: '黑色电影',
+      uwu: '萌系 UwU',
+      philosopher: '哲思派',
+      hype: '热血上头'
+    },
     about: {
       heading: 'Hermes Desktop',
       version: value => `版本 ${value}`,

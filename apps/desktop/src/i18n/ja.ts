@@ -621,6 +621,7 @@ export const ja = defineLocale({
           'アプリから Hermes 自身を更新するとき、ローカルのソース変更を保持するか破棄するかを選びます。ターミナル更新では常に確認されます。'
       }
     }),
+    personalities: {},
     about: {
       heading: 'Hermes Desktop',
       version: value => `バージョン ${value}`,

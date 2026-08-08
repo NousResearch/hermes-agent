@@ -421,6 +421,13 @@ export interface Translations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
+    // Display labels for the builtin assistant personalities surfaced in the
+    // `display.personality` dropdown. Keys are the canonical personality IDs
+    // (the same set listed in `BUILTIN_PERSONALITIES`); values are the
+    // human-readable names shown in the UI. Missing entries fall back to the
+    // raw ID, so adding a new builtin in the renderer doesn't have to wait for
+    // every locale to translate it.
+    personalities: Record<string, string>
     about: {
       heading: string
       version: (value: string) => string

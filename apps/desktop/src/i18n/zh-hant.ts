@@ -608,6 +608,22 @@ export const zhHant = defineLocale({
           'Hermes 從應用程式內更新自身時，保留本機原始碼變更（stash）或丟棄（discard）。終端機更新一律會詢問。'
       }
     }),
+    personalities: {
+      helpful: '樂於助人',
+      concise: '言簡意賅',
+      technical: '技術派',
+      creative: '腦洞創意',
+      teacher: '循循善誘',
+      kawaii: '可愛風',
+      catgirl: '貓娘',
+      pirate: '海盜船長',
+      shakespeare: '莎翁風',
+      surfer: '衝浪少年',
+      noir: '黑色電影',
+      uwu: '萌系 UwU',
+      philosopher: '哲思派',
+      hype: '熱血上頭'
+    },
     about: {
       heading: 'Hermes Desktop',
       version: value => `版本 ${value}`,

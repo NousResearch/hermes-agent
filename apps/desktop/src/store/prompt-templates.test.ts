@@ -49,8 +49,9 @@ describe('prompt-templates store', () => {
     localStorageMock.getItem.mockClear()
     localStorageMock.setItem.mockClear()
     localStorageMock.removeItem.mockClear()
-    // Reset to empty state (no persisted data → empty store)
-    $promptTemplates.set([])
+    // Restore a valid non-empty state between tests. The store's seed decision
+    // is intentionally process-scoped and should not be reset by test setup.
+    resetToBuiltins()
   })
 
   describe('ensureSeeded', () => {
@@ -76,6 +77,52 @@ describe('prompt-templates store', () => {
 
       expect($promptTemplates.get()).toEqual(before)
     })
+
+    it('preserves an intentionally empty list', () => {
+      ensureSeeded()
+
+      for (const template of $promptTemplates.get()) {
+        deleteTemplate(template.id)
+      }
+
+      expect($promptTemplates.get()).toEqual([])
+
+      ensureSeeded()
+
+      expect($promptTemplates.get()).toEqual([])
+    })
+
+    it.each([
+      ['malformed JSON', '{not-json'],
+      ['invalid template shape', JSON.stringify([{ id: 'broken' }])]
+    ])('recovers from %s after a fresh store load', async (_caseName, raw) => {
+      store.set('hermes.desktop.prompt-templates', raw)
+      vi.resetModules()
+
+      const reloaded = await import('./prompt-templates')
+
+      expect(reloaded.$promptTemplates.get()).toEqual([])
+
+      reloaded.ensureSeeded()
+
+      expect(reloaded.$promptTemplates.get()).toHaveLength(3)
+      expect(reloaded.$promptTemplates.get().map(template => template.id)).toEqual([
+        'codeReview',
+        'implementationPlan',
+        'explainThis'
+      ])
+    })
+
+    it('keeps a persisted empty list empty after a fresh store load', async () => {
+      store.set('hermes.desktop.prompt-templates', JSON.stringify([]))
+      vi.resetModules()
+
+      const reloaded = await import('./prompt-templates')
+
+      reloaded.ensureSeeded()
+
+      expect(reloaded.$promptTemplates.get()).toEqual([])
+    })
   })
 
   describe('addTemplate', () => {
@@ -92,6 +139,8 @@ describe('prompt-templates store', () => {
     })
 
     it('defaults to empty strings', () => {
+      $promptTemplates.set([])
+
       const created = addTemplate()
 
       expect(created.label).toBe('')
@@ -227,6 +276,8 @@ describe('prompt-templates store', () => {
 
   describe('persistence', () => {
     it('writes to localStorage on every mutation', () => {
+      $promptTemplates.set([])
+
       addTemplate('Persisted', '', '')
 
       expect(localStorageMock.setItem).toHaveBeenCalledWith(

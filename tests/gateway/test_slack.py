@@ -100,6 +100,14 @@ _slack_mod.SLACK_AVAILABLE = True
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
+def _rich_text_blocks(*elements):
+    return [{"type": "rich_text", "elements": list(elements)}]
+
+
+def _rich_text_section(*elements):
+    return {"type": "rich_text_section", "elements": list(elements)}
+
+
 def test_slack_mock_bootstrap_preserves_installed_packages():
     """Installed Slack dependencies must remain importable as real packages."""
     for package in ("slack_sdk", "aiohttp"):
@@ -1738,6 +1746,210 @@ class TestIncomingDocumentHandling:
         assert "> Quoted line" in msg_event.text
         assert "• First bullet" in msg_event.text
         assert "• Second bullet" in msg_event.text
+
+    @pytest.mark.parametrize(
+        ("text", "section_elements"),
+        [
+            (
+                "update the path to `src/app`",
+                [
+                    {"type": "text", "text": "update the path to "},
+                    {"type": "text", "text": "src/app", "style": {"code": True}},
+                ],
+            ),
+            (
+                "use *bold* and _italic_ text",
+                [
+                    {"type": "text", "text": "use "},
+                    {"type": "text", "text": "bold", "style": {"bold": True}},
+                    {"type": "text", "text": " and "},
+                    {"type": "text", "text": "italic", "style": {"italic": True}},
+                    {"type": "text", "text": " text"},
+                ],
+            ),
+            (
+                "use *_~styled~_* text",
+                [
+                    {"type": "text", "text": "use "},
+                    {
+                        "type": "text",
+                        "text": "styled",
+                        "style": {"bold": True, "italic": True, "strike": True},
+                    },
+                    {"type": "text", "text": " text"},
+                ],
+            ),
+            (
+                "read <https://example.com/docs|the docs>",
+                [
+                    {"type": "text", "text": "read "},
+                    {
+                        "type": "link",
+                        "url": "https://example.com/docs",
+                        "text": "the docs",
+                    },
+                ],
+            ),
+        ],
+        ids=("inline-code", "inline-styles", "nested-inline-styles", "link"),
+    )
+    @pytest.mark.asyncio
+    async def test_equivalent_rich_text_is_not_duplicated(
+        self, adapter, text, section_elements
+    ):
+        event = self._make_event(
+            text=text,
+            blocks=_rich_text_blocks(_rich_text_section(*section_elements)),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args[0][0].text == text
+
+    @pytest.mark.parametrize(
+        "text",
+        (
+            "run ```echo ok```",
+            "run\n\n```\necho ok\n```\n",
+        ),
+        ids=("compact-fence", "fence-with-surrounding-newlines"),
+    )
+    @pytest.mark.asyncio
+    async def test_equivalent_preformatted_text_is_not_duplicated(
+        self, adapter, text
+    ):
+        event = self._make_event(
+            text=text,
+            blocks=_rich_text_blocks(
+                _rich_text_section({"type": "text", "text": "run"}),
+                {
+                    "type": "rich_text_preformatted",
+                    "elements": [{"type": "text", "text": "echo ok"}],
+                },
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args[0][0].text == text
+
+    @pytest.mark.asyncio
+    async def test_preformatted_text_also_mentioned_in_prose_is_preserved(self, adapter):
+        event = self._make_event(
+            text="run echo ok to verify the command",
+            blocks=_rich_text_blocks(
+                _rich_text_section(
+                    {"type": "text", "text": "run echo ok to verify the command"}
+                ),
+                {
+                    "type": "rich_text_preformatted",
+                    "elements": [{"type": "text", "text": "echo ok"}],
+                },
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args[0][0].text == (
+            "run echo ok to verify the command\n```\necho ok\n```"
+        )
+
+    @pytest.mark.asyncio
+    async def test_block_only_bot_mention_does_not_duplicate_rich_text(self, adapter):
+        event = self._make_event(
+            text="update the path",
+            blocks=_rich_text_blocks(
+                _rich_text_section(
+                    {"type": "user", "user_id": "U_BOT"},
+                    {"type": "text", "text": " update the path"},
+                )
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args[0][0].text == "update the path"
+
+    @pytest.mark.asyncio
+    async def test_secondary_workspace_bot_mention_does_not_duplicate_rich_text(
+        self, adapter
+    ):
+        adapter._team_bot_user_ids["T_SECONDARY"] = "U_SECONDARY_BOT"
+        event = self._make_event(
+            text="update the path",
+            blocks=_rich_text_blocks(
+                _rich_text_section(
+                    {"type": "user", "user_id": "U_SECONDARY_BOT"},
+                    {"type": "text", "text": " update the path"},
+                )
+            ),
+        )
+
+        await adapter._handle_slack_message(event, {"team_id": "T_SECONDARY"})
+
+        assert adapter.handle_message.call_args[0][0].text == "update the path"
+
+    @pytest.mark.asyncio
+    async def test_rich_text_list_already_in_text_is_not_duplicated(self, adapter):
+        event = self._make_event(
+            text="• first\n• second",
+            blocks=_rich_text_blocks(
+                {
+                    "type": "rich_text_list",
+                    "style": "bullet",
+                    "elements": [
+                        _rich_text_section({"type": "text", "text": "first"}),
+                        _rich_text_section({"type": "text", "text": "second"}),
+                    ],
+                }
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "• first\n• second"
+
+    @pytest.mark.asyncio
+    async def test_rich_text_different_section_is_preserved(self, adapter):
+        event = self._make_event(
+            text="review `test/yana`",
+            blocks=_rich_text_blocks(
+                _rich_text_section(
+                    {"type": "text", "text": "also review test/prod"}
+                )
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "review `test/yana`\nalso review test/prod"
+
+    @pytest.mark.asyncio
+    async def test_rich_text_duplicate_section_keeps_quote(self, adapter):
+        event = self._make_event(
+            text="review `test/yana`",
+            blocks=_rich_text_blocks(
+                _rich_text_section(
+                    {"type": "text", "text": "review "},
+                    {"type": "text", "text": "test/yana", "style": {"code": True}},
+                ),
+                {
+                    "type": "rich_text_quote",
+                    "elements": [
+                        _rich_text_section(
+                            {"type": "text", "text": "quoted context"}
+                        )
+                    ],
+                },
+            ),
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "review `test/yana`\n> quoted context"
 
 
 # ---------------------------------------------------------------------------
@@ -4280,6 +4492,45 @@ class TestThreadImageContext:
         assert "[image: shelf.jpg]" in rendered
         assert "[file: specs.pdf (application/pdf)]" in rendered
 
+    def test_render_message_text_deduplicates_main_section_and_keeps_quote(
+        self, adapter
+    ):
+        msg = {
+            "text": "<@U_BOT> review `src/app`",
+            "blocks": _rich_text_blocks(
+                _rich_text_section(
+                    {"type": "user", "user_id": "U_BOT"},
+                    {"type": "text", "text": " review "},
+                    {"type": "text", "text": "src/app", "style": {"code": True}},
+                ),
+                {
+                    "type": "rich_text_quote",
+                    "elements": [
+                        _rich_text_section(
+                            {"type": "text", "text": "quoted context"}
+                        )
+                    ],
+                },
+            ),
+        }
+
+        assert adapter._render_message_text(msg, bot_uid="U_BOT") == (
+            "review `src/app`\n> quoted context"
+        )
+
+    def test_render_message_text_deduplicates_compact_fenced_code(self, adapter):
+        msg = {
+            "text": "run ```echo ok```",
+            "blocks": _rich_text_blocks(
+                _rich_text_section({"type": "text", "text": "run"}),
+                {
+                    "type": "rich_text_preformatted",
+                    "elements": [{"type": "text", "text": "echo ok"}],
+                },
+            ),
+        }
+
+        assert adapter._render_message_text(msg) == "run ```echo ok```"
 
     # -- integration: cold-start thread hydrate ----------------------------
 

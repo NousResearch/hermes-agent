@@ -535,23 +535,64 @@ def _extract_text_from_slack_attachments(attachments: list) -> str:
 _SLACK_MRKDWN_LINK_RE = re.compile(
     r"<((?:https?|mailto):[^>|]+)(?:\|([^>]+))?>"
 )
+_SLACK_FENCED_CODE_RE = re.compile(
+    r"(?<!`)\n*```[ \t]*\n?(.*?)\n?[ \t]*```\n*(?!`)", re.DOTALL
+)
+_SLACK_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_SLACK_INLINE_STYLE_RE = re.compile(r"([*_~])([^\n]+?)\1")
 
 
-def _normalize_slack_text_for_dedupe(text: str) -> str:
-    """Canonicalize equivalent Slack plain-text and rich-block link forms.
-
-    Slack serializes the same authored link as ``<url|label>`` in the event's
-    plain ``text`` field and as a structured ``link`` element in ``blocks``.
-    Comparing those raw strings makes a normal rich-text message look like
-    additional quoted content and appends the whole message a second time.
-    """
+def _normalize_slack_text_for_dedupe(text: str, bot_uid: str = "") -> str:
+    """Normalize Slack text for comparison with rendered rich text."""
 
     def _link(match: re.Match) -> str:
         url, label = match.group(1), match.group(2)
         return f"{label} ({url})" if label and label != url else url
 
-    canonical = _SLACK_MRKDWN_LINK_RE.sub(_link, text or "")
+    canonical = text or ""
+    if bot_uid:
+        canonical = canonical.replace(f"<@{bot_uid}>", "")
+    canonical = _SLACK_MRKDWN_LINK_RE.sub(_link, canonical)
+    canonical = _SLACK_FENCED_CODE_RE.sub(r"\1", canonical)
+    canonical = _SLACK_INLINE_CODE_RE.sub(r"\1", canonical)
+    while True:
+        unstyled = _SLACK_INLINE_STYLE_RE.sub(r"\2", canonical)
+        if unstyled == canonical:
+            break
+        canonical = unstyled
     return re.sub(r"\s+", " ", canonical).strip()
+
+
+def _extract_additional_text_from_slack_blocks(
+    blocks: list, primary_text: str, bot_uid: str = ""
+) -> str:
+    """Render rich-text content not already represented by primary_text."""
+    primary = _normalize_slack_text_for_dedupe(primary_text, bot_uid)
+    primary_fenced = {
+        _normalize_slack_text_for_dedupe(match.group(0), bot_uid)
+        for match in _SLACK_FENCED_CODE_RE.finditer(primary_text or "")
+    }
+    parts: list[str] = []
+
+    for block in blocks or []:
+        if (block or {}).get("type") != "rich_text":
+            continue
+        for element in block.get("elements", []):
+            rendered = _extract_text_from_slack_blocks(
+                [{"type": "rich_text", "elements": [element]}]
+            ).strip()
+            if not rendered:
+                continue
+            normalized = _normalize_slack_text_for_dedupe(rendered, bot_uid)
+            if element.get("type") == "rich_text_preformatted":
+                is_duplicate = normalized in primary_fenced
+            else:
+                is_duplicate = normalized == primary or normalized in primary
+            if normalized and is_duplicate:
+                continue
+            parts.append(rendered)
+
+    return "\n".join(parts)
 
 
 def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> str:
@@ -5390,17 +5431,17 @@ class SlackAdapter(BasePlatformAdapter):
         # model name appears to contain spaces).
         blocks = event.get("blocks")
         if blocks and not is_command_text:
-            blocks_text = _extract_text_from_slack_blocks(blocks)
-            if blocks_text:
-                # Only append if the blocks contain text not already present
-                # in the plain text field (avoids duplication).
-                stripped_blocks = blocks_text.strip()
-                block_text_is_duplicate = (
-                    stripped_blocks in text.strip()
-                    or _normalize_slack_text_for_dedupe(stripped_blocks)
-                    == _normalize_slack_text_for_dedupe(text)
+            blocks_text = _extract_additional_text_from_slack_blocks(
+                blocks,
+                text,
+                bot_uid=self._team_bot_user_ids.get(
+                    dedup_team_id, self._bot_user_id
                 )
-                if stripped_blocks and not block_text_is_duplicate:
+                or "",
+            )
+            if blocks_text:
+                stripped_blocks = blocks_text.strip()
+                if stripped_blocks:
                     logger.debug(
                         "Slack: extracted additional text from blocks "
                         "(likely quoted/forwarded content; chars=%d)",
@@ -7148,8 +7189,10 @@ class SlackAdapter(BasePlatformAdapter):
         blocks = msg.get("blocks")
         extras: list[str] = []
         if blocks:
-            rich_text = _extract_text_from_slack_blocks(blocks).strip()
-            if rich_text and rich_text not in msg_text:
+            rich_text = _extract_additional_text_from_slack_blocks(
+                blocks, msg_text, bot_uid=bot_uid
+            ).strip()
+            if rich_text:
                 extras.append(rich_text)
             for block in blocks:
                 block_type = (block or {}).get("type", "")

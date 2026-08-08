@@ -9,7 +9,12 @@ metadata:
   hermes:
     tags: [wiki, knowledge-base, research, notes, markdown, rag-alternative]
     category: research
-    related_skills: [obsidian, arxiv]
+    related_skills: [obsidian, obsidian-markdown, arxiv]
+    config:
+      - key: wiki.path
+        description: Path to the LLM Wiki knowledge base directory
+        default: "~/wiki"
+        prompt: Wiki directory path
 ---
 
 # Karpathy's LLM Wiki
@@ -35,16 +40,21 @@ Use this skill when the user:
 
 ## Wiki Location
 
-**Location:** Set via `WIKI_PATH` environment variable (e.g. in `${HERMES_HOME:-~/.hermes}/.env`).
+**Location:** Set via `wiki.path` in Hermes config (`hermes config`), or via the
+`WIKI_PATH` environment variable (e.g. in `${HERMES_HOME:-~/.hermes}/.env`). The
+config value takes precedence when present (shown in the `[Skill config: ...]`
+block above).
 
-If unset, defaults to `~/wiki`.
+If neither is set, defaults to `~/wiki`.
 
 ```bash
 WIKI="${WIKI_PATH:-$HOME/wiki}"
 ```
 
 The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
-any editor. No database, no special tooling required.
+any editor. Use the broad `obsidian` skill for generic vault/file workflows and
+`obsidian-markdown` when you need Obsidian-specific syntax such as properties,
+callouts, embeds, or wikilinks.
 
 ## Architecture: Three Layers
 
@@ -98,7 +108,7 @@ at hand before creating anything new.
 
 When the user asks to create or start a wiki:
 
-1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
+1. Determine the wiki path (from skill config `wiki.path`, `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
 2. Create the directory structure above
 3. Ask the user what domain the wiki covers — be specific
 4. Write `SCHEMA.md` customized to the domain (see template below)

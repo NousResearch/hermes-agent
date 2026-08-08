@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/aion_pr_intake_adapter_v0_1.schema.json",
+  "title": "AION PR Intake Adapter v0.1 static packet",
+  "type": "object",
+  "required": [
+    "version",
+    "github_pr_metadata",
+    "execution_trigger",
+    "audit",
+    "protected_surfaces",
+    "non_claims"
+  ],
+  "properties": {
+    "version": {"const": "aion_pr_intake_adapter_v0_1"},
+    "github_pr_metadata": {
+      "type": "object",
+      "required": ["intake_mirror_only", "label_claims_execution", "actions_business_flow_dispatch"],
+      "properties": {
+        "intake_mirror_only": {"const": true},
+        "label_claims_execution": {"const": false},
+        "actions_business_flow_dispatch": {"const": false}
+      }
+    },
+    "execution_trigger": {
+      "type": "object",
+      "required": ["type", "kanban_task", "dispatcher_pickup"],
+      "properties": {
+        "type": {"const": "hermes_kanban_task_assignee_and_dispatcher_pickup"},
+        "kanban_task": {
+          "type": "object",
+          "required": ["task_id", "assignee"],
+          "properties": {
+            "task_id": {"type": "string"},
+            "assignee": {"type": "string", "minLength": 1}
+          }
+        },
+        "dispatcher_pickup": {
+          "type": "object",
+          "required": ["picked_up", "run_id", "claimed_by"],
+          "properties": {
+            "picked_up": {"const": true},
+            "run_id": {"type": "string", "minLength": 1},
+            "claimed_by": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "required": ["verdict_required_before_merge", "current_head_verdict"],
+      "properties": {
+        "verdict_required_before_merge": {"const": true},
+        "current_head_verdict": {"enum": ["PASS", "CONDITIONAL_PASS", "BLOCK"]}
+      }
+    },
+    "protected_surfaces": {"type": "object"},
+    "non_claims": {
+      "type": "object",
+      "required": ["full_unattended_ready"],
+      "properties": {"full_unattended_ready": {"const": false}}
+    }
+  }
+}

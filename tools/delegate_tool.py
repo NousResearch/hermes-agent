@@ -3753,15 +3753,22 @@ def delegate_task(
             n = len(_goals)
             note = (
                 "Subagent is running in the background. You and the user can "
-                "keep working; its full result re-enters the conversation as a "
-                "new message when it finishes. Do not wait or poll — just "
-                "continue."
+                "keep working; its full result re-enters the conversation as "
+                "a new message when it finishes. Continue any independent "
+                "work that does not depend on its result. If no independent "
+                "work remains, end the current turn and wait for the "
+                "automatic completion message. Do not repeatedly check task "
+                "status, transcript files, or output files."
                 if n == 1 else
                 f"{n} subagents are running in parallel in the background. You "
                 f"and the user can keep working; they wait on each other and "
                 f"their consolidated results re-enter the conversation as a "
-                f"single message once ALL of them finish. Do not wait or poll "
-                f"— just continue."
+                f"single message once ALL of them finish. Continue any "
+                f"independent work that does not depend on their results. If "
+                f"no independent work remains, end the current turn and wait "
+                f"for the automatic consolidated completion message. Do not "
+                f"repeatedly check task status, transcript files, or output "
+                f"files."
             )
             payload = {
                 "status": "dispatched",
@@ -3776,8 +3783,11 @@ def delegate_task(
                 payload["live_transcripts_hint"] = (
                     "Each subagent streams a human-readable transcript of its "
                     "operations to the file listed above (append-only, one per "
-                    "task). Read or `tail -f` these paths at any time to watch "
-                    "a child work while it runs."
+                    "task). These transcripts are available for explicit "
+                    "user-requested live monitoring or diagnostics only; they "
+                    "may be incomplete while a child is running and are not a "
+                    "completion signal. For ordinary delegation, wait for the "
+                    "automatic consolidated result."
                 )
             return json.dumps(payload, ensure_ascii=False)
 
@@ -4079,8 +4089,14 @@ def _build_top_level_description() -> str:
         "(limits and nesting rules are in the parameter descriptions).\n\n"
         "Runs in the background: dispatch returns immediately with live "
         "transcript paths, and the completed result (one consolidated message "
-        "for a batch) re-enters the conversation on its own. Do NOT wait or "
-        "poll; continue other work.\n\n"
+        "for a batch) re-enters the conversation on its own. Continue any "
+        "independent work that does not depend on their results; if none "
+        "remains, end the turn and wait for the automatic completion message. "
+        "Do NOT poll status, transcript files, or output files.\n\n"
+        "LIVE TRANSCRIPTS: those paths are append-only logs for explicit "
+        "user-requested monitoring or diagnostics only; they may be incomplete "
+        "while children run and are NOT completion signals — for ordinary "
+        "delegation, wait for the consolidated result.\n\n"
         "USE FOR: reasoning-heavy subtasks, work that would flood your context "
         "with intermediate data, or independent parallel workstreams.\n"
         "DO NOT USE FOR (use these instead):\n"

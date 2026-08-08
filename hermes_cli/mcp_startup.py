@@ -11,6 +11,61 @@ _mcp_discovery_started = False
 _mcp_discovery_thread: Optional[threading.Thread] = None
 
 
+
+# Cap per-server causes so one pathological error (a wrapped traceback, a
+# provider dump) cannot turn a startup warning into a log flood.
+_CAUSE_MAX_CHARS = 160
+_CAUSE_MAX_SERVERS = 10
+
+
+def _format_zero_connected_causes(status: list) -> str:
+    """Render per-server causes for the zero-connected discovery warning.
+
+    ``get_mcp_status()`` already carries why each configured server is not
+    connected — ``status`` ("failed" / "connecting" / "disabled" /
+    "configured") plus a recorded ``error`` for failures — and the warning
+    threw all of it away, leaving operators a generic line and no way to tell
+    an auth failure from a server that never started.
+
+    Returns ``""`` when there is nothing to add, so the caller's message is
+    unchanged in that case. Never raises: a diagnostics helper must not be
+    able to break startup.
+    """
+    try:
+        parts: list[str] = []
+        for entry in status or []:
+            if not isinstance(entry, dict) or entry.get("connected"):
+                continue
+            name = str(entry.get("name") or "?")
+            state = str(entry.get("status") or "unknown")
+            cause = entry.get("error")
+            if cause:
+                text = str(cause).strip().replace("\n", " ")
+                try:
+                    from agent.redact import redact_sensitive_text
+
+                    text = redact_sensitive_text(text)
+                except Exception:
+                    # Redaction unavailable — drop the body rather than risk
+                    # writing a token into the log.
+                    text = "(error withheld: redaction unavailable)"
+                if len(text) > _CAUSE_MAX_CHARS:
+                    text = text[:_CAUSE_MAX_CHARS - 1] + "\u2026"
+                parts.append(f"{name} [{state}]: {text}")
+            else:
+                parts.append(f"{name} [{state}]")
+        if not parts:
+            return ""
+        shown = parts[:_CAUSE_MAX_SERVERS]
+        omitted = len(parts) - len(shown)
+        rendered = "; ".join(shown)
+        if omitted > 0:
+            rendered += f"; (+{omitted} more)"
+        return f" — {rendered}"
+    except Exception:
+        return ""
+
+
 def _has_configured_mcp_servers() -> bool:
     """Cheap config probe so non-MCP users avoid importing the MCP stack."""
     try:
@@ -92,7 +147,9 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
                     status = get_mcp_status() or []
                     if not any(entry.get("connected") for entry in status):
                         logger.warning(
-                            "Background MCP discovery completed with zero connected servers"
+                            "Background MCP discovery completed with zero "
+                            "connected servers%s",
+                            _format_zero_connected_causes(status),
                         )
                 except Exception:
                     logger.debug("Failed to inspect MCP status after background discovery", exc_info=True)

@@ -16,6 +16,9 @@ import {
   slashIconElement
 } from '@/components/assistant-ui/directive-text'
 import { referenceKind, referenceRe } from '@/components/assistant-ui/reference-kinds'
+import { syncElementTextDirection } from '@/lib/bidi-direction'
+
+export { syncElementTextDirection }
 
 import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
@@ -132,6 +135,7 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   const chip = document.createElement('span')
 
   chip.contentEditable = 'false'
+  chip.dir = 'ltr'
   chip.title = id
   chip.dataset.refText = text
   chip.dataset.refId = id
@@ -150,6 +154,7 @@ export function slashChipElement(command: string, kind: SlashChipKind, label?: s
   const chip = document.createElement('span')
 
   chip.contentEditable = 'false'
+  chip.dir = 'ltr'
   chip.dataset.refText = command
   chip.dataset.slashKind = kind
   chip.className = 'ref'
@@ -230,6 +235,7 @@ export function renderComposerContents(target: HTMLElement, text: string, option
   // The other writer that reshapes the editor root: painting a restored draft
   // in clears the marker, clearing back to '' sets it.
   markEditorEmptiness(target)
+  syncElementTextDirection(target, text)
 }
 
 /** Caret range when the selection lives inside `editor`; else null. */
@@ -771,4 +777,6 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
   if (editor.childNodes.length === 0) {
     editor.appendChild(document.createElement('br'))
   }
+
+  syncElementTextDirection(editor, composerPlainText(editor))
 }

@@ -36,15 +36,15 @@ const SVG_ATTRS =
  * message's mentions, a markdown link, a completion row's glyph. If it points
  * at something from inside text, it goes through here.
  */
-export function refAttrs(kind?: string, extra?: string): { className: string; 'data-ref'?: string } {
+export function refAttrs(kind?: string, extra?: string): { className: string; dir: 'ltr'; 'data-ref'?: string } {
   const className = extra ? `ref ${extra}` : 'ref'
 
-  return kind ? { className, 'data-ref': referenceKind(kind) } : { className }
+  return kind ? { className, dir: 'ltr', 'data-ref': referenceKind(kind) } : { className, dir: 'ltr' }
 }
 
 /** The same thing as a raw attribute string, for HTML built by hand. */
 export function refAttrsHtml(kind?: string): string {
-  return kind ? `class="ref" data-ref="${referenceKind(kind)}"` : 'class="ref"'
+  return kind ? `class="ref" dir="ltr" data-ref="${referenceKind(kind)}"` : 'class="ref" dir="ltr"'
 }
 
 /** SVG markup string for embedding directly in HTML (composer contenteditable). */

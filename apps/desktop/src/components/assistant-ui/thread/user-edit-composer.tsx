@@ -42,7 +42,8 @@ import {
   refChipElement,
   renderComposerContents,
   replaceBeforeCaret,
-  RICH_INPUT_SLOT
+  RICH_INPUT_SLOT,
+  syncElementTextDirection
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
@@ -227,6 +228,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const syncDraftFromEditor = useCallback(
     (editor: HTMLDivElement) => {
       const nextDraft = sanitizeComposerInput(composerPlainText(editor))
+      syncElementTextDirection(editor, nextDraft)
 
       if (nextDraft !== draftRef.current) {
         draftRef.current = nextDraft
@@ -337,8 +339,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
 
       const finish = () => {
-        draftRef.current = composerPlainText(editor)
-        aui.composer().setText(draftRef.current)
+        syncDraftFromEditor(editor)
         requestEditFocus()
         starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
       }
@@ -779,6 +780,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               contentEditable
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
+              dir="auto"
               onBeforeInput={handleBeforeInput}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
               onDragOver={handleDragOver}

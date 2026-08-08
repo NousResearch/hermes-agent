@@ -31,6 +31,8 @@ describe('renderComposerContents', () => {
 
     expect(editor.querySelector('img')).toBeNull()
     expect(editor.querySelector('b')).toBeNull()
+    expect(editor.querySelector('[data-ref-text]')?.getAttribute('dir')).toBe('ltr')
+    expect(editor.getAttribute('dir')).toBe('ltr')
     expect(editor.textContent).toContain('<img src=x onerror=alert(1)>')
     expect(editor.textContent).toContain('<b>raw</b>')
     expect(composerPlainText(editor)).toBe('@file:`<img src=x onerror=alert(1)>` <b>raw</b>')
@@ -48,8 +50,19 @@ describe('renderComposerContents', () => {
     const pill = editor.querySelector('[data-slash-kind]')
 
     expect(pill?.getAttribute('data-ref-text')).toBe('/some-skill')
+    expect(pill?.getAttribute('dir')).toBe('ltr')
     expect(editor.querySelector('[data-ref-kind="folder"]')).not.toBeNull()
     expect(composerPlainText(editor)).toBe('/some-skill @folder:`Desktop` ')
+  })
+
+  it('sets the editor direction from RTL prose after leading special chips', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    renderComposerContents(editor, '@file:`apps/desktop/a.ts` شوف الملف')
+
+    expect(editor.getAttribute('dir')).toBe('rtl')
+    expect(editor.querySelector('[data-ref-text]')?.getAttribute('dir')).toBe('ltr')
   })
 
   it('keeps a still-typed leading slash token as editable text', () => {

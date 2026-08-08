@@ -10,15 +10,15 @@ import { REFERENCE_STYLES, referenceKind, referenceStyle } from '@/components/as
  */
 describe('the inline reference contract', () => {
   it('marks any element as a reference of a given kind', () => {
-    expect(refAttrs('file')).toEqual({ className: 'ref', 'data-ref': 'file' })
-    expect(refAttrsHtml('skill')).toBe('class="ref" data-ref="skill"')
+    expect(refAttrs('file')).toEqual({ className: 'ref', dir: 'ltr', 'data-ref': 'file' })
+    expect(refAttrsHtml('skill')).toBe('class="ref" dir="ltr" data-ref="skill"')
   })
 
   it('an unkinded reference is a plain link, not a broken one', () => {
     // A bare external link has no kind — it keeps the default link colour
     // rather than being tagged with a wrong one.
-    expect(refAttrs()).toEqual({ className: 'ref' })
-    expect(refAttrsHtml()).toBe('class="ref"')
+    expect(refAttrs()).toEqual({ className: 'ref', dir: 'ltr' })
+    expect(refAttrsHtml()).toBe('class="ref" dir="ltr"')
   })
 
   it('normalises an unknown kind instead of emitting it raw', () => {

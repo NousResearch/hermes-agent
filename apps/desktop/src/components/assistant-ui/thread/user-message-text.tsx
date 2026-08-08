@@ -3,6 +3,7 @@ import { Fragment, useMemo } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { referenceRe } from '@/components/assistant-ui/reference-kinds'
+import { resolveTextDirection } from '@/lib/bidi-direction'
 import { cn } from '@/lib/utils'
 
 // User messages should render the bare-minimum of markdown: backtick `code`
@@ -148,16 +149,18 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
 
 const InlineSegmentView: FC<{ text: string }> = ({ text }) => {
   const nodes = useMemo(() => splitInlineCode(text), [text])
+  const direction = useMemo(() => resolveTextDirection(text), [text])
 
   return (
     // styles.css bidi hook (#44150); whitespace-pre-line makes each line its own
     // UAX#9 paragraph so it resolves direction independently.
-    <span className="wrap-anywhere block whitespace-pre-line" data-slot="aui_user-inline-text">
+    <span className="wrap-anywhere block whitespace-pre-line" data-slot="aui_user-inline-text" dir={direction}>
       {nodes.map((node, nodeIndex) =>
         node.kind === 'inline-code' ? (
           <code
             className="mx-px rounded bg-[color-mix(in_srgb,currentColor_8%,transparent)] px-1 py-px font-mono text-[0.92em]"
             data-slot="aui_user-inline-code"
+            dir="ltr"
             key={`code-${nodeIndex}`}
           >
             {node.code}

@@ -44,6 +44,25 @@ describe('a sent reference renders as the chip the composer showed', () => {
     const code = document.querySelector('[data-slot="aui_user-inline-code"]')
 
     expect(code?.textContent).toBe('npm test')
+    expect(code?.getAttribute('dir')).toBe('ltr')
+  })
+
+  it('lets user prose resolve its own direction without inline code voting', () => {
+    render(<UserMessageText text="شغّل `npm test` الأول" />)
+
+    const line = document.querySelector('[data-slot="aui_user-inline-text"]')
+    const code = document.querySelector('[data-slot="aui_user-inline-code"]')
+
+    expect(line?.getAttribute('dir')).toBe('rtl')
+    expect(code?.getAttribute('dir')).toBe('ltr')
+  })
+
+  it('keeps RTL direction when special tokens start the sentence', () => {
+    render(<UserMessageText text="@file:`apps/desktop/a.ts` شوف الملف\n`npm test` شغّل الأول\n- راجع ده" />)
+
+    const line = document.querySelector('[data-slot="aui_user-inline-text"]')
+
+    expect(line?.getAttribute('dir')).toBe('rtl')
   })
 
   it('renders code and a reference side by side', () => {

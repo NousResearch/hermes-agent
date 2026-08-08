@@ -1261,16 +1261,17 @@ code {
    content's --message-text-indent). No extra prose indent — a single gutter
    reads cleaner than a ragged tool-vs-reply column. */
 
-/* RTL/bidi chat text (#44150): each block resolves its own base direction from
-   its first strong char (UAX#9 plaintext). text-align:start makes that resolved
-   direction drive alignment too — load-bearing, since the user bubble pins
-   text-left. direction is never set, so chrome/layout/list-indent stay LTR (the
-   issue asks not to flip the whole UI). Covers assistant prose, user lines, and
-   both composers (main + edit share composer-rich-input). */
+/* RTL/bidi chat text (#44150): React-owned text surfaces set their own
+   direction from the user-visible sentence, then isolate that resolved block
+   from surrounding bidi runs. `plaintext` is intentionally wrong here: it
+   re-detects the paragraph from the first strong character, so an English
+   brand or neutral punctuation can undo the resolved RTL direction and make
+   wrapped lines align left. Covers assistant prose, user lines, and both
+   composers (main + edit share composer-rich-input). */
 [data-slot='aui_assistant-message-content'] .aui-md :where(p, h1, h2, h3, h4, h5, h6, li, blockquote),
 [data-slot='aui_user-inline-text'],
 [data-slot='composer-rich-input'] {
-  unicode-bidi: plaintext;
+  unicode-bidi: isolate;
   text-align: start;
 }
 

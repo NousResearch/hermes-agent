@@ -4,7 +4,13 @@ import logging
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import (
+    mask_secret,
+    redact_cdp_url,
+    redact_sensitive_text,
+    redact_terminal_output,
+    RedactingFormatter,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +22,19 @@ def _ensure_redaction_enabled(monkeypatch):
 
 
 class TestKnownPrefixes:
+
+    def test_alibaba_token_plan_dotted_key(self):
+        token = "sk-sp-" + "f4k3t0k3n4t3std4t4" + ".part2xyz.part3tail"
+
+        terminal_result = redact_terminal_output(
+            f"ALIBABA_CODING_PLAN_API_KEY={token}",
+            command="grep API_KEY ~/.hermes/.env",
+        )
+        sentence_result = redact_sensitive_text(f"leaked key {token}.")
+
+        assert token not in terminal_result
+        assert ".part2xyz.part3" not in terminal_result
+        assert sentence_result.endswith("tail.")
 
 
 
@@ -1031,7 +1050,6 @@ class TestKeywordWordBoundary:
         text = "secrets: hunter2hunter2hunter2hh"
         result = redact_sensitive_text(text)
         assert "hunter2hunter2hunter2hh" not in result
-
 
 class TestMaskSecretControlStripping:
     """Issue #55319/#55321: mask_secret() must not emit control bytes

@@ -77,6 +77,7 @@ _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "t
 
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [
+    r"sk-sp-[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)+",  # Alibaba Token Plan (dotted)
     r"sk-[A-Za-z0-9_-]{10,}",           # OpenAI / OpenRouter / Anthropic (sk-ant-*)
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)

@@ -1003,12 +1003,18 @@ def _transcribe_command_stt(
     }
 
 
-def _get_provider(stt_config: dict) -> str:
+def _get_provider(stt_config: dict, *, install: bool = True) -> str:
     """Determine which STT provider to use.
 
     When ``stt.provider`` is explicitly set in config, that choice is
     honoured — no silent cloud fallback.  When no provider is configured,
     auto-detect tries: local > groq (free) > openai (paid).
+
+    ``install`` controls whether resolving an uninstalled ``local`` provider
+    may trigger a lazy faster-whisper install.  Probe callers (wake-word and
+    voice requirements checks) pass ``install=False`` so a slow pip install
+    can never freeze a startup handshake or status poll — the install then
+    happens lazily at first real transcription instead.
     """
     if not is_stt_enabled(stt_config):
         return "none"
@@ -1024,8 +1030,9 @@ def _get_provider(stt_config: dict) -> str:
                 return "local"
             if _has_local_command():
                 return "local_command"
-            # Try lazy-install before giving up
-            if _try_lazy_install_stt():
+            # Try lazy-install before giving up (probe callers skip this —
+            # an uninstalled local provider is resolved lazily at first use)
+            if install and _try_lazy_install_stt():
                 return "local"
             logger.warning(
                 "STT provider 'local' configured but unavailable "
@@ -1111,7 +1118,8 @@ def _get_provider(stt_config: dict) -> str:
     if _has_local_command():
         return "local_command"
     # Try lazy-install before falling through to cloud providers
-    if _try_lazy_install_stt():
+    # (probe callers skip this — uninstalled local resolves lazily at first use)
+    if install and _try_lazy_install_stt():
         return "local"
     if _HAS_OPENAI and _resolve_provider_key("GROQ_API_KEY", "groq"):
         logger.info("No local STT available, using Groq Whisper API")

@@ -273,7 +273,10 @@ class TestCheckVoiceRequirements:
         monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
         monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
                             lambda: {"available": True, "warnings": []})
-        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "openai")
+        monkeypatch.setattr(
+            "tools.transcription_tools._get_provider",
+            lambda cfg, *, install=True: "openai",
+        )
 
         from tools.voice_mode import check_voice_requirements
 

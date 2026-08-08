@@ -842,12 +842,33 @@ def _stt_ready() -> bool:
     A wake without STT arms the mic but every captured utterance dies at
     transcription — a useless (and confusing) experience. Same standard as
     voice mode's ``check_voice_requirements``: enabled + a real provider.
+
+    PROBE, not an installer: ``_get_provider`` resolves an explicit
+    ``local`` provider by lazy-installing faster-whisper via
+    ``lazy_deps.ensure`` — running that inside the wake.start handshake /
+    wake.status froze the TUI for the length of a pip install. We resolve
+    with ``install=False``; an uninstalled-but-installable local provider
+    still counts as ready ("installs at first transcription"), mirroring
+    ``_tts_ready``.
     """
     try:
+        from tools import lazy_deps
         from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled
 
         stt_config = _load_stt_config()
-        return is_stt_enabled(stt_config) and _get_provider(stt_config) != "none"
+        if not is_stt_enabled(stt_config):
+            return False
+
+        provider = _get_provider(stt_config, install=False)
+        if provider != "none":
+            return True
+
+        # Explicit local / local_command that isn't installed yet: ready iff
+        # a lazy install is permitted — the pip fetch happens at first
+        # transcription, never from a status poll / startup handshake.
+        if "provider" in stt_config and stt_config.get("provider") in ("local", "local_command"):
+            return lazy_deps._allow_lazy_installs()
+        return False
     except Exception:
         return False
 

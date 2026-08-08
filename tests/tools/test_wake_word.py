@@ -146,6 +146,51 @@ def test_tts_ready_is_a_probe_never_an_installer(monkeypatch):
     assert ww._tts_ready() is True
 
 
+def test_stt_ready_is_a_probe_never_an_installer(monkeypatch):
+    """_stt_ready must NOT trigger lazy pip installs from a status poll.
+
+    Regression: _get_provider resolved an explicit 'local' provider by
+    lazy-installing faster-whisper (lazy_deps.ensure → pip install), which
+    froze the TUI's wake.start handshake — and wake.status — for the length
+    of a pip install. Uninstalled-but-lazy-installable counts as ready
+    WITHOUT calling _try_lazy_install_stt / ensure.
+    """
+    monkeypatch.setattr(
+        ww, "_stt_ready", ww.__dict__["_stt_ready"]
+    )  # use the real implementation
+    install_seen: list = []
+
+    def _fake_get_provider(cfg, *, install=True):
+        install_seen.append(install)
+        # faster-whisper absent, no cloud keys → resolves to nothing
+        return "none"
+
+    fake_stt = types.SimpleNamespace(
+        _get_provider=_fake_get_provider,
+        _load_stt_config=lambda: {"enabled": True, "provider": "local"},
+        is_stt_enabled=lambda cfg: bool(cfg.get("enabled")),
+    )
+    monkeypatch.setitem(sys.modules, "tools.transcription_tools", fake_stt)
+
+    # Deps missing + lazy installs allowed → ready (installs at first use),
+    # and the probe must never pass install=True into the resolver.
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)
+    assert ww._stt_ready() is True
+    assert install_seen == [False]
+
+    # Deps missing + lazy installs disabled → not ready.
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: False)
+    assert ww._stt_ready() is False
+
+    # A cloud provider resolves → ready without needing the lazy install.
+    fake_stt._get_provider = lambda cfg, *, install=True: "groq"
+    assert ww._stt_ready() is True
+
+    # STT disabled → never ready.
+    fake_stt._load_stt_config = lambda: {"enabled": False, "provider": "local"}
+    assert ww._stt_ready() is False
+
+
 def test_requirements_fresh_install_lazy_allowed(monkeypatch):
     """Deps missing + lazy installs allowed → available, so /wake on can
     reach the engine constructor's ``lazy_deps.ensure()`` call.

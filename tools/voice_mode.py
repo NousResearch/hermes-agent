@@ -2260,7 +2260,10 @@ def check_voice_requirements() -> Dict[str, Any]:
     )
     stt_config = _load_stt_config()
     stt_enabled = is_stt_enabled(stt_config)
-    stt_provider = _get_provider(stt_config)
+    # install=False: this is a status probe, not a transcription path — a
+    # lazy faster-whisper install here would freeze /voice status (and the
+    # TUI's voice.toggle status RPC) for the length of a pip install.
+    stt_provider = _get_provider(stt_config, install=False)
     native_stt_available = stt_provider in {
         "local",
         "local_command",

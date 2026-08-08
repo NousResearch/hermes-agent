@@ -27,6 +27,9 @@ Security:
     binds a timestamp into the signed data for replay protection; the
     legacy body-only V1 (X-Webhook-Signature) is deprecated but still
     accepted with a warning, since it has no replay protection
+  - X-Webhook-Secret plain shared-secret header (PostHog, n8n, Zapier,
+    Make.com): bearer-token pattern — the header value IS the secret,
+    TLS provides confidentiality in transit (same model as X-Gitlab-Token)
   - Set secret to "INSECURE_NO_AUTH" to skip validation (testing only)
 """
 
@@ -1066,6 +1069,15 @@ class WebhookAdapter(BasePlatformAdapter):
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return _hmac_str_equal(gl_token, secret)
+
+        # Plain shared-secret header (PostHog, n8n, Zapier, etc.): the
+        # service is configured with a custom header whose value IS the
+        # secret.  Unlike HMAC, no signing is done — the header is a bearer
+        # token.  TLS (in production) provides the confidentiality that the
+        # shared secret isn't sniffed in transit.
+        plain_token = _header("X-Webhook-Secret")
+        if plain_token:
+            return _hmac_str_equal(plain_token, secret)
 
         # Generic V2: X-Webhook-Signature-V2 = <hex HMAC-SHA256 of "<timestamp>.<body>">
         #             X-Webhook-Timestamp = <unix seconds> (required for V2)

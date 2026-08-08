@@ -140,3 +140,84 @@ class TestSignatureBeforeRateLimit:
         assert len(captured_events) == 1
 
 
+class TestPlainSharedSecretHeader:
+    """Verify X-Webhook-Secret plain shared-secret header auth.
+
+    Many services (PostHog, n8n, Zapier, Make.com) authenticate by sending
+    a custom header whose value IS the secret — no HMAC signing.  This is
+    a bearer-token pattern; TLS provides confidentiality in transit.
+    """
+
+    @pytest.mark.asyncio
+    async def test_valid_plain_secret_header_accepted(self):
+        """X-Webhook-Secret matching the route secret → 202."""
+        secret = "my-shared-secret"
+        route_name = "posthog-test"
+        routes = {
+            route_name: {
+                "secret": secret,
+                "events": [],
+                "prompt": "Event: {event}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+
+        async def _noop(event):
+            pass
+
+        adapter.handle_message = _noop
+        app = _create_app(adapter)
+
+        body = json.dumps({"event": "alert", "data": "hello"}).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/webhooks/{route_name}",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Webhook-Secret": secret,
+                },
+            )
+            assert resp.status == 202, (
+                f"Expected 202 for valid plain-secret header, got {resp.status}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_invalid_plain_secret_header_rejected(self):
+        """X-Webhook-Secret NOT matching the route secret → 401."""
+        secret = "my-shared-secret"
+        route_name = "posthog-test"
+        routes = {
+            route_name: {
+                "secret": secret,
+                "events": [],
+                "prompt": "Event: {event}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+
+        async def _noop(event):
+            pass
+
+        adapter.handle_message = _noop
+        app = _create_app(adapter)
+
+        body = json.dumps({"event": "alert", "data": "hello"}).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/webhooks/{route_name}",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Webhook-Secret": "wrong-secret",
+                },
+            )
+            assert resp.status == 401, (
+                f"Expected 401 for invalid plain-secret header, got {resp.status}"
+            )
+
+

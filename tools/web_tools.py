@@ -649,6 +649,19 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Raises:
         Exception: If search fails or API key is not set
     """
+    if not isinstance(query, str) or not query.strip():
+        # Guard against model-issued empty queries. Without this, the empty
+        # string reaches the backend as-is — SearXNG receives /search?q= and
+        # answers HTTP 400 (#72270) — and the model only sees an opaque
+        # "SearXNG returned HTTP 400". Fail fast with actionable guidance
+        # instead, for every backend, before any plugin/network dispatch.
+        return tool_error(
+            "web_search requires a non-empty 'query' string. Retry the call "
+            "with the actual search terms in the 'query' argument.",
+            success=False,
+        )
+    query = query.strip()
+
     try:
         limit = int(limit)
     except (TypeError, ValueError):

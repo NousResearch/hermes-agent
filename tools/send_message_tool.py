@@ -685,6 +685,36 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
+def _adapter_session_is_usable(adapter) -> bool:
+    """True when the adapter's aiohttp session can be driven from this loop.
+
+    Adapters create their aiohttp session on the gateway's main event loop.
+    When ``_send_via_adapter`` runs on a worker-thread loop — cron delivery
+    executes ``asyncio.run(coro)`` in a ``ThreadPoolExecutor``, and the
+    send_message tool's ``_run_async`` bridge also spawns a worker thread with
+    a separate loop — reusing that session makes aiohttp's ``TimerContext``
+    call ``asyncio.current_task(loop=session._loop)``, see ``None``, and raise
+    "Timeout context manager should be used inside a task".  Skip the live
+    adapter in that case and fall through to the plugin's
+    ``standalone_sender_fn``, which creates a fresh session on the current
+    loop (mirrors the Weixin fix in commit ``a22465e07a``).
+    """
+    try:
+        current = asyncio.get_running_loop()
+    except RuntimeError:
+        return True  # no running loop → nothing to compare against
+    for attr in ("_session", "_send_session", "session"):
+        session = getattr(adapter, attr, None)
+        if session is None:
+            continue
+        if getattr(session, "closed", False):
+            return False
+        bound_loop = getattr(session, "_loop", None)
+        if bound_loop is not None:
+            return bound_loop is current
+    return True
+
+
 async def _send_via_adapter(
     platform,
     pconfig,
@@ -700,10 +730,14 @@ async def _send_via_adapter(
 
     Order of attempts:
       1. Live in-process adapter via ``_gateway_runner_ref()`` (the path that
-         existed before this change).
+         existed before this change) — only when the adapter's aiohttp
+         session is bound to the current event loop; a session created on the
+         gateway's main loop cannot be reused from a cron worker-thread loop
+         ("Timeout context manager should be used inside a task").
       2. The plugin's ``standalone_sender_fn`` registered on its
          ``PlatformEntry`` (used when the gateway is not in this process, so
-         the runner weakref is ``None``).
+         the runner weakref is ``None``, or when the live adapter's session
+         belongs to a different event loop).
       3. A descriptive error explaining both options.
     """
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
@@ -719,7 +753,7 @@ async def _send_via_adapter(
             adapter = runner.adapters.get(platform)
         except Exception:
             adapter = None
-        if adapter is not None:
+        if adapter is not None and _adapter_session_is_usable(adapter):
             try:
                 metadata = {}
                 if thread_id:

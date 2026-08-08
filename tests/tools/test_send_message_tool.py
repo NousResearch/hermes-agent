@@ -829,7 +829,7 @@ class TestSendTelegramThreadIdMapping:
 
         # Create a test file
         test_file = tmp_path / "doc.txt"
-        test_file.write_text("test content")
+        test_file.write_text("test content", encoding="utf-8")
 
         asyncio.run(
             _send_telegram(
@@ -1699,6 +1699,134 @@ class TestSendViaAdapterStandaloneFallback:
             platform_registry.unregister("fakeplatform")
 
         assert result == {"error": "Plugin standalone send failed: boom!"}
+
+
+class TestSendViaAdapterCrossLoopSession:
+    """Cron delivery runs _send_via_adapter on a worker-thread loop (asyncio.run
+    inside a ThreadPoolExecutor) while the live adapter's aiohttp session was
+    created on the gateway's main loop.  Reusing that session raises "Timeout
+    context manager should be used inside a task" (#39836, #76799, #37005).
+    The live adapter must be skipped when its session belongs to a different
+    event loop, falling through to the plugin's standalone sender — mirroring
+    the Weixin fix in commit a22465e07a.
+    """
+
+    @staticmethod
+    def _make_ntfy_entry(send_fn):
+        from gateway.platform_registry import PlatformEntry
+
+        return PlatformEntry(
+            name="ntfy",
+            label="Ntfy",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            standalone_sender_fn=send_fn,
+        )
+
+    @pytest.mark.asyncio
+    async def test_foreign_loop_session_falls_back_to_standalone_sender(self, monkeypatch):
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        gateway_loop = asyncio.new_event_loop()
+        try:
+            live_calls = []
+
+            class LiveAdapter:
+                _session = SimpleNamespace(closed=False, _loop=gateway_loop)
+
+                async def send(self, *, chat_id, content, metadata=None):
+                    live_calls.append(chat_id)
+                    return SimpleNamespace(success=True, message_id="live-id")
+
+            platform = Platform("ntfy")
+            runner = SimpleNamespace(adapters={platform: LiveAdapter()})
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+            async def standalone(pconfig, chat_id, message, **kwargs):
+                return {"success": True, "message_id": "standalone-id", "via": "standalone"}
+
+            platform_registry.register(self._make_ntfy_entry(standalone))
+            try:
+                result = await _send_via_adapter(
+                    platform,
+                    SimpleNamespace(extra={}),
+                    "alerts-channel",
+                    "done",
+                )
+            finally:
+                platform_registry.unregister("ntfy")
+
+            assert result == {"success": True, "message_id": "standalone-id", "via": "standalone"}
+            assert live_calls == [], (
+                "live adapter must be skipped when its session is bound to "
+                "a different event loop (cron worker-thread path)"
+            )
+        finally:
+            gateway_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_closed_session_falls_back_to_standalone_sender(self, monkeypatch):
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        live_calls = []
+
+        class LiveAdapter:
+            _session = SimpleNamespace(closed=True, _loop=asyncio.get_running_loop())
+
+            async def send(self, *, chat_id, content, metadata=None):
+                live_calls.append(chat_id)
+                return SimpleNamespace(success=True, message_id="live-id")
+
+        platform = Platform("ntfy")
+        runner = SimpleNamespace(adapters={platform: LiveAdapter()})
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        async def standalone(pconfig, chat_id, message, **kwargs):
+            return {"success": True, "message_id": "standalone-id"}
+
+        platform_registry.register(self._make_ntfy_entry(standalone))
+        try:
+            result = await _send_via_adapter(
+                platform,
+                SimpleNamespace(extra={}),
+                "alerts-channel",
+                "done",
+            )
+        finally:
+            platform_registry.unregister("ntfy")
+
+        assert result == {"success": True, "message_id": "standalone-id"}
+        assert live_calls == [], "closed sessions must not be reused"
+
+    @pytest.mark.asyncio
+    async def test_current_loop_session_uses_live_adapter(self, monkeypatch):
+        from tools.send_message_tool import _send_via_adapter
+
+        platform = Platform("ntfy")
+        live_calls = []
+
+        class LiveAdapter:
+            async def send(self, *, chat_id, content, metadata=None):
+                live_calls.append(chat_id)
+                return SimpleNamespace(success=True, message_id="live-id")
+
+        live = LiveAdapter()
+        live._session = SimpleNamespace(closed=False, _loop=asyncio.get_running_loop())
+
+        runner = SimpleNamespace(adapters={platform: live})
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        result = await _send_via_adapter(
+            platform,
+            SimpleNamespace(extra={}),
+            "alerts-channel",
+            "done",
+        )
+
+        assert result == {"success": True, "message_id": "live-id"}
+        assert live_calls == ["alerts-channel"]
 
 # ---------------------------------------------------------------------------
 # _check_send_message — availability gating

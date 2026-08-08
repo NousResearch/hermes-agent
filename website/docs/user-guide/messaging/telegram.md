@@ -882,6 +882,7 @@ platforms:
         - name: Engineering
           thread_id: 5
           skill: software-development
+          workdir: /Users/alice/engineering-repo
         - name: Research
           thread_id: 12
           skill: arxiv
@@ -898,13 +899,15 @@ platforms:
 | `name` | No | Human-readable label for the topic (informational only) |
 | `thread_id` | Yes | Telegram forum topic ID — visible in `t.me/c/<group_id>/<thread_id>` links |
 | `skill` | No | Skill to auto-load on new sessions in this topic |
+| `workdir` | No | Absolute path to pin this topic's session working directory (e.g. a git repo). Lets the agent operate on the right filesystem by default without being told each time. |
 
 ### How it works
 
 1. When a message arrives in a mapped group topic, Hermes looks up the `chat_id` and `thread_id` in `group_topics` config
 2. If a matching entry has a `skill` field, that skill is auto-loaded for the session — identical to DM topic skill binding
-3. Topics without a `skill` key get session isolation only (existing behavior, unchanged)
-4. Unmapped `thread_id` values or `chat_id` values fall through silently — no error, no skill
+3. If a matching entry has a `workdir` field, the session's working directory is pinned to that absolute path — so tools and context-file discovery operate inside that repo by default
+4. Topics without a `skill` key get session isolation only (existing behavior, unchanged)
+5. Unmapped `thread_id` values or `chat_id` values fall through silently — no error, no skill, no workdir override
 
 ### Differences from DM Topics
 

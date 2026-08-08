@@ -16748,8 +16748,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Build session context
         context = build_session_context(source, self.config, session_entry)
         
-        # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        # Set session context variables for tools (task-local, concurrency-safe).
+        # A per-topic workdir binding (e.g. Telegram group_topics[].workdir) pins
+        # this session's cwd onto its git repo directory; absence keeps global default.
+        _event_workdir = (getattr(event, "workdir", None) or "").strip()
+        _session_env_tokens = self._set_session_env(
+            context, cwd=_event_workdir or None
+        )
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -21681,11 +21686,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return delivered
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(self, context: SessionContext, cwd: Optional[str] = None) -> list:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
         gateway messages cannot overwrite each other's session state.
+
+        ``cwd`` optionally pins the session's working directory (e.g. a
+        per-topic ``workdir`` binding).  When None, the session keeps the
+        global TERMINAL_CWD default.
 
         Returns a list of reset tokens; pass them to ``_clear_session_env``
         in a ``finally`` block.
@@ -21716,6 +21725,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
             cron_session="",
+            cwd=cwd or "",
         )
 
     def _clear_session_env(self, tokens: list) -> None:

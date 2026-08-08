@@ -475,6 +475,90 @@ def test_group_topic_skill_binding_second_topic():
     assert event.source.chat_topic == "Sales"
 
 
+# ── _build_message_event: group_topics workdir binding ──
+
+
+def test_group_topic_workdir_binding():
+    """Group topic with a workdir config should set event.workdir."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "aiops", "thread_id": 5, "workdir": "/Users/andrew/aiops"},
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=5,
+        text="hello",
+        is_topic_message=True,
+        is_forum=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.workdir == "/Users/andrew/aiops"
+
+
+def test_group_topic_workdir_none_without_binding():
+    """Group topic without a workdir config should leave event.workdir=None."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "General", "thread_id": 1},
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=1,
+        text="hello",
+        is_topic_message=True,
+        is_forum=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.workdir is None
+
+
+def test_group_topic_workdir_alongside_skill():
+    """A topic can bind both a skill and a workdir; both should be carried."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "aiops", "thread_id": 5,
+                 "skill": "software-development", "workdir": "/Users/andrew/aiops"},
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=5,
+        text="hello",
+        is_topic_message=True,
+        is_forum=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == "software-development"
+    assert event.workdir == "/Users/andrew/aiops"
+    assert event.source.chat_topic == "aiops"
+
+
 # ── _build_message_event: from_user=None fallback in DMs ──
 
 

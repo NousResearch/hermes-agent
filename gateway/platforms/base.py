@@ -2124,6 +2124,13 @@ class MessageEvent:
     # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
 
+    # Per-channel working-directory pin for topic/channel bindings (e.g.
+    # Telegram group_topics[].workdir).  When set, the dispatcher runs this
+    # session with cwd pointed at the given absolute path instead of the
+    # global TERMINAL_CWD.  Lets a topic map to a git repo's directory so the
+    # agent operates on the right filesystem by default.
+    workdir: Optional[str] = None
+
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None

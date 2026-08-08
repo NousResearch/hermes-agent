@@ -427,6 +427,68 @@ class TestUpdate:
             update_distribution("plain")
 
 
+class TestUpdatePreservesBindMountedDirectories:
+    """Profile updates must never replace directory inodes that sandboxes
+    may be bind-mounted to (Docker persistent containers see an empty
+    ``/root/.hermes/skills`` when the host skills dir is deleted and
+    recreated — hermes-agent#73842)."""
+
+    def test_update_preserves_skills_dir_inode(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="bm1")
+
+        skills_dir = plan.target_dir / "skills"
+        assert skills_dir.is_dir()
+        first_inode = skills_dir.stat().st_ino
+        first_demo_inode = (skills_dir / "demo").stat().st_ino
+
+        # Bump staged skill content: edit the existing skill, add a new
+        # skill, add a script.
+        (staged / "skills" / "demo" / "SKILL.md").write_text("# Demo v2\n")
+        (staged / "skills" / "demo" / "scripts").mkdir(exist_ok=True)
+        (staged / "skills" / "demo" / "scripts" / "run.sh").write_text("#!/bin/sh\n")
+        (staged / "skills" / "newskill").mkdir()
+        (staged / "skills" / "newskill" / "SKILL.md").write_text("# New\n")
+
+        update_distribution("bm1", force_config=False)
+
+        # The skills directory inode is preserved (bind mount stays valid).
+        assert skills_dir.stat().st_ino == first_inode
+        # Nested directories keep their inodes too — the whole tree is
+        # refreshed in place, not rebuilt.
+        assert (skills_dir / "demo").stat().st_ino == first_demo_inode
+        # Contents refreshed in place.
+        assert (skills_dir / "demo" / "SKILL.md").read_text() == "# Demo v2\n"
+        assert (skills_dir / "demo" / "scripts" / "run.sh").read_text() == "#!/bin/sh\n"
+        assert (skills_dir / "newskill" / "SKILL.md").read_text() == "# New\n"
+
+    def test_update_removes_deleted_skills_in_place(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="bm2")
+
+        skills_dir = plan.target_dir / "skills"
+        first_inode = skills_dir.stat().st_ino
+
+        # Drop the demo skill from the distribution and add another.
+        import shutil as _shutil
+
+        _shutil.rmtree(staged / "skills" / "demo")
+        (staged / "skills" / "keep").mkdir()
+        (staged / "skills" / "keep" / "SKILL.md").write_text("# Keep\n")
+
+        update_distribution("bm2", force_config=False)
+
+        assert skills_dir.stat().st_ino == first_inode
+        assert not (skills_dir / "demo").exists()
+        assert (skills_dir / "keep" / "SKILL.md").read_text() == "# Keep\n"
+
+    def test_fresh_install_still_creates_skills_dir(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="bm3")
+
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").exists()
+
+
 # ===========================================================================
 # describe_distribution — info subcommand
 # ===========================================================================

@@ -72,6 +72,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from tools.dir_sync import sync_dir_in_place
 
 
 # ---------------------------------------------------------------------------
@@ -583,18 +584,20 @@ def _copy_dist_payload(
 
     def _copy_entry(entry: Path, dest: Path) -> None:
         if entry.is_dir():
-            if dest.exists():
-                shutil.rmtree(dest)
-            staged_resolved = staged.resolve()
-            shutil.copytree(
-                entry,
-                dest,
-                ignore=lambda d, names: (
-                    [n for n in names if n in USER_OWNED_EXCLUDE]
-                    if Path(d).resolve() == staged_resolved
-                    else []
-                ),
-            )
+            # Sync in place — never delete/recreate *dest*.  Directory
+            # entries such as ``skills/`` may be bind-mounted into
+            # persistent sandboxes; replacing the directory inode empties
+            # the mount and the sandbox sees a dead directory until the
+            # container is recreated (hermes-agent#73842).
+            #
+            # No skip_names here: USER_OWNED_EXCLUDE filtering already
+            # happens at the entry loop above (top-level names are never
+            # selected as *entry*), and nested user-owned-named dirs such
+            # as tools/bin/ or scripts/logs/ ARE distribution content —
+            # see TestNestedUserOwnedExcludeNotFiltered.  The historical
+            # copytree ignore callback for the staged root was equally
+            # unreachable (entry is always a child of *staged*).
+            sync_dir_in_place(entry, dest)
         else:
             shutil.copy2(entry, dest)
 

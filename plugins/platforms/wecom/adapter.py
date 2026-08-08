@@ -415,7 +415,6 @@ class WeComAdapter(BasePlatformAdapter):
                         {
                             "cmd": APP_CMD_PING,
                             "headers": {"req_id": self._new_req_id("ping")},
-                            "body": {},
                         }
                     )
                 except Exception as exc:

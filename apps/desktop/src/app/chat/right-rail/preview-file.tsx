@@ -32,6 +32,7 @@ import {
 } from '@/lib/desktop-fs'
 import { Check, Pencil, X } from '@/lib/icons'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
+import { findHeadingByHash, rehypeHeadingIds } from '@/lib/markdown-heading-ids'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
@@ -355,6 +356,47 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
   return <RichCodeBlock code={code} fallback={highlighted} language={language} />
 }
 
+// Custom anchor for the file preview pane (#81055): Streamdown renders links
+// as `<button>` with no `href`, and the default rehype chain strips the `id`
+// we stamp on headings. This override routes `#fragment` clicks to the
+// matching heading inside this preview body. `#preview/...` cross-file
+// references are not handled here (the file preview pane has its own tab
+// switcher that doesn't operate-open another preview from inside markdown).
+function MarkdownAnchor({ children, href, ...props }: ComponentProps<'a'>) {
+  if (href?.startsWith('#')) {
+    return (
+      <a
+        className="font-semibold text-foreground underline underline-offset-4 decoration-current/30"
+        href={href}
+        onClick={(event) => {
+          event.preventDefault()
+          // Scope the lookup to this preview body: several previews can be
+          // mounted at once (tabs, tiles) and ids repeat across notes, so a
+          // document-wide match could scroll a different pane.
+          const body = (event.currentTarget as HTMLElement).closest('.preview-markdown') ?? document
+          const heading = findHeadingByHash(body, href)
+          heading?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }}
+        {...props}
+      >
+        {children}
+      </a>
+    )
+  }
+
+  return (
+    <a
+      className="font-semibold text-foreground underline underline-offset-4 decoration-current/30"
+      href={href}
+      rel="noopener noreferrer"
+      target="_blank"
+      {...props}
+    >
+      {children}
+    </a>
+  )
+}
+
 const MARKDOWN_COMPONENTS = {
   h1: tagged('h1'),
   h2: tagged('h2'),
@@ -366,13 +408,24 @@ const MARKDOWN_COMPONENTS = {
   li: tagged('li'),
   blockquote: tagged('blockquote'),
   pre: tagged('pre'),
-  code: MarkdownCode
+  code: MarkdownCode,
+  a: MarkdownAnchor
 }
 
 function MarkdownPreview({ text }: { text: string }) {
+  // Heading ids must be stamped AFTER Streamdown's own rehype chain (raw →
+  // sanitize → harden): `id` is not on rehype-sanitize's default allow-list,
+  // so an id added earlier is stripped before it reaches the DOM (#81055).
+  const rehypePlugins = useMemo(() => [rehypeHeadingIds()], [])
   return (
     <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
-      <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
+      <Streamdown
+        components={MARKDOWN_COMPONENTS}
+        controls={false}
+        mode="static"
+        parseIncompleteMarkdown={false}
+        rehypePlugins={rehypePlugins}
+      >
         {text}
       </Streamdown>
     </div>

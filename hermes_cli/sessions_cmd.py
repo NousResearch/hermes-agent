@@ -65,11 +65,19 @@ def _export_output_file(output: str, default_name: str) -> Path:
     and raise ``IsADirectoryError``.  Missing parents are created, matching
     the ``mkdir(parents=True, exist_ok=True)`` those two branches already do.
 
-    A plain file path is returned unchanged, so existing invocations behave
-    exactly as before.
+    A trailing path separator asks for a directory explicitly, so it is
+    honoured even when the directory does not exist yet — ``open()`` rejects
+    such a path outright today, so no working invocation changes meaning.
+
+    A path that neither exists as a directory nor ends in a separator stays
+    a file name, exactly as it is treated today: ``sessions export
+    ~/my-export --format jsonl --session-id X`` writes a file called
+    ``my-export`` and must keep doing so, which is why a bare non-existent
+    path is not guessed at.
     """
+    separators = tuple(sep for sep in (os.sep, os.altsep) if sep)
     path = Path(output).expanduser()
-    if path.is_dir():
+    if path.is_dir() or output.endswith(separators):
         path = path / default_name
     path.parent.mkdir(parents=True, exist_ok=True)
     return path

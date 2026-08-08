@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 
 from hermes_cli.session_export import export_record_count, render_sessions_export
@@ -308,6 +309,46 @@ def test_export_creates_missing_parent_directory(monkeypatch, tmp_path):
 
     assert target.is_file()
     assert "Why is login broken?" in target.read_text(encoding="utf-8")
+
+
+def test_export_trailing_separator_creates_new_directory(monkeypatch, capsys, tmp_path):
+    """A trailing separator asks for a directory that need not exist yet.
+
+    The multi-session trace and bulk md/qmd branches ``mkdir`` a
+    not-yet-existing output directory, so the single-session writers need a
+    way to say "directory" about a path that is not one on disk. ``open()``
+    rejects a trailing-separator path outright, so honouring it here cannot
+    change the meaning of any invocation that works today.
+    """
+    target_dir = tmp_path / "new-exports"
+
+    _run_sessions_export(
+        monkeypatch,
+        [str(target_dir) + os.sep, "--format", "trace", "--session-id", "sess"],
+    )
+
+    written = target_dir / "sess-123.trace.jsonl"
+    assert target_dir.is_dir()
+    assert written.is_file()
+    assert str(written) in capsys.readouterr().out
+
+
+def test_export_bare_nonexistent_path_stays_a_file(monkeypatch, tmp_path):
+    """Boundary guard: a bare non-existent path is still a file name.
+
+    ``sessions export ~/my-export --format jsonl --session-id X`` writes a
+    file called ``my-export`` today, so a path that is neither an existing
+    directory nor separator-terminated must not be silently reinterpreted.
+    """
+    target = tmp_path / "my-export"
+
+    _run_sessions_export(
+        monkeypatch,
+        [str(target), "--format", "jsonl", "--session-id", "sess"],
+    )
+
+    assert target.is_file()
+    assert json.loads(target.read_text(encoding="utf-8"))["id"] == "sess-123"
 
 
 def test_prompt_only_md_stdout_dash_unchanged(monkeypatch, capsys):

@@ -967,14 +967,36 @@ class CLICommandsMixin:
             target = target[1:-1].strip()
 
         if not target:
+            # Interactive TTY: launch the curses session browser for arrow-key
+            # navigation matching the TUI/desktop. Non-interactive contexts
+            # (piped input, gateway, CI) fall back to the static numbered table.
+            import sys as _sys
+
+            if _sys.stdin.isatty() and _sys.stdout.isatty():
+                sessions = self._list_recent_sessions(limit=200)
+                if sessions:
+                    picked = self._browse_sessions_in_terminal(sessions)
+                    if picked:
+                        # Disarm any previously-armed pending selection before
+                        # recursing so the next bare number isn't hijacked.
+                        self._pending_resume_sessions = None
+                        # Recurse with the picked ID so the full resolution
+                        # path (compression chain, session switch, recap)
+                        # runs exactly as if the user had typed
+                        # ``/resume <id>``.  Mirrors _consume_pending_resume_selection.
+                        self._handle_resume_command(f"/resume {picked}")
+                        return
+                    else:
+                        _cprint("  Cancelled.")
+                        return
+                else:
+                    _cprint("  No previous sessions to resume.")
+                    return
+
+            # Non-interactive: fall back to the static numbered table + one-shot
+            # bare-number selection. See #34584.
             _cprint("  Usage: /resume <number|session_id_or_title>")
             if self._show_recent_sessions(reason="resume"):
-                # Arm a one-shot pending-resume selection so the user can type
-                # just the number (`3`) on the next line instead of having to
-                # retype `/resume 3`. The list here must match the one shown by
-                # _show_recent_sessions and used for index resolution below —
-                # all three go through _list_recent_sessions(limit=10). See
-                # #34584.
                 self._pending_resume_sessions = self._list_recent_sessions(limit=10)
                 return
             _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
@@ -1138,6 +1160,43 @@ class CLICommandsMixin:
         # the approval session key just changed. Same contract as a startup
         # --resume.
         self._restore_session_yolo(session_meta)
+
+    def _browse_sessions_in_terminal(self, sessions: list) -> str | None:
+        """Run the curses session browser safely under the classic CLI's
+        prompt_toolkit application.
+
+        ``_session_browse_picker`` drives ``curses.wrapper`` directly, which
+        would clobber the terminal while prompt_toolkit's ``patch_stdout``
+        owns it. Invoke it through ``run_in_terminal`` — equivalent to
+        ``HermesCLI._run_curses_picker`` — so the compositor releases and
+        restores terminal ownership cleanly. On a background thread (no
+        prompt_toolkit event loop, e.g. the process_loop), fall back to the
+        direct call.
+        """
+        import threading
+        from hermes_cli.main import _session_browse_picker
+
+        result = [None]
+
+        def _pick():
+            result[0] = _session_browse_picker(sessions)
+
+        in_main_thread = threading.current_thread() is threading.main_thread()
+
+        if self._app and in_main_thread:
+            from prompt_toolkit.application import run_in_terminal
+            was_visible = self._status_bar_visible
+            self._status_bar_visible = False
+            self._app.invalidate()
+            try:
+                run_in_terminal(_pick)
+            finally:
+                self._status_bar_visible = was_visible
+                self._app.invalidate()
+        else:
+            _pick()
+
+        return result[0]
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.

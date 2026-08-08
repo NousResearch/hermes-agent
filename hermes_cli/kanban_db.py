@@ -8720,8 +8720,19 @@ def _dispatch_once_locked(
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        if _per_profile_cap is not None:
+            current = _per_profile_running.get(row["assignee"], 0)
+            if current >= _per_profile_cap:
+                result.skipped_per_profile_capped.append(
+                    (row["id"], row["assignee"], current)
+                )
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            if _per_profile_cap is not None:
+                _per_profile_running[row["assignee"]] = (
+                    _per_profile_running.get(row["assignee"], 0) + 1
+                )
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -8766,6 +8777,10 @@ def _dispatch_once_locked(
                 _set_worker_pid(conn, claimed.id, int(pid))
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
+            if _per_profile_cap is not None and claimed.assignee:
+                _per_profile_running[claimed.assignee] = (
+                    _per_profile_running.get(claimed.assignee, 0) + 1
+                )
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),

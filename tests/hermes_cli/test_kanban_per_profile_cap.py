@@ -98,3 +98,42 @@ def test_capped_tasks_dispatched_on_subsequent_tick(isolated_kanban_home_with_pr
     assert res2.spawned[0][0] != spawned_id  # different task this time
 
 
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_review_dispatch_shares_profile_cap(
+    isolated_kanban_home_with_profiles, dry_run
+):
+    """Ready and review workers share one per-profile concurrency cap."""
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        running_id = kb.create_task(conn, title="running", assignee="alpha")
+        ready_id = kb.create_task(conn, title="ready", assignee="alpha")
+        review_ids = [
+            kb.create_task(conn, title=f"review-{i}", assignee="alpha")
+            for i in range(3)
+        ]
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'running' WHERE id = ?",
+                (running_id,),
+            )
+            conn.executemany(
+                "UPDATE tasks SET status = 'review' WHERE id = ?",
+                [(task_id,) for task_id in review_ids],
+            )
+
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=dry_run,
+            max_in_progress_per_profile=3,
+        )
+
+    spawned_ids = [task_id for task_id, _, _ in res.spawned]
+    capped_ids = [task_id for task_id, _, _ in res.skipped_per_profile_capped]
+    assert spawned_ids[0] == ready_id
+    assert len(spawned_ids) == 2
+    assert len(set(spawned_ids).intersection(review_ids)) == 1
+    assert set(capped_ids) == set(review_ids) - set(spawned_ids)
+    assert all(count == 3 for _, _, count in res.skipped_per_profile_capped)

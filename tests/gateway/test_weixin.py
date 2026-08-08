@@ -646,6 +646,42 @@ class TestWeixinApiTimeout:
         assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}
 
 
+class TestWeixinLongPollTimeoutClamp:
+    """Regression: iLink may return ``longpolling_timeout_ms`` after getUpdates.
+
+    The value feeds ``asyncio.wait_for`` for the next poll. Without a ceiling,
+    a huge positive suggestion pins the poll task (and delays disconnect)
+    for an unbounded wall-clock hang.
+    """
+
+    def test_huge_server_suggestion_is_clamped(self):
+        clamped = weixin._apply_long_poll_timeout_hint(
+            weixin.LONG_POLL_TIMEOUT_MS,
+            10**12,
+        )
+        assert clamped == weixin.MAX_LONG_POLL_TIMEOUT_MS
+        assert clamped < 10**12
+
+    def test_normal_server_suggestion_is_kept(self):
+        assert (
+            weixin._apply_long_poll_timeout_hint(weixin.LONG_POLL_TIMEOUT_MS, 35_000)
+            == 35_000
+        )
+
+    def test_non_positive_or_non_int_keeps_current(self):
+        current = weixin.LONG_POLL_TIMEOUT_MS
+        assert weixin._apply_long_poll_timeout_hint(current, 0) == current
+        assert weixin._apply_long_poll_timeout_hint(current, -5) == current
+        assert weixin._apply_long_poll_timeout_hint(current, None) == current
+        assert weixin._apply_long_poll_timeout_hint(current, "35000") == current
+        assert weixin._apply_long_poll_timeout_hint(current, 35_000.5) == current
+
+    def test_ceiling_constant_is_above_default(self):
+        # Server may legitimately ask for longer than the default boot value,
+        # but still within a sane upper bound.
+        assert weixin.MAX_LONG_POLL_TIMEOUT_MS >= weixin.LONG_POLL_TIMEOUT_MS
+
+
 class TestWeixinVoiceAlwaysDownloaded:
     """Regression tests for #27300: when WeChat (Weixin) returns a
     ``voice_item.text`` (Tencent Cloud's STT) we must still download

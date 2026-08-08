@@ -561,3 +561,36 @@ def test_colliding_repo_basenames_disambiguate_labels():
     labels = sorted(p["label"] for p in tree["projects"])
 
     assert labels == ["x/proj", "y/proj"]
+
+
+def test_suppress_git_auto_keeps_explicit_projects_and_skips_git_auto():
+    # The permanent kill switch: git-derived AUTO projects (session-rooted or
+    # disk-scanned) vanish, while explicit user projects and non-git cwd
+    # grouping survive. Users who keep repos as backups shouldn't see git lanes.
+    project = _project("p_app", "App", ["/work/app"])
+    resolve = _resolver(
+        {
+            "/work/app": ("/work/app", "/work/app"),
+            "/work/repo": ("/work/repo", "/work/repo"),
+        }
+    )
+    sessions = [
+        _session("/work/app", branch="main", repo_root="/work/app"),   # owned by explicit project
+        _session("/work/repo", branch="main", repo_root="/work/repo"), # would mint an auto repo project
+        _session("/work/notes"),                                       # non-git legacy cwd grouping
+    ]
+    discovered = [{"root": "/work/fresh", "label": "fresh", "sessions": 0, "last_active": 5}]
+
+    tree = pt.build_tree(
+        [project], sessions, discovered, resolve,
+        hydrate=True, suppress_git_auto=True,
+    )
+
+    ids = {p["id"] for p in tree["projects"]}
+    # Explicit project survives.
+    assert "p_app" in ids
+    # Git-derived auto projects are suppressed (repo-rooted + disk-scanned).
+    assert "/work/repo" not in ids
+    assert "/work/fresh" not in ids
+    # The non-git legacy cwd grouping survives (not git noise).
+    assert "/work/notes" in ids

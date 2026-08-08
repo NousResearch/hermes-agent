@@ -1437,20 +1437,36 @@ def _profile_home(profile: str | None) -> Path | None:
     return home if (home / "state.db").exists() or home.exists() else None
 
 
-def _profile_scoped(handler):
-    """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
+def _is_launch_profile_request(profile: str | None) -> bool:
+    """Whether ``profile`` explicitly resolves to this process's profile home."""
+    name = (profile or "").strip()
+    if not name:
+        return True
+    try:
+        from hermes_cli import profiles as profiles_mod
 
-    Pets are per-profile: ``display.pet.*`` lives in the profile's config.yaml and
-    sprites install under its ``pets/`` dir (both resolve via ``get_hermes_home``).
-    The desktop sends ``profile`` on pet calls so config + pets dir resolve to the
-    focused profile even in app-global remote mode, where one backend serves every
-    profile. No-op for the launch profile (own-profile backends already resolve it).
+        return Path(profiles_mod.get_profile_dir(name)).resolve() == Path(_hermes_home).resolve()
+    except Exception:
+        return False
+
+
+def _profile_scoped(handler):
+    """Bind ``params['profile']``'s HERMES_HOME around a profile-owned RPC.
+
+    Profile-owned resources such as Projects and pets live in the selected
+    profile's database/config and must resolve to that home even when one
+    dashboard backend serves multiple profiles. The desktop sends ``profile``
+    on those calls. No-op for the launch profile (own-profile backends already
+    resolve it).
     """
 
     def wrapper(rid, params):
-        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+        requested = params.get("profile") if isinstance(params, dict) else None
+        home = _profile_home(requested)
         if home is None:
-            return handler(rid, params)
+            if _is_launch_profile_request(requested):
+                return handler(rid, params)
+            return _err(rid, 4041, f"unknown profile: {str(requested).strip()}")
         token = set_hermes_home_override(home)
         try:
             return handler(rid, params)
@@ -11386,6 +11402,7 @@ def _projects_method(name: str):
 
     def decorator(fn):
         @method(name)
+        @_profile_scoped
         def handler(rid, params: dict) -> dict:
             try:
                 from hermes_cli import projects_db as pdb
@@ -11817,6 +11834,12 @@ def _build_project_tree(
     sessions, projects, discovered, active_id = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered
     )
+    # When the user disabled repo scanning (desktop.repo_scan_enabled=false),
+    # suppress git-derived AUTO projects entirely (session-rooted and
+    # disk-scanned). Explicit projects and non-git session folders remain —
+    # only the git lanes disappear. This is the permanent kill switch for
+    # users who keep repos purely as backups.
+    policy = _repo_discovery_policy()
     tree = project_tree.build_tree(
         projects,
         sessions,
@@ -11827,6 +11850,7 @@ def _build_project_tree(
         is_junk_root=_is_repo_junk,
         is_junk_cwd=_is_session_cwd_junk,
         exists=_dir_exists_cached,
+        suppress_git_auto=not bool(policy.get("enabled", True)),
     )
     return tree, active_id
 

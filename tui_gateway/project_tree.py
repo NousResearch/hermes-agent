@@ -429,7 +429,7 @@ def _seed_folder_repos(
         if not raw:
             continue
         info = resolve(raw) if resolve else None
-        root = (info or {}).get("repo_root") or re.sub(r"[/\\]+$", "", raw)
+        root = (info or {}).get("repo_root") or re.sub(r"[/\\\\]+$", "", raw)
         root_key = _path_key(root)
         if not root_key or root_key in seen:
             continue
@@ -440,6 +440,70 @@ def _seed_folder_repos(
         _disambiguate_labels(seeded)
 
     return seeded
+
+
+def _relabel_repos_for_project(repos: list[dict], folders: list[dict]) -> list[dict]:
+    """Label an explicit project's repo nodes with the project's own folder name.
+
+    When a project folder lives INSIDE a git repo (e.g. ``/home/tom/workspaces/emma``
+    inside the ``/home/tom/workspaces`` repo), the shared-repo basename
+    ("workspaces") leaks into every project that shares that repo, producing a row
+    of identical labels. For an explicit project, the repo node represents *this
+    project's files*, so it should be named after the project's folder, not the
+    common ancestor repo. Auto projects keep the repo basename (their only name).
+    """
+    if not folders:
+        return repos
+    for repo in repos:
+        root = (repo.get("path") or repo.get("id") or "").strip()
+        if not root:
+            continue
+        best = None
+        best_len = 0
+        for folder in folders:
+            fpath = (folder.get("path") or "").strip()
+            if not fpath or not _is_path_under(root, fpath):
+                continue
+            segs = _comparison_segments(fpath)
+            if len(segs) > best_len:
+                best_len = len(segs)
+                best = fpath
+        if best and _path_key(best) != _path_key(root):
+            repo["label"] = base_name(best) or repo["label"]
+    return repos
+
+
+def _flatten_repos(repos: list[dict], project_label: str) -> list[dict]:
+    """Collapse git branch/worktree lanes into a single flat session lane.
+
+    When git is suppressed (repos are backup-only), the branch-icon header and
+    "+" git-switch button are meaningless noise (and the git switch can fail
+    when paths don't exist locally). Flatten all repo → lane → sessions into
+    one repo → one lane → all sessions, so the desktop renders sessions directly
+    under the project name with no branch icon and a plain "+" new-session button.
+    """
+    all_sessions: list[dict] = []
+    for repo in repos:
+        for group in repo.get("groups") or []:
+            all_sessions.extend(group.get("sessions") or [])
+    all_sessions.sort(key=_session_time, reverse=True)
+    flat_lane = {
+        "id": f"flat::{project_label}",
+        "label": project_label,
+        "path": None,
+        "isMain": False,
+        "isKanban": False,
+        "sessions": all_sessions,
+    }
+    return [
+        {
+            "id": f"flat::{project_label}",
+            "label": project_label,
+            "path": None,
+            "groups": [flat_lane],
+            "sessionCount": len(all_sessions),
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +609,7 @@ def build_tree(
     is_junk_root: Optional[Callable[[str], bool]] = None,
     is_junk_cwd: Optional[Callable[[str], bool]] = None,
     exists: Optional[Exists] = None,
+    suppress_git_auto: bool = False,
 ) -> dict:
     """Build the authoritative project tree.
 
@@ -560,6 +625,12 @@ def build_tree(
     still on disk, so a session whose workspace was DELETED (a removed worktree,
     a scratch dir under /tmp) doesn't get promoted to a phantom AUTO project;
     omit it (remote backends) to keep every candidate.
+
+    ``suppress_git_auto`` disables git-derived AUTO projects entirely (both the
+    session-rooted Tier 2 and the disk-scanned Tier 3). Explicit user projects
+    are always honored; non-git session folders (the legacy cwd grouping) are
+    still kept, since they are not git noise. This is the permanent kill switch
+    for users who only keep repos as backups and don't want git lanes surfaced.
 
     Returns ``{"projects": [...], "scoped_session_ids": [...]}``. When
     ``hydrate`` is False (overview), lane ``sessions`` arrays are emptied but
@@ -598,9 +669,17 @@ def build_tree(
     for project in active_projects:
         psessions = by_project.get(project["id"], [])
         scoped_ids.extend(s["id"] for s in psessions if s.get("id"))
-        repos = _seed_folder_repos(
-            _build_repos(psessions, resolve, hydrate), project.get("folders") or [], resolve
-        )
+        if suppress_git_auto:
+            # Git lanes off: flatten all sessions into one plain lane. No branch
+            # icons, no repo headers, no "+" git-switch. Just sessions.
+            repos = _flatten_repos(
+                _build_repos(psessions, resolve, hydrate), project.get("name") or project["id"]
+            )
+        else:
+            repos = _seed_folder_repos(
+                _build_repos(psessions, resolve, hydrate), project.get("folders") or [], resolve
+            )
+            repos = _relabel_repos_for_project(repos, project.get("folders") or [])
         result.append(
             _project_node(
                 pid=project["id"],
@@ -634,6 +713,13 @@ def build_tree(
     for session in unowned:
         root = _session_repo_root(session, resolve)
         if root:
+            if suppress_git_auto:
+                # Git lanes are off: a session inside a git repo is not git noise
+                # when the repo is only used as a backup; keep the session
+                # reachable by sending it to Home instead of minting a repo
+                # project.
+                homeless.append(session)
+                continue
             # A real git root uses the stricter repo policy. Do not reinterpret a
             # filtered internal repo as a cwd-only project. A root that no longer
             # exists is a stale persisted value (the repo was deleted after the
@@ -661,7 +747,12 @@ def build_tree(
         # phantom project that can never be opened and can only be dismissed by
         # hand. The session goes to Home instead.
         if placement and _exists(placement["repo_key"]):
-            _add_auto(placement["repo_key"], session)
+            if suppress_git_auto and _path_key(placement.get("repo_key") or "") != _path_key(cwd):
+                # Git-derived placement (sibling worktree probe / persisted root
+                # pointing above cwd) — suppressed with git lanes off.
+                homeless.append(session)
+            else:
+                _add_auto(placement["repo_key"], session)
         else:
             homeless.append(session)
 
@@ -699,29 +790,30 @@ def build_tree(
 
     # Tier 3: repos discovered from full history / disk scan with no loaded
     # sessions, folded to their common root and not owned by an explicit project.
-    for repo in discovered_repos or []:
-        raw_root = (repo.get("root") or "").strip()
-        if not raw_root:
-            continue
-        info = resolve(raw_root) if resolve else None
-        root = (info or {}).get("repo_root") or raw_root
-        root_key = _path_key(root)
-        if root_key in seen or _junk(root) or _project_for_path(folder_index, root):
-            continue
-        seen.add(root_key)
-        label = repo.get("label") or base_name(root) or root
-        result.append(
-            _project_node(
-                pid=root,
-                label=label,
-                path=root,
-                repos=[{"id": root, "label": label, "path": root, "groups": [], "sessionCount": 0}],
-                session_count=int(repo.get("sessions") or 0),
-                last_active=float(repo.get("last_active") or 0),
-                preview_sessions=[],
-                is_auto=True,
+    if not suppress_git_auto:
+        for repo in discovered_repos or []:
+            raw_root = (repo.get("root") or "").strip()
+            if not raw_root:
+                continue
+            info = resolve(raw_root) if resolve else None
+            root = (info or {}).get("repo_root") or raw_root
+            root_key = _path_key(root)
+            if root_key in seen or _junk(root) or _project_for_path(folder_index, root):
+                continue
+            seen.add(root_key)
+            label = repo.get("label") or base_name(root) or root
+            result.append(
+                _project_node(
+                    pid=root,
+                    label=label,
+                    path=root,
+                    repos=[{"id": root, "label": label, "path": root, "groups": [], "sessionCount": 0}],
+                    session_count=int(repo.get("sessions") or 0),
+                    last_active=float(repo.get("last_active") or 0),
+                    preview_sessions=[],
+                    is_auto=True,
+                )
             )
-        )
 
     # Auto projects are labelled by repo basename, which can collide (two "app"
     # repos in different parents). Grow path prefixes so each is distinct.

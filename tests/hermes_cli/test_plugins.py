@@ -593,6 +593,31 @@ class TestPreToolCallDirective:
         )
         assert get_pre_tool_call_directive("write_file", {}) == ("approve", None)
 
+    def test_block_vetoes_earlier_approval(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_tool_call_directive
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "earlier gate"},
+                {"action": "block", "message": "later veto"},
+            ],
+        )
+        assert get_pre_tool_call_directive("terminal", {}) == ("block", "later veto")
+
+    def test_first_approval_wins_when_no_plugin_blocks(self, monkeypatch):
+        from hermes_cli.plugins import _get_pre_tool_call_directive_details
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "first", "rule_key": "first:key"},
+                {"action": "approve", "message": "second", "rule_key": "second:key"},
+            ],
+        )
+        result = _get_pre_tool_call_directive_details("terminal", {})
+        assert (result.action, result.message, result.rule_key) == (
+            "approve", "first", "first:key",
+        )
+
 
 class TestResolvePreToolBlock:
     """Tests for the single dispatch-site chokepoint that resolves a

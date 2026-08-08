@@ -16,7 +16,11 @@ describe('shouldPreserveCtrlJNewline', () => {
     ).toBe(true)
   })
 
-  it('keeps bare local POSIX LF-compatible prompts submitting on Ctrl+J', () => {
+  it('preserves Ctrl+J as newline in VTE terminals like GNOME Console/Terminal', () => {
+    expect(shouldPreserveCtrlJNewline({ TERM: 'xterm-256color', VTE_VERSION: '8400' })).toBe(true)
+  })
+
+  it('keeps bare local POSIX LF-compatible prompts submitting when no terminal fingerprint is available', () => {
     expect(shouldPreserveCtrlJNewline({ TERM: 'xterm-256color' })).toBe(false)
   })
 })

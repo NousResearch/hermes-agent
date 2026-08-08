@@ -6531,7 +6531,14 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         List of all currently registered MCP tool names.
     """
     if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping explicit MCP registration")
+        if servers:
+            logger.warning(
+                "MCP SDK not available but %d server(s) provided "
+                "-- skipping explicit MCP registration",
+                len(servers),
+            )
+        else:
+            logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []
 
     servers = _filter_suspicious_mcp_servers(servers)
@@ -6727,6 +6734,11 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         summary = f"MCP: registered {new_tool_count} tool(s) from {connected_count} server(s)"
         if failed:
             summary += f" ({failed} failed)"
+            with _lock:
+                error_snapshot = dict(_server_connect_errors)
+            for name in new_servers:
+                if name not in connected and name in error_snapshot:
+                    summary += f"\n  - {name}: {error_snapshot[name]}"
         logger.info(summary)
 
     return _existing_tool_names()
@@ -6745,7 +6757,18 @@ def discover_mcp_tools() -> List[str]:
         List of all registered MCP tool names.
     """
     if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
+        # Only warn if the user has MCP servers configured — otherwise
+        # an absent SDK is expected and harmless.
+        _cfg = _load_mcp_config()
+        if _cfg:
+            logger.warning(
+                "MCP SDK not available but %d server(s) configured "
+                "-- skipping MCP tool discovery. Install the 'mcp' "
+                "package to enable MCP tools.",
+                len(_cfg),
+            )
+        else:
+            logger.debug("MCP SDK not available -- skipping MCP tool discovery")
         return []
 
     servers = _load_mcp_config()
@@ -6808,6 +6831,10 @@ def discover_mcp_tools() -> List[str]:
             summary = f"  MCP: {new_tool_count} tool(s) from {len(connected_server_names)} server(s)"
             if failed_count:
                 summary += f" ({failed_count} failed)"
+                error_snapshot = dict(_server_connect_errors)
+                for name in new_server_names:
+                    if name not in connected_server_names and name in error_snapshot:
+                        summary += f"\n    - {name}: {error_snapshot[name]}"
             logger.info(summary)
 
         return tool_names

@@ -35,7 +35,12 @@ import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
-import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
+import {
+  buildDesktopBackendEnv,
+  buildDesktopBackendPath,
+  hermesManagedNodePathEntries,
+  normalizeHermesHomeRoot
+} from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
   canImportHermesCli,
@@ -1831,7 +1836,12 @@ function findOnPath(command) {
     return command
   }
 
-  const pathEntries = String(process.env.PATH || '')
+  const pathEntries = buildDesktopBackendPath({
+    hermesHome: HERMES_HOME,
+    venvRoot: VENV_ROOT,
+    currentPath: process.env.PATH || '',
+    platform: process.platform
+  })
     .split(path.delimiter)
     .filter(Boolean)
 

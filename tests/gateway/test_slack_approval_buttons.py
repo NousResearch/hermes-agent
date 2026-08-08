@@ -117,9 +117,13 @@ class TestSlackExecApproval:
         assert "hermes_approve_session" in action_ids
         assert "hermes_approve_always" in action_ids
         assert "hermes_deny" in action_ids
-        # Each button carries the session key as value
+        # Each button now carries an opaque numeric token, not the session key.
+        token = elements[0]["value"]
+        assert token != "agent:main:slack:group:C1:1111"
+        assert token.isdigit()
+        assert adapter._approval_state[int(token)] == "agent:main:slack:group:C1:1111"
         for e in elements:
-            assert e["value"] == "agent:main:slack:group:C1:1111"
+            assert e["value"] == token
 
     @pytest.mark.asyncio
     async def test_smart_deny_owner_override_hides_persistent_buttons(self):
@@ -154,6 +158,7 @@ class TestSlackApprovalAction:
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
         adapter._approval_resolved["1.2"] = False
+        adapter._approval_state[1] = "session-key"
 
         # Simulate Slack re-escaping: original was ~2990 chars, but & → &amp;
         # etc. inflates it past 3000.
@@ -167,7 +172,7 @@ class TestSlackApprovalAction:
             "channel": {"id": "C1"},
             "user": {"name": "alice", "id": "U_ALICE"},
         }
-        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+        action = {"action_id": "hermes_approve_once", "value": "1"}
 
         mock_client = adapter._team_clients["T1"]
         mock_client.chat_update = AsyncMock()
@@ -193,6 +198,30 @@ class TestSlackApprovalAction:
             "message": {"ts": "1234.5678", "blocks": []},
             "channel": {"id": "C1"},
             "user": {"name": "mallory", "id": "U_ATTACKER"},
+        }
+        action = {
+            "action_id": "hermes_approve_once",
+            "value": "1",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        ack.assert_called_once()
+        mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_forged_session_key_button_fails_closed(self, monkeypatch):
+        """A button value carrying the raw session_key must not resolve (#80283)."""
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        adapter._approval_resolved["1234.5678"] = False
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "1234.5678", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "owner", "id": "U_OWNER"},
         }
         action = {
             "action_id": "hermes_approve_once",
@@ -237,6 +266,7 @@ class TestSlackSlashConfirmAction:
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
         adapter._approval_resolved["2222.3333"] = False
+        adapter._slash_confirm_state["confirm-1"] = "agent:main:slack:group:C1:1111"
 
         # Simulate Slack re-escaping inflating text past 3000 chars.
         inflated_text = "b" * 2990 + "&lt;" * 10  # 2990 + 40 = 3030 chars
@@ -251,7 +281,7 @@ class TestSlackSlashConfirmAction:
         }
         action = {
             "action_id": "hermes_confirm_once",
-            "value": "agent:main:slack:group:C1:1111|confirm-1",
+            "value": "confirm-1",
         }
 
         mock_client = adapter._team_clients["T1"]

@@ -250,3 +250,120 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
     assert os.environ["VERCEL_TEAM_ID"] == "linked-team"
     assert defaults["    Vercel project ID"] == "linked-project"
     assert defaults["    Vercel team ID"] == "linked-team"
+
+
+def _drive_ssh_backend(monkeypatch, tmp_path):
+    """Route setup_terminal_backend through the SSH branch with the
+    'Test SSH connection?' prompt answered yes.
+
+    Backend index 3 == ssh (idx_to_backend). Returns the config so callers can
+    invoke setup_terminal_backend(config)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = load_config()
+
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt_choice", lambda *a, **kw: 3
+    )
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt",
+        lambda message, *a, **kw: "example.com" if "SSH host" in message else "",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt_yes_no", lambda *a, **kw: True
+    )
+    return config
+
+
+def test_ssh_setup_warns_when_ssh_client_missing(tmp_path, monkeypatch, capsys):
+    """When no ssh client is on PATH the wizard must warn and skip the test,
+    not crash with an uncaught FileNotFoundError from subprocess.run."""
+    config = _drive_ssh_backend(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("subprocess.run must not run when ssh is absent")
+
+    monkeypatch.setattr("subprocess.run", _boom)
+
+    setup_mod.setup_terminal_backend(config)
+
+    out = capsys.readouterr().out
+    assert "SSH client not found" in out
+
+
+def test_ssh_setup_warns_on_timeout(tmp_path, monkeypatch, capsys):
+    """A hung/unreachable host makes subprocess.run raise TimeoutExpired under
+    timeout=10; the wizard must warn instead of crashing. This is the path
+    #7477 misses."""
+    import subprocess
+
+    config = _drive_ssh_backend(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ssh")
+
+    def _timeout(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd=["ssh"], timeout=10)
+
+    monkeypatch.setattr("subprocess.run", _timeout)
+
+    setup_mod.setup_terminal_backend(config)
+
+    out = capsys.readouterr().out
+    assert "timed out" in out
+
+
+def test_ssh_setup_warns_on_oserror(tmp_path, monkeypatch, capsys):
+    """`subprocess.run` can still raise OSError *after* a successful precheck.
+
+    The `shutil.which("ssh") is None` guard only proves a name resolved on
+    PATH at that instant. The exec itself can fail afterwards: the resolved
+    file is not executable (PermissionError), a wrapper shim is a dangling
+    symlink or was removed in between (FileNotFoundError), the binary is a
+    corrupt/foreign-arch image (OSError EXEC_FORMAT_ERROR), or the process
+    table is exhausted. All are OSError.
+
+    `test_ssh_setup_warns_when_ssh_client_missing` cannot cover this: it
+    returns None from `shutil.which`, so it exits at the precheck and never
+    reaches `subprocess.run`. This test forces the opposite — the precheck
+    passes and the exec is what fails — so it is the only coverage for the
+    `except OSError` branch.
+    """
+    config = _drive_ssh_backend(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ssh")
+
+    ran = []
+
+    def _permission_denied(*_a, **_k):
+        ran.append(True)
+        raise PermissionError("Permission denied")
+
+    monkeypatch.setattr("subprocess.run", _permission_denied)
+
+    setup_mod.setup_terminal_backend(config)
+
+    # The precheck really was cleared and the exec really was attempted —
+    # otherwise this would be the missing-client test wearing a new name.
+    assert ran, "subprocess.run was never reached; the precheck short-circuited"
+
+    out = capsys.readouterr().out
+    assert "Could not run the SSH client" in out
+    # The OS reason is surfaced, not swallowed into a generic message.
+    assert "Permission denied" in out
+    assert "SSH client not found" not in out
+    assert "SSH connection successful" not in out
+
+
+def test_ssh_setup_reports_success(tmp_path, monkeypatch, capsys):
+    """Positive control: a returncode==0 result still reports success, so the
+    warning-path tests cannot pass vacuously."""
+    config = _drive_ssh_backend(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ssh")
+
+    def _ok(*_a, **_k):
+        return types.SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("subprocess.run", _ok)
+
+    setup_mod.setup_terminal_backend(config)
+
+    out = capsys.readouterr().out
+    assert "SSH connection successful" in out

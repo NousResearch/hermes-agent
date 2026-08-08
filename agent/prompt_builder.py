@@ -2268,3 +2268,30 @@ def build_context_files_prompt(
     if not sections:
         return ""
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+
+
+def compose_effective_system_tail(agent, base_prompt: str) -> str:
+    """Append the per-turn timestamp and persistent ephemeral prompt.
+
+    The one shared composer for every request-only system message
+    assembly.  The base prompt (the byte-stable cached prefix) is always
+    preserved unchanged; the per-turn ``_current_turn_timestamp`` (set
+    once per turn in ``run_conversation``) and the persistent
+    ``ephemeral_system_prompt`` ride after it, in that order, at
+    API-call time.  Mutating the ephemeral prompt itself would stack
+    timestamps on a cached gateway agent (``ts2\\nts1\\nbase``); a
+    dedicated attribute avoids that.
+
+    Sites: the main API build, ``_sync_failover_system_message``, and
+    ``handle_max_iterations``.  Missing timestamp (older agent stubs)
+    and missing ephemeral prompt both degrade to today's behaviour.
+    """
+    parts = []
+    _ts = getattr(agent, "_current_turn_timestamp", "") or ""
+    if _ts:
+        parts.append(_ts)
+    if getattr(agent, "ephemeral_system_prompt", None):
+        parts.append(agent.ephemeral_system_prompt)
+    if not parts:
+        return base_prompt
+    return (base_prompt + "\n\n" + "\n\n".join(parts)).strip()

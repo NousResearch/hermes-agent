@@ -2804,18 +2804,21 @@ class TestRunConversation:
         assert result["completed"] is True
         system = agent.client.chat.completions.create.call_args.kwargs["messages"][0]
         assert system["role"] == "system"
-        assert system["content"] == [
-            {
-                "type": "text",
-                "text": "stable instructions",
-                "cache_control": {"type": "ephemeral"},
-            },
-            {
-                "type": "text",
-                "text": "\n\nsession context",
-                "cache_control": {"type": "ephemeral"},
-            },
-        ]
+        # The static prefix block stays byte-identical (its cache entry
+        # stays warm); the volatile tail carries the per-turn stamp, which
+        # belongs after the breakpoint, not in the cached prefix. The stamp
+        # comes from the live clock (run_conversation stamps per turn), so
+        # assert the contract, not exact clock bytes.
+        blocks = system["content"]
+        assert blocks[0] == {
+            "type": "text",
+            "text": "stable instructions",
+            "cache_control": {"type": "ephemeral"},
+        }, f"static prefix block changed: {blocks[0]}"
+        assert blocks[1]["type"] == "text"
+        assert blocks[1]["text"].startswith("\n\nsession context\n\nCurrent time: ")
+        assert blocks[1].get("cache_control") == {"type": "ephemeral"}
+        assert len(blocks) == 2
 
     def test_codex_content_filter_incomplete_routes_to_policy_fallback(self, agent):
         self._setup_agent(agent)

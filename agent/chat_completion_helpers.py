@@ -40,6 +40,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
 )
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
+from agent.prompt_builder import compose_effective_system_tail
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -2372,9 +2373,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
             api_messages.append(api_msg)
 
-        effective_system = agent._cached_system_prompt or ""
-        if agent.ephemeral_system_prompt:
-            effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        effective_system = compose_effective_system_tail(agent, agent._cached_system_prompt or "")
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
         if agent.prefill_messages:

@@ -169,7 +169,8 @@ class TestTranscribeGroq:
         from tools.transcription_tools import _transcribe_groq
         result = _transcribe_groq("/tmp/test.ogg", "whisper-large-v3-turbo")
         assert result["success"] is False
-        assert "GROQ_API_KEY" in result["error"]
+        assert result["error_code"] == "credentials_unavailable"
+        assert result["error_type"] == "CredentialsUnavailableError"
 
     def test_openai_package_not_installed(self, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
@@ -177,7 +178,8 @@ class TestTranscribeGroq:
             from tools.transcription_tools import _transcribe_groq
             result = _transcribe_groq("/tmp/test.ogg", "whisper-large-v3-turbo")
         assert result["success"] is False
-        assert "openai package" in result["error"]
+        assert result["error_code"] == "provider_dependency_unavailable"
+        assert result["error_type"] == "DependencyUnavailableError"
 
 
     def test_null_groq_subsection_is_safe(self, monkeypatch, sample_wav):
@@ -334,6 +336,526 @@ class TestTranscribeLocalCommand:
 
 
 # ============================================================================
+# Provider failure privacy
+# ============================================================================
+
+class TestTranscriptionFailurePrivacy:
+    def test_local_provider_exception_is_bounded_in_logs_and_result(self, caplog):
+        from tools.transcription_tools import _transcribe_local
+
+        canary = "local provider private failure canary"
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch(
+                 "tools.transcription_tools._load_local_whisper_model",
+                 side_effect=RuntimeError(canary),
+             ):
+            result = _transcribe_local("/tmp/private-audio.wav", "base")
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "local_transcription_failed",
+            "provider": "local",
+            "stage": "transcribe",
+            "error_type": "RuntimeError",
+        }
+        assert "provider=local stage=transcribe type=RuntimeError" in caplog.text
+        assert canary not in caplog.text
+        assert canary not in result["error"]
+
+    def test_generic_provider_exception_is_bounded_in_logs_and_result(
+        self,
+        caplog,
+        sample_wav,
+    ):
+        from tools.transcription_tools import _transcribe_openai
+
+        canary = "generic provider private failure canary"
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", side_effect=RuntimeError(canary)):
+            result = _transcribe_openai(
+                sample_wav,
+                "whisper-large-v3",
+                api_key="test-key",
+                base_url="https://stt.invalid/v1",
+                provider_label="deepinfra",
+            )
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "provider_transcription_failed",
+            "provider": "deepinfra",
+            "stage": "transcribe",
+            "error_type": "RuntimeError",
+        }
+        assert "provider=deepinfra stage=transcribe type=RuntimeError" in caplog.text
+        assert canary not in caplog.text
+        assert canary not in result["error"]
+
+    def test_transcode_failure_omits_process_output_and_path(self, tmp_path, caplog):
+        from tools.transcription_tools import _transcode_audio_for_stt
+
+        canary = "TRANSCODE_STDOUT_STDERR_PRIVATE_CANARY"
+        audio = tmp_path / "PRIVATE_TRANSCODE_PATH_CANARY.ogg"
+        audio.write_bytes(b"fake")
+        failure = subprocess.CalledProcessError(
+            9,
+            "ffmpeg-private-command",
+            output=canary,
+            stderr=canary,
+        )
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch(
+            "tools.transcription_tools._find_ffmpeg_binary",
+            return_value="/usr/bin/ffmpeg",
+        ), patch(
+            "tools.transcription_tools.subprocess.run",
+            side_effect=failure,
+        ):
+            result = _transcode_audio_for_stt(str(audio), str(tmp_path))
+
+        assert result == (None, "audio_transcode_failed")
+        assert canary not in caplog.text
+        assert "PRIVATE_TRANSCODE_PATH_CANARY" not in caplog.text
+        assert canary not in repr(result)
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_silk_preprocess_failure_is_structured_and_private(
+        self, tmp_path, caplog
+    ):
+        from tools.transcription_tools import _prepare_audio_for_transcription
+
+        canary = "SILK_PREPROCESS_PRIVATE_CANARY"
+        audio = tmp_path / "PRIVATE_SILK_PATH_CANARY.silk"
+        audio.write_bytes(b"fake")
+        fake_pilk = types.SimpleNamespace(
+            silk_to_wav=MagicMock(side_effect=RuntimeError(canary))
+        )
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch("tools.transcription_tools._HAS_PILK", True), patch.dict(
+            "sys.modules", {"pilk": fake_pilk}
+        ):
+            _prepared, _cleanup, result = _prepare_audio_for_transcription(str(audio))
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "audio_preprocess_failed",
+            "provider": "unknown",
+            "stage": "preprocess",
+            "error_type": "RuntimeError",
+        }
+        assert canary not in caplog.text
+        assert "PRIVATE_SILK_PATH_CANARY" not in caplog.text
+        assert canary not in repr(result)
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_cuda_fallback_log_omits_exception_content(self, caplog):
+        from tools.transcription_tools import _load_local_whisper_model
+
+        canary = "CUDA_RUNTIME_PRIVATE_CANARY"
+        cpu_model = object()
+        whisper_cls = MagicMock(
+            side_effect=[
+                RuntimeError(f"libcublas.so cannot be loaded {canary}"),
+                cpu_model,
+            ]
+        )
+        fake_fw = types.SimpleNamespace(WhisperModel=whisper_cls)
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch(
+            "tools.transcription_tools._should_force_faster_whisper_cpu",
+            return_value=False,
+        ), patch.dict("sys.modules", {"faster_whisper": fake_fw}):
+            result = _load_local_whisper_model("base")
+
+        assert result is cpu_model
+        assert canary not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_success_does_not_log_transcript_or_audio_path(self, tmp_path, caplog):
+        from tools.transcription_tools import _transcribe_local
+
+        transcript_canary = "SUCCESS_TRANSCRIPT_PRIVATE_CANARY"
+        audio = tmp_path / "SUCCESS_AUDIO_PATH_PRIVATE_CANARY.ogg"
+        audio.write_bytes(b"fake")
+        segment = MagicMock(
+            text=transcript_canary,
+            no_speech_prob=0.0,
+            avg_logprob=0.0,
+        )
+        info = MagicMock(language="en", duration=1.0)
+        model = MagicMock()
+        model.transcribe.return_value = ([segment], info)
+        caplog.set_level("DEBUG", logger="tools.transcription_tools")
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), patch(
+            "tools.transcription_tools._local_model", model
+        ), patch("tools.transcription_tools._local_model_name", "base"), patch(
+            "tools.transcription_tools._load_stt_config", return_value={}
+        ):
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == transcript_canary
+        assert transcript_canary not in caplog.text
+        assert "SUCCESS_AUDIO_PATH_PRIVATE_CANARY" not in caplog.text
+
+    def test_hallucination_debug_log_omits_segment_text(self, caplog):
+        from tools.transcription_tools import _join_confident_segments
+
+        canary = "DROPPED_SEGMENT_PRIVATE_CANARY"
+        segment = MagicMock(text=canary, no_speech_prob=0.99, avg_logprob=-2.0)
+        caplog.set_level("DEBUG", logger="tools.transcription_tools")
+
+        result = _join_confident_segments([segment], {})
+
+        assert result == ""
+        assert canary not in caplog.text
+
+    def test_local_command_failure_omits_process_output_and_path(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        from tools.transcription_tools import _transcribe_local_command
+
+        canary = "LOCAL_COMMAND_OUTPUT_PRIVATE_CANARY"
+        audio = tmp_path / "LOCAL_COMMAND_PATH_PRIVATE_CANARY.wav"
+        audio.write_bytes(b"fake")
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --output_dir {output_dir} --model {model} --language {language}",
+        )
+        failure = subprocess.CalledProcessError(
+            5,
+            "private-local-command",
+            output=canary,
+            stderr=canary,
+        )
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch(
+            "tools.transcription_tools._prepare_local_audio",
+            return_value=(str(audio), None),
+        ), patch(
+            "tools.transcription_tools.subprocess.run",
+            side_effect=failure,
+        ):
+            result = _transcribe_local_command(str(audio), "base")
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "local_command_failed",
+            "provider": "local_command",
+            "stage": "command",
+            "error_type": "CalledProcessError",
+        }
+        assert canary not in caplog.text
+        assert "LOCAL_COMMAND_PATH_PRIVATE_CANARY" not in caplog.text
+        assert canary not in repr(result)
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_groq_typed_network_failure_is_structured_and_private(
+        self, monkeypatch, sample_wav, caplog
+    ):
+        import httpx
+        from openai import APIConnectionError
+
+        from tools.transcription_tools import _transcribe_groq
+
+        canary = "GROQ_NETWORK_PRIVATE_CANARY"
+        monkeypatch.setenv("GROQ_API_KEY", "test-key")
+        client = MagicMock()
+        client.audio.transcriptions.create.side_effect = APIConnectionError(
+            message=canary,
+            request=httpx.Request("POST", "https://groq.invalid/audio"),
+        )
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), patch(
+            "openai.OpenAI", return_value=client
+        ):
+            result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "provider_connection_failed",
+            "provider": "groq",
+            "stage": "request",
+            "error_type": "APIConnectionError",
+        }
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_openai_typed_api_failure_body_is_structured_and_private(
+        self, sample_wav, caplog
+    ):
+        import httpx
+        from openai import APIError
+
+        from tools.transcription_tools import _transcribe_openai
+
+        canary = "OPENAI_HTTP_BODY_PRIVATE_CANARY"
+        client = MagicMock()
+        client.audio.transcriptions.create.side_effect = APIError(
+            canary,
+            httpx.Request("POST", "https://openai.invalid/audio"),
+            body={"private": canary},
+        )
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), patch(
+            "openai.OpenAI", return_value=client
+        ):
+            result = _transcribe_openai(
+                sample_wav,
+                "whisper-1",
+                api_key="test-key",
+                base_url="https://openai.invalid/v1",
+            )
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "provider_api_error",
+            "provider": "openai",
+            "stage": "request",
+            "error_type": "APIError",
+        }
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_mistral_sdk_failure_is_structured_and_private(
+        self, monkeypatch, sample_ogg, mock_mistral_module, caplog
+    ):
+        from tools.transcription_tools import _transcribe_mistral
+
+        class MistralSDKError(RuntimeError):
+            pass
+
+        canary = "MISTRAL_SDK_BODY_PRIVATE_CANARY"
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        mock_mistral_module.audio.transcriptions.complete.side_effect = (
+            MistralSDKError(canary)
+        )
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        result = _transcribe_mistral(sample_ogg, "voxtral-mini-latest")
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "provider_sdk_error",
+            "provider": "mistral",
+            "stage": "request",
+            "error_type": "STTError",
+        }
+        assert "type=STTError" in caplog.text
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_xai_http_failure_body_is_structured_and_private(
+        self, monkeypatch, sample_ogg, mock_xai_http_module, caplog
+    ):
+        from tools.transcription_tools import _transcribe_xai
+
+        canary = "XAI_HTTP_BODY_PRIVATE_CANARY"
+        monkeypatch.setenv("XAI_API_KEY", "test-key")
+        response = MagicMock(status_code=422, text=canary)
+        response.json.return_value = {"error": {"message": canary}}
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), patch(
+            "requests.post", return_value=response
+        ):
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "provider_http_error",
+            "provider": "xai",
+            "stage": "request",
+            "error_type": "HTTPError",
+        }
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_elevenlabs_http_failure_body_is_structured_and_private(
+        self, monkeypatch, sample_ogg, caplog
+    ):
+        from tools.transcription_tools import _transcribe_elevenlabs
+
+        canary = "ELEVENLABS_HTTP_BODY_PRIVATE_CANARY"
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        response = MagicMock(status_code=503, text=canary)
+        response.json.return_value = {"detail": {"message": canary}}
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), patch(
+            "requests.post", return_value=response
+        ):
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "provider_http_error",
+            "provider": "elevenlabs",
+            "stage": "request",
+            "error_type": "HTTPError",
+        }
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_public_dispatch_normalizes_unsafe_provider_failure(
+        self, sample_ogg, caplog
+    ):
+        from tools.transcription_tools import transcribe_audio
+
+        canary = "FINAL_PROVIDER_RESULT_PRIVATE_CANARY"
+        unsafe = {
+            "success": False,
+            "transcript": canary,
+            "error": canary,
+            "provider": canary,
+            "error_code": canary,
+            "stage": canary,
+            "error_type": canary,
+        }
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"provider": "local"},
+        ), patch(
+            "tools.transcription_tools._get_provider", return_value="local"
+        ), patch(
+            "tools.transcription_tools._transcribe_local", return_value=unsafe
+        ):
+            result = transcribe_audio(sample_ogg)
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "provider_result_failure",
+            "provider": "local",
+            "stage": "transcribe",
+            "error_type": "ProviderError",
+        }
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+
+    def test_public_dispatch_catches_provider_exception(self, sample_ogg, caplog):
+        from tools.transcription_tools import transcribe_audio
+
+        canary = "FINAL_PROVIDER_EXCEPTION_PRIVATE_CANARY"
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"provider": "local"},
+        ), patch(
+            "tools.transcription_tools._get_provider", return_value="local"
+        ), patch(
+            "tools.transcription_tools._transcribe_local",
+            side_effect=RuntimeError(canary),
+        ):
+            result = transcribe_audio(sample_ogg)
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "provider_dispatch_failed",
+            "provider": "local",
+            "stage": "dispatch",
+            "error_type": "RuntimeError",
+        }
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_local_fallback_normalizes_unsafe_provider_failure(
+        self, sample_ogg, caplog
+    ):
+        from tools.transcription_tools import transcribe_audio_local_fallback
+
+        canary = "LOCAL_FALLBACK_RESULT_PRIVATE_CANARY"
+        unsafe = {
+            "success": False,
+            "transcript": canary,
+            "error": canary,
+            "provider": canary,
+        }
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), patch(
+            "tools.transcription_tools._load_stt_config", return_value={}
+        ), patch(
+            "tools.transcription_tools._transcribe_local", return_value=unsafe
+        ):
+            result = transcribe_audio_local_fallback(sample_ogg)
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "provider_result_failure",
+            "provider": "local",
+            "stage": "transcribe",
+            "error_type": "ProviderError",
+        }
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+
+    def test_public_validation_failure_omits_raw_path(self, tmp_path, caplog):
+        from tools.transcription_tools import transcribe_audio
+
+        missing = tmp_path / "VALIDATION_PATH_PRIVATE_CANARY.ogg"
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        result = transcribe_audio(str(missing))
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "file_not_found",
+            "provider": "unknown",
+            "stage": "validation",
+            "error_type": "FileNotFoundError",
+        }
+        assert "VALIDATION_PATH_PRIVATE_CANARY" not in repr(result)
+        assert "VALIDATION_PATH_PRIVATE_CANARY" not in caplog.text
+
+
+# ============================================================================
 # _transcribe_local — additional tests
 # ============================================================================
 
@@ -406,7 +928,7 @@ class TestTranscribeLocalExtended:
 
 
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):
-        """'CUDA out of memory' is a real error, not a missing lib — surface it."""
+        """CUDA OOM is not retried, but raw provider detail stays private."""
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")
 
@@ -421,8 +943,15 @@ class TestTranscribeLocalExtended:
 
         # Single call — no CPU retry, because OOM isn't a missing-lib symptom.
         assert mock_whisper_cls.call_count == 1
-        assert result["success"] is False
-        assert "CUDA out of memory" in result["error"]
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "local_transcription_failed",
+            "provider": "local",
+            "stage": "transcribe",
+            "error_type": "RuntimeError",
+        }
 
 
 # ============================================================================
@@ -474,7 +1003,8 @@ class TestValidateAudioFileEdgeCases:
         d.mkdir()
         result = _validate_audio_file(str(d))
         assert result is not None
-        assert "not a file" in result["error"]
+        assert result["error_code"] == "not_a_file"
+        assert result["error_type"] == "FileTypeError"
 
     def test_symlink_with_supported_extension_is_rejected(self, tmp_path):
         if not hasattr(os, "symlink"):
@@ -491,7 +1021,8 @@ class TestValidateAudioFileEdgeCases:
         from tools.transcription_tools import _validate_audio_file
         result = _validate_audio_file(str(link))
         assert result is not None
-        assert "symbolic link" in result["error"]
+        assert result["error_code"] == "symbolic_link_rejected"
+        assert result["error_type"] == "PathSafetyError"
 
 
     def test_all_supported_formats_accepted(self, tmp_path):
@@ -525,9 +1056,10 @@ class TestTranscribeAudioDispatch:
             result = transcribe_audio(sample_ogg)
 
         assert result["success"] is False
-        assert "No STT provider" in result["error"]
-        assert "faster-whisper" in result["error"]
-        assert "GROQ_API_KEY" in result["error"]
+        assert result["error_code"] == "provider_unavailable"
+        assert result["error_type"] == "ProviderUnavailableError"
+        assert result["provider"] == "none"
+        assert result["stage"] == "selection"
 
 
     def test_silk_symlink_is_rejected_before_preprocessing(self, tmp_path):
@@ -550,7 +1082,8 @@ class TestTranscribeAudioDispatch:
             result = transcribe_audio(str(link))
 
         assert result["success"] is False
-        assert "symbolic link" in result["error"]
+        assert result["error_code"] == "symbolic_link_rejected"
+        assert result["error_type"] == "PathSafetyError"
         mock_prepare.assert_not_called()
 
 
@@ -608,7 +1141,8 @@ class TestTranscribeMistral:
         result = _transcribe_mistral(sample_ogg, "voxtral-mini-latest")
 
         assert result["success"] is False
-        assert "RuntimeError" in result["error"]
+        assert result["error_type"] == "RuntimeError"
+        assert result["error_code"] == "provider_sdk_error"
         assert "secret-key-leaked" not in result["error"]
 
 # ============================================================================
@@ -1167,9 +1701,12 @@ class TestTranscribeCredentialReadGuard:
         result = transcribe_audio(str(env_file))
 
         assert result["success"] is False
-        # The error is the shared read-guard message, not an audio-validation
-        # or provider error — proving the guard fired before dispatch.
-        assert result["error"] == expected
+        # The shared guard fires before dispatch, but the public boundary must
+        # not echo the secret-bearing path or guard body.
+        assert result["error_code"] == "path_read_blocked"
+        assert result["error_type"] == "PathSafetyError"
+        assert str(env_file) not in repr(result)
+        assert expected not in repr(result)
 
 
 class TestRunCommandSttIdleTimeout:
@@ -1191,9 +1728,9 @@ class TestRunCommandSttIdleTimeout:
         script.write_text(
             "\n".join([
                 "import sys, time",
-                "for idx in range(4):",
+                "for idx in range(5):",
                 "    print(f'tick {idx}', file=sys.stderr, flush=True)",
-                "    time.sleep(0.04)",
+                "    time.sleep(0.2)",
                 "print('done', flush=True)",
             ]),
             encoding="utf-8",
@@ -1201,11 +1738,11 @@ class TestRunCommandSttIdleTimeout:
 
         result = _run_command_stt(
             self._shell_command(sys.executable, "-u", str(script)),
-            timeout=0.1,
+            timeout=0.5,
         )
 
         assert result.returncode == 0
-        assert "tick 3" in result.stderr
+        assert "tick 4" in result.stderr
         assert "done" in result.stdout
 
     def test_silent_stall_still_times_out(self, tmp_path):
@@ -1230,3 +1767,150 @@ class TestRunCommandSttIdleTimeout:
             )
 
         assert "starting pass 1" in (excinfo.value.stderr or "")
+
+
+class TestFinalSttBoundaryAdversarial:
+    def test_marker_subclass_is_rebuilt_and_drops_untrusted_extra_fields(self):
+        from tools.transcription_tools import _STTFailure, normalize_stt_result
+
+        canary = "MARKER_PRIVATE_CANARY_75325"
+        unsafe = _STTFailure(
+            {
+                "success": False,
+                "transcript": canary,
+                "error": canary,
+                "error_code": "provider_api_error",
+                "provider": canary,
+                "stage": "request",
+                "error_type": "APIError",
+                "stdout": canary,
+                "stderr": canary,
+            }
+        )
+
+        result = normalize_stt_result(unsafe, provider="openai")
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "provider_api_error",
+            "provider": "openai",
+            "stage": "request",
+            "error_type": "APIError",
+        }
+        assert canary not in repr(result)
+        assert "stdout" not in result and "stderr" not in result
+
+    def test_untrusted_marker_is_rebuilt_again_at_public_dispatch(
+        self, sample_ogg
+    ):
+        from tools.transcription_tools import _STTFailure, transcribe_audio
+
+        canary = "PUBLIC_MARKER_PRIVATE_CANARY_75325"
+        unsafe = _STTFailure(
+            {
+                "success": False,
+                "transcript": canary,
+                "error": canary,
+                "error_code": canary,
+                "provider": canary,
+                "stage": canary,
+                "error_type": canary,
+                "stderr": canary,
+            }
+        )
+        setattr(unsafe, "_trusted_boundary_value", True)
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"provider": "local"},
+        ), patch(
+            "tools.transcription_tools._get_provider", return_value="local"
+        ), patch(
+            "tools.transcription_tools._transcribe_prepared_audio",
+            return_value=unsafe,
+        ):
+            result = transcribe_audio(sample_ogg)
+
+        assert result["error_code"] == "provider_result_failure"
+        assert result["provider"] == "local"
+        assert result["stage"] == "transcribe"
+        assert result["error_type"] == "ProviderError"
+        assert canary not in repr(result)
+        assert "stderr" not in result
+
+    def test_success_result_keeps_only_transcript_and_bounded_provider(self):
+        from tools.transcription_tools import normalize_stt_result
+
+        canary = "SUCCESS_EXTRA_PRIVATE_CANARY_75325"
+        result = normalize_stt_result(
+            {
+                "success": True,
+                "transcript": "intentional spoken text",
+                "provider": canary,
+                "stdout": canary,
+                "stderr": canary,
+                "response": {"body": canary},
+            },
+            provider="plugin-safe",
+        )
+
+        assert result == {
+            "success": True,
+            "transcript": "intentional spoken text",
+            "provider": "plugin-safe",
+        }
+        assert canary not in repr(result)
+
+    def test_provider_resolution_exception_is_caught_at_public_boundary(
+        self, sample_ogg, caplog
+    ):
+        from tools.transcription_tools import transcribe_audio
+
+        canary = "PROVIDER_RESOLUTION_PRIVATE_CANARY_75325"
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+        with patch(
+            "tools.transcription_tools._get_provider",
+            side_effect=RuntimeError(canary),
+        ):
+            result = transcribe_audio(sample_ogg)
+
+        assert result["error_code"] == "provider_resolution_failed"
+        assert result["provider"] == "unknown"
+        assert result["error_type"] == "RuntimeError"
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_xai_untrusted_duration_cannot_trigger_logging_traceback(
+        self, monkeypatch, sample_ogg, caplog, capsys
+    ):
+        from tools.transcription_tools import _transcribe_xai
+
+        canary = "XAI_DURATION_PRIVATE_CANARY_75325"
+
+        class HostileDuration:
+            def __float__(self):
+                raise RuntimeError(canary)
+
+            def __str__(self):
+                return canary
+
+        monkeypatch.setenv("XAI_API_KEY", "test-key")
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "text": "safe transcript",
+            "language": "en",
+            "duration": HostileDuration(),
+        }
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), patch(
+            "requests.post", return_value=response
+        ):
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        captured = capsys.readouterr()
+        assert result["success"] is True
+        assert canary not in caplog.text
+        assert canary not in captured.err
+        assert "Logging error" not in captured.err

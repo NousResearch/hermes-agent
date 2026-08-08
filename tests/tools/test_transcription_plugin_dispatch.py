@@ -19,6 +19,7 @@ to #30398 — STT pluggability):
 from __future__ import annotations
 
 import pytest
+from unittest.mock import patch
 
 from agent import transcription_registry
 from agent.transcription_provider import TranscriptionProvider
@@ -153,6 +154,121 @@ class TestPluginDispatch:
         assert result is not None
         assert result["provider"] == "openrouter"
 
+    def test_plugin_exception_is_bounded_in_logs_and_result(self, caplog):
+        canary = "plugin provider private failure canary"
+        provider = _FakeProvider(
+            name="openrouter",
+            raise_exc=RuntimeError(canary),
+        )
+        transcription_registry.register_provider(provider)
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        result = transcription_tools._dispatch_to_plugin_provider(
+            "/tmp/audio.mp3", "openrouter",
+        )
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "plugin_transcription_failed",
+            "provider": "openrouter",
+            "stage": "transcribe",
+            "error_type": "RuntimeError",
+        }
+        assert (
+            "provider=openrouter stage=transcribe type=RuntimeError"
+            in caplog.text
+        )
+        assert canary not in caplog.text
+        assert canary not in result["error"]
+
+    def test_discovery_exception_is_normalized_without_canary(self, caplog):
+        canary = "PLUGIN_DISCOVERY_PRIVATE_CANARY"
+        caplog.set_level("DEBUG", logger="tools.transcription_tools")
+
+        with patch(
+            "hermes_cli.plugins._ensure_plugins_discovered",
+            side_effect=RuntimeError(canary),
+        ):
+            result = transcription_tools._dispatch_to_plugin_provider(
+                "/tmp/private-audio.mp3", "openrouter",
+            )
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "plugin_discovery_failed",
+            "provider": "openrouter",
+            "stage": "discovery",
+            "error_type": "RuntimeError",
+        }
+        assert canary not in caplog.text
+        assert canary not in repr(result)
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_availability_exception_is_normalized_without_canary(self, caplog):
+        canary = "PLUGIN_AVAILABILITY_PRIVATE_CANARY"
+        provider = _FakeProvider(
+            name="openrouter",
+            available_raises=RuntimeError(canary),
+        )
+        transcription_registry.register_provider(provider)
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        result = transcription_tools._dispatch_to_plugin_provider(
+            "/tmp/private-audio.mp3", "openrouter",
+        )
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "plugin_availability_failed",
+            "provider": "openrouter",
+            "stage": "availability",
+            "error_type": "RuntimeError",
+        }
+        assert canary not in caplog.text
+        assert canary not in repr(result)
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_plugin_failure_dict_is_normalized_without_canary(self, caplog):
+        canary = "PLUGIN_RESULT_PRIVATE_CANARY"
+        provider = _FakeProvider(
+            name="openrouter",
+            result={
+                "success": False,
+                "transcript": canary,
+                "error": canary,
+                "error_code": canary,
+                "provider": canary,
+                "stage": canary,
+                "error_type": canary,
+                "private_extra": canary,
+            },
+        )
+        transcription_registry.register_provider(provider)
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        result = transcription_tools._dispatch_to_plugin_provider(
+            "/tmp/private-audio.mp3", "openrouter",
+        )
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "plugin_result_failure",
+            "provider": "openrouter",
+            "stage": "transcribe",
+            "error_type": "ProviderError",
+        }
+        assert canary not in caplog.text
+        assert canary not in repr(result)
+        assert all(record.exc_info is None for record in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # End-to-end via transcribe_audio
@@ -221,7 +337,8 @@ class TestTranscribeAudioE2E:
             result = transcription_tools.transcribe_audio(str(audio_path))
 
         assert result["success"] is False
-        assert "File too large" in result["error"]
+        assert result["error_code"] == "file_too_large"
+        assert result["error_type"] == "FileTooLargeError"
         assert provider.last_call is None
 
 
@@ -254,7 +371,8 @@ class TestAvailabilityGate:
         )
         assert result["success"] is False
         assert result["provider"] == "openrouter"
-        assert "not available" in result["error"]
+        assert result["error_code"] == "plugin_unavailable"
+        assert result["error_type"] == "ProviderUnavailableError"
         # Plugin's transcribe MUST NOT have been called
         assert provider.last_call is None
 
@@ -276,7 +394,8 @@ class TestAvailabilityGate:
         assert result["success"] is False
         # Must surface the plugin's unavailability — NOT the generic
         # "No STT provider available" auto-detect-failure message.
-        assert "not available" in result["error"]
+        assert result["error_code"] == "plugin_unavailable"
+        assert result["error_type"] == "ProviderUnavailableError"
         assert "No STT provider available" not in result["error"]
         assert result["provider"] == "openrouter"
 

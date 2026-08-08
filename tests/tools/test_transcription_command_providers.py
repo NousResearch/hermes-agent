@@ -19,6 +19,7 @@ identically on Linux, macOS, and Windows (with minor quoting differences).
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import wave
 from pathlib import Path
@@ -244,6 +245,72 @@ class TestTranscribeCommandSTT:
         result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
         assert result["transcript"] == DEFAULT_COMMAND_STT_LANGUAGE
 
+    def test_process_output_failure_is_normalized_without_canary(
+        self, tmp_path, caplog
+    ):
+        canary = "COMMAND_STDOUT_STDERR_PRIVATE_CANARY"
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        failure = subprocess.CalledProcessError(
+            19,
+            "private-command",
+            output=canary,
+            stderr=canary,
+        )
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch(
+            "tools.transcription_tools._run_command_stt",
+            side_effect=failure,
+        ):
+            result = _transcribe_command_stt(
+                str(audio), "fake-cli", {"command": "ignored"}, {}
+            )
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "command_failed",
+            "provider": "fake-cli",
+            "stage": "command",
+            "error_type": "CalledProcessError",
+        }
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_read_output_exception_is_normalized_without_canary(
+        self, tmp_path, caplog
+    ):
+        canary = "COMMAND_READ_OUTPUT_PRIVATE_CANARY"
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        completed = subprocess.CompletedProcess("ignored", 0, canary, "")
+        caplog.set_level("INFO", logger="tools.transcription_tools")
+
+        with patch(
+            "tools.transcription_tools._run_command_stt",
+            return_value=completed,
+        ), patch(
+            "tools.transcription_tools._read_command_stt_output",
+            side_effect=RuntimeError(canary),
+        ):
+            result = _transcribe_command_stt(
+                str(audio), "fake-cli", {"command": "ignored"}, {}
+            )
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "error": "Speech transcription failed",
+            "error_code": "command_output_failed",
+            "provider": "fake-cli",
+            "stage": "read_output",
+            "error_type": "RuntimeError",
+        }
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # End-to-end via transcribe_audio(): dispatcher integration
@@ -285,8 +352,9 @@ class TestTranscribeAudioDispatchToCommandProvider:
         assert result["success"] is False
         # Explicitly-configured unknown providers now get a named
         # registration error instead of the generic legacy message.
-        assert result["error_type"] == "provider_not_registered"
-        assert "unknown-cli" in result["error"]
+        assert result["error_code"] == "provider_not_registered"
+        assert result["error_type"] == "ProviderNotRegisteredError"
+        assert result["provider"] == "unknown-cli"
 
 
 # ---------------------------------------------------------------------------

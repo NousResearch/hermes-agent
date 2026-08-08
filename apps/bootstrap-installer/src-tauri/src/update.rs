@@ -434,9 +434,18 @@ async fn run_update(app: AppHandle) -> Result<()> {
             emit_stage(&app, "update", StageState::Succeeded, Some(update_ms), None);
         }
         Some(code) if code == UPDATE_EXIT_CONCURRENT => {
-            let msg = "Hermes is still running. Close all Hermes windows and try \
-                       the update again."
-                .to_string();
+            // Prefer the child's captured diagnostic (e.g. describe_holder()
+            // text or the Windows guard message) over a generic string.
+            // The child always prints the specific cause before exiting;
+            // only fall back when capture is empty.
+            let child_msg = update.stdout.trim();
+            let msg = if child_msg.is_empty() {
+                "Hermes is still running. Close all Hermes windows and try \
+                 the update again."
+                    .to_string()
+            } else {
+                child_msg.to_string()
+            };
             emit_stage(
                 &app,
                 "update",
@@ -834,10 +843,17 @@ async fn run_streamed(
     let mut err_buf = Vec::new();
 
     let stage_owned = stage.map(|s| s.to_string());
+    let mut captured_stdout = String::new();
     loop {
         tokio::select! {
             line = read_decoded_line(&mut out, &mut out_buf) => match line {
-                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l),
+                Ok(Some(l)) => {
+                    if !captured_stdout.is_empty() {
+                        captured_stdout.push('\n');
+                    }
+                    captured_stdout.push_str(&l);
+                    emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
+                }
                 Ok(None) => break,
                 Err(e) => { tracing::warn!("stdout read error: {e}"); break; }
             },
@@ -849,6 +865,10 @@ async fn run_streamed(
         }
     }
     while let Ok(Some(l)) = read_decoded_line(&mut out, &mut out_buf).await {
+        if !captured_stdout.is_empty() {
+            captured_stdout.push('\n');
+        }
+        captured_stdout.push_str(&l);
         emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
     }
     while let Ok(Some(l)) = read_decoded_line(&mut err, &mut err_buf).await {
@@ -858,11 +878,16 @@ async fn run_streamed(
     let status = child.wait().await.map_err(|e| anyhow!("waiting for child: {e}"))?;
     Ok(CmdResult {
         exit_code: status.code(),
+        stdout: captured_stdout,
     })
 }
 
 struct CmdResult {
     exit_code: Option<i32>,
+    /// Accumulated stdout from the child process.  Used to surface the
+    /// specific diagnostic (e.g. `describe_holder()` text) to the user
+    /// instead of a generic hardcoded message.
+    stdout: String,
 }
 
 /// Path to the venv hermes shim under an install root, regardless of existence.

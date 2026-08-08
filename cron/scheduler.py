@@ -1546,6 +1546,74 @@ def _confirm_adapter_delivery(send_result) -> bool:
     return bool(getattr(send_result, "success"))
 
 
+def _resolve_telegram_named_dm_topic(
+    runtime_adapter: Any,
+    chat_id: str,
+    topic_name: str,
+    loop: Any,
+    job_id: str,
+) -> Optional[str]:
+    """Resolve a named Telegram private-DM topic to a numeric thread_id via the
+    LIVE adapter's ``ensure_dm_topic`` — the same resolver the gateway
+    DeliveryRouter uses for live named-topic sends (#80483).
+
+    Cron's media helper sends directly through adapter media methods (bypassing
+    the DeliveryRouter), so it cannot rely on the router's named-topic
+    resolution. This helper reuses the adapter's single ``ensure_dm_topic``
+    method so text and media share ONE resolver instead of growing parallel
+    Telegram routing rules in each send helper.
+
+    Mirrors the DeliveryRouter's retry contract: if the first resolution returns
+    nothing (a stale/missing topic mapping), refresh it once via
+    ``force_create=True`` before giving up (#80483 contract #3).
+
+    Returns the resolved numeric thread_id as a string, or ``None`` when no live
+    adapter is available, the adapter cannot create named topics, or resolution
+    fails — callers MUST fail closed (skip delivery) on ``None`` rather than
+    silently delivering into the General topic.
+    """
+    ensure_dm_topic = getattr(type(runtime_adapter), "ensure_dm_topic", None)
+    if not callable(ensure_dm_topic):
+        logger.error(
+            "Job '%s': named Telegram DM topic '%s' for chat %s cannot be "
+            "resolved — live adapter has no ensure_dm_topic; skipping delivery "
+            "(fail closed, not delivered into General)",
+            job_id, topic_name, chat_id,
+        )
+        return None
+    from agent.async_utils import safe_schedule_threadsafe
+
+    def _call(force_create: bool) -> Optional[str]:
+        future = safe_schedule_threadsafe(
+            ensure_dm_topic(runtime_adapter, str(chat_id), topic_name, force_create=force_create),
+            loop,
+        )
+        if future is None:
+            return None
+        try:
+            thread_id = future.result(timeout=30)
+        except Exception as exc:
+            logger.error(
+                "Job '%s': ensure_dm_topic raised for chat %s topic '%s': %s; "
+                "skipping delivery (fail closed)",
+                job_id, chat_id, topic_name, exc,
+            )
+            return None
+        return str(thread_id) if thread_id else None
+
+    resolved = _call(force_create=False)
+    if resolved:
+        return resolved
+    # Retry once by refreshing the topic mapping (force_create), mirroring the
+    # DeliveryRouter's thread-not-found refresh+retry.
+    logger.info(
+        "Job '%s': named Telegram DM topic '%s' for chat %s not resolved on "
+        "first attempt; refreshing mapping and retrying once",
+        job_id, topic_name, chat_id,
+    )
+    return _call(force_create=True)
+
+
 def _is_channel_dm_topic(
     runtime_adapter: Any,
     chat_id: Any,
@@ -1874,6 +1942,22 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 thread_id = new_thread_id
                 opened_thread_id = new_thread_id
 
+        # Named Telegram private-DM topic flag is computed here (before the
+        # live-adapter block) so the standalone fail-closed branch below can
+        # reference it even when no live adapter/loop is available (#80483). It
+        # only depends on (platform, chat_id, thread_id), not on adapter
+        # availability. The two delivery helpers are imported at module use time
+        # by the live block below; import them here too for this detection.
+        from gateway.delivery import (
+            _looks_like_int as _delivery_looks_like_int,
+            looks_like_telegram_private_chat_id as _looks_like_telegram_private_chat_id,
+        )
+        is_named_telegram_private_topic = (
+            platform == Platform.TELEGRAM
+            and thread_id is not None
+            and _looks_like_telegram_private_chat_id(str(chat_id))
+            and not _delivery_looks_like_int(str(thread_id))
+        )
         if live_adapter_ready:
             # Telegram topic routing (#22773, regression fixed #52060): a
             # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is
@@ -1898,6 +1982,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 and looks_like_telegram_private_chat_id(str(chat_id))
                 and _looks_like_int(str(thread_id))
             )
+            # Named Telegram private-DM topic (``telegram:<chat>:<topic_name>``)
+            # — #80483. The topic is a human name, not a numeric thread id, so it
+            # must be resolved/created/refreshed through the LIVE adapter's
+            # ``ensure_dm_topic`` before delivery. Text routes through the
+            # DeliveryRouter, which already detects this named shape and calls
+            # ``ensure_dm_topic`` itself — so we pass the NAME as target.thread_id
+            # and deliberately OMIT ``thread_id`` from route_metadata (otherwise
+            # the router's named-topic detection is short-circuited and the name
+            # would be sent as a raw thread_id). Media bypasses the router, so it
+            # resolves the name to a numeric thread_id via the SAME ensure_dm_topic
+            # resolver (one resolver for text+media, no parallel routing rules).
+            # Resolved numeric thread_id for the named topic (media path only).
+            named_topic_resolved_thread_id: Optional[str] = None
+            named_topic_resolution_failed = False
             route_via_dm_topic = is_ambiguous_telegram_topic and _is_channel_dm_topic(
                 runtime_adapter, chat_id, loop, job["id"],
             )
@@ -1912,6 +2010,35 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # Media metadata mirrors the text routing so attachments land in
                 # the same DM topic instead of the General lane (#22773).
                 media_metadata = {"direct_messages_topic_id": str(thread_id)}
+            elif is_named_telegram_private_topic:
+                # Named private-DM topic (#80483): pass the NAME to the router via
+                # target.thread_id (set below) and keep thread_id OUT of metadata
+                # so the router's named-topic detection resolves it via
+                # ensure_dm_topic (with its own retry-once on thread-not-found).
+                route_thread_id = str(thread_id)
+                route_metadata = {"job_id": job["id"]}
+                # Media bypasses the router — resolve the name to a numeric
+                # thread_id here via the same ensure_dm_topic resolver (which
+                # retries once with force_create on a stale/empty mapping,
+                # mirroring the router's thread-not-found refresh+retry).
+                named_topic_resolved_thread_id = _resolve_telegram_named_dm_topic(
+                    runtime_adapter, chat_id, str(thread_id), loop, job["id"],
+                )
+                if named_topic_resolved_thread_id:
+                    media_metadata = {"thread_id": named_topic_resolved_thread_id}
+                else:
+                    # Fail closed for media: do NOT deliver attachments into the
+                    # General topic just because the named topic could not be
+                    # resolved. Text may still succeed via the router (which has
+                    # its own fail-closed raise); media is skipped with a log.
+                    named_topic_resolution_failed = True
+                    media_metadata = None
+                    logger.error(
+                        "Job '%s': could not resolve named Telegram DM topic '%s' "
+                        "for chat %s; media delivery skipped (fail closed, not "
+                        "delivered into General)",
+                        job["id"], thread_id, chat_id,
+                    )
             else:
                 # Forum-style topic (private chat / supergroup) or non-topic
                 # target: route via message_thread_id (#52060).  Put thread_id in
@@ -2084,7 +2211,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # payload is already assumed delivered (#38922).  Record the
                 # skipped attachments so the drop is visible rather than silently
                 # lost.
-                if adapter_ok and not timed_out and media_files:
+                if adapter_ok and not timed_out and media_files and not named_topic_resolution_failed:
                     routed_media_metadata = dict(media_metadata or {})
                     if transport is not None and transport.is_relay:
                         routed_media_metadata["_relay_logical_platform"] = platform.value
@@ -2107,6 +2234,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     msg = (
                         f"{len(media_files)} media attachment(s) not delivered to "
                         f"{platform_name}:{chat_id} (live adapter confirmation timed out)"
+                    )
+                    logger.warning("Job '%s': %s", job["id"], msg)
+                    delivery_errors.append(msg)
+                elif adapter_ok and media_files and named_topic_resolution_failed:
+                    # Named Telegram DM topic could not be resolved for media —
+                    # fail closed rather than delivering attachments into General.
+                    msg = (
+                        f"{len(media_files)} media attachment(s) not delivered to "
+                        f"{platform_name}:{chat_id} (named DM topic '{thread_id}' "
+                        f"could not be resolved)"
                     )
                     logger.warning("Job '%s': %s", job["id"], msg)
                     delivery_errors.append(msg)
@@ -2160,6 +2297,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     target_errors.append(
                         f"relay delivery to {platform_name}:{chat_id} failed"
                     )
+                delivery_errors.extend(target_errors)
+                continue
+            # Named Telegram private-DM topic with no live adapter resolution
+            # (#80483): the standalone ``_send_to_platform`` path cannot resolve
+            # a topic NAME into a thread_id (it has no ``ensure_dm_topic``), so
+            # sending would either be rejected by the Bot API or silently land
+            # in the General topic. Fail closed instead.
+            if is_named_telegram_private_topic:
+                msg = (
+                    f"named Telegram DM topic '{thread_id}' for {platform_name}:"
+                    f"{chat_id} cannot be resolved without a live adapter; "
+                    "skipping delivery (fail closed, not delivered into General)"
+                )
+                logger.error("Job '%s': %s", job["id"], msg)
+                target_errors.append(msg)
                 delivery_errors.extend(target_errors)
                 continue
             # If the interpreter is finalizing (gateway SIGTERM / restart /

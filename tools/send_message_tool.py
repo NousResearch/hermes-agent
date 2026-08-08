@@ -18,6 +18,10 @@ from agent.secret_scope import get_secret
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
+# Named Telegram private-DM topic target: ``<private_chat_id>:<topic_name>``
+# where the topic is a human name (non-numeric), e.g. ``722341991:Debug``. The
+# numeric thread-id form above is matched first, so this only fires for names.
+_TELEGRAM_NAMED_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+):([^\s:]+)\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 # Slack conversation IDs: C (public channel), G (private/group channel), D (DM).
 # Must be uppercase alphanumeric, 9+ chars. User IDs (U...) are parsed as
@@ -533,6 +537,14 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+        # Named private-DM topic (``<chat_id>:<topic_name>`` with a non-numeric
+        # topic). Split chat_id and topic_name so callers can resolve the name
+        # into a real thread_id via the live Telegram adapter (#80483). Numeric
+        # thread ids are handled by the regex above; this branch only adds
+        # named-topic support and leaves numeric/group/forum behavior intact.
+        named_match = _TELEGRAM_NAMED_TOPIC_TARGET_RE.fullmatch(target_ref)
+        if named_match:
+            return named_match.group(1), named_match.group(2), True
         from plugins.platforms.telegram.telegram_ids import (
             parse_telegram_username_target,
         )

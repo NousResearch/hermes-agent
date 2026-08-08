@@ -43,6 +43,53 @@ class TestSentenceChunker:
             "A paragraph without punctuation\n\n"
         ]
 
+    def test_chinese_full_stop_is_a_boundary(self):
+        c = ts.SentenceChunker()
+        # Chinese full stop (。) should split sentences even without trailing space.
+        assert c.feed("你好世界。这是第二句话。") == [
+            "你好世界。",
+            "这是第二句话。",
+        ]
+
+    def test_chinese_exclamation_and_question_are_boundaries(self):
+        c = ts.SentenceChunker()
+        assert c.feed("太好了！你觉得怎么样？还可以吧。") == [
+            "太好了！",
+            "你觉得怎么样？",
+            "还可以吧。",
+        ]
+
+    def test_chinese_ellipsis_is_a_boundary(self):
+        c = ts.SentenceChunker()
+        # U+2026 HORIZONTAL ELLIPSIS — single ellipsis splits correctly.
+        assert c.feed("然后呢…我不知道。") == [
+            "然后呢…",
+            "我不知道。",
+        ]
+
+    def test_chinese_short_head_merges_into_next_sentence(self):
+        c = ts.SentenceChunker(min_len=20)
+        # "好。" is only 2 chars (< min_len=20), should merge with following sentence.
+        assert c.feed("好。这是一个很长的中文句子，用来满足最小长度要求。") == [
+            "好。这是一个很长的中文句子，用来满足最小长度要求。",
+        ]
+
+    def test_mixed_english_chinese_boundaries(self):
+        c = ts.SentenceChunker()
+        assert c.feed("Hello world. 你好世界。Goodbye!") == [
+            "Hello world. ",
+            "你好世界。",
+            "Goodbye!",
+        ]
+
+    def test_chinese_incremental_feed_splits_correctly(self):
+        c = ts.SentenceChunker()
+        # Simulate streaming: Chinese text arrives in small deltas.
+        assert c.feed("这是第一") == []
+        assert c.feed("句话。这是第二") == ["这是第一句话。"]
+        assert c.feed("句话。") == ["这是第二句话。"]
+        assert c.flush() == []
+
 
 # ── Interruption latch ───────────────────────────────────────────────────
 

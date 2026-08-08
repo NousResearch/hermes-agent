@@ -96,7 +96,11 @@ def _path_key(path: str) -> str:
     """Return a stable key for per-file LSP state."""
     parsed = urlsplit(path)
     is_windows_drive = (
-        len(parsed.scheme) == 1 and len(path) >= 2 and path[1] == ":"
+        os.name == "nt"
+        and len(path) >= 3
+        and path[0].isalpha()
+        and path[1] == ":"
+        and path[2] in ("/", "\\")
     )
     if parsed.scheme and parsed.scheme.lower() != "file" and not is_windows_drive:
         # LSP also permits non-file document URIs such as ``untitled:``.
@@ -129,13 +133,16 @@ def file_uri(path: str) -> str:
 
 def uri_to_path(uri: str) -> str:
     """Inverse of :func:`file_uri`, normalized for stable dictionary keys."""
-    if not uri.startswith("file://"):
-        return uri
-    if os.name != "nt":
-        return os.path.normpath(unquote(uri[len("file://"):]))
-
     parsed = urlsplit(uri)
+    if parsed.scheme.lower() != "file":
+        return uri
+
     raw = unquote(parsed.path)
+    if os.name != "nt":
+        if parsed.netloc and parsed.netloc.lower() != "localhost":
+            raw = f"//{parsed.netloc}{raw}"
+        return os.path.normpath(raw)
+
     if parsed.netloc and parsed.netloc.lower() != "localhost":
         raw = f"//{parsed.netloc}{raw}"
     elif raw.startswith("/") and len(raw) > 2 and raw[2] == ":":

@@ -62,6 +62,24 @@ class TestEstimateMessagesTokensRough:
         assert result > 0
         assert result == (len(str(msg)) + 3) // 4
 
+    def test_persistence_timestamp_does_not_change_estimate(self):
+        """Durability metadata must not create artificial context pressure."""
+        msg = {
+            "role": "assistant",
+            "content": "done",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        }
+        stamped = {**msg, "timestamp": 1_781_976_577.123456}
+
+        assert estimate_messages_tokens_rough([stamped]) == (
+            estimate_messages_tokens_rough([msg])
+        )
+
     def test_message_with_list_content(self):
         """Vision messages with multimodal content arrays.
 
@@ -482,7 +500,9 @@ class TestCodexOAuthContextLength:
 
         assert ctx == live_context
         mock_get.assert_called_once()
-        remaining = _yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        remaining = _yaml.safe_load(cache_file.read_text(encoding="utf-8")).get(
+            "context_lengths", {}
+        )
         assert remaining.get(stale_key) == live_context
         assert remaining.get(other_key) == 128_000
 
@@ -617,7 +637,7 @@ class TestNousPortalContextResolution:
         )
         assert ctx == 1_000_000, "OR fallback should still serve the request"
         assert not cache_file.exists() or not yaml.safe_load(
-            cache_file.read_text()
+            cache_file.read_text(encoding="utf-8")
         ).get("context_lengths", {}), (
             "OR-fallback values must NOT be persisted — a single portal blip "
             "would otherwise freeze the wrong value in via step-1 cache hit"
@@ -659,7 +679,9 @@ class TestNousPortalContextResolution:
             f"Stale OR-derived cache entry should not have leaked through; got {ctx}"
         )
 
-        remaining = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        remaining = yaml.safe_load(cache_file.read_text(encoding="utf-8")).get(
+            "context_lengths", {}
+        )
         assert remaining.get(stale_key) == 262_144, (
             "Portal value should have overwritten the stale entry on disk"
         )
@@ -1090,7 +1112,7 @@ class TestContextLengthCache:
         """``context_lengths:`` with no value parses as None — must behave
         like an empty cache instead of crashing every caller (#47135)."""
         cache_file = tmp_path / "cache.yaml"
-        cache_file.write_text("context_lengths:\n")
+        cache_file.write_text("context_lengths:\n", encoding="utf-8")
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             assert get_cached_context_length("test/model", "http://x") is None
             # save must also survive the null key and repair the file
@@ -1104,7 +1126,7 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length("model", "http://x", 32768)
             save_context_length("model", "http://x", 32768)
-            with open(cache_file) as f:
+            with open(cache_file, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
             assert len(data["context_lengths"]) == 1
 
@@ -1192,7 +1214,7 @@ class TestMoAContextLength:
             payload["custom_providers"] = custom_providers
         if providers is not None:
             payload["providers"] = providers
-        with open(os.path.join(home, "config.yaml"), "w") as f:
+        with open(os.path.join(home, "config.yaml"), "w", encoding="utf-8") as f:
             yaml.safe_dump(payload, f)
 
     def test_moa_resolves_from_aggregator(self, tmp_path, monkeypatch):

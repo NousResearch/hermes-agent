@@ -318,7 +318,9 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     if not isinstance(last, dict) or last.get("role") != "tool":
         return False
     text = final_response if isinstance(final_response, str) else ""
-    messages.append({
+    from agent.message_metadata import append_message
+
+    append_message(messages, {
         "role": "assistant",
         "content": text.strip() or "Operation interrupted.",
     })

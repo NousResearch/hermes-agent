@@ -32,6 +32,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.message_metadata import stamp_message_timestamp
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
 )
@@ -557,13 +558,13 @@ def make_tool_result_message(
     callers should compare by value, not by ``is``.
     """
     wrapped = _maybe_wrap_untrusted(name, content)
-    message = {
+    message = stamp_message_timestamp({
         "role": "tool",
         "name": name,
         "tool_name": name,
         "content": wrapped,
         "tool_call_id": tool_call_id,
-    }
+    })
     try:
         risk_metadata = _tool_output_risk_metadata(name, content)
     except Exception as exc:

@@ -279,7 +279,7 @@ export function usePromptActions({
       role: ChatMessage['role'],
       text: string,
       storedSessionId?: string | null,
-      options: { insertBeforeActiveReply?: boolean } = {}
+      options: { appendAfterActiveReply?: boolean } = {}
     ) => {
       // Strip ANSI: slash-command output from the backend worker carries SGR
       // color codes (e.g. "Unknown command" in red). The ESC byte is invisible
@@ -302,23 +302,40 @@ export function usePromptActions({
             parts: [textPart(body)]
           }
 
-          const streamIndex =
-            options.insertBeforeActiveReply && state.streamId
-              ? state.messages.findIndex(candidate => candidate.id === state.streamId)
-              : -1
-
-          const lastAssistantIndex = options.insertBeforeActiveReply
-            ? state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
-            : -1
-
-          const insertionIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
+          // A redirect is a new user boundary after the partial reply that was
+          // already shown. Keep the old assistant segments in place, then put
+          // the correction at the tail so the retried answer is rendered after
+          // it. The active stream must also be sealed here: redirect() cancels
+          // the provider request and retries inside the same gateway turn, so
+          // no second message.start event is guaranteed to clear streamId for
+          // us. Leaving it set would append the retried answer to the old
+          // bubble, placing the answer before its correction.
+          const activeStreamId = options.appendAfterActiveReply ? state.streamId : null
+          const messagesBeforeAppend =
+            activeStreamId === null
+              ? state.messages
+              : state.messages.map(candidate =>
+                  candidate.id === activeStreamId
+                    ? { ...candidate, pending: false, interim: true }
+                    : candidate
+                )
+          const insertionIndex = options.appendAfterActiveReply ? messagesBeforeAppend.length : -1
 
           const messages =
             insertionIndex >= 0
-              ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]
-              : [...state.messages, message]
+              ? [...messagesBeforeAppend.slice(0, insertionIndex), message, ...messagesBeforeAppend.slice(insertionIndex)]
+              : [...messagesBeforeAppend, message]
 
-          return { ...state, messages }
+          return {
+            ...state,
+            messages,
+            ...(options.appendAfterActiveReply
+              ? {
+                  streamId: null,
+                  interimBoundaryPending: activeStreamId !== null || state.interimBoundaryPending
+                }
+              : {})
+          }
         },
         storedSessionId ?? selectedStoredSessionIdRef.current
       )
@@ -721,10 +738,10 @@ export function usePromptActions({
       // transcript rather than a system note that changes role after reload.
       const send = async (id: string): Promise<boolean> => {
         // Redirect aborts the model request, so the completion event can race
-        // its RPC response. Insert before the live reply *before* awaiting the
-        // gateway; appending after the response leaves the correction below a
-        // reply that the redirect has already replaced.
-        const messageId = appendSessionTextMessage(id, 'user', text, undefined, { insertBeforeActiveReply: true })
+        // its RPC response. Seal the visible partial and append the correction
+        // before awaiting the gateway; the retried stream then starts after the
+        // correction even though the gateway keeps the same logical turn.
+        const messageId = appendSessionTextMessage(id, 'user', text, undefined, { appendAfterActiveReply: true })
 
         const discardOptimisticMessage = () =>
           updateSessionState(id, state => ({

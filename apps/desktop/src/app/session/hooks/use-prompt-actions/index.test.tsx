@@ -106,7 +106,8 @@ function Harness({
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
   storedSessionId,
   activeSessionId,
-  createBackendSessionForSend
+  createBackendSessionForSend,
+  seedState
 }: {
   activeSessionIdRef?: MutableRefObject<string | null>
   busyRef?: MutableRefObject<boolean>
@@ -125,6 +126,7 @@ function Harness({
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   seedMessages?: unknown[]
+  seedState?: Record<string, unknown>
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
   storedSessionId?: null | string
   activeSessionId?: null | string
@@ -146,7 +148,8 @@ function Harness({
     messages: seedMessages ?? [],
     busy: false,
     awaitingResponse: false,
-    interrupted: true
+    interrupted: true,
+    ...seedState
   } as never)
 
   const actions = usePromptActions({
@@ -2094,6 +2097,65 @@ describe('usePromptActions redirectPrompt', () => {
     expect((capturedStates.at(-1)?.messages as unknown[]).at(-1)).toMatchObject({
       role: 'user',
       parts: [{ type: 'text', text: 'nudge the run' }]
+    })
+  })
+
+  it('keeps the old reply before the redirect and starts the retried reply after it', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'redirected' }) as never)
+    const capturedStates: Record<string, unknown>[] = []
+
+    const seedMessages = [
+      { id: 'u1', role: 'user', parts: [textPart('original prompt')] },
+      { id: 'a1', role: 'assistant', interim: true, parts: [textPart('checking the files')] },
+      { id: 'a2', role: 'assistant', pending: true, parts: [textPart('continuing the check')] }
+    ]
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => capturedStates.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={seedMessages}
+      />
+    )
+
+    expect(await handle!.redirectPrompt('use the local fix')).toBe(true)
+
+    const messages = capturedStates.at(-1)?.messages as { role: string; parts: { text?: string }[] }[]
+    expect(messages.map(message => message.parts.map(part => part.text ?? '').join(''))).toEqual([
+      'original prompt',
+      'checking the files',
+      'continuing the check',
+      'use the local fix'
+    ])
+  })
+
+  it('seals the active stream before appending a redirect correction', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'redirected' }) as never)
+    const capturedStates: Record<string, unknown>[] = []
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => capturedStates.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[{ id: 'stream-1', role: 'assistant', pending: true, parts: [textPart('partial')] }]}
+        seedState={{ streamId: 'stream-1', busy: true, awaitingResponse: true, interrupted: false }}
+      />
+    )
+
+    expect(await handle!.redirectPrompt('use the local fix')).toBe(true)
+
+    const state = capturedStates.at(-1) as Record<string, unknown>
+    expect(state.streamId).toBeNull()
+    expect((state.messages as { id: string; pending?: boolean; interim?: boolean }[])[0]).toMatchObject({
+      id: 'stream-1',
+      pending: false,
+      interim: true
     })
   })
 

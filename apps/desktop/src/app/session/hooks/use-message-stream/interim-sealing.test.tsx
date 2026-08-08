@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
-import { chatMessageText } from '@/lib/chat-messages'
+import { chatMessageText, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionTodos } from '@/store/todos'
 import type { RpcEvent } from '@/types/hermes'
@@ -18,10 +18,16 @@ let sessionStates: Map<string, ClientSessionState>
 let mockCompleteSound: ReturnType<typeof vi.fn>
 let mockHaptic: ReturnType<typeof vi.fn>
 
-function Harness() {
+function Harness({ seedMessages = [] }: { seedMessages?: ClientSessionState['messages'] }) {
   const activeSessionIdRef = useRef<string | null>(SID)
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
   const queryClientRef = useRef(new QueryClient())
+
+  if (seedMessages.length && !sessionStateByRuntimeIdRef.current.has(SID)) {
+    const initial = { ...createClientSessionState(), messages: seedMessages }
+    sessionStateByRuntimeIdRef.current.set(SID, initial)
+    sessionStates.set(SID, initial)
+  }
 
   const stream = useMessageStream({
     activeSessionIdRef,
@@ -47,9 +53,9 @@ function Harness() {
   return null
 }
 
-async function mountStream() {
+async function mountStream(seedMessages: ClientSessionState['messages'] = []) {
   sessionStates = new Map()
-  render(<Harness />)
+  render(<Harness seedMessages={seedMessages} />)
   await waitFor(() => expect(handleEvent).not.toBeNull())
 }
 
@@ -184,6 +190,27 @@ describe('useMessageStream interim text sealing', () => {
     // Turn is still active — busy stays true
     expect(getState().busy).toBe(true)
     expect(getState().interimBoundaryPending).toBe(true)
+  })
+
+  it('starts the redirected reply after the correction instead of reusing the old bubble', async () => {
+    await mountStream([
+      { id: 'user-1', role: 'user', parts: [textPart('original prompt')] },
+      { id: 'assistant-1', role: 'assistant', interim: true, parts: [textPart('old partial reply')] },
+      { id: 'user-2', role: 'user', parts: [textPart('use the local fix')] }
+    ])
+    await start()
+
+    await delta('new reply')
+    await complete('new reply')
+
+    expect(
+      getState().messages.map(message => `${message.role}:${chatMessageText(message)}`)
+    ).toEqual([
+      'user:original prompt',
+      'assistant:old partial reply',
+      'user:use the local fix',
+      'assistant:new reply'
+    ])
   })
 
   it('settles an identical final onto a non-previewed interim (tool-call turn) instead of duplicating (#63679)', async () => {

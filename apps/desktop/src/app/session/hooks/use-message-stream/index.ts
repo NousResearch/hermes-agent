@@ -603,9 +603,14 @@ export function useMessageStream({
         if (streamId && prev.some(m => m.id === streamId)) {
           nextMessages = prev.map(m => (m.id === streamId ? completeMessage(m) : m))
         } else {
+          const latestUserIndex = prev.map(message => message.role).lastIndexOf('user')
           const fallbackIndex = [...prev]
+            .map((message, index) => ({ message, index }))
             .reverse()
-            .findIndex(message => message.role === 'assistant' && !message.hidden)
+            .findIndex(
+              ({ message, index }) =>
+                index > latestUserIndex && message.role === 'assistant' && !message.hidden
+            )
 
           if (fallbackIndex >= 0) {
             const index = prev.length - 1 - fallbackIndex

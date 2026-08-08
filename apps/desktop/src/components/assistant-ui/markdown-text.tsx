@@ -138,8 +138,13 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
   )
 }
 
+// Path-keyed source cache -- survives virtualizer remounts.
+// Entries are cleaned up when the last consumer unmounts.
+const _mediaSrcCache = new Map<string, string>()
+const _mediaSrcRefCount = new Map<string, number>()
+
 function MediaAttachment({ path }: { path: string }) {
-  const [src, setSrc] = useState('')
+  const [src, setSrc] = useState(() => _mediaSrcCache.get(path) ?? '')
   const [failed, setFailed] = useState(false)
   const { open, openFailed } = useOpenMediaFile(path)
   const kind = mediaKind(path)
@@ -149,40 +154,63 @@ function MediaAttachment({ path }: { path: string }) {
     let cancelled = false
     let objectUrl = ''
 
-    setFailed(false)
-    setSrc('')
-
-    if (kind === 'file') {
-      setFailed(true)
-
-      return () => {
-        cancelled = true
+    _mediaSrcRefCount.set(path, (_mediaSrcRefCount.get(path) ?? 0) + 1)
+    const cached = _mediaSrcCache.get(path)
+    if (cached) {
+      setSrc(cached)
+    } else {
+      setFailed(false)
+      if (kind === 'file') {
+        setFailed(true)
+        return () => {
+          cancelled = true
+          const count = (_mediaSrcRefCount.get(path) ?? 1) - 1
+          if (count <= 0) {
+            _mediaSrcRefCount.delete(path)
+            _mediaSrcCache.delete(path)
+          } else {
+            _mediaSrcRefCount.set(path, count)
+          }
+        }
       }
+      void resolveMediaPlaybackSrc(path)
+        .then(value => {
+          if (value.startsWith('blob:')) {
+            objectUrl = value
+          }
+
+          if (!cancelled) {
+            _mediaSrcCache.set(path, value)
+            setSrc(value)
+          } else if (objectUrl) {
+            URL.revokeObjectURL(objectUrl)
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setFailed(true)
+          }
+        })
     }
-
-    void resolveMediaPlaybackSrc(path)
-      .then(value => {
-        if (value.startsWith('blob:')) {
-          objectUrl = value
-        }
-
-        if (!cancelled) {
-          setSrc(value)
-        } else if (objectUrl) {
-          URL.revokeObjectURL(objectUrl)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setFailed(true)
-        }
-      })
 
     return () => {
       cancelled = true
-
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl)
+      const count = (_mediaSrcRefCount.get(path) ?? 1) - 1
+      if (count <= 0) {
+        _mediaSrcRefCount.delete(path)
+        const c = _mediaSrcCache.get(path)
+        if (c?.startsWith('blob:')) {
+          URL.revokeObjectURL(c)
+        }
+        _mediaSrcCache.delete(path)
+        if (objectUrl && objectUrl !== c) {
+          URL.revokeObjectURL(objectUrl)
+        }
+      } else {
+        _mediaSrcRefCount.set(path, count)
+        if (objectUrl && !_mediaSrcCache.has(path)) {
+          URL.revokeObjectURL(objectUrl)
+        }
       }
     }
   }, [kind, path])

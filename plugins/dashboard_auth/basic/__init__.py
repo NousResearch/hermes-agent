@@ -64,7 +64,9 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli.dashboard_auth import (
@@ -194,6 +196,127 @@ def _unsign(token: str, secret: bytes) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Revocation set (jti -> exp)
+# ---------------------------------------------------------------------------
+
+# Default location for the persisted revocation set. Kept under the Hermes
+# state dir so it survives restarts and is covered by the same backup story
+# as the rest of the deployment's state.
+_REVOCATIONS_REL_PATH = Path("state") / "dashboard-auth-basic-revocations.json"
+
+
+class _RevocationStore:
+    """Persisted set of revoked session ids (``jti`` -> token ``exp``).
+
+    Tokens carry a random ``jti`` (see ``_mint_session``). Revoking a
+    session records its ``jti`` here; ``verify_session`` and
+    ``refresh_session`` reject any token whose ``jti`` is present, so a
+    revoked session dies immediately instead of living out its ~30-day
+    refresh TTL.
+
+    The set is bounded by construction: an entry is only meaningful until
+    the revoked token's own ``exp`` passes, and ``_flush`` drops expired
+    entries, so the file never holds more than the number of sessions
+    revoked within one refresh TTL. A JSON file is sufficient for the
+    single-box deployment this provider targets — no database needed.
+
+    Thread-safe. Writes are atomic (temp file + ``os.replace``). All
+    filesystem failures are swallowed and degrade to in-memory-only
+    revocation for the life of the process — auth must never fail because
+    the revocation store broke.
+    """
+
+    def __init__(self, path: Optional[Path] = None) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._revoked: dict[str, int] = {}  # jti -> exp (unix seconds)
+        self._mtime: Optional[float] = None
+        self._load()
+
+    # ---- public API ------------------------------------------------------
+
+    def revoke(self, jti: str, exp: int) -> None:
+        """Record ``jti`` as revoked until ``exp``. Never raises."""
+        with self._lock:
+            self._revoked[jti] = exp
+            self._flush()
+
+    def is_revoked(self, jti: str) -> bool:
+        """True if ``jti`` was revoked. Never raises."""
+        with self._lock:
+            self._reload_if_changed()
+            return jti in self._revoked
+
+    # ---- internals -------------------------------------------------------
+
+    def _load(self) -> None:
+        """Load the persisted set, dropping entries whose exp has passed."""
+        self._revoked = {}
+        if self._path is None:
+            return
+        try:
+            raw = self._path.read_text()
+            data = json.loads(raw)
+            now = int(time.time())
+            self._revoked = {
+                str(jti): int(exp)
+                for jti, exp in data.items()
+                if isinstance(exp, int) and exp > now
+            }
+        except FileNotFoundError:
+            pass
+        except Exception:  # noqa: BLE001 — corrupt file must not break auth
+            logger.warning(
+                "dashboard-auth-basic: failed to load revocation set from "
+                "%s (%s); starting empty",
+                self._path,
+                exc_info=True,
+            )
+        try:
+            self._mtime = self._path.stat().st_mtime
+        except OSError:
+            self._mtime = None
+
+    def _reload_if_changed(self) -> None:
+        """Re-read the file when another process (or worker) updated it.
+
+        Enables multi-worker deployments with an explicit secret: a
+        revocation written by one worker is picked up by the others on
+        their next check. A failed stat just keeps the in-memory view.
+        """
+        if self._path is None:
+            return
+        try:
+            mtime = self._path.stat().st_mtime
+        except OSError:
+            return
+        if mtime != self._mtime:
+            self._load()
+
+    def _flush(self) -> None:
+        """Persist the set atomically, dropping expired entries."""
+        if self._path is None:
+            return
+        now = int(time.time())
+        self._revoked = {
+            jti: exp for jti, exp in self._revoked.items() if exp > now
+        }
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._path.with_name(self._path.name + ".tmp")
+            tmp.write_text(json.dumps(self._revoked, sort_keys=True))
+            os.replace(tmp, self._path)
+            self._mtime = self._path.stat().st_mtime
+        except Exception:  # noqa: BLE001 — write failure degrades gracefully
+            logger.warning(
+                "dashboard-auth-basic: failed to persist revocation set to "
+                "%s; keeping in-memory set for this process",
+                self._path,
+                exc_info=True,
+            )
+
+
+# ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
 
@@ -212,6 +335,7 @@ class BasicAuthProvider(DashboardAuthProvider):
         password_hash: str,
         secret: bytes,
         ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+        revocations_path: Optional[Path] = None,
     ) -> None:
         if not username:
             raise ValueError("username must be non-empty")
@@ -223,6 +347,11 @@ class BasicAuthProvider(DashboardAuthProvider):
         self._password_hash = password_hash
         self._secret = secret
         self._ttl = max(60, int(ttl_seconds))
+        # Path to the persisted revocation set. ``None`` (tests, ad-hoc
+        # construction) degrades to in-memory-only revocation for the life
+        # of the process; ``register()`` passes the real state path so
+        # revocations survive restarts.
+        self._revocations = _RevocationStore(path=revocations_path)
 
     # ---- OAuth methods: not used (pure-password provider) ------------------
 
@@ -268,6 +397,11 @@ class BasicAuthProvider(DashboardAuthProvider):
             or payload.get("exp", 0) <= int(time.time())
         ):
             return None
+        # A token whose jti is in the revocation set is dead even if its
+        # signature and exp are fine — the session was logged out.
+        jti = payload.get("jti")
+        if jti and self._revocations.is_revoked(str(jti)):
+            return None
         return self._session_from_payload(access_token, "", payload)
 
     def refresh_session(self, *, refresh_token: str) -> Session:
@@ -280,24 +414,64 @@ class BasicAuthProvider(DashboardAuthProvider):
             or payload.get("exp", 0) <= int(time.time())
         ):
             raise RefreshExpiredError("refresh token expired or invalid")
-        return self._mint_session(str(payload.get("sub", self._username)))
+        # Revoked refresh tokens are rejected like expired ones, so the
+        # middleware forces a re-login instead of silently re-minting.
+        jti = payload.get("jti")
+        if jti and self._revocations.is_revoked(str(jti)):
+            raise RefreshExpiredError("refresh token revoked")
+        # Rotation carries the session's jti forward: revoking one jti
+        # kills the whole session lineage, not just the presented token.
+        return self._mint_session(str(payload.get("sub", self._username)), jti=jti)
 
     def revoke_session(self, *, refresh_token: str) -> None:
-        # Stateless tokens — nothing to revoke server-side. The session
-        # expires within its TTL. Best-effort no-op, must not raise.
-        _ = refresh_token
+        # Record the session's jti in the revocation set so verify_session
+        # and refresh_session reject it immediately, instead of waiting out
+        # the ~30-day refresh TTL. Best-effort and must not raise — the
+        # logout route still clears the client cookies regardless.
+        if not refresh_token:
+            return None
+        payload = _unsign(refresh_token, self._secret)
+        if payload is None or payload.get("kind") != "refresh":
+            # Not one of our tokens (foreign provider, malformed, or an
+            # access token) — nothing to revoke.
+            return None
+        jti = payload.get("jti")
+        if not jti:
+            # Token minted before jti existed; nothing to key a revocation
+            # on. Falls back to TTL expiry.
+            return None
+        self._revocations.revoke(str(jti), int(payload.get("exp", 0)))
         return None
 
     # ---- internals ---------------------------------------------------------
 
-    def _mint_session(self, user_id: str) -> Session:
+    def _mint_session(
+        self, user_id: str, *, jti: Optional[str] = None
+    ) -> Session:
         now = int(time.time())
         exp = now + self._ttl
+        # jti = random 128-bit session identity shared by the access and
+        # refresh tokens of one session lineage. Refresh rotation passes
+        # the existing jti forward, so a single revocation entry kills the
+        # whole lineage (old + rotated tokens). Absent jti (legacy tokens)
+        # just means "not revocable".
+        session_jti = jti or secrets.token_urlsafe(16)
         access_token = _sign(
-            {"sub": user_id, "kind": "access", "exp": exp}, self._secret
+            {
+                "sub": user_id,
+                "kind": "access",
+                "exp": exp,
+                "jti": session_jti,
+            },
+            self._secret,
         )
         refresh_token = _sign(
-            {"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS},
+            {
+                "sub": user_id,
+                "kind": "refresh",
+                "exp": now + _REFRESH_TTL_SECONDS,
+                "jti": session_jti,
+            },
             self._secret,
         )
         return Session(
@@ -391,6 +565,18 @@ def _resolve_secret(cfg_section: dict) -> bytes:
     return raw.encode("utf-8")
 
 
+def _default_revocations_path() -> Path:
+    """``$HERMES_HOME/state/dashboard-auth-basic-revocations.json``.
+
+    Uses ``hermes_constants.get_hermes_home()`` (a leaf module — no import
+    cycle) so profile overrides and the native-Windows fallback are
+    honored, mirroring ``hermes_cli.dashboard_auth.audit``.
+    """
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / _REVOCATIONS_REL_PATH
+
+
 def register(ctx) -> None:
     """Plugin entry — registers BasicAuthProvider when credentials exist.
 
@@ -478,6 +664,7 @@ def register(ctx) -> None:
             password_hash=password_hash,
             secret=secret,
             ttl_seconds=ttl,
+            revocations_path=_default_revocations_path(),
         )
     except ValueError as exc:
         LAST_SKIP_REASON = f"BasicAuthProvider construction failed: {exc}"

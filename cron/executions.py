@@ -72,6 +72,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
                  finished_at TEXT,
                  error TEXT,
                  session_key TEXT,
+                 admitted_binding_version INTEGER,
+                 admitted_route_instance_id TEXT,
                  admitted_session_id TEXT,
                  admitted_routing_revision INTEGER,
                  admitted_at TEXT,
@@ -103,6 +105,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         }
         for name, sql_type in (
             ("session_key", "TEXT"),
+            ("admitted_binding_version", "INTEGER"),
+            ("admitted_route_instance_id", "TEXT"),
             ("admitted_session_id", "TEXT"),
             ("admitted_routing_revision", "INTEGER"),
             ("admitted_at", "TEXT"),
@@ -160,7 +164,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_executions_pending_delivery "
             "ON executions(delivery_state, phase, claimed_at)"
         )
-        conn.execute("PRAGMA user_version=6")
+        conn.execute("PRAGMA user_version=8")
         conn.commit()
     except BaseException:
         conn.rollback()
@@ -299,6 +303,8 @@ def seal_contextual_admission(
     session_key: str,
     admitted_session_id: str,
     admitted_routing_revision: int = 0,
+    admitted_route_instance_id: Optional[str] = None,
+    admitted_binding_version: int = 1,
 ) -> bool:
     """Durably bind an occurrence to the exact live session before queueing.
 
@@ -307,18 +313,27 @@ def seal_contextual_admission(
     """
     key = str(session_key or "").strip()
     session_id = str(admitted_session_id or "").strip()
+    route_instance_id = str(admitted_route_instance_id or "").strip() or None
+    binding_version = int(admitted_binding_version)
+    if binding_version not in (1, 2):
+        raise ValueError("unsupported contextual binding version")
+    if binding_version == 2 and route_instance_id is None:
+        raise ValueError("v2 contextual admission requires a route instance")
     if not key or not session_id:
         return False
     admitted_at = _hermes_now().isoformat()
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions
-               SET session_key=?, admitted_session_id=?,
+               SET session_key=?, admitted_binding_version=?,
+                   admitted_route_instance_id=?, admitted_session_id=?,
                    admitted_routing_revision=?, admitted_at=?, phase='admitted'
                WHERE id=? AND status IN ('claimed','running')
                  AND session_key IS NULL AND admitted_session_id IS NULL""",
             (
                 key,
+                binding_version,
+                route_instance_id,
                 session_id,
                 int(admitted_routing_revision),
                 admitted_at,
@@ -328,15 +343,19 @@ def seal_contextual_admission(
         if cur.rowcount == 1:
             return True
         existing = conn.execute(
-            """SELECT status, session_key, admitted_session_id,
-                      admitted_routing_revision
+            """SELECT status, session_key, admitted_binding_version,
+                      admitted_route_instance_id,
+                      admitted_session_id, admitted_routing_revision
                FROM executions WHERE id=?""",
             (execution_id,),
         ).fetchone()
         return bool(
-            existing
+            existing is not None
             and existing["status"] in {"claimed", "running"}
             and existing["session_key"] == key
+            and int(existing["admitted_binding_version"] or 1) == binding_version
+            and (existing["admitted_route_instance_id"] or None)
+            == route_instance_id
             and existing["admitted_session_id"] == session_id
             and int(existing["admitted_routing_revision"] or 0)
             == int(admitted_routing_revision)

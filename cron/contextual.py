@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 SESSION_TARGET_ISOLATED = "isolated"
 SESSION_TARGET_CURRENT = "current"
 SESSION_TARGETS = frozenset({SESSION_TARGET_ISOLATED, SESSION_TARGET_CURRENT})
+CONTEXTUAL_BINDING_VERSION_LOGICAL_ROUTE = 2
 
 
 @dataclass(frozen=True)
@@ -88,34 +89,71 @@ def capture_current_session_binding() -> Dict[str, Any]:
         raise ValueError(
             "session_target='current' requires a gateway-bound messaging session"
         )
-    session_id = str(binding.get("session_id") or "").strip()
-    if not session_id:
+    route_instance_id = str(binding.get("route_instance_id") or "").strip()
+    if not route_instance_id:
         raise ValueError(
-            "session_target='current' requires a concrete live gateway session"
+            "session_target='current' requires a concrete authenticated logical route"
+        )
+    route_principal = binding.get("route_principal")
+    if not isinstance(route_principal, dict):
+        raise ValueError(
+            "session_target='current' requires a trusted logical route principal"
         )
     return {
         "profile": binding.get("profile", ""),
         "session_key": binding["session_key"],
-        "session_id": session_id,
-        "routing_revision": int(binding.get("routing_revision") or 0),
+        "route_instance_id": route_instance_id,
         "platform": binding["platform"],
         "chat_type": binding.get("chat_type", ""),
         "chat_id": binding["chat_id"],
         "thread_id": binding.get("thread_id", ""),
         "user_id": binding["user_id"],
+        "scope_id": str(route_principal.get("scope_id") or ""),
+        "parent_chat_id": str(route_principal.get("parent_chat_id") or ""),
+        "user_id_alt": str(route_principal.get("user_id_alt") or ""),
+        "chat_id_alt": str(route_principal.get("chat_id_alt") or ""),
     }
+
+
+def validate_contextual_origin(origin: Any) -> Dict[str, Any]:
+    """Validate private immutable creator authority before an external effect."""
+    if not isinstance(origin, dict):
+        raise ValueError("Contextual creator authority is missing.")
+    normalized = dict(origin)
+    for field in ("platform", "chat_type", "chat_id", "user_id"):
+        raw_value = normalized.get(field)
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            raise ValueError("Contextual creator authority is incomplete.")
+        normalized[field] = raw_value.strip()
+    for field in (
+        "profile",
+        "thread_id",
+        "scope_id",
+        "parent_chat_id",
+        "user_id_alt",
+        "chat_id_alt",
+    ):
+        raw_value = normalized.get(field)
+        if raw_value is not None and not isinstance(raw_value, str):
+            raise ValueError("Contextual creator authority is invalid.")
+    normalized["profile"] = str(normalized.get("profile") or "")
+    return normalized
 
 
 def contextual_origin_from_binding(binding: Dict[str, Any]) -> Dict[str, Any]:
     """Derive execution/delivery origin from the exact persisted binding."""
-    return {
+    return validate_contextual_origin({
         "platform": str(binding.get("platform") or ""),
         "chat_type": str(binding.get("chat_type") or ""),
         "chat_id": str(binding.get("chat_id") or ""),
         "thread_id": str(binding.get("thread_id") or "") or None,
         "user_id": str(binding.get("user_id") or ""),
         "profile": str(binding.get("profile") or ""),
-    }
+        "scope_id": str(binding.get("scope_id") or "") or None,
+        "parent_chat_id": str(binding.get("parent_chat_id") or "") or None,
+        "user_id_alt": str(binding.get("user_id_alt") or "") or None,
+        "chat_id_alt": str(binding.get("chat_id_alt") or "") or None,
+    })
 
 
 def _has(job: Dict[str, Any], field: str) -> bool:
@@ -146,7 +184,7 @@ def _validate_contextual_scheduler_provider() -> None:
 
 
 def contextual_definition_route(job: Mapping[str, Any]) -> tuple[str, int]:
-    """Return the immutable physical session captured with the definition."""
+    """Return a legacy-v1 immutable physical route binding."""
     session_key = str(job.get("session_key") or "").strip()
     binding = job.get("context_binding")
     if not session_key or not isinstance(binding, Mapping):
@@ -172,13 +210,47 @@ def contextual_definition_route(job: Mapping[str, Any]) -> tuple[str, int]:
     return session_id, routing_revision
 
 
+def contextual_definition_route_instance(job: Mapping[str, Any]) -> str:
+    """Return the immutable logical-route instance captured by a v2 definition."""
+    session_key = str(job.get("session_key") or "").strip()
+    binding = job.get("context_binding")
+    if not session_key or not isinstance(binding, Mapping):
+        raise ValueError(
+            "session_target='current' requires an immutable logical route binding"
+        )
+    if str(binding.get("session_key") or "").strip() != session_key:
+        raise ValueError(
+            "session_target='current' has a mismatched immutable logical route binding"
+        )
+    route_instance_id = str(binding.get("route_instance_id") or "").strip()
+    if not route_instance_id:
+        raise ValueError(
+            "session_target='current' requires an immutable route-instance binding"
+        )
+    for field in ("platform", "chat_id", "user_id"):
+        if not str(binding.get(field) or "").strip():
+            raise ValueError(
+                "session_target='current' requires an immutable authenticated "
+                f"logical route field: {field}"
+            )
+    return route_instance_id
+
+
 def validate_contextual_job_shape(job: Dict[str, Any]) -> None:
     """Fail closed on settings whose runtime semantics diverge from live chat."""
     if normalize_session_target(job.get("session_target")) != SESSION_TARGET_CURRENT:
         return
 
     _validate_contextual_scheduler_provider()
-    contextual_definition_route(job)
+    version = int(job.get("_contextual_binding_version") or 1)
+    if version == CONTEXTUAL_BINDING_VERSION_LOGICAL_ROUTE:
+        contextual_definition_route_instance(job)
+    elif version == 1:
+        contextual_definition_route(job)
+    else:
+        raise ValueError(
+            f"unsupported contextual binding version: {version}"
+        )
 
     conflicts: list[str] = []
     if bool(job.get("no_agent")):
@@ -264,4 +336,5 @@ def contextual_fields_for_write(
         "session_target": normalized,
         "session_key": key,
         "context_binding": binding,
+        "_contextual_binding_version": CONTEXTUAL_BINDING_VERSION_LOGICAL_ROUTE,
     }

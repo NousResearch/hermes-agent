@@ -2377,6 +2377,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_channel_continuity_note,
     build_session_key,
+    canonical_route_coordinates,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
@@ -17014,6 +17015,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         lease_token = None
         session_key = str(getattr(item, "session_key", "") or "")
         session_id = str(getattr(item, "admitted_session_id", "") or "")
+        route_instance_id = str(
+            getattr(item, "admitted_route_instance_id", "") or ""
+        )
         try:
             session_store = getattr(self, "session_store", None)
             receipt_lookup = getattr(
@@ -17028,6 +17032,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             entry = peek(session_key) if callable(peek) else None
             route_current = bool(
                 entry is not None
+                and (
+                    not route_instance_id
+                    or str(getattr(entry, "route_instance_id", ""))
+                    == route_instance_id
+                )
                 and str(getattr(entry, "session_id", "")) == session_id
                 and int(getattr(entry, "routing_revision", 0))
                 == int(getattr(item, "admitted_routing_revision", 0))
@@ -17039,8 +17048,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             if route_current:
                 adapter_for_source = getattr(self, "_adapter_for_source", None)
+                recovery_source = getattr(item, "source", None) or getattr(
+                    entry, "origin", None
+                )
                 adapter = (
-                    adapter_for_source(getattr(entry, "origin", None))
+                    adapter_for_source(recovery_source)
                     if callable(adapter_for_source)
                     else None
                 )
@@ -17087,6 +17099,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             entry = peek(session_key) if callable(peek) else None
             route_current = bool(
                 entry is not None
+                and (
+                    not route_instance_id
+                    or str(getattr(entry, "route_instance_id", ""))
+                    == route_instance_id
+                )
                 and str(getattr(entry, "session_id", "")) == session_id
                 and int(getattr(entry, "routing_revision", 0))
                 == int(getattr(item, "admitted_routing_revision", 0))
@@ -17097,7 +17114,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Contextual transcript route changed while recovery waited for its fences."
                 )
             if receipt is None:
-                source = getattr(entry, "origin", None)
+                source = getattr(item, "source", None) or getattr(entry, "origin", None)
                 authorize = getattr(self, "_is_user_authorized", None)
                 if source is None or not callable(authorize) or not authorize(source):
                     raise ContextualCronTranscriptConflict(
@@ -17144,6 +17161,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             mark_contextual_transcript_conflict,
         )
         from cron.jobs import use_cron_store
+        from cron.contextual import validate_contextual_origin
         from gateway.contextual_cron import ContextualCronTranscriptConflict
 
         scope = use_cron_store(cron_home) if cron_home is not None else nullcontext()
@@ -17163,6 +17181,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         raise ContextualCronTranscriptConflict(
                             "Contextual transcript outbox payload is invalid."
                         )
+                    admitted_route_instance_id = (
+                        str(record.get("admitted_route_instance_id") or "") or None
+                    )
+                    admitted_binding_version = int(
+                        record.get("admitted_binding_version") or 1
+                    )
+                    if admitted_binding_version not in (1, 2):
+                        raise ContextualCronTranscriptConflict(
+                            "Contextual binding-version receipt is invalid."
+                        )
+                    creator_source = None
+                    raw_delivery_target = record.get("delivery_target_json")
+                    if raw_delivery_target:
+                        try:
+                            delivery_target = json.loads(raw_delivery_target)
+                            creator_origin = delivery_target.get("origin")
+                            if not isinstance(creator_origin, dict):
+                                raise TypeError("missing creator origin")
+                            creator_source = SessionSource.from_dict(
+                                validate_contextual_origin(creator_origin)
+                            )
+                        except (AttributeError, TypeError, ValueError) as exc:
+                            raise ContextualCronTranscriptConflict(
+                                "Contextual creator authority receipt is invalid."
+                            ) from exc
+                    if admitted_binding_version == 2 and (
+                        admitted_route_instance_id is None or creator_source is None
+                    ):
+                        raise ContextualCronTranscriptConflict(
+                            "Contextual v2 authority receipt is incomplete."
+                        )
                     item = SimpleNamespace(
                         job_id=str(record.get("job_id") or ""),
                         execution_id=str(record.get("id") or ""),
@@ -17173,6 +17222,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         admitted_routing_revision=int(
                             record.get("admitted_routing_revision") or 0
                         ),
+                        admitted_route_instance_id=admitted_route_instance_id,
+                        admitted_binding_version=admitted_binding_version,
+                        source=creator_source,
                         transcript_session_id=str(
                             record.get("transcript_session_id") or ""
                         ),
@@ -17315,9 +17367,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "conversation's existing context. Do not mention this wrapper.]\n\n"
             + item.prompt
         )
+        creator_source = getattr(item, "source", None) or entry.origin
         event = MessageEvent(
             text=internal_prompt,
-            source=entry.origin,
+            source=creator_source,
             internal=True,
             metadata={
                 "contextual_cron": True,
@@ -17334,7 +17387,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ),
             },
         )
-        adapter = self._adapter_for_source(entry.origin)
+        adapter = self._adapter_for_source(creator_source)
         guard = getattr(item, "adapter_guard", None)
         guard_owned_by_lane = guard is not None
         if adapter is not None and guard is None:
@@ -17349,7 +17402,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     raise ContextualCronGuardBusy()
 
         active_lease, limit_message = self._claim_active_session_slot(
-            item.session_key, entry.origin
+            item.session_key, creator_source
         )
         if limit_message is not None:
             if adapter is not None and guard is not None and not guard_owned_by_lane:
@@ -17380,9 +17433,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=item.session_key,
                 admitted_session_id=item.admitted_session_id,
                 admitted_routing_revision=item.admitted_routing_revision,
+                admitted_route_instance_id=getattr(
+                    item, "admitted_route_instance_id", None
+                ),
+                creator_source=creator_source,
             ), suppress_lifecycle_hooks():
                 response = await self._handle_message_with_agent(
-                    event, entry.origin, item.session_key, run_generation
+                    event, creator_source, item.session_key, run_generation
                 )
         finally:
             self._restore_moa_one_shot(event, item.session_key)
@@ -17503,6 +17560,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _contextual_authority
             else None
         )
+        _admitted_route_instance_id = (
+            _contextual_authority.admitted_route_instance_id
+            if _contextual_authority
+            else None
+        )
         if _is_contextual_cron:
             if (
                 _contextual_authority.session_key != _quick_key
@@ -17515,13 +17577,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
                 return None
             session_entry = await self.async_session_store.peek_session_entry(_quick_key)
+            creator_source = _contextual_authority.creator_source or source
             if (
                 session_entry is None
                 or session_entry.session_id != _admitted_session_id
+                or (
+                    _admitted_route_instance_id is not None
+                    and session_entry.route_instance_id
+                    != _admitted_route_instance_id
+                )
                 or session_entry.routing_revision != _admitted_routing_revision
                 or session_entry.origin is None
                 or self._session_key_for_source(session_entry.origin) != _quick_key
-                or not self._is_user_authorized(session_entry.origin)
+                or not isinstance(creator_source, SessionSource)
+                or self._session_key_for_source(creator_source) != _quick_key
+                or not self._is_user_authorized(creator_source)
             ):
                 logger.info("contextual cron stale before turn: admitted route is no longer valid")
                 _event_metadata["contextual_cron_result"] = {
@@ -17530,7 +17600,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "error": "The target session route changed after admission.",
                 }
                 return None
-            source = session_entry.origin
+            source = creator_source
             event.source = source
         else:
             # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
@@ -17645,7 +17715,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # path (#9893). Covers daily/idle/suspended auto-reset.
             self._evict_cached_agent(session_key)
             session_entry.was_auto_reset = False
-        
+
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (not _is_contextual_cron) and (
             session_entry.created_at == session_entry.updated_at
@@ -17663,13 +17733,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
-        
+
         # Build session context
         context = build_session_context(source, self.config, session_entry)
-        
+
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
-        
+
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
         persist_user_message = None
@@ -22926,6 +22996,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if (
                 _contextual_authority.session_key != context.session_key
                 or _contextual_authority.admitted_session_id != context.session_id
+                or (
+                    _contextual_authority.admitted_route_instance_id is not None
+                    and _contextual_authority.admitted_route_instance_id
+                    != context.route_instance_id
+                )
                 or _contextual_authority.admitted_routing_revision
                 != int(context.routing_revision)
             ):
@@ -22948,18 +23023,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _adapter = _adapters.get(context.source.platform)
             _async_delivery = getattr(_adapter, "supports_async_delivery", True)
             _cron_session = ""
+        (
+            canonical_chat_type,
+            canonical_chat_id,
+            canonical_thread_id,
+            canonical_parent_chat_id,
+        ) = canonical_route_coordinates(context.source)
         return set_session_vars(
             platform=context.source.platform.value,
-            chat_id=context.source.chat_id,
-            chat_type=(
-                str(context.source.chat_type) if context.source.chat_type else ""
-            ),
+            chat_id=canonical_chat_id,
+            chat_type=canonical_chat_type,
             chat_name=context.source.chat_name or "",
-            thread_id=str(context.source.thread_id) if context.source.thread_id else "",
+            thread_id=canonical_thread_id,
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             session_id=context.session_id,
+            route_instance_id=context.route_instance_id,
+            route_principal={
+                "scope_id": str(context.source.scope_id or ""),
+                "parent_chat_id": canonical_parent_chat_id,
+                "user_id_alt": str(context.source.user_id_alt or ""),
+                "chat_id_alt": str(context.source.chat_id_alt or ""),
+            },
             routing_revision=context.routing_revision,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",

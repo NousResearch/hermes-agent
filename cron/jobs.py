@@ -463,7 +463,9 @@ def contextual_transcript_lock():
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
 # into output writes/deletes.
-_IMMUTABLE_JOB_FIELDS = frozenset({"id", "session_key", "context_binding", "origin"})
+_IMMUTABLE_JOB_FIELDS = frozenset(
+    {"id", "session_key", "context_binding", "origin", "_contextual_binding_version"}
+)
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -664,12 +666,15 @@ def public_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     else:
         public.pop("session_target", None)
     execution = source.get("latest_execution")
-    if public_target == "current" and isinstance(execution, dict):
-        public["latest_execution"] = {
-            key: execution.get(key)
-            for key in _PUBLIC_EXECUTION_FIELDS
-            if execution.get(key) is not None
-        }
+    if public_target == "current":
+        if isinstance(execution, dict):
+            public["latest_execution"] = {
+                key: execution.get(key)
+                for key in _PUBLIC_EXECUTION_FIELDS
+                if execution.get(key) is not None
+            }
+        else:
+            public.pop("latest_execution", None)
     return public
 
 
@@ -1898,7 +1903,6 @@ def create_job(
     contextual_fields = contextual_fields_for_write(session_target)
     if contextual_fields.get("session_target") == "current":
         _enable_contextual_jobs_authority()
-        contextual_fields["_contextual_binding_version"] = 1
         from cron.contextual import contextual_origin_from_binding
 
         # Execution identity and delivery identity are one atomic binding.  A
@@ -2149,11 +2153,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updated["origin"] = contextual_origin_from_binding(
                         fields["context_binding"]
                     )
-                updated["_contextual_binding_version"] = 1
             else:
                 updated.pop("session_target", None)
                 updated.pop("session_key", None)
                 updated.pop("context_binding", None)
+                updated.pop("_contextual_binding_version", None)
             validate_contextual_job_shape(updated)
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(

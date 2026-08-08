@@ -17,7 +17,14 @@ def _point_store(monkeypatch, tmp_path):
     return jobs
 
 
-def _bind_session(key: str, *, session_id: str = "sid", routing_revision: int = 0):
+def _bind_session(
+    key: str,
+    *,
+    session_id: str = "sid",
+    routing_revision: int = 0,
+    route_instance_id: str = "route-instance-a",
+    route_principal=None,
+):
     from gateway.session_context import set_session_vars
 
     return set_session_vars(
@@ -27,6 +34,8 @@ def _bind_session(key: str, *, session_id: str = "sid", routing_revision: int = 
         user_id="42",
         session_key=key,
         session_id=session_id,
+        route_instance_id=route_instance_id,
+        route_principal=route_principal,
         routing_revision=routing_revision,
     )
 
@@ -108,6 +117,21 @@ def test_public_job_record_redacts_contextual_binding_and_execution_internals():
         "exec-private",
     ):
         assert value not in encoded
+
+
+def test_public_job_record_drops_malformed_contextual_execution_payload():
+    from cron.jobs import public_job_record
+
+    public = public_job_record(
+        {
+            "id": "bad-current",
+            "session_target": "current",
+            "latest_execution": "ROUTE-SECRET-CANARY",
+        }
+    )
+
+    assert public["id"] == "bad-current"
+    assert "latest_execution" not in public
 
 
 def test_public_job_record_preserves_legacy_isolated_api_shape():
@@ -617,7 +641,15 @@ def test_legacy_isolated_update_keeps_contextual_fields_absent_on_disk(
 
 def test_current_update_binding_is_immutable(monkeypatch, tmp_path):
     jobs = _point_store(monkeypatch, tmp_path)
-    _bind_session("telegram:dm:42:42")
+    _bind_session(
+        "telegram:dm:42:42",
+        route_principal={
+            "scope_id": "tenant-a",
+            "parent_chat_id": "parent-a",
+            "user_id_alt": "user-alt-a",
+            "chat_id_alt": "chat-alt-a",
+        },
+    )
     created = jobs.create_job(
         prompt="continue the discussion",
         schedule="every 1h",
@@ -626,8 +658,14 @@ def test_current_update_binding_is_immutable(monkeypatch, tmp_path):
     )
     assert created["session_target"] == "current"
     assert created["session_key"] == "telegram:dm:42:42"
-    assert created["context_binding"]["session_id"] == "sid"
-    assert created["context_binding"]["routing_revision"] == 0
+    assert created["context_binding"]["route_instance_id"] == "route-instance-a"
+    assert created["context_binding"]["scope_id"] == "tenant-a"
+    assert created["context_binding"]["parent_chat_id"] == "parent-a"
+    assert created["context_binding"]["user_id_alt"] == "user-alt-a"
+    assert created["context_binding"]["chat_id_alt"] == "chat-alt-a"
+    assert "session_id" not in created["context_binding"]
+    assert "routing_revision" not in created["context_binding"]
+    assert created["_contextual_binding_version"] == 2
 
     _bind_session(
         "telegram:dm:99:99", session_id="different-session", routing_revision=7
@@ -638,8 +676,9 @@ def test_current_update_binding_is_immutable(monkeypatch, tmp_path):
     recaptured = jobs.update_job(created["id"], {"session_target": "current"})
     assert recaptured["session_key"] == "telegram:dm:42:42"
     assert recaptured["context_binding"]["chat_id"] == "42"
-    assert recaptured["context_binding"]["session_id"] == "sid"
-    assert recaptured["context_binding"]["routing_revision"] == 0
+    assert recaptured["context_binding"]["route_instance_id"] == "route-instance-a"
+    assert "session_id" not in recaptured["context_binding"]
+    assert "routing_revision" not in recaptured["context_binding"]
     assert recaptured["origin"]["chat_id"] == "42"
 
     with pytest.raises(ValueError, match="binding is permanent"):
@@ -1138,6 +1177,57 @@ def test_contextual_delivery_recovery_rechecks_authorization_before_claim(monkey
 
     assert resumed is False
     assert events == ["suppressed", "accounted"]
+
+
+def test_v2_delivery_recovery_rejects_incomplete_creator_authority(monkeypatch):
+    import json
+
+    import cron.scheduler as scheduler
+
+    finished = []
+    monkeypatch.setattr(
+        scheduler,
+        "finish_contextual_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_CONTEXTUAL_AUTHORIZER",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("auth forbidden")),
+    )
+
+    resumed = scheduler._resume_contextual_delivery_record(
+        {"id": "job"},
+        {
+            "id": "execution",
+            "admitted_route_instance_id": "route-instance-a",
+            "admitted_binding_version": 2,
+            "result_json": json.dumps({"final_response": "notify"}),
+            "delivery_target_json": json.dumps(
+                {
+                    "id": "job",
+                    "deliver": "origin",
+                    "origin": {
+                        "platform": "telegram",
+                        "chat_type": "dm",
+                        "chat_id": "42",
+                        "user_id": "",
+                    },
+                }
+            ),
+        },
+    )
+
+    assert resumed is False
+    assert finished == [
+        (
+            "execution",
+            {
+                "outcome": "unknown",
+                "error": "Pending contextual delivery has invalid creator authority.",
+            },
+        )
+    ]
 
 
 def test_contextual_delivery_exception_is_persisted_unknown_without_retry(monkeypatch):

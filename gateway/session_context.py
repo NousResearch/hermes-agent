@@ -39,7 +39,7 @@ needs to replace the import + call site:
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
 # When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
@@ -82,6 +82,12 @@ _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNS
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
 _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
+_SESSION_ROUTE_INSTANCE_ID: ContextVar = ContextVar(
+    "hermes_session_route_instance_id", default=_UNSET
+)
+_SESSION_ROUTE_PRINCIPAL: ContextVar = ContextVar(
+    "hermes_session_route_principal", default=_UNSET
+)
 _SESSION_ROUTING_REVISION: ContextVar = ContextVar(
     "hermes_session_routing_revision", default=_UNSET
 )
@@ -138,6 +144,8 @@ class _ContextualTurnAuthority:
     session_key: str
     admitted_session_id: str
     admitted_routing_revision: int
+    admitted_route_instance_id: Optional[str] = None
+    creator_source: Any = None
 
 
 _CONTEXTUAL_TURN_AUTHORITY: ContextVar = ContextVar(
@@ -152,6 +160,8 @@ def _bind_contextual_turn_authority(
     session_key: str,
     admitted_session_id: str,
     admitted_routing_revision: int,
+    admitted_route_instance_id: Optional[str] = None,
+    creator_source: Any = None,
 ):
     """Bind immutable gateway-owned contextual authority to this task only."""
     authority = _ContextualTurnAuthority(
@@ -159,6 +169,10 @@ def _bind_contextual_turn_authority(
         session_key=str(session_key),
         admitted_session_id=str(admitted_session_id),
         admitted_routing_revision=int(admitted_routing_revision),
+        admitted_route_instance_id=(
+            str(admitted_route_instance_id) if admitted_route_instance_id else None
+        ),
+        creator_source=creator_source,
     )
     token = _CONTEXTUAL_TURN_AUTHORITY.set(authority)
     try:
@@ -257,6 +271,8 @@ def set_session_vars(
     user_name: str = "",
     session_key: str = "",
     session_id: str = "",
+    route_instance_id: str = "",
+    route_principal: Optional[dict[str, str]] = None,
     routing_revision: int = 0,
     message_id: str = "",
     profile: str = "",
@@ -300,6 +316,8 @@ def set_session_vars(
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
         _SESSION_ID.set(session_id),
+        _SESSION_ROUTE_INSTANCE_ID.set(route_instance_id),
+        _SESSION_ROUTE_PRINCIPAL.set(dict(route_principal or {})),
         _SESSION_ROUTING_REVISION.set(int(routing_revision)),
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
@@ -338,6 +356,8 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_NAME,
         _SESSION_KEY,
         _SESSION_ID,
+        _SESSION_ROUTE_INSTANCE_ID,
+        _SESSION_ROUTE_PRINCIPAL,
         _SESSION_ROUTING_REVISION,
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
@@ -394,6 +414,8 @@ def reset_session_vars() -> None:
     """
     for var in _VAR_MAP.values():
         var.set(_UNSET)
+    _SESSION_ROUTE_INSTANCE_ID.set(_UNSET)
+    _SESSION_ROUTE_PRINCIPAL.set(_UNSET)
     _SESSION_ROUTING_REVISION.set(_UNSET)
     # Reset the async-delivery capability to "never bound here" (_UNSET) for the
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
@@ -451,14 +473,23 @@ def get_bound_session_context() -> dict[str, Any] | None:
         "user_id": _SESSION_USER_ID.get(),
         "session_key": _SESSION_KEY.get(),
         "session_id": _SESSION_ID.get(),
+        "route_instance_id": _SESSION_ROUTE_INSTANCE_ID.get(),
+        "route_principal": _SESSION_ROUTE_PRINCIPAL.get(),
         "routing_revision": _SESSION_ROUTING_REVISION.get(),
         "profile": _SESSION_PROFILE.get(),
     }
     if any(value is _UNSET for value in values.values()):
         return None
     routing_revision = int(values.pop("routing_revision") or 0)
+    route_principal = values.pop("route_principal")
+    if not isinstance(route_principal, dict):
+        return None
     normalized: dict[str, Any] = {
         name: str(value or "").strip() for name, value in values.items()
+    }
+    normalized["route_principal"] = {
+        str(name): str(value or "").strip()
+        for name, value in route_principal.items()
     }
     normalized["routing_revision"] = routing_revision
     if not all(normalized.get(name) for name in ("platform", "chat_id", "user_id", "session_key")):

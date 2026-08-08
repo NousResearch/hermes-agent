@@ -4724,6 +4724,38 @@ def _resume_contextual_delivery_record(
             error="Pending contextual delivery has no valid immutable destination.",
         )
         return False
+    try:
+        admitted_binding_version = int(record.get("admitted_binding_version") or 1)
+    except (TypeError, ValueError):
+        admitted_binding_version = 0
+    if admitted_binding_version not in (1, 2):
+        finish_contextual_execution(
+            execution_id,
+            outcome="unknown",
+            error="Pending contextual delivery has invalid binding authority.",
+        )
+        return False
+    if admitted_binding_version == 2:
+        if not record.get("admitted_route_instance_id"):
+            finish_contextual_execution(
+                execution_id,
+                outcome="unknown",
+                error="Pending contextual delivery has incomplete v2 authority.",
+            )
+            return False
+        from cron.contextual import validate_contextual_origin
+
+        try:
+            immutable_delivery_job["origin"] = validate_contextual_origin(
+                immutable_delivery_job.get("origin")
+            )
+        except ValueError:
+            finish_contextual_execution(
+                execution_id,
+                outcome="unknown",
+                error="Pending contextual delivery has invalid creator authority.",
+            )
+            return False
     authorizer = get_contextual_authorizer()
     try:
         authorized = bool(

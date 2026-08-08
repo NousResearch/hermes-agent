@@ -72,7 +72,7 @@ class _ComposedGatewayRunner:
 async def test_builtin_current_session_composes_scheduler_gateway_transcript_and_single_delivery(
     monkeypatch, tmp_path
 ):
-    """Real V1 composition: built-in run -> live lane -> outbox -> one delivery."""
+    """Real V2 composition follows a reset logical route and delivers once."""
     import cron.executions as executions
     import cron.jobs as jobs
     import cron.scheduler as scheduler
@@ -114,6 +114,7 @@ async def test_builtin_current_session_composes_scheduler_gateway_transcript_and
         user_id="42",
         session_key=session_key,
         session_id=session_id,
+        route_instance_id=entry.route_instance_id,
     )
     try:
         job = jobs.create_job(
@@ -124,6 +125,18 @@ async def test_builtin_current_session_composes_scheduler_gateway_transcript_and
         )
     finally:
         clear_session_vars(tokens)
+
+    assert job["_contextual_binding_version"] == 2
+    assert job["context_binding"]["route_instance_id"] == entry.route_instance_id
+    reset_entry = store.reset_session(session_key)
+    assert reset_entry is not None
+    assert reset_entry.session_id != session_id
+    assert reset_entry.route_instance_id == entry.route_instance_id
+    store.append_to_transcript(
+        reset_entry.session_id,
+        {"role": "user", "content": "The chosen word is nougat."},
+        skip_db=False,
+    )
 
     async_store = AsyncSessionStore(store)
     lane = ContextualCronGateway(
@@ -165,18 +178,22 @@ async def test_builtin_current_session_composes_scheduler_gateway_transcript_and
     assert record["outcome"] == "notify"
     assert record["delivery_state"] == "sent"
     assert record["transcript_state"] == "applied"
-    history = store.load_transcript_strict(entry.session_id)
+    assert record["admitted_binding_version"] == 2
+    assert record["admitted_route_instance_id"] == entry.route_instance_id
+    assert record["admitted_session_id"] == reset_entry.session_id
+    history = store.load_transcript_strict(reset_entry.session_id)
     assert [item["message_id"] for item in history[-2:]] == [
         f"contextual-cron:{record['id']}:0",
         f"contextual-cron:{record['id']}:1",
     ]
     assert history[-2]["display_kind"] == "hidden"
-    assert "marzipan" in history[-1]["content"]
+    assert "nougat" in history[-1]["content"]
+    assert len(store.load_transcript_strict(entry.session_id)) == 1
     refreshed_entry = store.peek_session_entry(entry.session_key)
     assert refreshed_entry is not None
     assert refreshed_entry.last_prompt_tokens == 23
     assert send.await_count == 1
-    assert "marzipan" in str(send.await_args)
+    assert "nougat" in str(send.await_args)
 
     replay = dict(job, execution_id=record["id"])
     assert await asyncio.to_thread(
@@ -186,4 +203,4 @@ async def test_builtin_current_session_composes_scheduler_gateway_transcript_and
         contextual_dispatch=dispatch,
     )
     assert send.await_count == 1
-    assert len(store.load_transcript_strict(entry.session_id)) == 3
+    assert len(store.load_transcript_strict(reset_entry.session_id)) == 3

@@ -265,24 +265,42 @@ What they do:
 ### Opt in to the current conversation
 
 Model-backed jobs created from a live gateway conversation may set
-`session_target: "current"` to continue that same conversation when they run.
-Hermes captures the conversation's stable gateway routing key; callers cannot
-supply an arbitrary session key through the `cronjob` tool. At each occurrence,
-the gateway durably seals the concrete session ID before queueing the turn,
-serializes it through the same resolved-session turn lease used by human turns,
-and revalidates the mapping and authorization immediately before execution.
+`session_target: "current"` to continue that same logical conversation when they
+run. Hermes captures an immutable gateway-owned route instance plus the exact
+profile, tenant/workspace, platform, account-bound chat, canonical thread, user,
+and adapter-alias dimensions; callers cannot supply an arbitrary session key or
+route identity through the `cronjob` tool. At each
+occurrence, the gateway resolves the physical transcript currently owned by that
+logical route under the same routing fence used by reset, durably seals the
+route instance, concrete session ID, and routing revision, then serializes the
+turn through the same resolved-session turn lease used by human turns.
 
-A contextual job's concrete session binding is immutable from creation. Any
-`/new` or reset that changes that route before or after occurrence admission
-makes the occurrence `stale`; Hermes does not retarget it or fall back to an
-isolated session. Recreate the job from the new conversation to bind it there.
+A normal `/new` or reset preserves the logical route instance. An occurrence
+admitted afterward therefore follows the new transcript in that same
+conversation. Once an occurrence is admitted, its physical target is immutable:
+a later reset makes that occurrence `stale` rather than retargeting it, while a
+future recurring occurrence may resolve the newer transcript. Deletion,
+recreation, account/chat/thread route drift, authorization loss, or any
+unprovable continuity fails closed. In shared threads, participant activity does
+not redefine the conversation route: each job is reauthorized as its own
+captured creator before execution and transcript application. Hermes never
+follows the currently focused UI conversation and never falls back to an
+isolated session. Existing persisted v1 jobs retain their original strict
+physical-session binding and must be recreated to opt into logical-route
+rollover.
+
+The gateway acquires a persistent cross-process routing-authority lease for each
+session-store scope. Starting another gateway process against the same scope
+fails closed instead of allowing two once-loaded routing caches to disagree
+about reset/admission order.
+
 The scheduled prompt is stored as a hidden
 internal transcript row, progress and streaming output are suppressed, and only
 the final `notify` result goes through the normal cron delivery path. An
 intentional `no_action` result is silent and scheduled turns do not refresh the
 human-interaction timestamp.
 
-Contextual v1 jobs are same-session, model-backed jobs only. They cannot use
+Contextual jobs are same-conversation, model-backed jobs only. They cannot use
 script/`no_agent` execution, attached skills, `workdir`, `context_from`, custom
 toolset or model/provider overrides, `attach_to_session`, or fan-out/cross-user
 delivery. Omit `session_target` (or use `"isolated"`) for the existing isolated
@@ -310,7 +328,8 @@ On each tick Hermes:
 1. loads jobs from `~/.hermes/cron/jobs.json`
 2. checks `next_run_at` against the current time
 3. starts a fresh `AIAgent` session for each isolated job, or admits an opt-in
-   contextual job into its immutable live gateway session
+   contextual job into the currently resolved transcript of its immutable
+   logical gateway route
 4. optionally injects one or more attached skills into isolated sessions
 5. runs the prompt to completion
 6. delivers the final response

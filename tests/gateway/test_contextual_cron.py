@@ -212,6 +212,28 @@ def test_zero_routing_revision_preserves_legacy_session_record_shape():
     assert entry.to_dict()["routing_revision"] == 1
 
 
+def test_route_instance_identity_round_trips():
+    now = datetime.now(timezone.utc)
+    entry = SessionEntry(
+        session_key="telegram:u:c",
+        session_id="session-1",
+        created_at=now,
+        updated_at=now,
+        route_instance_id="route-instance-a",
+    )
+
+    stored = entry.to_dict()
+    assert stored["route_instance_id"] == "route-instance-a"
+    assert SessionEntry.from_dict(stored).route_instance_id == "route-instance-a"
+
+    legacy = dict(stored)
+    legacy.pop("route_instance_id")
+    first = SessionEntry.from_dict(legacy).route_instance_id
+    second = SessionEntry.from_dict(legacy).route_instance_id
+    assert first
+    assert first == second
+
+
 @pytest.mark.asyncio
 async def test_contextual_cron_tracer_recovers_only_the_stable_session_context():
     """The opt-in lane sees live history; the legacy isolated control does not."""
@@ -482,6 +504,63 @@ async def test_post_model_authorization_error_resolves_item_and_lane_continues()
     assert second.kind == "notify"
     assert runner.started == ["first", "second"]
     assert finished == [("first", "retryable"), ("second", "notify")]
+
+
+@pytest.mark.asyncio
+async def test_late_authorization_error_defers_outbox_and_releases_lane():
+    import asyncio
+
+    runner = _OutboxRunner(_LiveStore(_entry(), []))
+    late_failure = True
+    auth_calls = 0
+
+    def authorize(source):
+        del source
+        nonlocal auth_calls
+        auth_calls += 1
+        if late_failure and auth_calls >= 4:
+            raise RuntimeError("late auth backend unavailable")
+        return True
+
+    runner._is_user_authorized = authorize
+    gateway = ContextualCronGateway(
+        runner,
+        busy_poll_seconds=0.001,
+        transcript_retry_seconds=0.001,
+        seal_admission=lambda *_: True,
+        finish_admission=lambda *_: {"transcript_state": "pending"},
+    )
+
+    first_task = asyncio.create_task(
+        gateway.dispatch(
+            {
+                "id": "job",
+                "prompt": "first",
+                "session_target": "current",
+                "session_key": "telegram:dm:42:42",
+            },
+            execution_id="late-auth-first",
+        )
+    )
+    first = await asyncio.wait_for(first_task, timeout=0.5)
+    late_failure = False
+    second = await asyncio.wait_for(
+        gateway.dispatch(
+            {
+                "id": "job",
+                "prompt": "second",
+                "session_target": "current",
+                "session_key": "telegram:dm:42:42",
+            },
+            execution_id="late-auth-second",
+        ),
+        timeout=0.5,
+    )
+
+    assert first.kind == "unknown"
+    assert "authorization" in str(first.error).lower()
+    assert second.kind == "no_action"
+    assert runner.events.count("run") == 2
 
 
 @pytest.mark.asyncio
@@ -1216,6 +1295,52 @@ async def test_recovery_route_revision_change_terminalizes_unapplied_outbox(monk
 
 
 @pytest.mark.asyncio
+async def test_recovery_route_instance_change_terminalizes_unapplied_outbox(
+    monkeypatch,
+):
+    record = {
+        "id": "recover-route-aba",
+        "job_id": "job-1",
+        "session_key": "telegram:dm:42:42",
+        "admitted_route_instance_id": "route-instance-a",
+        "admitted_binding_version": 2,
+        "delivery_target_json": (
+            '{"origin":{"platform":"telegram","chat_type":"dm",'
+            '"chat_id":"42","user_id":"42","profile":""}}'
+        ),
+        "admitted_session_id": "session-1",
+        "admitted_routing_revision": 0,
+        "transcript_session_id": "session-1",
+        "transcript_json": '[{"role":"assistant","content":"scheduled",'
+        '"message_id":"contextual-cron:recover-route-aba:0"}]',
+        "transcript_base_message_count": 0,
+        "transcript_base_revision": 0,
+        "transcript_last_prompt_tokens": None,
+    }
+    monkeypatch.setattr(
+        "cron.executions.list_pending_contextual_transcripts", lambda: [record]
+    )
+    conflicts = []
+    monkeypatch.setattr(
+        "cron.executions.mark_contextual_transcript_conflict",
+        lambda execution_id, *, error: conflicts.append((execution_id, error)) or True,
+    )
+    entry = _entry()
+    entry.route_instance_id = "route-instance-b"
+    runner = object.__new__(GatewayRunner)
+    cast(Any, runner).session_store = _LiveStore(entry, [])
+    applied = []
+    cast(Any, runner)._apply_contextual_cron_transcript = applied.append
+
+    recovered = await GatewayRunner._recover_contextual_cron_transcripts(runner)
+
+    assert recovered == 0
+    assert applied == []
+    assert conflicts and conflicts[0][0] == "recover-route-aba"
+    assert "route changed" in conflicts[0][1]
+
+
+@pytest.mark.asyncio
 async def test_recovery_preserves_nonzero_admitted_route_revision_for_current_route(
     monkeypatch,
 ):
@@ -1259,6 +1384,71 @@ async def test_recovery_preserves_nonzero_admitted_route_revision_for_current_ro
     assert len(applied) == 1
     assert applied[0].admitted_routing_revision == 7
     assert applied[0].contextual_route_current is True
+
+
+@pytest.mark.asyncio
+async def test_v2_recovery_reauthorizes_sealed_creator_not_route_origin(monkeypatch):
+    import json
+
+    record = {
+        "id": "recover-shared-creator",
+        "job_id": "job-1",
+        "session_key": "telegram:dm:42:42",
+        "admitted_session_id": "session-1",
+        "admitted_routing_revision": 0,
+        "admitted_route_instance_id": "route-instance-a",
+        "admitted_binding_version": 2,
+        "delivery_target_json": json.dumps(
+            {
+                "id": "job-1",
+                "deliver": "local",
+                "origin": {
+                    "platform": "telegram",
+                    "chat_type": "dm",
+                    "chat_id": "42",
+                    "user_id": "creator-b",
+                    "profile": "",
+                },
+            }
+        ),
+        "transcript_session_id": "session-1",
+        "transcript_json": '[{"role":"assistant","content":"scheduled",'
+        '"message_id":"contextual-cron:recover-shared-creator:0"}]',
+        "transcript_base_message_count": 0,
+        "transcript_base_revision": 0,
+        "transcript_last_prompt_tokens": None,
+    }
+    monkeypatch.setattr(
+        "cron.executions.list_pending_contextual_transcripts", lambda: [record]
+    )
+    conflicts = []
+    monkeypatch.setattr(
+        "cron.executions.mark_contextual_transcript_conflict",
+        lambda execution_id, *, error: conflicts.append((execution_id, error)) or True,
+    )
+    route_entry = _entry()
+    route_entry.route_instance_id = "route-instance-a"
+    assert route_entry.origin is not None
+    route_entry.origin.user_id = "creator-a"
+    runner = object.__new__(GatewayRunner)
+    cast(Any, runner).session_store = _LiveStore(route_entry, [])
+    authorized_users = []
+    cast(Any, runner)._is_user_authorized = lambda source: (
+        authorized_users.append(source.user_id) or source.user_id == "creator-b"
+    )
+    applied = []
+
+    async def apply(item):
+        applied.append(item)
+
+    cast(Any, runner)._apply_contextual_cron_transcript = apply
+
+    recovered = await GatewayRunner._recover_contextual_cron_transcripts(runner)
+
+    assert recovered == 1
+    assert conflicts == []
+    assert authorized_users == ["creator-b"]
+    assert applied[0].source.user_id == "creator-b"
 
 
 @pytest.mark.asyncio
@@ -1706,8 +1896,50 @@ async def test_contextual_drainer_cancellation_resolves_all_pending_unknown():
 
 
 @pytest.mark.asyncio
-async def test_reset_before_admission_is_stale_against_definition_binding():
-    store = _LiveStore(_entry("replacement-session"), [])
+async def test_v1_reset_before_admission_remains_strictly_stale():
+    replacement = _entry("replacement-session")
+    store = _LiveStore(replacement, [])
+    runner = _QueueRunner(store)
+    sealed = []
+    gateway = ContextualCronGateway(
+        runner,
+        seal_admission=lambda *args: sealed.append(args) or True,
+        finish_admission=lambda *_args: None,
+        busy_poll_seconds=0.001,
+    )
+
+    outcome = await gateway.dispatch(
+        {
+            "id": "legacy-reset-before-admission",
+            "session_target": "current",
+            "session_key": "telegram:dm:42:42",
+            "context_binding": {
+                "profile": "",
+                "session_key": "telegram:dm:42:42",
+                "session_id": "original-session",
+                "routing_revision": 0,
+                "platform": "telegram",
+                "chat_type": "dm",
+                "chat_id": "42",
+                "thread_id": "",
+                "user_id": "42",
+            },
+            "_contextual_binding_version": 1,
+            "prompt": "legacy strict binding",
+        },
+        execution_id="legacy-reset-before-admission",
+    )
+
+    assert outcome.kind == "stale"
+    assert sealed == []
+    assert runner.started == []
+
+
+@pytest.mark.asyncio
+async def test_reset_before_admission_follows_same_logical_route():
+    replacement = _entry("replacement-session")
+    replacement.route_instance_id = "route-instance-a"
+    store = _LiveStore(replacement, [])
     runner = _QueueRunner(store)
     sealed = []
     gateway = ContextualCronGateway(
@@ -1722,18 +1954,274 @@ async def test_reset_before_admission_is_stale_against_definition_binding():
             "prompt": "continue",
             "session_target": "current",
             "session_key": "telegram:dm:42:42",
+            "_contextual_binding_version": 2,
             "context_binding": {
                 "session_key": "telegram:dm:42:42",
-                "session_id": "captured-session",
-                "routing_revision": 0,
+                "route_instance_id": "route-instance-a",
+                "profile": "",
+                "platform": "telegram",
+                "chat_type": "dm",
+                "chat_id": "42",
+                "thread_id": "",
+                "user_id": "42",
             },
         },
         execution_id="reset-before-admission",
     )
 
+    assert outcome.kind == "notify"
+    assert sealed == [
+        (
+            "reset-before-admission",
+            "telegram:dm:42:42",
+            "replacement-session",
+            0,
+            "route-instance-a",
+            2,
+        )
+    ]
+    assert runner.started == ["reset-before-admission"]
+
+
+@pytest.mark.asyncio
+async def test_v2_route_delete_recreate_aba_is_stale_before_seal():
+    recreated = _entry("replacement-session")
+    recreated.route_instance_id = "route-instance-b"
+    store = _LiveStore(recreated, [])
+    runner = _QueueRunner(store)
+    sealed = []
+    gateway = ContextualCronGateway(
+        runner,
+        seal_admission=lambda *args: sealed.append(args) or True,
+        finish_admission=lambda *_: None,
+    )
+
+    outcome = await gateway.dispatch(
+        {
+            "id": "job",
+            "prompt": "continue",
+            "session_target": "current",
+            "session_key": recreated.session_key,
+            "_contextual_binding_version": 2,
+            "context_binding": {
+                "session_key": recreated.session_key,
+                "route_instance_id": "route-instance-a",
+                "profile": "",
+                "platform": "telegram",
+                "chat_type": "dm",
+                "chat_id": "42",
+                "thread_id": "",
+                "user_id": "42",
+            },
+        },
+        execution_id="route-aba",
+    )
+
     assert outcome.kind == "stale"
     assert sealed == []
     assert runner.started == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("scope_id", "workspace-b"),
+        ("parent_chat_id", "parent-b"),
+        ("chat_id_alt", "chat-alt-b"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_v2_same_route_instance_with_principal_drift_is_stale(field, value):
+    changed = _entry("same-session")
+    changed.route_instance_id = "route-instance-a"
+    assert changed.origin is not None
+    setattr(changed.origin, field, value)
+    store = _LiveStore(changed, [])
+    runner = _QueueRunner(store)
+    sealed = []
+    gateway = ContextualCronGateway(
+        runner,
+        seal_admission=lambda *args: sealed.append(args) or True,
+        finish_admission=lambda *_: None,
+    )
+
+    outcome = await gateway.dispatch(
+        {
+            "id": "job",
+            "prompt": "continue",
+            "session_target": "current",
+            "session_key": changed.session_key,
+            "_contextual_binding_version": 2,
+            "context_binding": {
+                "session_key": changed.session_key,
+                "route_instance_id": "route-instance-a",
+                "profile": "",
+                "platform": "telegram",
+                "chat_type": "dm",
+                "chat_id": "42",
+                "thread_id": "",
+                "user_id": "42",
+            },
+        },
+        execution_id="principal-drift",
+    )
+
+    assert outcome.kind == "stale"
+    assert sealed == []
+    assert runner.started == []
+
+
+def test_v2_prospective_thread_and_real_thread_are_one_logical_route():
+    from dataclasses import replace
+
+    from gateway.session import _same_route_identity, build_session_key
+
+    entry = _entry("thread-session")
+    assert entry.origin is not None
+    prospective = replace(
+        entry.origin,
+        platform=Platform.DISCORD,
+        chat_type="channel",
+        chat_id="channel-1",
+        parent_chat_id=None,
+        thread_id=None,
+        prospective_thread_id="thread-42",
+    )
+    realized = replace(
+        entry.origin,
+        platform=Platform.DISCORD,
+        chat_type="thread",
+        chat_id="thread-42",
+        parent_chat_id="channel-1",
+        thread_id="thread-42",
+        prospective_thread_id=None,
+    )
+    entry.origin = realized
+    entry.route_instance_id = "route-instance-a"
+
+    assert build_session_key(prospective) == build_session_key(realized)
+    assert _same_route_identity(prospective, realized)
+    assert (
+        ContextualCronGateway._logical_binding_rejection(
+            entry,
+            {
+                "route_instance_id": "route-instance-a",
+                "profile": "",
+                "platform": "discord",
+                "chat_type": "thread",
+                "chat_id": "thread-42",
+                "thread_id": "thread-42",
+                "user_id": "42",
+                "scope_id": "",
+                "parent_chat_id": "channel-1",
+                "user_id_alt": "",
+                "chat_id_alt": "",
+            },
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_v2_shared_thread_uses_captured_creator_authority():
+    from gateway.session import build_session_key
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_type="thread",
+        chat_id="thread-42",
+        parent_chat_id="channel-1",
+        thread_id="thread-42",
+        user_id="creator-a",
+    )
+    now = datetime.now(timezone.utc)
+    entry = SessionEntry(
+        session_key=build_session_key(source),
+        session_id="thread-session",
+        created_at=now,
+        updated_at=now,
+        origin=source,
+        route_instance_id="route-instance-a",
+    )
+    runner = _QueueRunner(_LiveStore(entry, []))
+    gateway = ContextualCronGateway(
+        runner,
+        seal_admission=lambda *_: True,
+        finish_admission=lambda *_: None,
+    )
+
+    outcome = await gateway.dispatch(
+        {
+            "id": "job-b",
+            "prompt": "continue",
+            "session_target": "current",
+            "session_key": entry.session_key,
+            "_contextual_binding_version": 2,
+            "context_binding": {
+                "session_key": entry.session_key,
+                "route_instance_id": "route-instance-a",
+                "profile": "",
+                "platform": "discord",
+                "chat_type": "thread",
+                "chat_id": "thread-42",
+                "thread_id": "thread-42",
+                "user_id": "creator-b",
+                "scope_id": "",
+                "parent_chat_id": "channel-1",
+                "user_id_alt": "",
+                "chat_id_alt": "",
+            },
+        },
+        execution_id="shared-creator-b",
+    )
+
+    assert outcome.kind == "notify"
+    assert runner.started == ["shared-creator-b"]
+
+
+@pytest.mark.asyncio
+async def test_v2_route_instance_swap_during_model_is_stale_before_commit():
+    entry = _entry("session-1")
+    entry.route_instance_id = "route-instance-a"
+    store = _LiveStore(entry, [])
+    runner = _QueueRunner(store)
+
+    async def run_turn(item, _entry_value, _history):
+        runner.started.append(item.execution_id)
+        store.entry.route_instance_id = "route-instance-b"
+        return ContextualCronOutcome.notify("must-not-commit")
+
+    setattr(cast(Any, runner), "_run_contextual_cron_turn", run_turn)
+    gateway = ContextualCronGateway(
+        runner,
+        seal_admission=lambda *_: True,
+        finish_admission=lambda *_: None,
+    )
+
+    outcome = await gateway.dispatch(
+        {
+            "id": "job",
+            "prompt": "continue",
+            "session_target": "current",
+            "session_key": entry.session_key,
+            "_contextual_binding_version": 2,
+            "context_binding": {
+                "session_key": entry.session_key,
+                "route_instance_id": "route-instance-a",
+                "profile": "",
+                "platform": "telegram",
+                "chat_type": "dm",
+                "chat_id": "42",
+                "thread_id": "",
+                "user_id": "42",
+            },
+        },
+        execution_id="route-swap-during-model",
+    )
+
+    assert runner.started == ["route-swap-during-model"]
+    assert outcome.kind == "stale"
+    assert outcome.final_response == ""
 
 
 @pytest.mark.asyncio
@@ -1899,6 +2387,8 @@ async def test_runner_internal_turn_is_hidden_and_intentional_silence_is_no_acti
         authority = _get_contextual_turn_authority()
         assert authority.execution_id == "execution"
         assert authority.admitted_session_id == "session-1"
+        assert authority.creator_source is source
+        assert source.user_id == "creator-b"
         assert has_hook("agent:start") is False
         assert invoke_hook("agent:start") == []
         event.metadata["contextual_cron_result"] = {
@@ -1932,6 +2422,10 @@ async def test_runner_internal_turn_is_hidden_and_intentional_silence_is_no_acti
     runner._release_running_agent_state = lambda *_args, **_kwargs: True
     runner._release_turn_lease = lambda *_args, **_kwargs: True
     loop = __import__("asyncio").get_running_loop()
+    creator = _entry().origin
+    assert creator is not None
+    creator.user_id = "creator-b"
+    route_entry = _entry()
     item = ContextualCronQueueItem(
         job_id="job",
         execution_id="execution",
@@ -1939,7 +2433,7 @@ async def test_runner_internal_turn_is_hidden_and_intentional_silence_is_no_acti
         session_key="telegram:dm:42:42",
         admitted_session_id="session-1",
         admitted_routing_revision=3,
-        source=_entry().origin,
+        source=creator,
         future=loop.create_future(),
     )
     cast(Any, runner)._detach_preheld_turn_lease = lambda *_args: True
@@ -1948,7 +2442,7 @@ async def test_runner_internal_turn_is_hidden_and_intentional_silence_is_no_acti
         outcome = await GatewayRunner._run_contextual_cron_turn(
             runner,
             item,
-            _entry(),
+            route_entry,
             [],
         )
     finally:
@@ -2418,6 +2912,7 @@ def test_auto_reset_then_resume_keeps_route_revision_monotonic():
     key = _entry().session_key
     old = _entry()
     old.routing_revision = 1
+    old.route_instance_id = "route-instance-a"
     store = object.__new__(SessionStore)
     store._lock = threading.Lock()
     store._loaded = True
@@ -2433,11 +2928,53 @@ def test_auto_reset_then_resume_keeps_route_revision_monotonic():
     reset = store._get_or_create_session_impl(source)
     assert reset.session_id != old.session_id
     assert reset.routing_revision == 2
+    assert reset.route_instance_id == "route-instance-a"
 
     resumed = store.switch_session(key, old.session_id)
     assert resumed is not None
     assert resumed.session_id == old.session_id
     assert resumed.routing_revision == 3
+    assert resumed.route_instance_id == "route-instance-a"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "preserves_route"),
+    [
+        ("user_id", "99", True),
+        ("user_id_alt", "user-alt-b", True),
+        ("scope_id", "workspace-b", False),
+    ],
+)
+def test_auto_reset_separates_conversation_identity_from_participant_authority(
+    field, value, preserves_route
+):
+    import threading
+    from dataclasses import replace
+
+    from gateway.session import SessionStore
+
+    old = _entry()
+    assert old.origin is not None
+    old.route_instance_id = "route-instance-a"
+    incoming = replace(old.origin, **{field: value})
+    store = object.__new__(SessionStore)
+    store_any = cast(Any, store)
+    store_any._lock = threading.Lock()
+    store_any._loaded = True
+    store_any._entries = {old.session_key: old}
+    store_any._db = None
+    store_any._save_entries = lambda: None
+    store_any._save = lambda: None
+    store_any._generate_session_key = lambda _source: old.session_key
+    store_any._compression_tip_for_session_id = lambda session_id: session_id
+    store_any._is_session_ended_in_db = lambda _session_id: False
+    store_any._should_reset = lambda _entry, _source: "idle"
+
+    reset = store._get_or_create_session_impl(incoming)
+
+    assert reset.routing_revision == 1
+    assert (reset.route_instance_id == "route-instance-a") is preserves_route
+    assert reset.origin is incoming
 
 
 def test_admission_and_reset_share_one_routing_linearization_lock():
@@ -2487,6 +3024,30 @@ def test_admission_and_reset_share_one_routing_linearization_lock():
     assert admitted == [("exec", entry.session_key, "session-1", 0)]
     assert reset_result[0].session_id != "session-1"
     assert reset_result[0].routing_revision == 1
+
+
+def test_admission_seal_rejects_route_instance_swap_inside_routing_lock():
+    import threading
+
+    from gateway.session import ContextualRouteInstanceMismatch, SessionStore
+
+    store = object.__new__(SessionStore)
+    store._lock = threading.Lock()
+    store._loaded = True
+    entry = _entry("replacement-session")
+    entry.route_instance_id = "route-instance-b"
+    store._entries = {entry.session_key: entry}
+    sealed = []
+
+    with pytest.raises(ContextualRouteInstanceMismatch):
+        store.seal_contextual_admission(
+            entry.session_key,
+            "route-race",
+            lambda *args: sealed.append(args) or True,
+            expected_route_instance_id="route-instance-a",
+        )
+
+    assert sealed == []
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,13 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any, Callable, Deque, Dict, Optional
 
+from gateway.session import (
+    ContextualRouteInstanceMismatch,
+    Platform,
+    SessionSource,
+    canonical_route_coordinates,
+)
+
 logger = logging.getLogger(__name__)
 
 _CONTEXTUAL_KINDS = frozenset(
@@ -90,6 +97,8 @@ class ContextualCronQueueItem:
     source: Any
     future: asyncio.Future
     admitted_routing_revision: int = 0
+    admitted_route_instance_id: Optional[str] = None
+    admitted_binding_version: int = 1
     turn_lease_token: Any = None
     adapter: Any = None
     adapter_guard: Any = None
@@ -135,6 +144,8 @@ class ContextualCronGateway:
         session_key: str,
         session_id: str,
         routing_revision: int,
+        route_instance_id: Optional[str] = None,
+        binding_version: int = 1,
     ) -> bool:
         from cron.executions import seal_contextual_admission
 
@@ -144,6 +155,8 @@ class ContextualCronGateway:
                 session_key=session_key,
                 admitted_session_id=session_id,
                 admitted_routing_revision=routing_revision,
+                admitted_route_instance_id=route_instance_id,
+                admitted_binding_version=binding_version,
             )
         )
 
@@ -153,21 +166,50 @@ class ContextualCronGateway:
         session_key: str,
         session_id: str,
         routing_revision: int,
+        route_instance_id: Optional[str] = None,
+        binding_version: int = 1,
     ) -> bool:
-        """Call production four-field seal while retaining old test doubles."""
+        """Call production v2 seal while retaining old test doubles."""
         try:
             params = inspect.signature(self._seal_admission).parameters.values()
-            supports_revision = any(
+            variadic = any(
                 p.kind is inspect.Parameter.VAR_POSITIONAL for p in params
-            ) or sum(
+            )
+            positional_count = sum(
                 p.kind in {
                     inspect.Parameter.POSITIONAL_ONLY,
                     inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 }
                 for p in params
-            ) >= 4
+            )
+            supports_binding_version = variadic or positional_count >= 6
+            supports_route_instance = variadic or positional_count >= 5
+            supports_revision = variadic or positional_count >= 4
         except (TypeError, ValueError):
+            supports_binding_version = True
+            supports_route_instance = True
             supports_revision = True
+        if supports_binding_version:
+            return bool(
+                self._seal_admission(
+                    execution_id,
+                    session_key,
+                    session_id,
+                    routing_revision,
+                    route_instance_id,
+                    binding_version,
+                )
+            )
+        if supports_route_instance:
+            return bool(
+                self._seal_admission(
+                    execution_id,
+                    session_key,
+                    session_id,
+                    routing_revision,
+                    route_instance_id,
+                )
+            )
         if supports_revision:
             return bool(
                 self._seal_admission(
@@ -177,9 +219,7 @@ class ContextualCronGateway:
                     routing_revision,
                 )
             )
-        return bool(
-            self._seal_admission(execution_id, session_key, session_id)
-        )
+        return bool(self._seal_admission(execution_id, session_key, session_id))
 
     @staticmethod
     def _default_load_execution(execution_id: str) -> Optional[Dict[str, Any]]:
@@ -303,6 +343,9 @@ class ContextualCronGateway:
         session_key: str,
         admitted_session_id: Optional[str] = None,
         admitted_routing_revision: Optional[int] = None,
+        admitted_route_instance_id: Optional[str] = None,
+        authorization_source: Optional[SessionSource] = None,
+        propagate_authorization_errors: bool = False,
     ):
         entry = self._peek_entry(session_key)
         if entry is None or not getattr(entry, "origin", None):
@@ -312,6 +355,14 @@ class ContextualCronGateway:
         if admitted_session_id is not None and entry.session_id != admitted_session_id:
             return None, ContextualCronOutcome.stale(
                 "The target session was reset after this occurrence was admitted."
+            )
+        if (
+            admitted_route_instance_id is not None
+            and str(getattr(entry, "route_instance_id", ""))
+            != admitted_route_instance_id
+        ):
+            return None, ContextualCronOutcome.stale(
+                "The originating logical route changed after this occurrence was admitted."
             )
         if (
             admitted_routing_revision is not None
@@ -334,14 +385,65 @@ class ContextualCronGateway:
                     "The target source could not be revalidated."
                 )
         try:
-            authorized = bool(self.runner._is_user_authorized(source))
+            authorized = bool(
+                self.runner._is_user_authorized(authorization_source or source)
+            )
         except Exception:
+            if propagate_authorization_errors:
+                raise
             authorized = False
         if not authorized:
             return None, ContextualCronOutcome.rejected(
-                "The target session source is no longer authorized."
+                "The target session authorization is no longer valid."
             )
         return entry, None
+
+    @staticmethod
+    def _source_from_logical_binding(binding: Dict[str, Any]) -> SessionSource:
+        """Reconstruct the immutable creator authority for a v2 occurrence."""
+        return SessionSource(
+            platform=Platform(str(binding.get("platform") or "")),
+            chat_type=str(binding.get("chat_type") or "dm"),
+            chat_id=str(binding.get("chat_id") or ""),
+            thread_id=str(binding.get("thread_id") or "") or None,
+            user_id=str(binding.get("user_id") or "") or None,
+            scope_id=str(binding.get("scope_id") or "") or None,
+            parent_chat_id=str(binding.get("parent_chat_id") or "") or None,
+            user_id_alt=str(binding.get("user_id_alt") or "") or None,
+            chat_id_alt=str(binding.get("chat_id_alt") or "") or None,
+            profile=str(binding.get("profile") or "") or None,
+        )
+
+    @staticmethod
+    def _logical_binding_rejection(entry, binding) -> Optional[ContextualCronOutcome]:
+        """Require exact immutable conversation-route equality for v2 jobs."""
+        route_instance_id = str(binding.get("route_instance_id") or "").strip()
+        if not route_instance_id or entry.route_instance_id != route_instance_id:
+            return ContextualCronOutcome.stale(
+                "The originating logical conversation no longer exists."
+            )
+        source = entry.origin
+        chat_type, chat_id, thread_id, parent_chat_id = canonical_route_coordinates(
+            source
+        )
+        actual = {
+            "profile": str(getattr(source, "profile", None) or ""),
+            "platform": str(
+                getattr(getattr(source, "platform", None), "value", "") or ""
+            ),
+            "chat_type": chat_type,
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "scope_id": str(getattr(source, "scope_id", None) or ""),
+            "parent_chat_id": parent_chat_id,
+            "chat_id_alt": str(getattr(source, "chat_id_alt", None) or ""),
+        }
+        for field, current in actual.items():
+            if str(binding.get(field) or "") != current:
+                return ContextualCronOutcome.stale(
+                    "The originating conversation's authenticated route changed."
+                )
+        return None
 
     async def dispatch(self, job: Dict[str, Any], *, execution_id: str) -> ContextualCronOutcome:
         """Seal and enqueue one contextual occurrence.
@@ -383,15 +485,32 @@ class ContextualCronGateway:
 
         captured_session_id = None
         captured_routing_revision = None
-        if job.get("context_binding") is not None or int(
-            job.get("_contextual_binding_version") or 0
-        ) >= 1:
-            from cron.contextual import contextual_definition_route
+        captured_route_instance_id = None
+        captured_authorization_source: Optional[SessionSource] = None
+        binding = job.get("context_binding")
+        raw_binding_version = int(job.get("_contextual_binding_version") or 0)
+        binding_version = raw_binding_version or (1 if binding is not None else 0)
+        if binding is not None or raw_binding_version >= 1:
+            from cron.contextual import (
+                contextual_definition_route,
+                contextual_definition_route_instance,
+            )
 
             try:
-                captured_session_id, captured_routing_revision = (
-                    contextual_definition_route(job)
-                )
+                if binding_version == 2:
+                    captured_route_instance_id = contextual_definition_route_instance(job)
+                    assert isinstance(binding, dict)
+                    captured_authorization_source = self._source_from_logical_binding(
+                        binding
+                    )
+                elif binding_version == 1:
+                    captured_session_id, captured_routing_revision = (
+                        contextual_definition_route(job)
+                    )
+                else:
+                    raise ValueError(
+                        f"unsupported contextual binding version: {binding_version}"
+                    )
             except (TypeError, ValueError) as exc:
                 return finish_pre_admission(
                     ContextualCronOutcome.rejected(str(exc))
@@ -401,10 +520,16 @@ class ContextualCronGateway:
             session_key,
             admitted_session_id=captured_session_id,
             admitted_routing_revision=captured_routing_revision,
+            authorization_source=captured_authorization_source,
         )
         if rejection is not None:
             return finish_pre_admission(rejection)
         assert entry is not None
+        if binding_version == 2:
+            assert isinstance(binding, dict)
+            rejection = self._logical_binding_rejection(entry, binding)
+            if rejection is not None:
+                return finish_pre_admission(rejection)
 
         routing_revision = int(getattr(entry, "routing_revision", 0))
         try:
@@ -414,12 +539,42 @@ class ContextualCronGateway:
                 None,
             )
             if callable(linearize):
-                sealed_entry = await asyncio.to_thread(
-                    linearize,
-                    session_key,
-                    execution_id,
-                    self._seal_occurrence,
+                seal_resolved = (
+                    lambda admitted_execution_id, admitted_key, admitted_session_id, admitted_revision: self._seal_occurrence(
+                        admitted_execution_id,
+                        admitted_key,
+                        admitted_session_id,
+                        admitted_revision,
+                        captured_route_instance_id,
+                        binding_version or 1,
+                    )
                 )
+                try:
+                    linearize_params = inspect.signature(linearize).parameters.values()
+                    linearize_supports_route_instance = any(
+                        parameter.kind is inspect.Parameter.VAR_POSITIONAL
+                        for parameter in linearize_params
+                    ) or sum(
+                        parameter.kind
+                        in {
+                            inspect.Parameter.POSITIONAL_ONLY,
+                            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        }
+                        for parameter in linearize_params
+                    ) >= 4
+                except (TypeError, ValueError):
+                    linearize_supports_route_instance = True
+                linearize_args = (
+                    (
+                        session_key,
+                        execution_id,
+                        seal_resolved,
+                        captured_route_instance_id,
+                    )
+                    if linearize_supports_route_instance
+                    else (session_key, execution_id, seal_resolved)
+                )
+                sealed_entry = await asyncio.to_thread(linearize, *linearize_args)
                 sealed = sealed_entry is not None
                 if sealed_entry is not None:
                     entry = sealed_entry
@@ -427,12 +582,20 @@ class ContextualCronGateway:
                         getattr(sealed_entry, "routing_revision", 0)
                     )
             else:
+                if binding_version == 2:
+                    rejection = self._logical_binding_rejection(entry, binding)
+                    if rejection is not None:
+                        return finish_pre_admission(rejection)
                 sealed = self._seal_occurrence(
                     execution_id,
                     session_key,
                     entry.session_id,
                     routing_revision,
+                    captured_route_instance_id,
+                    binding_version or 1,
                 )
+        except ContextualRouteInstanceMismatch as exc:
+            return finish_pre_admission(ContextualCronOutcome.stale(str(exc)))
         except asyncio.CancelledError:
             finish_pre_admission(
                 ContextualCronOutcome.unknown(
@@ -458,7 +621,13 @@ class ContextualCronGateway:
             session_key=session_key,
             admitted_session_id=entry.session_id,
             admitted_routing_revision=routing_revision,
-            source=entry.origin,
+            admitted_route_instance_id=captured_route_instance_id,
+            admitted_binding_version=binding_version or 1,
+            source=(
+                captured_authorization_source
+                if captured_authorization_source is not None
+                else getattr(entry, "origin", None)
+            ),
             future=future,
         )
         # Admission is durable before this append.  That ordering is the reset
@@ -516,6 +685,8 @@ class ContextualCronGateway:
                     item.session_key,
                     admitted_session_id=item.admitted_session_id,
                     admitted_routing_revision=item.admitted_routing_revision,
+                    admitted_route_instance_id=item.admitted_route_instance_id,
+                    authorization_source=item.source,
                 )
                 if rejection is not None:
                     return rejection
@@ -591,8 +762,13 @@ class ContextualCronGateway:
                     outcome = ContextualCronOutcome.failure(str(exc))
 
                 try:
-                    authorized_after_model = bool(
-                        self.runner._is_user_authorized(item.source)
+                    _, commit_rejection = self._validate_entry(
+                        item.session_key,
+                        admitted_session_id=item.admitted_session_id,
+                        admitted_routing_revision=item.admitted_routing_revision,
+                        admitted_route_instance_id=item.admitted_route_instance_id,
+                        authorization_source=item.source,
+                        propagate_authorization_errors=True,
                     )
                 except Exception as auth_exc:
                     outcome = ContextualCronOutcome.retryable(
@@ -601,10 +777,8 @@ class ContextualCronGateway:
                     )
                     item.transcript_entries = None
                 else:
-                    if not authorized_after_model:
-                        outcome = ContextualCronOutcome.rejected(
-                            "Contextual cron authorization was revoked before commit."
-                        )
+                    if commit_rejection is not None:
+                        outcome = commit_rejection
                         item.transcript_entries = None
 
                 try:
@@ -626,7 +800,17 @@ class ContextualCronGateway:
                         retry_delay = self._transcript_retry_seconds
                         while True:
                             try:
-                                if not self.runner._is_user_authorized(item.source):
+                                authorized_for_apply = bool(
+                                    self.runner._is_user_authorized(item.source)
+                                )
+                            except Exception:
+                                outcome = ContextualCronOutcome.unknown(
+                                    "Contextual transcript application was deferred because "
+                                    "authorization could not be revalidated."
+                                )
+                                break
+                            try:
+                                if not authorized_for_apply:
                                     raise ContextualCronTranscriptConflict(
                                         "Contextual cron authorization was revoked "
                                         "before transcript application."

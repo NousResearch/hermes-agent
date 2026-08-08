@@ -22,11 +22,11 @@ def _point_ledger(monkeypatch, tmp_path):
     return executions
 
 
-def test_schema_v6_migrates_every_legacy_version_without_pending_side_effects(
+def test_schema_v8_migrates_every_legacy_version_without_pending_side_effects(
     monkeypatch, tmp_path
 ):
     executions = _point_ledger(monkeypatch, tmp_path)
-    for legacy_version in range(6):
+    for legacy_version in range(8):
         path = tmp_path / f"legacy-{legacy_version}.db"
         monkeypatch.setattr(executions, "EXECUTIONS_FILE", path)
         with sqlite3.connect(path) as conn:
@@ -61,9 +61,11 @@ def test_schema_v6_migrates_every_legacy_version_without_pending_side_effects(
         assert migrated["delivery_state"] == "not_applicable"
         assert migrated["transcript_state"] == "not_applicable"
         assert migrated["requires_job_accounting"] == 0
+        assert migrated["admitted_binding_version"] is None
+        assert migrated["admitted_route_instance_id"] is None
         assert executions.list_pending_contextual_transcripts() == []
         with sqlite3.connect(path) as conn:
-            assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 def test_contextual_admission_and_typed_outcomes_are_durable(monkeypatch, tmp_path):
@@ -75,6 +77,8 @@ def test_contextual_admission_and_typed_outcomes_are_durable(monkeypatch, tmp_pa
         record["id"],
         session_key="telegram:dm:42:42",
         admitted_session_id="session-1",
+        admitted_route_instance_id="route-instance-a",
+        admitted_binding_version=2,
     ) is True
     assert executions.seal_contextual_admission(
         record["id"],
@@ -88,9 +92,12 @@ def test_contextual_admission_and_typed_outcomes_are_durable(monkeypatch, tmp_pa
         record["id"],
         outcome="no_action",
     )
+    assert finished is not None
     assert finished["status"] == "completed"
     assert finished["outcome"] == "no_action"
     assert finished["session_key"] == "telegram:dm:42:42"
+    assert finished["admitted_binding_version"] == 2
+    assert finished["admitted_route_instance_id"] == "route-instance-a"
     assert finished["admitted_session_id"] == "session-1"
     assert json.loads(finished["result_json"])["kind"] == "no_action"
     assert executions.finish_contextual_execution(

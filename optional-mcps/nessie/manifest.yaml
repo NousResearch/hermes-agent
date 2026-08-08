@@ -1,0 +1,49 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: nessie
+description: >-
+  Search and read your own and your team's AI conversation history, notes,
+  profiles, and shared context from Hermes.
+source: https://nessielabs.com/docs/mcp-setup
+
+# Hosted Streamable HTTP endpoint. Auth is a per-user API key sent as a
+# bearer Authorization header - the same header template that
+# `hermes mcp add nessie --auth header` produces manually today.
+transport:
+  type: http
+  url: https://mcp.nessielabs.com/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_NESSIE_API_KEY
+      prompt: "Nessie API key (create one under Settings → API Keys)"
+      required: true
+      secret: true
+
+# Start with the modern read-only surface. Context/profile writes, modality
+# corrections, deletion, and deprecated compatibility aliases remain available
+# in the install-time checklist and can be enabled explicitly.
+tools:
+  default_enabled:
+    - nessie_check_in
+    - nessie_who_am_i
+    - nessie_team_list
+    - nessie_integration_list
+    - nessie_ls
+    - nessie_grep
+    - nessie_cat
+    - nessie_head
+    - nessie_tail
+    - nessie_stat
+    - nessie_asset_get
+
+post_install: |
+  Enable Cloud Sync in Nessie, create an API key under Settings → API Keys,
+  and paste it at the prompt above. Verify the connection with:
+    hermes mcp test nessie
+  Then start a fresh session (/new) so the Nessie tools load. The default
+  tool set is read-only; run `hermes mcp configure nessie` to opt into
+  context/profile writes or deletion tools.

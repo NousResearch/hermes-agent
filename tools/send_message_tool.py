@@ -851,7 +851,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # limit (issue #28557). Pass the whole message in one call; media attaches
     # after all text chunks.
     if platform == Platform.TELEGRAM:
-        disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+        _tg_extra = getattr(pconfig, "extra", None) or {}
+        disable_link_previews = bool(_tg_extra.get("disable_link_previews"))
         return await _send_telegram(
             pconfig.token,
             chat_id,
@@ -860,6 +861,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             thread_id=thread_id,
             disable_link_previews=disable_link_previews,
             force_document=force_document,
+            base_url=_tg_extra.get("base_url"),
+            base_file_url=_tg_extra.get("base_file_url"),
         )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
@@ -1173,7 +1176,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, base_url=None, base_file_url=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1203,6 +1206,19 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
+        # Honour a custom Bot API base_url (self-hosted telegram-bot-api
+        # server), mirroring the gateway adapter's extra.base_url /
+        # extra.base_file_url. Without this, the standalone send path
+        # always hits api.telegram.org and times out in regions where it
+        # is blocked, even when interactive gateway replies work (#51223).
+        _bot_kwargs: dict = {}
+        if base_url:
+            _bot_kwargs["base_url"] = base_url
+            _bot_kwargs["base_file_url"] = base_file_url or base_url
+            logger.info(
+                "send_message: standalone Telegram send via custom Bot API base_url %s",
+                base_url,
+            )
         # Honour a configured proxy (telegram.proxy_url in config.yaml, exported
         # as TELEGRAM_PROXY env var by load_gateway_config). Without this, the
         # standalone send path bypasses the proxy and times out in regions
@@ -1221,12 +1237,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     token=token,
                     request=HTTPXRequest(proxy=_tg_proxy),
                     get_updates_request=HTTPXRequest(proxy=_tg_proxy),
+                    **_bot_kwargs,
                 )
             except Exception as _proxy_err:
                 logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
-                bot = Bot(token=token)
+                bot = Bot(token=token, **_bot_kwargs)
         else:
-            bot = Bot(token=token)
+            bot = Bot(token=token, **_bot_kwargs)
         from plugins.platforms.telegram.telegram_ids import (
             normalize_telegram_chat_id,
         )

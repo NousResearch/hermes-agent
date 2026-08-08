@@ -163,7 +163,7 @@ class TestGenerate:
                  return_value=Path("/tmp/krea_krea-2-medium_test.png"),
              ) as mock_save, \
              patch("plugins.image_gen.krea.time.sleep"):  # skip real waits
-            result = KreaImageGenProvider().generate(prompt="A cinematic lamp")
+            result = KreaImageGenProvider().generate(prompt="A cinematic lamp", upscale=False)
 
         assert result["success"] is True
         assert result["image"] == "/tmp/krea_krea-2-medium_test.png"
@@ -215,7 +215,7 @@ class TestGenerate:
                  return_value=Path("/tmp/x.png"),
              ), \
              patch("plugins.image_gen.krea.time.sleep"):
-            KreaImageGenProvider().generate(prompt="test", aspect_ratio="square")
+            KreaImageGenProvider().generate(prompt="test", aspect_ratio="square", upscale=False)
 
         payload = mock_post.call_args.kwargs["json"]
         assert payload["aspect_ratio"] == "1:1"
@@ -260,6 +260,7 @@ class TestGenerate:
                 moodboards=[{"url": "https://x.com/mood.png"}, {"url": "https://x.com/mood2.png"}],
                 image_style_references=[{"url": f"https://x.com/{i}.png"} for i in range(15)],
                 creativity="high",
+                upscale=False,
             )
 
         payload = mock_post.call_args.kwargs["json"]
@@ -290,6 +291,7 @@ class TestGenerate:
                     "https://x.com/a.png",
                     {"url": "https://x.com/b.png", "strength": 1.2},
                 ],
+                upscale=False,
             )
 
         payload = mock_post.call_args.kwargs["json"]
@@ -513,7 +515,7 @@ class TestManagedGateway:
                  return_value=Path("/tmp/x.png"),
              ), \
              patch("plugins.image_gen.krea.time.sleep"):
-            result = KreaImageGenProvider().generate(prompt="A managed lamp")
+            result = KreaImageGenProvider().generate(prompt="A managed lamp", upscale=False)
 
         assert result["success"] is True
         post_url = mock_post.call_args[0][0]
@@ -573,7 +575,7 @@ class TestExplicitModelOverride:
                  return_value=Path("/tmp/x.png"),
              ), \
              patch("plugins.image_gen.krea.time.sleep"):
-            result = KreaImageGenProvider().generate(prompt="test", model="krea-2-medium-turbo")
+            result = KreaImageGenProvider().generate(prompt="test", model="krea-2-medium-turbo", upscale=False)
 
         assert result["success"] is True
         assert result["model"] == "krea-2-medium-turbo"
@@ -587,7 +589,7 @@ class TestExplicitModelOverride:
 
 
 class TestUpscalePass:
-    def _run_generate(self, *, upscale, enhance_job):
+    def _run_generate(self, *, upscale, enhance_job, model=None):
         """Drive generate() with sequenced post/get mocks.
 
         Sequence: generation submit POST → generation poll GET; then (when
@@ -603,6 +605,10 @@ class TestUpscalePass:
         posts = [gen_submit, enh_submit]
         gets = [gen_poll] + ([enh_poll] if enh_poll else [])
 
+        kwargs = {"prompt": "a lamp", "upscale": upscale}
+        if model is not None:
+            kwargs["model"] = model
+
         with patch("plugins.image_gen.krea.requests.post", side_effect=posts) as mock_post, \
              patch("plugins.image_gen.krea.requests.get", side_effect=gets) as mock_get, \
              patch(
@@ -610,7 +616,7 @@ class TestUpscalePass:
                  side_effect=lambda url, prefix: Path(f"/tmp/{url.rsplit('/', 1)[-1]}"),
              ), \
              patch("plugins.image_gen.krea.time.sleep"):
-            result = KreaImageGenProvider().generate(prompt="a lamp", upscale=upscale)
+            result = KreaImageGenProvider().generate(**kwargs)
         return result, mock_post, mock_get
 
     def test_upscale_routes_through_enhance_endpoint(self):
@@ -651,13 +657,41 @@ class TestUpscalePass:
         assert result["image"].endswith("native.png")
         assert mock_post.call_count == 2  # enhance attempted, fell back
 
-    def test_no_upscale_by_default(self):
-        result, mock_post, _ = self._run_generate(upscale=None, enhance_job=None)
+    def test_medium_upscales_by_default(self):
+        """krea-2-medium is 1.5K native — the Enhance pass defaults ON."""
+        enhance_job = {
+            "job_id": "00000000-0000-0000-0000-00000000e0e0",
+            "status": "completed",
+            "created_at": "2026-05-27T00:00:00Z",
+            "completed_at": "2026-05-27T00:01:00Z",
+            "result": {"urls": ["https://krea.cdn/enhanced.png"]},
+        }
+        result, mock_post, _ = self._run_generate(upscale=None, enhance_job=enhance_job)
+
+        assert result["success"] is True
+        assert result["upscaled"] is True
+        assert result["image"].endswith("enhanced.png")
+        assert mock_post.call_count == 2
+
+    def test_large_skips_upscale_by_default(self):
+        """krea-2-large is 2K native — no automatic Enhance pass."""
+        result, mock_post, _ = self._run_generate(
+            upscale=None, enhance_job=None, model="krea-2-large",
+        )
 
         assert result["success"] is True
         assert result["upscaled"] is False
         assert result["image"].endswith("native.png")
         assert mock_post.call_count == 1  # only the generation submit
+
+    def test_explicit_false_disables_default(self):
+        """Explicit upscale=False wins over medium's default-on."""
+        result, mock_post, _ = self._run_generate(upscale=False, enhance_job=None)
+
+        assert result["success"] is True
+        assert result["upscaled"] is False
+        assert result["image"].endswith("native.png")
+        assert mock_post.call_count == 1
 
 
 # ---------------------------------------------------------------------------

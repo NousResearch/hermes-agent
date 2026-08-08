@@ -160,37 +160,33 @@ This translation happens in `_build_fal_payload()` — agent code never has to k
 
 ## Upscaling
 
-### On-demand (any model)
+### Automatic (default-on for low-res models)
 
-The agent-facing `upscale` parameter requests a high-resolution pass after
-generation on **any** model — ask for "high-res", "print quality", or
-"wallpaper" output and the agent sets `upscale: true`:
+Every model whose native output is below ~2MP automatically runs a
+high-resolution pass after generation, so you never silently get a low-res
+image:
 
-| Backend | Upscaler | Result |
+| Backend | Models upscaled by default | Upscaler |
 |---|---|---|
-| **FAL.ai** (all models) | Clarity Upscaler | ~2× resolution, +$0.03/MP |
-| **Krea** (Krea 2 family) | Krea Enhance | 2× resolution (up to 8K ceiling) |
-| Other backends | — | parameter is ignored (native resolution returned) |
+| **FAL.ai** | all except Seedream 5 Pro/Lite and Krea 2 Large (native ≥2MP) | Clarity Upscaler (2×, +$0.03/MP) |
+| **Krea** | Krea 2 Medium + Medium Turbo (1.5K native); Large (2K) skips | Krea Enhance (2×, up to 8K ceiling) |
+| Other backends | — | no upscaler; native resolution returned |
 
-An explicit `upscale: false` also *disables* the automatic pass on models
-that default to it (currently `flux-2-pro`). Passing `upscale: true` with an
-image edit runs the pass on the edited output too.
+### The `upscale` parameter (per-call override)
 
-`video_generate` accepts the same `upscale` parameter on the FAL backend,
-chaining ByteDance's **SeedVR2** video upscaler (2×, $0.001/MP of output
-video) after generation.
+The agent-facing `upscale` boolean overrides the default in either
+direction:
 
-### Automatic (per-model default)
+- `upscale: false` — skip the automatic pass (faster/cheaper draft output)
+- `upscale: true` — force the pass, even on native hi-res models or image
+  edits
 
-Upscaling via FAL's **Clarity Upscaler** also runs automatically for models
-whose catalog entry sets `upscale: True`:
+`video_generate` also accepts `upscale: true` on the FAL backend, chaining
+ByteDance's **SeedVR2** video upscaler (2×, $0.001/MP of output video) after
+generation. Video stays opt-in — doubling every video's resolution by
+default would double its cost and latency.
 
-| Model | Upscale? | Why |
-|---|---|---|
-| `fal-ai/flux-2-pro` | ✓ | Backward-compat (was the pre-picker default) |
-| All others | ✗ | Fast models would lose their sub-second value prop; hi-res models don't need it |
-
-When upscaling runs, it uses these settings:
+When the FAL image pass runs, it uses these settings:
 
 | Setting | Value |
 |---|---|
@@ -207,7 +203,7 @@ If upscaling fails (network issue, rate limit), the original image is returned a
 1. **Model resolution** — `_resolve_fal_model()` reads `image_gen.model` from `config.yaml`, falls back to the `FAL_IMAGE_MODEL` env var, then to `fal-ai/flux-2/klein/9b`.
 2. **Payload building** — `_build_fal_payload()` translates your `aspect_ratio` into the model's native format (preset enum, aspect-ratio enum, or GPT literal), merges the model's default params, applies any caller overrides, then filters to the model's `supports` whitelist so unsupported keys are never sent.
 3. **Submission** — `_submit_fal_request()` routes via direct FAL credentials or the managed Nous gateway.
-4. **Upscaling** — runs when the agent passed `upscale: true`, or when the model's metadata has `upscale: True` (explicit `upscale: false` wins over the metadata default).
+4. **Upscaling** — runs when the model's catalog entry has `upscale: True` (the default for sub-2MP models) or the agent passed `upscale: true`; an explicit `upscale: false` always skips it.
 5. **Delivery** — final image URL returned to the agent, which emits a `MEDIA:<url>` tag that platform adapters convert to native media.
 
 ## Debugging

@@ -57,17 +57,23 @@ class TestFalCatalog:
             assert not missing, f"{mid} missing required keys: {missing}"
 
 
-    def test_only_flux2_pro_upscales_by_default(self, image_tool):
-        """Upscaling should default to False for all new models to preserve
-        the <1s / fast-render value prop. Only flux-2-pro stays True for
-        backward-compat with the previous default."""
+    def test_upscale_defaults_track_native_resolution(self, image_tool):
+        """Default-on upscaling: every model whose native output is below
+        ~2MP upscales by default so users never silently get low-res images.
+        Models that already emit >=2MP natively (Seedream tiers, Krea 2
+        Large on FAL) skip the pass — upscaling them wastes money."""
+        native_hi_res = {
+            "bytedance/seedream/v5/pro/text-to-image",   # 1536²-2048² native
+            "bytedance/seedream/v5/lite/text-to-image",  # up to 4K native
+            "fal-ai/krea/v2/large/text-to-image",        # 2K native
+        }
         for mid, meta in image_tool.FAL_MODELS.items():
-            if mid == "fal-ai/flux-2-pro":
-                assert meta["upscale"] is True, \
-                    "flux-2-pro should keep upscale=True for backward-compat"
-            else:
+            if mid in native_hi_res:
                 assert meta["upscale"] is False, \
-                    f"{mid} should default to upscale=False"
+                    f"{mid} is native hi-res — should not double-upscale"
+            else:
+                assert meta["upscale"] is True, \
+                    f"{mid} should default to upscale=True (sub-2MP native)"
 
 
 # ---------------------------------------------------------------------------
@@ -494,19 +500,22 @@ class TestUpscaleOptIn:
         expected_url = "https://fal/upscaled.png" if upscaler_called else "https://fal/native.png"
         assert out["image"] == expected_url
 
-    def test_explicit_true_upscales_non_default_model(self, image_tool, monkeypatch):
-        """Klein has upscale=False in the catalog — explicit True wins."""
+    def test_explicit_true_upscales_native_hi_res_model(self, image_tool, monkeypatch):
+        """Seedream Lite has upscale=False in the catalog (native 4K) —
+        explicit True still wins."""
         self._run(image_tool, monkeypatch,
-                  model="fal-ai/flux-2/klein/9b", upscale=True, upscaler_called=True)
+                  model="bytedance/seedream/v5/lite/text-to-image",
+                  upscale=True, upscaler_called=True)
 
-    def test_explicit_false_disables_flux2_pro_default(self, image_tool, monkeypatch):
-        """flux-2-pro defaults to upscale=True — explicit False wins."""
+    def test_explicit_false_disables_default_on_model(self, image_tool, monkeypatch):
+        """Klein defaults to upscale=True (sub-2MP native) — explicit False wins."""
         self._run(image_tool, monkeypatch,
-                  model="fal-ai/flux-2-pro", upscale=False, upscaler_called=False)
+                  model="fal-ai/flux-2/klein/9b", upscale=False, upscaler_called=False)
 
     def test_omitted_keeps_catalog_default_off(self, image_tool, monkeypatch):
         self._run(image_tool, monkeypatch,
-                  model="fal-ai/flux-2/klein/9b", upscale=None, upscaler_called=False)
+                  model="bytedance/seedream/v5/lite/text-to-image",
+                  upscale=None, upscaler_called=False)
 
     def test_omitted_keeps_catalog_default_on(self, image_tool, monkeypatch):
         self._run(image_tool, monkeypatch,

@@ -57,6 +57,9 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "Illustration, anime, painting, expressive styles. Faster + cheaper.",
         "price": "$0.030 (text) / $0.035 (style refs) / $0.040 (moodboards)",
         "path": "medium",
+        # 1.5K native — default the Enhance pass on (mirrors the FAL
+        # catalog policy: sub-2MP models upscale by default).
+        "upscale": True,
     },
     "krea-2-large": {
         "display": "Krea 2 Large",
@@ -64,6 +67,8 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "Photorealism, raw textured looks (motion blur, grain), expressive styles.",
         "price": "$0.060 (text) / $0.065 (style refs) / $0.070 (moodboards)",
         "path": "large",
+        # 2K native — high-res enough out of the box.
+        "upscale": False,
     },
     "krea-2-medium-turbo": {
         "display": "Krea 2 Medium Turbo",
@@ -71,6 +76,8 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "Fastest Krea 2 — medium quality at lower latency / cost.",
         "price": "$0.015 (text) / $0.0175 (style refs)",
         "path": "medium-turbo",
+        # 1.5K native — default the Enhance pass on.
+        "upscale": True,
     },
 }
 
@@ -821,17 +828,20 @@ class KreaImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        # Optional high-resolution pass (Krea Enhance). Explicit agent/user
-        # opt-in via the ``upscale`` kwarg; config default via
-        # ``image_gen.krea.upscale``. Best-effort: failure falls back to the
-        # original image rather than failing the generation.
+        # High-resolution pass (Krea Enhance). Precedence: explicit kwarg >
+        # ``image_gen.krea.upscale`` config > per-model catalog default
+        # (1.5K-native tiers default on; 2K-native Large stays off). Best-
+        # effort: failure falls back to the original image rather than
+        # failing the generation.
         upscaled = False
         upscale_requested = kwargs.get("upscale")
         if not isinstance(upscale_requested, bool):
             cfg_krea = _load_krea_config().get("krea")
-            upscale_requested = bool(
-                isinstance(cfg_krea, dict) and cfg_krea.get("upscale") is True
-            )
+            cfg_upscale = cfg_krea.get("upscale") if isinstance(cfg_krea, dict) else None
+            if isinstance(cfg_upscale, bool):
+                upscale_requested = cfg_upscale
+            else:
+                upscale_requested = bool(meta.get("upscale", False))
         if upscale_requested:
             enhanced_url = _enhance_image(
                 base_url,

@@ -1373,3 +1373,164 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
         assert len(calls) == 1  # attempted exactly once, init still completed
         assert any("runtime installs are disabled" in r.getMessage()
                    for r in caplog.records)
+
+
+class TestSecretScopeGuard:
+    """Background writer/daemon threads run without contextvars under a
+    multiplexing gateway. get_secret() then fails closed with
+    UnscopedSecretError; _secret_scope_guard must install the provider's
+    profile scope so client creation and daemon startup resolve the right key.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_multiplex(self):
+        from agent.secret_scope import set_multiplex_active
+        set_multiplex_active(True)
+        try:
+            yield
+        finally:
+            set_multiplex_active(False)
+
+    def _provider(self, tmp_path):
+        from agent.secret_scope import current_secret_scope
+        # Scope must be empty at the start of each test (fresh context).
+        assert current_secret_scope() is None
+        provider = HindsightMemoryProvider()
+        provider._profile_home = tmp_path
+        return provider
+
+    def test_guard_installs_profile_scope_for_secret_reads(self, tmp_path):
+        from agent import secret_scope as ss
+        tmp_path.joinpath(".env").write_text(
+            "HINDSIGHT_LLM_API_KEY=test-llm-key\nHINDSIGHT_API_KEY=test-api-key\n"
+        )
+        provider = self._provider(tmp_path)
+
+        # Baseline: fail closed without the guard.
+        with pytest.raises(ss.UnscopedSecretError):
+            ss.get_secret("HINDSIGHT_LLM_API_KEY", "")
+
+        with provider._secret_scope_guard():
+            assert ss.get_secret("HINDSIGHT_LLM_API_KEY", "") == "test-llm-key"
+            assert ss.get_secret("HINDSIGHT_API_KEY", "") == "test-api-key"
+            # Home override is active too, so daemon-env fills resolve the
+            # provider's own profile .env, not the default home.
+            from hermes_constants import get_hermes_home
+            assert str(get_hermes_home()) == str(tmp_path)
+
+        assert ss.current_secret_scope() is None
+
+    def test_guard_is_reentrant_and_keeps_existing_scope(self, tmp_path):
+        from agent import secret_scope as ss
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_LLM_API_KEY=k\n")
+        provider = self._provider(tmp_path)
+
+        with provider._secret_scope_guard():
+            outer = ss.current_secret_scope()
+            with provider._secret_scope_guard():
+                assert ss.current_secret_scope() is outer
+            assert ss.current_secret_scope() is outer
+
+    def test_guard_noop_when_multiplex_off(self, tmp_path, monkeypatch):
+        from agent import secret_scope as ss
+        from agent.secret_scope import set_multiplex_active
+        set_multiplex_active(False)
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_LLM_API_KEY=k\n")
+        provider = self._provider(tmp_path)
+
+        with provider._secret_scope_guard():
+            # Multiplex off => get_secret falls back to os.environ; guard must
+            # not have installed any scope.
+            assert ss.current_secret_scope() is None
+
+    def test_get_client_creates_within_scope_and_caches(self, tmp_path):
+        from agent import secret_scope as ss
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_LLM_API_KEY=test-llm-key\n")
+        provider = self._provider(tmp_path)
+        provider._client = None
+
+        calls = {}
+
+        def fake_unscoped(self):
+            scope = ss.current_secret_scope()
+            calls["scope_active"] = scope is not None
+            calls["key"] = (scope or {}).get("HINDSIGHT_LLM_API_KEY")
+            self._client = "FAKE_CLIENT"  # real creation sets self._client
+            return "FAKE_CLIENT"
+
+        provider._create_client = fake_unscoped.__get__(provider, HindsightMemoryProvider)
+
+        assert provider._get_client() == "FAKE_CLIENT"
+        assert calls["scope_active"] is True
+        assert calls["key"] == "test-llm-key"
+        # Cached: second call must not re-enter unscoped creation.
+        provider._create_client = None
+        assert provider._get_client() == "FAKE_CLIENT"
+
+    def test_background_thread_resolves_secrets_through_guard(self, tmp_path):
+        """Regression for the actual bug: a plain threading.Thread (no
+        copy_context) like hindsight-writer must still resolve profile secrets
+        when it builds the client under a multiplexing gateway."""
+        import threading
+        from agent import secret_scope as ss
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_LLM_API_KEY=thread-key\n")
+        provider = self._provider(tmp_path)
+        provider._client = None
+
+        result = {}
+
+        def fake_unscoped(self):
+            scope = ss.current_secret_scope()
+            result["scope_active"] = scope is not None
+            result["key"] = (scope or {}).get("HINDSIGHT_LLM_API_KEY")
+            self._client = "THREAD_CLIENT"
+            return "THREAD_CLIENT"
+
+        provider._create_client = fake_unscoped.__get__(provider, HindsightMemoryProvider)
+
+        thread = threading.Thread(target=provider._get_client, name="hindsight-writer")
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert result["scope_active"] is True
+        assert result["key"] == "thread-key"
+        assert provider._client == "THREAD_CLIENT"
+        # Main thread context stayed untouched — no leak from the worker.
+        assert ss.current_secret_scope() is None
+
+    def test_guard_restores_contextvars_on_exception(self, tmp_path):
+        from agent import secret_scope as ss
+        from hermes_constants import get_hermes_home_override
+        tmp_path.joinpath(".env").write_text("HINDSIGHT_LLM_API_KEY=k\n")
+        provider = self._provider(tmp_path)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with provider._secret_scope_guard():
+                raise RuntimeError("boom")
+
+        assert ss.current_secret_scope() is None
+        assert get_hermes_home_override() is None
+
+    def test_guard_fails_closed_when_profile_home_missing(self, tmp_path):
+        from agent import secret_scope as ss
+        provider = HindsightMemoryProvider()
+        provider._profile_home = None  # pre-initialize state
+
+        # Guard must NOT install the default profile's secrets: get_secret
+        # keeps failing closed so a wrong-key client can never be built.
+        with provider._secret_scope_guard():
+            assert ss.current_secret_scope() is None
+            with pytest.raises(ss.UnscopedSecretError):
+                ss.get_secret("HINDSIGHT_LLM_API_KEY", "")
+
+    def test_initialize_captures_profile_home_from_kwarg(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"mode": "cloud", "apiKey": "x"}))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="s", hermes_home=str(tmp_path), platform="cli")
+        assert provider._profile_home == tmp_path
+

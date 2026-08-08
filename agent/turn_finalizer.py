@@ -151,6 +151,10 @@ def finalize_turn(
         # We route through ``_record_task_failure(outcome="timed_out")``
         # rather than ``kanban_block`` so this counts toward the dispatcher's
         # consecutive-failure circuit breaker (#29747 gap 2).
+        # Hold the claim (release_claim=False) so the dispatcher cannot
+        # spawn a second worker into the same worktree while this process
+        # is still alive — the goal loop will continue with a fresh
+        # iteration budget until goal_max_turns is exhausted (#71175).
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
@@ -167,7 +171,7 @@ def finalize_turn(
                             "iterations"
                         ),
                         outcome="timed_out",
-                        release_claim=True,
+                        release_claim=False,
                         end_run=True,
                         event_payload_extra={
                             "budget_used": api_call_count,

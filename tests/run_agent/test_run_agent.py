@@ -4173,7 +4173,7 @@ class TestRunConversation:
         # Positional: (conn, task_id, ...)
         assert call.args[1] == "t_test_task_123"
         assert call.kwargs.get("outcome") == "timed_out"
-        assert call.kwargs.get("release_claim") is True
+        assert call.kwargs.get("release_claim") is False
         assert call.kwargs.get("end_run") is True
         assert "Iteration budget exhausted" in call.kwargs.get("error", "")
 

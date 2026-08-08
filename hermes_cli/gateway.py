@@ -4120,11 +4120,20 @@ def generate_launchd_plist() -> str:
     if profile_arg:
         for part in profile_arg.split():
             prog_args.append(f"<string>{part}</string>")
+    # No ``--replace`` for supervised starts (issue #79048). A launchd
+    # service is respawned by KeepAlive, so takeover authority would be
+    # re-armed on every respawn: two profiles legitimately sharing one
+    # platform token (e.g. the same Discord bot) would each terminate the
+    # sibling, and launchd would revive the victim forever — an endless
+    # mutual-eviction loop. Bounded replacement is the lifecycle commands'
+    # job (``launchctl kickstart -k``, drain in ``launchd_restart()``,
+    # bootout+bootstrap in install/refresh), which run before supervision
+    # resumes. This mirrors ``generate_systemd_unit``, whose ExecStart also
+    # runs ``gateway run`` without ``--replace``.
     prog_args.extend(
         [
             "<string>gateway</string>",
             "<string>run</string>",
-            "<string>--replace</string>",
         ]
     )
     prog_args_xml = "\n        ".join(prog_args)

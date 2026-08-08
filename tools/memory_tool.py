@@ -389,6 +389,10 @@ class MemoryStore:
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
+        # Strict providers may send JSON null (already caught upstream) or a
+        # non-string filler; bare ``.strip()`` AttributeErrors mid-tool.
+        if not isinstance(content, str):
+            return {"success": False, "error": "Content must be a string."}
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -448,6 +452,10 @@ class MemoryStore:
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
+        if not isinstance(old_text, str):
+            return {"success": False, "error": "old_text must be a string."}
+        if not isinstance(new_content, str):
+            return {"success": False, "error": "new_content must be a string."}
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -519,6 +527,8 @@ class MemoryStore:
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
+        if not isinstance(old_text, str):
+            return {"success": False, "error": "old_text must be a string."}
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
@@ -580,6 +590,11 @@ class MemoryStore:
         for i, op in enumerate(operations):
             act = (op or {}).get("action")
             new_content = (op or {}).get("content")
+            if act in {"add", "replace"} and new_content is not None and not isinstance(new_content, str):
+                return {
+                    "success": False,
+                    "error": f"Operation {i + 1}: content must be a string.",
+                }
             if act in {"add", "replace"} and new_content:
                 scan_error = _scan_memory_content(new_content)
                 if scan_error:
@@ -599,9 +614,17 @@ class MemoryStore:
             for i, op in enumerate(operations):
                 op = op or {}
                 act = op.get("action")
-                content = (op.get("content") or "").strip()
-                old_text = (op.get("old_text") or "").strip()
+                raw_content = op.get("content")
+                raw_old = op.get("old_text")
                 pos = f"Operation {i + 1} ({act or 'unknown'})"
+                # Present-but-null is fine (treated as empty); non-strings must
+                # not AttributeError on ``.strip()`` mid-batch.
+                if raw_content is not None and not isinstance(raw_content, str):
+                    return self._batch_error(target, f"{pos}: content must be a string.")
+                if raw_old is not None and not isinstance(raw_old, str):
+                    return self._batch_error(target, f"{pos}: old_text must be a string.")
+                content = (raw_content or "").strip()
+                old_text = (raw_old or "").strip()
 
                 if act == "add":
                     if not content:

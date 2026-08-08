@@ -5,39 +5,23 @@ import { useWebHaptics } from 'web-haptics/react'
 import { registerHapticTrigger } from '@/lib/haptics'
 import { $hapticsMuted } from '@/store/haptics'
 
+// web-haptics' `debug` option is its desktop audio fallback: on platforms
+// where navigator.vibrate exists (Chromium exposes it as a no-op on
+// desktop) the library plays synthesized click sounds through an
+// AudioContext whenever debug is enabled, briefly seizing the macOS audio
+// device and interrupting other playback (Spotify, Apple Music, Bluetooth
+// streams) on every prompt submit. Desktop has no vibration motor, so
+// keep the provider and the persisted mute control wired, but never
+// enable the audio fallback.
 export function HapticsProvider({ children }: { children: ReactNode }) {
   const muted = useStore($hapticsMuted)
-  const { trigger } = useWebHaptics({ debug: true, showSwitch: false })
+  const { trigger } = useWebHaptics({ showSwitch: false })
 
   useEffect(() => {
     registerHapticTrigger(muted ? null : trigger)
 
     return () => registerHapticTrigger(null)
   }, [muted, trigger])
-
-  // web-haptics builds its AudioContext lazily inside the first trigger(), and
-  // the process's first AudioContext pays the CoreAudio spin-up (~850ms stall
-  // in profiles) — which landed on the first streamStart haptic as the first
-  // token painted. Open/close a throwaway context at idle so the real one
-  // connects to an already-warm audio service in single-digit ms.
-  useEffect(() => {
-    if (typeof requestIdleCallback !== 'function' || typeof AudioContext === 'undefined') {
-      return undefined
-    }
-
-    const id = requestIdleCallback(
-      () => {
-        try {
-          void new AudioContext().close().catch(() => undefined)
-        } catch {
-          // No audio device (headless CI) — nothing to warm.
-        }
-      },
-      { timeout: 2000 }
-    )
-
-    return () => cancelIdleCallback(id)
-  }, [])
 
   return <>{children}</>
 }

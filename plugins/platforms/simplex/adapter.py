@@ -52,9 +52,10 @@ import os
 import random
 import re
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Lazy import: BasePlatformAdapter and friends live in the main repo.
 # Imported at module top because they're stdlib-only inside Hermes — no
@@ -81,10 +82,123 @@ HEALTH_CHECK_STALE_THRESHOLD = 300.0
 # Correlation ID prefix for requests we send so we can ignore our own echoes.
 _CORR_PREFIX = "hermes-"
 
+# Fallback tap-window for an approval prompt, used only when the core
+# approval config cannot be read. The live value comes from
+# ``tools.approval._get_approval_timeout()`` — the two timers are
+# independent, and a prompt that outlives the agent-side wait would collect
+# taps that resolve nothing, so the adapter follows the operator's
+# ``approvals.timeout`` instead of hardcoding its own.
+APPROVAL_PROMPT_TTL_FALLBACK_SECONDS = 300.0
+
+# Correlated-wait budget for the anchoring ``/_send``. gateway/run.py gives
+# ``send_exec_approval`` 15 seconds before it abandons the button lane and
+# posts its own plain-text prompt, so waiting the full 15 here leaves no
+# headroom and a slow daemon double-posts the approval.
+ANCHORED_SEND_TIMEOUT_SECONDS = 10.0
+
+# Tap targets the bot places on its own approval prompt, in seeding order:
+# (emoji, choice, label).
+#
+# Exactly three, because simplex-chat holds at most three reactions per
+# sender per item — measured against v7.0.0.11, where seeding a fourth comes
+# back as ``commandError: "too many reactions"``. It is a count cap, not an
+# emoji filter (removing one frees a slot), and it is per *sender*, so a user
+# can always still add their own reaction to an item the bot has filled.
+#
+# Deny is first on purpose: whichever target is seeded last is the one a cap
+# drops, and "I refuse" is the choice a security prompt must never lose.
+#
+# The emoji are NOT the Matrix adapter's ✅/🌀/♾️/❌ set. The simplex-chat
+# daemon validates reaction emoji against a fixed list (``mrEmojiChar`` in
+# ``src/Simplex/Chat/Protocol.hs`` accepts only 👍👎😀😂😢❤🚀✅ and rejects
+# everything else), so 🌀/♾️/❌ would come back as command errors.
+_APPROVAL_CHOICES: Tuple[Tuple[str, str, str], ...] = (
+    ("👎", "deny", "deny"),
+    ("✅", "once", "approve once"),
+    ("🚀", "session", "approve for this session"),
+)
+
+_APPROVAL_REACTION_MAP: Dict[str, str] = {
+    emoji: choice for emoji, choice, _label in _APPROVAL_CHOICES
+}
+# 👍 is not seeded but it is what people reach for first, and the gateway
+# already reads a typed 👍 as approval.
+_APPROVAL_REACTION_MAP["👍"] = "once"
+# ❤ is approve-*always*, and it is deliberately typed-only: it writes a
+# permanent, global, on-disk allowlist entry, which is the most consequential
+# thing this prompt can do. A deliberate ``/approve always`` is the right cost
+# for that tier, and it keeps the three tap slots for the tiers that are
+# scoped to the moment. Still honoured inbound, so a user who places ❤ by hand
+# gets what they asked for.
+_APPROVAL_REACTION_MAP["❤"] = "always"
+
+# Outcomes of asking the daemon to place or remove one of our reactions.
+_REACTION_ACCEPTED = "accepted"
+_REACTION_REJECTED = "rejected"
+_REACTION_CAPPED = "capped"
+_REACTION_NO_ANSWER = "no-answer"
+
+# What the daemon says when a sender already holds its maximum reactions on
+# an item. Matched on the message text rather than a decoded error shape
+# because the error envelope varies between daemon versions, and mistaking a
+# cap for a refusal would drop the whole reaction lane.
+_REACTION_CAP_MARKER = "too many reactions"
+
+_APPROVAL_ACK: Dict[str, str] = {
+    "once": "✅ Approved — running this once.",
+    "session": "✅ Approved for this session.",
+    "always": "✅ Approved permanently (added to the allowlist).",
+    "deny": "👎 Denied — the command will not run.",
+}
+
+# Unicode variation selectors. ❤ arrives as U+2764 U+FE0F from most clients
+# and as bare U+2764 from others; the daemon's own validator only accepts the
+# bare code point. Normalising on the way in means one map entry per reaction
+# instead of one entry per spelling.
+_VARIATION_SELECTORS = ("\ufe0f", "\ufe0e")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _normalize_reaction_emoji(emoji: str) -> str:
+    """Strip Unicode variation selectors from a reaction emoji."""
+    out = str(emoji or "")
+    for selector in _VARIATION_SELECTORS:
+        out = out.replace(selector, "")
+    return out
+
+
+def _is_reaction_cap_error(resp: dict) -> bool:
+    """True when a ``chatCmdError`` is the daemon's per-sender reaction cap.
+
+    "You already hold three reactions here" and "this daemon refuses your
+    reactions" arrive as the same response type and mean opposite things —
+    one is a full slot, the other is the feature being unavailable — so they
+    must not share an outcome.
+    """
+    try:
+        blob = json.dumps(resp.get("chatError") or resp, ensure_ascii=False)
+    except (TypeError, ValueError):
+        blob = str(resp)
+    return _REACTION_CAP_MARKER in blob.lower()
+
+
+def _approval_prompt_ttl() -> float:
+    """Seconds a reaction prompt stays tappable — the operator's own value.
+
+    Reads ``approvals.timeout`` through ``tools.approval``. Lazy import for
+    the same reason the resolve call is lazy: the plugin must load without
+    the agent package present.
+    """
+    try:
+        from tools.approval import _get_approval_timeout
+
+        return float(_get_approval_timeout())
+    except Exception:
+        return APPROVAL_PROMPT_TTL_FALLBACK_SECONDS
+
 
 def _parse_comma_list(value: str) -> List[str]:
     """Split a comma-separated string into a stripped list."""
@@ -128,6 +242,41 @@ def _is_image_ext(ext: str) -> bool:
 
 def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".opus"}
+
+
+class _SimplexCommandSendError(Exception):
+    """The command never reached the daemon — the WebSocket write failed.
+
+    Distinct from "no reply came back". A timeout leaves the command
+    possibly delivered; this means it certainly was not, so a caller must
+    not report the message it carried as sent.
+    """
+
+
+@dataclass
+class _SimplexApprovalPrompt:
+    """Tracks a pending SimpleX reaction-based exec approval prompt.
+
+    In-memory only, like every other adapter's approval state: a gateway
+    restart orphans pending prompts, and the agent-side wait in
+    ``tools/approval.py`` is what eventually times them out.
+    """
+
+    session_key: str
+    chat_id: str
+    chat_ref: str
+    item_id: str
+    # Tiers this particular prompt offered. A reaction for a tier that was
+    # never on the table is refused rather than silently upgraded — the
+    # emoji→choice map is global, the offer is not.
+    choices: frozenset = field(default_factory=frozenset)
+    expires_at: float = 0.0
+    resolved: bool = False
+    # Emoji the bot actually placed, so cleanup removes only its own.
+    seeded_emoji: List[str] = field(default_factory=list)
+    # One "that reaction isn't an option" reply per prompt: a group member
+    # reacting playfully must not turn the bot into a spam amplifier.
+    feedback_sent: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +345,35 @@ class SimplexAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+
+        # Reaction-based dangerous-command approvals. Prompts are correlated
+        # by the daemon's chat-item id: the id of the message the bot posted
+        # is what an inbound reaction event points back at.
+        self._approval_prompts_by_item: Dict[str, _SimplexApprovalPrompt] = {}
+        self._approval_prompt_by_session: Dict[str, str] = {}
+        # Sessions that piled up more than one approval, and the moment the
+        # pile-up can be assumed drained. Answering a prompt by typing is
+        # invisible to this adapter, so once a session's queue holds more
+        # than one entry the only safe assumption is that it still does,
+        # until the whole approval window lapses.
+        self._typed_only_sessions: Dict[str, float] = {}
+        # Sessions with a ``send_exec_approval`` currently awaiting its
+        # prompt send, plus a per-session entry counter. Two calls for one
+        # session can interleave at that await: both would pass the
+        # single-live-prompt check before either registers. The in-flight
+        # count lets the later entrant see the earlier one; the entry
+        # counter lets the earlier entrant see the later one when it
+        # resumes. asyncio interleaves only at awaits, so plain dict
+        # mutation here is race-free.
+        self._approval_inflight: Dict[str, int] = {}
+        self._approval_entry_gen: Dict[str, int] = {}
+        # Tri-state feature detection for daemon reaction support: None until
+        # the first /_reaction is answered, then True/False. Never assumed —
+        # older daemons and future emoji-policy changes both show up as an
+        # explicit command error, which downgrades this adapter to the typed
+        # /approve flow instead of breaking approvals.
+        self._reactions_supported: Optional[bool] = None
+        self._background_tasks: Set[asyncio.Task] = set()
 
         logger.info(
             "SimpleX adapter initialized: url=%s auto_accept=%s groups=%s",
@@ -280,6 +458,17 @@ class SimplexAdapter(BasePlatformAdapter):
                 fut.cancel()
         self._pending_responses.clear()
 
+        # Cancel reaction seed/cleanup tasks and drop approval prompt state.
+        for task in list(self._background_tasks):
+            if not task.done():
+                task.cancel()
+        self._background_tasks.clear()
+        self._approval_prompts_by_item.clear()
+        self._approval_prompt_by_session.clear()
+        self._typed_only_sessions.clear()
+        self._approval_inflight.clear()
+        self._approval_entry_gen.clear()
+
         if hasattr(self, "_mark_disconnected"):
             self._mark_disconnected()
         logger.info("SimpleX: disconnected")
@@ -307,6 +496,11 @@ class SimplexAdapter(BasePlatformAdapter):
                     self._ws = ws
                     backoff = WS_RETRY_DELAY_INITIAL
                     self._last_ws_activity = time.time()
+                    # A fresh connection may be a fresh (or upgraded) daemon,
+                    # so re-probe reaction support instead of carrying a
+                    # single earlier command error forward for the life of
+                    # the process.
+                    self._reactions_supported = None
                     logger.info("SimpleX WS: connected")
 
                     async for raw in ws:
@@ -373,7 +567,8 @@ class SimplexAdapter(BasePlatformAdapter):
         #   {"corrId": "...", "resp": {"type": "newChatItems", ...}}
         # Older/examples may put the response fields at top-level. Normalize
         # both forms before dispatching, otherwise inbound chatItems are lost.
-        resp = event.get("resp") if isinstance(event.get("resp"), dict) else event
+        nested = event.get("resp")
+        resp = nested if isinstance(nested, dict) else event
         corr_id = event.get("corrId")
 
         # Handle correlated responses (replies to our own commands)
@@ -464,6 +659,15 @@ class SimplexAdapter(BasePlatformAdapter):
                         logger.exception(
                             "SimpleX: error processing deferred file message"
                         )
+            return
+
+        # A contact or group member reacted to one of our messages — this is
+        # how tap-to-approve reaches the approval queue.
+        if resp_type == "chatItemReaction":
+            try:
+                await self._handle_reaction_event(resp)
+            except Exception:
+                logger.exception("SimpleX: error processing reaction event")
             return
 
         if resp_type:
@@ -756,12 +960,26 @@ class SimplexAdapter(BasePlatformAdapter):
             logger.warning("SimpleX: WS send error: %s", e)
 
     async def _send_command(
-        self, command: str, timeout: float = 30.0
+        self,
+        command: str,
+        timeout: float = 30.0,
+        *,
+        raise_on_send_error: bool = False,
     ) -> Optional[dict]:
-        """Send a command and await the correlated response."""
+        """Send a command and await the correlated response.
+
+        ``None`` means "no answer came back", which by default covers both a
+        reply timeout (the daemon very likely got the command) and a write
+        that raised (it certainly did not). Callers that have to tell those
+        apart — anything reporting delivery to a user — pass
+        ``raise_on_send_error=True`` and get :class:`_SimplexCommandSendError`
+        for the write failure instead of an indistinguishable ``None``.
+        """
         ws = self._ws
         if not ws:
             logger.warning("SimpleX: command sent but WebSocket not connected")
+            if raise_on_send_error:
+                raise _SimplexCommandSendError("WebSocket not connected")
             return None
 
         corr_id = self._make_corr_id()
@@ -772,17 +990,27 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_responses[corr_id] = fut
 
         try:
-            await ws.send(payload)
+            try:
+                await ws.send(payload)
+            except Exception as e:
+                logger.warning(
+                    "SimpleX: command not sent: %s — %s", command[:50], e
+                )
+                if raise_on_send_error:
+                    raise _SimplexCommandSendError(str(e)) from e
+                return None
             result = await asyncio.wait_for(fut, timeout=timeout)
             return result
         except asyncio.TimeoutError:
             logger.warning("SimpleX: command timed out: %s", command[:50])
-            self._pending_responses.pop(corr_id, None)
             return None
+        except _SimplexCommandSendError:
+            raise
         except Exception as e:
             logger.warning("SimpleX: command failed: %s — %s", command[:50], e)
-            self._pending_responses.pop(corr_id, None)
             return None
+        finally:
+            self._pending_responses.pop(corr_id, None)
 
     async def _send_fire_and_forget(self, command: str) -> None:
         """Send a command without waiting for a correlated response.
@@ -923,6 +1151,763 @@ class SimplexAdapter(BasePlatformAdapter):
                 })
 
         return channels
+
+    # ------------------------------------------------------------------
+    # Reaction-based exec approvals
+    # ------------------------------------------------------------------
+
+    def _spawn_background(self, coro) -> None:
+        """Run *coro* detached, holding a strong reference until it finishes."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    @staticmethod
+    def _chat_ref(chat_id: str) -> Optional[str]:
+        """Build a daemon ``ChatRef`` (``@<contactId>`` / ``#<groupId>``).
+
+        Returns ``None`` for a direct chat addressed by display name. The
+        ``/_send`` and ``/_reaction`` command forms take numeric ids, while
+        ``list_channels`` deliberately emits display names for DMs because
+        the plain ``@<name> text`` send form addresses by name. Callers
+        degrade to the typed ``/approve`` flow rather than guess an id.
+        """
+        if not chat_id:
+            return None
+        if chat_id.startswith("group:"):
+            group_id = chat_id[6:]
+            return f"#{group_id}" if group_id.isdigit() else None
+        return f"@{chat_id}" if chat_id.isdigit() else None
+
+    @staticmethod
+    def _is_group_chat(chat_id: str) -> bool:
+        """True for a group chat id (``group:<id>``), False for a DM."""
+        return str(chat_id or "").startswith("group:")
+
+    async def _send_anchored_text(self, chat_ref: str, text: str) -> Tuple[Optional[str], bool]:
+        """Send text via ``/_send`` and return ``(item_id, delivered)``.
+
+        Unlike :meth:`send`, this waits for the correlated ``newChatItems``
+        reply, because a reaction has to be anchored to the daemon's
+        ``itemId`` for the message it decorates.
+
+        ``delivered`` is False when the send was never attempted (no live
+        WebSocket), when the write itself raised (the connection died between
+        the check and the write), or when the daemon answered with an explicit
+        error — all three mean the user will see nothing, so the caller must
+        fail and let ``gateway/run.py`` post its own plain-text prompt. A
+        *timeout* is different: the message is possibly delivered, so the
+        caller reports success and skips the reactions rather than
+        double-posting.
+        """
+        if not self._ws:
+            logger.warning(
+                "SimpleX: approval prompt not sent — WebSocket not connected"
+            )
+            return None, False
+        composed = json.dumps([{"msgContent": {"type": "text", "text": text}}])
+        try:
+            resp = await self._send_command(
+                f"/_send {chat_ref} json {composed}",
+                timeout=ANCHORED_SEND_TIMEOUT_SECONDS,
+                raise_on_send_error=True,
+            )
+        except _SimplexCommandSendError:
+            # The write failed, so nothing was delivered. Reporting this as
+            # sent would leave the user with no prompt at all for a command
+            # still queued in core.
+            logger.warning(
+                "SimpleX: approval prompt not sent — WebSocket write failed"
+            )
+            return None, False
+        if resp is None:
+            return None, True
+        if resp.get("type") == "chatCmdError":
+            logger.warning("SimpleX: daemon rejected /_send for %s", chat_ref)
+            return None, False
+        for item in resp.get("chatItems") or []:
+            if not isinstance(item, dict):
+                continue
+            meta = (item.get("chatItem") or {}).get("meta") or {}
+            item_id = meta.get("itemId")
+            if item_id is not None:
+                return str(item_id), True
+        return None, True
+
+    async def _set_reaction(
+        self,
+        chat_ref: str,
+        item_id: str,
+        emoji: str,
+        *,
+        add: bool = True,
+    ) -> str:
+        """Add or remove one of the bot's own reactions on a chat item.
+
+        Returns one of :data:`_REACTION_ACCEPTED`, :data:`_REACTION_CAPPED`
+        (the sender already holds the daemon's maximum on this item),
+        :data:`_REACTION_REJECTED` (an explicit command error — the
+        feature-detection signal) or :data:`_REACTION_NO_ANSWER` (nothing
+        came back: inconclusive, and deliberately not read as "reactions
+        unsupported").
+        """
+        reaction = json.dumps({"type": "emoji", "emoji": emoji}, ensure_ascii=False)
+        toggle = "on" if add else "off"
+        resp = await self._send_command(
+            f"/_reaction {chat_ref} {item_id} {toggle} {reaction}", timeout=10.0
+        )
+        if resp is None:
+            return _REACTION_NO_ANSWER
+        if resp.get("type") == "chatCmdError":
+            if _is_reaction_cap_error(resp):
+                return _REACTION_CAPPED
+            logger.info(
+                "SimpleX: daemon rejected reaction %s on item %s", emoji, item_id
+            )
+            return _REACTION_REJECTED
+        return _REACTION_ACCEPTED
+
+    @staticmethod
+    def _approval_tiers(
+        allow_permanent: bool,
+        allow_session: bool,
+        smart_denied: bool,
+    ) -> frozenset:
+        """The approval tiers this particular request actually offers.
+
+        A smart-DENY owner override is one operation only — ``tools/approval``
+        collapses any wider choice back to a single run — so the prompt must
+        not offer session or permanent scope for it.
+        """
+        if smart_denied or not allow_session:
+            return frozenset({"once", "deny"})
+        if not allow_permanent:
+            return frozenset({"once", "session", "deny"})
+        return frozenset({"once", "session", "always", "deny"})
+
+    @staticmethod
+    def _seed_plan(tiers: frozenset) -> Tuple[Tuple[str, str, str], ...]:
+        """Tap targets to place, in order, for an approval offering *tiers*.
+
+        Always a subset of the three seedable choices: ``always`` has no tap
+        target at all, so an approval that offers it still seeds three.
+        """
+        return tuple(c for c in _APPROVAL_CHOICES if c[1] in tiers)
+
+    def _format_simplex_exec_approval(
+        self,
+        command: str,
+        description: str,
+        smart_denied: bool,
+        tiers: frozenset,
+    ) -> str:
+        """Compose the approval prompt: shared core plus the typed commands.
+
+        *tiers* is the full set this approval offers; the typed instructions
+        list every one of them on every path, because typing is the lane that
+        always works. The reaction legend is not here — it is sent afterwards
+        from the taps that were actually placed (see
+        :meth:`_seed_approval_reactions`), so the prompt cannot advertise a
+        tap the user never received.
+        """
+        prefix = self.typed_command_prefix
+        scope = ""
+        if not smart_denied:
+            if "session" in tiers:
+                scope += (
+                    f"Reply `{prefix}approve session` to approve this pattern "
+                    "for the session, "
+                )
+            if "always" in tiers:
+                scope += f"`{prefix}approve always` to approve permanently, "
+        return (
+            f"{self._format_exec_approval(command, description, smart_denied)}\n\n"
+            f"{scope}Reply `{prefix}approve` to execute once, or "
+            f"`{prefix}deny` to cancel."
+        )
+
+    @staticmethod
+    def _format_tap_legend(landed: List[str]) -> str:
+        """Explain the taps that are actually on the message, and only those."""
+        labels = {emoji: label for emoji, _choice, label in _APPROVAL_CHOICES}
+        legend = "\n".join(f"{emoji} = {labels[emoji]}" for emoji in landed)
+        return "Or tap a reaction on the message above:\n" + legend
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
+    ) -> SendResult:
+        """Send an exec approval prompt, with a tap lane when it is unambiguous.
+
+        Mirrors the Matrix adapter: one ordinary chat message carrying the
+        shared approval text, with the bot pre-seeding the decision emoji so
+        answering is a tap instead of a retyped command. The typed
+        ``/approve`` / ``/deny`` instructions stay in the message on every
+        path, so every fallback below still leaves a working flow.
+
+        The tap lane is offered only when a tap can mean exactly one thing:
+        a direct chat with exactly one live approval. Groups and concurrent
+        approvals fall back to the typed lane — see the guards below.
+
+        Every exit that does not end with a registered prompt holds the
+        session to the typed lane for one approval window, because
+        ``tools/approval`` has already queued the approval by the time this
+        runs: an unregistered prompt is a pending command the single-prompt
+        guard cannot see.
+
+        *command* arrives already credential-redacted from ``gateway/run.py``
+        — do not re-redact it and do not log it.
+        """
+        tiers = self._approval_tiers(allow_permanent, allow_session, smart_denied)
+
+        # Housekeeping first, and before any early return: prompts nobody
+        # ever answered would otherwise accumulate for the life of the
+        # gateway and make the single-pending check below lie.
+        self._sweep_expired_prompts()
+
+        # resolve_gateway_approval(session_key, choice) is FIFO per session
+        # (upstream #64001) — a tap cannot target a specific queue entry, so
+        # a second live prompt in one session would let a tap on either
+        # message answer the older command. Withdraw the older prompt and
+        # send this one typed-only rather than offer an ambiguous tap.
+        #
+        # The session then stays typed-only for a full approval window: a
+        # third prompt would find an empty prompt map while two unanswered
+        # commands are still queued in core, and a tap on it would run the
+        # oldest of them.
+        now = time.monotonic()
+        if self._retire_live_prompt_for_session(session_key) or (
+            self._typed_only_sessions.get(session_key, 0.0) > now
+        ):
+            queued = True
+        else:
+            queued = False
+        if self._approval_inflight.get(session_key, 0) > 0:
+            # A prompt send for this session is already in flight — the
+            # single-live-prompt check above cannot see it, because that
+            # call has not registered yet. Two live tap prompts must never
+            # exist, so the later entrant takes the typed lane and holds
+            # the session there.
+            self._mark_session_typed_only(session_key)
+            queued = True
+        self._approval_inflight[session_key] = (
+            self._approval_inflight.get(session_key, 0) + 1
+        )
+        entry_gen = self._approval_entry_gen.get(session_key, 0) + 1
+        self._approval_entry_gen[session_key] = entry_gen
+
+        # Anything short of a registered prompt below leaves an approval
+        # pending in core with no tappable message of its own, so the
+        # session is held to the typed lane by the ``finally``. That covers
+        # the WebSocket being down, the write raising, the daemon rejecting
+        # or not answering the send, a group or display-name-addressed chat,
+        # and an exception escaping into gateway/run.py's text fallback.
+        registered = False
+        try:
+            chat_ref = self._chat_ref(chat_id)
+            # v1 keeps the reaction lane to direct chats. In a group, any
+            # member can react, and the only identity the daemon hands us for
+            # a group reactor is one this adapter cannot yet tie to a verified
+            # operator. Groups get the typed lane, which the gateway
+            # authorizes properly.
+            reaction_lane = (
+                bool(chat_ref) and not self._is_group_chat(chat_id) and not queued
+            )
+            # Seeding is a separate capability from the inbound lane: a daemon
+            # that refuses to let the bot place a reaction has not said
+            # anything about reactions a *user* places.
+            seed = reaction_lane and self._reactions_supported is not False
+
+            text = self._format_simplex_exec_approval(
+                command, description, smart_denied, tiers
+            )
+            if not reaction_lane:
+                return await self._send_approval_message(
+                    chat_id, text, metadata=metadata
+                )
+
+            item_id, delivered = await self._send_anchored_text(str(chat_ref), text)
+            if not delivered:
+                # Let gateway/run.py fall back to its own plain-text prompt.
+                return SendResult(
+                    success=False,
+                    error="SimpleX daemon rejected the approval prompt",
+                )
+            if not item_id:
+                # The prompt is out but unanchored; its typed instructions
+                # work, and its reaction legend is a dud — nothing correlates
+                # a tap on a message whose item id we never learned.
+                return SendResult(success=True)
+
+            prompt = _SimplexApprovalPrompt(
+                session_key=session_key,
+                chat_id=chat_id,
+                chat_ref=str(chat_ref),
+                item_id=item_id,
+                choices=tiers,
+                expires_at=time.monotonic() + _approval_prompt_ttl(),
+            )
+            self._approval_prompts_by_item[item_id] = prompt
+            self._approval_prompt_by_session[session_key] = item_id
+            registered = True
+
+            if self._approval_entry_gen.get(session_key, 0) != entry_gen:
+                # Another approval for this session entered while the prompt
+                # send above was in flight. That entrant saw this call and
+                # went typed-only — but this prompt was composed against a
+                # queue that has since grown, so a tap on it could resolve a
+                # different command than the one it shows. Withdraw it and
+                # hold the session to the typed lane.
+                self._retire_live_prompt_for_session(session_key)
+                self._mark_session_typed_only(session_key)
+                return SendResult(success=True, message_id=item_id)
+
+            if seed:
+                # Seed detached: every /_reaction waits on a correlated daemon
+                # reply, and gateway/run.py only allows send_exec_approval 15
+                # seconds before it abandons the button lane. Prompt state is
+                # already registered, so a reaction that beats the seeding
+                # still correlates. The legend follows from the same task,
+                # once there is a placed-taps list to describe.
+                self._spawn_background(
+                    self._seed_approval_reactions(prompt, self._seed_plan(tiers))
+                )
+            return SendResult(success=True, message_id=item_id)
+        finally:
+            if not registered:
+                self._mark_session_typed_only(session_key)
+            remaining = self._approval_inflight.get(session_key, 0) - 1
+            if remaining > 0:
+                self._approval_inflight[session_key] = remaining
+            else:
+                # Last one out drops both entries: every overlap check
+                # snapshots at entry and compares while in flight, so the
+                # counter has no meaning once nobody is.
+                self._approval_inflight.pop(session_key, None)
+                self._approval_entry_gen.pop(session_key, None)
+
+    async def _send_approval_message(
+        self,
+        chat_id: str,
+        text: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an approval-flow message via the structured ``/_send`` form.
+
+        Every notice this feature emits — the prompt itself on the typed
+        path, the tap legend, the acknowledgement, superseded, expired,
+        no-longer-pending and unusable-reaction replies — goes out through
+        here rather than through :meth:`send`.
+
+        :meth:`send` composes a DM as ``@<chat_id> <text>``, and the daemon
+        parses ``@x`` as a *display-name* lookup: on any contact whose
+        display name is not literally its numeric id it answers
+        ``contactNotFound`` and nothing reaches the chat, while the send
+        still reports success. (Verified against simplex-chat v7.0.0.11:
+        ``@3 hi`` → ``chatCmdError/contactNotFound``, the structured form →
+        ``newChatItems``. The media paths already use the structured form;
+        only DM text is affected. That is a separate bug in ``send`` and is
+        not fixed here.) A user who taps ✅ and sees no reply reads the tap
+        as broken, so the approval flow must not depend on that branch.
+
+        Chats with no numeric ``ChatRef`` — DMs addressed by display name —
+        fall back to :meth:`send`, which is the form that addresses them
+        correctly.
+        """
+        chat_ref = self._chat_ref(chat_id)
+        if not chat_ref:
+            return await self.send(chat_id, text, metadata=metadata)
+        composed = json.dumps([{"msgContent": {"type": "text", "text": text}}])
+        await self._send_fire_and_forget(f"/_send {chat_ref} json {composed}")
+        return SendResult(success=True)
+
+    def _mark_session_typed_only(self, session_key: str) -> None:
+        """Refuse the tap lane for *session_key* for one approval window.
+
+        ``tools/approval`` queues an approval entry *before* it notifies the
+        adapter, so any ``send_exec_approval`` call that ends without a
+        registered prompt still leaves a command pending in core — one the
+        single-live-prompt guard cannot see and the user may never have been
+        shown. A later prompt in the same session would then look
+        unambiguous, and a tap on it would resolve the FIFO head: the older,
+        unseen command. Holding the session typed-only until every entry that
+        could still be queued has timed out is the same principle the
+        pile-up latch applies, extended to the paths where nothing was sent.
+
+        Never shortens an existing window.
+        """
+        deadline = time.monotonic() + _approval_prompt_ttl()
+        if self._typed_only_sessions.get(session_key, 0.0) < deadline:
+            self._typed_only_sessions[session_key] = deadline
+
+    def _sweep_expired_prompts(self) -> None:
+        """Retire every prompt whose tap window has closed."""
+        now = time.monotonic()
+        for prompt in list(self._approval_prompts_by_item.values()):
+            if now > prompt.expires_at:
+                self._retire_prompt(prompt)
+        for session_key, deadline in list(self._typed_only_sessions.items()):
+            if now > deadline:
+                self._typed_only_sessions.pop(session_key, None)
+
+    def _retire_live_prompt_for_session(self, session_key: str) -> bool:
+        """Withdraw the session's live prompt, if any. True when one was live.
+
+        Tells the user what happened: the message they are looking at now has
+        no working tap targets, and the reason is not obvious from the chat.
+        """
+        item_id = self._approval_prompt_by_session.get(session_key)
+        live = self._approval_prompts_by_item.get(item_id) if item_id else None
+        if live is None or live.resolved:
+            return False
+        prefix = self.typed_command_prefix
+        self._retire_prompt(
+            live,
+            notice=(
+                "A newer approval request superseded this one. Reactions on "
+                f"the message above no longer do anything — reply "
+                f"`{prefix}approve` or `{prefix}deny` to answer."
+            ),
+        )
+        return True
+
+    async def _seed_approval_reactions(
+        self,
+        prompt: _SimplexApprovalPrompt,
+        plan: Tuple[Tuple[str, str, str], ...],
+    ) -> None:
+        """Place the tap targets, then explain the ones that landed.
+
+        The legend is written from *landed* rather than from *plan*, so the
+        message can never advertise a tap that is not on it. That is why the
+        prompt goes out without a legend and this task sends one.
+        """
+        landed: List[str] = []
+        for index, (emoji, _choice, _label) in enumerate(plan):
+            if prompt.resolved:
+                return
+            outcome = await self._set_reaction(
+                prompt.chat_ref, prompt.item_id, emoji, add=True
+            )
+            if outcome == _REACTION_ACCEPTED:
+                self._reactions_supported = True
+                if prompt.resolved:
+                    # Cleanup ran while this seed was in flight: take our own
+                    # late reaction back off instead of stranding it on a
+                    # resolved prompt as a live-looking tap target.
+                    await self._set_reaction(
+                        prompt.chat_ref, prompt.item_id, emoji, add=False
+                    )
+                    return
+                prompt.seeded_emoji.append(emoji)
+                landed.append(emoji)
+            elif outcome == _REACTION_CAPPED:
+                # Not a refusal: the daemon takes our reactions, we have just
+                # run out of slots on this item (three per sender). Stop here
+                # — every later target would hit the same wall — and let the
+                # legend describe what is really on the message. Deny is
+                # seeded first precisely so it is never the casualty.
+                logger.warning(
+                    "SimpleX: reaction slots full on item %s after %d of %d "
+                    "tap targets — %s and anything after it were not placed; "
+                    "the legend will list only %s",
+                    prompt.item_id,
+                    len(landed),
+                    len(plan),
+                    emoji,
+                    "".join(landed) or "nothing",
+                )
+                break
+            elif outcome == _REACTION_REJECTED and index == 0:
+                # The first emoji is 👎, which the daemon's own validator
+                # allows, so rejecting it means reactions are refused
+                # wholesale. A rejection further down the list is about that
+                # one emoji and must not disable the whole lane.
+                await self._downgrade_to_typed_approvals(prompt)
+                return
+            elif outcome == _REACTION_REJECTED:
+                logger.info(
+                    "SimpleX: daemon refused approval emoji %s — "
+                    "the remaining tap targets still stand",
+                    emoji,
+                )
+        if landed and not prompt.resolved:
+            await self._send_approval_message(
+                prompt.chat_id, self._format_tap_legend(landed)
+            )
+
+    async def _downgrade_to_typed_approvals(
+        self, prompt: _SimplexApprovalPrompt
+    ) -> None:
+        """Record that this daemon refuses to let the bot place reactions.
+
+        This disables *seeding* and the legend, not the inbound lane: a user
+        who places one of the approval emoji themselves still resolves the
+        prompt. Says so once per downgrade.
+        """
+        if self._reactions_supported is False:
+            return
+        self._reactions_supported = False
+        logger.warning(
+            "SimpleX: daemon does not accept reactions from this bot — "
+            "prompts will not be pre-seeded; typed %sapprove still works",
+            self.typed_command_prefix,
+        )
+        prefix = self.typed_command_prefix
+        await self._send_approval_message(
+            prompt.chat_id,
+            "This SimpleX daemon does not let me place the approval "
+            f"reactions. Reply `{prefix}approve` or `{prefix}deny` instead.",
+        )
+
+    async def _clear_seeded_reactions(self, prompt: _SimplexApprovalPrompt) -> None:
+        """Remove the bot's own seeds, leaving the user's reaction in place.
+
+        SimpleX reactions are toggles keyed by emoji rather than addressable
+        events, so cleanup is the same command with ``off`` — there is no
+        redaction step and nothing to schedule around delivery lag.
+
+        Emoji come off the list as they are toggled, not from a snapshot: the
+        seeder may still be appending while this runs.
+        """
+        while prompt.seeded_emoji:
+            emoji = prompt.seeded_emoji.pop(0)
+            await self._set_reaction(
+                prompt.chat_ref, prompt.item_id, emoji, add=False
+            )
+
+    @staticmethod
+    def _event_chat_id(wrapper: dict) -> str:
+        """Chat the reaction event happened in, in adapter chat-id form.
+
+        Matrix compares the reaction's room against the prompt's room before
+        it authorizes anything (``plugins/platforms/matrix/adapter.py``); this
+        is the SimpleX equivalent, and it is what turns "a DM reactor is the
+        DM owner" from an assumption into a checked invariant.
+        """
+        chat_info = wrapper.get("chatInfo") or {}
+        if not isinstance(chat_info, dict):
+            return ""
+        info_type = chat_info.get("type")
+        if info_type == "direct":
+            contact = chat_info.get("contact") or {}
+            if isinstance(contact, dict):
+                return str(contact.get("contactId", "") or "")
+            return ""
+        if info_type == "group":
+            group = chat_info.get("groupInfo") or {}
+            if isinstance(group, dict) and group.get("groupId") is not None:
+                return f"group:{group.get('groupId')}"
+        return ""
+
+    @staticmethod
+    def _reaction_sender(wrapper: dict, chat_reaction: dict) -> Tuple[str, str]:
+        """Return ``(user_id, display_name)`` for whoever placed a reaction."""
+        chat_dir = chat_reaction.get("chatDir") or {}
+        member = chat_dir.get("groupMember") or {} if isinstance(chat_dir, dict) else {}
+        if isinstance(member, dict) and member:
+            return (
+                str(member.get("memberId", "") or ""),
+                str(member.get("localDisplayName", "") or ""),
+            )
+        contact = (wrapper.get("chatInfo") or {}).get("contact") or {}
+        if not isinstance(contact, dict):
+            return "", ""
+        return (
+            str(contact.get("contactId", "") or ""),
+            str(contact.get("localDisplayName", "") or ""),
+        )
+
+    def _reactor_authorized(
+        self,
+        prompt: _SimplexApprovalPrompt,
+        user_id: str,
+        chat_reaction: dict,
+    ) -> bool:
+        """Fail-closed check that this reactor may answer this prompt.
+
+        The reaction lane is direct-chat only, and that is the whole of the
+        authorization model: the only party who can react in a DM is the
+        contact that owns it, and that contact is the one whose message
+        raised the approval — so identity is the chat id. Nothing is read
+        from an allowlist env var, and no allow-all flag can widen it;
+        ``SIMPLEX_ALLOW_ALL_USERS`` governs who may *talk* to the bot, never
+        who may approve a dangerous command. DM-paired users
+        (``hermes pairing approve simplex``) keep working with no extra
+        configuration, and the typed ``/approve`` path — fully authorized by
+        the gateway — remains the way in for everyone else.
+        """
+        if self._is_group_chat(prompt.chat_id):
+            return False
+        chat_dir = chat_reaction.get("chatDir") or {}
+        if isinstance(chat_dir, dict) and chat_dir.get("groupMember"):
+            # A group member reacting on something registered as a DM: the
+            # identity namespaces do not match, so refuse rather than guess.
+            return False
+        return bool(user_id) and user_id == prompt.chat_id
+
+    async def _reaction_feedback(
+        self, prompt: _SimplexApprovalPrompt, text: str
+    ) -> None:
+        """Reply once per prompt about an unusable reaction."""
+        if prompt.feedback_sent:
+            return
+        prompt.feedback_sent = True
+        await self._send_approval_message(prompt.chat_id, text)
+
+    async def _expire_approval_prompt(self, prompt: _SimplexApprovalPrompt) -> None:
+        """Retire a prompt whose tap window closed."""
+        self._retire_prompt(prompt)
+        await self._send_approval_message(
+            prompt.chat_id,
+            "This approval prompt has expired. Run the command again if you "
+            "still want to approve it.",
+        )
+
+    def _retire_prompt(
+        self, prompt: _SimplexApprovalPrompt, *, notice: Optional[str] = None
+    ) -> None:
+        """Retire a prompt: no live tap targets, no correlation state left.
+
+        The single retirement path. Marking ``resolved`` is what stops a
+        later tap and what tells an in-flight seeder to take its own late
+        reaction back off; clearing the seeds is what stops the message from
+        *looking* answerable. Skipping either one leaves a message with four
+        live-looking buttons that resolve something else.
+        """
+        prompt.resolved = True
+        self._approval_prompts_by_item.pop(prompt.item_id, None)
+        if self._approval_prompt_by_session.get(prompt.session_key) == prompt.item_id:
+            self._approval_prompt_by_session.pop(prompt.session_key, None)
+        if prompt.seeded_emoji:
+            self._spawn_background(self._clear_seeded_reactions(prompt))
+        if notice:
+            self._spawn_background(
+                self._send_approval_message(prompt.chat_id, notice)
+            )
+
+    async def _handle_reaction_event(self, resp: dict) -> None:
+        """Resolve a pending exec approval from a ``chatItemReaction`` event.
+
+        The daemon reports reactions as
+        ``{"type": "chatItemReaction", "added": bool, "reaction": ACIReaction}``
+        where ``ACIReaction`` is ``{"chatInfo": ..., "chatReaction": {...}}``.
+        ``chatReaction.chatDir`` describes who reacted, and
+        ``chatReaction.chatItem`` is the message they reacted to.
+        """
+        if resp.get("added") is not True:
+            return  # un-reacting never answers a prompt
+
+        wrapper = resp.get("reaction") or {}
+        if not isinstance(wrapper, dict):
+            return
+        chat_reaction = wrapper.get("chatReaction") or {}
+        if not isinstance(chat_reaction, dict):
+            return
+
+        chat_dir = chat_reaction.get("chatDir") or {}
+        if isinstance(chat_dir, dict) and chat_dir.get("type") in (
+            "directSnd",
+            "groupSnd",
+        ):
+            return  # our own seed echoing back
+
+        chat_item = chat_reaction.get("chatItem") or {}
+        meta = chat_item.get("meta") or {} if isinstance(chat_item, dict) else {}
+        item_id = str(meta.get("itemId") or "")
+        if not item_id:
+            return
+
+        prompt = self._approval_prompts_by_item.get(item_id)
+        if prompt is None or prompt.resolved:
+            return
+
+        # Currency: this must still be the session's one live prompt. The
+        # guard in send_exec_approval already retires anything older, so this
+        # should be unreachable — it stays because it is the invariant the
+        # whole design rests on, and it costs one dict lookup.
+        if self._approval_prompt_by_session.get(prompt.session_key) != prompt.item_id:
+            self._retire_prompt(prompt)
+            await self._send_approval_message(
+                prompt.chat_id,
+                "That approval is no longer pending — a newer request "
+                "replaced it. The command did not run.",
+            )
+            return
+
+        # Same chat the prompt was posted in, or nothing doing.
+        if self._event_chat_id(wrapper) != prompt.chat_id:
+            logger.info(
+                "SimpleX: ignoring approval reaction from a different chat"
+            )
+            return
+
+        user_id, _display_name = self._reaction_sender(wrapper, chat_reaction)
+        if not self._reactor_authorized(prompt, user_id, chat_reaction):
+            # Logged, not answered: an unauthorized reactor would otherwise
+            # get the bot to post on demand.
+            logger.info(
+                "SimpleX: ignoring approval reaction from unauthorized user %s",
+                _redact_id(user_id),
+            )
+            return
+
+        # Expiry after authorization: an unauthorized party must not be able
+        # to make the bot post the expiry notice on demand.
+        if time.monotonic() > prompt.expires_at:
+            await self._expire_approval_prompt(prompt)
+            return
+
+        msg_reaction = chat_reaction.get("reaction") or {}
+        emoji = _normalize_reaction_emoji(
+            msg_reaction.get("emoji", "") if isinstance(msg_reaction, dict) else ""
+        )
+        choice = _APPROVAL_REACTION_MAP.get(emoji)
+        if not choice or choice not in prompt.choices:
+            # Either not an approval emoji at all, or a tier this prompt
+            # deliberately did not offer — approve-always on a smart-denied
+            # command, say. Never silently widen the offer.
+            await self._reaction_feedback(
+                prompt, "That reaction is not one of the approval options."
+            )
+            return
+
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            count = resolve_gateway_approval(prompt.session_key, choice)
+        except Exception as exc:
+            logger.error(
+                "Failed to resolve gateway approval from SimpleX reaction: %s", exc
+            )
+            return
+
+        self._retire_prompt(prompt)
+        if not count:
+            # Nothing was pending: a typed /approve, an interrupt, or the
+            # agent-side timeout already drained the queue. Say so — silently
+            # doing nothing reads as a broken tap.
+            await self._send_approval_message(
+                prompt.chat_id,
+                "That approval is no longer pending — it was already answered "
+                "or it timed out. The command did not run.",
+            )
+            return
+
+        logger.info(
+            "SimpleX reaction resolved %d approval(s) for session %s (choice=%s)",
+            count,
+            prompt.session_key,
+            choice,
+        )
+        await self._send_approval_message(prompt.chat_id, _APPROVAL_ACK[choice])
 
     # ------------------------------------------------------------------
     # Outbound — media

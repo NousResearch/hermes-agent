@@ -1184,3 +1184,54 @@ class TestApiServerEnvOverride:
         assert config.platforms[Platform.API_SERVER].enabled is False
         # The key is still wired through for the shared listener.
         assert config.platforms[Platform.API_SERVER].extra.get("key") == api_server_key
+
+
+class TestUnknownPlatformNamesAreReported:
+    """A typo'd platform key used to vanish without a trace.
+
+    ``GatewayConfig.from_dict`` skips names that aren't a known ``Platform``
+    (or a registered plugin adapter). Skipping is correct — the config must
+    still load — but doing it silently makes a misspelled key
+    indistinguishable from a platform that is configured and simply not
+    running, which is the whole diagnostic question the user has.
+    """
+
+    def test_unknown_platform_key_is_skipped_and_logged(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            config = GatewayConfig.from_dict({
+                "platforms": {
+                    "telegram": {"enabled": True},
+                    "teelgram": {"enabled": True},
+                },
+            })
+
+        assert Platform.TELEGRAM in config.platforms
+        assert len(config.platforms) == 1, "the unknown key must not be kept"
+        assert any(
+            "teelgram" in r.getMessage() for r in caplog.records
+        ), f"the skipped name was never reported: {[r.getMessage() for r in caplog.records]}"
+
+    def test_unknown_reset_by_platform_key_is_skipped_and_logged(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            config = GatewayConfig.from_dict({
+                "reset_by_platform": {
+                    "telegram": {"reset_on_new": True},
+                    "discrod": {"reset_on_new": True},
+                },
+            })
+
+        assert Platform.TELEGRAM in config.reset_by_platform
+        assert len(config.reset_by_platform) == 1
+        assert any(
+            "discrod" in r.getMessage() for r in caplog.records
+        ), f"the skipped reset policy was never reported: {[r.getMessage() for r in caplog.records]}"
+
+    def test_known_platforms_log_nothing(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            config = GatewayConfig.from_dict({
+                "platforms": {"telegram": {"enabled": True}},
+                "reset_by_platform": {"telegram": {"reset_on_new": True}},
+            })
+
+        assert Platform.TELEGRAM in config.platforms
+        assert not [r for r in caplog.records if "Unknown platform" in r.getMessage()]

@@ -1093,7 +1093,12 @@ class GatewayConfig:
                 platform = Platform(platform_name)
                 platforms[platform] = PlatformConfig.from_dict(platform_data)
             except ValueError:
-                pass  # Skip unknown platforms
+                # Skipping silently makes a typo'd platform key indistinguishable
+                # from one that is configured and simply not running.
+                logger.warning(
+                    "Unknown platform %r in gateway config 'platforms' — skipping "
+                    "its settings.", platform_name,
+                )
         
         reset_by_type = {}
         for type_name, policy_data in _coerce_dict(data.get("reset_by_type", {})).items():
@@ -1105,7 +1110,10 @@ class GatewayConfig:
                 platform = Platform(platform_name)
                 reset_by_platform[platform] = SessionResetPolicy.from_dict(policy_data)
             except ValueError:
-                pass
+                logger.warning(
+                    "Unknown platform %r in gateway config 'reset_by_platform' — "
+                    "its reset policy will not apply.", platform_name,
+                )
         
         default_policy = SessionResetPolicy()
         if "default_reset_policy" in data:

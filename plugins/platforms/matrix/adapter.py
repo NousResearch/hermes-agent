@@ -3021,6 +3021,11 @@ class MatrixAdapter(BasePlatformAdapter):
                         self._room_identities.clear()
                         self._room_identity_cached_at.clear()
 
+                    # Apply live m.direct changes (e.g. Element marking or
+                    # unmarking a DM) before dispatching events, so messages
+                    # in the same sync batch see the new classification.
+                    self._update_dm_rooms_from_sync(sync_data)
+
                     # Advance the sync token so the next request is
                     # incremental instead of a full initial sync.
                     nb = sync_data.get("next_batch")
@@ -4638,10 +4643,12 @@ class MatrixAdapter(BasePlatformAdapter):
         *,
         force_refresh: bool = False,
     ) -> MatrixRoomIdentity:
-        """Resolve Matrix room identity without member-count DM heuristics.
+        """Resolve Matrix room identity.
 
-        Matrix ``m.direct`` account data is the authoritative DM signal, but
-        explicitly named rooms win over stale/conflicting DM account data.
+        ``m.direct`` account data is the authoritative DM signal, matching how
+        matrix-js-sdk and Element classify (their ``DMRoomMap`` is built from
+        ``m.direct``). An explicit room name does not demote a DM, and member
+        count does not promote a non-DM room.
         """
         cached = self._room_identities.get(room_id)
         cached_at = self._room_identity_cached_at.get(room_id, 0.0)
@@ -4658,23 +4665,18 @@ class MatrixAdapter(BasePlatformAdapter):
         member_count = await self._get_room_member_count(room_id)
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
-        # member_count is the primary DM signal: <=2 members means this is
-        # necessarily a 1:1 conversation (or self-DM), regardless of m.direct
-        # or room name. Most Matrix clients auto-name DM rooms (e.g.
-        # "Alice & Bot"), so the old `not has_explicit_name` check
-        # misclassified virtually all client-created DMs as rooms. Falls back
-        # to the m.direct + name heuristic when the count is unavailable (e.g.
-        # state_store and API query both fail). A room that grew to 3+ members
-        # but is still in stale m.direct is correctly classified as a room.
-        is_likely_dm = (member_count is not None and member_count <= 2) or (
-            is_direct and not has_explicit_name
-        )
-        conflict = bool(
-            is_direct
-            and has_explicit_name
-            and (member_count is None or member_count > 2)
-        )
-        chat_type = "dm" if is_likely_dm else "room"
+        # m.direct is the authoritative DM signal, matching matrix-js-sdk and
+        # Element: Element's DMRoomMap is built from m.direct account data, with
+        # the invite `is_direct` flag as the only fallback (both fold into
+        # `_dm_rooms`). Member count never promotes a room to a DM — a joined
+        # room with <=2 members is not a DM unless m.direct says so — and an
+        # explicit room name never demotes one, since clients routinely
+        # auto-name DMs (e.g. "Alice & Bot").
+        chat_type = "dm" if is_direct else "room"
+        # A room still in m.direct but grown past two members is most likely a
+        # group left behind by a stale m.direct entry; surface that for
+        # diagnostics without overriding the m.direct classification.
+        conflict = bool(is_direct and member_count is not None and member_count > 2)
         display_name = room_name or canonical_alias or room_id
 
         identity = MatrixRoomIdentity(
@@ -4716,6 +4718,10 @@ class MatrixAdapter(BasePlatformAdapter):
         if dm_data is None:
             return
 
+        self._apply_m_direct_content(dm_data)
+
+    def _apply_m_direct_content(self, dm_data: Dict) -> None:
+        """Rebuild the DM room cache from m.direct content."""
         dm_room_ids: Set[str] = set()
         for user_id, rooms in dm_data.items():
             if isinstance(rooms, list):
@@ -4765,6 +4771,31 @@ class MatrixAdapter(BasePlatformAdapter):
         self._dm_rooms[room_id] = True
         self._room_identities.pop(room_id, None)
         self._room_identity_cached_at.pop(room_id, None)
+
+    def _update_dm_rooms_from_sync(self, sync_data: Dict[str, Any]) -> None:
+        """Apply live m.direct updates delivered in a sync response.
+
+        Element edits m.direct account data when the user marks or unmarks a
+        room as a DM; the change arrives as a top-level account_data event on
+        the next sync, so the DM cache must not wait for a reconnect.
+        """
+        account_data = sync_data.get("account_data")
+        if not isinstance(account_data, dict):
+            return
+
+        events = account_data.get("events")
+        if not isinstance(events, list):
+            return
+
+        for raw_event in events:
+            if not isinstance(raw_event, dict):
+                continue
+            if raw_event.get("type") != "m.direct":
+                continue
+
+            content = raw_event.get("content")
+            if isinstance(content, dict):
+                self._apply_m_direct_content(content)
 
     # ------------------------------------------------------------------
     # Mention detection helpers

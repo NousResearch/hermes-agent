@@ -905,7 +905,20 @@ class TestConvertMessages:
 
         assert system == "You are helpful."
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == [{"type": "text", "text": "(empty)"}]
+        # Assert the INVARIANT, not the literal placeholder value. Upstream
+        # froze `[{"type": "text", "text": "(empty)"}]` here; that is a
+        # change-detector — it breaks on any rewording of the placeholder
+        # while proving nothing extra. What we actually require is that the
+        # prepended leading user turn contains NON-WHITESPACE text: a literal
+        # " " was the 2026-08-07 defect, because Anthropic rejects
+        # whitespace-only text blocks ("messages: text content blocks must
+        # contain non-whitespace text"), trading the leading-assistant 400
+        # for a different 400 and wedging every session that compacted.
+        assert len(result[0]["content"]) == 1
+        assert result[0]["content"][0]["type"] == "text"
+        assert result[0]["content"][0]["text"].strip(), (
+            "leading user turn must contain non-whitespace text"
+        )
         assert result[1]["role"] == "assistant"
         assert any(
             m["role"] == "assistant" and "Context compaction summary" in str(m["content"])

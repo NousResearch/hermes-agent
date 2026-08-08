@@ -644,23 +644,191 @@ def _format_exec_approval_fallback(
     )
 
 
+_GATEWAY_HTTP_STATUS_RE = re.compile(
+    r"(?:\bHTTP\s*|\bError\s+code:\s*|\bstatus(?:_code)?[\s=:]+)(\d{3})\b",
+    re.IGNORECASE,
+)
+
+_GATEWAY_PROVIDER_MSG_RE = re.compile(
+    r"['\"]message['\"]\s*:\s*(['\"])(?P<msg>.*?)(?<!\\)\1",
+    re.DOTALL,
+)
+
+_GATEWAY_PROVIDER_ERRTYPE_RE = re.compile(
+    r"['\"]type['\"]\s*:\s*['\"](?P<etype>[a-z_]*error[a-z_]*)['\"]",
+    re.IGNORECASE,
+)
+
+_GATEWAY_PROVIDER_MSG_MAX = 400
+
+
+def _extract_gateway_http_status(text: str) -> "int | None":
+    """Pull the HTTP status code out of a raw provider error string."""
+    m = _GATEWAY_HTTP_STATUS_RE.search(text or "")
+    if not m:
+        return None
+    try:
+        status = int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+    return status if 100 <= status <= 599 else None
+
+
+def _extract_gateway_provider_message(text: str) -> str:
+    """Pull the provider's own human-readable message out of a raw error body.
+
+    The provider's message is the single most actionable thing in the payload —
+    a malformed-request 400, a billing notice and a dead key are otherwise
+    indistinguishable once collapsed to a generic string (that ambiguity cost
+    a full morning of misdirected debugging). Returns "" when no structured
+    message is present so callers can fall back to the summary text.
+
+    SECURITY: the extracted message is redacted here, not by the caller. One
+    of the two call sites passes an already-redacted string but the other
+    (``_prepare_gateway_status_message``) passes the RAW body, and a provider
+    can echo the offending credential back inside ``message`` — e.g.
+    ``'invalid x-api-key sk-ant-...'``. Surfacing the provider message without
+    redacting at this level leaked exactly that. Defence in depth: redact
+    unconditionally, regardless of what the caller already did.
+    """
+    best = ""
+    for m in _GATEWAY_PROVIDER_MSG_RE.finditer(text or ""):
+        candidate = (m.group("msg") or "").strip()
+        # Unescape the common JSON/py-repr escapes without a full parse; the
+        # body may be a Python repr, not valid JSON.
+        candidate = candidate.replace("\\n", " ").replace('\\"', '"').replace("\\'", "'")
+        candidate = " ".join(candidate.split())
+        if len(candidate) > len(best):
+            best = candidate
+    if not best:
+        return ""
+    best = _redact_gateway_provider_message(best)
+    if len(best) > _GATEWAY_PROVIDER_MSG_MAX:
+        best = best[:_GATEWAY_PROVIDER_MSG_MAX].rstrip() + "…"
+    return best
+
+
+# Credential shapes that must never reach chat. Value-shape based, not
+# key-name based: a key-name allowlist misses a token echoed inline in prose.
+_GATEWAY_PROVIDER_MSG_SECRET_RES = (
+    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}"),
+    re.compile(r"\bhf_[A-Za-z0-9]{20,}"),
+    re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"\bey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+"),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{12,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+)
+
+
+def _redact_gateway_provider_message(msg: str) -> str:
+    """Strip credential-shaped substrings out of a provider message."""
+    out = msg
+    for pattern in _GATEWAY_PROVIDER_MSG_SECRET_RES:
+        out = pattern.sub("[REDACTED]", out)
+    try:
+        from agent.redact import redact_sensitive_text
+
+        out = redact_sensitive_text(out, force=True)
+    except Exception:
+        # Never let a redactor import failure surface the raw text.
+        pass
+    return out
+
+
+def _extract_gateway_provider_error_type(text: str) -> str:
+    """Pull the provider's machine-readable error type (e.g. invalid_request_error).
+
+    Anthropic bodies nest two ``type`` keys — the outer envelope is the bare
+    string ``'error'`` and the inner one carries the useful value
+    (``invalid_request_error``, ``authentication_error``, ...). Scan every
+    match and prefer the most specific, discarding the bare envelope value.
+    """
+    best = ""
+    for m in _GATEWAY_PROVIDER_ERRTYPE_RE.finditer(text or ""):
+        candidate = (m.group("etype") or "").strip()
+        if candidate.lower() == "error":
+            continue  # outer envelope, carries no information
+        if len(candidate) > len(best):
+            best = candidate
+    return best
+
+
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
+    """Map raw provider/API errors to a short user-safe reply.
+
+    Every 4xx is TERMINAL and is surfaced with the provider's own message,
+    HTTP status and error type. Credentials never reach chat: *text* has
+    already been through ``_redact_gateway_error`` /
+    ``redact_sensitive_text`` at both call sites, and the extracted provider
+    message is length-capped.
+
+    Previously any error that did not match the auth/policy/rate-limit
+    patterns fell through to "the model provider failed after retries" — a
+    string that was wrong three ways at once: it implied the provider was at
+    fault when the request was ours, implied retries had happened when a 400
+    is never retried, and hid the one field that identified the real problem.
+    A payload bug, a billing notice and an invalid key all rendered
+    identically.
+    """
+    status = _extract_gateway_http_status(text)
+    provider_msg = _extract_gateway_provider_message(text)
+    err_type = _extract_gateway_provider_error_type(text)
+
+    # Auth first: most actionable, and its remedy differs from every other 4xx.
     if _GATEWAY_AUTH_ERROR_RE.search(text):
+        detail = f" Provider said: {provider_msg}" if provider_msg else ""
         return (
-            "⚠️ Provider authentication failed. Check the configured credentials; "
-            "raw provider details are in the gateway logs."
+            "⚠️ Provider authentication failed"
+            f"{f' (HTTP {status})' if status else ''}."
+            f"{detail} Check the configured credentials; raw provider details "
+            "are in the gateway logs."
         )
-    if _GATEWAY_PROVIDER_POLICY_RE.search(text):
-        return (
-            "⚠️ The model provider rejected the request. I kept the raw provider "
-            "error out of chat; check gateway logs for details or try rephrasing."
-        )
+
     if _GATEWAY_RATE_LIMIT_RE.search(text):
-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+        detail = f" Provider said: {provider_msg}" if provider_msg else ""
+        return (
+            "⏱️ The model provider is rate-limiting or usage-capping requests"
+            f"{f' (HTTP {status})' if status else ''}."
+            f"{detail}"
+        )
+
+    if _GATEWAY_PROVIDER_POLICY_RE.search(text):
+        detail = f" Provider said: {provider_msg}" if provider_msg else ""
+        return (
+            "⚠️ The model provider rejected the request on policy grounds"
+            f"{f' (HTTP {status})' if status else ''}."
+            f"{detail} Check gateway logs for details or try rephrasing."
+        )
+
+    # Any other 4xx: terminal, our fault, and the provider's message names it.
+    if status is not None and 400 <= status < 500:
+        bits = [f"⚠️ Request rejected by the provider (HTTP {status}"]
+        bits.append(f", {err_type})" if err_type else ")")
+        head = "".join(bits)
+        if provider_msg:
+            return (
+                f"{head}: {provider_msg}\n"
+                "This is a terminal error — not retried. Full details "
+                "including the request ID are in the gateway logs."
+            )
+        return (
+            f"{head}. This is a terminal error — not retried. "
+            "Full details are in the gateway logs."
+        )
+
+    if status is not None and status >= 500:
+        detail = f" Provider said: {provider_msg}" if provider_msg else ""
+        return (
+            f"⚠️ The model provider returned a server error (HTTP {status}) "
+            f"after retries.{detail} Check gateway logs for diagnostics."
+        )
+
+    detail = f" Provider said: {provider_msg}" if provider_msg else ""
     return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics."
+        "⚠️ The model provider call failed."
+        f"{detail} Raw provider details are in the gateway logs."
     )
 
 
@@ -18220,11 +18388,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ))
                 or ("400" in _err_str_for_classify and len(history) > 50)
             )
+            # A malformed-payload 4xx is TERMINAL and DETERMINISTIC: the
+            # assembled message array itself is invalid, so persisting the
+            # transcript re-sends the same poisoned history on the next turn
+            # and the session fails identically until it is manually reset.
+            # This is what turned one bad content block into a wedged session
+            # that only `/reset` could clear. It is emphatically not
+            # "transient" — and it is not context overflow either, so the
+            # branch above does not catch it.
+            is_terminal_payload_failure = agent_failed_early and (
+                not is_context_overflow_failure
+            ) and any(p in _err_str_for_classify for p in (
+                "non-whitespace text",
+                "invalid_request_error",
+                "text content blocks must contain",
+                "messages: ",
+                "tool_use ids were found without",
+                "unexpected role",
+                "must be a non-empty array",
+            ))
             if is_context_overflow_failure:
                 logger.info(
                     "Skipping transcript persistence for context-overflow "
                     "failure in session %s to prevent session growth loop.",
                     session_entry.session_id,
+                )
+            elif is_terminal_payload_failure:
+                logger.error(
+                    "TERMINAL payload failure in session %s — NOT persisting "
+                    "the transcript: the assembled message array was rejected "
+                    "by the provider and re-sending it would fail identically. "
+                    "Error: %s",
+                    session_entry.session_id,
+                    agent_result.get("error", "malformed request payload"),
                 )
             elif agent_failed_early:
                 logger.info(
@@ -18332,6 +18528,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # entries that were stripped before the agent saw them.
             if is_context_overflow_failure:
                 pass  # handled above — skip all transcript writes
+            elif is_terminal_payload_failure:
+                # Terminal malformed-payload 4xx: skip ALL transcript writes.
+                # The assembled array was rejected by the provider, so
+                # persisting any part of this turn re-poisons the next one.
+                # Handled/logged above.
+                pass
             elif agent_failed_early or hidden_reasoning_incomplete:
                 # Transient failure (429/timeout/5xx): persist only the user
                 # message so the next message can load a transcript that

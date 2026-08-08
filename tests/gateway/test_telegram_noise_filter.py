@@ -194,7 +194,12 @@ def test_chat_gateways_redact_secret_in_provider_error(platform):
 
     assert "sk-ABCDEF0123456789abcdef0123" not in sanitized
     assert "sk-ABCDEF" not in sanitized
-    assert "HTTP 401" not in sanitized
+    # The HTTP status is deliberately RETAINED (2026-08-07): suppressing it
+    # was what made a payload bug, a billing notice and a dead API key all
+    # read as one indistinguishable string. The security invariant here is
+    # about SECRETS and raw provider bodies, not the status code — a bare
+    # "401" carries no credential material and is the most actionable field.
+    assert "HTTP 401" in sanitized
     # The user gets the safe provider-error category instead of the raw body.
     assert "provider" in sanitized.lower()
 
@@ -267,7 +272,10 @@ def test_telegram_status_sanitizes_raw_provider_security_errors():
     assert sanitized is not None
     assert "provider rejected" in sanitized.lower()
     assert "cybersecurity risk" not in sanitized.lower()
-    assert "HTTP 400" not in sanitized
+    # HTTP status retained by design (2026-08-07) — see the note on
+    # test_chat_gateways_redact_secret_in_provider_error. The raw policy body
+    # and the request_id must still be suppressed.
+    assert "HTTP 400" in sanitized
     assert "req_123" not in sanitized
 
 
@@ -282,7 +290,9 @@ def test_telegram_final_response_sanitizes_raw_provider_errors():
 
     assert "provider rejected" in sanitized.lower()
     assert "cybersecurity risk" not in sanitized.lower()
-    assert "HTTP 400" not in sanitized
+    # HTTP status retained by design (2026-08-07); raw policy body and
+    # request_id must still be suppressed.
+    assert "HTTP 400" in sanitized
     assert "req_abc" not in sanitized
 
 

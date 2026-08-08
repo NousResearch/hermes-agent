@@ -2739,6 +2739,157 @@ def _scrub_blank_text_blocks(result: List[Dict[str, Any]]) -> None:
         msg["content"] = new_content
 
 
+class AnthropicMessageValidationError(ValueError):
+    """An assembled Anthropic message array violates the Messages API contract.
+
+    Raised instead of letting the provider reject the request, so the failure
+    names the offending message index and violation rather than surfacing as
+    an opaque HTTP 400 with no index and no offending value.
+    """
+
+
+def _describe_block(block: Any) -> str:
+    """Short, non-leaking description of a content block for error messages."""
+    if not isinstance(block, dict):
+        return f"<non-dict {type(block).__name__}>"
+    btype = block.get("type", "<no-type>")
+    if btype == "text":
+        return f"text(len={len(block.get('text', '') or '')})"
+    if btype == "tool_use":
+        return f"tool_use(id={str(block.get('id'))[:12]})"
+    if btype == "tool_result":
+        return f"tool_result(tool_use_id={str(block.get('tool_use_id'))[:12]})"
+    return str(btype)
+
+
+def validate_anthropic_messages(messages: List[Dict[str, Any]]) -> None:
+    """Final pre-send gate: fail loudly on what repair cannot fix.
+
+    LAYERING — this runs AFTER ``_scrub_blank_text_blocks``, which owns the
+    blank/whitespace-only text-block case and REPAIRS it (including the
+    ``tool_result`` inner-content recursion and ``cache_control`` relocation).
+    This validator deliberately does not re-implement that repair. It catches
+    the structural violations that cannot be silently repaired, because a
+    repair would have to guess at intent:
+
+      * ``tool_result`` blocks with no matching ``tool_use``
+      * empty content arrays / messages with no content at all
+      * invalid roles
+      * consecutive same-role messages
+
+    It also asserts, as a post-scrub invariant, that no blank text block
+    survived. That is NOT a duplicate repair: if this fires, the scrub pass
+    either did not run or missed a path, and the correct response is to fix
+    the ordering — never to loosen this check.
+
+    Raises :class:`AnthropicMessageValidationError` naming the offending
+    message index. Returns None; mutates nothing.
+    """
+    if not isinstance(messages, list):
+        raise AnthropicMessageValidationError(
+            f"messages must be a list, got {type(messages).__name__}"
+        )
+
+    # Pass 1 — collect tool_use ids so orphaned tool_results can be detected.
+    tool_use_ids = set()
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    if block.get("id"):
+                        tool_use_ids.add(block["id"])
+
+    # Pass 2 — per-message structural checks.
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            raise AnthropicMessageValidationError(
+                f"messages[{idx}]: expected a dict, got {type(msg).__name__}"
+            )
+
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            raise AnthropicMessageValidationError(
+                f"messages[{idx}]: invalid role {role!r} "
+                "(Anthropic accepts only 'user' or 'assistant')"
+            )
+
+        content = msg.get("content")
+
+        # String content is not covered by _scrub_blank_text_blocks (which
+        # only walks list content), so it is validated here.
+        if isinstance(content, str):
+            if not content.strip():
+                raise AnthropicMessageValidationError(
+                    f"messages[{idx}] (role={role}): content string is empty or "
+                    "whitespace-only; Anthropic requires non-whitespace text"
+                )
+            continue
+
+        if not isinstance(content, list):
+            raise AnthropicMessageValidationError(
+                f"messages[{idx}] (role={role}): content must be a string or a "
+                f"list of blocks, got {type(content).__name__}"
+            )
+
+        if len(content) == 0:
+            raise AnthropicMessageValidationError(
+                f"messages[{idx}] (role={role}): content array is empty; "
+                "Anthropic requires at least one content block"
+            )
+
+        for bidx, block in enumerate(content):
+            if not isinstance(block, dict):
+                raise AnthropicMessageValidationError(
+                    f"messages[{idx}].content[{bidx}] (role={role}): expected a "
+                    f"block dict, got {type(block).__name__}"
+                )
+
+            btype = block.get("type")
+
+            if btype is None:
+                raise AnthropicMessageValidationError(
+                    f"messages[{idx}].content[{bidx}] (role={role}): content "
+                    f"block has no 'type' field ({_describe_block(block)})"
+                )
+
+            if btype == "text":
+                text = block.get("text", "")
+                if not isinstance(text, str):
+                    raise AnthropicMessageValidationError(
+                        f"messages[{idx}].content[{bidx}] (role={role}): text "
+                        f"field must be a str, got {type(text).__name__}"
+                    )
+                # Post-scrub invariant, not a repair. See the docstring.
+                if not text.strip():
+                    raise AnthropicMessageValidationError(
+                        f"messages[{idx}].content[{bidx}] (role={role}): blank "
+                        f"text block (repr={text!r}) survived "
+                        "_scrub_blank_text_blocks — this is a LAYERING bug: the "
+                        "scrub pass must run before this gate"
+                    )
+
+            elif btype == "tool_result":
+                tu_id = block.get("tool_use_id")
+                if not tu_id or tu_id not in tool_use_ids:
+                    raise AnthropicMessageValidationError(
+                        f"messages[{idx}].content[{bidx}] (role={role}): "
+                        f"orphaned tool_result — tool_use_id={str(tu_id)[:20]!r} "
+                        "has no matching tool_use block in the array"
+                    )
+
+    # Pass 3 — strict role alternation.
+    for idx in range(1, len(messages)):
+        prev_role = messages[idx - 1].get("role")
+        cur_role = messages[idx].get("role")
+        if prev_role == cur_role:
+            raise AnthropicMessageValidationError(
+                f"messages[{idx}]: consecutive same-role messages "
+                f"(messages[{idx - 1}] and messages[{idx}] are both "
+                f"role={cur_role!r}); Anthropic requires strict alternation"
+            )
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
@@ -2801,6 +2952,24 @@ def convert_messages_to_anthropic(
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
     _scrub_blank_text_blocks(result)
+
+    # Final pre-send gate, layered AFTER the scrub pass above. The scrub
+    # REPAIRS blank text blocks (including tool_result inner content and
+    # cache_control relocation); this gate FAILS LOUDLY on the structural
+    # violations that cannot be repaired without guessing at intent —
+    # orphaned tool_result, empty content arrays, invalid roles, consecutive
+    # same-role messages. Every Anthropic request passes through here, so it
+    # is the one place that can guarantee the assembled array satisfies the
+    # Messages API contract instead of surfacing as an opaque provider 400.
+    try:
+        validate_anthropic_messages(result)
+    except AnthropicMessageValidationError:
+        logger.error(
+            "Anthropic message array FAILED validation before send "
+            "(%d messages) — refusing to send an invalid payload.",
+            len(result),
+        )
+        raise
 
     return system, result
 

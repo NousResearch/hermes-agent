@@ -23916,6 +23916,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if interrupt_depth == 0:
             from agent.session_activity import ActivityProvenance
 
+            # Save previous ts for idle-compaction gap calculation (#79357)
+            # before the watchdog reset overwrites it.
+            agent._prev_activity_ts = getattr(agent, "_last_activity_ts", None)
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
             agent._last_activity_provenance = ActivityProvenance.UNKNOWN

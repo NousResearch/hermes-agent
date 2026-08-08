@@ -675,7 +675,10 @@ def build_turn_context(
     # expensive) token estimate, mirroring ``_should_run_preflight_estimate``.
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
     if agent.compression_enabled and _idle_after > 0 and messages:
-        _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
+        # Use _prev_activity_ts (saved before the watchdog reset) to measure
+        # the real idle gap since the previous turn finished (#79357).
+        _idle_ref = getattr(agent, "_prev_activity_ts", None) or getattr(agent, "_last_activity_ts", time.time())
+        _idle_gap = time.time() - _idle_ref
         if _idle_gap >= _idle_after:
             _compressor = agent.context_compressor
             _idle_tokens = estimate_request_tokens_rough(

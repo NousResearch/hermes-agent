@@ -43,11 +43,20 @@ import {
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { formatBackendError } from "@/lib/formatBackendError";
 import { cn, themedBody } from "@/lib/utils";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const RESERVED_PROFILE_NAMES = new Set([
+  "hermes",
+  "default",
+  "test",
+  "tmp",
+  "root",
+  "sudo",
+]);
 
 /** Braille unicode spinner (`unicode-animations`); static first frame when reduced motion is preferred. */
 function ProfilesLoadingSpinner() {
@@ -305,6 +314,9 @@ export default function ProfilesPage() {
       modelSelect: p.modelSelect ?? "Select a model",
       actions: p.actions ?? "Actions",
       manageSkills: p.manageSkills ?? "Manage skills & tools",
+      reservedName:
+        p.reservedName ??
+        "This profile name is reserved. Pick a different name.",
       activeSetHint:
         p.activeSetHint ??
         "Dashboard switched to manage {name}. New CLI/gateway runs will use this profile too.",
@@ -419,14 +431,30 @@ export default function ProfilesPage() {
     [activeInfo],
   );
 
+  const getProfileNameError = useCallback(
+    (value: string, currentName?: string | null) => {
+      const trimmed = value.trim();
+      if (!trimmed || (currentName && trimmed === currentName)) return null;
+      if (!PROFILE_NAME_RE.test(trimmed)) {
+        return `${t.profiles.invalidName}: ${t.profiles.nameRule}`;
+      }
+      if (RESERVED_PROFILE_NAMES.has(trimmed)) {
+        return L.reservedName;
+      }
+      return null;
+    },
+    [L.reservedName, t.profiles.invalidName, t.profiles.nameRule],
+  );
+
   const handleCreate = async () => {
     const name = newName.trim();
     if (!name) {
       showToast(t.profiles.nameRequired, "error");
       return;
     }
-    if (!PROFILE_NAME_RE.test(name)) {
-      showToast(`${t.profiles.invalidName}: ${t.profiles.nameRule}`, "error");
+    const nameError = getProfileNameError(name);
+    if (nameError) {
+      showToast(nameError, "error");
       return;
     }
     setCreating(true);
@@ -462,7 +490,7 @@ export default function ProfilesPage() {
       setCreateModalOpen(false);
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${formatBackendError(e)}`, "error");
     } finally {
       setCreating(false);
     }
@@ -476,8 +504,9 @@ export default function ProfilesPage() {
       setRenameTo("");
       return;
     }
-    if (!PROFILE_NAME_RE.test(target)) {
-      showToast(`${t.profiles.invalidName}: ${t.profiles.nameRule}`, "error");
+    const nameError = getProfileNameError(target, renamingFrom);
+    if (nameError) {
+      showToast(nameError, "error");
       return;
     }
     try {
@@ -487,7 +516,7 @@ export default function ProfilesPage() {
       setRenameTo("");
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${formatBackendError(e)}`, "error");
     }
   };
 
@@ -772,6 +801,7 @@ export default function ProfilesPage() {
   }, [setEnd, t.common.create, loading, navigate]);
 
   const cloning = cloneFrom !== null;
+  const createNameError = getProfileNameError(newName);
 
   if (loading) {
     return (
@@ -851,13 +881,17 @@ export default function ProfilesPage() {
                     if (e.key === "Enter") handleCreate();
                   }}
                   aria-invalid={
-                    newName.trim() !== "" &&
-                    !PROFILE_NAME_RE.test(newName.trim())
+                    newName.trim() !== "" && createNameError !== null
                   }
                 />
 
-                <p className="text-xs text-muted-foreground">
-                  {t.profiles.nameRule}
+                <p
+                  className={cn(
+                    "text-xs",
+                    createNameError ? "text-destructive" : "text-muted-foreground",
+                  )}
+                >
+                  {createNameError ?? t.profiles.nameRule}
                 </p>
               </div>
 
@@ -1031,6 +1065,9 @@ export default function ProfilesPage() {
             const isEditingDesc = editingDescFor === p.name;
             const isEditingModel = editingModelFor === p.name;
             const active = isActive(p);
+            const renameNameError = isRenaming
+              ? getProfileNameError(renameTo, p.name)
+              : null;
             return (
               <Card key={p.name} className="h-full">
                 <CardContent className="flex h-full flex-col gap-2 py-4">
@@ -1045,33 +1082,20 @@ export default function ProfilesPage() {
                           if (e.key === "Escape") setRenamingFrom(null);
                         }}
                         aria-invalid={
-                          renameTo.trim() !== "" &&
-                          renameTo.trim() !== p.name &&
-                          !PROFILE_NAME_RE.test(renameTo.trim())
+                          renameTo.trim() !== "" && renameNameError !== null
                         }
                       />
 
-                      {(() => {
-                        const trimmed = renameTo.trim();
-                        const invalid =
-                          trimmed !== "" &&
-                          trimmed !== p.name &&
-                          !PROFILE_NAME_RE.test(trimmed);
-                        return (
-                          <p
-                            className={cn(
-                              "text-xs",
-                              invalid
-                                ? "text-destructive"
-                                : "text-muted-foreground",
-                            )}
-                          >
-                            {invalid
-                              ? `${t.profiles.invalidName}: ${t.profiles.nameRule}`
-                              : t.profiles.nameRule}
-                          </p>
-                        );
-                      })()}
+                      <p
+                        className={cn(
+                          "text-xs",
+                          renameNameError
+                            ? "text-destructive"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        {renameNameError ?? t.profiles.nameRule}
+                      </p>
 
                       <div className="flex gap-1.5">
                         <Button size="sm" onClick={handleRenameSubmit}>

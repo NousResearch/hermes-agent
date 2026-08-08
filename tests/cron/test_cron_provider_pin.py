@@ -394,3 +394,134 @@ class TestRuntimeResolutionTargetModel:
 
         assert captured.get("target_model") == "my-pinned-model"
         assert captured.get("requested") == "openrouter"
+
+
+class TestResnapshot:
+    """resnapshot_job / resnapshot_all_unpinned — 'adopt the current global
+    default without pinning' (#44585 companion). These refresh an unpinned
+    job's snapshot(s) to the CURRENT global resolution while leaving the job
+    unpinned, so it keeps tracking future global changes."""
+
+    @staticmethod
+    def _install_store(monkeypatch, initial_jobs):
+        """Install an in-memory cron job store backed by a real list so
+        resnapshot functions can load/save against it."""
+        import contextlib
+        import cron.jobs as jobs
+
+        store = [dict(j) for j in initial_jobs]  # deep-ish copy per job
+
+        @contextlib.contextmanager
+        def _lock():
+            yield
+
+        monkeypatch.setattr(jobs, "_jobs_lock", _lock, raising=True)
+        monkeypatch.setattr(jobs, "load_jobs", lambda: [dict(j) for j in store], raising=True)
+
+        def _save(job_list):
+            store[:] = [dict(j) for j in job_list]
+
+        monkeypatch.setattr(jobs, "save_jobs", _save, raising=True)
+        return jobs, store
+
+    def _make_job(self, job_id, **overrides):
+        job = {
+            "id": job_id,
+            "name": f"job {job_id}",
+            "prompt": "do a thing",
+            "model": None,
+            "provider": None,
+            "model_snapshot": "old-model",
+            "provider_snapshot": "old-provider",
+            "base_url": None,
+            "no_agent": False,
+        }
+        job.update(overrides)
+        return job
+
+    def test_resnapshot_unpinned_refreshes_to_current(self, monkeypatch, tmp_path):
+        jobs_mod, store = self._install_store(
+            monkeypatch, [self._make_job("j1", model_snapshot="old-model")]
+        )
+        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
+        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "openrouter"},
+        ):
+            updated = jobs_mod.resnapshot_job("j1")
+
+        assert updated is not None
+        assert updated["model"] is None, "job must stay unpinned"
+        assert updated["model_snapshot"] == "new-model"
+        assert updated["provider_snapshot"] == "openrouter"
+        # Persisted too.
+        assert store[0]["model_snapshot"] == "new-model"
+        assert store[0]["provider_snapshot"] == "openrouter"
+
+    def test_resnapshot_pinned_job_keeps_none_snapshot(self, monkeypatch, tmp_path):
+        # A fully-pinned job already carries None snapshots; resnapping must not
+        # clobber them into a global default.
+        jobs_mod, store = self._install_store(
+            monkeypatch,
+            [
+                self._make_job(
+                    "j1",
+                    model="my-pinned-model",
+                    provider="openrouter",
+                    model_snapshot=None,
+                    provider_snapshot=None,
+                )
+            ],
+        )
+        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
+        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "openrouter"},
+        ):
+            updated = jobs_mod.resnapshot_job("j1")
+
+        # Pinned axes stay pinned: model unchanged, snapshots still None.
+        assert updated["model"] == "my-pinned-model"
+        assert updated["model_snapshot"] is None
+        assert updated["provider_snapshot"] is None
+
+    def test_resnapshot_missing_job_returns_none(self, monkeypatch, tmp_path):
+        jobs_mod, _store = self._install_store(monkeypatch, [])
+        assert jobs_mod.resnapshot_job("nope") is None
+
+    def test_resnapshot_all_skips_no_agent_and_fully_pinned(self, monkeypatch, tmp_path):
+        jobs_mod, store = self._install_store(
+            monkeypatch,
+            [
+                # unpinned, model-only → should be refreshed (provider axis too)
+                self._make_job("j1", model_snapshot="old", provider_snapshot="old"),
+                # no_agent → skipped entirely
+                self._make_job("j2", no_agent=True, model_snapshot="old", provider_snapshot="old"),
+                # fully pinned → skipped (nothing unpinned)
+                self._make_job(
+                    "j3",
+                    model="pm", provider="pp",
+                    model_snapshot=None, provider_snapshot=None,
+                ),
+            ],
+        )
+        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
+        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"provider": "openrouter"},
+        ):
+            updated = jobs_mod.resnapshot_all_unpinned()
+
+        ids = [j["id"] for j in updated]
+        assert ids == ["j1"], "only the unpinned agent job is refreshed"
+        by_id = {j["id"]: j for j in store}
+        assert by_id["j1"]["model_snapshot"] == "new-model"
+        assert by_id["j1"]["provider_snapshot"] == "openrouter"
+        # no_agent job keeps its (irrelevant) old snapshot untouched.
+        assert by_id["j2"]["model_snapshot"] == "old"
+        # pinned job keeps None.
+        assert by_id["j3"]["model_snapshot"] is None
+

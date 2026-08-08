@@ -21,6 +21,18 @@ const WS_OPEN = 1
 const WS_CLOSING = 2
 const WS_CLOSED = 3
 
+// Keepalive + dead-connection detection. A silent drop (macOS sleep, proxy
+// idle timeout, VPN reconnect) kills the TCP socket without a `close` event,
+// so the client hangs forever (issue #32997). Browser/undici WebSocket does
+// not expose an acknowledged ping/pong API, so this uses a small JSON-RPC
+// heartbeat that the TUI gateway explicitly answers. Healthy idle sockets stay
+// open; only a missing heartbeat ack forces close -> reconnect.
+export const WS_HEARTBEAT_INTERVAL_MS = 15_000
+export const WS_HEARTBEAT_DEAD_MS = 45_000
+// Exponential backoff for reconnect attempts after a transport drop.
+export const RECONNECT_BASE_MS = 1_000
+export const RECONNECT_MAX_MS = 30_000
+
 const getWebSocketCtor = (): typeof WebSocket =>
   typeof WebSocket === 'undefined' ? (UndiciWebSocket as unknown as typeof WebSocket) : WebSocket
 
@@ -149,6 +161,15 @@ export class GatewayClient extends EventEmitter {
   private drainGeneration = 0
   private stdoutRl: ReturnType<typeof createInterface> | null = null
   private stderrRl: ReturnType<typeof createInterface> | null = null
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectAttempts = 0
+  private lastActivityAt = 0
+  private heartbeatSeq = 0
+  private heartbeatPendingId: string | null = null
+  private heartbeatSentAt = 0
+  // Set on kill() so we never auto-reconnect after an intentional shutdown.
+  private disposed = false
 
   constructor() {
     super()
@@ -210,6 +231,96 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  private startHeartbeat(ws: WebSocket) {
+    this.stopHeartbeat()
+    this.lastActivityAt = Date.now()
+    this.heartbeatPendingId = null
+    this.heartbeatSentAt = 0
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws !== ws || ws.readyState !== WS_OPEN) {
+        return
+      }
+
+      const now = Date.now()
+
+      if (this.heartbeatPendingId && now - this.heartbeatSentAt > WS_HEARTBEAT_DEAD_MS) {
+        this.lifecycle('[lifecycle] websocket silent drop detected (heartbeat ack timeout); forcing reconnect')
+        this.stopHeartbeat()
+
+        try {
+          ws.close()
+        } catch {
+          // ignore
+        }
+
+        return
+      }
+
+      if (this.heartbeatPendingId) {
+        return
+      }
+
+      const id = `h${++this.heartbeatSeq}`
+
+      this.heartbeatPendingId = id
+      this.heartbeatSentAt = now
+
+      try {
+        ws.send(JSON.stringify({ id, jsonrpc: '2.0', method: 'gateway.ping', params: { last_activity_ms: this.lastActivityAt } }))
+      } catch {
+        this.lifecycle('[lifecycle] websocket heartbeat send failed; forcing reconnect')
+        this.stopHeartbeat()
+
+        try {
+          ws.close()
+        } catch {
+          // ignore
+        }
+      }
+    }, WS_HEARTBEAT_INTERVAL_MS)
+    this.heartbeatTimer.unref?.()
+  }
+
+  private stopHeartbeat() {
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
+
+    this.heartbeatPendingId = null
+    this.heartbeatSentAt = 0
+  }
+
+  private scheduleReconnect() {
+    if (this.disposed || this.reconnectTimer !== null) {
+      return
+    }
+
+    const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS)
+    this.reconnectAttempts += 1
+    this.lifecycle(`[lifecycle] scheduling gateway reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`)
+    this.publish({ type: 'gateway.reconnecting', payload: { attempt: this.reconnectAttempts, delay_ms: delay } })
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+
+      if (this.disposed) {
+        return
+      }
+
+      this.start()
+    }, delay)
+    this.reconnectTimer.unref?.()
+  }
+
+  private clearReconnect() {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+
+    this.reconnectAttempts = 0
+  }
+
   private resetStartupState() {
     // Reject any in-flight RPCs left over from the previous transport
     // before we swap. Otherwise the old transport's stale exit/close
@@ -257,6 +368,14 @@ export class GatewayClient extends EventEmitter {
     this.closeSidecarSocket()
     this.lifecycle(`[lifecycle] transport exit code=${code ?? 'null'} reason=${reason ?? 'none'}`)
     this.rejectPending(new Error(reason || `gateway exited${code === null ? '' : ` (${code})`}`))
+
+    // Self-heal: a dropped transport (real close OR silent drop caught by the
+    // heartbeat) should reconnect instead of stranding the UI on a dead socket
+    // (issue #32997). Intentional shutdown sets `disposed` and skips this.
+    // Schedule before the synchronous 'exit' emission: useMainApp's existing
+    // recovery subscriber may call start() immediately, and start() cancels this
+    // timer so there is only one recovery owner.
+    this.scheduleReconnect()
 
     if (this.subscribed) {
       this.emit('exit', code)
@@ -320,6 +439,7 @@ export class GatewayClient extends EventEmitter {
   }
 
   private handleWebSocketFrame(raw: unknown) {
+    this.lastActivityAt = Date.now()
     const text = asWireText(raw)
 
     if (!text) {
@@ -453,6 +573,9 @@ export class GatewayClient extends EventEmitter {
               resolve()
             }
 
+            this.lastActivityAt = Date.now()
+            this.clearReconnect()
+            this.startHeartbeat(ws)
             this.connectSidecarMirror()
           },
           { once: true }
@@ -504,6 +627,7 @@ export class GatewayClient extends EventEmitter {
         }
 
         this.pushLog(`[lifecycle] websocket close code=${ev.code}`)
+        this.stopHeartbeat()
         this.ws = null
         this.wsConnectPromise = null
         this.handleTransportExit(ev.code, `gateway websocket closed${ev.code ? ` (${ev.code})` : ''}`)
@@ -521,6 +645,9 @@ export class GatewayClient extends EventEmitter {
   }
 
   start() {
+    this.disposed = false
+    this.clearReconnect()
+
     const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
     const attachUrl = resolveGatewayAttachUrl()
     const sidecarUrl = resolveSidecarUrl()
@@ -528,6 +655,8 @@ export class GatewayClient extends EventEmitter {
     this.attachUrl = attachUrl
     this.sidecarUrl = sidecarUrl
     this.resetStartupState()
+    this.clearReconnect()
+    this.stopHeartbeat()
 
     if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
       this.lifecycle(`[lifecycle] replacing live gateway child ${describeChild(this.proc)}`)
@@ -549,6 +678,14 @@ export class GatewayClient extends EventEmitter {
 
   private dispatch(msg: Record<string, unknown>) {
     const id = msg.id as string | undefined
+
+    if (id && id === this.heartbeatPendingId) {
+      this.heartbeatPendingId = null
+      this.heartbeatSentAt = 0
+
+      return
+    }
+
     const p = id ? this.pending.get(id) : undefined
 
     if (p) {
@@ -776,6 +913,9 @@ export class GatewayClient extends EventEmitter {
   }
 
   kill(reason = 'requested') {
+    this.disposed = true
+    this.clearReconnect()
+    this.stopHeartbeat()
     const proc = this.proc
     const killed = proc?.kill()
 

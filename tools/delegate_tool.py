@@ -2073,6 +2073,20 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         )
 
 
+def _attach_child_cost(entry: Dict[str, Any], child) -> Dict[str, Any]:
+    """Snapshot child spend into both host-only and serialized fields."""
+    raw_cost = getattr(child, "session_estimated_cost_usd", 0.0)
+    child_cost = float(raw_cost or 0.0) if isinstance(raw_cost, (int, float)) else 0.0
+    entry["_child_cost_usd"] = child_cost
+    entry["cost_usd"] = round(child_cost, 6)
+
+    cost_status = getattr(child, "session_cost_status", None)
+    entry["cost_status"] = (
+        cost_status if isinstance(cost_status, str) and cost_status else "unknown"
+    )
+    return entry
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -2452,7 +2466,7 @@ def _run_single_child(
                     " [steer did not land before the subagent stopped: "
                     f"{_late_pending_steer}]"
                 )
-            return _error_entry
+            return _attach_child_cost(_error_entry, child)
         finally:
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.
@@ -2637,31 +2651,11 @@ def _run_single_child(
             # parent thread can fire subagent_stop with the correct role.
             # Stripped before the dict is serialised back to the model.
             "_child_role": getattr(child, "_delegate_role", None),
-            # Captured before child.close() so the parent aggregator can fold
-            # the child's total spend into the parent's session cost.  Port of
-            # Kilo-Org/kilocode#9448 — previously the footer only reflected the
-            # parent's direct API calls and under-counted subagent-heavy runs.
-            # Stripped before the dict is serialised back to the model.
-            "_child_cost_usd": (
-                float(getattr(child, "session_estimated_cost_usd", 0.0) or 0.0)
-                if isinstance(
-                    getattr(child, "session_estimated_cost_usd", 0.0),
-                    (int, float),
-                )
-                else 0.0
-            ),
         }
-        # Per-delegation spend, serialized back to the model alongside
-        # tokens/api_calls so the parent can see what each delegation cost.
-        # Mirrors _child_cost_usd (which is stripped pre-serialization and
-        # only feeds the parent session rollup).
-        # Inspired by: Perplexity Agent API result shape (idea-level).
-        entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
-        _cost_status = getattr(child, "session_cost_status", None)
-        entry["cost_status"] = (
-            _cost_status if isinstance(_cost_status, str) and _cost_status
-            else "unknown"
-        )
+        # Capture spend before any return path reaches child.close(). The
+        # host-only field feeds parent rollup; the public fields let the parent
+        # model see this delegation's cost.
+        _attach_child_cost(entry, child)
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
@@ -2817,7 +2811,7 @@ def _run_single_child(
                 " [steer did not land before the subagent stopped: "
                 f"{_late_pending_steer}]"
             )
-        return _error_entry
+        return _attach_child_cost(_error_entry, child)
 
     finally:
         # Stop the heartbeat thread so it doesn't keep touching parent activity

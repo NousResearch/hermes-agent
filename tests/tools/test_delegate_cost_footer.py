@@ -15,6 +15,7 @@ Inspired by: Perplexity Agent API result shape (idea-level)
 
 import json
 import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -112,6 +113,38 @@ class TestCostInResultEntry(unittest.TestCase):
         _, result = self._run(child)
         entry = result["results"][0]
         self.assertEqual(entry["cost_usd"], 0.0)
+
+    def test_exception_entry_preserves_incurred_cost(self):
+        child = _make_mock_child(cost=0.25, cost_status="reported")
+        child.run_conversation.side_effect = RuntimeError("child crashed")
+
+        parent, result = self._run(child)
+
+        entry = result["results"][0]
+        self.assertEqual(entry["status"], "error")
+        self.assertEqual(entry["cost_usd"], 0.25)
+        self.assertEqual(entry["cost_status"], "reported")
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.25, places=6)
+
+    def test_timeout_entry_snapshots_incurred_cost(self):
+        child = _make_mock_child(cost=0.25, cost_status="estimated")
+        child.get_activity_summary.return_value = {"api_call_count": 1}
+        child.run_conversation.side_effect = lambda **_kwargs: time.sleep(0.1)
+        parent = _make_mock_parent()
+
+        with (
+            patch("run_agent.AIAgent", return_value=child),
+            patch("tools.delegate_tool._get_child_timeout", return_value=0.01),
+        ):
+            result = json.loads(
+                delegate_task(goal="Test timeout cost", parent_agent=parent)
+            )
+
+        entry = result["results"][0]
+        self.assertEqual(entry["status"], "timeout")
+        self.assertEqual(entry["cost_usd"], 0.25)
+        self.assertEqual(entry["cost_status"], "estimated")
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.25, places=6)
 
 
 if __name__ == "__main__":

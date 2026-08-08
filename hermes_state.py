@@ -2652,9 +2652,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._conn = _connect_tracked_db(
                     str(self.db_path),
                     check_same_thread=False,
-                    # Short timeout — application-level retry with random
-                    # jitter handles contention instead of sitting in
-                    # SQLite's internal busy handler for up to 30s.
+                    # Short timeout for direct connection operations. Explicit
+                    # write-lock acquisition temporarily disables the SQLite
+                    # busy handler in _execute_write so its application-level
+                    # patience budget remains authoritative.
                     timeout=1.0,
                     # auto-starts transactions on DML, which conflicts with
                     # our explicit BEGIN IMMEDIATE.  None = we manage
@@ -3117,13 +3118,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         while True:
             try:
                 with self._lock:
-                    self._conn.execute("BEGIN IMMEDIATE")
+                    conn = self._conn
+                    if conn is None:
+                        raise RuntimeError("Session database is not initialized")
+                    # BEGIN IMMEDIATE must fail fast so the randomized retry
+                    # loop — not SQLite's deterministic busy handler — owns
+                    # the complete wall-clock patience budget. Restore the
+                    # connection's normal timeout immediately afterward for
+                    # direct maintenance/read operations outside this helper.
+                    busy_timeout_ms = conn.execute(
+                        "PRAGMA busy_timeout"
+                    ).fetchone()[0]
                     try:
-                        result = fn(self._conn)
-                        self._conn.commit()
+                        conn.execute("PRAGMA busy_timeout=0")
+                        conn.execute("BEGIN IMMEDIATE")
+                    finally:
+                        conn.execute(
+                            f"PRAGMA busy_timeout={int(busy_timeout_ms)}"
+                        )
+                    try:
+                        result = fn(conn)
+                        conn.commit()
                     except BaseException:
                         try:
-                            self._conn.rollback()
+                            conn.rollback()
                         except Exception:
                             pass
                         raise

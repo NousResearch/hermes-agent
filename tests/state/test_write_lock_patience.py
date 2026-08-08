@@ -109,6 +109,38 @@ class TestTranscriptWritePatience:
         db.append_message(session_id="s2", role="user", content="fast")
         assert time.monotonic() - t0 < 5.0  # loose: no patience-length stall
 
+    def test_busy_timeout_is_restored_after_successful_write(self, db):
+        """The application retry loop must not leak its fail-fast setting."""
+        with db._lock:
+            db._conn.execute("PRAGMA busy_timeout = 73")
+
+        db.set_meta("restore-success", "ok")
+
+        with db._lock:
+            assert db._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 73
+
+    def test_busy_timeout_is_restored_after_exhausted_patience(self, db, monkeypatch):
+        """Lock exhaustion must restore the connection's prior timeout too."""
+        monkeypatch.setattr(SessionDB, "_WRITE_PATIENCE_S", 0.05)
+        with db._lock:
+            db._conn.execute("PRAGMA busy_timeout = 73")
+
+        started = threading.Event()
+        holder = threading.Thread(
+            target=_hold_write_lock, args=(db.db_path, 0.3, started)
+        )
+        holder.start()
+        try:
+            assert started.wait(5.0)
+            with pytest.raises(sqlite3.OperationalError):
+                db.set_meta("restore-failure", "never-written")
+        finally:
+            holder.join(timeout=5.0)
+        assert not holder.is_alive()
+
+        with db._lock:
+            assert db._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 73
+
 
 class TestOpenLockPatience:
     def test_open_survives_multi_second_lock_hold(self, tmp_path):

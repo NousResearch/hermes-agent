@@ -1323,7 +1323,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     ended_at            INTEGER,
     outcome             TEXT,
     -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    --          gave_up | reclaimed | released | (null while still running)
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
@@ -4595,6 +4595,127 @@ def release_stale_claims(
             )
             reclaimed += 1
     return reclaimed
+
+
+def release_running_workers_for_gateway_shutdown(
+    conn: sqlite3.Connection,
+    reason: str,
+    *,
+    claimer: Optional[str] = None,
+) -> list[str]:
+    """Release this gateway's own running kanban workers during shutdown.
+
+    Kanban workers are subprocesses of the gateway service. A managed
+    gateway restart terminates those children via the service cgroup; counting
+    that lifecycle event as a worker crash trips the task circuit breaker even
+    though the task did nothing wrong. This function is only called from the
+    gateway shutdown path, before the service manager kills child workers.
+
+    Two guards keep this release from causing the duplicate-spawn scenario
+    the reclaim paths defend against:
+
+    * **Scope is the calling gateway's own dispatcher claims only** — the
+      exact ``host:<gateway pid>`` claimer, never the bare host prefix. A
+      separate ``hermes kanban daemon`` on the same host
+      (``kanban.dispatch_in_gateway=false``) claims as its own
+      ``host:<daemon pid>``; its in-flight workers are not children of this
+      gateway, so its claims must not be released by this shutdown.
+    * **A claim whose ``worker_pid`` is still alive is left untouched** —
+      the same invariant ``release_stale_claims`` enforces ("never release
+      a claim while our own worker is still alive: that would spawn a
+      duplicate beside it"). On a systemd-managed restart the worker dies
+      with the gateway's cgroup, so the final-cleanup pass (or the
+      post-restart reclaim path) covers claims whose worker outlived this
+      pass. On a graceful stop that does not kill children (desktop app,
+      planned takeover), the live worker simply finishes and releases its
+      own claim.
+
+    Claims with no recorded ``worker_pid`` (mid-spawn window) are released:
+    the spawned child either dies with the gateway's cgroup, or its
+    completion is rejected by the claim compare-and-swap and the task is
+    re-dispatched — no duplicate result can be written either way.
+
+    Returns the task ids released back to ``ready`` without incrementing
+    ``consecutive_failures``.
+    """
+    claimer = claimer or _claimer_id()
+    rows = conn.execute(
+        """
+        SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at
+          FROM tasks
+         WHERE status = 'running'
+           AND (claim_lock = ? OR claim_lock LIKE ?)
+        """,
+        (claimer, f"{claimer}:%"),
+    ).fetchall()
+    released: list[str] = []
+    now = int(time.time())
+    host = claimer.split(":", 1)[0]
+    for row in rows:
+        if row["worker_pid"] and _pid_alive(row["worker_pid"]):
+            # Never release a claim while its worker is still alive: the
+            # released task would be re-dispatched and spawn a duplicate
+            # beside the still-running worker. Leave the claim alone; the
+            # worker either completes (releasing its own claim) or dies and
+            # is handled by a later pass / the post-restart reclaim path.
+            continue
+        with write_txn(conn):
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'ready',
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL,
+                       last_heartbeat_at = NULL,
+                       last_failure_error = ?
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND claim_lock IS ?
+                """,
+                (reason[:500], row["id"], row["claim_lock"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            run_id = _end_run(
+                conn, row["id"],
+                outcome="released", status="released",
+                error=reason,
+                metadata={
+                    "reason": reason,
+                    "release_kind": "gateway_shutdown",
+                    "claim_lock": row["claim_lock"],
+                    "worker_pid": (
+                        int(row["worker_pid"])
+                        if row["worker_pid"] is not None else None
+                    ),
+                    "claim_expires": (
+                        int(row["claim_expires"])
+                        if row["claim_expires"] is not None else None
+                    ),
+                    "last_heartbeat_at": (
+                        int(row["last_heartbeat_at"])
+                        if row["last_heartbeat_at"] is not None else None
+                    ),
+                    "released_at": now,
+                    "host": host,
+                },
+            )
+            _append_event(
+                conn, row["id"], "gateway_interrupted",
+                {
+                    "reason": reason,
+                    "claim_lock": row["claim_lock"],
+                    "worker_pid": (
+                        int(row["worker_pid"])
+                        if row["worker_pid"] is not None else None
+                    ),
+                    "host": host,
+                },
+                run_id=run_id,
+            )
+            released.append(row["id"])
+    return released
 
 
 def reclaim_task(

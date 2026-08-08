@@ -176,6 +176,232 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
     assert call_order.count("kill_all") >= 2
 
 
+@pytest.mark.asyncio
+async def test_gateway_stop_releases_kanban_claims_before_first_shutdown_await(monkeypatch):
+    """Graceful no-agent stops release claims before their first await and keep final cleanup."""
+    runner, adapter = make_restart_runner()
+    call_order: list[str] = []
+
+    class _Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class _ShutdownEvent:
+        def set(self):
+            call_order.append("shutdown-event")
+
+    async def _stop_watchdog():
+        call_order.append("first-await")
+
+    import hermes_cli.kanban_db as _kb
+    import tools.process_registry as _pr
+
+    monkeypatch.setattr(_kb, "list_boards", lambda *, include_archived: [{"slug": "default"}])
+    monkeypatch.setattr(_kb, "connect", lambda *, board: _Connection())
+    monkeypatch.setattr(
+        _kb,
+        "release_running_workers_for_gateway_shutdown",
+        lambda _conn, reason: call_order.append(
+            "release:pre-drain" if "pre-drain" in reason else "release:final-cleanup"
+        ) or [],
+    )
+    monkeypatch.setattr(_pr.process_registry, "kill_all", lambda *_args, **_kwargs: 0)
+    runner._stop_systemd_watchdog = _stop_watchdog
+    runner._shutdown_event = _ShutdownEvent()
+    adapter.disconnect = AsyncMock()
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert call_order.index("release:pre-drain") < call_order.index("first-await")
+    assert call_order.index("release:pre-drain") < call_order.index("shutdown-event")
+    assert call_order.index("shutdown-event") < call_order.index("release:final-cleanup")
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_releases_every_active_kanban_board_before_tool_kill(monkeypatch):
+    """Each shutdown cleanup phase releases every non-archived board first."""
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.01
+    call_order: list[str] = []
+
+    def _fake_kill_all(*_args, **_kwargs):
+        call_order.append("kill_all")
+        return 0
+
+    def _fake_release(conn, reason):
+        call_order.append(f"release:{conn.slug}")
+        return [f"{conn.slug}-task"]
+
+    class _Connection:
+        def __init__(self, slug):
+            self.slug = slug
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    import hermes_cli.kanban_db as _kb
+    import tools.process_registry as _pr
+
+    monkeypatch.setattr(_pr.process_registry, "kill_all", _fake_kill_all)
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda *, include_archived: (
+            [{"slug": "default"}, {"slug": "alpha"}]
+            if include_archived is False else pytest.fail("archived boards must be excluded")
+        ),
+    )
+    monkeypatch.setattr(_kb, "connect", lambda *, board: _Connection(board))
+    monkeypatch.setattr(
+        _kb,
+        "release_running_workers_for_gateway_shutdown",
+        _fake_release,
+    )
+    adapter.disconnect = AsyncMock()
+    runner._running_agents = {"session": MagicMock()}
+    runner._running_agents["session"].interrupt.side_effect = (
+        lambda *a, **k: runner._running_agents.clear()
+    )
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert call_order.count("kill_all") == 2
+    assert call_order == [
+        "release:default",
+        "release:alpha",
+        "release:default",
+        "release:alpha",
+        "kill_all",
+        "release:default",
+        "release:alpha",
+        "kill_all",
+    ], f"Each child-cleanup phase must release Kanban claims first, got: {call_order}"
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_falls_back_to_default_board_when_listing_boards_fails(monkeypatch):
+    """A board-list failure still releases default-board claims before tool cleanup."""
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.01
+    call_order: list[str] = []
+
+    class _Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    import hermes_cli.kanban_db as _kb
+    import tools.process_registry as _pr
+
+    def _list_boards(*, include_archived):
+        assert include_archived is False
+        raise RuntimeError("board registry unavailable")
+
+    def _read_board_metadata(slug):
+        call_order.append(f"metadata:{slug}")
+        return {"slug": slug}
+
+    def _connect(*, board):
+        call_order.append(f"connect:{board}")
+        return _Connection()
+
+    def _release(_conn, _reason):
+        call_order.append("release:default")
+        return []
+
+    monkeypatch.setattr(_kb, "list_boards", _list_boards)
+    monkeypatch.setattr(_kb, "read_board_metadata", _read_board_metadata)
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr(_kb, "release_running_workers_for_gateway_shutdown", _release)
+    monkeypatch.setattr(_pr.process_registry, "kill_all", lambda *_args, **_kwargs: call_order.append("kill_all") or 0)
+    adapter.disconnect = AsyncMock()
+    runner._running_agents = {"session": MagicMock()}
+    runner._running_agents["session"].interrupt.side_effect = (
+        lambda *_args, **_kwargs: runner._running_agents.clear()
+    )
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert call_order[:3] == [
+        f"metadata:{_kb.DEFAULT_BOARD}",
+        f"connect:{_kb.DEFAULT_BOARD}",
+        "release:default",
+    ]
+    assert call_order.count("release:default") == 3
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_continues_after_one_kanban_board_release_fails(monkeypatch):
+    """One corrupt board cannot block later boards or ordinary teardown."""
+    runner, adapter = make_restart_runner()
+    call_order: list[str] = []
+
+    def _fake_kill_all(*_args, **_kwargs):
+        call_order.append("kill_all")
+        return 0
+
+    class _Connection:
+        def __init__(self, slug):
+            self.slug = slug
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def _connect(*, board):
+        if board == "broken":
+            call_order.append("connect:broken")
+            raise RuntimeError("Kanban DB unavailable")
+        call_order.append(f"connect:{board}")
+        return _Connection(board)
+
+    def _fake_release(conn, reason):
+        call_order.append(f"release:{conn.slug}")
+        return []
+
+    import hermes_cli.kanban_db as _kb
+    import tools.process_registry as _pr
+
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda *, include_archived: (
+            [{"slug": "default"}, {"slug": "broken"}, {"slug": "later"}]
+            if include_archived is False else pytest.fail("archived boards must be excluded")
+        ),
+    )
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr(
+        _kb,
+        "release_running_workers_for_gateway_shutdown",
+        _fake_release,
+    )
+    monkeypatch.setattr(_pr.process_registry, "kill_all", _fake_kill_all)
+    adapter.disconnect = AsyncMock(side_effect=lambda: call_order.append("disconnect"))
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert call_order.count("connect:broken") == 2
+    assert call_order.count("release:later") == 2
+    assert call_order.index("release:later") < call_order.index("kill_all")
+    assert call_order.count("kill_all") >= 1
+    assert "disconnect" in call_order
+
+
 # ---------------------------------------------------------------------------
 # gateway_state persistence on shutdown (issue #42675)
 #

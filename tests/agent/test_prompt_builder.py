@@ -2,6 +2,7 @@
 
 import builtins
 import importlib
+import json
 import logging
 import sys
 
@@ -280,7 +281,43 @@ class TestBuildSkillsSystemPrompt:
         yield
         clear_skills_system_prompt_cache(clear_snapshot=True)
 
+    def test_root_level_skill_is_not_repeated_as_its_category(
+        self, monkeypatch, tmp_path
+    ):
+        from agent.prompt_builder import _build_skills_manifest
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_root = tmp_path / "skills"
+        skill_dir = skills_root / "git-worktree-discipline"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: git-worktree-discipline\n"
+            "description: Keep worktrees safe\n"
+            "---\n"
+        )
+        (tmp_path / ".skills_prompt_snapshot.json").write_text(
+            json.dumps({
+                "version": 2,
+                "manifest": _build_skills_manifest(skills_root),
+                "skills": [
+                    {
+                        "skill_name": "git-worktree-discipline",
+                        "category": "git-worktree-discipline",
+                        "frontmatter_name": "git-worktree-discipline",
+                        "description": "Keep worktrees safe",
+                        "platforms": [],
+                        "conditions": {},
+                    }
+                ],
+                "category_descriptions": {},
+            })
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "\n  general:\n    - git-worktree-discipline:" in result
+        assert "\n  git-worktree-discipline:\n" not in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

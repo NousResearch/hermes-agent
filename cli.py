@@ -8942,7 +8942,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
+    def _open_model_picker(
+        self,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        *,
+        persist_global: bool = False,
+        user_provs=None,
+        custom_provs=None,
+    ) -> None:
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()
         default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
@@ -8952,6 +8961,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "selected": default_idx,
             "current_model": current_model,
             "current_provider": current_provider,
+            "persist_global": persist_global,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
         }
@@ -9261,10 +9271,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
-    def _handle_model_picker_selection(self, persist_global: bool = False) -> None:
+    def _handle_model_picker_selection(self, persist_global: bool | None = None) -> None:
         state = self._model_picker_state
         if not state:
             return
+        if persist_global is None:
+            persist_global = bool(state.get("persist_global"))
         selected = state.get("selected", 0)
         stage = state.get("stage")
         if stage == "provider":
@@ -9445,6 +9457,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 providers,
                 model_display,
                 provider_display,
+                persist_global=persist_global,
                 user_provs=user_provs,
                 custom_provs=custom_provs,
             )

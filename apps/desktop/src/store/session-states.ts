@@ -528,6 +528,12 @@ function syncTileStripOrder() {
  *  An unanchored open (⌘T, ⌘⇧T on a tile that predates anchors) docks into the
  *  FOCUSED chat zone — the same zone ⌘1…⌘9 and ⌘W act on — so a new tab lands
  *  in the strip the user is looking at, not always main's. */
+// Tiles opened during THIS app run. Pane adoption is async (registry →
+// layout tree), so a tile whose pane is briefly missing right after open is
+// IN-FLIGHT, not phantom. Only tiles hydrated from storage (app boot /
+// profile switch) may be judged phantom when their pane never materializes.
+const runtimeOpenedTiles = new Set<string>()
+
 export function openSessionTile(
   storedSessionId: string,
   dir: TileDock = 'right',
@@ -543,6 +549,7 @@ export function openSessionTile(
   const dock = anchor ?? focusedSessionTabAnchor() ?? undefined
 
   if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
+    runtimeOpenedTiles.add(storedSessionId)
     saveTiles([...tiles, { anchor: dock, before, dir, storedSessionId }])
     // Adoption is async via the registry — order sync runs after the move path
     // below; a brand-new tile's strip slot is already in `before`.
@@ -610,6 +617,21 @@ export function focusOpenSession(storedSessionId: string): 'main' | 'tile' | nul
 
     if (group) {
       noteActiveTreeGroup(group.id)
+
+      return 'tile'
+    }
+
+    // Phantom tile: persisted as "open", but no pane exists even after a
+    // reveal (crash-stale storage — the layout tree was reset while the tile
+    // list survived). Claiming 'tile' here makes every open a dead click and
+    // keeps the actions menu suppressing "Open in new tab" forever. Drop the
+    // stale entry and report a miss so the caller opens the session for real.
+    // Tiles opened THIS run are exempt: their pane adoption is async and a
+    // just-opened tile must not be discarded mid-flight.
+    if (!runtimeOpenedTiles.has(storedSessionId)) {
+      discardSessionTile(storedSessionId)
+
+      return null
     }
 
     return 'tile'
@@ -685,6 +707,7 @@ export function closeSessionTile(storedSessionId: string) {
     closedStack().push({ anchor: tile.anchor, before: tile.before, dir: tile.dir, storedSessionId })
   }
 
+  runtimeOpenedTiles.delete(storedSessionId)
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
 }
 
@@ -699,6 +722,7 @@ export function discardSessionTile(storedSessionId: string) {
     dropSessionState(runtimeId)
   }
 
+  runtimeOpenedTiles.delete(storedSessionId)
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
 }
 

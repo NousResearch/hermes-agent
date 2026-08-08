@@ -226,4 +226,32 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     expect(findGroupOfPane(tree.$layoutTree.get()!, tilePane('closed'))?.active).toBe(tilePane('closed'))
     expect(tree.$activeTreeGroup.get()).toBe('grp-main')
   })
+
+  it('drops a phantom tile (persisted but pane-less) and reports a miss', async () => {
+    const { states, tree } = await setup()
+
+    // A tile opened THIS run is exempt: pane adoption is async, so a briefly
+    // missing pane right after open is in-flight, not phantom. Simulate the
+    // adoption gap by removing the pane — the claim must survive.
+    tree.removeTreePane(tilePane('closed'))
+    expect(states.focusOpenSession('closed')).toBe('tile')
+    expect(states.$sessionTiles.get().some(t => t.storedSessionId === 'closed')).toBe(true)
+
+    // Crash-stale storage shape: the tile hydrates from localStorage on boot
+    // (no runtime open), and the layout tree lost the pane. Simulate by
+    // closing (clears the runtime mark), re-hydrating the atom directly the
+    // way boot does, and stripping the pane the harness re-adopted.
+    states.closeSessionTile('closed')
+    states.$sessionTiles.set([{ dir: 'center' as const, storedSessionId: 'closed' }])
+    tree.removeTreePane(tilePane('closed'))
+    expect(findGroupOfPane(tree.$layoutTree.get()!, tilePane('closed'))).toBeNull()
+
+    // Pre-fix this returned 'tile' (a dead click: nothing on screen to front,
+    // menu suppresses "Open in new tab" forever). It must be a miss...
+    expect(states.focusOpenSession('closed')).toBeNull()
+
+    // ...and self-heal: the phantom entry is gone, so the NEXT open works and
+    // the actions menu offers "Open in new tab" again.
+    expect(states.$sessionTiles.get().some(t => t.storedSessionId === 'closed')).toBe(false)
+  })
 })

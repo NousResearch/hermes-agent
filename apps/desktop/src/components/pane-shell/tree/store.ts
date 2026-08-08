@@ -904,6 +904,15 @@ export function revealTreePane(paneId: string) {
       next = setGroupMinimized(next, group.id, false)
     }
 
+    // Revealing a CHAT tab into a zone whose header is hidden must un-hide
+    // it: the strip is the only way to see/switch/close chat tabs, and the
+    // only "show header" affordance lives in the header's own menu — an
+    // invisible strip is a dead end the user can't escape. Tool panels keep
+    // the zone's standing preference.
+    if (group.headerHidden === true && isSessionStripPane(paneId)) {
+      next = setGroupHeaderHiddenOp(next, group.id, false)
+    }
+
     if (group.active !== paneId) {
       next = setActivePaneOp(next, group.id, paneId)
     }
@@ -1113,10 +1122,17 @@ function adoptContributedPanes(): void {
       // standing preference about the zone, not a stale default. Without this
       // the bar came back every time a tool panel was closed and toggled on
       // again — Close dismisses the pane, the toggle re-adopts it through here.
+      //
+      // EXCEPT-THE-EXCEPTION: session tiles. A chat tab is only reachable
+      // through the tab strip, and the only "show header" affordance lives in
+      // the header's own context menu — so honoring the hidden preference for
+      // a session tile creates an invisible tab with NO way back (the user
+      // sees a dead click). Chat tabs force the bar visible; tool panels keep
+      // honoring the zone's standing preference.
       const landed = findGroupOfPane(next, pane.id)
 
       if (landed) {
-        next = setGroupHeaderHiddenOp(next, landed.id, hostHeaderHidden)
+        next = setGroupHeaderHiddenOp(next, landed.id, hostHeaderHidden && !isSessionStripPane(pane.id))
       }
     }
   }

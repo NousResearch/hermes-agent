@@ -2535,7 +2535,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Split long messages, preserving code block boundaries
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             last_result = None
 
             # reply_broadcast: also post thread replies to the main channel.
@@ -2653,7 +2653,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         try:
             formatted = self.format_message(content)
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             kwargs = {
                 "channel": chat_id,
                 "user": user_id,
@@ -2694,7 +2694,7 @@ class SlackAdapter(BasePlatformAdapter):
         edit fails (message deleted, too old, ...) the cached ts is dropped
         and a fresh message is sent.
         """
-        thread_ts = self._resolve_thread_ts(None, metadata) or ""
+        thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id) or ""
         key = (str(chat_id), str(thread_ts), str(status_key))
         cached_id = self._status_message_ids.get(key)
         if cached_id is not None:
@@ -2881,6 +2881,7 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts = self._resolve_thread_ts(
                 reply_to=metadata.get("message_id"),
                 metadata=metadata,
+                chat_id=chat_id,
             )
 
         if not thread_ts:
@@ -3135,6 +3136,8 @@ class SlackAdapter(BasePlatformAdapter):
         self,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        chat_id: Optional[str] = None,
     ) -> Optional[str]:
         """Resolve the correct thread_ts for a Slack API call.
 
@@ -3155,7 +3158,7 @@ class SlackAdapter(BasePlatformAdapter):
         # top-level message. reply_to is the incoming message's own id, so
         # when thread_id == reply_to the "thread" is synthetic and we reply
         # directly in the channel instead.
-        if not self.config.extra.get("reply_in_thread", True):
+        if not self._reply_in_thread_for_channel(chat_id):
             md = metadata or {}
             existing_thread = md.get("thread_id") or md.get("thread_ts")
             if existing_thread and reply_to and existing_thread == reply_to:
@@ -3193,7 +3196,7 @@ class SlackAdapter(BasePlatformAdapter):
         chat_id = await self._ensure_dm_conversation(
             chat_id, team_id=self._metadata_team_id(metadata)
         )
-        thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
         last_exc = None
         for attempt in range(3):
             try:
@@ -3263,7 +3266,7 @@ class SlackAdapter(BasePlatformAdapter):
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
             return
 
-        thread_ts = self._resolve_thread_ts(None, metadata)
+        thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id)
 
         CHUNK = 10
         chunks = [images[i : i + CHUNK] for i in range(0, len(images), CHUNK)]
@@ -4081,7 +4084,7 @@ class SlackAdapter(BasePlatformAdapter):
                 response = await client.get(image_url)
                 response.raise_for_status()
 
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             chat_id = await self._ensure_dm_conversation(
                 chat_id, team_id=self._metadata_team_id(metadata)
             )
@@ -4162,7 +4165,7 @@ class SlackAdapter(BasePlatformAdapter):
             chat_id, team_id=self._metadata_team_id(metadata)
         )
         try:
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
             last_exc = None
             for attempt in range(3):
                 try:
@@ -4222,7 +4225,7 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"File not found: {file_path}")
 
         display_name = file_name or os.path.basename(file_path)
-        thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        thread_ts = self._resolve_thread_ts(reply_to, metadata, chat_id=chat_id)
         chat_id = await self._ensure_dm_conversation(
             chat_id, team_id=self._metadata_team_id(metadata)
         )
@@ -5587,7 +5590,7 @@ class SlackAdapter(BasePlatformAdapter):
             # variants (Copilot on #15464).
             if event_thread_ts_raw and event_thread_ts_raw != ts:
                 thread_ts = event_thread_ts_raw
-            elif self.config.extra.get("reply_in_thread", True):
+            elif self._reply_in_thread_for_channel(channel_id):
                 # Legacy default: treat ts as a synthetic thread root so
                 # this top-level message gets its own session.
                 thread_ts = ts
@@ -6379,7 +6382,7 @@ class SlackAdapter(BasePlatformAdapter):
             chat_id, team_id=self._metadata_team_id(metadata)
         )
         try:
-            thread_ts = self._resolve_thread_ts(None, metadata)
+            thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id)
 
             # Slack hard-caps a section block's text at 3000 chars; an
             # oversized block fails the whole send with ``invalid_blocks``
@@ -6479,7 +6482,7 @@ class SlackAdapter(BasePlatformAdapter):
             chat_id, team_id=self._metadata_team_id(metadata)
         )
         try:
-            thread_ts = self._resolve_thread_ts(None, metadata)
+            thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id)
             # Same 3000-char section-block cap as send_exec_approval: budget
             # the body against the rendered title so the wrapper never pushes
             # the block over the limit (overflow → invalid_blocks → no buttons).
@@ -6586,7 +6589,7 @@ class SlackAdapter(BasePlatformAdapter):
             chat_id, team_id=self._metadata_team_id(metadata)
         )
         try:
-            thread_ts = self._resolve_thread_ts(None, metadata)
+            thread_ts = self._resolve_thread_ts(None, metadata, chat_id=chat_id)
 
             # Escape the Slack mrkdwn control chars (&, <, >) so a question
             # containing them renders literally instead of as markup/mentions.
@@ -8351,6 +8354,37 @@ class SlackAdapter(BasePlatformAdapter):
             re.search(rf"<@{re.escape(uid)}(?:\|[^>]*)?>", text)
             for uid in self_uids
         )
+
+    def _slack_channel_reply_modes(self) -> Dict[str, bool]:
+        """Return per-channel thread-placement overrides.
+
+        ``platforms.slack.extra.channel_reply_modes`` maps channel IDs to
+        ``"thread"`` or ``"channel"``. Invalid entries are ignored so the
+        global ``reply_in_thread`` setting remains the safe fallback.
+        """
+        raw = self.config.extra.get("channel_reply_modes")
+        if not isinstance(raw, dict):
+            return {}
+        modes: Dict[str, bool] = {}
+        for channel_id, mode in raw.items():
+            normalized_id = str(channel_id).strip()
+            normalized_mode = str(mode).strip().lower()
+            if not normalized_id or normalized_mode not in {"thread", "channel"}:
+                continue
+            modes[normalized_id] = normalized_mode == "thread"
+        return modes
+
+    def _reply_in_thread_for_channel(self, channel_id: Optional[str]) -> bool:
+        """Resolve Slack reply placement for one channel.
+
+        A configured channel override wins; otherwise preserve the historical
+        global ``reply_in_thread`` behavior.
+        """
+        if channel_id:
+            override = self._slack_channel_reply_modes().get(str(channel_id))
+            if override is not None:
+                return override
+        return bool(self.config.extra.get("reply_in_thread", True))
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""

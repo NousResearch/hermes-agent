@@ -1509,6 +1509,23 @@ async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_
 class TestSlackReplyInThreadProgressRouting:
     """#18859: reply_in_thread=false must stop progress from creating threads."""
 
+    def test_per_channel_mode_is_used_for_progress(self):
+        from gateway.run import _slack_reply_in_thread_for_progress
+
+        seen = []
+        adapter = SimpleNamespace(
+            _reply_in_thread_for_channel=lambda chat_id: seen.append(chat_id) or False
+        )
+
+        assert _slack_reply_in_thread_for_progress(adapter, "C_PROJECT") is False
+        assert seen == ["C_PROJECT"]
+
+    def test_relay_mode_remains_the_fallback(self):
+        from gateway.run import _slack_reply_in_thread_for_progress
+
+        adapter = SimpleNamespace(_effective_reply_in_thread=lambda: False)
+        assert _slack_reply_in_thread_for_progress(adapter, "C_PROJECT") is False
+
     def test_slack_reply_in_thread_false_drops_synthetic_thread(self):
         from gateway.run import _resolve_progress_thread_id
 

@@ -405,6 +405,13 @@ platforms:
       # of threads. Messages inside existing threads still reply in-thread.
       reply_in_thread: true
 
+      # Optional per-channel override. "channel" keeps top-level replies flat
+      # and shares one channel session; "thread" keeps thread-per-message mode.
+      # Genuine replies inside an existing Slack thread always stay there.
+      channel_reply_modes:
+        C0123456789: channel
+        C9876543210: thread
+
       # Also post thread replies to the main channel
       # (Slack's "Also send to channel" feature).
       # Only the first chunk of the first reply is broadcast.
@@ -451,6 +458,7 @@ platforms:
 |-----|---------|-------------|
 | `platforms.slack.reply_to_mode` | `"first"` | Threading mode for multi-part messages: `"off"`, `"first"`, or `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
+| `platforms.slack.extra.channel_reply_modes` | `{}` | Optional map of Slack channel IDs to `"channel"` or `"thread"`. Per-channel values override `reply_in_thread` for top-level session scope, progress/status placement, prompts, attachments, and final replies. Existing threads remain thread-scoped. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |

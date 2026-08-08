@@ -818,6 +818,29 @@ def _resolve_progress_thread_id(
     return None
 
 
+def _slack_reply_in_thread_for_progress(adapter: Any, chat_id: Any) -> bool:
+    """Resolve native/relay Slack reply mode for progress/status delivery."""
+    if adapter is None:
+        return True
+    try:
+        channel_mode = getattr(adapter, "_reply_in_thread_for_channel", None)
+        if callable(channel_mode):
+            return bool(channel_mode(chat_id))
+
+        relay_mode = getattr(adapter, "_effective_reply_in_thread", None)
+        if callable(relay_mode):
+            try:
+                return bool(relay_mode(chat_id))
+            except TypeError:
+                # Compatibility with relay/plugin adapters that implemented
+                # the historical zero-argument resolver.
+                return bool(relay_mode())
+
+        return bool(adapter.config.extra.get("reply_in_thread", True))
+    except Exception:
+        return True
+
+
 def _has_platform_display_override(user_config: dict, platform_key: str, setting: str) -> bool:
     """Return True when display.platforms.<platform> explicitly sets setting."""
     display = user_config.get("display") if isinstance(user_config, dict) else None
@@ -25215,26 +25238,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _progress_reply_in_thread = True
         if source.platform == Platform.SLACK:
             _slack_adapter_for_progress = self._adapter_for_source(source)
-            if _slack_adapter_for_progress is not None:
-                try:
-                    # Relay lane: the adapter owns mode resolution (nested
-                    # platforms.relay.extra.slack subset with flat-key
-                    # fallback). Native lane: read the flat extra as before.
-                    _mode_fn = getattr(
-                        _slack_adapter_for_progress,
-                        "_effective_reply_in_thread",
-                        None,
-                    )
-                    if callable(_mode_fn):
-                        _progress_reply_in_thread = bool(_mode_fn())
-                    else:
-                        _progress_reply_in_thread = bool(
-                            _slack_adapter_for_progress.config.extra.get(
-                                "reply_in_thread", True
-                            )
-                        )
-                except Exception:
-                    _progress_reply_in_thread = True
+            _progress_reply_in_thread = _slack_reply_in_thread_for_progress(
+                _slack_adapter_for_progress,
+                source.chat_id,
+            )
         _progress_thread_id = _resolve_progress_thread_id(
             source.platform, source.thread_id, event_message_id,
             reply_in_thread=_progress_reply_in_thread,

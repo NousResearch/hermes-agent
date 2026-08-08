@@ -294,6 +294,12 @@ platforms:
       # 已在话题中的消息仍在话题中回复。
       reply_in_thread: true
 
+      # 可选的按频道覆盖。"channel" 让顶层消息平铺回复并共享频道会话；
+      # "thread" 保持每条顶层消息一个话题。真实话题中的回复始终留在话题内。
+      channel_reply_modes:
+        C0123456789: channel
+        C9876543210: thread
+
       # 同时将话题回复发布到主频道
       # （Slack 的"同时发送到频道"功能）。
       # 仅广播第一条回复的第一个分块。
@@ -319,6 +325,7 @@ platforms:
 |-----|---------|-------------|
 | `platforms.slack.reply_to_mode` | `"first"` | 多部分消息的话题模式：`"off"`、`"first"` 或 `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | 为 `false` 时，频道消息直接回复而非话题。已在话题中的消息仍在话题中回复。 |
+| `platforms.slack.extra.channel_reply_modes` | `{}` | 可选的 Slack 频道 ID 到 `"channel"` 或 `"thread"` 的映射。按频道设置会覆盖 `reply_in_thread`，并统一控制顶层会话范围、进度/状态、交互提示、附件和最终回复的位置；真实话题仍保持独立会话。 |
 | `platforms.slack.extra.reply_broadcast` | `false` | 为 `true` 时，话题回复也会发布到主频道。仅广播第一个分块。 |
 | `platforms.slack.extra.rich_blocks` | `false` | 为 `true` 时，Agent 消息会渲染为 [Block Kit](https://docs.slack.dev/block-kit/) 区块（标题、分隔线、真正的嵌套列表以及原生表格）。始终附带纯文本回退。超出 Slack 限制的表格会回退为对齐的等宽文本。无需重新安装应用——这仅是发送端的改动。 |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | [可继续 cron 任务](../features/cron.md)的投递方式。`"thread"` 为每次投递新建专用话题（默认）；`"in_channel"` 直接平铺投递到频道时间线。使用 `in_channel` 时需搭配 `reply_in_thread: false`（及 `require_mention: false`），纯文本回复即可继续任务。 |

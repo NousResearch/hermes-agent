@@ -1028,6 +1028,14 @@ platform_toolsets:
 #         priority_mode: prepend
 #         priority:
 #           - my_plugin_command
+#   slack:
+#     extra:
+#       reply_in_thread: true
+#       # Optional per-channel override for top-level messages. Existing Slack
+#       # threads always remain thread-scoped.
+#       channel_reply_modes:
+#         C0123456789: channel  # Flat replies + one shared channel session
+#         C9876543210: thread   # Thread-per-message
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

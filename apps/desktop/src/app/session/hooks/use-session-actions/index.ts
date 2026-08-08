@@ -500,7 +500,7 @@ export function useSessionActions({
       try {
         // Fresh tile → the caller's workspace when one was named (the sidebar
         // "+" on a project/worktree lane), else the resolved new-session cwd
-        // (focused session's project → project scope → default).
+        // (project scope → configured default).
         const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim())
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id

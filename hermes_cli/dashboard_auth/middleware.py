@@ -372,6 +372,25 @@ async def gated_auth_middleware(
         # re-login, rather than falling through to the cookie/login redirect.
         return _unauth_response(request, reason="invalid_or_expired_session")
 
+    # Media elements (<video>/<audio>) in remote desktop mode cannot attach
+    # Authorization headers or cookies, so they send ?token=<access_token> on
+    # /api/files/download. Verify query tokens through the same _verify_bearer
+    # provider stack strictly for this path when no Bearer header was present.
+    if path == "/api/files/download":
+        query_token = request.query_params.get("token", "").strip()
+        if query_token:
+            try:
+                query_session = _verify_bearer(request, access_token=query_token)
+            except ProviderError as e:
+                return JSONResponse(
+                    {"detail": f"Auth provider {str(e)!r} unreachable"},
+                    status_code=503,
+                )
+            if query_session is not None:
+                request.state.session = query_session
+                return await call_next(request)
+            return _unauth_response(request, reason="invalid_or_expired_session")
+
     at, _rt = read_session_cookies(request)
     provider_hint = read_session_provider(request)
     if not at and not _rt:

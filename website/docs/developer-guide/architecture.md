@@ -12,10 +12,10 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Entry Points                                  │
-│                                                                      │
+│                        Entry Points                                 │
+│                                                                     │
 │  CLI (cli.py)    Gateway (gateway/run.py)    ACP (acp_adapter/)     │
-│  Batch Runner    API Server                  Python Library          │
+│  Batch Runner    API Server                  Python Library         │
 └──────────┬──────────────┬───────────────────────┬───────────────────┘
            │              │                       │
            ▼              ▼                       ▼
@@ -38,14 +38,14 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 └─────────┴─────────────────┴─────────────────┴───────────────────────┘
            │                                    │
            ▼                                    ▼
-┌───────────────────┐              ┌──────────────────────┐
+┌───────────────────┐              ┌───────────────────────┐
 │ Session Storage   │              │ Tool Backends         │
 │ (SQLite + FTS5)   │              │ Terminal (6 backends) │
 │ hermes_state.py   │              │ Browser (5 backends)  │
 │ gateway/session.py│              │ Web (4 backends)      │
 └───────────────────┘              │ MCP (dynamic)         │
                                    │ File, Vision, etc.    │
-                                   └──────────────────────┘
+                                   └───────────────────────┘
 ```
 
 ## Directory Structure

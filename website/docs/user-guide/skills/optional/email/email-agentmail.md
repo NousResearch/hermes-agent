@@ -128,6 +128,7 @@ All 11 AgentMail tools are now available automatically.
 - Node.js (18+) is required for the MCP server (`npx -y agentmail-mcp`)
 - The `mcp` Python package must be installed: `pip install mcp`
 - Real-time inbound email (webhooks) requires a public server — use `list_threads` polling via cronjob instead for personal use
+- **xAI Grok drops optional multiline string args:** on `provider: xai` / `xai-oauth` with `grok-4.3`, optional string parameters whose values contain newlines (e.g. `send_message` `subject` / `text`, `reply_to_message` `text`) are silently stripped from the model's tool call, so `send_message` delivers blank emails with no error. See the [xAI Grok OAuth guide](https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth) troubleshooting section for workarounds (mark the fields `required`, or patch the MCP server's zod schema to drop `.optional()` on those fields).
 
 ## Verification
 After setup, test with:

@@ -73,7 +73,7 @@ def probe_gemini_tier(
     api_key: str,
     base_url: str = DEFAULT_GEMINI_BASE_URL,
     *,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.6-flash",
     timeout: float = 10.0,
 ) -> str:
     """Probe a Google AI Studio API key and return its tier.
@@ -154,8 +154,8 @@ def is_free_tier_quota_error(error_message: str) -> bool:
 
 
 _FREE_TIER_GUIDANCE = (
-    "\n\nYour Google API key is on the free tier (<= 250 requests/day for "
-    "gemini-2.5-flash). Hermes typically makes 3-10 API calls per user turn, "
+    "\n\nYour Google API key is on the free tier (a few hundred requests/day "
+    "for Gemini Flash models). Hermes typically makes 3-10 API calls per user turn, "
     "so the free tier is exhausted in a handful of messages and cannot sustain "
     "an agent session. Enable billing on your Google Cloud project and "
     "regenerate the key in a billing-enabled project: "
@@ -289,6 +289,16 @@ def _tool_call_extra_signature(tool_call: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+# Stands in for a model turn that never arrived (stream failure / interrupt /
+# quota fallback) when history leaves a human user text turn directly after a
+# tool-result turn. Interposed between the two user contents so the request
+# stays alternation-valid while the user's message remains a turn of its own.
+# Mirrors gemini-cli's INTERRUPTED_RESPONSE_PLACEHOLDER (gemini-cli#28700).
+_INTERRUPTED_RESPONSE_PLACEHOLDER = (
+    "[The previous response was interrupted before it completed.]"
+)
+
+
 def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
     fn = tool_call.get("function") or {}
     args_raw = fn.get("arguments", "")
@@ -321,9 +331,13 @@ def _translate_tool_result_to_gemini(
 ) -> Dict[str, Any]:
     tool_name_by_call_id = tool_name_by_call_id or {}
     tool_call_id = str(message.get("tool_call_id") or "")
+    # A tool result can carry the unwrapped internal tool name (for example,
+    # an MCP tool invoked through the `tool_call` bridge). Gemini requires
+    # functionResponse.name to echo the matching functionCall.name, so the
+    # call-id mapping must take precedence over the internal result name.
     name = str(
-        message.get("name")
-        or tool_name_by_call_id.get(tool_call_id)
+        tool_name_by_call_id.get(tool_call_id)
+        or message.get("name")
         or tool_call_id
         or "tool"
     )
@@ -388,17 +402,49 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
 
-    # Gemini's generateContent requires strict user/model alternation;
-    # consecutive same-role contents are rejected with HTTP 400 "Please ensure
-    # that multiturn requests alternate between user and model". The loop above
-    # emits one content per source message, so parallel tool calls (N tool
-    # results become N user functionResponse contents), back-to-back user turns,
-    # or merged assistant turns would each violate that. Merge adjacent
-    # same-role contents by concatenating their parts. For parallel calls this
-    # also produces the grouped multi-functionResponse turn Gemini expects.
+    # Compatibility contract for native Gemini generateContent:
+    # 1) Same-role adjacent contents still merge in general (strict user/model
+    #    alternation for ordinary text turns and parallel tool-result grouping;
+    #    consecutive same-role contents are rejected with HTTP 400 "Please
+    #    ensure that multiturn requests alternate between user and model").
+    # 2) Exception: do NOT fuse a human user text turn into a preceding user
+    #    content that only carries functionResponse parts (or vice versa).
+    #    Gemini 3 accepts that fold with HTTP 200 but then reads the trailing
+    #    text as a continuation of the tool result — it returns an empty
+    #    candidate or "finishes the user's sentence" instead of answering
+    #    (same defect gemini-cli fixed in google-gemini/gemini-cli#28700).
+    # 3) Because rule 1's HTTP 400 makes two consecutive user contents unsafe
+    #    to emit (#55125 — the reason this merge exists), the split pair is
+    #    kept API-valid by interposing a placeholder model turn between the
+    #    functionResponse content and the human text content, mirroring
+    #    gemini-cli's INTERRUPTED_RESPONSE_PLACEHOLDER repair.
+    # 4) Parallel tool results (functionResponse + functionResponse) still
+    #    merge into one user content — only mixed functionResponse/text is
+    #    kept apart.
     merged_contents: List[Dict[str, Any]] = []
     for content in contents:
-        if merged_contents and merged_contents[-1]["role"] == content["role"]:
+        same_role = bool(
+            merged_contents and merged_contents[-1]["role"] == content["role"]
+        )
+        if same_role and content["role"] == "user":
+            previous_has_function_response = any(
+                isinstance(part, dict) and "functionResponse" in part
+                for part in merged_contents[-1].get("parts", [])
+            )
+            current_has_function_response = any(
+                isinstance(part, dict) and "functionResponse" in part
+                for part in content.get("parts", [])
+            )
+            if previous_has_function_response != current_has_function_response:
+                same_role = False
+                merged_contents.append(
+                    {
+                        "role": "model",
+                        "parts": [{"text": _INTERRUPTED_RESPONSE_PLACEHOLDER}],
+                    }
+                )
+
+        if same_role:
             merged_contents[-1]["parts"].extend(content["parts"])
         else:
             merged_contents.append(content)
@@ -976,7 +1022,7 @@ class GeminiNativeClient:
     def _create_chat_completion(
         self,
         *,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.6-flash",
         messages: Optional[List[Dict[str, Any]]] = None,
         stream: bool = False,
         tools: Any = None,

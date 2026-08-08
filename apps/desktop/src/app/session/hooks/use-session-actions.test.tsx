@@ -896,7 +896,7 @@ describe('resumeSession failure recovery', () => {
 
     expect(resumeParams).not.toHaveProperty('lazy')
     expect(resumeParams).not.toHaveProperty('eager_build')
-    expect(resumeParams).toMatchObject({ source: 'desktop' })
+    expect(resumeParams).toMatchObject({ source: 'desktop', omit_messages: true })
   })
 
   it('arms the failure latch when resume succeeds with an empty transcript for a non-empty stored session', async () => {
@@ -1253,6 +1253,71 @@ describe('branchStoredSession desktop source tagging', () => {
   })
 })
 
+// ── Main/tile dedup (the "same session open in main AND its own tab" bug) ─────
+// A session is EITHER the main thread OR a tile, never both. openSessionTile
+// enforces this from the tile side; resumeSession enforces it from the main
+// side by dropping an existing tile when the session loads into main (cold-start
+// restore, a pasted/⌘K route, a notification jump), so it can't render twice.
+describe('resumeSession drops a redundant tile when the session loads into main', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setResumeFailedSessionId(null)
+    setMessages([])
+    setSessions([])
+    $sessionTiles.set([])
+    vi.restoreAllMocks()
+  })
+
+  it('closes the tile so the session is not open in both main and its own tab', async () => {
+    // The session is already an open tile (e.g. persisted across a restart)...
+    $sessionTiles.set([{ storedSessionId: 'stored-1' }])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    // ...and now it loads into main.
+    await resume!('stored-1', true)
+
+    // Its tile is gone — main owns the session, so it renders exactly once.
+    expect($sessionTiles.get().some(t => t.storedSessionId === 'stored-1')).toBe(false)
+    expect($selectedStoredSessionId.get()).toBe('stored-1')
+  })
+
+  it('leaves OTHER sessions tiles untouched', async () => {
+    $sessionTiles.set([{ storedSessionId: 'stored-1' }, { storedSessionId: 'stored-2' }])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    // Only the resumed session's tile closes; the sibling tile stays put.
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['stored-2'])
+  })
+})
+
 // ── Warm-cache mapping integrity (the "open chat A, chat B loads" bug) ─────────
 // resumeSession's warm fast-path maps storedSessionId -> runtimeId -> cached
 // state. A reaped/respawned pooled backend re-mints runtime ids, so a recycled
@@ -1366,6 +1431,10 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(methods).toContain('session.activate')
     expect(methods).not.toContain('session.resume')
     expect(getSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.activate',
+      expect.objectContaining({ omit_messages: true, session_id: 'rt-A' })
+    )
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
   })
 

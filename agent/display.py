@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
@@ -185,6 +186,15 @@ def _truncate_preview(text: str, max_len: int | None) -> str:
             return "." * max_len
         return text[:max_len - 3] + "..."
     return text
+
+
+@dataclass(frozen=True)
+class ToolPreview:
+    """A compact tool preview plus presentation facts lost to truncation."""
+
+    text: str
+    truncated: bool = False
+    url: str | None = None
 
 
 _SHELL_SILENT_HEADS = {"cd", "pushd", "popd", "export", "set", "unset", "source", ".", "true", "false", ":"}
@@ -554,6 +564,35 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if max_len > 0 and len(preview) > max_len:
         preview = preview[:max_len - 3] + "..."
     return preview
+
+
+def prepare_tool_preview(
+    tool_name: str,
+    args: dict | None,
+    *,
+    fallback: str,
+    max_len: int,
+) -> ToolPreview:
+    """Build one canonical compact preview before platform formatting.
+
+    The uncapped preview is rebuilt from the tool arguments when possible so
+    an upstream display cap cannot discard its link target.  Platforms then
+    receive explicit truncation and URL metadata instead of inferring either
+    fact from the rendered text.
+    """
+    full_text = build_tool_preview(tool_name, args, max_len=0) or fallback
+    text = _truncate_preview(full_text, max_len)
+    truncated = text != full_text
+    url = None
+    if truncated:
+        candidate = _display_url(full_text)
+        try:
+            parsed = urlsplit(candidate)
+        except ValueError:
+            parsed = None
+        if parsed and parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+            url = candidate
+    return ToolPreview(text=text, truncated=truncated, url=url)
 
 
 # =========================================================================
@@ -1506,5 +1545,3 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
-

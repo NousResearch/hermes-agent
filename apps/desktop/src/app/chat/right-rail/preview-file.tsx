@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import type {
   ComponentProps,
@@ -23,6 +24,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import {
   desktopFileDiff,
+  desktopFsCacheKey,
   desktopGitRoot,
   readDesktopFileDataUrl,
   readDesktopFileText,
@@ -33,7 +35,7 @@ import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
-import { $currentCwd } from '@/store/session'
+import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
@@ -215,6 +217,45 @@ function looksBinaryBytes(bytes: Uint8Array) {
   }
 
   return suspicious / Math.min(bytes.length, 4096) > 0.12
+}
+
+function dataUrlToBlob(dataUrl: string) {
+  const comma = dataUrl.indexOf(',')
+
+  if (comma < 0 || !dataUrl.startsWith('data:')) {
+    throw new Error('Invalid PDF data URL')
+  }
+
+  const metadata = dataUrl
+    .slice(5, comma)
+    .split(';')
+    .map(part => part.trim().toLowerCase())
+
+  const payload = dataUrl.slice(comma + 1)
+
+  if (metadata[0] !== 'application/pdf' || !metadata.slice(1).includes('base64')) {
+    throw new Error('Invalid PDF data URL type')
+  }
+
+  let binary: string
+
+  try {
+    binary = atob(decodeURIComponent(payload))
+  } catch {
+    throw new Error('Invalid PDF data URL payload')
+  }
+
+  if (!binary.startsWith('%PDF-')) {
+    throw new Error('Invalid PDF file header')
+  }
+
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
+  return new Blob([bytes], { type: 'application/pdf' })
 }
 
 async function readTextPreview(filePath: string) {
@@ -579,6 +620,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const { t } = useI18n()
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
+  const [pdfError, setPdfError] = useState<string>()
+  const [pdfUrl, setPdfUrl] = useState<string>()
   // User-picked view; null = auto (diff when changed, else rendered markdown,
   // else source). Reset when the previewed file changes.
   const [userMode, setUserMode] = useState<null | PreviewViewMode>(null)
@@ -600,8 +643,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   // hover flag (no state — only the keydown handler reads it).
   const readViewRef = useRef<HTMLDivElement>(null)
   const hoverRef = useRef(false)
+  const connection = useStore($connection)
+  const fsCacheKey = desktopFsCacheKey(connection)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
+  const isPdf = target.previewKind === 'pdf'
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -620,7 +666,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isImage && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isImage && !isPdf && !forcePreview && (target.binary || target.large)
 
   useEffect(() => {
     let active = true
@@ -632,7 +678,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         return
       }
 
-      if (!isImage && !isText) {
+      if (!isImage && !isPdf && !isText) {
         setState({ loading: false })
 
         return
@@ -641,7 +687,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       setState({ loading: true })
 
       try {
-        if (isImage) {
+        if (isImage || isPdf) {
           // Prefer bytes the caller already handed us (a pasted/dropped
           // screenshot) over re-reading a path that may be transient/unreadable.
           const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath))
@@ -698,7 +744,49 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return () => {
       active = false
     }
-  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, selfReload, target.dataUrl, target.language])
+  }, [
+    blockedByTarget,
+    filePath,
+    forcePreview,
+    fsCacheKey,
+    isImage,
+    isPdf,
+    isText,
+    reloadKey,
+    selfReload,
+    target.dataUrl,
+    target.language
+  ])
+
+  useEffect(() => {
+    setPdfUrl(undefined)
+    setPdfError(undefined)
+
+    if (!isPdf || !state.dataUrl) {
+      return
+    }
+
+    // Chromium's PDF viewer is blank for large data: URLs in an iframe. Use a
+    // blob URL instead, and revoke it when the target or loaded bytes change.
+    if (typeof URL.createObjectURL !== 'function') {
+      setPdfError('PDF preview requires object URL support')
+
+      return
+    }
+
+    let objectUrl: string
+
+    try {
+      objectUrl = URL.createObjectURL(dataUrlToBlob(state.dataUrl))
+      setPdfUrl(objectUrl)
+    } catch (error) {
+      setPdfError(error instanceof Error ? error.message : String(error))
+
+      return
+    }
+
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [isPdf, state.dataUrl])
 
   // Editing is only offered for whole, readable text — never images, binaries,
   // or files we only loaded the first 512 KB of (saving would drop the tail).
@@ -889,8 +977,13 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return <PreviewEmptyState body={state.error} title={t.preview.unavailable} />
   }
 
+  if (pdfError) {
+    return <PreviewEmptyState body={pdfError} title={t.preview.unavailable} />
+  }
+
   if (
     !isImage &&
+    !isPdf &&
     !forcePreview &&
     (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
   ) {
@@ -918,6 +1011,23 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         />
       </div>
     )
+  }
+
+  if (isPdf && state.dataUrl && pdfUrl) {
+    return (
+      <div className="h-full w-full overflow-hidden bg-transparent">
+        <iframe
+          aria-label={target.label}
+          className="h-full w-full border-0 bg-white"
+          src={pdfUrl}
+          title={target.label}
+        />
+      </div>
+    )
+  }
+
+  if (isPdf && state.dataUrl) {
+    return <PageLoader label={t.preview.loading} />
   }
 
   if (isText && state.text !== undefined) {

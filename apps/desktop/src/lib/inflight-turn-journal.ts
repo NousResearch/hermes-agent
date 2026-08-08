@@ -254,6 +254,10 @@ function assistantTextLength(message: ChatMessage): number {
  * BASE row's id so live deltas keep appending to the row the stream handler
  * already targets.
  */
+function hasStructuralParts(message: ChatMessage): boolean {
+  return message.parts.some(part => part.type === 'reasoning' || part.type === 'tool-call')
+}
+
 function overlayProjectionRow(projection: ChatMessage, journalRow: ChatMessage): ChatMessage {
   // A projected error (retained failed turn) must survive the overlay.
   const error = journalRow.error ?? projection.error
@@ -271,7 +275,20 @@ function overlayProjectionRow(projection: ChatMessage, journalRow: ChatMessage):
 
   // Backend text is newer than the journal's last throttled write — swap it
   // into the journal's first text part, keeping tool calls and reasoning.
+  // When the journal already carries structure, only accept a *strict*
+  // extension of the answer text. A longer flat dump that starts with
+  // thinking chatter must not overwrite / insert as answer text (#76444).
   const projectionText = chatMessageText(projection)
+  const journalText = chatMessageText(journalRow).trim()
+
+  if (hasStructuralParts(journalRow)) {
+    const next = projectionText.trim()
+
+    if (!journalText || !next.startsWith(journalText)) {
+      return merged
+    }
+  }
+
   const parts: ChatMessagePart[] = []
   let textReplaced = false
 
@@ -289,6 +306,16 @@ function overlayProjectionRow(projection: ChatMessage, journalRow: ChatMessage):
   }
 
   return { ...merged, parts }
+}
+
+/** Rows the base transcript doesn't already hold by id. The journal and the
+ *  base can both carry the same row (a resume that replays a still-journaled
+ *  turn), and appending it twice puts a duplicate id in the transcript —
+ *  which assistant-ui's MessageRepository rejects by throwing. */
+function withoutBaseIds(rows: ChatMessage[], baseMessages: ChatMessage[]): ChatMessage[] {
+  const baseIds = new Set(baseMessages.map(message => message.id))
+
+  return rows.filter(row => !baseIds.has(row.id))
 }
 
 export function mergeInFlightMessages(
@@ -321,7 +348,13 @@ export function mergeInFlightMessages(
     // append the whole tail.
     const streamId = lastJournalRow?.id ?? null
 
-    return { applied: true, caughtUp: false, messages: [...baseMessages, ...tail], streamId, turnStartedAt: null }
+    return {
+      applied: true,
+      caughtUp: false,
+      messages: [...baseMessages, ...withoutBaseIds(tail, baseMessages)],
+      streamId,
+      turnStartedAt: null
+    }
   }
 
   const afterUser = baseMessages.slice(matchingUserIndex + 1)
@@ -350,7 +383,7 @@ export function mergeInFlightMessages(
     return {
       applied: true,
       caughtUp: false,
-      messages: [...baseMessages, ...tailAssistants],
+      messages: [...baseMessages, ...withoutBaseIds(tailAssistants, baseMessages)],
       streamId,
       turnStartedAt: null
     }

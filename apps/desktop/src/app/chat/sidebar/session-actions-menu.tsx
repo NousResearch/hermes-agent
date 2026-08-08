@@ -2,10 +2,12 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
 
+import { openSession } from '@/app/open-session'
 import {
   closeAllTreeTabs,
   closeOtherTreeTabs,
   closeTreeTabsToRight,
+  reloadTreePane,
   treeTabCloseTargets
 } from '@/components/pane-shell/tree/store'
 import {
@@ -19,13 +21,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
 import { CopyButton } from '@/components/ui/copy-button'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -34,6 +30,7 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
@@ -43,8 +40,8 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, openSessionTile } from '@/store/session-states'
-import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+import { $sessionTiles } from '@/store/session-states'
+import { canOpenSessionWindow } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
 
@@ -137,6 +134,44 @@ function SessionColorSwatches({ sessionId }: { sessionId: string }) {
   )
 }
 
+// The project list inside the session menu's "Move to project" submenu. Its own
+// component so only an OPEN submenu subscribes to the stores (same reasoning as
+// SessionColorSwatches). Re-homes the session's workspace at the target
+// project's root — the fix for a chat created in the wrong folder. The current
+// owner and folderless projects (the Home bucket) are excluded: there is
+// nothing to move into.
+function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; sessionId: string; profile?: string }) {
+  const { t } = useI18n()
+  const p = t.sidebar.projects
+  const tree = useStore($projectTree)
+  const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
+  const cwd = session?.cwd?.trim() || ''
+  const currentProjectId = cwd ? projectIdForCwd(cwd) : null
+  const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+
+  if (targets.length === 0) {
+    return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
+  }
+
+  return (
+    <>
+      {targets.map(node => (
+        <kit.Item
+          key={node.id}
+          onSelect={() => {
+            triggerHaptic('selection')
+            moveSessionToProject(sessionId, node.id, profile)
+              .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(node.label) }))
+              .catch(err => notifyError(err, p.moveFailed))
+          }}
+        >
+          {node.label}
+        </kit.Item>
+      ))}
+    </>
+  )
+}
+
 function useSessionActions({
   sessionId,
   title,
@@ -175,8 +210,9 @@ function useSessionActions({
             onSelect: () => {
               triggerHaptic('selection')
               // Stack into the MAIN zone as a tab (center dock; the strip
-              // sticky-shows on gain) — the door to the tab bar.
-              openSessionTile(sessionId, 'center')
+              // sticky-shows on gain) — the door to the tab bar. Focuses first
+              // if the session is already on screen.
+              openSession(sessionId, () => undefined, 'tab')
             }
           })
         ]
@@ -189,7 +225,7 @@ function useSessionActions({
             label: r.newWindow,
             onSelect: () => {
               triggerHaptic('selection')
-              void openSessionInNewWindow(sessionId)
+              openSession(sessionId, () => undefined, 'window')
             }
           })
         ]
@@ -243,12 +279,24 @@ function useSessionActions({
     })
   ]
 
-  // TAB — close verbs that act on the strip (tabs only; a row isn't a tab).
+  // TAB — verbs that act on the strip (tabs only; a row isn't a tab).
   const closeTargets = surface === 'tab' && tabPaneId ? treeTabCloseTargets(tabPaneId) : null
 
-  const tabCloseItems: ActionItemSpec[] =
+  const tabItems: ActionItemSpec[] =
     surface === 'tab'
       ? [
+          ...(tabPaneId
+            ? [
+                spec({
+                  icon: 'refresh',
+                  label: t.zones.reload,
+                  onSelect: () => {
+                    triggerHaptic('selection')
+                    reloadTreePane(tabPaneId)
+                  }
+                })
+              ]
+            : []),
           ...(onClose
             ? [
                 spec({
@@ -346,10 +394,19 @@ function useSessionActions({
       />
       <kit.Separator />
       {workItems.map(item => renderActionItem(kit, item))}
-      {tabCloseItems.length > 0 && (
+      <kit.Sub>
+        <kit.SubTrigger disabled={!sessionId}>
+          <Codicon name="folder" size="0.875rem" />
+          <span>{t.sidebar.projects.moveToProject}</span>
+        </kit.SubTrigger>
+        <kit.SubContent>
+          <MoveToProjectItems kit={kit} profile={profile} sessionId={sessionId} />
+        </kit.SubContent>
+      </kit.Sub>
+      {tabItems.length > 0 && (
         <>
           <kit.Separator />
-          {tabCloseItems.map(item => renderActionItem(kit, item))}
+          {tabItems.map(item => renderActionItem(kit, item))}
         </>
       )}
       <kit.Separator />
@@ -389,12 +446,7 @@ interface SessionActionsMenuProps
   children: React.ReactNode
 }
 
-export function SessionActionsMenu({
-  children,
-  align = 'end',
-  sideOffset = 6,
-  ...actions
-}: SessionActionsMenuProps) {
+export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
   const { renameDialog, renderItems } = useSessionActions(actions)
 
@@ -424,11 +476,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
 
   return (
     <>
-      <ActionsContextMenu
-        ariaLabel={t.sidebar.row.sessionActions}
-        contentClassName="w-40"
-        items={renderItems}
-      >
+      <ActionsContextMenu ariaLabel={t.sidebar.row.sessionActions} contentClassName="w-40" items={renderItems}>
         {children}
       </ActionsContextMenu>
       {renameDialog}

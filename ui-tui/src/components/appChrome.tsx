@@ -5,6 +5,7 @@ import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
 import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
+import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
@@ -122,6 +123,7 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
+  const isOccluded = useStore($isStatusRuleOccluded)
 
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
@@ -130,6 +132,19 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   const { intervalMs, showVerb } = renderIndicator(style, 0)
 
   useEffect(() => {
+    // An overlay is painted OVER the status rule (the modal widget slot, or a
+    // floating panel growing up over the top rule), so every tick below is a
+    // re-render nobody can see — in an Ink TUI that churn reads as the dialog
+    // tearing.  Arm nothing while occluded.  The effect re-runs when the rule
+    // is revealed again and re-seeds `now` from the wall clock, so the elapsed
+    // read-out resumes live rather than frozen at the moment it was covered.
+    // See `$isStatusRuleOccluded` for why this is NOT `$isBlocked`.
+    if (isOccluded) {
+      return
+    }
+
+    setNow(Date.now())
+
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
     // Verb timer is gated on `showVerb` — `unicode` style hides the verb
@@ -144,7 +159,7 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
         clearInterval(verb)
       }
     }
-  }, [intervalMs, showVerb])
+  }, [intervalMs, isOccluded, showVerb])
 
   const { frame } = renderIndicator(style, tick)
   const verb = VERBS[verbTick % VERBS.length] ?? ''
@@ -360,13 +375,21 @@ function SpawnHud({ t }: { t: Theme }) {
 
 function SessionDuration({ startedAt }: { startedAt: number }) {
   const [now, setNow] = useState(() => Date.now())
+  const isOccluded = useStore($isStatusRuleOccluded)
 
   useEffect(() => {
+    // Paused only while an overlay actually covers the status rule — see
+    // FaceTicker.  The `setNow` below already re-seeds from the wall clock
+    // on every re-arm, so it doubles as the reveal catch-up.
+    if (isOccluded) {
+      return
+    }
+
     setNow(Date.now())
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
-  }, [startedAt])
+  }, [isOccluded, startedAt])
 
   return fmtDuration(now - startedAt)
 }
@@ -375,13 +398,21 @@ function IdleSince({ endedAt }: { endedAt: number }) {
   // Time since the last final agent response. Re-ticks every second like
   // SessionDuration so the read-out stays live while the session idles.
   const [now, setNow] = useState(() => Date.now())
+  const isOccluded = useStore($isStatusRuleOccluded)
 
   useEffect(() => {
+    // Paused only while an overlay actually covers the status rule — see
+    // FaceTicker.  The `setNow` below re-seeds from the wall clock on reveal
+    // so the idle read-out is not frozen when the overlay closes.
+    if (isOccluded) {
+      return
+    }
+
     setNow(Date.now())
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
-  }, [endedAt])
+  }, [endedAt, isOccluded])
 
   return `✓ ${fmtDuration(now - endedAt)}`
 }

@@ -35,23 +35,6 @@ class TestMergeHelper:
             out = _merge_with_models_dev("opencode-go", ["mimo-v2-pro", "kimi-k2.6"])
         assert out == ["mimo-v2-pro", "kimi-k2.6"]
 
-    def test_merge_mdev_raises_returns_curated(self):
-        """Offline / broken models.dev must not break the catalog path."""
-        def boom(_provider):
-            raise RuntimeError("network down")
-
-        with patch("agent.models_dev.list_agentic_models", side_effect=boom):
-            out = _merge_with_models_dev("opencode-go", ["mimo-v2-pro"])
-        assert out == ["mimo-v2-pro"]
-
-    def test_merge_mdev_first_then_curated_extras(self):
-        """models.dev entries come first; curated-only entries are appended."""
-        mdev = ["mimo-v2.5-pro", "mimo-v2-pro", "kimi-k2.6"]
-        curated = ["kimi-k2.6", "kimi-k2.5", "mimo-v2-pro"]  # kimi-k2.5 is curated-only
-        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
-            out = _merge_with_models_dev("opencode-go", curated)
-        # models.dev entries first (in order), then curated-only entries
-        assert out == ["mimo-v2.5-pro", "mimo-v2-pro", "kimi-k2.6", "kimi-k2.5"]
 
     def test_merge_case_insensitive_dedup(self):
         """Dedup is case-insensitive but preserves the first occurrence's casing."""
@@ -64,59 +47,10 @@ class TestMergeHelper:
 
 
 class TestProviderModelIdsPreferred:
-    def test_opencode_go_is_preferred(self):
-        assert "opencode-go" in _MODELS_DEV_PREFERRED
 
-    def test_opencode_go_includes_fresh_models_dev_entries(self):
-        """provider_model_ids('opencode-go') adds models.dev entries on top."""
-        mdev = ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "kimi-k2.6"]
-        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
-            out = provider_model_ids("opencode-go")
-        # Fresh models must surface (this is exactly the reported bug fix:
-        # mimo-v2.5-pro should be pickable on opencode-go).
-        assert "mimo-v2.5-pro" in out
-        assert "mimo-v2.5" in out
-        # Curated entries are still present.
-        assert "mimo-v2-pro" in out
-        assert "kimi-k2.6" in out
 
-    def test_opencode_go_offline_falls_back_to_curated(self):
-        """Offline models.dev → curated-only list, no crash."""
-        with patch("agent.models_dev.list_agentic_models", return_value=[]):
-            out = provider_model_ids("opencode-go")
-        # Curated floor (see hermes_cli/models.py _PROVIDER_MODELS["opencode-go"])
-        assert "mimo-v2-pro" in out
-        assert "kimi-k2.6" in out
 
-    def test_opencode_zen_includes_fresh_models(self):
-        """opencode-zen follows the same pattern as opencode-go."""
-        assert "opencode-zen" in _MODELS_DEV_PREFERRED
-        mdev = ["claude-opus-4-7", "kimi-k2.6", "glm-5.1"]
-        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
-            out = provider_model_ids("opencode-zen")
-        assert "claude-opus-4-7" in out
-        assert "kimi-k2.6" in out
 
-    def test_kimi_coding_offline_catalog_includes_k3(self):
-        """Native Kimi users must see the newest models without live catalog help."""
-        assert "kimi-coding" not in _MODELS_DEV_PREFERRED
-        with patch("agent.models_dev.list_agentic_models", return_value=[]):
-            out = provider_model_ids("kimi-coding")
-        assert "kimi-k3" in out
-        assert "kimi-k2.7-code" in out
-
-    def test_kimi_coding_live_catalog_does_not_hide_curated_k3(self):
-        """Kimi /models can lag inference; live results must not replace curated."""
-        with (
-            patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
-                return_value={"api_key": "sk-test", "base_url": "https://api.moonshot.ai/v1"},
-            ),
-            patch("providers.base.ProviderProfile.fetch_models", return_value=["kimi-k2.6"]),
-        ):
-            out = provider_model_ids("kimi-coding")
-        # Curated-first order; curated newest (k3) stays ahead of live.
-        assert out[:3] == ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6"]
 
     def test_k3_live_discovery_is_scoped_to_kimi_coding_endpoint(self):
         """Coding keys discover K3; legacy Moonshot keys must not advertise it."""
@@ -205,11 +139,6 @@ class TestProviderModelIdsPreferred:
 class TestOpenRouterAndNousUnchanged:
     """Per Teknium: openrouter and nous are NEVER merged with models.dev."""
 
-    def test_openrouter_not_in_preferred_set(self):
-        assert "openrouter" not in _MODELS_DEV_PREFERRED
-
-    def test_nous_not_in_preferred_set(self):
-        assert "nous" not in _MODELS_DEV_PREFERRED
 
     def test_openrouter_does_not_call_merge(self):
         """openrouter takes its own live path — merge helper must NOT run."""

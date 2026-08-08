@@ -31,8 +31,10 @@ describe('hermesDirectiveFormatter.parse', () => {
   it('still parses unquoted paths', () => {
     const segments = hermesDirectiveFormatter.parse('@file:src/main.tsx the entry point')
 
+    // The label keeps its directory: it's the same string the `@` popover row
+    // showed, and a bare `main.tsx` can't tell two files apart.
     expect(segments).toEqual([
-      { kind: 'mention', type: 'file', label: 'main.tsx', id: 'src/main.tsx' },
+      { kind: 'mention', type: 'file', label: 'src/main.tsx', id: 'src/main.tsx' },
       { kind: 'text', text: ' the entry point' }
     ])
   })
@@ -74,8 +76,14 @@ describe('inline skill references', () => {
     expect(skills('roughly 3 /4 of it')).toEqual([])
   })
 
-  it('does not chip a leading slash — that is a command invocation, not prose', () => {
-    expect(skills('/clean')).toEqual([])
+  it('chips a leading slash, which now reaches the transcript as a skill invocation', () => {
+    // #71664 asserted the opposite, and was right at the time: a leading slash
+    // only ever EXECUTED, so it never reached a rendered message as text —
+    // the turn that reached the bubble was the expanded skill body. Projecting
+    // a skill turn back onto `/work fix it` changes that precondition, so the
+    // invocation now has to chip like any other skill reference.
+    expect(skills('/clean')).toEqual(['/clean'])
+    expect(skills('/work fix the leak')).toEqual(['/work'])
   })
 
   it('parses a skill chip alongside an @ reference', () => {

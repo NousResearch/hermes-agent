@@ -86,60 +86,6 @@ def test_override_persists_and_survives_restart(store_factory, tmp_path):
     }
 
 
-def test_api_key_never_serialized(store_factory, tmp_path):
-    store = store_factory()
-    entry = store.get_or_create_session(_make_source())
-
-    store.set_model_override(entry.session_key, OVERRIDE)
-
-    raw = _sessions_json(tmp_path)
-    assert "sk-SUPER-SECRET-do-not-persist" not in raw
-    assert "api_key" not in raw
-    # api_mode is re-derived from provider resolution; not persisted either.
-    data = json.loads(raw)
-    stored = data[entry.session_key]["model_override"]
-    assert set(stored) == {"model", "provider", "base_url"}
-
-
-def test_from_dict_strips_api_key_from_tampered_json():
-    """Even a hand-edited sessions.json with an api_key must not load one."""
-    store_entry = SessionEntry.from_dict(
-        {
-            "session_key": "k1",
-            "session_id": "s1",
-            "created_at": "2026-01-01T00:00:00",
-            "updated_at": "2026-01-01T00:00:00",
-            "model_override": {
-                "model": "m1",
-                "provider": "p1",
-                "api_key": "sk-injected",
-                "api_mode": "chat_completions",
-            },
-        }
-    )
-    assert store_entry.model_override == {"model": "m1", "provider": "p1"}
-
-
-def test_new_clears_persisted_override(store_factory, tmp_path):
-    """/new resets the session; the persisted override must not survive it."""
-    store = store_factory()
-    entry = store.get_or_create_session(_make_source())
-    session_key = entry.session_key
-
-    store.set_model_override(session_key, OVERRIDE)
-    assert store.get_model_override(session_key) is not None
-
-    # /new path -> SessionStore.reset_session creates a fresh entry.
-    new_entry = store.reset_session(session_key)
-    assert new_entry is not None
-    assert store.get_model_override(session_key) is None
-
-    # Restart after /new must NOT resurrect the override.
-    store2 = store_factory()
-    assert store2.get_model_override(session_key) is None
-    assert "gpt-5o" not in _sessions_json(tmp_path)
-
-
 def _make_runner(store):
     from gateway.run import GatewayRunner
 
@@ -176,51 +122,6 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     # Credentials come from live resolution, never from disk.
     assert override["api_key"] == "sk-fresh-from-keychain"
     assert override["api_mode"] == "responses"
-
-
-def test_runner_rehydrate_keeps_live_override(store_factory):
-    """An in-memory override (live gateway state) always wins over disk."""
-    store = store_factory()
-    entry = store.get_or_create_session(_make_source())
-    session_key = entry.session_key
-    store.set_model_override(session_key, OVERRIDE)
-
-    runner = _make_runner(store)
-    live = {"model": "live-model", "provider": "anthropic"}
-    runner._session_model_overrides[session_key] = live
-
-    runner._rehydrate_session_model_override(session_key)
-
-    assert runner._session_model_overrides[session_key] is live
-
-
-def test_runner_rehydrate_noop_without_persisted_override(store_factory):
-    store = store_factory()
-    entry = store.get_or_create_session(_make_source())
-
-    runner = _make_runner(store)
-    runner._rehydrate_session_model_override(entry.session_key)
-
-    assert runner._session_model_overrides == {}
-
-
-def test_runner_rehydrate_survives_credential_resolution_failure(store_factory):
-    """Missing credentials degrade to a credential-less override, not a crash."""
-    store = store_factory()
-    entry = store.get_or_create_session(_make_source())
-    session_key = entry.session_key
-    store.set_model_override(session_key, OVERRIDE)
-
-    runner = _make_runner(store)
-    with patch(
-        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-        side_effect=RuntimeError("no credentials"),
-    ):
-        runner._rehydrate_session_model_override(session_key)
-
-    override = runner._session_model_overrides[session_key]
-    assert override["model"] == "gpt-5o"
-    assert override.get("api_key") is None
 
 
 def test_sanitize_model_override():

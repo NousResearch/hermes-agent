@@ -487,6 +487,9 @@ THREAT_PATTERNS = [
     (r'AKIA[0-9A-Z]{16}',
      "aws_access_key_leaked", "critical", "credential_exposure",
      "AWS access key ID in skill content"),
+    (r'glpat-[A-Za-z0-9_\-]{20,}',
+     "gitlab_token_leaked", "critical", "credential_exposure",
+     "GitLab personal access token in skill content"),
 
     # ── Additional prompt injection: jailbreak patterns ──
     (r'\bDAN\s+mode\b|Do\s+Anything\s+Now',
@@ -518,6 +521,11 @@ THREAT_PATTERNS = [
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration",
      "instructs agent to send data to a URL"),
+]
+
+_COMPILED_THREAT_PATTERNS = [
+    (re.compile(pattern, re.IGNORECASE), pid, severity, category, description)
+    for pattern, pid, severity, category, description in THREAT_PATTERNS
 ]
 
 # Structural limits for skill directories
@@ -591,11 +599,11 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     seen = set()  # (pattern_id, line_number) for deduplication
 
     # Regex pattern matching
-    for pattern, pid, severity, category, description in THREAT_PATTERNS:
+    for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             if (pid, i) in seen:
                 continue
-            if re.search(pattern, line, re.IGNORECASE):
+            if pattern.search(line):
                 seen.add((pid, i))
                 matched_text = line.strip()
                 if len(matched_text) > 120:

@@ -136,6 +136,25 @@ def _run_tool_loop(agent, n_tool_iterations: int):
 
 
 class TestProactivePruneLoopWiring:
+    def test_full_compression_preempts_proactive_prune(self, agent):
+        agent.context_compressor.should_compress.return_value = True
+
+        def _compress(messages, system_message, **_kwargs):
+            return [dict(m) for m in messages], system_message
+
+        with (
+            patch.object(agent, "_compress_context", side_effect=_compress) as compress,
+            patch(
+                "agent.conversation_loop.conversation_history_after_compression",
+                return_value=[],
+            ),
+        ):
+            result = _run_tool_loop(agent, n_tool_iterations=1)
+
+        assert result["completed"] is True
+        compress.assert_called_once()
+        agent.context_compressor.prune_tool_results_only.assert_not_called()
+
     def test_prune_consulted_when_compression_stands_down(self, agent):
         calls = []
 

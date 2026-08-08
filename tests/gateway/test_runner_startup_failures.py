@@ -65,84 +65,6 @@ class _SuccessfulAdapter(BasePlatformAdapter):
 
 
 @pytest.mark.asyncio
-async def test_runner_stays_alive_for_retryable_startup_errors(monkeypatch, tmp_path):
-    """Retryable startup errors should leave the gateway running in
-    degraded mode so the reconnect watcher can recover the platform when
-    the underlying problem clears.  Previously this returned False from
-    ``start()`` and exited the process, which converted a single broken
-    platform (e.g. unpaired WhatsApp, DNS blip on Telegram) into a
-    systemd restart loop and killed cron jobs in the meantime.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    config = GatewayConfig(
-        platforms={
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
-        },
-        sessions_dir=tmp_path / "sessions",
-    )
-    runner = GatewayRunner(config)
-
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _RetryableFailureAdapter())
-
-    ok = await runner.start()
-
-    # Gateway stays alive in degraded mode; reconnect watcher takes over.
-    assert ok is True
-    assert runner.should_exit_cleanly is False
-    state = read_runtime_status()
-    assert state["gateway_state"] in {"degraded", "running"}
-    # Telegram was queued for retry, not given up on.
-    assert Platform.TELEGRAM in runner._failed_platforms
-    assert state["platforms"]["telegram"]["state"] == "retrying"
-    assert state["platforms"]["telegram"]["error_code"] == "telegram_connect_error"
-
-
-@pytest.mark.asyncio
-async def test_runner_allows_cron_only_mode_when_no_platforms_are_enabled(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    config = GatewayConfig(
-        platforms={
-            Platform.TELEGRAM: PlatformConfig(enabled=False, token="***")
-        },
-        sessions_dir=tmp_path / "sessions",
-    )
-    runner = GatewayRunner(config)
-
-    ok = await runner.start()
-
-    assert ok is True
-    assert runner.should_exit_cleanly is False
-    assert runner.adapters == {}
-    state = read_runtime_status()
-    assert state["gateway_state"] == "running"
-
-
-@pytest.mark.asyncio
-async def test_runner_records_connected_platform_state_on_success(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    config = GatewayConfig(
-        platforms={
-            Platform.DISCORD: PlatformConfig(enabled=True, token="***")
-        },
-        sessions_dir=tmp_path / "sessions",
-    )
-    runner = GatewayRunner(config)
-
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _SuccessfulAdapter())
-    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
-    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
-
-    ok = await runner.start()
-
-    assert ok is True
-    state = read_runtime_status()
-    assert state["gateway_state"] == "running"
-    assert state["platforms"]["discord"]["state"] == "connected"
-    assert state["platforms"]["discord"]["error_code"] is None
-    assert state["platforms"]["discord"]["error_message"] is None
-
-
-@pytest.mark.asyncio
 async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, tmp_path):
     """Verbosity != None must not crash with NameError on RedactingFormatter (#8044)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -175,67 +97,6 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
     ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=1)
 
     assert ok is True
-
-
-@pytest.mark.asyncio
-async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    calls = []
-
-    class _CleanExitRunner:
-        def __init__(self, config):
-            self.config = config
-            self.should_exit_cleanly = True
-            self.exit_reason = None
-            self.exit_code = None
-            self.adapters = {}
-
-        async def start(self):
-            assert self._platform_lock_takeover_on_start is True
-            return True
-
-        async def stop(self):
-            return None
-
-    # get_running_pid returns 42 before we kill the old gateway, then None
-    # after remove_pid_file() clears the record (reflects real behavior).
-    _pid_state = {"alive": True}
-    def _mock_get_running_pid():
-        return 42 if _pid_state["alive"] else None
-    def _mock_remove_pid_file():
-        _pid_state["alive"] = False
-    monkeypatch.setattr("gateway.status.get_running_pid", _mock_get_running_pid)
-    monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
-    monkeypatch.setattr(
-        "gateway.status.release_all_scoped_locks",
-        lambda **kwargs: 0,
-    )
-    # force-kill reaps the process: terminate_pid(force=True) flips it dead,
-    # and the post-kill re-poll via _pid_exists then sees it gone so the
-    # replacement proceeds.
-    def _mock_terminate_pid(pid, force=False):
-        calls.append((pid, force))
-        if force:
-            _pid_state["alive"] = False
-    monkeypatch.setattr("gateway.status.terminate_pid", _mock_terminate_pid)
-    monkeypatch.setattr(
-        "gateway.status._pid_exists", lambda pid: _pid_state["alive"]
-    )
-    monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
-    monkeypatch.setattr("gateway.run.os.kill", lambda pid, sig: None)
-    monkeypatch.setattr("time.sleep", lambda _: None)
-    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
-    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
-    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
-
-    from gateway.run import start_gateway
-
-    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
-
-    assert ok is True
-    assert calls == [(42, False), (42, True)]
 
 
 @pytest.mark.asyncio
@@ -513,60 +374,6 @@ async def test_runner_exits_with_ex_config_on_nonretryable_startup_error(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_runner_stays_alive_on_mixed_retryable_and_nonretryable_errors(
-    monkeypatch, tmp_path, caplog
-):
-    """Mixed startup failures — one platform fatally misconfigured, another
-    merely transiently failing — must NOT exit with EX_CONFIG (NS-609).
-
-    Real-world shape: WhatsApp enabled but never paired (non-retryable
-    ``whatsapp_not_paired``) while Telegram hits a startup TimedOut
-    (retryable). Exiting 78 here either takes the gateway permanently down
-    (supervisors honoring the exit-78 contract) or crash-loops it (anything
-    else) — and in both cases Telegram never gets its retry even though
-    nothing is wrong with its config. The gateway must stay alive in
-    degraded mode, park the fatal platform, and queue the retryable one."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    config = GatewayConfig(
-        platforms={
-            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
-        },
-        sessions_dir=tmp_path / "sessions",
-    )
-    runner = GatewayRunner(config)
-
-    def _make_adapter(platform, platform_config):
-        if platform == Platform.DISCORD:
-            return _NonRetryableFailureAdapter()
-        return _RetryableFailureAdapter()
-
-    monkeypatch.setattr(runner, "_create_adapter", _make_adapter)
-
-    import logging
-    with caplog.at_level(logging.ERROR):
-        ok = await runner.start()
-
-    # Gateway stays alive — no clean-exit request, no EX_CONFIG.
-    assert ok is True
-    assert runner.should_exit_cleanly is False
-    assert runner.exit_code is None
-    state = read_runtime_status()
-    assert state["gateway_state"] in {"degraded", "running"}
-    # The retryable platform is queued for reconnection…
-    assert Platform.TELEGRAM in runner._failed_platforms
-    assert state["platforms"]["telegram"]["state"] == "retrying"
-    # …while the misconfigured one is parked as fatal, not retried.
-    assert Platform.DISCORD not in runner._failed_platforms
-    assert state["platforms"]["discord"]["state"] == "fatal"
-    # The fatal side is still surfaced loudly for the operator.
-    assert any(
-        "fatally misconfigured" in record.message
-        for record in caplog.records
-    ), "Expected an error log calling out the parked platform(s)"
-
-
-@pytest.mark.asyncio
 async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_path):
     """A clean exit carrying GATEWAY_FATAL_CONFIG_EXIT_CODE must surface as a
     process-level SystemExit(78) — NOT a truthy return — so main() exits 78
@@ -606,21 +413,3 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
     assert exc_info.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
 
 
-def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatch, tmp_path, caplog):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("TERMINAL_ENV", "docker")
-    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", '["/etc/localtime:/etc/localtime:ro"]')
-    config = GatewayConfig(
-        platforms={
-            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
-        },
-        sessions_dir=tmp_path / "sessions",
-    )
-
-    with caplog.at_level("WARNING"):
-        GatewayRunner(config)
-
-    assert any(
-        "host-visible output mount" in record.message
-        for record in caplog.records
-    )

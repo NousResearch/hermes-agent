@@ -9,16 +9,24 @@ import {
   $connection,
   $currentCwd,
   $selectedStoredSessionId,
+  $sessions,
   $unreadFinishedSessionIds,
+  _resetLegacyDiscardForTests,
   applyConfiguredDefaultProjectDir,
+  getRememberedRoute,
   getRememberedSessionId,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
+  sessionBelongsToProfile,
   sessionPinId,
   setCurrentCwd,
+  setRememberedRoute,
   setRememberedSessionId,
   setSelectedStoredSessionId,
+  setSessions,
+  shouldMigrateComposerScope,
+  touchSessionActivity,
   workspaceCwdForNewSession
 } from './session'
 import {
@@ -101,6 +109,35 @@ describe('resolveComposerSessionKey', () => {
 
   it('falls back to the live id when the tip row is not loaded yet', () => {
     expect(resolveComposerSessionKey('tip-new', [])).toBe('tip-new')
+  })
+})
+
+describe('shouldMigrateComposerScope', () => {
+  it('allows tip → lineage-root rekey within the same conversation', () => {
+    const sessions = [session({ id: 'tip-a', _lineage_root_id: 'root-a' })]
+
+    expect(shouldMigrateComposerScope('tip-a', 'root-a', sessions)).toBe(true)
+  })
+
+  it('blocks cross-session migrate when route flipped but store selection lags', () => {
+    // ChatView mid-switch: selectedStoredSessionId still A, route-driven
+    // queueSessionKey already B. Migrating would re-home A's queue onto B.
+    const sessions = [
+      session({ id: 'tip-a', _lineage_root_id: 'root-a' }),
+      session({ id: 'tip-b', _lineage_root_id: 'root-b' })
+    ]
+
+    expect(shouldMigrateComposerScope('tip-a', 'root-b', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope('root-a', 'root-b', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope('tip-a', 'tip-b', sessions)).toBe(false)
+  })
+
+  it('is a no-op for identical or missing keys', () => {
+    const sessions = [session({ id: 'tip-a', _lineage_root_id: 'root-a' })]
+
+    expect(shouldMigrateComposerScope('root-a', 'root-a', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope(null, 'root-a', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope('root-a', null, sessions)).toBe(false)
   })
 })
 
@@ -204,6 +241,66 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['b'])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
+  })
+
+  it('never regresses last_active behind an optimistic user-send bump', () => {
+    const previous = [session({ id: 'old', last_active: 9_000 })]
+    const incoming = [session({ id: 'old', last_active: 100, message_count: 4 })]
+
+    const merged = mergeSessionPage(previous, incoming, [])
+
+    expect(merged[0]?.last_active).toBe(9_000)
+    expect(merged[0]?.message_count).toBe(4)
+  })
+
+  it('carries an optimistic last_active across a compression tip rotation', () => {
+    const previous = [session({ id: 'tip-4', _lineage_root_id: 'root', last_active: 9_000 })] as SessionInfo[]
+    const incoming = [session({ id: 'tip-5', _lineage_root_id: 'root', last_active: 50 })] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['tip-4'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip-5'])
+    expect(merged[0]?.last_active).toBe(9_000)
+  })
+})
+
+describe('touchSessionActivity', () => {
+  afterEach(() => {
+    setSessions([])
+  })
+
+  it('bumps last_active for a live id and a lineage-root pin target', () => {
+    setSessions([
+      session({ id: 'tip', _lineage_root_id: 'root', last_active: 10, preview: 'old' }),
+      session({ id: 'other', last_active: 20 })
+    ] as SessionInfo[])
+
+    touchSessionActivity('root', { at: 99, preview: 'just sent' })
+
+    const rows = $sessions.get()
+    const tip = rows.find(s => s.id === 'tip')
+    const other = rows.find(s => s.id === 'other')
+
+    expect(tip?.last_active).toBe(99)
+    expect(tip?.preview).toBe('just sent')
+    expect(other?.last_active).toBe(20)
+  })
+
+  it('is monotonic — a stale stamp does not pull the row down', () => {
+    setSessions([session({ id: 'a', last_active: 50 })])
+
+    touchSessionActivity('a', { at: 10 })
+
+    expect($sessions.get()[0]?.last_active).toBe(50)
+  })
+
+  it('preserves array identity when nothing matched', () => {
+    const prev = [session({ id: 'a', last_active: 1 })]
+    setSessions(prev)
+
+    touchSessionActivity('missing', { at: 99 })
+
+    expect($sessions.get()).toBe(prev)
   })
 })
 
@@ -406,6 +503,7 @@ describe('unread finished sessions', () => {
 describe('remembered session id (per profile)', () => {
   beforeEach(() => {
     localStorage.clear()
+    _resetLegacyDiscardForTests()
   })
 
   afterEach(() => {
@@ -422,15 +520,26 @@ describe('remembered session id (per profile)', () => {
     expect(getRememberedSessionId('research')).toBeNull()
   })
 
-  it('keeps the default profile on the legacy unsuffixed key for back-compat', () => {
+  it('discards legacy unsuffixed keys on first read (zero-migration, refuse-to-guess)', () => {
     // An existing install remembered its session under the pre-per-profile key.
     localStorage.setItem('hermes.desktop.lastSessionId', 'legacy-session')
 
-    expect(getRememberedSessionId('default')).toBe('legacy-session')
-    // Absent/blank profile normalizes to the default key too.
-    expect(getRememberedSessionId(undefined)).toBe('legacy-session')
-    expect(getRememberedSessionId('')).toBe('legacy-session')
-    expect(getRememberedSessionId(null)).toBe('legacy-session')
+    // Reading from any profile discards the legacy key — ownership is unknowable.
+    expect(getRememberedSessionId('default')).toBeNull()
+    expect(getRememberedSessionId('coder')).toBeNull()
+
+    // The legacy key must be cleared.
+    expect(localStorage.getItem('hermes.desktop.lastSessionId')).toBeNull()
+  })
+
+  it('uses encodeURIComponent so profile names with reserved chars are isolated', () => {
+    setRememberedSessionId('ops-session', 'research/ops')
+
+    expect(getRememberedSessionId('research/ops')).toBe('ops-session')
+    // Verify the storage key uses encoded form.
+    expect(localStorage.getItem('hermes.desktop.lastSessionId.profile.research%2Fops')).toBe('ops-session')
+    // Another profile with a different encoding cannot read it.
+    expect(getRememberedSessionId('research')).toBeNull()
   })
 
   it('clearing one profile leaves the others intact', () => {
@@ -441,6 +550,108 @@ describe('remembered session id (per profile)', () => {
 
     expect(getRememberedSessionId('ai-engineer')).toBeNull()
     expect(getRememberedSessionId('default')).toBe('personal-session')
+  })
+})
+
+describe('remembered route (per profile)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    _resetLegacyDiscardForTests()
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it('scopes the remembered route by profile so one profile cannot restore another', () => {
+    // A session route embeds a session id. Remembered globally, a cold start
+    // under 'default' would navigate straight into ai-engineer's conversation.
+    setRememberedRoute('/session/work-session', 'ai-engineer')
+    setRememberedRoute('/session/personal-session', 'default')
+
+    expect(getRememberedRoute('ai-engineer')).toBe('/session/work-session')
+    expect(getRememberedRoute('default')).toBe('/session/personal-session')
+    expect(getRememberedRoute('research')).toBeNull()
+  })
+
+  it('discards legacy unsuffixed keys on first read (zero-migration, refuse-to-guess)', () => {
+    localStorage.setItem('hermes.desktop.lastRoute', '/skills')
+
+    // Reading from any profile discards the legacy key.
+    expect(getRememberedRoute('default')).toBeNull()
+    expect(getRememberedRoute('coder')).toBeNull()
+
+    expect(localStorage.getItem('hermes.desktop.lastRoute')).toBeNull()
+  })
+
+  it('uses encodeURIComponent so profile names with reserved chars are isolated', () => {
+    setRememberedRoute('/cron', 'research/ops')
+
+    expect(getRememberedRoute('research/ops')).toBe('/cron')
+    expect(localStorage.getItem('hermes.desktop.lastRoute.profile.research%2Fops')).toBe('/cron')
+    expect(getRememberedRoute('research')).toBeNull()
+  })
+
+  it('clearing one profile leaves the others intact', () => {
+    setRememberedRoute('/session/work-session', 'ai-engineer')
+    setRememberedRoute('/session/personal-session', 'default')
+
+    setRememberedRoute(null, 'ai-engineer')
+
+    expect(getRememberedRoute('ai-engineer')).toBeNull()
+    expect(getRememberedRoute('default')).toBe('/session/personal-session')
+  })
+
+  it('route and session id agree on the owner, so restore cannot cross profiles', () => {
+    // The cold-start restore prefers the route over the id, so the two keys
+    // must be written under the same owner or the id scoping is bypassed.
+    const owner = rememberedSessionProfile([session({ id: 'stored-1', profile: 'ai-engineer' })], 'stored-1', 'default')
+
+    setRememberedSessionId('stored-1', owner)
+    setRememberedRoute('/session/stored-1', owner)
+
+    expect(getRememberedRoute('default')).toBeNull()
+    expect(getRememberedSessionId('default')).toBeNull()
+    expect(getRememberedRoute('ai-engineer')).toBe('/session/stored-1')
+  })
+})
+
+describe('sessionBelongsToProfile', () => {
+  it('validates that a session row matches a stored id and target profile', () => {
+    const sessions = [
+      session({ id: 's1', profile: 'ai-engineer' }),
+      session({ id: 's2', profile: 'default' }),
+      session({ id: 's3', profile: 'ai-engineer' })
+    ]
+
+    expect(sessionBelongsToProfile(sessions, 's1', 'ai-engineer')).toBe(true)
+    expect(sessionBelongsToProfile(sessions, 's3', 'ai-engineer')).toBe(true)
+    expect(sessionBelongsToProfile(sessions, 's2', 'default')).toBe(true)
+    // Wrong profile.
+    expect(sessionBelongsToProfile(sessions, 's1', 'default')).toBe(false)
+    // Missing session.
+    expect(sessionBelongsToProfile(sessions, 's-missing', 'ai-engineer')).toBe(false)
+  })
+
+  it('matches on lineage root so compressed tips validate their owner', () => {
+    const sessions = [session({ id: 'tip-2', _lineage_root_id: 'root-1', profile: 'work' })]
+
+    expect(sessionBelongsToProfile(sessions, 'root-1', 'work')).toBe(true)
+    expect(sessionBelongsToProfile(sessions, 'tip-2', 'work')).toBe(true)
+    // Wrong profile even when lineage matches.
+    expect(sessionBelongsToProfile(sessions, 'root-1', 'personal')).toBe(false)
+  })
+
+  it('normalizes blank/empty profiles to default', () => {
+    const sessions = [session({ id: 's1', profile: '' }), session({ id: 's2', profile: null as unknown as string })]
+
+    expect(sessionBelongsToProfile(sessions, 's1', 'default')).toBe(true)
+    expect(sessionBelongsToProfile(sessions, 's1', '')).toBe(true)
+    expect(sessionBelongsToProfile(sessions, 's2', 'default')).toBe(true)
+  })
+
+  it('returns false for an empty session list', () => {
+    expect(sessionBelongsToProfile([], 'any-id', 'default')).toBe(false)
   })
 })
 

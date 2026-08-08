@@ -27,24 +27,84 @@ const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 // The last chat the user had open, so a relaunch lands back on it instead of an
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
 //
-// Scoped per profile: a single global key remembered ONE session across every
-// profile, so relaunching (or a cold start) under profile B would try to
-// restore a session that belongs to profile A — one of the ways a conversation
-// appears to bleed between profiles (#63590). Each profile now remembers its
-// own last session. The default profile keeps the original unsuffixed key so
-// existing installs' remembered session survives the upgrade.
+// Scoped per profile with an explicit namespace (`.profile.<encoded>`) and
+// encodeURIComponent so a profile name carrying `/` or other reserved chars
+// cannot collide or leak across keys. Legacy global (unsuffixed) keys are
+// discarded on first read to prevent cross-profile bleed — ownership of the old
+// global values is unknowable, and guessing the owning profile is exactly the
+// cross-profile corruption this storage boundary prevents (#67709).
 const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
+const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
 
-function rememberedSessionKey(profile?: null | string): string {
-  const key = (profile ?? '').trim()
+function profileNavigationKey(base: string, profile: string): string {
+  const key = profile.trim() || 'default'
 
-  return !key || key === 'default' ? LAST_SESSION_KEY : `${LAST_SESSION_KEY}.${key}`
+  return `${base}.profile.${encodeURIComponent(key)}`
 }
 
-export const getRememberedSessionId = (profile?: null | string): null | string =>
-  storedString(rememberedSessionKey(profile))
-export const setRememberedSessionId = (id: null | string, profile?: null | string) =>
-  persistString(rememberedSessionKey(profile), id)
+// Discard legacy global keys once per tick. A module-level flag avoids
+// redundant synchronous localStorage reads on every get/set call within
+// the same synchronous block. The flag resets on cross-window `storage`
+// events, which are the only way another window can recontaminate between
+// ticks.
+let legacyDiscardNeeded = true
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', e => {
+    if (e.key === LAST_SESSION_KEY || e.key === LAST_ROUTE_KEY) {
+      legacyDiscardNeeded = true
+    }
+  })
+}
+
+function discardLegacyRememberedNavigation(): void {
+  if (!legacyDiscardNeeded) {
+    return
+  }
+
+  legacyDiscardNeeded = false
+
+  // Ownership of the old global values is unknowable. Never migrate them into
+  // a profile: guessing is exactly the cross-profile corruption this storage
+  // boundary prevents.
+  if (storedString(LAST_SESSION_KEY) !== null) {
+    persistString(LAST_SESSION_KEY, null)
+  }
+
+  if (storedString(LAST_ROUTE_KEY) !== null) {
+    persistString(LAST_ROUTE_KEY, null)
+  }
+}
+
+/** @internal Reset the legacy-discard flag for tests. */
+export function _resetLegacyDiscardForTests(): void {
+  legacyDiscardNeeded = true
+}
+
+export function getRememberedSessionId(profile: string): null | string {
+  discardLegacyRememberedNavigation()
+
+  return storedString(profileNavigationKey(LAST_SESSION_KEY, profile))
+}
+
+export function setRememberedSessionId(id: null | string, profile: string): void {
+  discardLegacyRememberedNavigation()
+  persistString(profileNavigationKey(LAST_SESSION_KEY, profile), id)
+}
+
+export function sessionBelongsToProfile(
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>[],
+  storedSessionId: string,
+  profile: string
+): boolean {
+  const key = profile.trim() || 'default'
+
+  return sessions.some(session => {
+    const owner = (session.profile ?? '').trim() || 'default'
+
+    return owner === key && sessionMatchesStoredId(session, storedSessionId)
+  })
+}
 
 /**
  * The profile a routed session belongs to, for keying the remembered id.
@@ -72,10 +132,24 @@ export function rememberedSessionProfile(
 
 // The last non-overlay route (a page like /skills, or a session route), so a
 // relaunch lands back where you were instead of a bare new-chat.
-const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
+//
+// Scoped per profile for the same reason the remembered session id is: a single
+// global key remembered ONE route across every profile, and a session route
+// carries a session id in its path. Restoring under profile B would navigate to
+// a session owned by profile A — the remembered-id scoping above is bypassed
+// entirely, because the route is preferred over the id on cold start
+// (#67603 family). Legacy global values are discarded on first read.
 
-export const getRememberedRoute = (): null | string => storedString(LAST_ROUTE_KEY)
-export const setRememberedRoute = (path: null | string) => persistString(LAST_ROUTE_KEY, path)
+export function getRememberedRoute(profile: string): null | string {
+  discardLegacyRememberedNavigation()
+
+  return storedString(profileNavigationKey(LAST_ROUTE_KEY, profile))
+}
+
+export function setRememberedRoute(path: null | string, profile: string): void {
+  discardLegacyRememberedNavigation()
+  persistString(profileNavigationKey(LAST_ROUTE_KEY, profile), path)
+}
 
 let configuredDefaultProjectDir = ''
 
@@ -177,6 +251,42 @@ export const sessionMatchesStoredId = (
   storedSessionId: string
 ): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
 
+/** True when two ids name the same conversation across compression tip rotation. */
+export function idsShareLineage(
+  a: string,
+  b: string,
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]
+): boolean {
+  if (a === b) {
+    return true
+  }
+
+  return sessions.some(session => sessionMatchesStoredId(session, a) && sessionMatchesStoredId(session, b))
+}
+
+/**
+ * Whether a composer draft/queue key should move from `fromKey` onto `toKey`.
+ *
+ * Only same-conversation rekeys are allowed (compression tip → lineage root).
+ * A session-switch window where the route already points at B while the store
+ * selection still holds A must NOT migrate — that would re-home Session A's
+ * queued prompts onto B and auto-drain them into the wrong chat.
+ */
+export function shouldMigrateComposerScope(
+  fromKey: string | null | undefined,
+  toKey: string | null | undefined,
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]
+): boolean {
+  const from = fromKey?.trim()
+  const to = toKey?.trim()
+
+  if (!from || !to || from === to) {
+    return false
+  }
+
+  return idsShareLineage(from, to, sessions)
+}
+
 /**
  * Stable composer + `/queue` scope for a selected stored session.
  *
@@ -234,15 +344,18 @@ export function mergeSessionPage(
   // auto-titler. A real clear sets the local title null first, so this never
   // masks one.
   const prevById = new Map(previous.map(session => [session.id, session]))
+  // Tip rotation changes the live id — carry activity/title across the lineage
+  // root so a mid-turn refresh can't drop a touchSessionActivity bump.
+  const prevByLineage = new Map(previous.map(session => [session._lineage_root_id ?? session.id, session]))
 
   const merged = incoming.map(session => {
-    if (session.title?.trim()) {
-      return session
-    }
+    const prev = prevById.get(session.id) ?? prevByLineage.get(session._lineage_root_id ?? session.id)
+    // User-send stamps last_active before the DB flushes the user row
+    // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
+    const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
+    const title = session.title?.trim() ? session.title : prev?.title?.trim() ? prev.title : session.title
 
-    const carried = prevById.get(session.id)?.title?.trim()
-
-    return carried ? { ...session, title: carried } : session
+    return last_active === session.last_active && title === session.title ? session : { ...session, last_active, title }
   })
 
   if (keep.size === 0) {
@@ -265,6 +378,43 @@ export function mergeSessionPage(
   )
 
   return survivors.length ? [...survivors, ...merged] : merged
+}
+
+/** Raise a session in recents on user send (before stream / turn resolve). */
+export function touchSessionActivity(
+  sessionId: string | null | undefined,
+  options?: { at?: number; preview?: string }
+): void {
+  const id = sessionId?.trim()
+
+  if (!id) {
+    return
+  }
+
+  const at = options?.at ?? Date.now() / 1000
+  const preview = options?.preview?.trim().slice(0, 200) || undefined
+
+  setSessions(prev => {
+    let changed = false
+
+    const next = prev.map(session => {
+      if (!sessionMatchesStoredId(session, id)) {
+        return session
+      }
+
+      const last_active = Math.max(session.last_active ?? 0, at)
+
+      if (last_active === session.last_active && (!preview || preview === session.preview)) {
+        return session
+      }
+
+      changed = true
+
+      return preview ? { ...session, last_active, preview } : { ...session, last_active }
+    })
+
+    return changed ? next : prev
+  })
 }
 
 export const $connection = atom<HermesConnection | null>(null)

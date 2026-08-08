@@ -443,13 +443,28 @@ def main():
     if not write_json({
         "jsonrpc": "2.0",
         "method": "event",
-        "params": {"type": "gateway.ready", "payload": {"skin": resolve_skin()}},
+        "params": {
+            "type": "gateway.ready",
+            # change_events: see tui_gateway/ws.py — clients demote legacy polls.
+            "payload": {"skin": resolve_skin(), "change_events": True},
+        },
     }):
         _log_exit("startup write failed (broken stdout pipe before first event)")
         sys.exit(0)
 
     # Live-apply skins Hermes activates mid-conversation.
     server._ensure_skin_watcher()
+
+    # Warm the /model picker's provider-models cache off-thread during this
+    # idle window (gateway.ready sent, user about to type). Mirrors the classic
+    # CLI run() loop — the stdio TUI otherwise never prewarms, so the first
+    # /model open blocks on serial /v1/models fetches. Fire-and-forget,
+    # guarded once-per-process, fully exception-isolated.
+    try:
+        from hermes_cli.model_switch import prewarm_picker_cache_async
+        prewarm_picker_cache_async()
+    except Exception:
+        logger.debug("picker cache prewarm (tui) failed to start", exc_info=True)
 
     while True:
         raw = sys.stdin.readline()

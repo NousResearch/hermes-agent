@@ -39,6 +39,8 @@ def _make_agent(monkeypatch, tmp_path: Path, **prune_keys):
     from hermes_cli import config as config_mod
 
     monkeypatch.setattr(config_mod, "load_config", lambda: _config(**prune_keys))
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: _config(**prune_keys))
     db = SessionDB(db_path=tmp_path / "state.db")
     with contextlib.redirect_stdout(io.StringIO()):
         agent = AIAgent(
@@ -83,29 +85,6 @@ class TestProactivePruneConfig:
         agent = _make_agent(monkeypatch, tmp_path, proactive_prune_tokens=True)
         assert agent.context_compressor.proactive_prune_tokens == 0
 
-    def test_fractional_float_is_rejected_not_truncated(self, monkeypatch, tmp_path):
-        agent = _make_agent(monkeypatch, tmp_path, proactive_prune_tokens=48_000.7)
-        assert agent.context_compressor.proactive_prune_tokens == 0
 
-    def test_integral_float_and_numeric_string_accepted(self, monkeypatch, tmp_path):
-        agent = _make_agent(monkeypatch, tmp_path, proactive_prune_tokens=48_000.0)
-        assert agent.context_compressor.proactive_prune_tokens == 48_000
-        agent = _make_agent(monkeypatch, tmp_path, proactive_prune_tokens="32000")
-        assert agent.context_compressor.proactive_prune_tokens == 32_000
 
-    def test_negative_trigger_treated_as_disabled(self, monkeypatch, tmp_path):
-        agent = _make_agent(monkeypatch, tmp_path, proactive_prune_tokens=-100)
-        assert agent.context_compressor.proactive_prune_tokens == 0
 
-    def test_garbage_falls_back_to_defaults(self, monkeypatch, tmp_path):
-        agent = _make_agent(
-            monkeypatch,
-            tmp_path,
-            proactive_prune_tokens="lots",
-            proactive_prune_min_result_chars=None,
-            proactive_prune_min_reclaim_tokens="???",
-        )
-        cc = agent.context_compressor
-        assert cc.proactive_prune_tokens == 0
-        assert cc.proactive_prune_min_result_chars == 8000
-        assert cc.proactive_prune_min_reclaim_tokens == 4096

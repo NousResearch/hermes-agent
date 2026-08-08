@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 
 import { test } from 'vitest'
 
@@ -9,6 +10,7 @@ import {
   helperCommand,
   powerShellCommand,
   psLiteral,
+  reusableWindowsLock,
   validLock
 } from './windows-remote-lifecycle'
 
@@ -112,6 +114,31 @@ test('Windows lock validation is scoped and exact', () => {
   // on it) but the reuse gate must reject it separately.
   assert.equal(validLock({ ...lock, port: 0 }, ownershipId), true)
   assert.equal(validLock({ ...lock, port: -1 }, ownershipId), false)
+})
+
+test('Windows SSH reuse requires the requested remote profile to match the lock', () => {
+  const token = 'stored-token'
+
+  const lock = {
+    schemaVersion: 2,
+    protocolVersion: 1,
+    ownershipId,
+    spawnNonce: '0123456789abcdef',
+    pid: 10,
+    creationTimeNs: '1784219690452757504',
+    port: 1234,
+    profile: 'default',
+    tokenFingerprint: crypto.createHash('sha256').update(token).digest('hex').slice(0, 32),
+    hermesPath: 'C:\\h\\hermes.exe',
+    hermesHome: 'C:\\h'
+  }
+
+  const state = { alive: true, owned: true }
+  const runtime = { hermesPath: lock.hermesPath, hermesHome: lock.hermesHome }
+
+  assert.equal(reusableWindowsLock(lock, state, 'default', token, runtime), true)
+  assert.equal(reusableWindowsLock(lock, state, 'desktop-work', token, runtime), false)
+  assert.equal(reusableWindowsLock({ ...lock, profile: '' }, state, '', token, runtime), true)
 })
 
 test('Windows integrated terminal uses encoded PowerShell and preserves cwd as literal data', () => {

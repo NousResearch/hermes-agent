@@ -27,8 +27,8 @@ import {
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
-  mediaStreamUrl,
-  resolveMediaDisplaySrc
+  resolveMediaDisplaySrc,
+  resolveMediaPlaybackSrc
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
@@ -98,16 +98,6 @@ function preprocessWithTailRepair(text: string): string {
   }
 }
 
-async function mediaSrc(path: string): Promise<string> {
-  // Stream audio/video through the custom protocol: data URLs are capped and
-  // load the whole file into memory, which broke playback for larger videos.
-  if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
-    return mediaStreamUrl(path)
-  }
-
-  return resolveMediaDisplaySrc(path)
-}
-
 function useOpenMediaFile(path: string) {
   const [openFailed, setOpenFailed] = useState(false)
 
@@ -137,7 +127,7 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
   return (
     <span className="block">
       <button
-        className="mt-2 link-chip bg-transparent text-xs font-medium text-muted-foreground hover:text-foreground"
+        className="mt-2 ref text-xs font-medium text-muted-foreground hover:text-foreground"
         onClick={open}
         type="button"
       >
@@ -170,7 +160,7 @@ function MediaAttachment({ path }: { path: string }) {
       }
     }
 
-    void mediaSrc(path)
+    void resolveMediaPlaybackSrc(path)
       .then(value => {
         if (value.startsWith('blob:')) {
           objectUrl = value
@@ -207,7 +197,7 @@ function MediaAttachment({ path }: { path: string }) {
 
   if (kind === 'audio' && src) {
     return (
-      <span className="my-3 block max-w-md rounded-xl border border-border bg-muted/35 p-3">
+      <span className="my-3 block max-w-md rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
         <audio className="block w-full" controls onError={() => setFailed(true)} preload="metadata" src={src} />
         {failed && <OpenMediaButton kind="audio" path={path} />}
@@ -217,7 +207,7 @@ function MediaAttachment({ path }: { path: string }) {
 
   if (kind === 'video' && src) {
     return (
-      <span className="my-3 block max-w-2xl rounded-xl border border-border bg-muted/35 p-3">
+      <span className="my-3 block max-w-2xl rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
         <video
           className="block max-h-112 w-full rounded-lg bg-black"
@@ -233,7 +223,7 @@ function MediaAttachment({ path }: { path: string }) {
   return (
     <span className="wrap-anywhere">
       <a
-        className="link-chip wrap-anywhere"
+        className="ref wrap-anywhere"
         href="#"
         onClick={event => {
           event.preventDefault()
@@ -283,7 +273,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   if (!target || !/^https?:\/\//i.test(target)) {
     return (
       <a
-        className={cn('link-chip wrap-anywhere', className)}
+        className={cn('ref wrap-anywhere', className)}
         href={href}
         rel="noopener noreferrer"
         target="_blank"
@@ -313,7 +303,29 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   )
 }
 
-function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>) {
+// Generated/inline media often arrives as image markdown — `![clip](clip.mp4)`.
+// A raw <img> with a video/audio source renders a broken-image icon (the file is
+// valid, the browser just can't paint it as an image), so route those sources to
+// MediaAttachment, which picks the right <video>/<audio> element (streaming
+// protocol + open-externally fallback) by media kind. Detection is
+// extension-based via mediaKind(); an extension-less/data/blob video URL still
+// resolves to 'file' and falls through to the image path as before.
+//
+// This is split from the image path because that path is built on hooks: a
+// conditional return inside it would have to sit after every hook call, which
+// would still fire an image resolve for media we never render as an image.
+export function MarkdownImage(props: ComponentProps<'img'>) {
+  const rawSrc = typeof props.src === 'string' ? props.src : ''
+  const kind = rawSrc ? mediaKind(rawSrc) : 'file'
+
+  if (kind === 'video' || kind === 'audio') {
+    return <MediaAttachment path={rawSrc} />
+  }
+
+  return <MarkdownImageContent {...props} />
+}
+
+function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<'img'>) {
   const rawSrc = typeof src === 'string' ? src : ''
   const [resolvedSrc, setResolvedSrc] = useState(() => (rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : ''))
   const [failed, setFailed] = useState(false)
@@ -357,11 +369,7 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
     return (
       <span className="my-2 block text-sm text-muted-foreground">
         Couldn&apos;t load {name}.{' '}
-        <button
-          className="link-chip bg-transparent font-medium text-foreground hover:text-foreground"
-          onClick={open}
-          type="button"
-        >
+        <button className="ref font-medium text-foreground" onClick={open} type="button">
           Open image
         </button>
         {openFailed && <OpenMediaFailedNote name={name} />}
@@ -428,7 +436,7 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   return (
     <div
       className={cn(
-        'aui-md w-full max-w-none overflow-hidden rounded-[0.625rem] border border-border font-mono text-[0.7rem] leading-relaxed text-foreground/90',
+        'aui-md w-full max-w-none overflow-hidden rounded-[0.625rem] border border-(--ui-stroke-tertiary) font-mono text-[0.7rem] leading-relaxed text-foreground/90',
         containerClassName
       )}
     >
@@ -515,7 +523,7 @@ function MarkdownTextSurface({
 
           return (
             <blockquote
-              className={cn('border-s-2 border-border ps-3 text-muted-foreground italic', className)}
+              className={cn('border-s-2 border-(--ui-stroke-tertiary) ps-3 text-muted-foreground italic', className)}
               dir="auto"
               {...props}
             >
@@ -533,10 +541,10 @@ function MarkdownTextSurface({
           <li className={cn('leading-(--dt-line-height)', className)} {...props} />
         ),
         table: ({ className, ...props }: ComponentProps<'table'>) => (
-          <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-border">
+          <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-(--ui-stroke-tertiary)">
             <table
               className={cn(
-                'm-0 w-full min-w-[18rem] border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
+                'm-0 w-full min-w-[18rem] border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-(--ui-stroke-tertiary) last:[&_tr]:border-0',
                 className
               )}
               {...props}

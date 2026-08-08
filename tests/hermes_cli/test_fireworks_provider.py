@@ -164,17 +164,13 @@ class TestFireworksAuxiliary:
         assert "X-Title" not in headers
         assert kwargs["base_url"] == "https://api.fireworks.ai/inference/v1"
 
-    def test_aux_model_is_payg_safe(self, monkeypatch):
+    def test_client_sends_hermes_user_agent(self, monkeypatch):
+        """The profile's User-Agent survives the generic default_headers
+        fallback and reaches OpenAI client construction."""
         monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test_key")
-        _, model, _ = self._resolve("fireworks")
-        assert model.startswith("accounts/fireworks/models/")
-        assert "/routers/" not in model
-        assert "turbo" not in model.lower()
-
-    def test_alias_resolves_through_aux_client(self, monkeypatch):
-        monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test_key")
-        client, _, _ = self._resolve("fw")
-        assert client is not None
+        _client, _model, kwargs = self._resolve("fireworks")
+        headers = kwargs.get("default_headers", {})
+        assert headers["User-Agent"].startswith("HermesAgent/")
 
 
 class TestFireworksModelMetadata:

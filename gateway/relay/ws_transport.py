@@ -53,6 +53,10 @@ WEBSOCKETS_AVAILABLE = websockets is not None
 # How long to wait for the handshake descriptor and for each outbound result.
 _HANDSHAKE_TIMEOUT_S = 30.0
 _OUTBOUND_TIMEOUT_S = 30.0
+# Bound supervisor/reader/ws.close awaits so a wedged peer cannot stall
+# adapter.disconnect. Three sequential awaits at 1.0s stay under the runner's
+# default 5s adapter disconnect budget (plus the 2s go_idle ACK budget).
+_TEARDOWN_AWAIT_TIMEOUT_S = 1.0
 
 # Phase 7 Unit 7d-B: the application close code the connector sends when it
 # rejects/revokes a gateway's WS upgrade auth (mirrors the connector's
@@ -219,6 +223,12 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         # (_is_discord_auto_thread_lane's relay-aware sibling reads these).
         auto_thread_created=bool(src.get("auto_thread_created", False)),
         auto_thread_initial_name=src.get("auto_thread_initial_name"),
+        # Discord auto-thread session continuity: the connector stamps the
+        # thread id this channel message's reply WILL be auto-threaded into
+        # (== the message id) so the gateway keys the initiating channel message
+        # and its later in-thread follow-ups to ONE session. See
+        # build_session_key / SessionSource.prospective_thread_id.
+        prospective_thread_id=src.get("prospective_thread_id"),
         # Authentic upstream-trust signal: this event arrived over the
         # per-instance-authenticated relay WS, so the connector already resolved
         # it to this instance's owner-bound author. ``platform`` is the
@@ -495,23 +505,26 @@ class WebSocketRelayTransport:
         if self._supervisor is not None:
             self._supervisor.cancel()
             try:
-                await self._supervisor
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                await asyncio.wait_for(
+                    self._supervisor, timeout=_TEARDOWN_AWAIT_TIMEOUT_S
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
                 pass
             self._supervisor = None
         if self._reader is not None:
             self._reader.cancel()
             try:
-                await self._reader
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                await asyncio.wait_for(self._reader, timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
                 pass
             self._reader = None
         if self._ws is not None:
             try:
-                await self._ws.close()
-            except Exception:  # noqa: BLE001
+                await asyncio.wait_for(self._ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-            self._ws = None
+            finally:
+                self._ws = None
         # Fail any in-flight outbound waiters so callers don't hang.
         for fut in self._pending.values():
             if not fut.done():
@@ -657,9 +670,11 @@ class WebSocketRelayTransport:
         # flip us back to a fast reconnect.
         self._dormant = True
         try:
-            await self._ws.close()
-        except Exception:  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
-            logger.debug("relay go_dormant: ws.close() raised", exc_info=True)
+            await asyncio.wait_for(
+                self._ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S
+            )
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
+            logger.debug("relay go_dormant: ws.close() raised or timed out", exc_info=True)
         return acked
 
     async def _send_inbound_ack(self, buffer_id: str) -> None:

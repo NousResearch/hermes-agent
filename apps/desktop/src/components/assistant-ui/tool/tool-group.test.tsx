@@ -523,6 +523,28 @@ describe('live tool run', () => {
     expect(container.querySelector('[data-tool-ticker]')).not.toBeNull()
     expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).toBeNull()
   })
+
+  // The ticker is a one-line window, so a row opened inside it had its output
+  // sliced to that line and then ticked away by the next call. Opening a row
+  // is a request to read it: the run gives up the window until it settles.
+  it('drops the one-line window when a row inside it is opened', async () => {
+    const { container } = render(<GroupHarness message={betweenSequentialCallsMessage()} />)
+
+    await screen.findByText('Running 2 commands')
+
+    const row = container.querySelector('[data-tool-ticker] [data-tool-row] button[aria-expanded="false"]')
+
+    expect(row).not.toBeNull()
+
+    fireEvent.click(row as Element)
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-tool-ticker]')).toBeNull()
+    })
+
+    // ...and the row it opened is still on screen to be read.
+    expect(container.querySelector('[data-tool-row][data-tool-open]')).not.toBeNull()
+  })
 })
 
 // A run whose calls never resolved used to read as live forever, which stranded

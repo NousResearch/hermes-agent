@@ -10553,6 +10553,12 @@ def cmd_dashboard(args):
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
         initial_profile=getattr(args, "open_profile", "") or "",
+        isolated_profile=(
+            _launch_profile
+            if getattr(args, "isolated", False)
+            and _launch_profile not in ("default", "custom")
+            else ""
+        ),
         headless=_headless_backend,
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,

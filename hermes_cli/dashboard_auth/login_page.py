@@ -22,6 +22,7 @@ class name MUST NOT change without updating
 from __future__ import annotations
 
 import html
+import os
 
 from hermes_cli.dashboard_auth import list_session_providers
 
@@ -38,7 +39,7 @@ _LOGIN_HTML_TEMPLATE = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in — Hermes Agent</title>
+<title>Sign in — {brand} Dashboard</title>
 <style>
   /* Brand fonts shipped by @nous-research/ui — same files the SPA loads. */
   @font-face {{
@@ -302,10 +303,10 @@ _LOGIN_HTML_TEMPLATE = """\
 </head>
 <body>
 <main>
-  <div class="brand">Nous<span class="dot"></span>Research</div>
+  <div class="brand">{brand}</div>
   <div class="card">
     <h1>Sign in</h1>
-    <p class="subtitle">Choose a sign-in method to continue to the Hermes Agent dashboard.</p>
+    <p class="subtitle">Choose a sign-in method to continue to the {brand} dashboard.</p>
     <div class="provider-list">
 {provider_buttons}
     </div>
@@ -469,6 +470,11 @@ def render_login_html(*, next_path: str = "") -> str:
     if not providers:
         return _EMPTY_HTML
 
+    brand = html.escape(
+        (os.environ.get("HERMES_DASHBOARD_BRAND") or "Nous Research").strip()
+        or "Nous Research"
+    )
+
     if next_path:
         # URL-encode then HTML-escape. The URL-encode step matches the
         # gate's ``_safe_next_target`` output shape (also URL-encoded),
@@ -493,6 +499,7 @@ def render_login_html(*, next_path: str = "") -> str:
             )
     script = _PASSWORD_FORM_SCRIPT if needs_password_script else ""
     return _LOGIN_HTML_TEMPLATE.format(
+        brand=brand,
         provider_buttons="\n".join(buttons),
         password_script=script,
     )

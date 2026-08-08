@@ -106,7 +106,7 @@ try:
         WebSocket, WebSocketDisconnect,
     )
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, SecretStr, field_validator
     from starlette.concurrency import run_in_threadpool
@@ -122,7 +122,7 @@ except ImportError:
             WebSocket, WebSocketDisconnect,
         )
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel, SecretStr, field_validator
         from starlette.concurrency import run_in_threadpool
@@ -2914,6 +2914,10 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     except Exception:
         _log.debug("profile/gateway topology enumeration failed", exc_info=True)
         return {"profiles": [], "gateway_mode": "unknown", "gateways": []}
+
+    isolated = _isolated_dashboard_profile()
+    if isolated:
+        homes = [(name, home) for name, home in homes if name == isolated]
 
     profile_names = [name for name, _home in homes]
     gateways: List[Dict[str, Any]] = []
@@ -11763,11 +11767,14 @@ def _validate_dashboard_cron_context_from(
 def _cron_profile_dicts() -> List[Dict[str, Any]]:
     """Return dashboard profile records, falling back to a directory scan."""
     from hermes_cli import profiles as profiles_mod
+    isolated = _isolated_dashboard_profile()
     try:
-        return [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
+        profiles = [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
+        return [p for p in profiles if p.get("name") == isolated] if isolated else profiles
     except Exception:
         _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
-        return _fallback_profile_dicts(profiles_mod)
+        profiles = _fallback_profile_dicts(profiles_mod)
+        return [p for p in profiles if p.get("name") == isolated] if isolated else profiles
 
 
 def _cron_default_profile() -> str:
@@ -11800,6 +11807,9 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
         profiles_mod.validate_profile_name(canon)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    isolated = _isolated_dashboard_profile()
+    if isolated and canon != isolated:
+        raise HTTPException(status_code=404, detail="Profile is not available in this dashboard.")
     if not profiles_mod.profile_exists(canon):
         raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
     return canon, profiles_mod.get_profile_dir(canon)
@@ -13496,6 +13506,20 @@ def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _isolated_dashboard_profile() -> Optional[str]:
+    """Return the sole profile served by an explicitly isolated dashboard.
+
+    The default dashboard is intentionally machine-wide.  ``hermes dashboard
+    --isolated`` is different: its process may still be able to resolve the
+    machine profile tree, but the HTTP surface must not enumerate or mutate
+    profiles outside the profile it was launched from.
+    """
+    value = str(getattr(app.state, "isolated_profile", "") or "").strip()
+    if value in ("", "default", "custom"):
+        return None
+    return value
+
+
 def _profile_attr(info, name: str, default: Any = None) -> Any:
     try:
         return getattr(info, name)
@@ -13580,12 +13604,16 @@ def _resolve_profile_dir(name: str) -> Path:
     """Validate ``name`` and resolve to its directory or raise an HTTPException."""
     from hermes_cli import profiles as profiles_mod
     try:
-        profiles_mod.validate_profile_name(name)
+        canon = profiles_mod.normalize_profile_name(name)
+        profiles_mod.validate_profile_name(canon)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if not profiles_mod.profile_exists(name):
-        raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
-    return profiles_mod.get_profile_dir(name)
+    isolated = _isolated_dashboard_profile()
+    if isolated and canon != isolated:
+        raise HTTPException(status_code=404, detail="Profile is not available in this dashboard.")
+    if not profiles_mod.profile_exists(canon):
+        raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
+    return profiles_mod.get_profile_dir(canon)
 
 
 def _profile_setup_command(name: str) -> str:
@@ -16389,6 +16417,21 @@ def mount_spa(application: FastAPI):
                 {"detail": f"No such API endpoint: /{full_path}"},
                 status_code=404,
             )
+
+        # A profile-isolated dashboard has one canonical profile.  Keep old
+        # bookmarks such as /sessions?profile=default useful by redirecting
+        # the browser route to that profile; API requests remain strict and
+        # reject cross-profile access in _resolve_profile_dir().
+        isolated = _isolated_dashboard_profile()
+        requested_profile = request.query_params.get("profile")
+        if isolated and requested_profile and requested_profile != isolated:
+            query_items = [
+                (key, isolated if key == "profile" else value)
+                for key, value in request.query_params.multi_items()
+            ]
+            target = str(request.url.replace(query=urllib.parse.urlencode(query_items)))
+            return RedirectResponse(url=target, status_code=307)
+
         file_path = WEB_DIST / full_path
         # Prevent path traversal via url-encoded sequences (%2e%2e/)
         if (
@@ -17645,6 +17688,7 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     initial_profile: str = "",
+    isolated_profile: str = "",
     headless: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
@@ -17663,6 +17707,7 @@ def start_server(
     ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state. Neither is persisted or exported to child processes.
     """
+    app.state.isolated_profile = (isolated_profile or "").strip()
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 

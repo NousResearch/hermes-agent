@@ -3181,6 +3181,7 @@ class TestThemeBootstrapCSS:
             encoding="utf-8",
         )
         monkeypatch.setattr(ws, "WEB_DIST", dist)
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
         spa_app = FastAPI()
         ws.mount_spa(spa_app)
         return TestClient(spa_app)

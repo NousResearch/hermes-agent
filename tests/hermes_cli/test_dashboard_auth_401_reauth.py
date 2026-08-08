@@ -601,6 +601,16 @@ class TestRenderLoginHtmlNext:
         assert 'href="/auth/login?provider=stub"' in html_out
         assert "next=" not in html_out
 
+    def test_profile_dashboard_brand_can_override_default(self, monkeypatch):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+
+        monkeypatch.setenv("HERMES_DASHBOARD_BRAND", "Inventra")
+        html_out = render_login_html()
+
+        assert 'class="brand">Inventra' in html_out
+        assert "Inventra dashboard" in html_out
+        assert "Nous<span class=\"dot\"></span>Research" not in html_out
+
 
     def test_next_with_html_metacharacters_is_escaped(self):
         """Defence in depth: even though the caller validates next_path,

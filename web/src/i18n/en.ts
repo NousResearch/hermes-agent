@@ -94,7 +94,7 @@ export const en: Translations = {
     system: "System",
     webUi: "Web UI",
     managingProfile: "Managing profile",
-    currentProfileOption: "this dashboard ({name})",
+    currentProfileOption: "Current profile ({name})",
     managingProfileBanner:
       "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
   },

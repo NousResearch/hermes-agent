@@ -70,6 +70,7 @@ _open_session_db_at_path = late("_open_session_db_at_path")
 _profile_setup_command = late("_profile_setup_command")
 _profile_to_dict = late("_profile_to_dict")
 _resolve_profile_dir = late("_resolve_profile_dir")
+_isolated_dashboard_profile = late("_isolated_dashboard_profile")
 _spawn_hermes_action = late("_spawn_hermes_action")
 _strip_session_list_rows = late("_strip_session_list_rows")
 _write_profile_mcp_servers = late("_write_profile_mcp_servers")
@@ -113,6 +114,12 @@ def get_profiles_sessions(
         raise HTTPException(status_code=400, detail="order must be one of: created, recent")
 
     from hermes_cli import profiles as profiles_mod
+
+    isolated = _isolated_dashboard_profile()
+    if isolated:
+        if profile not in ("", "all", isolated):
+            _resolve_profile_dir(profile)
+        profile = isolated
 
     targets: List[Tuple[str, Path]] = []
     if profile and profile != "all":
@@ -254,14 +261,23 @@ def get_profiles_sessions_sidebar(
     """
     from hermes_cli import profiles as profiles_mod
 
+    isolated = _isolated_dashboard_profile()
+    if isolated:
+        if recents_profile not in ("", "all", isolated):
+            _resolve_profile_dir(recents_profile)
+        recents_profile = isolated
+
     # cron + messaging are cross-profile; recents is scoped to recents_profile.
     # Scan every profile once regardless (each DB opened a single time).
-    try:
-        infos = profiles_mod.list_profiles()
-        targets: List[Tuple[str, Path]] = [(info.name, info.path) for info in infos]
-    except Exception:
-        _log.exception("GET /api/profiles/sessions/sidebar: list_profiles failed")
-        targets = []
+    if isolated:
+        targets: List[Tuple[str, Path]] = [(isolated, profiles_mod.get_profile_dir(isolated))]
+    else:
+        try:
+            infos = profiles_mod.list_profiles()
+            targets = [(info.name, info.path) for info in infos]
+        except Exception:
+            _log.exception("GET /api/profiles/sessions/sidebar: list_profiles failed")
+            targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))
 
@@ -373,18 +389,27 @@ def get_profiles_sessions_sidebar(
 @router.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
+    isolated = _isolated_dashboard_profile()
     try:
         loop = asyncio.get_running_loop()
         profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
-        return {"profiles": [_profile_to_dict(p) for p in profiles]}
+        result = [_profile_to_dict(p) for p in profiles]
+        if isolated:
+            result = [item for item in result if item.get("name") == isolated]
+        return {"profiles": result}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+        result = _fallback_profile_dicts(profiles_mod)
+        if isolated:
+            result = [item for item in result if item.get("name") == isolated]
+        return {"profiles": result}
 
 
 @router.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
+    if _isolated_dashboard_profile():
+        raise HTTPException(status_code=403, detail="Profile creation is disabled in this dashboard.")
     explicit_source = (body.clone_from or "").strip()
     if explicit_source:
         # Duplicating a specific profile: clone its config/skills/SOUL (or full
@@ -505,6 +530,9 @@ async def get_active_profile_endpoint():
     the running dashboard/gateway is scoped to (derived from HERMES_HOME).
     """
     from hermes_cli import profiles as profiles_mod
+    isolated = _isolated_dashboard_profile()
+    if isolated:
+        return {"active": isolated, "current": isolated}
     try:
         active = profiles_mod.get_active_profile() or "default"
     except Exception:
@@ -524,6 +552,11 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     it changes which profile subsequent CLI commands and gateways use.
     """
     from hermes_cli import profiles as profiles_mod
+    isolated = _isolated_dashboard_profile()
+    if isolated:
+        if (body.name or "").strip() != isolated:
+            raise HTTPException(status_code=403, detail="Profile switching is disabled in this dashboard.")
+        return {"ok": True, "active": isolated}
     try:
         profiles_mod.set_active_profile(body.name)
     except FileNotFoundError as e:

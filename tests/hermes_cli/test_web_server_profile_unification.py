@@ -50,6 +50,36 @@ def _cfg(home):
     return yaml.safe_load((home / "config.yaml").read_text()) or {}
 
 
+class TestIsolatedDashboard:
+    def test_isolated_dashboard_lists_only_its_profile(self, client, monkeypatch):
+        """A profile-isolated dashboard must not expose the machine profile list."""
+        from hermes_cli.web_server import app
+
+        monkeypatch.setattr(app.state, "isolated_profile", "worker_beta", raising=False)
+
+        response = client.get("/api/profiles")
+
+        assert response.status_code == 200
+        assert [item["name"] for item in response.json()["profiles"]] == ["worker_beta"]
+
+    def test_isolated_dashboard_rejects_cross_profile_reads_and_active_switches(
+        self, client, monkeypatch
+    ):
+        """URL/profile tampering cannot reach default from the named dashboard."""
+        from hermes_cli.web_server import app
+
+        monkeypatch.setattr(app.state, "isolated_profile", "worker_beta", raising=False)
+
+        sessions = client.get("/api/sessions?profile=default")
+        active = client.get("/api/profiles/active")
+        switch = client.post("/api/profiles/active", json={"name": "default"})
+
+        assert sessions.status_code == 404
+        assert active.status_code == 200
+        assert active.json() == {"active": "worker_beta", "current": "worker_beta"}
+        assert switch.status_code == 403
+
+
 class TestProfileScopedConfig:
 
 

@@ -383,6 +383,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Provider the --model belongs to (passed as "
                                "--provider <name> to the worker). Requires "
                                "--model.")
+    p_create.add_argument("--reasoning", default=None, dest="reasoning_effort",
+                          help="Pin worker thinking depth for this task: "
+                               "none|minimal|low|medium|high|xhigh|max|ultra. "
+                               "Overrides the worker profile's "
+                               "agent.reasoning_effort (passed as "
+                               "--reasoning <level>).")
     p_create.add_argument("--goal", action="store_true", dest="goal_mode",
                           help="Run the worker in a goal loop: after each "
                                "turn a judge checks the response against the "
@@ -1669,6 +1675,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_retries=max_retries,
             model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
+            reasoning_effort=getattr(args, "reasoning_effort", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),

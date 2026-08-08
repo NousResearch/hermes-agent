@@ -194,3 +194,20 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def test_create_reasoning_flag_reaches_task_record(kanban_home, capsys):
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+
+    args = parser.parse_args(
+        ["kanban", "create", "reasoning task", "--reasoning", "high", "--json"]
+    )
+    assert args.reasoning_effort == "high"
+
+    assert kc.kanban_command(args) == 0
+    task = json.loads(capsys.readouterr().out)
+    with kb.connect_closing() as conn:
+        stored = kb.get_task(conn, task["id"])
+    assert stored is not None
+    assert stored.reasoning_effort == "high"
+

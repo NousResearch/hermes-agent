@@ -78,6 +78,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/memory',
             'user-guide/features/memory-providers',
             'user-guide/features/honcho',
+            'user-guide/features/temporary-chats',
             'user-guide/features/context-files',
             'user-guide/features/context-references',
             'user-guide/features/mixture-of-agents',

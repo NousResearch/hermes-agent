@@ -11,7 +11,7 @@ either is missing the hooks are inert.
 Required env vars (set via ``hermes tools`` or ~/.hermes/.env):
   HERMES_LANGFUSE_PUBLIC_KEY  - Langfuse project public key (pk-lf-...)
   HERMES_LANGFUSE_SECRET_KEY  - Langfuse project secret key (sk-lf-...)
-  HERMES_LANGFUSE_BASE_URL    - Langfuse server URL (default: https://cloud.langfuse.com)
+  HERMES_LANGFUSE_BASE_URL    - Langfuse server URL (default: http://localhost:3000)
 
 Optional env vars:
   HERMES_LANGFUSE_ENV         - environment tag (e.g. "production", "local")
@@ -64,6 +64,11 @@ _TRACE_STATE: Dict[str, TraceState] = {}
 # to bound the leak from non-finalizing turns, not to limit concurrency.
 _MAX_TRACE_STATE = 256
 _LANGFUSE_CLIENT = None
+# A turn that errors between pre_llm_request and the final post_llm_call
+# never reaches _finish_trace, so its TraceState (and unended spans) would
+# otherwise live in _TRACE_STATE for the life of the process. Entries idle
+# longer than this are flushed by _reap_stale_traces on the next turn.
+_TRACE_STATE_TTL_SECONDS = 1800.0
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
@@ -198,7 +203,10 @@ def _get_langfuse() -> Optional[Langfuse]:
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 
-    base_url = _env("HERMES_LANGFUSE_BASE_URL") or _env("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
+    # Default to the local self-hosted instance, not cloud.langfuse.com:
+    # this deployment is privacy-first, and a missing base URL must never
+    # cause trace payloads to leave the machine.
+    base_url = _env("HERMES_LANGFUSE_BASE_URL") or _env("LANGFUSE_BASE_URL") or "http://localhost:3000"
     environment = _env("HERMES_LANGFUSE_ENV") or _env("LANGFUSE_ENV")
     release = _env("HERMES_LANGFUSE_RELEASE") or _env("LANGFUSE_RELEASE")
     sample_rate = _env("HERMES_LANGFUSE_SAMPLE_RATE")
@@ -766,6 +774,19 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
             pass
 
 
+def _reap_stale_traces() -> None:
+    now = time.time()
+    with _STATE_LOCK:
+        stale = [
+            task_key
+            for task_key, state in _TRACE_STATE.items()
+            if now - state.last_updated_at > _TRACE_STATE_TTL_SECONDS
+        ]
+    for task_key in stale:
+        _debug(f"reaping stale trace state for {task_key}")
+        _finish_trace(task_key)
+
+
 def _assistant_has_tool_calls(message: Any) -> bool:
     return bool(getattr(message, "tool_calls", None))
 
@@ -790,6 +811,8 @@ def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = 
     client = _get_langfuse()
     if client is None:
         return
+
+    _reap_stale_traces()
 
     # messages is a list only for legacy Hermes branches that fired
     # pre_llm_call with API messages directly. Current Hermes fires
@@ -850,6 +873,8 @@ def on_pre_llm_request(
     client = _get_langfuse()
     if client is None:
         return
+
+    _reap_stale_traces()
 
     input_messages = _coerce_request_messages(
         request_messages=request_messages,

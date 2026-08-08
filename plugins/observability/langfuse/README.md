@@ -23,7 +23,7 @@ Set these in `~/.hermes/.env` (or via `hermes tools`):
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...
 HERMES_LANGFUSE_SECRET_KEY=sk-lf-...
-HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com   # or your self-hosted URL
+HERMES_LANGFUSE_BASE_URL=http://localhost:3000   # default; set https://cloud.langfuse.com for Langfuse Cloud
 ```
 
 Without the SDK or credentials the hooks no-op silently — the plugin fails

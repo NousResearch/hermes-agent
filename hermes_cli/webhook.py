@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -44,8 +45,20 @@ def _load_subscriptions() -> Dict[str, dict]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    except json.JSONDecodeError as exc:
+        print(
+            f"Error: Cannot parse {path}: {exc}\n"
+            f"  The file contains a JSON syntax error. Fix the error\n"
+            f"  manually or restore from a backup, then retry.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except OSError as exc:
+        print(
+            f"Error: Cannot read {path}: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def _save_subscriptions(subs: Dict[str, dict]) -> None:

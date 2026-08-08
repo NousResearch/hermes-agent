@@ -40,6 +40,47 @@ describe("createPtyCompositionForwarder", () => {
     expect(send).toHaveBeenCalledExactlyOnceWith("ä");
   });
 
+  it("forwards a pending composition when unrelated data precedes matching chunks", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("ab");
+    forwarder.noteTerminalData("x");
+    forwarder.noteTerminalData("a");
+    forwarder.noteTerminalData("b");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenCalledExactlyOnceWith("ab");
+  });
+
+  it("cancels a pending composition when matching text arrives in clean chunks", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("ab");
+    forwarder.noteTerminalData("a");
+    forwarder.noteTerminalData("b");
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("ignores ESC/SGR data while matching composition chunks", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("ab");
+    forwarder.noteTerminalData("a");
+    forwarder.noteTerminalData("\x1b[<0;10;10M");
+    forwarder.noteTerminalData("b");
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("forwards a second composition after the first fallback completes", () => {
     vi.useFakeTimers();
     const send = vi.fn();

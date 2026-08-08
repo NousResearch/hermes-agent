@@ -7,9 +7,13 @@
 export function createPtyCompositionForwarder(send: (data: string) => void) {
   let pending: string | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let matchedTerminalPrefix = "";
+  let sawUnrelatedTerminalData = false;
 
   const clearPending = () => {
     pending = null;
+    matchedTerminalPrefix = "";
+    sawUnrelatedTerminalData = false;
     if (timer) {
       clearTimeout(timer);
       timer = null;
@@ -31,8 +35,19 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
       }, 16);
     },
     noteTerminalData(data: string) {
-      // xterm delivers the committed text before any following terminal input.
-      if (pending && !data.startsWith("\x1b") && data.startsWith(pending)) clearPending();
+      if (!pending || data.startsWith("\x1b") || sawUnrelatedTerminalData) return;
+
+      // xterm may split committed text across callbacks, but only a clean,
+      // leading match is authoritative. Once unrelated data arrives, retain
+      // the fallback even if later callbacks happen to spell the composition.
+      const observed = matchedTerminalPrefix + data;
+      if (observed.startsWith(pending)) {
+        clearPending();
+      } else if (pending.startsWith(observed)) {
+        matchedTerminalPrefix = observed;
+      } else {
+        sawUnrelatedTerminalData = true;
+      }
     },
     dispose: clearPending,
   };

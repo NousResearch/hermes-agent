@@ -325,6 +325,14 @@ def get_process_start_time(pid: int) -> Optional[int]:
     return _get_process_start_time(pid)
 
 
+def _format_process_argv(parts: list[str]) -> str:
+    """Rebuild an argv list without losing argument boundaries."""
+    normalized = [str(part) for part in parts]
+    if _IS_WINDOWS:
+        return subprocess.list2cmdline(normalized)
+    return shlex.join(normalized)
+
+
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string.
 
@@ -332,6 +340,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     platforms without /proc, falls back to ``ps -p <pid> -o command=``.
     On Windows (no /proc, no ps), uses psutil.
     """
+
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = cmdline_path.read_bytes()
@@ -339,7 +348,13 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         pass
     else:
         if raw:
-            return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+            parts = [
+                part.decode("utf-8", errors="ignore")
+                for part in raw.split(b"\x00")
+                if part
+            ]
+            if parts:
+                return _format_process_argv(parts)
 
     if not _IS_WINDOWS:
         try:
@@ -360,7 +375,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         proc = psutil.Process(pid)
         cmdline_parts = proc.cmdline()
         if cmdline_parts:
-            return " ".join(cmdline_parts)
+            return _format_process_argv(list(cmdline_parts))
     except Exception:
         pass
 
@@ -399,21 +414,82 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if not tokens:
         return None
 
-    # Gateway-dedicated entrypoints carry no subcommand to inspect.
-    for token in tokens:
-        if token == "gateway/run.py" or token.endswith("/gateway/run.py"):
+    # ``ps -o command=`` may include leading shell-style environment
+    # assignments even though they are not part of the executable argv.
+    # Skip only syntactically valid NAME=value prefixes; assignments that
+    # occur later remain ordinary arguments and cannot confer gateway identity.
+    while tokens:
+        name, separator, _value = tokens[0].partition("=")
+        valid_name = bool(name) and (name[0].isalpha() or name[0] == "_") and all(
+            char.isalnum() or char == "_" for char in name
+        )
+        if not separator or not valid_name:
+            break
+        tokens.pop(0)
+    if not tokens:
+        return None
+
+    def _basename(token: str) -> str:
+        return token.rsplit("/", 1)[-1]
+
+    def _is_python_launcher(token: str) -> bool:
+        stem = _basename(token)
+        if stem.endswith(".exe"):
+            stem = stem[:-4]
+        for prefix in ("python", "pythonw"):
+            if not stem.startswith(prefix):
+                continue
+            version = stem[len(prefix) :]
+            if not version or all(
+                part.isdigit() and part for part in version.split(".")
+            ):
+                return True
+        return False
+
+    first = tokens[0]
+    first_basename = _basename(first)
+    is_python = _is_python_launcher(first)
+
+    # Gateway-dedicated entrypoints carry no subcommand to inspect. Treat an
+    # entrypoint as process identity only when it occupies argv[0], or argv[1]
+    # directly after a Python interpreter. Argument text that merely mentions
+    # one of these paths must not exempt an unrelated venv holder.
+    if first == "gateway/run.py" or first.endswith("/gateway/run.py"):
+        return "run"
+    if first_basename in ("hermes-gateway", "hermes-gateway.exe"):
+        return "run"
+    if is_python and len(tokens) > 1:
+        script = tokens[1]
+        script_basename = _basename(script)
+        if script == "gateway/run.py" or script.endswith("/gateway/run.py"):
             return "run"
-        basename = token.rsplit("/", 1)[-1]
-        if basename in ("hermes-gateway", "hermes-gateway.exe"):
+        if script_basename in ("hermes-gateway", "hermes-gateway.exe"):
             return "run"
 
-    joined = " ".join(tokens)
-    has_gateway_entry = (
-        "hermes_cli.main" in joined
-        or "hermes_cli/main.py" in joined
-        or any(t.rsplit("/", 1)[-1] in ("hermes", "hermes.exe") for t in tokens)
-    )
-    if not has_gateway_entry:
+    # Accept only actual Hermes entrypoint positions: the native launcher at
+    # argv[0], ``python -m hermes_cli.main``, or a direct main.py script. Keep
+    # only arguments after that entrypoint so a later ordinary argument named
+    # ``gateway`` cannot shadow the real subcommand.
+    gateway_args: list[str] | None = None
+    if first_basename in ("hermes", "hermes.exe"):
+        gateway_args = tokens[1:]
+    elif is_python and len(tokens) > 2 and tokens[1] == "-m":
+        module = tokens[2]
+        if module == "hermes_cli.main" or (
+            module == "hermes_cli/main.py" or module.endswith("/hermes_cli/main.py")
+        ):
+            gateway_args = tokens[3:]
+    elif is_python and len(tokens) > 1:
+        script = tokens[1]
+        script_basename = _basename(script)
+        if script == "hermes_cli/main.py" or script.endswith("/hermes_cli/main.py"):
+            gateway_args = tokens[2:]
+        elif script_basename in ("hermes", "hermes.exe"):
+            # POSIX console scripts are shebang files, so /proc may expose the
+            # interpreter as argv[0] and the installed ``hermes`` script as
+            # argv[1]. Do not search later arguments for the launcher name.
+            gateway_args = tokens[2:]
+    if gateway_args is None:
         return None
 
     # Drop profile selectors anywhere: --profile X / -p X / --profile=X / -p=X.
@@ -421,7 +497,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # token is the one we land on below.
     filtered: list[str] = []
     skip_next = False
-    for token in tokens:
+    for token in gateway_args:
         if skip_next:
             skip_next = False
             continue
@@ -432,13 +508,11 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
             continue
         filtered.append(token)
 
-    for i, token in enumerate(filtered):
-        if token != "gateway":
-            continue
-        if i + 1 >= len(filtered):
-            return "run"  # bare `hermes gateway` defaults to `run`
-        return filtered[i + 1]
-    return None
+    if not filtered or filtered[0] != "gateway":
+        return None
+    if len(filtered) == 1:
+        return "run"  # bare `hermes gateway` defaults to `run`
+    return filtered[1]
 
 
 def looks_like_gateway_command_line(command: str | None) -> bool:
@@ -477,7 +551,8 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     if not isinstance(argv, list) or not argv:
         return False
 
-    cmdline = " ".join(str(part) for part in argv)
+    parts = [str(part) for part in argv]
+    cmdline = _format_process_argv(parts)
     return looks_like_gateway_runtime_command_line(cmdline)
 
 

@@ -157,11 +157,61 @@ def _run_main_with_detector(monkeypatch, capsys, matches):
         monkeypatch.setitem(sys.modules, name, mod)
     import hermes_cli.main as cli_main
 
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: matches)
+    monkeypatch.setattr(
+        cli_main,
+        "_detect_venv_python_processes",
+        lambda **_kwargs: matches,
+    )
     with pytest.raises(SystemExit) as excinfo:
         main()
     out = capsys.readouterr().out
     return excinfo.value.code, json.loads(out)
+
+
+def test_main_uses_full_command_line_for_gateway_identity(monkeypatch, capsys):
+    """Long profile commands must be classified before display truncation."""
+    for name, mod in _psutil_fake().items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    import hermes_cli.main as cli_main
+
+    full_command = (
+        r"C:\Users\Administrator\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
+        " -m hermes_cli.main --profile quality-manager gateway run"
+    )
+    assert len(full_command) > 120
+    calls: list[bool] = []
+
+    def fake_detector(*, truncate_cmdline: bool = True):
+        calls.append(truncate_cmdline)
+        command = full_command[:120] if truncate_cmdline else full_command
+        return [(12, "python.exe", command)]
+
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", fake_detector)
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    data = json.loads(capsys.readouterr().out)
+    assert excinfo.value.code == 0
+    assert calls == [False]
+    assert data["blocked"] is False
+    assert data["processes"] == []
+    assert data["pausable_gateways"] == 1
+
+
+def test_main_truncates_reported_command_after_identity_check(monkeypatch, capsys):
+    """Full commands are for matching only; diagnostics stay display-sized."""
+    long_serve = "python.exe -m hermes_cli.main serve " + "x" * 180
+
+    code, data = _run_main_with_detector(
+        monkeypatch,
+        capsys,
+        [(78, "python.exe", long_serve)],
+    )
+
+    assert code == 0
+    assert data["blocked"] is True
+    assert data["processes"][0]["cmdline"] == long_serve[:120]
 
 
 def test_main_exempts_gateway_chain_but_keeps_other_holders(monkeypatch, capsys):

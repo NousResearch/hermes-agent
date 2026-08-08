@@ -86,6 +86,40 @@ def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
         assert cli_main._detect_venv_python_processes() == []
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_preserves_argv_boundaries_for_space_path(
+    _winp, tmp_path
+):
+    project_root = tmp_path / "Program Files" / "Hermes"
+    venv_py = str(project_root / "venv" / "Scripts" / "python.exe")
+    parts = [
+        venv_py,
+        "-m",
+        "hermes_cli.main",
+        "--profile",
+        "quality-manager",
+        "gateway",
+        "run",
+    ]
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: iter([_proc(987654, venv_py, "python.exe", parts)]),
+        Process=lambda *a, **k: me,
+    )
+    with patch.object(cli_main, "PROJECT_ROOT", project_root), patch.dict(
+        sys.modules, {"psutil": fake_psutil}
+    ):
+        matches = cli_main._detect_venv_python_processes(truncate_cmdline=False)
+
+    assert len(matches) == 1
+    command = matches[0][2]
+    assert command.startswith(f'"{venv_py}"')
+    from gateway.status import looks_like_gateway_command_line
+
+    assert looks_like_gateway_command_line(command) is True
+
+
 
 
 # ---------------------------------------------------------------------------

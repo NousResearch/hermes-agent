@@ -1,10 +1,27 @@
 """Tests for explicit ownership by a wrapped external gateway supervisor."""
 
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 import hermes_cli.gateway as gateway
+
+
+def test_capture_gateway_argv_preserves_windows_space_path(monkeypatch):
+    argv = [
+        r"C:\Program Files\Hermes\venv\Scripts\pythonw.exe",
+        "-m",
+        "hermes_cli.main",
+        "gateway",
+        "run",
+    ]
+    fake_psutil = SimpleNamespace(
+        Process=lambda _pid: SimpleNamespace(cmdline=lambda: argv)
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    assert gateway._capture_gateway_argv(1234) == argv
 
 
 def _clear_native_supervisor_markers(monkeypatch):

@@ -799,6 +799,33 @@ class TestReadProcessCmdlinePsFallback:
         assert "hermes_cli/main.py" in result
         assert calls == ["proc"]
 
+    def test_windows_psutil_preserves_argv_boundaries_for_space_path(
+        self, monkeypatch
+    ):
+        parts = [
+            r"C:\Program Files\Hermes\venv\Scripts\python.exe",
+            "-m",
+            "hermes_cli.main",
+            "gateway",
+            "run",
+        ]
+        fake_psutil = SimpleNamespace(
+            Process=lambda _pid: SimpleNamespace(cmdline=lambda: parts)
+        )
+        monkeypatch.setattr(
+            status.Path,
+            "read_bytes",
+            lambda self: (_ for _ in ()).throw(FileNotFoundError),
+        )
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        result = status._read_process_cmdline(873)
+
+        assert result is not None
+        assert result.startswith('"C:\\Program Files\\Hermes')
+        assert status.looks_like_gateway_command_line(result) is True
+
 
 class TestCorruptStatusFiles:
     """A status / pid file holding non-UTF-8 (binary) bytes must read as

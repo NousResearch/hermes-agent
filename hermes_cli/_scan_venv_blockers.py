@@ -136,7 +136,10 @@ def main() -> None:
     try:
         from hermes_cli.main import _detect_venv_python_processes  # noqa: PLC0415
 
-        matches = _detect_venv_python_processes()
+        # Gateway identity may occur after a long install path and profile
+        # selector. Match against the full command, then redact/truncate only
+        # the human-facing JSON below.
+        matches = _detect_venv_python_processes(truncate_cmdline=False)
     except Exception as exc:
         _emit_probe_fail(f"scan aborted: {exc}")
 
@@ -144,7 +147,7 @@ def main() -> None:
         {
             "pid": pid,
             "name": name,
-            "cmdline": _redact_sensitive_cmdline(cmdline),
+            "cmdline": _redact_sensitive_cmdline(cmdline)[:120],
         }
         for pid, name, cmdline in matches
         if not _is_pausable_gateway(cmdline)

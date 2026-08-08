@@ -711,9 +711,9 @@ def _capture_gateway_argv(pid: int) -> list[str] | None:
     # reported by the scan: only respawn things that actually look like a
     # gateway run command line.
     try:
-        from gateway.status import looks_like_gateway_command_line
+        from gateway.status import _format_process_argv, looks_like_gateway_command_line
 
-        if not looks_like_gateway_command_line(" ".join(argv)):
+        if not looks_like_gateway_command_line(_format_process_argv(argv)):
             return None
     except Exception:
         pass

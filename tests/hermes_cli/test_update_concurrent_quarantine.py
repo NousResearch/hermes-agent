@@ -435,7 +435,7 @@ def test_pause_kill_set_covers_venv_guard_abort_set(
 
 
 GATEWAY_ARGV = [
-    r"C:\x\venv\Scripts\python.exe",
+    r"C:\Program Files\Hermes\venv\Scripts\python.exe",
     "-m",
     "hermes_cli.main",
     "gateway",

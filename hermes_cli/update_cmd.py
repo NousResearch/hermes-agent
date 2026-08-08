@@ -2840,7 +2840,9 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     return True, ""
 
 def _detect_venv_python_processes(
-    *, exclude_pids: set[int] | None = None
+    *,
+    exclude_pids: set[int] | None = None,
+    truncate_cmdline: bool = True,
 ) -> list[tuple[int, str, str]]:
     """Find live processes running from the project venv's interpreter.
 
@@ -2854,7 +2856,10 @@ def _detect_venv_python_processes(
     Killing them from here is pointless — the Desktop app supervises its
     backend and respawns it within seconds — so the caller should refuse and
     tell the user to close the app instead. Returns ``(pid, name, cmdline)``
-    tuples; empty off-Windows / without psutil / when nothing matches. The
+    tuples. Command lines are shortened for human-facing diagnostics by
+    default; process-identity callers must request the full text with
+    ``truncate_cmdline=False``. Empty off-Windows / without psutil / when
+    nothing matches. The
     calling process and its ancestors are always excluded (a CLI ``hermes
     update`` itself runs from the venv python). Never raises.
     """
@@ -2901,7 +2906,9 @@ def _detect_venv_python_processes(
             exe_norm = str(Path(exe).resolve()).lower()
         except (OSError, ValueError):
             exe_norm = str(exe).lower()
-        cmdline_raw = " ".join(info.get("cmdline") or [])
+        cmdline_raw = subprocess.list2cmdline(
+            [str(part) for part in (info.get("cmdline") or [])]
+        )
         cmdline_low = cmdline_raw.lower()
         cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
 
@@ -2921,7 +2928,8 @@ def _detect_venv_python_processes(
         if not is_holder:
             continue
         name = info.get("name") or Path(exe).name
-        matches.append((int(pid), str(name), cmdline_raw[:120]))
+        command = cmdline_raw[:120] if truncate_cmdline else cmdline_raw
+        matches.append((int(pid), str(name), command))
     return matches
 
 def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
@@ -3044,6 +3052,7 @@ def _leftover_pausable_gateway_pids(
     REPL, a stray script, or the Desktop backend has no pause machinery
     downstream, and the guard must keep refusing exactly as before.
     """
+    from gateway.status import _format_process_argv
     from hermes_cli._scan_venv_blockers import _is_pausable_gateway
 
     try:
@@ -3056,7 +3065,8 @@ def _leftover_pausable_gateway_pids(
         argv = cmdline
         if psutil is not None:
             try:
-                argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+                live_argv = list(psutil.Process(int(pid)).cmdline() or [])
+                argv = _format_process_argv(live_argv) or cmdline
             except Exception:
                 pass
         if not _is_pausable_gateway(argv):

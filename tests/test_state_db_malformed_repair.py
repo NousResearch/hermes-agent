@@ -395,3 +395,123 @@ def test_repair_stale_btree_index_preserves_rows(tmp_path):
         db.close()
 
 
+def test_select_cached_agent_history_prefers_longer_live_transcript():
+    """Gateway guard keeps the live transcript when persisted history lags."""
+    from gateway.run import _select_cached_agent_history
+
+    persisted = [{"role": "user", "content": "only one"}]
+    live = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+    ]
+    # Persisted lags (FTS write failed) → keep the longer live copy.
+    out = _select_cached_agent_history(persisted, live)
+    assert out == live
+    assert out is not live  # returns a copy, not the live list
+
+    # Persisted is current/longer → leave it untouched (identity preserved).
+    longer_persisted = live + [{"role": "assistant", "content": "four"}]
+    out2 = _select_cached_agent_history(longer_persisted, live)
+    assert out2 is longer_persisted
+
+    # No live transcript / not a list → no-op.
+    assert _select_cached_agent_history(persisted, None) is persisted
+    assert _select_cached_agent_history(persisted, "nope") is persisted
+
+
+def test_select_cached_agent_history_ignores_alternation_merge_shrink():
+    """The restored view merges split assistant tool-call pairs
+    (repair_message_sequence), so it runs SHORTER than the raw live list
+    without any write having been lost. Equal user turns = no lag: the
+    persisted view must win, or the #50502 guard false-fires on every
+    tool-use turn of a long session."""
+    from gateway.run import _select_cached_agent_history
+
+    live = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "on it"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "t1"}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "done"},
+        {"role": "assistant", "content": "finished"},
+    ]
+    persisted = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "on it", "tool_calls": [{"id": "t1"}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "done"},
+        {"role": "assistant", "content": "finished"},
+    ]
+    assert _select_cached_agent_history(persisted, live) is persisted
+
+
+def test_select_cached_agent_history_still_fires_on_lost_user_turn():
+    """A genuinely lost persisted turn (user row missing on disk) must still
+    trip the guard and prefer the live copy — the actual #50502 scenario."""
+    from gateway.run import _select_cached_agent_history
+
+    live = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+    persisted = live[:2]
+    out = _select_cached_agent_history(persisted, live)
+    assert out == live
+    assert out is not live
+
+
+def test_select_cached_agent_history_ignores_user_merge_repair():
+    """Review finding on #72001 (teknium1): repair_message_sequence pass 2
+    merges consecutive USER messages too (text joined with a blank line), so
+    a persisted view can carry fewer user turns than the live list with zero
+    input lost. The guard must not read that as persistence loss."""
+    from gateway.run import _select_cached_agent_history
+
+    live = [
+        {"role": "user", "content": "first thought"},
+        {"role": "user", "content": "second thought"},
+        {"role": "assistant", "content": "reply"},
+    ]
+    # Restore-time repair merged the double-send; every user byte survives.
+    persisted = [
+        {"role": "user", "content": "first thought\n\nsecond thought"},
+        {"role": "assistant", "content": "reply"},
+    ]
+    assert _select_cached_agent_history(persisted, live) is persisted
+
+
+def test_select_cached_agent_history_fires_on_lost_user_content():
+    """Genuine loss: the persisted view is MISSING user input the live list
+    still holds — content, not turn counts, is the merge-proof yardstick."""
+    from gateway.run import _select_cached_agent_history
+
+    live = [
+        {"role": "user", "content": "kept"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "user", "content": "lost by the FTS write failure"},
+    ]
+    persisted = [
+        {"role": "user", "content": "kept"},
+        {"role": "assistant", "content": "reply"},
+    ]
+    out = _select_cached_agent_history(persisted, live)
+    assert out == live and out is not live
+
+
+def test_select_cached_agent_history_counts_multimodal_user_messages():
+    """List-content (multimodal) user messages are never merged by repair —
+    a live one absent from the persisted view is loss even at equal text."""
+    from gateway.run import _select_cached_agent_history
+
+    live = [
+        {"role": "user", "content": "caption"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "user", "content": [{"type": "image", "data": "..."}]},
+    ]
+    persisted = [
+        {"role": "user", "content": "caption"},
+        {"role": "assistant", "content": "reply"},
+    ]
+    out = _select_cached_agent_history(persisted, live)
+    assert out == live and out is not live

@@ -1129,7 +1129,14 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        # QQ 1:1 chats reach this authorizer under two spellings, and both are
+        # real: gateway-built session keys use "dm" (``"dm" if is_dm else
+        # "group"`` at adapter.py:1301, a contract cron/scheduler.py mirrors),
+        # while the update-prompt path builds its key from ``event.scene``,
+        # which is QQ's own API name "c2c". Accepting only one of them rejects
+        # every approval click from the chat owner. Deliberately no wider than
+        # these two — this adapter emits no other 1:1 chat_type.
+        if chat_type in {"c2c", "dm"}:
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:

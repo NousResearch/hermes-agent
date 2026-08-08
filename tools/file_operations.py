@@ -147,8 +147,17 @@ def _has_bom(text: Optional[str]) -> bool:
 
 
 def _is_write_denied(path: str) -> bool:
-    """Return True if path is on the write deny list."""
-    return _shared_is_write_denied(path)
+    """Return True if path is on the write deny list.
+
+    Resolves symlinks first so a symlink pointing at a denied path
+    (e.g. /tmp/link -> /etc/passwd) is caught — the write-denial
+    check on the symlink name alone would miss the real target.
+    """
+    try:
+        resolved = os.path.realpath(path)
+    except (OSError, ValueError):
+        resolved = path
+    return _shared_is_write_denied(resolved)
 
 
 # =============================================================================

@@ -266,3 +266,44 @@ class TestDirectSendScope:
         assert captured, "token request never issued"
         assert captured[0]["appId"] == "env-app"
         assert captured[0]["clientSecret"] == "env-secret"
+
+
+class TestQQOpenDmAllowAllScope:
+    """QQ enforces its own access policy, so ``_open_dm_opted_in`` is the intake
+    gate for open-DM mode. GATEWAY_ALLOW_ALL_USERS must be read through the
+    scoped resolver (like QQ_ALLOW_ALL_USERS), so a secondary multiplex profile
+    can't inherit the default profile's process-env opt-in. ``_open_dm_opted_in``
+    reads no instance state, so bind it to a bare object.
+    """
+
+    def test_scoped_miss_does_not_inherit_gateway_allow_all(self, monkeypatch):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")  # default profile
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope({})  # secondary profile: no opt-in
+        try:
+            assert QQAdapter._open_dm_opted_in(object()) is False
+        finally:
+            ss.reset_secret_scope(tok)
+
+    def test_scoped_opt_in_is_honored(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope({"GATEWAY_ALLOW_ALL_USERS": "true"})
+        try:
+            assert QQAdapter._open_dm_opted_in(object()) is True
+        finally:
+            ss.reset_secret_scope(tok)
+
+    def test_unscoped_default_profile_uses_environ(self, monkeypatch):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope(None)
+        try:
+            assert QQAdapter._open_dm_opted_in(object()) is True
+        finally:
+            ss.reset_secret_scope(tok)

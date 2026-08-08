@@ -20,9 +20,32 @@ import { useEffect, useRef } from 'react'
 import { reloadPersistedDrafts, requestComposerDraftSync } from '@/store/composer'
 import { reportHudSession, watchHudState } from '@/store/hud'
 import { $selectedStoredSessionId } from '@/store/session'
+import { focusOpenSession, sessionTileDelegate } from '@/store/session-states'
 import { isHudWindow } from '@/store/windows'
 
+import { getActiveComposer } from '../chat/composer/focus'
 import { openSession, type OpenSessionNavigate } from '../open-session'
+
+/** Session tiles route on `tile:<storedSessionId>` (see session-tile.tsx). */
+const TILE_TARGET_PREFIX = 'tile:'
+
+/**
+ * The conversation HUD mode should open on: whichever chat surface the user is
+ * actually looking at.
+ *
+ * `$selectedStoredSessionId` is the WORKSPACE pane's session, so reading it
+ * alone sent the main tab into the HUD no matter which tile was fronted — the
+ * tabs exist precisely so that isn't the same question. `getActiveComposer()`
+ * already answers it for the focus bus, healing to the visible surface when its
+ * cached claim is buried or gone, and a tile's routing key IS its stored
+ * session id.
+ */
+export function hudTargetSessionId(): null | string {
+  const target = getActiveComposer()
+  const tile = target.startsWith(TILE_TARGET_PREFIX) ? target.slice(TILE_TARGET_PREFIX.length) : null
+
+  return tile || $selectedStoredSessionId.get()
+}
 
 interface HudHandoffParams {
   navigate: OpenSessionNavigate
@@ -49,10 +72,22 @@ export function useHudHandoff({ navigate, resumeSession }: HudHandoffParams): vo
       const selected = $selectedStoredSessionId.get()
       const target = hudSessionId ?? selected
 
-      // The HUD switched sessions (or started one this window has never seen):
-      // route to it and let the route resume do the rest, including loading
-      // that session's draft as the composer's scope swaps.
+      // Somewhere other than the workspace pane. If it is an open tile, front
+      // it and re-resume THROUGH the tile delegate: the ordinary resume path
+      // enforces "a session is either main or a tile, never both" and would
+      // close the tile to take it into main, quietly rearranging tabs the user
+      // opened on purpose. Otherwise it's a session this window has never seen
+      // — route to it and let the route resume do the rest, including loading
+      // its draft as the composer's scope swaps.
       if (target && target !== selected) {
+        const delegate = focusOpenSession(target) === 'tile' ? sessionTileDelegate() : null
+
+        if (delegate) {
+          void delegate.resumeTile(target).catch(() => undefined)
+
+          return
+        }
+
         openSession(target, paramsRef.current.navigate)
 
         return

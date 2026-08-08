@@ -2294,8 +2294,7 @@ button[data-slot='aui_msg-reactions'] svg {
      half-dissolved. Instead: most of it is FULLY solid, then it collapses in
      one short stretch, and the top fifth is nothing at all. That empty cap is
      what removes the edge — any alpha still alive at the window boundary reads
-     as a line, and with the frost riding this same mask it would be a line of
-     blur, which is worse. */
+     as a line. */
   --hud-thread-mask-stops: #000 0%, #000 58%, rgb(0 0 0 / 0.42) 71%, transparent 82%;
   --hud-thread-mask: linear-gradient(to top, var(--hud-thread-mask-stops));
 }
@@ -2312,12 +2311,12 @@ button[data-slot='aui_msg-reactions'] svg {
 
      - viz2d: `bg-black/20` at rest → `bg-black/60` on hover / focus-within /
        pending. Same mechanism here, theme-aware: the tint is the theme's own
-       background color, so it smokes dark on dark themes and frosts light on
-       light ones, and text keeps its normal contrast against it.
-     - VISIBILITY keeps the WoW fade this HUD already had: shown while a turn
-       is recent/streaming (`data-hud-recent`), on band hover, or while the
-       composer is focused; melted away otherwise. viz2d's band never hides —
-       ours does, because idle HUD mode is just the Spotlight bar.
+       background colour, so it reads correctly on dark and light themes alike
+       and text keeps its normal contrast against it.
+     - VISIBILITY keeps the WoW fade: shown while a turn is recent/streaming
+       (`data-hud-recent`) or the composer is focused, melted away otherwise.
+       viz2d's band never hides — ours does, because idle HUD mode is just the
+       Spotlight bar.
      - Focus steps the tint to fully solid: typing means reading conditions.
 
    Reveal is fast, fade-out is slow — the reveal is an answer to the user, the
@@ -2342,20 +2341,17 @@ button[data-slot='aui_msg-reactions'] svg {
   max-width: none !important;
   flex: none !important;
   border: 0 !important;
-  /* Rounded on top to match the window's own corners (roundedCorners clips the
-     frost to the same silhouette); square at the bottom, where the bar covers it. */
+  /* Rounded on top to match the window's own corners; square at the bottom,
+     where the bar covers it. */
   border-radius: 0.75rem 0.75rem 0 0;
-  /* No fill and no blur of its own — the glass is its own layer behind this
-     one ([data-hud-glass]). Chromium will not honour `mask-image` and
-     `backdrop-filter` on the SAME element: the mask ends up applying to the
-     backdrop rather than the content, which shows up as the sheet fading on
-     the gradient while the text stays stubbornly solid. Two elements, two
-     masks, no interaction. */
+  /* No fill of its own — the sheet is its own layer behind this one
+     ([data-hud-glass]), so it can be sized to the transcript while this box
+     stays the full window for the drag region and the scroll container. */
   background: transparent !important;
   opacity: 0;
   /* WoW linger: reveal is quick, but on losing focus the band HOLDS, then fades
-     out slow. The timings come from hud-shell.tsx, which uses the same numbers
-     to decide when to drop the vibrancy layer. Reveal rules zero the delay. */
+     out slow. The timings are published by hud-shell.tsx so the two can't
+     drift. Reveal rules zero the delay. */
   transition:
     opacity var(--hud-fade) ease var(--hud-fade-delay),
     background-color 350ms ease;
@@ -2373,20 +2369,15 @@ button[data-slot='aui_msg-reactions'] svg {
    mask as the text, so the whole surface ramps out together and the band has no
    top edge at all.
  
-   There is no desktop blur under it, and that is a hard limit rather than a
-   gap. macOS vibrancy is composited by WindowServer BELOW the web contents,
-   after this process has finished drawing, so nothing in the DOM can shape it —
-   mask, clip-path, stacking, none of it reaches. Leaving vibrancy on under a
-   masked tint is worse than no blur: the frost stays a flat slab, so the top of
-   the band goes pale exactly where it should be disappearing. And CSS
-   backdrop-filter is not a substitute; verified on the real window rather than
-   assumed, it produces no blur whatsoever, because a transparent window's
-   backdrop root is the document and the desktop was never in it.
- 
-   The one real way out is native — NSVisualEffectView.maskImage takes an alpha
-   mask for precisely this — which needs a small addon over
-   getNativeWindowHandle() and buys a cross-dissolve between frosted and sharp
-   rather than a true blur-radius ramp. Its own change, not this one. */
+   No desktop blur under it, and that is a limit rather than an omission. CSS
+   backdrop-filter reaches nothing here — a transparent window's backdrop root
+   is the document, and the desktop was never in it (verified on the real
+   window, not assumed). macOS vibrancy does see the desktop, but WindowServer
+   composites it below the web contents after this process has finished drawing,
+   so no mask, clip or stacking order can shape it; left on under a fading tint
+   it stays a flat slab and the top of the band goes pale exactly where it
+   should be disappearing. The way through is NSVisualEffectView.maskImage
+   behind a small native addon, which is its own change. */
 [data-hud-shell] [data-hud-glass] {
   /* The exit chip rides this box, not the band — the band is the whole window,
      so anchoring there left the chip stranded in empty space above a short

@@ -5812,6 +5812,16 @@ class AIAgent:
         _base = getattr(self, "_anthropic_base_url", "") or ""
         if "azure.com" in _base:
             return False
+        # A session on a regular Console API key (sk-ant-api…) has nothing to
+        # refresh — API keys never expire. Re-resolving here would let
+        # resolve_anthropic_token() prefer Claude Code OAuth credentials
+        # (~/.claude/.credentials.json, priority 3) over the explicitly
+        # selected API key (priority 5), silently switching the user's billing
+        # identity after a transient 429/401 (#75641). Only OAuth/setup-token
+        # sessions may be refreshed.
+        from agent.anthropic_adapter import _is_oauth_token as _is_oauth_shape
+        if not _is_oauth_shape(getattr(self, "_anthropic_api_key", "") or ""):
+            return False
 
         try:
             from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client

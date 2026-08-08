@@ -6047,7 +6047,17 @@ class TestOAuthFlagAfterCredentialRefresh:
     """_is_anthropic_oauth must update when token type changes during refresh."""
 
     def test_oauth_flag_updates_api_key_to_oauth(self, agent):
-        """Refreshing from API key to OAuth token must set flag to True."""
+        """API-key session must NOT refresh into OAuth credentials (#75641).
+
+        ``_try_refresh_anthropic_client_credentials`` used to call
+        ``resolve_anthropic_token()`` unconditionally, which prefers Claude
+        Code OAuth credentials (~/.claude/.credentials.json, priority 3) over
+        the explicitly selected API key (priority 5). After a transient 429,
+        the retry's request-local client was silently rebuilt with the OAuth
+        token — switching the user's billing identity and producing
+        "extra usage" 400s. A plain API key never expires, so there is
+        nothing to refresh; the refresh must be a no-op for API-key sessions.
+        """
         agent.api_mode = "anthropic_messages"
         agent.provider = "anthropic"
         agent._anthropic_api_key = "sk-ant-api-old"
@@ -6062,8 +6072,9 @@ class TestOAuthFlagAfterCredentialRefresh:
         ):
             result = agent._try_refresh_anthropic_client_credentials()
 
-        assert result is True
-        assert agent._is_anthropic_oauth is True
+        # The API-key session must be preserved — no refresh, no OAuth swap.
+        assert result is False
+        assert agent._is_anthropic_oauth is False
 
     def test_oauth_flag_updates_oauth_to_api_key(self, agent):
         """Refreshing from OAuth to API key must set flag to False."""

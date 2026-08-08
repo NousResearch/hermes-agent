@@ -1,0 +1,5 @@
+name: codex-lb-provider
+kind: model-provider
+version: 1.0.0
+description: Codex load balancer with conversation affinity
+author: Nous Research

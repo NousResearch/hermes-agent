@@ -8020,7 +8020,11 @@ def _build_call_kwargs(
         from providers import get_provider_profile
         from providers.base import ProviderProfile
 
-        profile = get_provider_profile(str(provider or "").strip().lower())
+        profile = get_provider_profile(
+            str(provider or "").strip().lower(),
+            base_url=effective_base,
+            model=model,
+        )
         if profile is not None:
             profile_body = profile.build_extra_body(
                 model=model,

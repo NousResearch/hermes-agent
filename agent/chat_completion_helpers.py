@@ -1523,7 +1523,11 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     # found, delegate fully; otherwise fall through to the legacy flag path.
     try:
         from providers import get_provider_profile
-        _profile = get_provider_profile(agent.provider)
+        _profile = get_provider_profile(
+            agent.provider,
+            base_url=agent.base_url,
+            model=agent.model,
+        )
     except Exception:
         _profile = None
 
@@ -2469,7 +2473,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             try:
                 from providers import get_provider_profile
 
-                provider_profile = get_provider_profile(agent.provider)
+                provider_profile = get_provider_profile(
+                    agent.provider,
+                    base_url=agent.base_url,
+                    model=agent.model,
+                )
                 if provider_profile is not None:
                     profile_extra_body = provider_profile.build_extra_body(
                         session_id=getattr(agent, "session_id", None),

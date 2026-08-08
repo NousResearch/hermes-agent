@@ -78,7 +78,9 @@ def _make_runner(tmp_path):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    runner._voice_transcript_prefs = {}
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
+    runner._VOICE_TRANSCRIPT_PREFS_PATH = tmp_path / "gateway_voice_transcript_prefs.json"
     runner._session_db = None
     runner.session_store = MagicMock()
     runner._is_user_authorized = lambda source: True

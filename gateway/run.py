@@ -14141,14 +14141,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _handle_gateway_platform_event(self, event: dict, source) -> None:
         """Authorize and publish one normalized adapter event to plugin hooks."""
         try:
+            from hermes_cli.lifecycle import has_hook, invoke_hook
+
+            if not has_hook("gateway_platform_event"):
+                return
             if not self._is_user_authorized(source):
                 return
-            from hermes_cli.plugins import get_plugin_manager
-
-            manager = get_plugin_manager()
-            if not manager.has_hook("gateway_platform_event"):
-                return
-            manager.invoke_hook("gateway_platform_event", **event)
+            invoke_hook("gateway_platform_event", **event)
         except Exception:
             # Observer failures must never break the adapter's update loop.
             logger.debug("gateway_platform_event hook dispatch failed", exc_info=True)
@@ -14173,11 +14172,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return _handler
 
     def _make_default_profile_platform_event_handler(self):
-        """Scope default-profile event auth under multiplexing from ingress."""
-        profile_home = Path(get_hermes_home())
+        """Scope primary-transport events to their routed multiplex profile."""
 
         async def _handler(event, source):
-            with _profile_runtime_scope(profile_home):
+            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler

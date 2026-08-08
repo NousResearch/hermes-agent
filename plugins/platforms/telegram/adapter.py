@@ -1069,8 +1069,6 @@ class TelegramAdapter(BasePlatformAdapter):
         is absent so the post-auth boundary fails closed rather than authorizing
         an incomplete source. A future event type must wire its own extraction.
         """
-        from gateway.session import SessionSource
-
         mr = getattr(update, "message_reaction", None)
         if mr is None:
             raise ValueError(
@@ -1103,13 +1101,13 @@ class TelegramAdapter(BasePlatformAdapter):
             # only forum signal available without the underlying message.
             chat_type = "forum" if getattr(chat, "is_forum", False) is True else "group"
 
-        return SessionSource(
-            platform=Platform.TELEGRAM,
+        return self.build_source(
             chat_id=chat_id,
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
             thread_id=None,
+            message_id=str(message_id),
         )
 
     def _telegram_auth_env_configured(self) -> bool:
@@ -3746,7 +3744,16 @@ class TelegramAdapter(BasePlatformAdapter):
         alongside, never displaces, the core handlers. Malformed updates and
         dispatch errors cannot raise into PTB's update loop.
         """
+        handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = getattr(
+            self, "_platform_event_handler", None
+        )
+        if handler is None:
+            return
         try:
+            from hermes_cli.lifecycle import has_hook
+
+            if not has_hook("gateway_platform_event"):
+                return
             event = self._normalize_platform_event(update)
         except Exception:
             logger.debug("[%s] gateway_platform_event normalize error", self.name, exc_info=True)
@@ -3757,11 +3764,6 @@ class TelegramAdapter(BasePlatformAdapter):
         # and its internal source to the gateway-owned boundary, where the full
         # profile-scoped authorization chain runs before plugin dispatch. No
         # callback means no trusted auth boundary, so fail closed.
-        handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = getattr(
-            self, "_platform_event_handler", None
-        )
-        if handler is None:
-            return
         try:
             source = self._source_from_reaction_for_auth(update)
             await handler(event, source)
@@ -3786,23 +3788,37 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         chat = getattr(mr, "chat", None)
         new_reaction = getattr(mr, "new_reaction", None) or []
+        if not isinstance(new_reaction, (list, tuple)):
+            return None
+        chat_id = getattr(chat, "id", None) if chat is not None else None
+        message_id = getattr(mr, "message_id", None)
+        if (
+            isinstance(chat_id, bool)
+            or not isinstance(chat_id, (str, int))
+            or isinstance(message_id, bool)
+            or not isinstance(message_id, (str, int))
+        ):
+            return None
         emojis: List[str] = []
         custom_emoji_ids: List[str] = []
-        for r in new_reaction:
+        for r in new_reaction[:64]:
             emoji = getattr(r, "emoji", None)
-            if emoji is not None:
-                emojis.append(emoji)
+            if isinstance(emoji, str) and emoji:
+                emojis.append(emoji[:64])
             custom_id = getattr(r, "custom_emoji_id", None)
-            if custom_id is not None:
-                custom_emoji_ids.append(str(custom_id))
+            if (
+                not isinstance(custom_id, bool)
+                and isinstance(custom_id, (str, int))
+            ):
+                custom_emoji_ids.append(str(custom_id)[:128])
         return {
             "platform": "telegram",
             "event_type": "reaction",
             "payload": {
                 "emojis": emojis,
                 "custom_emoji_ids": custom_emoji_ids,
-                "chat_id": str(getattr(chat, "id", "")) if chat is not None else None,
-                "message_id": str(getattr(mr, "message_id", "")),
+                "chat_id": str(chat_id)[:128],
+                "message_id": str(message_id)[:128],
                 # Reactions don't carry thread_id; do not guess it or expose an
                 # adapter object as a routing escape hatch.
                 "thread_id": None,

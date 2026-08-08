@@ -19,14 +19,16 @@ Covers the normalized-envelope pattern that replaces raw-SDK handler args:
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 
 
 _repo = str(Path(__file__).resolve().parents[2])
@@ -56,6 +58,7 @@ _ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
+from gateway.profile_routing import ProfileRoute  # noqa: E402
 from hermes_cli.plugins import (  # noqa: E402
     VALID_HOOKS,
     PluginContext,
@@ -73,9 +76,16 @@ def _adapter(extra=None) -> TelegramAdapter:
     normal reaction fires; pass a restrictive ``extra`` to exercise the gate.
     """
     a = object.__new__(TelegramAdapter)
-    a.platform = SimpleNamespace(value="telegram")  # name -> "Telegram"
+    a.platform = Platform.TELEGRAM
     a.config = SimpleNamespace(extra=extra if extra is not None else {"allow_from": ["*"]})
+    a.gateway_runner = None
     return a
+
+
+@pytest.fixture(autouse=True)
+def _observer_available(monkeypatch):
+    """Most fire-site tests exercise the subscribed path explicitly."""
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
 
 
 def _reaction(*, emoji=None, custom_emoji_id=None):
@@ -91,7 +101,7 @@ def _reaction(*, emoji=None, custom_emoji_id=None):
     return r
 
 
-def _reaction_update(reactions, chat_id=123, message_id=456):
+def _reaction_update(reactions, chat_id: object = 123, message_id: object = 456):
     """A PTB Update stand-in carrying a message_reaction with ``reactions``."""
     update = MagicMock()
     update.message_reaction = MagicMock()
@@ -138,8 +148,7 @@ class TestRunnerDispatch:
     def test_authorized_event_routes_normalized_envelope(self):
         runner = object.__new__(GatewayRunner)
         runner._is_user_authorized = lambda source: source.user_id == "777"
-        mgr = MagicMock()
-        mgr.has_hook.return_value = True
+        invoke = MagicMock()
         source = _adapter()._source_from_reaction_for_auth(
             _auth_reaction_update(user_id=777)
         )
@@ -149,57 +158,56 @@ class TestRunnerDispatch:
             "payload": {"chat_id": "123", "message_id": "456", "emojis": ["x"]},
         }
 
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
             asyncio.run(runner._handle_gateway_platform_event(event, source))
 
-        mgr.invoke_hook.assert_called_once_with("gateway_platform_event", **event)
+        invoke.assert_called_once_with("gateway_platform_event", **event)
 
     def test_unauthorized_event_never_reaches_hooks(self):
         runner = object.__new__(GatewayRunner)
         runner._is_user_authorized = lambda source: False
-        mgr = MagicMock()
+        invoke = MagicMock()
         source = _adapter()._source_from_reaction_for_auth(
             _auth_reaction_update(user_id=777)
         )
 
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
             asyncio.run(runner._handle_gateway_platform_event(
                 {"platform": "telegram", "event_type": "reaction", "payload": {}},
                 source,
             ))
 
-        mgr.has_hook.assert_not_called()
-        mgr.invoke_hook.assert_not_called()
+        invoke.assert_not_called()
 
     def test_skips_dispatch_when_no_subscriber(self):
         runner = object.__new__(GatewayRunner)
-        runner._is_user_authorized = lambda source: True
-        mgr = MagicMock()
-        mgr.has_hook.return_value = False
+        authorized = MagicMock(return_value=True)
+        runner._is_user_authorized = authorized
+        invoke = MagicMock()
         source = _adapter()._source_from_reaction_for_auth(
             _auth_reaction_update(user_id=777)
         )
 
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+        with patch("hermes_cli.lifecycle.has_hook", return_value=False), patch(
+            "hermes_cli.lifecycle.invoke_hook", invoke
+        ):
             asyncio.run(runner._handle_gateway_platform_event(
                 {"platform": "telegram", "event_type": "reaction", "payload": {}},
                 source,
             ))
 
-        mgr.has_hook.assert_called_once_with("gateway_platform_event")
-        mgr.invoke_hook.assert_not_called()
+        authorized.assert_not_called()
+        invoke.assert_not_called()
 
     def test_plugin_layer_error_is_isolated(self):
         runner = object.__new__(GatewayRunner)
         runner._is_user_authorized = lambda source: True
-        mgr = MagicMock()
-        mgr.has_hook.return_value = True
-        mgr.invoke_hook.side_effect = RuntimeError("plugin boom")
+        invoke = MagicMock(side_effect=RuntimeError("plugin boom"))
         source = _adapter()._source_from_reaction_for_auth(
             _auth_reaction_update(user_id=777)
         )
 
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
             asyncio.run(runner._handle_gateway_platform_event(
                 {"platform": "telegram", "event_type": "reaction", "payload": {}},
                 source,
@@ -252,6 +260,38 @@ class TestNormalizePlatformEvent:
         assert event["payload"]["emojis"] == ["\U0001F44D", "\U0001F525"]
         assert event["payload"]["custom_emoji_ids"] == ["555"]
 
+    def test_malformed_values_never_escape_as_live_objects(self):
+        a = _adapter()
+        update = _reaction_update(
+            [_reaction(emoji=object(), custom_emoji_id=object())]
+        )
+
+        event = a._normalize_platform_event(update)
+
+        assert event is not None
+        assert event["payload"]["emojis"] == []
+        assert event["payload"]["custom_emoji_ids"] == []
+        json.dumps(event)
+
+    def test_reaction_count_and_string_lengths_are_bounded(self):
+        a = _adapter()
+        update = _reaction_update(
+            [_reaction(emoji="x" * 100, custom_emoji_id="9" * 200) for _ in range(100)],
+            chat_id="c" * 200,
+            message_id="m" * 200,
+        )
+
+        event = a._normalize_platform_event(update)
+
+        assert event is not None
+        payload = event["payload"]
+        assert len(payload["emojis"]) == 64
+        assert len(payload["custom_emoji_ids"]) == 64
+        assert all(len(value) == 64 for value in payload["emojis"])
+        assert all(len(value) == 128 for value in payload["custom_emoji_ids"])
+        assert len(payload["chat_id"]) == 128
+        assert len(payload["message_id"]) == 128
+
     def test_non_reaction_update_returns_none(self):
         """Unsupported update types return None until a concrete contract exists."""
         a = _adapter()
@@ -266,6 +306,20 @@ class TestNormalizePlatformEvent:
 # ---------------------------------------------------------------------------
 
 class TestOnPlatformUpdate:
+    def test_no_subscriber_skips_normalization_source_and_dispatch(self):
+        a = _adapter()
+        a._normalize_platform_event = MagicMock()
+        a._source_from_reaction_for_auth = MagicMock()
+        handler = AsyncMock()
+        a.set_platform_event_handler(handler)
+
+        with patch("hermes_cli.lifecycle.has_hook", return_value=False):
+            asyncio.run(a._on_platform_update(MagicMock(), context=MagicMock()))
+
+        a._normalize_platform_event.assert_not_called()
+        a._source_from_reaction_for_auth.assert_not_called()
+        handler.assert_not_awaited()
+
     def test_fires_gateway_platform_event_with_envelope(self):
         a = _adapter()
         seen: list = []
@@ -377,6 +431,40 @@ class TestOnPlatformUpdateAuthBoundary:
 
 
 class TestProfileScopedPlatformEventHandler:
+    def test_primary_shared_transport_uses_profile_route_and_transport_provenance(self):
+        runner = object.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(  # type: ignore[assignment]
+            multiplex_profiles=True,
+            profile_routes=[
+                ProfileRoute(
+                    name="work-chat",
+                    platform="telegram",
+                    profile="work",
+                    chat_id="123",
+                )
+            ],
+        )
+        adapter = _adapter()
+        adapter.gateway_runner = runner  # type: ignore[assignment]
+
+        source = adapter._source_from_reaction_for_auth(
+            _auth_reaction_update(user_id=777)
+        )
+
+        assert source.profile == "work"
+        assert getattr(source, "_transport_adapter_ref")() is adapter
+
+        resolver = MagicMock(return_value=Path("/profiles/work"))
+        runner._resolve_profile_home_for_source = resolver
+        dispatch = AsyncMock()
+        runner._handle_gateway_platform_event = dispatch
+        handler = runner._make_default_profile_platform_event_handler()
+        with patch("gateway.run._profile_runtime_scope", side_effect=lambda _home: nullcontext()):
+            asyncio.run(handler({"event_type": "reaction"}, source))
+
+        resolver.assert_called_once_with(source)
+        dispatch.assert_awaited_once_with({"event_type": "reaction"}, source)
+
     def test_secondary_handler_stamps_profile_before_dispatch(self, monkeypatch):
         runner = object.__new__(GatewayRunner)
         captured = {}

@@ -1728,10 +1728,11 @@ class ProcessRegistry:
         7 minutes on Feishu).
 
         This helper closes that window: when `session.exited` is still False
-        but the direct child's `Popen.poll()` reports an exit code, drain any
-        readable bytes non-blocking and flip `session.exited`. The orphaned
-        reader thread remains stuck on its blocking `read()` but is a daemon
-        thread and will be reaped with the process.
+        but the direct child's `Popen.poll()` reports an exit code, flip
+        `session.exited`. It does NOT drain stdout — `_reader_loop` is the
+        sole stream consumer (draining here stalled on the reader's buffered-
+        stream lock and raced the reader for the fd; see #34711 review). The
+        orphaned reader thread, if any, is a daemon and is reaped with the process.
 
         Safe no-op on sessions without a local `Popen` (env/PTY), already-
         exited sessions, and detached-recovered sessions.
@@ -1748,37 +1749,13 @@ class ProcessRegistry:
         if rc is None:
             return  # Direct child still running — reader block is legitimate.
 
-        # Direct child exited. Try to drain any bytes the reader hasn't
-        # consumed yet. This is best-effort: if the pipe is held open by a
-        # descendant, the non-blocking read returns what's immediately
-        # available and we stop.
-        drained = ""
-        stdout = getattr(proc, "stdout", None)
-        if stdout is not None and not _IS_WINDOWS:
-            try:
-                import fcntl
-                fd = stdout.fileno()
-                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-                fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-                try:
-                    chunk = stdout.read()
-                    if chunk:
-                        drained = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
-                except (BlockingIOError, OSError, ValueError):
-                    pass
-                finally:
-                    try:
-                        fcntl.fcntl(fd, fcntl.F_SETFL, flags)
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
-
+        # Direct child exited. Flip session.exited WITHOUT draining stdout.
+        # _reader_loop (select()-based) is the sole stream consumer — it reads
+        # everything select() reports ready before its idle-break. Draining here
+        # was best-effort but unsafe: stdout.read() stalls while the reader
+        # thread touches the buffered stream, and os.read() raced the reader for
+        # the same fd with no output-ordering guarantee (#34711 review).
         with session._lock:
-            if drained:
-                session.output_buffer += drained
-                if len(session.output_buffer) > session.max_output_chars:
-                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
             session.exited = True
             if session.completion_reason != "killed":
                 session.exit_code = rc
@@ -2594,6 +2571,11 @@ class ProcessRegistry:
 # Module-level singleton
 process_registry = ProcessRegistry()
 
+# Consecutive-polls guard: tracks repeated poll() calls per session_id.
+# Reset when the agent calls wait/kill/log on the same session.
+# Key: session_id, Value: {"count": int, "ts": float}
+_consecutive_polls: dict = {}
+
 
 def _format_age(seconds: float) -> str:
     """Human-friendly elapsed string ('18m', '2h3m', '45s')."""
@@ -2817,7 +2799,13 @@ PROCESS_SCHEMA = {
         "Actions: 'list' (show all), 'poll' (check status + new output), "
         "'log' (full output with pagination), 'wait' (block until done or timeout), "
         "'kill' (terminate), 'write' (send raw stdin data without newline), "
-        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF)."
+        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF).\n\n"
+        "CRITICAL: Do NOT call poll() in a loop. Each poll() call costs one "
+        "iteration from the agent's limited budget (default 90 total). Use wait() "
+        "to block until the process finishes without consuming iterations. "
+        "If you need to check progress, poll at most 2-3 times then switch to wait(). "
+        "Repeated polling with no wait() between calls will trigger a warning and "
+        "waste your iteration budget."
     ),
     "parameters": {
         "type": "object",
@@ -2907,18 +2895,42 @@ def _handle_process(args, **kw):
     elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
+
+        # ── Consecutive-polls guard ──────────────────────────────────────
+        # Prevents agents from burning their iteration budget on a poll()
+        # loop.  After MAX_CONSECUTIVE_POLL polls on the same session_id
+        # without a wait/kill/log in between, return a warning + auto-
+        # promote to wait() so the agent doesn't get stuck.
+        _POLL_LIMIT = 5
         if action == "poll":
+            now = time.time()
+            _last = _consecutive_polls.get(session_id)
+            if _last and (now - _last["ts"] < 60):
+                _last["count"] += 1
+            else:
+                _consecutive_polls[session_id] = {"count": 1, "ts": now}
+
+            if _consecutive_polls[session_id]["count"] > _POLL_LIMIT:
+                _consecutive_polls.pop(session_id, None)
+                # Auto-promote to wait() and return its result
+                wait_result = process_registry.wait(session_id, timeout=args.get("timeout", 180))
+                wait_result["_poll_guard"] = (
+                    f"You called poll() {_POLL_LIMIT + 1}+ times on {session_id} without "
+                    f"a wait() or kill(). This burns through your iteration budget. "
+                    f"The system auto-promoted to wait() — use wait() directly next time."
+                )
+                return json.dumps(_redact_process_result(wait_result), ensure_ascii=False)
             return json.dumps(_redact_process_result(process_registry.poll(session_id)), ensure_ascii=False)
-        elif action == "log":
-            return json.dumps(_redact_process_result(process_registry.read_log(
-                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200))), ensure_ascii=False)
-        elif action == "wait":
-            return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
-        elif action == "kill":
-            return json.dumps(
-                _redact_process_result(process_registry.kill_process(session_id)),
-                ensure_ascii=False,
-            )
+        elif action in ("wait", "kill", "log"):
+            # Reset the poll counter — agent is doing something sensible
+            _consecutive_polls.pop(session_id, None)
+            if action == "log":
+                return json.dumps(_redact_process_result(process_registry.read_log(
+                    session_id, offset=args.get("offset", 0), limit=args.get("limit", 200))), ensure_ascii=False)
+            elif action == "wait":
+                return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
+            elif action == "kill":
+                return json.dumps(_redact_process_result(process_registry.kill_process(session_id)), ensure_ascii=False)
         elif action == "write":
             return json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
         elif action == "submit":

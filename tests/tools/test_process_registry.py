@@ -443,6 +443,59 @@ class TestOrphanedPipeReconciliation:
         except (ProcessLookupError, PermissionError):
             pass
 
+    def test_reconcile_prompt_with_live_reader_thread(self, registry):
+        """poll()/wait() return promptly with a real reader thread running.
+
+        The two #17327 tests above skip the reader thread ("We don't start a
+        reader thread"), so they never exercised the stall seen when
+        `_reconcile_local_exit` used `stdout.read()` while `_reader_loop` was
+        touching the buffered stream (blocked ~30s on current main, per the
+        #34711 review). `_reconcile_local_exit` now flips `session.exited`
+        WITHOUT draining stdout (reader is the sole stream consumer), so
+        reconcile can't stall on the buffer lock regardless of reader state.
+        """
+        proc = subprocess.Popen(
+            ["sh", "-c", "( sleep 30 ) & disown; exit 0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+        )
+
+        s = _make_session(sid="proc_orphan_live_reader")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        # Start the REAL reader thread — the case the #17327 tests skip.
+        reader = threading.Thread(target=registry._reader_loop, args=(s,), daemon=True)
+        reader.start()
+
+        assert _wait_until(lambda: proc.poll() is not None, timeout=5.0), (
+            "Direct child should exit while the descendant holds stdout open"
+        )
+
+        start = time.monotonic()
+        result = registry.poll(s.id)
+        elapsed = time.monotonic() - start
+        assert result["status"] == "exited", result
+        assert elapsed < 3.0, (
+            f"poll() blocked {elapsed:.1f}s with a live reader thread — "
+            "buffered-reader-lock race is back (regression of 9e4492fd7)."
+        )
+
+        start = time.monotonic()
+        result = registry.wait(s.id, timeout=10)
+        elapsed = time.monotonic() - start
+        assert result["status"] == "exited", result
+        assert elapsed < 3.0, (
+            f"wait() blocked {elapsed:.1f}s with a live reader thread"
+        )
+
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        reader.join(timeout=2.0)
     def test_wait_wakes_when_session_moves_to_finished(self, registry):
         """wait() should not sleep for the old 1s polling tick after exit."""
         s = _make_session(sid="proc_wait_event", output="done")
@@ -1045,6 +1098,78 @@ class TestProcessToolHandler:
         from tools.process_registry import _handle_process
         result = json.loads(_handle_process({"action": "unknown_action"}))
         assert "error" in result
+
+
+class TestPollLoopGuard:
+    """Consecutive-poll guard (salvaged from #34711): after N polls on one
+    session without wait/kill/log, auto-promote to wait() with a
+    `_poll_guard` warning — and redact the promoted result."""
+
+    def _setup(self, monkeypatch, poll_result, wait_result, command="python app.py"):
+        from tools import process_registry as pr
+        pr._consecutive_polls.clear()
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_guard", command=command)
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        monkeypatch.setattr(reg, "poll", lambda sid: dict(poll_result, session_id=sid))
+        monkeypatch.setattr(reg, "wait", lambda sid, timeout=180: dict(wait_result, session_id=sid))
+        return pr, sess
+
+    def test_promotes_after_limit(self, monkeypatch):
+        pr, sess = self._setup(
+            monkeypatch,
+            poll_result={"status": "running"},
+            wait_result={"status": "exited", "exit_code": 0},
+        )
+        # _POLL_LIMIT = 5; the 6th consecutive poll auto-promotes to wait()
+        for i in range(5):
+            r = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+            assert "_poll_guard" not in r, f"poll #{i+1} must not promote"
+        r = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+        assert "_poll_guard" in r
+        assert r["status"] == "exited"  # promoted to wait()'s result
+
+    def test_resets_on_wait(self, monkeypatch):
+        pr, sess = self._setup(
+            monkeypatch,
+            poll_result={"status": "running"},
+            wait_result={"status": "exited", "exit_code": 0},
+        )
+        for _ in range(4):
+            json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+        json.loads(pr._handle_process({"action": "wait", "session_id": sess.id}))  # resets counter
+        for _ in range(4):
+            r = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+            assert "_poll_guard" not in r
+
+    def test_expires_after_60s_window(self, monkeypatch):
+        import time as _time
+        pr, sess = self._setup(
+            monkeypatch,
+            poll_result={"status": "running"},
+            wait_result={"status": "exited", "exit_code": 0},
+        )
+        # Stale entry: high count but timestamp >60s ago → window expired, resets
+        pr._consecutive_polls[sess.id] = {"count": 100, "ts": _time.time() - 100}
+        r = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+        assert "_poll_guard" not in r  # expired → count reset to 1
+
+    def test_promoted_result_is_redacted(self, monkeypatch):
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
+        secret = "sk-proj-abc123def456ghi789jkl012"
+        pr, sess = self._setup(
+            monkeypatch,
+            poll_result={"status": "running"},
+            wait_result={"status": "exited", "exit_code": 0,
+                         "command": "python app.py",
+                         "output": f"leaked {secret} here"},
+        )
+        for _ in range(6):
+            r = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+        assert "_poll_guard" in r
+        assert secret not in r.get("output", "")
 
 
 # =========================================================================

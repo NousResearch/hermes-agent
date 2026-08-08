@@ -42,21 +42,35 @@ def test_private_page_blocks_state_changing_actions(monkeypatch, tool_call, args
 
 
 def test_click_still_runs_when_current_page_is_public(monkeypatch):
+    """Guard allows the native click when the current page is public.
+
+    A1 dispatch: resolve the ref's box (get box) then a native mouse click at
+    the center. The guard must NOT block a public page.
+    """
     calls = []
 
     monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
     monkeypatch.setattr(browser_tool, "_current_page_private_url", lambda task_id: None)
+    import tools.browser_cdp_tool as cdp_mod
+    monkeypatch.setattr(cdp_mod, "_resolve_cdp_endpoint", lambda: "")
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
 
     def fake_run(task_id, command, args):
         calls.append((task_id, command, args))
+        if command == "get" and args and args[0] == "box":
+            return {"success": True, "data": {"x": 0, "y": 0, "width": 10, "height": 10}}
         return {"success": True}
 
     monkeypatch.setattr(browser_tool, "_run_browser_command", fake_run)
 
     out = json.loads(browser_tool.browser_click("e1", task_id="task-1"))
 
-    assert out == {"success": True, "clicked": "@e1"}
-    assert calls == [("task-1", "click", ["@e1"])]
+    # Guard passed -> native click dispatched; ref normalized to @e1.
+    assert out["success"] is True
+    assert out["clicked"] == "@e1"
+    # box resolution + mouse move/down/up, with the normalized ref.
+    assert calls[0] == ("task-1", "get", ["box", "@e1"])
+    assert calls[-1] == ("task-1", "mouse", ["up"])
 
 
 def test_guard_inactive_does_not_block_or_probe(monkeypatch):
@@ -67,6 +81,9 @@ def test_guard_inactive_does_not_block_or_probe(monkeypatch):
     calls = []
 
     monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: False)
+    import tools.browser_cdp_tool as cdp_mod
+    monkeypatch.setattr(cdp_mod, "_resolve_cdp_endpoint", lambda: "")
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
 
     def fail_probe(task_id):
         raise AssertionError("_current_page_private_url must not be probed when guard inactive")
@@ -75,14 +92,18 @@ def test_guard_inactive_does_not_block_or_probe(monkeypatch):
 
     def fake_run(task_id, command, args):
         calls.append((task_id, command, args))
+        if command == "get" and args and args[0] == "box":
+            return {"success": True, "data": {"x": 0, "y": 0, "width": 10, "height": 10}}
         return {"success": True}
 
     monkeypatch.setattr(browser_tool, "_run_browser_command", fake_run)
 
     out = json.loads(browser_tool.browser_click("@e1", task_id="task-1"))
 
-    assert out == {"success": True, "clicked": "@e1"}
-    assert calls == [("task-1", "click", ["@e1"])]
+    # Guard inactive -> native click proceeds, no URL probe attempted.
+    assert out["success"] is True
+    assert out["clicked"] == "@e1"
+    assert calls[0] == ("task-1", "get", ["box", "@e1"])
 
 
 def test_camofox_short_circuits_before_guard(monkeypatch):

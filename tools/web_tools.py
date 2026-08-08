@@ -295,16 +295,30 @@ def _get_extract_backend() -> str:
     return _get_capability_backend("extract")
 
 
+def _configured_capability_backend(capability: str) -> str:
+    """Return the user-selected backend for *capability*, if any.
+
+    Per-capability configuration wins over the shared backend. The value is
+    returned without an availability probe: explicit selection is authoritative
+    so a provider-specific error is surfaced instead of silently dispatching a
+    different backend (#79899).
+    """
+    cfg = _load_web_config()
+    return (
+        (cfg.get(f"{capability}_backend") or "").lower().strip()
+        or (cfg.get("backend") or "").lower().strip()
+    )
+
+
 def _get_capability_backend(capability: str) -> str:
     """Shared helper for per-capability backend selection.
 
-    Reads ``web.{capability}_backend`` from config; if set and available,
-    uses it. Otherwise falls through to the shared ``_get_backend()``.
+    An explicitly configured capability/shared backend is authoritative. Only
+    when neither is set do we auto-detect an available backend.
     """
-    cfg = _load_web_config()
-    specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
-    if specific and _is_backend_available(specific):
-        return specific
+    configured = _configured_capability_backend(capability)
+    if configured:
+        return configured
     return _get_backend()
 
 
@@ -682,13 +696,18 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _disabled_web_plugin_for,
         )
 
+        configured_backend = _configured_capability_backend("search")
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
+
         if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
-            provider = get_active_search_provider()
+            if configured_backend:
+                # Explicit selection is authoritative. Do not silently run a
+                # different provider: that can turn a configuration/registry
+                # failure into a misleading successful empty result.
+                provider = None
+            else:
+                provider = get_active_search_provider()
 
         if provider is None:
             # A bundled web plugin the user explicitly disabled looks
@@ -704,6 +723,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                         f"plugin ('{disabled_key}') is disabled in config. "
                         f"Re-enable it with `hermes plugins enable {disabled_key}` "
                         "(or remove it from plugins.disabled)."
+                    ),
+                }
+            elif configured_backend:
+                response_data = {
+                    "success": False,
+                    "error": (
+                        f"Configured web search provider '{configured_backend}' "
+                        "is not registered or does not support search. Check "
+                        "the provider plugin and credentials, or choose another "
+                        "provider with `hermes tools`."
                     ),
                 }
             else:
@@ -870,14 +899,14 @@ async def web_extract_tool(
                 _disabled_web_plugin_for,
             )
 
+            configured_backend = _configured_capability_backend("extract")
             provider = _wsp_get_provider(backend) if backend else None
+
             if provider is None or not provider.supports_extract():
                 # When the configured name IS registered but doesn't support
                 # extract (search-only providers like brave-free / ddgs /
                 # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
+                # rather than silently switching backends.
                 if provider is not None and not provider.supports_extract():
                     return json.dumps(
                         {
@@ -891,7 +920,8 @@ async def web_extract_tool(
                         },
                         ensure_ascii=False,
                     )
-                provider = get_active_extract_provider()
+                if not configured_backend:
+                    provider = get_active_extract_provider()
                 if provider is None:
                     # If the configured backend is a bundled web plugin the
                     # user explicitly disabled, the backend is set correctly
@@ -910,6 +940,19 @@ async def web_extract_tool(
                                     "in config. Re-enable it with "
                                     f"`hermes plugins enable {disabled_key}` "
                                     "(or remove it from plugins.disabled)."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    if configured_backend:
+                        return json.dumps(
+                            {
+                                "success": False,
+                                "error": (
+                                    f"Configured web extract provider "
+                                    f"'{configured_backend}' is not registered. "
+                                    "Check the provider plugin and credentials, "
+                                    "or choose another provider with `hermes tools`."
                                 ),
                             },
                             ensure_ascii=False,

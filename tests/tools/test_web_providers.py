@@ -87,6 +87,24 @@ class TestPerCapabilityBackendSelection:
         monkeypatch.setenv("TAVILY_API_KEY", "test-key")
         assert web_tools._get_search_backend() == "tavily"
 
+    def test_explicit_search_backend_remains_authoritative_when_unavailable(self, monkeypatch):
+        """Do not silently switch away from an explicitly selected backend.
+
+        The selected provider owns the actionable configuration error. Falling
+        through here can dispatch a different provider and report an empty
+        success without ever calling the backend the user configured (#79899).
+        """
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "firecrawl",
+            "search_backend": "exa",  # explicit, but no EXA_API_KEY
+        })
+        monkeypatch.delenv("EXA_API_KEY", raising=False)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-key")
+
+        assert web_tools._get_search_backend() == "exa"
+
 
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
         from tools import web_tools
@@ -388,6 +406,105 @@ class TestDispatchersTriggerPluginDiscovery:
             )
             assert "No web search provider configured" not in json.dumps(result)
             assert web_search_registry.get_provider("brave-free") is not None
+        finally:
+            restore()
+
+    def test_missing_explicit_search_provider_never_uses_alternate(self, monkeypatch):
+        """A missing configured backend must fail instead of returning empty success."""
+        from agent import web_search_registry
+        from agent.web_search_provider import WebSearchProvider
+        from tools import web_tools
+
+        restore = self._clear_registry()
+        alternate_calls = 0
+        try:
+            class EmptyAlternate(WebSearchProvider):
+                @property
+                def name(self):
+                    return "ddgs"
+
+                @property
+                def display_name(self):
+                    return "Empty Alternate"
+
+                def is_available(self):
+                    return True
+
+                def supports_search(self):
+                    return True
+
+                def search(self, query, limit=5):
+                    nonlocal alternate_calls
+                    alternate_calls += 1
+                    return {"success": True, "data": {"web": []}}
+
+            web_search_registry.register_provider(EmptyAlternate())
+            monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+            monkeypatch.setattr(
+                web_tools,
+                "_load_web_config",
+                lambda: {"search_backend": "firecrawl"},
+            )
+            monkeypatch.setenv("FIRECRAWL_API_KEY", "fake")
+
+            result = json.loads(web_tools.web_search_tool("python asyncio tutorial", limit=5))
+
+            assert result["success"] is False
+            assert "firecrawl" in result["error"]
+            assert alternate_calls == 0
+        finally:
+            restore()
+
+    def test_missing_explicit_extract_provider_never_uses_alternate(self, monkeypatch):
+        """The explicit-provider invariant applies to extraction too."""
+        import asyncio
+        from agent import web_search_registry
+        from agent.web_search_provider import WebSearchProvider
+        from tools import web_tools
+
+        restore = self._clear_registry()
+        alternate_calls = 0
+        try:
+            class EmptyAlternate(WebSearchProvider):
+                @property
+                def name(self):
+                    return "tavily"
+
+                @property
+                def display_name(self):
+                    return "Empty Alternate"
+
+                def is_available(self):
+                    return True
+
+                def supports_extract(self):
+                    return True
+
+                async def extract(self, urls, **kwargs):
+                    nonlocal alternate_calls
+                    alternate_calls += 1
+                    return []
+
+            async def _safe(_url):
+                return True
+
+            web_search_registry.register_provider(EmptyAlternate())
+            monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+            monkeypatch.setattr(web_tools, "async_is_safe_url", _safe)
+            monkeypatch.setattr(
+                web_tools,
+                "_load_web_config",
+                lambda: {"extract_backend": "firecrawl"},
+            )
+            monkeypatch.setenv("FIRECRAWL_API_KEY", "fake")
+
+            result = json.loads(asyncio.run(web_tools.web_extract_tool([
+                "https://example.com/page",
+            ])))
+
+            assert result["success"] is False
+            assert "firecrawl" in result["error"]
+            assert alternate_calls == 0
         finally:
             restore()
 

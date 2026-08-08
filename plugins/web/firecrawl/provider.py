@@ -413,6 +413,40 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         client = _get_firecrawl_client()
         try:
             response = client.search(query=query, limit=limit)
+            response_plain = _to_plain_object(response)
+
+            if isinstance(response_plain, dict) and response_plain.get("success") is False:
+                detail = response_plain.get("error") or response_plain.get("message")
+                return {
+                    "success": False,
+                    "error": f"Firecrawl search failed: {detail or 'upstream returned failure'}",
+                }
+
+            valid_result_container = False
+            if isinstance(response_plain, dict):
+                data = response_plain.get("data")
+                valid_result_container = (
+                    isinstance(data, list)
+                    or (
+                        isinstance(data, dict)
+                        and (
+                            isinstance(data.get("web"), list)
+                            or isinstance(data.get("results"), list)
+                        )
+                    )
+                    or isinstance(response_plain.get("web"), list)
+                    or isinstance(response_plain.get("results"), list)
+                )
+            if not valid_result_container and hasattr(response, "web"):
+                valid_result_container = isinstance(getattr(response, "web", None), list)
+
+            if not valid_result_container:
+                logger.warning("Firecrawl search returned an unexpected response shape")
+                return {
+                    "success": False,
+                    "error": "Firecrawl search failed: unexpected response shape",
+                }
+
             web_results = _extract_web_search_results(response)
             logger.info("Firecrawl: found %d search results", len(web_results))
             return {"success": True, "data": {"web": web_results}}

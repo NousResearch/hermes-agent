@@ -380,6 +380,47 @@ class TestWebSearchErrorHandling:
         assert "traceback" not in result
 
 
+class TestFirecrawlSearchResponseHandling:
+    """Firecrawl must distinguish a valid empty result from backend failure."""
+
+    def test_explicit_upstream_failure_is_not_empty_success(self, monkeypatch):
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        client = MagicMock()
+        client.search.return_value = {"success": False, "error": "quota unavailable"}
+        monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: client)
+
+        result = firecrawl_provider.FirecrawlWebSearchProvider().search("docs", 5)
+
+        assert result == {
+            "success": False,
+            "error": "Firecrawl search failed: quota unavailable",
+        }
+
+    def test_unexpected_response_shape_is_not_empty_success(self, monkeypatch):
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        client = MagicMock()
+        client.search.return_value = {"success": True, "data": {"status": "queued"}}
+        monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: client)
+
+        result = firecrawl_provider.FirecrawlWebSearchProvider().search("docs", 5)
+
+        assert result["success"] is False
+        assert "unexpected response shape" in result["error"]
+
+    def test_legitimate_empty_web_results_remain_successful(self, monkeypatch):
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        client = MagicMock()
+        client.search.return_value = {"success": True, "data": {"web": []}}
+        monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: client)
+
+        result = firecrawl_provider.FirecrawlWebSearchProvider().search("no matches", 5)
+
+        assert result == {"success": True, "data": {"web": []}}
+
+
 class TestCheckWebApiKey:
     """Test suite for check_web_api_key() unified availability check."""
 

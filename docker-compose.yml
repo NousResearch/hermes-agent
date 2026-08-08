@@ -17,11 +17,14 @@
 #     adds authentication — do NOT pass --insecure --host 0.0.0.0.
 #   - If you override entrypoint, keep `/init` as the first command in
 #     the chain (or let docker use the image's default ENTRYPOINT,
-#     which is `["/init", "/opt/hermes/docker/main-wrapper.sh"]`).
-#     `/init` is s6-overlay's PID 1 — it runs the cont-init.d scripts
-#     (chown, profile reconcile, dashboard toggle) and sets up the
-#     supervision tree before any service starts. Bypassing it skips
-#     all of that setup and the gateway will not work correctly.
+#     which is `["/opt/hermes/docker/entrypoint-dispatch.sh"]`).
+#     The dispatcher execs `/init` (s6-overlay's PID 1) + main-wrapper
+#     when the image owns PID 1, and falls back to a direct stage2
+#     bootstrap on wrapped runtimes (Fly Machines, `docker run --init`).
+#     `/init` runs the cont-init.d scripts (chown, profile reconcile,
+#     dashboard toggle) and sets up the supervision tree before any
+#     service starts. Bypassing it skips all of that setup and the
+#     gateway will not work correctly.
 #   - The gateway's API server is off unless you uncomment API_SERVER_KEY
 #     and API_SERVER_HOST. See docs/user-guide/api-server.md before doing
 #     this on an internet-facing host.

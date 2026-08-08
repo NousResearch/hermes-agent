@@ -1055,6 +1055,67 @@ class TestRunPreUpdateBackup:
         assert len(self._zips(hermes_home)) == 1
 
 
+    def _set_snapshot_cap(self, hermes_home, value):
+        import yaml
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+            "_config_version": 22,
+            "updates": {"pre_update_snapshot_max_file_size": value},
+        }))
+
+    def test_snapshot_max_file_size_default(self, hermes_home):
+        """#75411: no config override → built-in 1 GiB cap."""
+        from hermes_cli.update_cmd import _resolve_pre_update_snapshot_max_file_size
+        assert _resolve_pre_update_snapshot_max_file_size(Namespace()) == 1 << 30
+
+    def test_snapshot_max_file_size_override(self, hermes_home):
+        """#75411: config override raises the cap (e.g. a 5 GiB state.db)."""
+        from hermes_cli.update_cmd import _resolve_pre_update_snapshot_max_file_size
+        self._set_snapshot_cap(hermes_home, 5 * (1 << 30))
+        assert _resolve_pre_update_snapshot_max_file_size(Namespace()) == 5 * (1 << 30)
+
+    def test_snapshot_max_file_size_zero_disables_cap(self, hermes_home):
+        """#75411: ``0`` disables the cap entirely."""
+        from hermes_cli.update_cmd import _resolve_pre_update_snapshot_max_file_size
+        self._set_snapshot_cap(hermes_home, 0)
+        assert _resolve_pre_update_snapshot_max_file_size(Namespace()) == 0
+
+    def test_snapshot_max_file_size_invalid_falls_back(self, hermes_home):
+        """#75411: invalid or negative config falls back to the default cap."""
+        from hermes_cli.update_cmd import _resolve_pre_update_snapshot_max_file_size
+        self._set_snapshot_cap(hermes_home, "garbage")
+        assert _resolve_pre_update_snapshot_max_file_size(Namespace()) == 1 << 30
+        self._set_snapshot_cap(hermes_home, -1)
+        assert _resolve_pre_update_snapshot_max_file_size(Namespace()) == 1 << 30
+
+    def test_config_snapshot_cap_controls_state_db_inclusion(self, hermes_home, capsys):
+        """#75411: updates.pre_update_snapshot_max_file_size controls whether
+        a large state.db is snapshotted or skipped with a warning."""
+        db_path = hermes_home / "state.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, data TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('s1', 'hello world')")
+        conn.commit()
+        conn.close()
+
+        from hermes_cli.main import _run_pre_update_backup
+
+        # Small cap → state.db is skipped (warning printed, not snapshotted).
+        self._set_snapshot_cap(hermes_home, 1024)
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+        assert snap_id is not None
+        assert "skipping state.db" in out.lower()
+        assert not (hermes_home / "state-snapshots" / snap_id / "state.db").exists()
+
+        # Large cap → state.db is snapshotted.
+        self._set_snapshot_cap(hermes_home, 100 * 1024 * 1024)
+        snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+        assert snap_id is not None
+        assert "skipping state.db" not in out.lower()
+        assert (hermes_home / "state-snapshots" / snap_id / "state.db").exists()
+
+
 
 
 # ---------------------------------------------------------------------------

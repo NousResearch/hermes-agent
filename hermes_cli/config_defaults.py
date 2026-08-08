@@ -2849,6 +2849,13 @@ DEFAULT_CONFIG = {
         # Values below 1 are floored to 1 — the backup just created is
         # always preserved. The quick snapshot always keeps exactly 1.
         "backup_keep": 5,
+        # Per-file size cap (bytes) for the pre-update quick snapshot.
+        # Files larger than this are skipped with a warning so a bloated
+        # state.db can never stall ``hermes update`` or silently eat disk.
+        # ``None`` (default) keeps the built-in 1 GiB cap; raise it (e.g.
+        # ``5368709120`` for 5 GiB) to include a legitimately large
+        # state.db in the snapshot. Set to ``0`` for no cap.
+        "pre_update_snapshot_max_file_size": None,
         # What `hermes update` does with uncommitted local changes to the
         # source tree when it runs NON-interactively — i.e. triggered from
         # the desktop/chat app or the gateway, where there's no TTY to answer

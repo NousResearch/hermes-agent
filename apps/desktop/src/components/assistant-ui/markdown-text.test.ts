@@ -16,7 +16,7 @@ describe('preprocessMarkdown', () => {
 
     expect(output).not.toContain('```')
     expect(output).toContain("Here's your scene:")
-    expect(output).not.toContain('http://localhost:8812/')
+    expect(output).toContain('<http://localhost:8812/>')
     expect(output).toContain('- **Multicolored cube**')
   })
 
@@ -33,11 +33,11 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown(input)
 
     expect(output).not.toContain('```')
-    expect(output).not.toContain('http://localhost:8812/')
+    expect(output).toContain('<http://localhost:8812/>')
     expect(output).toContain('- **Scroll wheel** - zoom')
   })
 
-  it('drops fences around a preview-only URL block', () => {
+  it('drops fences around a localhost-only URL block while keeping the URL visible', () => {
     const fence = '```'
     const input = ['Server is back.', '', fence, 'http://localhost:8812/', fence].join('\n')
 
@@ -45,7 +45,7 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('Server is back.')
     expect(output).not.toContain('```')
-    expect(output).not.toContain('http://localhost:8812/')
+    expect(output).toContain('<http://localhost:8812/>')
   })
 
   it('demotes prose sentence masquerading as fence info', () => {

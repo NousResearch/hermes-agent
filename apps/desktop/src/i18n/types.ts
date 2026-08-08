@@ -1852,6 +1852,17 @@ export interface Translations {
     applyingClose: string
     errorTitle: string
     errorBody: string
+    blockerTitle: string
+    blockerBody: string
+    foreignBlockerTitle: string
+    foreignBlockerBody: string
+    mixedBlockerBody: string
+    closePreviewsAndUpdate: string
+    closePreviewsAndCheckAgain: string
+    localPreview: string
+    portLabel: (port: number) => string
+    pidLabel: (pid: number) => string
+    technicalDetails: string
     notNow: string
     applyStatus: {
       preparing: string

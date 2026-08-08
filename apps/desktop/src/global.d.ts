@@ -428,8 +428,21 @@ export interface DesktopUpdateStatus {
 
 export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'
 
+export interface DesktopUpdateBlocker {
+  pid: number
+  name: string
+  cmdline: string
+  kind: 'local-preview' | 'other'
+  safeToStop: boolean
+  label?: string
+  port?: number
+  createTime?: number
+}
+
 export interface DesktopUpdateApplyOptions {
   dirtyStrategy?: DesktopUpdateDirtyStrategy
+  /** User confirmed that Desktop may stop freshly re-scanned safe local preview servers. */
+  stopSafeBlockers?: boolean
 }
 
 export interface DesktopUpdateApplyResult {
@@ -437,6 +450,7 @@ export interface DesktopUpdateApplyResult {
   branch?: string
   error?: string
   message?: string
+  blockers?: DesktopUpdateBlocker[]
   /** True when no staged updater exists (CLI install) and the user should run
    *  `hermes update` themselves. `command` is the exact line to run. */
   manual?: boolean

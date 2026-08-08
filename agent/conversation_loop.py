@@ -2866,10 +2866,12 @@ def run_conversation(
                     agent._buffer_vprint(f"⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...")
                     logger.warning("Invalid API response (retry %d/%d): %s | Provider: %s", retry_count, max_retries, ', '.join(error_details), provider_name)
                     
-                    # Sleep in small increments to stay responsive to interrupts
-                    sleep_end = time.time() + wait_time
+                    # Sleep in small increments to stay responsive to interrupts.
+                    # Use a monotonic deadline so wall-clock jumps (NTP, DST,
+                    # manual clock changes) cannot extend or shorten the wait.
+                    sleep_end = time.monotonic() + wait_time
                     _backoff_touch_counter = 0
-                    while time.time() < sleep_end:
+                    while time.monotonic() < sleep_end:
                         if agent._interrupt_requested:
                             # A redirect uses the interrupt machinery to cancel
                             # only the live request. Aborting the retry here
@@ -2901,7 +2903,7 @@ def run_conversation(
                         if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
                             agent._touch_activity(
                                 f"retry backoff ({retry_count}/{max_retries}), "
-                                f"{int(sleep_end - time.time())}s remaining"
+                                f"{int(sleep_end - time.monotonic())}s remaining"
                             )
                     if _retry.restart_with_redirected_messages:
                         break  # rebuild this iteration from the correction
@@ -5745,10 +5747,12 @@ def run_conversation(
                     api_error,
                 )
                 # Sleep in small increments so we can respond to interrupts quickly
-                # instead of blocking the entire wait_time in one sleep() call
-                sleep_end = time.time() + wait_time
+                # instead of blocking the entire wait_time in one sleep() call.
+                # Use a monotonic deadline so wall-clock jumps (NTP, DST,
+                # manual clock changes) cannot extend or shorten the wait.
+                sleep_end = time.monotonic() + wait_time
                 _backoff_touch_counter = 0
-                while time.time() < sleep_end:
+                while time.monotonic() < sleep_end:
                     if agent._interrupt_requested:
                         # Same preserve-redirect rule as the retry-wait above:
                         # a steering correction must survive backoff, not die
@@ -5775,7 +5779,7 @@ def run_conversation(
                     if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
                         agent._touch_activity(
                             f"error retry backoff ({retry_count}/{max_retries}), "
-                            f"{int(sleep_end - time.time())}s remaining"
+                            f"{int(sleep_end - time.monotonic())}s remaining"
                         )
                 if _retry.restart_with_redirected_messages:
                     # Leave the retry loop — the check right below rebuilds this

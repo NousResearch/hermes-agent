@@ -595,53 +595,91 @@ export function TreeGroup({
           `visibility` (not display) keeps the hidden pane's layout box, so
           scroll positions and measurements survive the round-trip — which also
           makes a hidden layer's rect identical to the visible one's, hence the
-          marker document-wide lookups filter on (see pane-visibility.ts). */}
-      {!node.minimized && (
-        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-          {isEmpty ? (
-            <div className="grid h-full place-items-center">
-              {/* Same decode primitive as the CONNECTING boot overlay. */}
-              <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text="HERMES" />
-            </div>
-          ) : (
-            keptPanes.map(paneId => {
-              const pane = paneFor(paneId)
-              const isActive = paneId === activeId
+          marker document-wide lookups filter on (see pane-visibility.ts).
 
-              return (
-                <div
-                  aria-hidden={!isActive || undefined}
-                  className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
-                  key={paneId}
-                  {...hiddenPaneProps(!isActive)}
-                >
-                  {pane?.render ? (
-                    // Visibility flows to the pane so a kept-alive chat surface
-                    // can gate its hot (per-token) subscriptions while hidden;
-                    // the group id identifies the ZONE it lives in, for state
-                    // that is per-zone rather than per-tab (composer pop-out).
-                    // The reload epoch keys the CONTENT, not this layer: a
-                    // Reload remounts the contribution (effects re-run, state
-                    // resets) while the layer — and every other tab — stays.
-                    <PaneGroupContext.Provider value={node.id}>
-                      <PaneVisibleContext.Provider value={isActive}>
-                        <ContribBoundary id={pane.id} key={paneEpochs[paneId] ?? 0}>
-                          {pane.render()}
-                        </ContribBoundary>
-                      </PaneVisibleContext.Provider>
-                    </PaneGroupContext.Provider>
-                  ) : (
-                    isActive && (
-                      <div className="p-3 font-mono text-[11px] text-(--ui-text-quaternary)">
-                        {t.zones.missingPane(paneId)}
-                      </div>
-                    )
-                  )}
+          A hidden header still needs a recoverable surface. The header's
+          context menu cannot be reached once the strip is gone, so put the same
+          zone menu around the body while it is hidden. This keeps the existing
+          `Show header` action available for non-WebView panes; Browser panes
+          also get a visible parent-owned button below. */}
+      {!node.minimized &&
+        (() => {
+          const body = (
+            <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+              {isEmpty ? (
+                <div className="grid h-full place-items-center">
+                  {/* Same decode primitive as the CONNECTING boot overlay. */}
+                  <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text="HERMES" />
                 </div>
-              )
-            })
-          )}
-        </div>
+              ) : (
+                keptPanes.map(paneId => {
+                  const pane = paneFor(paneId)
+                  const isActive = paneId === activeId
+
+                  return (
+                    <div
+                      aria-hidden={!isActive || undefined}
+                      className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
+                      key={paneId}
+                      {...hiddenPaneProps(!isActive)}
+                    >
+                      {pane?.render ? (
+                        // Visibility flows to the pane so a kept-alive chat surface
+                        // can gate its hot (per-token) subscriptions while hidden;
+                        // the group id identifies the ZONE it lives in, for state
+                        // that is per-zone rather than per-tab (composer pop-out).
+                        // The reload epoch keys the CONTENT, not this layer: a
+                        // Reload remounts the contribution (effects re-run, state
+                        // resets) while the layer — and every other tab — stays.
+                        <PaneGroupContext.Provider value={node.id}>
+                          <PaneVisibleContext.Provider value={isActive}>
+                            <ContribBoundary id={pane.id} key={paneEpochs[paneId] ?? 0}>
+                              {pane.render()}
+                            </ContribBoundary>
+                          </PaneVisibleContext.Provider>
+                        </PaneGroupContext.Provider>
+                      ) : (
+                        isActive && (
+                          <div className="p-3 font-mono text-[11px] text-(--ui-text-quaternary)">
+                            {t.zones.missingPane(paneId)}
+                          </div>
+                        )
+                      )}
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          )
+
+          return headerHidden ? <ZoneMenu {...zoneMenu}>{body}</ZoneMenu> : body
+        })()}
+
+      {/* A webview owns pointer events in its own WebContents, so a context
+          menu wrapped around the body cannot receive a right-click from the
+          embedded Browser page. Keep a visible, parent-owned recovery button
+          instead. Only this small control claims pointer events; the rest of
+          the page keeps its native browser context menu and interactions. */}
+      {headerHidden && !node.minimized && !isEmpty && (
+        <ZoneMenu {...zoneMenu}>
+          <div className="absolute left-2 top-2 z-50">
+            <button
+              aria-label={t.zones.showHeader}
+              className="group/show-header flex h-6 w-6 items-center justify-start gap-1 overflow-hidden rounded-md border border-transparent bg-(--ui-bg-chrome)/35 p-0 text-[0.625rem] font-medium text-(--ui-text-secondary)/70 opacity-70 shadow-sm backdrop-blur-sm transition-[width,padding,opacity,background-color,border-color,color] duration-150 hover:w-36 hover:border-(--ui-stroke-secondary) hover:bg-(--ui-control-hover-background) hover:px-2 hover:text-foreground hover:opacity-100 focus-visible:w-36 focus-visible:border-(--ui-stroke-secondary) focus-visible:bg-(--ui-control-hover-background) focus-visible:px-2 focus-visible:text-foreground focus-visible:opacity-100"
+              onClick={() => setTreeGroupHeaderHidden(node.id, false)}
+              onPointerDown={event => event.stopPropagation()}
+              title={t.zones.showHeader}
+              type="button"
+            >
+              <span className="grid size-6 shrink-0 place-items-center">
+                <Codicon name="eye" size="0.75rem" />
+              </span>
+              <span className="truncate whitespace-nowrap opacity-0 transition-opacity duration-100 group-hover/show-header:opacity-100 group-focus-visible/show-header:opacity-100">
+                {t.zones.showHeader}
+              </span>
+            </button>
+          </div>
+        </ZoneMenu>
       )}
 
       {/* Edit-mode veil: the BODY is a drag handle for the active pane. It

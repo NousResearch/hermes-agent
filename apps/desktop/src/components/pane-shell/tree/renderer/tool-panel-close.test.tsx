@@ -125,6 +125,29 @@ describe('right-clicking a tool panel tab', () => {
 
     expect(await screen.findByRole('menuitem', { name: /^close$/i })).toBeTruthy()
   })
+
+  it('offers a visible Show header control after the header was hidden', async () => {
+    $layoutTree.set(
+      split('column', [
+        group(['workspace'], { active: 'workspace', id: 'grp-main' }),
+        group(['terminal', 'logs'], { active: 'logs', headerHidden: true, id: 'grp-tools' })
+      ])
+    )
+    render(<TreeGroup node={zoneAt(1)} parentAxis="column" />)
+
+    const body = screen.getByRole('button', { name: /show header/i })
+
+    expect(body).toBeTruthy()
+
+    openContextMenu(body!)
+
+    const showHeader = await screen.findByRole('menuitem', { name: /show header/i })
+    expect(showHeader).toBeTruthy()
+
+    fireEvent.click(showHeader)
+
+    expect((zoneAt(1) as { headerHidden?: boolean }).headerHidden).toBe(false)
+  })
 })
 
 describe('⌘W over a focused tool panel', () => {

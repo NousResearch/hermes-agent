@@ -251,6 +251,22 @@ async def _lifespan(app: "FastAPI"):
     # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
 
+    # Orphan goal recovery: a standing /goal set in the desktop chat dies
+    # with its keep-alive PTY child (the reaper above kills it after the
+    # TTL once the browser detaches). The goal stays "active" in state_meta
+    # but no process feeds continuation turns. On boot (and periodically —
+    # see _goal_recovery_sweep_loop) scan the desktop-scoped session
+    # store and re-queue a continuation turn for every orphaned goal via
+    # the embedded tui_gateway dispatch. Goals with a live owner (a live
+    # tui_gateway session here, or a live owner pid elsewhere) are never
+    # touched; paused/cleared goals are skipped by construction.
+    goal_recovery_task = None
+    try:
+        await _run_goal_recovery_sweep()
+        goal_recovery_task = asyncio.create_task(_goal_recovery_sweep_loop())
+    except Exception:
+        _log.debug("goal recovery boot sweep failed", exc_info=True)
+
     # Periodic authenticated self-test (feeds the ``dashboard`` component on
     # /api/status).  The loop exits immediately when httpx is unavailable.
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
@@ -263,6 +279,8 @@ async def _lifespan(app: "FastAPI"):
         yield
     finally:
         pty_reaper_task.cancel()
+        if goal_recovery_task is not None:
+            goal_recovery_task.cancel()
         selftest_task.cancel()
         auto_archive_task.cancel()
         await PTY_REGISTRY.close_all()
@@ -285,6 +303,210 @@ def _get_event_state(app: "FastAPI"):
         app.state.event_channels = {}
         app.state.event_lock = asyncio.Lock()
         return app.state.event_channels, app.state.event_lock
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Orphan goal recovery (desktop / serve)
+# ──────────────────────────────────────────────────────────────────────
+# A standing /goal set in the desktop chat runs inside the chat's
+# keep-alive PTY child, whose tui_gateway sessions live IN this process
+# (in attach mode). When the browser detaches, the PTY reaper kills the
+# child after the TTL and the goal stays "active" in state_meta with no
+# process feeding continuation turns. The recovery sweep below re-drives
+# orphaned goals through the embedded tui_gateway dispatch — the same
+# JSON-RPC surface the desktop uses — so message-role alternation and
+# prompt caching are untouched.
+
+
+def _goal_recovery_config() -> Dict[str, Any]:
+    """Resolve the goals.recovery_* config knobs (fail-open defaults)."""
+    try:
+        from hermes_cli.config import load_config
+
+        goals_cfg = (load_config() or {}).get("goals") or {}
+    except Exception:
+        goals_cfg = {}
+    return goals_cfg
+
+
+def _goal_recovery_enabled() -> bool:
+    try:
+        return bool(_goal_recovery_config().get("recovery_enabled", True))
+    except Exception:
+        return True
+
+
+def _goal_recovery_interval_minutes() -> int:
+    try:
+        value = int(_goal_recovery_config().get("recovery_interval_minutes", 5) or 0)
+        return value if value > 0 else 0
+    except Exception:
+        return 5
+
+
+def _goal_recovery_homes() -> List[str]:
+    """HERMES_HOMEs whose desktop-scoped sessions this server can drive.
+
+    Only the launch profile's home is driveable in-process: profile-scoped
+    chats spawn their own gateway child (see ``_resolve_chat_argv``), and
+    in desktop pool mode each profile runs its own backend whose own
+    lifespan sweeps that profile's home. Sweeping only the launch home
+    keeps recovery exactly where the embedded tui_gateway can actually
+    drive the session.
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli import profiles as profiles_mod
+
+        name = get_active_profile_name() or "default"
+        return [str(profiles_mod.get_profile_dir(name))]
+    except Exception:
+        try:
+            from hermes_constants import get_hermes_home
+
+            return [str(get_hermes_home())]
+        except Exception:
+            return []
+
+
+def _goal_sweeper() -> Optional[Any]:
+    """Return the shared GoalRecoverySweeper for this server (cached)."""
+    sweeper = getattr(app.state, "_goal_sweeper_obj", None)
+    if sweeper is not None:
+        return sweeper
+
+    def _owns_goal(session_id: str) -> bool:
+        # A live tui_gateway session in THIS process means the desktop
+        # loop is running here — never claim it.
+        try:
+            from tui_gateway.server import _find_live_session_by_key
+
+            return _find_live_session_by_key(session_id) is not None
+        except Exception:
+            return False
+
+    from hermes_cli.goal_recovery import GoalRecoverySweeper
+
+    sweeper = GoalRecoverySweeper(
+        _goal_recovery_homes(),
+        owns_goal=_owns_goal,
+        self_pid=os.getpid(),
+    )
+    app.state._goal_sweeper_obj = sweeper
+    return sweeper
+
+
+def _goal_recovery_drive_session(session_id: str, goal_text: str) -> bool:
+    """Drive one continuation turn for an orphaned desktop session.
+
+    Re-creates the session through the embedded tui_gateway (resume +
+    prompt.submit) — the same path the desktop uses when the user reopens
+    the chat — then queues the goal text as the next user turn. The
+    post-turn judge hook in ``_run_prompt_submit`` takes over from there,
+    so the loop continues across turns exactly as if the user had come
+    back.
+
+    The handlers are invoked directly (not via ``handle_request``) because
+    ``session.resume`` is a long handler that ``handle_request`` would
+    dispatch to the RPC pool and return ``None`` for. We are already off
+    the event loop (the sweep runs in a worker thread), so running inline
+    is safe.
+    """
+    try:
+        from tui_gateway import server as tui
+
+        live = tui._find_live_session_by_key(session_id)
+        if live is not None:
+            sid = live[0]
+        else:
+            resume = tui._methods["session.resume"](
+                "goal-recovery",
+                {"session_id": session_id},
+            )
+            if not isinstance(resume, dict) or "error" in resume:
+                _log.debug(
+                    "goal recovery: session.resume failed for %s: %s",
+                    session_id,
+                    resume,
+                )
+                return False
+            sid = (resume.get("result") or {}).get("session_id") or ""
+            if not sid or sid not in tui._sessions:
+                return False
+
+        submit = tui._methods["prompt.submit"](
+            "goal-recovery",
+            {"session_id": sid, "text": goal_text},
+        )
+        if not isinstance(submit, dict) or "error" in submit:
+            _log.debug(
+                "goal recovery: prompt.submit failed for %s: %s",
+                session_id,
+                submit,
+            )
+            return False
+        _log.info(
+            "goal recovery: resumed orphaned desktop goal for session %s (%s)",
+            session_id,
+            goal_text[:60],
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("goal recovery: drive failed for %s: %s", session_id, exc)
+        return False
+
+
+async def _run_goal_recovery_sweep() -> int:
+    """Boot scan + periodic sweep: resume orphaned desktop goals.
+
+    The claim (persisted orphaned flag) happens in the worker thread
+    (lock + SQLite); the drive (tui_gateway resume + prompt.submit, which
+    can block on DB reads) also runs in a worker thread; the orphaned
+    flag is cleared once the continuation turn is handed off.
+    """
+    if not _goal_recovery_enabled():
+        return 0
+    sweeper = _goal_sweeper()
+    if sweeper is None:
+        return 0
+
+    claimed = await asyncio.to_thread(sweeper.sweep)
+    if not claimed:
+        return 0
+    driven = 0
+    for home, session_id, state in claimed:
+        try:
+            from hermes_cli.goals import continuation_prompt_from_state
+
+            prompt = continuation_prompt_from_state(state)
+            if not prompt:
+                continue
+            ok = await asyncio.to_thread(
+                _goal_recovery_drive_session, session_id, prompt
+            )
+            if ok:
+                sweeper.clear_claim(home, session_id)
+                driven += 1
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.debug("goal recovery: drive failed for %s: %s", session_id, exc)
+    return driven
+
+
+async def _goal_recovery_sweep_loop() -> None:
+    """Periodic sweep so a goal orphaned mid-run recovers without a restart."""
+    interval_minutes = _goal_recovery_interval_minutes()
+    if interval_minutes <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval_minutes * 60)
+        try:
+            driven = await _run_goal_recovery_sweep()
+            if driven:
+                _log.info(
+                    "goal recovery sweep: resumed %d orphaned goal(s)", driven
+                )
+        except Exception:
+            _log.debug("goal recovery sweep failed", exc_info=True)
 
 
 def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:

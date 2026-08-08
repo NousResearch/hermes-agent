@@ -11634,6 +11634,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 
+        # Orphan goal recovery: a standing /goal (Ralph loop) set by a CLI,
+        # TUI, or desktop chat dies with its owning process — the goal stays
+        # "active" in state_meta but no process feeds continuation turns.
+        # On boot (and periodically — see _start_goal_recovery_sweeper) scan
+        # the profiles this gateway serves, and for every active goal whose
+        # owner process is gone, enqueue a continuation turn through the
+        # same adapter FIFO the post-turn hook uses. Goals whose owner pid
+        # is still alive are never touched (no double-fire), and
+        # paused/cleared goals are skipped by construction.
+        try:
+            await self._run_goal_recovery_sweep()
+        except Exception:
+            logger.debug("goal recovery sweep failed at startup", exc_info=True)
+        self._start_goal_recovery_sweeper()
+
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
             from tools.process_registry import process_registry
@@ -19253,6 +19268,229 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 task.add_done_callback(_bg.discard)
         except Exception:
             logger.debug("Failed to start heartbeat poller", exc_info=True)
+
+    # ── Orphan goal recovery (supervisor sweep) ────────────────────────
+    # A standing /goal only runs inside a live process; when the owning
+    # process dies (CLI terminal closed, desktop chat PTY reaped) the goal
+    # stays "active" in state_meta but nothing feeds continuation turns.
+    # This sweep scans the profiles the gateway serves and enqueues one
+    # continuation turn per orphaned goal through the adapter FIFO — the
+    # same path _post_turn_goal_continuation uses — so message-role
+    # alternation and prompt caching are untouched. Goals whose owner pid
+    # is still alive are never claimed (no double-fire); paused/cleared
+    # goals are skipped by construction.
+
+    def _goal_recovery_enabled(self) -> bool:
+        try:
+            goals_cfg = (
+                (self.config or {}).get("goals", {})
+                if isinstance(self.config, dict)
+                else getattr(self.config, "goals", None) or {}
+            )
+            if not goals_cfg:
+                from hermes_cli.config import load_config
+
+                goals_cfg = (load_config() or {}).get("goals") or {}
+            return bool(goals_cfg.get("recovery_enabled", True))
+        except Exception:
+            return True
+
+    def _goal_recovery_interval_minutes(self) -> int:
+        try:
+            goals_cfg = (
+                (self.config or {}).get("goals", {})
+                if isinstance(self.config, dict)
+                else getattr(self.config, "goals", None) or {}
+            )
+            if not goals_cfg:
+                from hermes_cli.config import load_config
+
+                goals_cfg = (load_config() or {}).get("goals") or {}
+            value = int(goals_cfg.get("recovery_interval_minutes", 5) or 0)
+            return value if value > 0 else 0
+        except Exception:
+            return 5
+
+    def _goal_recovery_homes(self) -> List[str]:
+        """HERMES_HOMEs of the profiles this gateway serves (multiplex aware)."""
+        try:
+            from hermes_cli.profiles import profiles_to_serve
+
+            if getattr(self.config, "multiplex_profiles", False):
+                return [str(home) for _name, home in profiles_to_serve(multiplex=True)]
+            return [str(home) for _name, home in profiles_to_serve(multiplex=False)]
+        except Exception as exc:
+            logger.debug("goal recovery: profile resolution failed: %s", exc)
+            return []
+
+    def _goal_sweeper(self) -> Optional[Any]:
+        """Return the shared GoalRecoverySweeper for this runner (cached)."""
+        sweeper = getattr(self, "_goal_sweeper_obj", None)
+        if sweeper is not None:
+            return sweeper
+
+        def _owns_goal(session_id: str) -> bool:
+            # A live in-process gateway session means the loop is running
+            # here — never claim it. The routing index is keyed by
+            # session_key, so resolve the DB session id to its key first.
+            try:
+                store = getattr(self, "session_store", None)
+                if store is None:
+                    return False
+                with store._lock:  # noqa: SLF001
+                    store._ensure_loaded_locked()  # noqa: SLF001
+                    for _key, candidate in store._entries.items():  # noqa: SLF001
+                        if getattr(candidate, "session_id", None) == session_id:
+                            return self._is_session_running(
+                                getattr(candidate, "session_key", "") or ""
+                            )
+                return False
+            except Exception:
+                return False
+
+        from hermes_cli.goal_recovery import GoalRecoverySweeper
+
+        sweeper = GoalRecoverySweeper(
+            self._goal_recovery_homes(),
+            owns_goal=_owns_goal,
+        )
+        self._goal_sweeper_obj = sweeper
+        return sweeper
+
+    def _goal_recovery_homes_reload(self) -> None:
+        """Re-resolve served profile homes (multiplex can change at runtime)."""
+        sweeper = getattr(self, "_goal_sweeper_obj", None)
+        if sweeper is not None:
+            sweeper.homes = self._goal_recovery_homes()
+
+    async def _run_goal_recovery_sweep(self) -> int:
+        """Scan served profiles and enqueue continuation turns for orphans.
+
+        Runs at boot and on the periodic sweep. Returns the number of
+        continuation turns enqueued. Never raises — a broken DB or missing
+        module degrades to a no-op sweep.
+
+        The claim (persisted orphaned flag) happens in the worker thread
+        (lock + SQLite); the enqueue runs back on the event loop because
+        the adapter FIFO is not thread-safe.
+        """
+        if not self._goal_recovery_enabled():
+            return 0
+        sweeper = self._goal_sweeper()
+        if sweeper is None:
+            return 0
+        self._goal_recovery_homes_reload()
+
+        claimed = await asyncio.to_thread(sweeper.sweep)
+        if not claimed:
+            return 0
+        enqueued = 0
+        for home, session_id, state in claimed:
+            try:
+                prompt = self._goal_continuation_prompt_for_state(state)
+                if not prompt:
+                    continue
+                source = self._goal_recovery_source_for_session(session_id)
+                adapter = self._adapter_for_source(source)
+                if adapter is None or source is None:
+                    logger.debug(
+                        "goal recovery: no adapter/source for orphaned session %s",
+                        session_id,
+                    )
+                    continue
+                quick_key = self._session_key_for_source(source)
+                if not quick_key:
+                    continue
+                cont_event = MessageEvent(
+                    text=prompt,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    message_id=None,
+                    channel_prompt=None,
+                )
+                self._enqueue_fifo(quick_key, cont_event, adapter)
+                sweeper.clear_claim(home, session_id)
+                enqueued += 1
+                logger.info(
+                    "goal recovery: resumed orphaned goal for session %s (%s)",
+                    session_id,
+                    getattr(state, "goal", "")[:60],
+                )
+            except Exception as exc:
+                logger.debug(
+                    "goal recovery: enqueue failed for %s: %s", session_id, exc
+                )
+        return enqueued
+
+    def _goal_continuation_prompt_for_state(self, state: Any) -> Optional[str]:
+        """Render the canonical continuation prompt from a goal state."""
+        try:
+            from hermes_cli.goals import continuation_prompt_from_state
+
+            return continuation_prompt_from_state(state)
+        except Exception:
+            return None
+
+    def _goal_recovery_source_for_session(self, session_id: str) -> Optional[Any]:
+        """Recover the SessionSource that owns an orphaned session.
+
+        The gateway persists session entries (routing index) with their
+        origin source; an orphaned goal's session is one of those entries.
+        Sessions without a persisted origin (pure CLI/TUI rows) are skipped
+        — they are not this gateway's to drive.
+        """
+        try:
+            store = getattr(self, "session_store", None)
+            if store is None:
+                return None
+            with store._lock:  # noqa: SLF001
+                store._ensure_loaded_locked()  # noqa: SLF001
+                entry = None
+                for _key, candidate in store._entries.items():  # noqa: SLF001
+                    if getattr(candidate, "session_id", None) == session_id:
+                        entry = candidate
+                        break
+            if entry is None:
+                return None
+            origin = getattr(entry, "origin", None)
+            if origin is None:
+                return None
+            return origin
+        except Exception as exc:
+            logger.debug("goal recovery: source lookup failed for %s: %s", session_id, exc)
+            return None
+
+    def _start_goal_recovery_sweeper(self) -> None:
+        """Start the periodic orphan-goal sweep (idempotent)."""
+        if getattr(self, "_goal_recovery_sweeper_started", False):
+            return
+        interval_minutes = self._goal_recovery_interval_minutes()
+        if interval_minutes <= 0:
+            return
+
+        async def _sweep_loop() -> None:
+            while True:
+                await asyncio.sleep(interval_minutes * 60)
+                try:
+                    enqueued = await self._run_goal_recovery_sweep()
+                    if enqueued:
+                        logger.info(
+                            "goal recovery sweep: enqueued %d continuation turn(s)",
+                            enqueued,
+                        )
+                except Exception:
+                    logger.debug("goal recovery sweep failed", exc_info=True)
+
+        try:
+            task = asyncio.create_task(_sweep_loop())
+            self._goal_recovery_sweeper_task = task
+            _bg = getattr(self, "_background_tasks", None)
+            if _bg is not None:
+                _bg.add(task)
+                task.add_done_callback(_bg.discard)
+            self._goal_recovery_sweeper_started = True
+        except Exception:
+            logger.debug("Failed to start goal recovery sweeper", exc_info=True)
 
 
 

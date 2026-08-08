@@ -1789,6 +1789,18 @@ DEFAULT_CONFIG = {
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
         "max_turns": 20,
+        # Orphan goal recovery: when a goal's owning process dies (desktop
+        # chat PTY reaped, CLI terminal closed), no process feeds
+        # continuation turns and the loop goes inert while the goal still
+        # reads "active". The gateway and ``hermes serve`` boot scan for
+        # orphaned goals and resume them automatically, then re-sweep every
+        # ``recovery_interval_minutes`` so a goal orphaned mid-run is
+        # recovered without a restart. Set to 0 to disable the periodic
+        # sweep (boot-time recovery stays on).
+        "recovery_interval_minutes": 5,
+        # A goal whose stored owner pid is alive is NOT orphaned and is
+        # never double-fired. Paused/cleared goals are never touched.
+        "recovery_enabled": True,
     },
 
     # Mixture of Agents — named presets used by /moa. A preset is an execution

@@ -9494,6 +9494,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return None
         return row["value"] if isinstance(row, sqlite3.Row) else row[0]
 
+    def list_meta_keys(self, prefix: str = "") -> List[str]:
+        """Return every ``state_meta`` key matching ``prefix`` (ordered).
+
+        Powers cross-process sweeps (orphan goal recovery, heartbeat
+        resumption) that need to enumerate persisted per-session state
+        without knowing the session ids up front. ``prefix`` is matched
+        with ``LIKE 'prefix%'`` after escaping ``%``/``_`` so literal
+        prefix characters are honored. Cheap scan; bounded by the number
+        of meta rows.
+        """
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT key FROM state_meta WHERE key LIKE ? ESCAPE '\\' ORDER BY key",
+                (f"{escaped}%",),
+            ).fetchall()
+        return [r["key"] if isinstance(r, sqlite3.Row) else r[0] for r in rows]
+
     def set_meta(
         self, key: str, value: str, *, cursor: Optional[sqlite3.Cursor] = None
     ) -> None:

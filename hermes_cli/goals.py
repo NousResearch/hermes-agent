@@ -587,6 +587,15 @@ class GoalState:
     # must ALL pass before the judge may declare the goal done. Empty by
     # default — a goal with no gates behaves exactly as before.
     gates: List[GoalGate] = field(default_factory=list)
+    # Owner liveness bookkeeping for orphan recovery. The owning surface
+    # (CLI / TUI / desktop / gateway) stamps ``owner_pid`` at set time;
+    # ``last_owner_seen_at`` refreshes while the owning process runs. A
+    # supervisor marks ``orphaned=True`` when no live owner remains, so
+    # ``/goal status`` can distinguish active-running from active-orphaned
+    # without guessing. Backwards-compatible: old rows load with no owner.
+    owner_pid: Optional[int] = None
+    last_owner_seen_at: float = 0.0
+    orphaned: bool = False
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -624,6 +633,9 @@ class GoalState:
                 for g in (data.get("gates") or [])
                 if isinstance(g, dict) and str(g.get("command") or "").strip()
             ],
+            owner_pid=(int(data["owner_pid"]) if data.get("owner_pid") else None),
+            last_owner_seen_at=float(data.get("last_owner_seen_at", 0.0) or 0.0),
+            orphaned=bool(data.get("orphaned", False)),
         )
 
     # --- contract helpers -------------------------------------------------
@@ -648,6 +660,11 @@ class GoalState:
 
 def _meta_key(session_id: str) -> str:
     return f"goal:{session_id}"
+
+
+#: ``state_meta`` key prefix shared by every goal row. Recovery sweeps
+#: enumerate persisted goals with ``LIKE 'goal:%'`` via ``list_meta_keys``.
+GOAL_META_PREFIX = "goal:"
 
 
 _DB_CACHE: Dict[str, Any] = {}
@@ -683,11 +700,17 @@ def _get_session_db() -> Optional[Any]:
     return db
 
 
-def load_goal(session_id: str) -> Optional[GoalState]:
-    """Load the goal for a session, or None if none exists."""
+def load_goal(session_id: str, *, db: Optional[Any] = None) -> Optional[GoalState]:
+    """Load the goal for a session, or None if none exists.
+
+    ``db`` may be supplied by callers (recovery sweeps) that need to read a
+    different profile's store; otherwise the process-default SessionDB is
+    used.
+    """
     if not session_id:
         return None
-    db = _get_session_db()
+    if db is None:
+        db = _get_session_db()
     if db is None:
         return None
     try:
@@ -704,17 +727,48 @@ def load_goal(session_id: str) -> Optional[GoalState]:
         return None
 
 
-def save_goal(session_id: str, state: GoalState) -> None:
+def save_goal(session_id: str, state: GoalState, *, db: Optional[Any] = None) -> None:
     """Persist a goal to SessionDB. No-op if DB unavailable."""
     if not session_id:
         return
-    db = _get_session_db()
+    if db is None:
+        db = _get_session_db()
     if db is None:
         return
     try:
         db.set_meta(_meta_key(session_id), state.to_json())
     except Exception as exc:
         logger.debug("GoalManager: set_meta failed: %s", exc)
+
+
+def enumerate_active_goals() -> List[Tuple[str, GoalState]]:
+    """Return ``(session_id, state)`` for every live goal row.
+
+    Scans the current HERMES_HOME's ``state_meta`` for ``goal:`` keys and
+    parses each row with the same loader the GoalManager uses, so rows that
+    fail to parse (corrupt/foreign) are skipped defensively. Cleared and
+    done rows are excluded — only goals that can still run (active or
+    paused) are returned. The scan is read-only and best-effort: any DB
+    failure degrades to ``[]`` rather than raising into callers (recovery
+    sweeps must never wedge a boot).
+    """
+    db = _get_session_db()
+    if db is None:
+        return []
+    try:
+        keys = db.list_meta_keys(GOAL_META_PREFIX)
+    except Exception as exc:
+        logger.debug("GoalManager: enumerate meta keys failed: %s", exc)
+        return []
+    out: List[Tuple[str, GoalState]] = []
+    for key in keys:
+        session_id = key[len(GOAL_META_PREFIX):]
+        if not session_id:
+            continue
+        state = load_goal(session_id)
+        if state is not None and state.status in {"active", "paused"}:
+            out.append((session_id, state))
+    return out
 
 
 def clear_goal(session_id: str) -> None:
@@ -724,6 +778,46 @@ def clear_goal(session_id: str) -> None:
         return
     state.status = "cleared"
     save_goal(session_id, state)
+
+
+def mark_goal_orphaned(session_id: str, *, db: Optional[Any] = None) -> bool:
+    """Flag an active goal as orphaned (its owning process died).
+
+    Used by recovery sweeps to persist the ``orphaned`` marker that
+    ``/goal status`` reflects (active-running vs active-orphaned).
+    Non-destructive: paused/cleared/done goals are never touched, and a
+    goal that another supervisor already claimed (``orphaned`` already
+    True) is not re-claimed — the return value is the claim result.
+    Returns True when THIS caller flipped the marker.
+    """
+    state = load_goal(session_id, db=db)
+    if state is None or state.status != "active":
+        return False
+    if state.orphaned:
+        return False
+    state.orphaned = True
+    # Stamp the claim time so the sibling-sweep re-claim window works:
+    # a goal claimed within the window reads as "recently claimed".
+    state.last_owner_seen_at = time.time()
+    save_goal(session_id, state, db=db)
+    return True
+
+
+def clear_goal_orphaned(session_id: str, *, db: Optional[Any] = None) -> bool:
+    """Clear the orphaned marker when an owner is (re)established.
+
+    Called by an adopting surface right before it fires a continuation
+    turn, so the goal reads active-running again. Returns True when the
+    flag was actually cleared.
+    """
+    state = load_goal(session_id, db=db)
+    if state is None or state.status != "active" or not state.orphaned:
+        return False
+    state.orphaned = False
+    state.owner_pid = os.getpid()
+    state.last_owner_seen_at = time.time()
+    save_goal(session_id, state, db=db)
+    return True
 
 
 def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason: str = "") -> bool:
@@ -1226,6 +1320,37 @@ def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def continuation_prompt_from_state(state: "GoalState") -> Optional[str]:
+    """Build the canonical continuation prompt from a goal state.
+
+    Extracted from ``GoalManager.next_continuation_prompt`` so recovery
+    drivers (gateway / ``hermes serve``) can render the continuation for a
+    goal they adopted from the DB without constructing a GoalManager bound
+    to a session they do not own. Contract takes priority (it carries the
+    verification surface), subgoals fold in as extra criteria.
+    """
+    if state is None or state.status != "active":
+        return None
+    if state.has_contract():
+        contract_block = state.contract.render_block()
+        if state.subgoals:
+            extra = "\n".join(
+                f"- Extra criterion {i}: {text}"
+                for i, text in enumerate(state.subgoals, start=1)
+            )
+            contract_block = f"{contract_block}\n{extra}"
+        return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(
+            goal=state.goal,
+            contract_block=contract_block,
+        )
+    if state.subgoals:
+        return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
+            goal=state.goal,
+            subgoals_block=state.render_subgoals_block(),
+        )
+    return CONTINUATION_PROMPT_TEMPLATE.format(goal=state.goal)
+
+
 class GoalManager:
     """Per-session goal state + continuation decisions.
 
@@ -1283,7 +1408,9 @@ class GoalManager:
                 remaining = int(s.waiting_until - time.time())
                 wr = s.waiting_reason or f"{remaining}s"
                 return f"⏳ Goal (parked {remaining}s — {wr}, {meta}): {s.goal}"
-            return f"⊙ Goal (active, {meta}): {s.goal}"
+            if s.orphaned:
+                return f"⚠ Goal (active-orphaned, {meta}): {s.goal}"
+            return f"⊙ Goal (active-running, {meta}): {s.goal}"
         if s.status == "paused":
             extra = f" — {s.paused_reason}" if s.paused_reason else ""
             return f"⏸ Goal (paused, {meta}{extra}): {s.goal}"
@@ -1306,6 +1433,13 @@ class GoalManager:
             last_turn_at=0.0,
             contract=contract if contract is not None else GoalContract(),
         )
+        # Stamp this process as the goal's owner so a supervisor elsewhere
+        # (gateway / ``hermes serve``) can tell a live loop from an orphaned
+        # one without racing the setter (see orphan recovery in
+        # hermes_cli/goal_recovery.py).
+        state.owner_pid = os.getpid()
+        state.last_owner_seen_at = time.time()
+        state.orphaned = False
         self._state = state
         save_goal(self.session_id, state)
         return state
@@ -1741,6 +1875,13 @@ class GoalManager:
         # Count the turn that just finished.
         state.turns_used += 1
         state.last_turn_at = time.time()
+        # This turn proves a live owner is running the loop (CLI, TUI,
+        # desktop chat, or gateway). Stamp ownership so orphan recovery
+        # elsewhere can tell active-running from active-orphaned, and
+        # clear any orphaned marker left by a previous recovery claim.
+        state.owner_pid = os.getpid()
+        state.last_owner_seen_at = time.time()
+        state.orphaned = False
 
         # Quality gates run BEFORE the LLM judge: a failing gate is
         # deterministic evidence the goal is not done, so the judge call is
@@ -1922,27 +2063,7 @@ class GoalManager:
     def next_continuation_prompt(self) -> Optional[str]:
         if not self._state or self._state.status != "active":
             return None
-        # Contract takes priority: it carries the verification surface and
-        # constraints the agent must target. Subgoals fold in as extra
-        # criteria appended to the contract block.
-        if self._state.has_contract():
-            contract_block = self._state.contract.render_block()
-            if self._state.subgoals:
-                extra = "\n".join(
-                    f"- Extra criterion {i}: {text}"
-                    for i, text in enumerate(self._state.subgoals, start=1)
-                )
-                contract_block = f"{contract_block}\n{extra}"
-            return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(
-                goal=self._state.goal,
-                contract_block=contract_block,
-            )
-        if self._state.subgoals:
-            return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
-                goal=self._state.goal,
-                subgoals_block=self._state.render_subgoals_block(),
-            )
-        return CONTINUATION_PROMPT_TEMPLATE.format(goal=self._state.goal)
+        return continuation_prompt_from_state(self._state)
 
     def render_contract(self) -> str:
         """Public helper for the /goal show + /goal draft slash commands."""
@@ -2127,7 +2248,11 @@ __all__ = [
     "load_goal",
     "save_goal",
     "clear_goal",
+    "enumerate_active_goals",
+    "mark_goal_orphaned",
+    "clear_goal_orphaned",
     "migrate_goal_to_session",
+    "continuation_prompt_from_state",
     "judge_goal",
     "run_kanban_goal_loop",
 ]

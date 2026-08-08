@@ -727,6 +727,29 @@ session_reset:
   idle_minutes: 1440   # Inactivity timeout in minutes (used by "idle"/"both")
   at_hour: 4           # Daily reset hour, 0-23 local time (used by "daily"/"both")
 
+# =============================================================================
+# Goals — standing /goal (Ralph loop)
+# =============================================================================
+# A goal is a free-form user objective that stays active across turns. After
+# each turn, a lightweight judge asks an auxiliary model whether the goal is
+# satisfied; if not, Hermes feeds a continuation prompt back into the same
+# session and keeps working until the goal is done, the turn budget is
+# exhausted, or the user pauses/clears it.
+#
+# goals:
+#   max_turns: 20              # Continuation budget before auto-pause
+#
+#   # Orphan goal recovery: a goal set in the desktop chat or a CLI terminal
+#   # dies with its owning process (desktop PTY reaped after detach, terminal
+#   # closed, gateway stopped) — the goal stays "active" but nothing feeds
+#   # continuation turns. The gateway and `hermes serve` scan for orphaned
+#   # goals at boot and resume them automatically, then re-sweep every
+#   # recovery_interval_minutes so a goal orphaned mid-run is recovered
+#   # without a restart. Goals whose owning process is still alive are never
+#   # double-fired; paused/cleared goals are untouched.
+#   recovery_enabled: true     # Master switch for the boot scan + periodic sweep
+#   recovery_interval_minutes: 5   # Periodic sweep cadence; 0 disables the sweep
+
 # Maximum number of simultaneously active chat sessions across CLI, TUI,
 # dashboard chat, and messaging gateway. Set to null, 0, or omit to allow
 # unlimited concurrent sessions. When the limit is reached, new sessions get a

@@ -24,6 +24,10 @@ Hermes supports multiple AI inference providers out of the box. Use `hermes mode
 
 - **[MCP Servers](/user-guide/features/mcp)** — Connect Hermes to external tool servers via Model Context Protocol. Access tools from GitHub, databases, file systems, browser stacks, internal APIs, and more without writing native Hermes tools. Supports both stdio and SSE transports, per-server tool filtering, and capability-aware resource/prompt registration.
 
+## Financial Data
+
+- **[Revelata deepKPI](/integrations/revelata)** — Query SEC-sourced KPIs, filings, and company summaries for US public companies via a remote MCP server with OAuth 2.1. 8 read-only tools, 100 free credits/month.
+
 ## Web Search Backends
 
 The `web_search` and `web_extract` tools support eight backend providers, configured via `config.yaml` or `hermes tools`:

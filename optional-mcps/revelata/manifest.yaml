@@ -1,0 +1,68 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: revelata
+description: >-
+  Query SEC-sourced KPIs, filings, and company summaries for US public
+  companies via Revelata deepKPI (8 read-only tools, OAuth 2.1 + DCR).
+source: https://www.revelata.com
+
+# Revelata ships a hosted remote MCP server (Streamable HTTP) with native
+# MCP OAuth 2.1 + Dynamic Client Registration — same shape as the linear /
+# comfy-cloud entries. Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh — nothing to install locally.
+# No `provider:` key: this is native MCP OAuth (case 1), not a third-party
+# provider like Google. The MCP client triggers the browser flow on the
+# first probe / first connect.
+transport:
+  type: http
+  url: https://deepkpi-mcp.revelata.com/mcp
+
+auth:
+  type: oauth
+
+# Tool selection at install time:
+# deepKPI exposes a small, read-only surface (8 tools) for US public company
+# financial data. We leave `default_enabled` unset so the install-time
+# checklist starts with everything pre-checked — users prune what they don't
+# want.
+#
+# Canonical tools (names match REST/MCP):
+#   query_company_id          — free-text → SEC CIK (free)
+#   list_kpis                 — KPI catalog for a company (free)
+#   search_kpis               — semantic KPI search (1 credit/result)
+#   company_summary_search    — thematic discovery across companies (1/company)
+#   get_company_summary       — narrative summary from latest 10-K (3 credits)
+#   get_company_segments       — segment breakdown from latest 10-K (3 credits)
+#   list_sec_filing_markdowns — available filings for a CIK (free)
+#   get_sec_filing_markdown   — markdown for one SEC filing (10 credits)
+#
+# Credit model: 100 free credits/month per user; lookups are always free.
+# Additional credits at https://www.revelata.com/ai-credits
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with
+  Revelata. After auth, restart your Hermes session so the deepKPI tools
+  are loaded.
+
+  deepKPI access uses Revelata credits (100 free/month; lookups are always
+  free, paid calls range 1-10 credits each). Account / plans:
+  https://www.revelata.com/ai-credits
+
+  Companion skills (KPI pulls, filings, pressure-tests, peer benchmarks,
+  idea generation, etc.) install from GitHub today:
+    hermes skills install revelata/deepkpi-agents/kpi
+  Or, once merged, from the official optional catalog:
+    hermes skills install official/finance/kpi
+
+  On a headless / remote host, OAuth needs paste-back or an SSH port
+  forward. Use `hermes mcp login revelata` (waits 5 min) instead of
+  editing config from a running session (30 s reload timeout is too
+  short for interactive OAuth).
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure revelata
+
+  Coverage: US public companies (S&P 500/400/600); international tickers
+  (Japan, China, Hong Kong, Singapore) are enterprise-only.

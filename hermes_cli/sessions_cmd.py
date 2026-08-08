@@ -31,6 +31,22 @@ def _m():
     return main
 
 
+def clamp_sessions_browse_limit(raw, *, default: int = 500, maximum: int = 2000) -> int:
+    """Bound ``hermes sessions browse --limit`` before ``list_sessions_rich``.
+
+    Negative SQL ``LIMIT`` is unbounded in SQLite; oversized positives force
+    expensive compression-chain CTE work before the picker opens.
+    """
+    try:
+        if raw is None or raw == "":
+            value = default
+        else:
+            value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, maximum))
+
+
 def get_hermes_home():
     return _m().get_hermes_home()
 
@@ -981,7 +997,7 @@ def cmd_sessions(args, sessions_parser=None):
             print(f"✓ Re-titled {changed} session(s).")
 
     elif action == "browse":
-        limit = getattr(args, "limit", 500) or 500
+        limit = clamp_sessions_browse_limit(getattr(args, "limit", 500))
         source = getattr(args, "source", None)
         _browse_exclude = None if source else ["tool"]
         sessions = db.list_sessions_rich(

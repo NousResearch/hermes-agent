@@ -122,7 +122,16 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {
+    "dependency", "needs_input", "capability", "transient",
+    "review_required",
+}
+
+# Reason-prefix convention for auto-detecting review-required blocks when
+# ``kind`` is None (the legacy un-typed path). Workers taught to call
+# ``kanban_block(reason="review-required: …")`` hit this branch without
+# needing to pass an explicit ``kind="review_required"``.
+_REVIEW_REQUIRED_REASON_PREFIX = "review-required"
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -993,6 +1002,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Original executor assignee before the task was routed to ``review``.
+    # Preserved so the reviewer can return the task on ``needs_refinement``.
+    # ``None`` when the task has never entered the review pipeline.
+    original_executor: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1086,6 +1099,11 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            original_executor=(
+                row["original_executor"]
+                if "original_executor" in keys and row["original_executor"]
+                else None
             ),
         )
 
@@ -1268,13 +1286,18 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to ``blocked`` for a human. Preserved across unblock so a re-block for
     -- the SAME kind can be recognised as a loop.
     block_kind           TEXT,
-    -- Unblock-loop counter. Incremented each time a task is re-blocked for the
-    -- same truly-blocked reason after having been unblocked. When it reaches
+    -- Unblock-loop counter. Incremented each time a task is re-blocked for
+    -- the same truly-blocked reason after having been unblocked. When it reaches
     -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Original executor assignee before the task was routed to ``review``
+    -- via a ``review_required`` block. Preserved so the reviewer can return
+    -- the task to the original executor on ``needs_refinement``. NULL when
+    -- the task has never entered the review pipeline.
+    original_executor    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2472,6 +2495,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "original_executor" not in cols:
+        # Original executor before review routing. NULL for tasks that have
+        # never entered the review pipeline. Existing rows get NULL.
+        _add_column_if_missing(
+            conn, "tasks", "original_executor", "original_executor TEXT",
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -5647,17 +5677,40 @@ def block_task(
       can use it to signal "this might clear on its own"; it still participates
       in the loop breaker so a forever-flaky task eventually escalates.
 
-    Returns True on any successful transition (to ``blocked``, ``todo``, or
-    ``triage``), False when the task wasn't in a blockable state.
+    * ``review_required`` — the worker has finished implementation and the
+      work needs human/agent review before it counts as done. The task is
+      routed to ``review`` status (where the dispatcher's review-column
+      query picks it up and spawns a reviewer agent) instead of ``blocked``.
+      The assignee is normalised from ``<prefix>-executor`` to
+      ``<prefix>-reviewer`` so the review dispatch query finds it. The
+      original executor is preserved in ``original_executor`` so the reviewer
+      can return the task on ``needs_refinement``. Workers can trigger this
+      either explicitly (``kind="review_required"``) or via the reason-prefix
+      convention ``reason="review-required: …"`` (auto-detected when ``kind``
+      is ``None``).
+
+    Returns True on any successful transition (to ``blocked``, ``todo``,
+    ``triage``, or ``review``), False when the task wasn't in a blockable
+    state.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    # Auto-detect review-required blocks from the reason-prefix convention.
+    # Workers taught to call ``kanban_block(reason="review-required: …")``
+    # without an explicit ``kind`` still get routed to the review pipeline.
+    if (
+        kind is None
+        and reason
+        and reason.lower().startswith(_REVIEW_REQUIRED_REASON_PREFIX)
+    ):
+        kind = "review_required"
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, block_kind, block_recurrences, assignee "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
@@ -5668,6 +5721,9 @@ def block_task(
             if "block_recurrences" in cur_row.keys()
             and cur_row["block_recurrences"] is not None
             else 0
+        )
+        current_assignee = (
+            cur_row["assignee"] if "assignee" in cur_row.keys() else None
         )
 
         # Dependency blocks never enter the human ``blocked`` bucket — they
@@ -5703,6 +5759,84 @@ def block_task(
             _append_event(
                 conn, task_id, "dependency_wait",
                 {"reason": reason, "kind": kind}, run_id=run_id,
+            )
+            _blocked_task = get_task(conn, task_id)
+            _fire_kanban_lifecycle_hook(
+                "kanban_task_blocked",
+                task_id,
+                board=get_current_board(),
+                assignee=_blocked_task.assignee if _blocked_task else None,
+                run_id=run_id,
+                reason=reason,
+            )
+            return True
+
+        # ---- review-required routing ----
+        # A ``review_required`` block routes the task to ``review`` status
+        # instead of ``blocked``. The dispatcher's review-column query picks
+        # up tasks in ``review`` and spawns a reviewer agent. The assignee is
+        # normalised from ``<prefix>-executor`` to ``<prefix>-reviewer`` so
+        # the dispatch query (which filters on assignee) finds the right
+        # reviewer profile. The original executor is preserved in
+        # ``original_executor`` so the reviewer can return the task on
+        # ``needs_refinement``. Review is a fresh start, not a loop, so
+        # ``block_recurrences`` is reset to 0.
+        if kind == "review_required":
+            review_assignee = current_assignee
+            if review_assignee and review_assignee.endswith("-executor"):
+                review_assignee = review_assignee[: -len("-executor")] + "-reviewer"
+            elif review_assignee and review_assignee.endswith("-coder"):
+                review_assignee = review_assignee[: -len("-coder")] + "-reviewer"
+            # If already a reviewer or doesn't match convention, leave as-is.
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status           = 'review',
+                       claim_lock       = NULL,
+                       claim_expires    = NULL,
+                       worker_pid       = NULL,
+                       block_kind       = ?,
+                       block_recurrences = 0,
+                       assignee         = ?,
+                       original_executor = COALESCE(original_executor, ?)
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
+                (
+                    kind,
+                    review_assignee,
+                    current_assignee,
+                    task_id,
+                )
+                if expected_run_id is None
+                else (
+                    kind,
+                    review_assignee,
+                    current_assignee,
+                    task_id,
+                    int(expected_run_id),
+                ),
+            )
+            if cur.rowcount != 1:
+                return False
+            run_id = _end_run(
+                conn, task_id,
+                outcome="blocked", status="blocked",
+                summary=reason,
+            )
+            if run_id is None and reason:
+                run_id = _synthesize_ended_run(
+                    conn, task_id, outcome="blocked", summary=reason,
+                )
+            _append_event(
+                conn, task_id, "review_required",
+                {
+                    "reason": reason,
+                    "kind": kind,
+                    "original_executor": current_assignee,
+                    "review_assignee": review_assignee,
+                },
+                run_id=run_id,
             )
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(

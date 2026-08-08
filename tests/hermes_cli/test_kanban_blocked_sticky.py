@@ -9,6 +9,11 @@ worker found nothing to do (work already applied), exited cleanly, and
 got recorded as a ``protocol_violation`` → ``gave_up`` → promote → loop
 until manual intervention.
 
+NOTE: The original ``reason="review-required: ..."`` string now triggers
+review routing (→ ``review`` status, not ``blocked``) as of the
+``review_required`` block kind. These tests use a different reason string
+because they verify block *stickiness*, not review routing.
+
 These tests pin down:
 
 * Worker / operator-initiated blocks are sticky and survive
@@ -63,7 +68,7 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
         kb.claim_task(conn, tid)
         assert kb.block_task(
             conn, tid,
-            reason="review-required: please verify ACL change",
+            reason="human review needed: please verify ACL change",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "blocked"
@@ -120,7 +125,7 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
         kb.claim_task(conn, tid)
         kb.block_task(
             conn, tid,
-            reason="review-required: human eyes please",
+            reason="human review needed: please verify",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "blocked"

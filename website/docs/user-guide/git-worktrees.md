@@ -158,7 +158,12 @@ This is the easiest way to get worktree isolation. You can also combine it with 
 hermes -w -z "Fix issue #123"
 ```
 
-For parallel agents, open multiple terminals and run `hermes -w` in each — every invocation gets its own worktree and branch automatically.
+For parallel agents, open multiple terminals and run `hermes -w` in each — every
+invocation gets its own worktree and branch automatically.  If
+`terminal.backend` is set to `docker`, the host git repository corresponding to
+the worktree will be automatically mounted inside the container using the same
+path as on the host.  This prevents a dangling worktree inside the docker
+container.  The worktree itself is mounted at `/workspace` inside the container.
 
 ## Putting It All Together
 

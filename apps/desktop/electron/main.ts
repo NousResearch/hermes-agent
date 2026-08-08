@@ -157,7 +157,7 @@ import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
-import { fetchPrimaryProfileSessions } from './profile-session-routing'
+import { fetchPrimaryProfileSessions, resolveProfileSessionAggregateRoute } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
@@ -1054,6 +1054,7 @@ let mainWindow = null
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
+let globalRemoteConnectionPromise: Promise<any> | null = null
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
@@ -7666,6 +7667,11 @@ async function fetchJsonForProfile(profile, path) {
 // Issue an arbitrary method against a profile's resolved backend, parsed JSON.
 async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
+
+  return requestJsonForConnection(conn, path, method, body)
+}
+
+async function requestJsonForConnection(conn, path: string, method: string, body?: string) {
   const url = `${conn.baseUrl}${path}`
   const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
 
@@ -7682,6 +7688,74 @@ async function requestJsonForProfile(profile: string, path: string, method: stri
   }
 
   return fetchJson(url, conn.token, opts)
+}
+
+async function ensureGlobalRemoteBackend() {
+  if (globalRemoteConnectionPromise) {
+    return globalRemoteConnectionPromise
+  }
+
+  const connectionAttempt = (async () => {
+    const remote = await resolveRemoteBackend(null)
+
+    if (!remote) {
+      throw new Error('The app-global Hermes backend is not remote.')
+    }
+
+    await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode)
+
+    return remote
+  })()
+
+  globalRemoteConnectionPromise = connectionAttempt
+
+  try {
+    return await connectionAttempt
+  } catch (error) {
+    if (globalRemoteConnectionPromise === connectionAttempt) {
+      globalRemoteConnectionPromise = null
+    }
+
+    throw error
+  }
+}
+
+async function requestJsonForGlobalRemote(path: string, method: string, body?: string) {
+  const conn = await ensureGlobalRemoteBackend()
+  const connectionAttempt = globalRemoteConnectionPromise
+
+  try {
+    return await requestJsonForConnection(conn, path, method, body)
+  } catch (error) {
+    if (globalRemoteConnectionPromise === connectionAttempt) {
+      globalRemoteConnectionPromise = null
+    }
+
+    throw error
+  }
+}
+
+function profileSessionAggregateRoute() {
+  return resolveProfileSessionAggregateRoute({
+    globalRemote: globalRemoteActive(),
+    primaryProfileRemoteOverride: Boolean(profileHasRemoteOverride(primaryProfileKey()))
+  })
+}
+
+function profileSessionAggregateFetchOptions() {
+  return {
+    globalRemote: globalRemoteActive(),
+    primaryProfileRemoteOverride: Boolean(profileHasRemoteOverride(primaryProfileKey())),
+    fetchJsonForGlobalRemote: (_profile, path) => requestJsonForGlobalRemote(path, 'GET')
+  }
+}
+
+async function requestJsonForGlobalProfile(path: string, method: string, body?: string) {
+  if (profileSessionAggregateRoute() === 'global-remote') {
+    return requestJsonForGlobalRemote(path, method, body)
+  }
+
+  return requestJsonForProfile(null, path, method, body)
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -7923,6 +7997,7 @@ function stopBackendChild(child) {
 function resetHermesConnection({ soft = false } = {}) {
   backendStartFailure = null
   remoteReauthFailure = null
+  globalRemoteConnectionPromise = null
   remoteLiveness.clear()
   const hermesProcess = backendConnectionState.invalidate()
   stopBackendChild(hermesProcess)
@@ -10508,12 +10583,12 @@ async function interceptSessionRequestForRemote(request) {
       const path = `${pathname}?${passthroughParams.toString()}`
 
       if (method === 'GET') {
-        return fetchJsonForProfile(null, path)
+        return requestJsonForGlobalProfile(path, method)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
 
-      return requestJsonForProfile(null, path, method, body)
+      return requestJsonForGlobalProfile(path, method, body)
     }
 
     return undefined
@@ -10552,7 +10627,7 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
       return remoteSessionList(requested, searchParams)
     }
 
-    return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)
+    return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, profileSessionAggregateFetchOptions())
   }
 
   return mergeRemoteProfileSessions(searchParams, remoteProfiles)
@@ -10567,7 +10642,11 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
-  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)) as any
+  const base = (await fetchPrimaryProfileSessions(
+    searchParams,
+    fetchJsonForProfile,
+    profileSessionAggregateFetchOptions()
+  )) as any
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.

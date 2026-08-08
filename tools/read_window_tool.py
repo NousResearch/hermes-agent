@@ -48,8 +48,9 @@ READ_WINDOW_BELOW_SCHEMA = {
         "Returns JSON: {window: {app, title, bounds{x,y,width,height}, id}, "
         "frontmost: {app, title}, platform}. `title` may be empty when the OS "
         "withholds window titles (e.g. macOS without the Screen Recording "
-        "permission — never prompted for, noted in `note`). Metadata only; "
-        "this never captures pixels or content of other windows."
+        "permission — never prompted for, noted in `note`). Other Hermes "
+        "windows are skipped: the nearest non-Hermes window is reported. "
+        "Metadata only; this never captures pixels or content of other windows."
     ),
     "parameters": {
         "type": "object",

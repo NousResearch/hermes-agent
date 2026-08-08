@@ -1087,12 +1087,17 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (requestId) {
           const read = window.hermesDesktop?.readWindowBelow
-          void Promise.resolve(read ? read() : null).then(result => {
-            void $gateway.get()?.request('window.read.respond', {
+
+          const answer = (result: unknown) =>
+            $gateway.get()?.request('window.read.respond', {
               request_id: requestId,
               text: result ? JSON.stringify(result) : ''
             })
-          })
+
+          // .catch: ipcRenderer.invoke rejects on an older shell without the
+          // handler or a main-side throw — without an empty answer the tool
+          // would stall its full 30s timeout.
+          void Promise.resolve(read ? read() : null).then(answer, () => answer(null))
         }
       } else if (event.type === 'agent.terminal.output') {
         // Live chunk from a background process → its read-only agent terminal tab.

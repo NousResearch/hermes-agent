@@ -364,7 +364,7 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
 // behavior).
 
 const STAGED_WINDOWS_JS = `// Rewritten by stage-native-deps.mjs: resolves the staged prebuilt binding
-// directly instead of through @mapbox/node-pre-gyp (see stageGetWindowsInto).
+// directly instead of through the pre-gyp locator (see stageGetWindowsInto).
 import path from 'node:path';
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -424,13 +424,36 @@ function resolveGetWindowsRoot() {
  * a Windows host — cross-platform packs already can't happen, see
  * stageNodePtyInto), Linux nothing (it shells out to xprop at runtime).
  */
+const GET_WINDOWS_VERSION = '9.3.0'
+
 export function stageGetWindowsInto(srcRoot, destRoot, { platform = process.platform } = {}) {
+  // The STAGED_WINDOWS_JS rewrite mirrors this exact version's export surface.
+  // A version bump must fail the build here until the rewrite is re-verified —
+  // otherwise it ships stale and fails soft as a generic "unavailable".
+  const srcVersion = JSON.parse(readFileSync(join(srcRoot, 'package.json'), 'utf8')).version
+  if (srcVersion !== GET_WINDOWS_VERSION) {
+    throw new Error(
+      `[stage-native-deps] get-windows is ${srcVersion} but the staged lib/windows.js ` +
+        `rewrite was verified against ${GET_WINDOWS_VERSION}. Re-verify the rewrite ` +
+        `(STAGED_WINDOWS_JS) against the new version, then update GET_WINDOWS_VERSION.`
+    )
+  }
+
   rmSync(destRoot, { recursive: true, force: true })
   mkdirSync(destRoot, { recursive: true })
 
   cpSync(join(srcRoot, 'package.json'), join(destRoot, 'package.json'))
   cpSync(join(srcRoot, 'index.js'), join(destRoot, 'index.js'))
-  copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
+
+  // lib/*.js only — NOT copyGlobByExt, which recurses into lib/binding and
+  // stages empty dirs for every prebuilt slot (including the darwin one the
+  // tarball bundles on all platforms). Bindings are staged explicitly below.
+  mkdirSync(join(destRoot, 'lib'), { recursive: true })
+  for (const entry of readdirSync(join(srcRoot, 'lib'), { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.js')) {
+      cpSync(join(srcRoot, 'lib', entry.name), join(destRoot, 'lib', entry.name))
+    }
+  }
 
   writeFileSync(join(destRoot, 'lib', 'windows.js'), STAGED_WINDOWS_JS)
 
@@ -444,10 +467,17 @@ export function stageGetWindowsInto(srcRoot, destRoot, { platform = process.plat
   }
 
   if (platform === 'win32') {
+    // The published tarball bundles a darwin binding dir on EVERY platform
+    // (its `files` includes lib/), so a Windows host's lib/binding holds both
+    // that and the win32 dir node-pre-gyp downloaded. Stage only dirs naming
+    // the target platform; the classify gate below still catches a dir that
+    // claims win32 but holds a foreign binary.
     const bindingRoot = join(srcRoot, 'lib', 'binding')
     const bindingDirs = existsSync(bindingRoot)
-      ? readdirSync(bindingRoot).filter((dir) =>
-          existsSync(join(bindingRoot, dir, 'node-get-windows.node'))
+      ? readdirSync(bindingRoot).filter(
+          (dir) =>
+            dir.includes(`-${platform}-`) &&
+            existsSync(join(bindingRoot, dir, 'node-get-windows.node'))
         )
       : []
     if (bindingDirs.length === 0) {

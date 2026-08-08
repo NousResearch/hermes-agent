@@ -176,3 +176,27 @@ async def test_client_upload_rejects_oversize_and_missing(tmp_path: Path):
     empty = tmp_path / "empty.bin"
     empty.write_bytes(b"")
     assert await c.upload(str(empty)) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [b"null", b"[]", b'"ok"', b"42"])
+async def test_client_upload_non_object_response_returns_none(tmp_path: Path, payload: bytes):
+    """A valid-JSON non-object response is a failure, not a crash.
+
+    `upload()` promises None on any failure; a body like `null`/`[]` used to
+    reach `.get` and raise AttributeError (outside the caught tuple), escaping
+    into the send path instead of degrading to the caller's fallback.
+    """
+    from unittest.mock import MagicMock, patch
+
+    src = tmp_path / "a.png"
+    src.write_bytes(b"x")
+    c = RelayMediaClient("https://c.example", "gw1", "sec")
+
+    resp = MagicMock()
+    resp.read.return_value = payload
+    resp.__enter__.return_value = resp
+    resp.__exit__.return_value = False
+
+    with patch("urllib.request.urlopen", return_value=resp):
+        assert await c.upload(str(src)) is None

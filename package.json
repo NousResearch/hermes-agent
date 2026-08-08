@@ -64,6 +64,7 @@
     "agent-browser@0.26.0": true,
     "electron@40.10.2": true,
     "fsevents@2.3.2": true,
-    "fsevents@2.3.3": true
+    "fsevents@2.3.3": true,
+    "get-windows@9.3.0": true
   }
 }

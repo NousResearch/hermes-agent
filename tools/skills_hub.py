@@ -3336,7 +3336,13 @@ class OptionalSkillSource(SkillSource):
                 and "__pycache__" not in f.parts
                 and f.suffix != ".pyc"
             ):
-                rel_path = str(f.relative_to(skill_dir))
+                # Bundle keys are POSIX-form relative paths. ``str()`` emits
+                # "assets\\x\\y.wav" on Windows, which breaks three things at
+                # once: ``bundle_content_hash`` hashes the key strings, so the
+                # digest diverges from the installed tree's (which uses
+                # ``as_posix``); ``quarantine_bundle`` writes files at these
+                # keys; and callers index ``bundle.files`` with forward slashes.
+                rel_path = f.relative_to(skill_dir).as_posix()
                 try:
                     files[rel_path] = f.read_bytes()
                 except OSError:
@@ -3352,7 +3358,13 @@ class OptionalSkillSource(SkillSource):
             name=name,
             files=files,
             source="official",
-            identifier=f"official/{skill_dir.relative_to(self._optional_dir)}",
+            # as_posix() for the same reason the file keys use it: an f-string
+            # interpolates a Path via str(), yielding "official/a\\b\\c" on
+            # Windows. That identifier is persisted to the lock file, disagrees
+            # with the one _scan_all() builds (which already uses as_posix), and
+            # breaks fetch()'s own `rel.rsplit("/", 1)` fallback because there
+            # is no "/" left to split on.
+            identifier=f"official/{skill_dir.relative_to(self._optional_dir).as_posix()}",
             trust_level="builtin",
         )
 
@@ -3677,7 +3689,14 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         if isinstance(file_content, bytes):
             file_dest.write_bytes(file_content)
         else:
-            file_dest.write_text(file_content, encoding="utf-8")
+            # newline="" disables universal-newline translation. Without it,
+            # Python rewrites every "\n" to os.linesep when writing, so on
+            # Windows the installed bytes differ from the bundle bytes and
+            # content_hash(install_dir) can never equal
+            # bundle_content_hash(bundle) -- leaving every text skill
+            # permanently reported as "update_available" by
+            # check_for_skill_updates(), with reinstalling unable to clear it.
+            file_dest.write_text(file_content, encoding="utf-8", newline="")
 
     return dest
 

@@ -824,6 +824,13 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Protect specific skills from automated modification during background
+  # self-improvement review. The review fork will not be able to patch,
+  # edit, or delete any skill listed here. Foreground turns are unaffected.
+  # review_protected:
+  #   - my-important-skill
+  #   - project-conventions
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

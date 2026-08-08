@@ -1,6 +1,7 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { BackendExit, DesktopBootProgress } from '@/global'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewayState } from '@/store/session'
 
@@ -19,7 +20,9 @@ import { useGatewayBoot } from './use-gateway-boot'
 // post-boot reconnect loop.
 
 type Listener = (ev: unknown) => void
+let backendExit: null | ((payload: BackendExit) => void) = null
 let connectionApplied: null | (() => void) = null
+let bootProgress: null | ((payload: DesktopBootProgress) => void) = null
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
 // touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
@@ -97,8 +100,20 @@ function fakeDesktop() {
       running: true,
       timestamp: Date.now()
     })),
-    onBootProgress: vi.fn(() => () => undefined),
-    onBackendExit: vi.fn(() => () => undefined),
+    onBootProgress: vi.fn(callback => {
+      bootProgress = callback
+
+      return () => {
+        bootProgress = null
+      }
+    }),
+    onBackendExit: vi.fn(callback => {
+      backendExit = callback
+
+      return () => {
+        backendExit = null
+      }
+    }),
     onConnectionApplied: vi.fn(callback => {
       connectionApplied = callback
 
@@ -146,7 +161,9 @@ beforeEach(() => {
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
+  backendExit = null
   connectionApplied = null
+  bootProgress = null
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
@@ -198,6 +215,33 @@ async function advanceBackoff() {
   })
 }
 
+// One replay of the two steps startHermes() emits whenever it re-enters its
+// remote branch (electron/main.ts: advanceBootProgress 'backend.resolve' then
+// 'backend.remote', both running:true / error:null). The main process re-enters
+// it for any caller that asks for a connection, boot or no boot.
+function emitRemoteBootRetry() {
+  act(() => {
+    bootProgress?.({
+      error: null,
+      fakeMode: false,
+      message: 'Resolving Hermes backend',
+      phase: 'backend.resolve',
+      progress: 8,
+      running: true,
+      timestamp: Date.now()
+    })
+    bootProgress?.({
+      error: null,
+      fakeMode: false,
+      message: 'Connecting to remote Hermes backend at https://vps.example.com',
+      phase: 'backend.remote',
+      progress: 24,
+      running: true,
+      timestamp: Date.now()
+    })
+  })
+}
+
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForHermes) → app sits in the connecting combo, then fails', async () => {
     // The report's actual path: a fresh launch pointed at an unreachable VPS.
@@ -234,6 +278,149 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     })
 
     expect($desktopBoot.get().error).toBeTruthy()
+  })
+
+  it('FIX: the failed boot keeps its recovery surface while the main process retries behind it', async () => {
+    // Where the test above stops, one event too early. boot() runs once, but
+    // the main process keeps startHermes() available, and every later caller
+    // that wants a connection re-enters it and replays the cold-boot progress
+    // steps. They land on a renderer whose boot is already over: the first
+    // running:true hides the recovery overlay, the second wipes boot.error, and
+    // the fullscreen CONNECTING screen covers the app for the rest of that
+    // attempt. Nothing concludes this boot a second time, so only the main
+    // process's own failure payload could bring the recovery surface back.
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(async () => {
+      throw new Error('Hermes backend did not become ready: connect ECONNREFUSED 127.0.0.1:9119')
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    emitRemoteBootRetry()
+    emitRemoteBootRetry()
+
+    // The pair BootFailureOverlay renders on (error set, nothing running), and
+    // the same boot.error that keeps GatewayConnectingOverlay off the screen.
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect($desktopBoot.get().running).toBe(false)
+  })
+
+  it('FIX: a stale boot snapshot cannot hide the recovery surface after boot fails', async () => {
+    const desktop = fakeDesktop()
+    type BootSnapshot = Awaited<ReturnType<typeof desktop.getBootProgress>>
+    let resolveSnapshot: (snapshot: BootSnapshot) => void = () => undefined
+
+    desktop.getBootProgress = vi.fn(
+      () =>
+        new Promise<BootSnapshot>(resolve => {
+          resolveSnapshot = resolve
+        })
+    )
+    desktop.getConnection = vi.fn(async () => {
+      throw new Error('Hermes backend did not become ready: connect ECONNREFUSED 127.0.0.1:9119')
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    await act(async () => {
+      resolveSnapshot({
+        error: null,
+        fakeMode: false,
+        message: 'Resolving Hermes backend',
+        phase: 'backend.resolve',
+        progress: 8,
+        running: true,
+        timestamp: Date.now()
+      })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect($desktopBoot.get().running).toBe(false)
+  })
+
+  it('FIX: the same holds when the boot fails at the gateway socket instead of getConnection', async () => {
+    // The other way a cold boot ends badly, and the one a stale token produces:
+    // the backend answers and reports ready, so boot() gets past getConnection,
+    // and the gateway socket is what refuses. It concludes in the same catch, so
+    // the recovery surface has to survive the same replayed progress.
+    FakeWebSocket.mode = 'fail'
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    emitRemoteBootRetry()
+
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect($desktopBoot.get().running).toBe(false)
+  })
+
+  it('FIX: the same holds when the backend exits during startup and onBackendExit raises the failure', async () => {
+    // The third way a boot ends in failure, and the only one that does not run
+    // inside boot()'s own catch: a local backend that dies while boot() is
+    // still awaiting a connection. onBackendExit concludes the boot on its
+    // behalf, and the main process restarting that backend is exactly what
+    // replays the progress steps, so this conclusion has to latch as well.
+    const desktop = fakeDesktop()
+    // boot() is still awaiting getConnection when the process goes away.
+    desktop.getConnection = vi.fn(() => new Promise(() => undefined))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().running).toBe(true)
+
+    act(() => backendExit?.({ code: 1, signal: null }))
+
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    emitRemoteBootRetry()
+
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect($desktopBoot.get().running).toBe(false)
+  })
+
+  it('FIX: the failed boot is not a dead end — applying a gateway config still boots the app', async () => {
+    // The latch must not outlive the failure it describes. "Use local gateway"
+    // and the embedded gateway settings both apply a config, which drives
+    // softSwitch(): a fresh boot lifecycle that has to clear the failure and
+    // open the app.
+    let connectionFails = true
+    const desktop = fakeDesktop()
+    const healthyConnection = desktop.getConnection
+
+    desktop.getConnection = vi.fn(async () => {
+      if (connectionFails) {
+        throw new Error('Hermes backend did not become ready: connect ECONNREFUSED 127.0.0.1:9119')
+      }
+
+      return healthyConnection()
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    emitRemoteBootRetry()
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    connectionFails = false
+    act(() => connectionApplied?.())
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
   })
 
   it('resets the old machine context before connecting an applied gateway', async () => {

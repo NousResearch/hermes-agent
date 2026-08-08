@@ -1,7 +1,7 @@
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
-import type { HermesConnection } from '@/global'
+import type { DesktopBootProgress, HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
@@ -116,6 +116,14 @@ export function useGatewayBoot({
     // signals that fire around wake (power resume, network online, the window
     // becoming visible).
     let bootCompleted = false
+    // The other way a cold boot ends. The main process keeps startHermes()
+    // available for retries, and every retry re-emits the progress steps a cold
+    // boot emits — but this boot is over, because boot() runs once and nothing
+    // calls it again. Without this latch that progress put the fullscreen
+    // CONNECTING overlay back over the recovery surface for the whole of every
+    // retry, leaving it reachable only between attempts. A soft switch starts a
+    // fresh boot lifecycle and clears it.
+    let bootFailed = false
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
@@ -291,6 +299,7 @@ export function useGatewayBoot({
       reconnectFailingSince = null
       escalated = false
       reauthNotified = false
+      bootFailed = false
       callbacksRef.current.beforeConnectionSwitch()
       wipeSessionListsForGatewaySwitch()
 
@@ -325,6 +334,7 @@ export function useGatewayBoot({
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
+          bootFailed = true
           failDesktopBoot(message)
           notifyError(err, translateNow('boot.errors.desktopBootFailed'))
           setSessionsLoading(false)
@@ -334,10 +344,12 @@ export function useGatewayBoot({
       }
     }
 
-    const offBootProgress = desktop.onBootProgress(payload => {
+    const handleBootProgress = (payload: DesktopBootProgress) => {
       // Soft switch / post-boot startHermes re-emits progress — ignore so the
-      // cold-boot CONNECTING overlay stays down. Errors still surface.
-      if ($gatewaySwitching.get() || bootCompleted) {
+      // cold-boot CONNECTING overlay stays down. Errors still surface. A boot
+      // that ended in failure counts as ended too: its retries re-emit the same
+      // steps, and replaying them would take the recovery overlay back down.
+      if ($gatewaySwitching.get() || bootCompleted || bootFailed) {
         if (payload.error) {
           applyDesktopBootProgress(payload)
         }
@@ -346,11 +358,13 @@ export function useGatewayBoot({
       }
 
       applyDesktopBootProgress(payload)
-    })
+    }
+
+    const offBootProgress = desktop.onBootProgress(handleBootProgress)
 
     void desktop
       .getBootProgress()
-      .then(snapshot => applyDesktopBootProgress(snapshot))
+      .then(handleBootProgress)
       .catch(() => undefined)
 
     setDesktopBootStep({
@@ -475,6 +489,9 @@ export function useGatewayBoot({
       }
 
       if ($desktopBoot.get().running || $desktopBoot.get().visible) {
+        // Ends a boot that is still in flight, so it latches like the catch
+        // blocks that conclude one.
+        bootFailed = true
         failDesktopBoot(translateNow('boot.errors.backgroundExitedDuringStartup'))
       }
 
@@ -548,6 +565,7 @@ export function useGatewayBoot({
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
+          bootFailed = true
           failDesktopBoot(message)
           notifyError(err, translateNow('boot.errors.desktopBootFailed'))
           setSessionsLoading(false)

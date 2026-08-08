@@ -55,6 +55,76 @@ def _m():
     return main
 
 
+
+
+def check_hermes_process(args: object) -> None:
+    """Prompt the user to stop other hermes.exe shims before a Windows update.
+
+    Reuses ``_m()._detect_concurrent_hermes_instances(scripts_dir)`` so the
+    candidate set is scoped to *this* venv's resolved shim paths and already
+    excludes the updater's own launcher ancestor (the Windows ``hermes.exe``
+    shim is a parent of the Python process running the update). Using the
+    scoped detector avoids targeting a different Hermes installation.
+
+    The prompt only appears when:
+      * we are on Windows,
+      * ``args.yes`` is not set (non-interactive ``--yes`` skips it), and
+      * stdin is a TTY.
+
+    On a ``n`` answer the update aborts cleanly via ``sys.exit(0)`` (no error).
+    """
+    import subprocess
+    import sys
+
+    if not sys.platform.startswith("win"):
+        return
+    if getattr(args, "yes", False):
+        return
+    try:
+        if not sys.stdin.isatty():
+            return
+    except Exception:
+        return
+
+    scripts_dir = _m()._venv_scripts_dir()
+    if scripts_dir is None:
+        return
+
+    # Scoped to this venv; excludes the updater's own launcher ancestor.
+    try:
+        concurrent = _m()._detect_concurrent_hermes_instances(scripts_dir)
+    except Exception:
+        return
+    if not concurrent:
+        return
+
+    print()
+    plural = "s" if len(concurrent) != 1 else ""
+    pids = [str(pid) for pid, _name in concurrent]
+    names = ", ".join(pids)
+    print(
+        "\u26a0 Detected {} running hermes.exe process{} holding the venv shim: {}".format(
+            len(concurrent), plural, names
+        )
+    )
+    answer = input("Stop these processes before continuing? [Y/n] ").strip().lower()
+    if answer in ("", "y", "yes"):
+        for pid, _name in concurrent:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/F"],
+                    check=False,
+                    capture_output=True,
+                )
+            except Exception:
+                pass
+        print("\u2192 Stopped hermes.exe processes.")
+    else:
+        # User declined: abort the update cleanly, no error.
+        print()
+        print("\u2192 Update aborted: hermes.exe processes still running.")
+        sys.exit(0)
+
 _UPDATE_RUNTIME_RELOAD_MODULES = (
     "hermes_constants",
     "tools.environments.local",
@@ -3600,7 +3670,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # open. Continuing would result in a string of WinError 32 warnings and
     # then either a deferred-rename leftover or a failed git-pull fast path
     # that silently falls back to the slower ZIP route. See issue #26670.
+    # On Windows, prompt (once) to stop any other running hermes.exe holding the
+    # venv shim. Reuses _detect_concurrent_hermes_instances so the candidate set
+    # is scoped to this venv and excludes the updater's own launcher ancestor.
+    # A "n" answer aborts the update cleanly (sys.exit(0)); a "y" answer kills
+    # the foreign shims and we fall through to the re-check below.
     if _m()._is_windows() and not getattr(args, "force", False):
+        check_hermes_process(args)
+        # Re-check after a possible termination before continuing.
         scripts_dir = _m()._venv_scripts_dir()
         if scripts_dir is not None:
             concurrent = _m()._detect_concurrent_hermes_instances(scripts_dir)

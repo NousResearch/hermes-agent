@@ -104,6 +104,24 @@ $ hermes update
   confirmed those processes will not write to the venv.
 ```
 
+If the check fires, you'll now get an interactive prompt before the hard stop:
+
+```text
+⚠ Detected 1 running hermes.exe process holding the venv shim: 12345
+Stop these processes before continuing? [Y/n]
+```
+
+- **`y`** (or just Enter) — the updater kills the listed foreign shims via
+  `taskkill /PID <pid> /F`, then re-checks and continues if the lock cleared.
+- **`n`** — the update aborts cleanly (exit code 0, no error). Re-run once you
+  have closed the processes yourself, or pass `--force` to skip the check.
+
+The prompt only appears in an interactive terminal and is skipped when you pass
+`--yes`. Detection is scoped to *this* venv's resolved shim paths, so a
+`hermes.exe` from a different installation is never nominated. The original
+hard-stop message above remains as a safety net if `taskkill` cannot clear the
+lock.
+
 Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
 
 A second, separate guard refuses to touch the venv while any process is running from its Python interpreter (the Desktop app's backend, a gateway, a Python REPL). Those processes keep native extension files (`.pyd`) locked, and a dependency sync that dies partway on an access-denied error strands the install between versions. This guard is **not** bypassed by `--force`; if you're certain the detected holders are false positives, use the explicit `hermes update --force-venv`.

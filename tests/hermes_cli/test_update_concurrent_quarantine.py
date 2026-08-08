@@ -523,6 +523,142 @@ def test_unreadable_argv_falls_back_to_the_captured_prefix(monkeypatch):
 # cmd_update integration — concurrent-instance gate
 # ---------------------------------------------------------------------------
 
+# Tests below exercise check_hermes_process(), the interactive prompt added to
+# _cmd_update_impl. They stub the scoped detector (_detect_concurrent_hermes_instances)
+# so no real process is enumerated or killed. They keep the module-level
+# real_concurrent_gate marker (no autouse stub), but override the helper per
+# test via monkeypatch on the lazy _m() reference.
+
+
+import io
+import subprocess
+
+from hermes_cli import update_cmd as uc
+
+
+def _make_args(yes=False):
+    class _Args:
+        pass
+
+    a = _Args()
+    a.yes = yes
+    return a
+
+
+class _FakeTTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class _FakeNoTTY(io.StringIO):
+    def isatty(self):
+        return False
+
+
+@pytest.fixture()
+def _detect_mock(monkeypatch):
+    state = {"concurrent": [], "scripts_dir": "/fake/scripts", "raise": False}
+
+    def _fake_detect(scripts_dir):
+        if state["raise"]:
+            raise RuntimeError("boom")
+        return state["concurrent"]
+
+    def _fake_scripts_dir():
+        return state["scripts_dir"]
+
+    monkeypatch.setattr(uc._m(), "_detect_concurrent_hermes_instances", _fake_detect)
+    monkeypatch.setattr(uc._m(), "_venv_scripts_dir", _fake_scripts_dir)
+    return state
+
+
+@pytest.fixture()
+def _taskkill_spy(monkeypatch):
+    killed = []
+
+    def _fake_run(cmd, *a, **k):
+        if cmd[:1] == ["taskkill"]:
+            killed.append(cmd[2])
+        import subprocess as _sp
+
+        class _R:
+            stdout = ""
+
+        # Preserve the real subprocess.run signature for non-taskkill calls.
+        _sp.run
+        return _R()
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    return killed
+
+
+def test_check_no_concurrent_no_prompt(_detect_mock, _taskkill_spy):
+    _detect_mock["concurrent"] = []
+    sys.stdin = _FakeTTY("y\n")
+    uc.check_hermes_process(_make_args(yes=False))
+    assert _taskkill_spy == []
+
+
+def test_check_yes_flag_skips_prompt(_detect_mock, _taskkill_spy):
+    _detect_mock["concurrent"] = [(22796, "hermes.exe")]
+    sys.stdin = _FakeTTY("n\n")  # would abort if reached
+    uc.check_hermes_process(_make_args(yes=True))
+    assert _taskkill_spy == []
+
+
+def test_check_non_tty_skips_prompt(_detect_mock, _taskkill_spy):
+    _detect_mock["concurrent"] = [(22796, "hermes.exe")]
+    sys.stdin = _FakeNoTTY("n\n")
+    uc.check_hermes_process(_make_args(yes=False))
+    assert _taskkill_spy == []
+
+
+def test_check_declined_aborts_cleanly(_detect_mock, _taskkill_spy):
+    _detect_mock["concurrent"] = [(22796, "hermes.exe"), (4544, "hermes.exe")]
+    sys.stdin = _FakeTTY("n\n")
+    with pytest.raises(SystemExit) as exc:
+        uc.check_hermes_process(_make_args(yes=False))
+    assert exc.value.code == 0
+    assert _taskkill_spy == []
+
+
+def test_check_accept_kills_each_foreign_pid(_detect_mock, _taskkill_spy):
+    _detect_mock["concurrent"] = [(22796, "hermes.exe"), (4544, "hermes.exe")]
+    sys.stdin = _FakeTTY("y\n")
+    uc.check_hermes_process(_make_args(yes=False))
+    assert set(_taskkill_spy) == {"22796", "4544"}
+
+
+def test_check_empty_input_defaults_to_yes(_detect_mock, _taskkill_spy):
+    _detect_mock["concurrent"] = [(22796, "hermes.exe")]
+    sys.stdin = _FakeTTY("\n")
+    uc.check_hermes_process(_make_args(yes=False))
+    assert _taskkill_spy == ["22796"]
+
+
+def test_check_detect_raises_is_safe(_detect_mock, _taskkill_spy):
+    _detect_mock["raise"] = True
+    sys.stdin = _FakeTTY("y\n")
+    uc.check_hermes_process(_make_args(yes=False))
+    assert _taskkill_spy == []
+
+
+def test_check_scripts_dir_none_returns(_detect_mock, _taskkill_spy):
+    _detect_mock["scripts_dir"] = None
+    _detect_mock["concurrent"] = [(22796, "hermes.exe")]
+    sys.stdin = _FakeTTY("n\n")
+    uc.check_hermes_process(_make_args(yes=False))
+    assert _taskkill_spy == []
+
+
+def test_check_prompt_scoped_to_venv(_detect_mock, _taskkill_spy):
+    # Sanity: exactly the scoped PIDs are killed, nothing else.
+    _detect_mock["concurrent"] = [(999, "hermes.exe")]
+    sys.stdin = _FakeTTY("yes\n")
+    uc.check_hermes_process(_make_args(yes=False))
+    assert _taskkill_spy == ["999"]
+
+
 
 
 

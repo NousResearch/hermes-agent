@@ -1640,7 +1640,11 @@ def switch_model(
                 api_key = _ukey
                 base_url = _user_pdef.base_url
                 api_mode = ""
-        elif target_provider == "custom" and current_base_url:
+        elif (
+            target_provider == "custom"
+            and current_provider in {"custom", "local"}
+            and current_base_url
+        ):
             api_key = current_api_key
             base_url = current_base_url
             api_mode = determine_api_mode(target_provider, base_url)

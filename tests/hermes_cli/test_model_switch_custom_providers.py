@@ -229,6 +229,60 @@ def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch)
     assert result.api_key == "sk-test"
 
 
+def test_switch_model_bare_custom_uses_configured_endpoint_across_providers(
+    monkeypatch,
+):
+    """A previous provider's endpoint must not leak into bare custom validation."""
+    configured_url = "http://localhost:8027/v1"
+    previous_url = "https://api.deepseek.com"
+    captured = {}
+
+    def resolve_runtime_provider(**kwargs):
+        captured["runtime"] = kwargs
+        return {
+            "api_key": "configured-key",
+            "base_url": configured_url,
+            "api_mode": "chat_completions",
+        }
+
+    def validate_requested_model(*args, **kwargs):
+        captured["validation"] = kwargs
+        return _MOCK_VALIDATION
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        resolve_runtime_provider,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        validate_requested_model,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_info", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities",
+        lambda *args, **kwargs: None,
+    )
+
+    result = switch_model(
+        raw_input="qwen3.6-27b",
+        current_provider="deepseek",
+        current_model="deepseek-v4-flash",
+        current_base_url=previous_url,
+        current_api_key="previous-key",
+        explicit_provider="custom",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert captured["runtime"]["requested"] == "custom"
+    assert captured["validation"]["base_url"] == configured_url
+    assert result.base_url == configured_url
+    assert result.api_key == "configured-key"
+
+
 def test_is_aggregator_recognizes_named_custom_provider():
     assert providers_mod.is_aggregator("custom:hpc-ai") is True
     assert providers_mod.is_aggregator("custom:litellm") is True

@@ -671,6 +671,21 @@ def unwrap_workflow(payload: Any) -> dict:
     )
 
 
+def strip_comment_keys(workflow: dict) -> dict:
+    """Drop underscore-prefixed top-level keys before submitting to /prompt.
+
+    ComfyUI's /prompt endpoint treats every top-level key as a node and calls
+    `.get()` on its value (e.g. `node_data.get('_meta')`). A `_comment` whose
+    value is a string raises `AttributeError: 'str' object has no attribute
+    'get'`, returning HTTP 500. Authors commonly add `_comment`/`_meta`-style
+    metadata keys to document a workflow, so strip any `_`-prefixed top-level
+    key (not just `_comment`) to keep the submitted graph valid. Real node ids
+    are numeric strings, so this never removes a node. Returns a new dict; the
+    input is not mutated.
+    """
+    return {k: v for k, v in workflow.items() if not k.startswith("_")}
+
+
 def is_link(value: Any) -> bool:
     """True if `value` is a [node_id, output_index] connection (length-2 list)."""
     return (

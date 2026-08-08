@@ -478,7 +478,7 @@ class TestEventBridge:
         b._pending_approvals["a1"] = {
             "id": "a1", "kind": "exec",
             "description": "rm -rf /tmp",
-            "session_key": "test", "created_at": "2026-03-29T12:00:00",
+            "created_at": "2026-03-29T12:00:00",
         }
         assert len(b.list_pending_approvals()) == 1
         result = b.respond_to_approval("a1", "deny")
@@ -489,6 +489,63 @@ class TestEventBridge:
         from mcp_serve import EventBridge
         r = EventBridge().respond_to_approval("nope", "deny")
         assert "error" in r
+
+    def test_sync_pending_approvals_emits_request_and_resolution(self, monkeypatch):
+        import mcp_serve
+
+        pending = {
+            "session-1": {
+                "command": "rm -rf /tmp/demo",
+                "description": "dangerous command",
+                "created_at": "2026-03-29T12:00:00Z",
+            }
+        }
+        monkeypatch.setattr(
+            "tools.approval.list_pending_gateway_approvals",
+            lambda: pending.copy(),
+        )
+
+        bridge = mcp_serve.EventBridge()
+        bridge._sync_pending_approvals()
+
+        approvals = bridge.list_pending_approvals()
+        assert len(approvals) == 1
+        assert approvals[0]["session_key"] == "session-1"
+        assert approvals[0]["kind"] == "exec"
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert events[0]["type"] == "approval_requested"
+
+        pending.clear()
+        bridge._sync_pending_approvals()
+        events = bridge.poll_events(after_cursor=1)["events"]
+        assert events[-1]["type"] == "approval_resolved"
+        assert bridge.list_pending_approvals() == []
+
+    def test_respond_to_approval_unblocks_gateway_queue(self, monkeypatch):
+        from mcp_serve import EventBridge
+
+        calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False, reason=None):
+            calls.append((session_key, choice, resolve_all, reason))
+            return 1
+
+        monkeypatch.setattr("tools.approval.resolve_gateway_approval", fake_resolve)
+
+        bridge = EventBridge()
+        bridge._pending_approvals["a1"] = {
+            "id": "a1",
+            "kind": "plugin",
+            "description": "Approve plugin write",
+            "session_key": "session-1",
+            "created_at": "2026-03-29T12:00:00Z",
+        }
+
+        result = bridge.respond_to_approval("a1", "allow-once")
+
+        assert result["resolved"] is True
+        assert calls == [("session-1", "once", False, None)]
+        assert bridge.list_pending_approvals() == []
 
 
 # ---------------------------------------------------------------------------

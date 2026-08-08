@@ -398,26 +398,35 @@ def _raw_config_cache_clear() -> None:
     _RAW_CONFIG_CACHE.clear()
 
 
-def _load_raw_config() -> Dict[str, Any]:
+def _load_raw_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     """Read config.yaml with a shared mtime+size keyed cache.
 
     This module intentionally avoids importing ``hermes_cli.config`` on the
     skill prompt/build path. A tiny local cache gives the same repeated-read
     win without pulling the heavier CLI config stack into startup.
+
+    ``config_path`` overrides the HERMES_HOME lookup so a caller can inspect
+    another profile's config. Overridden reads deliberately bypass the cache:
+    it holds a single entry for the running profile's config, and letting
+    cross-profile lookups evict it would thrash the prompt-build hot path.
     """
-    config_path = get_config_path()
+    use_cache = config_path is None
+    if config_path is None:
+        config_path = get_config_path()
     if not config_path.exists():
         return {}
-    try:
-        stat = config_path.stat()
-        cache_key = (str(config_path), stat.st_mtime_ns, stat.st_size)
-    except OSError:
-        cache_key = None
+    cache_key = None
+    if use_cache:
+        try:
+            stat = config_path.stat()
+            cache_key = (str(config_path), stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            cache_key = None
 
-    if cache_key is not None:
-        cached = _RAW_CONFIG_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
+        if cache_key is not None:
+            cached = _RAW_CONFIG_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
 
     try:
         parsed = yaml_load(config_path.read_text(encoding="utf-8"))
@@ -469,6 +478,22 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
         if platform_disabled is not None:
             return global_disabled | _normalize_string_set(platform_disabled)
     return global_disabled
+
+
+def get_globally_disabled_skill_names(hermes_home: Path) -> Set[str]:
+    """Return ``skills.disabled`` for the profile rooted at *hermes_home*.
+
+    For callers inspecting a profile they are **not** running as, where the
+    platform the target process will use is unknown. ``platform_disabled`` is
+    deliberately excluded for that reason; a globally-disabled skill is
+    disabled on every platform, so this is the subset guaranteed to be
+    unloadable there no matter how the profile is launched.
+    """
+    parsed = _load_raw_config(hermes_home / "config.yaml")
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return set()
+    return _normalize_string_set(skills_cfg.get("disabled"))
 
 
 def _normalize_string_set(values) -> Set[str]:

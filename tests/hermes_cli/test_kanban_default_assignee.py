@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -71,6 +72,65 @@ def test_unassigned_task_auto_assigned_with_default_assignee(isolated_kanban_hom
     assert payload["assignee"] == "default"
     assert payload["source"] == "kanban.default_assignee"
 
+
+def test_default_assignee_drops_skills_that_profile_disables(isolated_kanban_home):
+    """The fallback profile's disabled skills are stripped as it is applied.
+
+    An unassigned card gave ``create_task`` no assignee to filter its pinned
+    skills against, so the check lands here instead — otherwise the dispatcher
+    spawns a worker whose every pinned skill is missing, which raises before
+    any work happens.
+    """
+    kb, home = isolated_kanban_home
+    profile_dir = Path(home) / "profiles" / "researcher"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "config.yaml").write_text(
+        "skills:\n  disabled:\n    - arxiv\n", encoding="utf-8"
+    )
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        task_id = kb.create_task(
+            conn, title="t1", assignee=None, skills=["arxiv", "translation"]
+        )
+        # Nothing was known to be disabled at creation: there was no assignee.
+        assert kb.get_task(conn, task_id).skills == ["arxiv", "translation"]
+
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn, spawn_fn=_fake_spawn, dry_run=False,
+            default_assignee="researcher",
+        )
+    assert res.auto_assigned_default == [task_id]
+
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+    assert task.assignee == "researcher"
+    assert task.skills == ["translation"]
+
+
+def test_dry_run_default_assignee_leaves_skills_alone(isolated_kanban_home):
+    """Dry-run reports the routing without stripping anything from the card."""
+    kb, home = isolated_kanban_home
+    profile_dir = Path(home) / "profiles" / "researcher"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "config.yaml").write_text(
+        "skills:\n  disabled:\n    - arxiv\n", encoding="utf-8"
+    )
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        task_id = kb.create_task(
+            conn, title="t1", assignee=None, skills=["arxiv", "translation"]
+        )
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn, spawn_fn=_fake_spawn, dry_run=True,
+            default_assignee="researcher",
+        )
+    assert res.auto_assigned_default == [task_id]
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+    assert task.assignee is None
+    assert task.skills == ["arxiv", "translation"]
 
 
 

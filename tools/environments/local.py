@@ -349,6 +349,37 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX")
 
 
+# Credential-shaped words used to classify *dynamically named* Hermes-internal
+# secrets. Deliberately the same shape test ``code_execution_tool.py`` already
+# applies to the execute_code child env (``_SECRET_SUBSTRINGS``), narrowed to
+# the four words that can appear under the two Hermes-internal prefixes. A
+# substring test — not a suffix test — is what catches real-world spellings
+# that carry no separator (``APIKEY``) or a trailing qualifier (``_SECRET_V2``);
+# the sandbox list calls out ``APIKEY`` for exactly that reason.
+_INTERNAL_SECRET_SUBSTRINGS = ("KEY", "SECRET", "TOKEN", "PASSWORD")
+
+# Non-secret ``GATEWAY_RELAY_*`` names that contain a credential-shaped word but
+# carry routing/config material rather than auth material.
+#
+# This set is enumerated on the SAFE side on purpose. Enumerating *secrets*
+# fails open on every name nobody thought of, which is the leak this predicate
+# keeps re-acquiring; enumerating the handful of *non-secrets* fails closed
+# instead — an unknown ``GATEWAY_RELAY_*`` name containing KEY/SECRET/TOKEN/
+# PASSWORD is treated as a secret until someone documents otherwise.
+#
+#   GATEWAY_RELAY_ROUTE_KEYS     comma-separated relay *route* identifiers
+#                                (gateway/relay/__init__.py), the routing-hint
+#                                class the docstring below promises to keep.
+#   GATEWAY_RELAY_IDP_TOKEN_URL  the OIDC token *endpoint* URL, not a token
+#                                (gateway/relay/__init__.py). The credential
+#                                that pairs with it, GATEWAY_RELAY_IDP_CLIENT_
+#                                SECRET, is still stripped.
+_GATEWAY_RELAY_NON_SECRET_NAMES: frozenset[str] = frozenset({
+    "GATEWAY_RELAY_ROUTE_KEYS",
+    "GATEWAY_RELAY_IDP_TOKEN_URL",
+})
+
+
 def _is_hermes_internal_secret(key: str) -> bool:
     """Return True for Hermes-internal secrets injected under *dynamic* names.
 
@@ -356,23 +387,34 @@ def _is_hermes_internal_secret(key: str) -> bool:
     provider/tool registries, but the gateway and CLI also inject secrets into
     ``os.environ`` at runtime under names no static registry knows about:
 
-    - ``AUXILIARY_<TASK>_API_KEY`` / ``AUXILIARY_<TASK>_BASE_URL`` — per-task
-      side-LLM credentials bridged from ``config.yaml[auxiliary]`` by
-      ``gateway/run.py`` and ``cli.py`` (vision, web_extract, approval,
-      compression, and any plugin-registered auxiliary task). These are
-      separate, often higher-spend API keys plus base URLs that may point at
-      private endpoints; a model-authored shell command must never see them.
-    - ``GATEWAY_RELAY_*_SECRET`` / ``GATEWAY_RELAY_*_KEY`` /
-      ``GATEWAY_RELAY_*_TOKEN`` — relay-auth material provisioned by the
-      gateway (``GATEWAY_RELAY_SECRET``, ``GATEWAY_RELAY_DELIVERY_KEY``).
+    - ``AUXILIARY_<TASK>_*`` — per-task side-LLM credentials bridged from
+      ``config.yaml[auxiliary]`` by ``gateway/run.py`` and ``cli.py`` (vision,
+      web_extract, approval, compression, and any plugin-registered auxiliary
+      task). These are separate, often higher-spend API keys plus base URLs
+      that may point at private endpoints; a model-authored shell command must
+      never see them. Non-credential ``AUXILIARY_*`` selectors
+      (``AUXILIARY_VISION_MODEL``, ``…_PROVIDER``) are NOT matched.
+    - ``GATEWAY_RELAY_*`` relay-auth material provisioned by the gateway
+      (``GATEWAY_RELAY_SECRET``, ``GATEWAY_RELAY_DELIVERY_KEY``,
+      ``GATEWAY_RELAY_ENROLL_TOKEN``, ``GATEWAY_RELAY_IDP_CLIENT_SECRET``).
       These are Tier-1 gateway secrets, like the messaging bot tokens in
       ``_ALWAYS_STRIP_KEYS``. Non-secret ``GATEWAY_RELAY_*`` routing hints
       (``GATEWAY_RELAY_URL``, ``GATEWAY_RELAY_PLATFORMS``, …) are NOT matched
-      and remain visible.
+      and remain visible — see ``_GATEWAY_RELAY_NON_SECRET_NAMES`` for the two
+      routing hints that would otherwise collide with the shape test.
 
-    ``code_execution_tool.py`` already catches these via substring matching on
-    ``KEY`` / ``SECRET`` / ``TOKEN``; the terminal backend's narrower name-based
-    blocklist did not, which is the leak this predicate closes.
+    **Shape test, not a suffix list.** Both prefixes classify on the
+    credential-shaped words in ``_INTERNAL_SECRET_SUBSTRINGS``. An exact-suffix
+    list only strips the spellings its author enumerated, so adjacent real
+    spellings of the same secret fall straight through to the child:
+    ``AUXILIARY_<TASK>_APIKEY`` (no separator before KEY),
+    ``AUXILIARY_<TASK>_SECRET`` / ``_TOKEN`` (the aux branch matched
+    ``_API_KEY`` / ``_BASE_URL`` only), and ``GATEWAY_RELAY_SECRET_V2`` (a
+    trailing qualifier defeats ``endswith``). ``code_execution_tool.py`` already
+    catches these via substring matching on ``KEY`` / ``SECRET`` / ``TOKEN``;
+    the terminal backend's narrower name-based blocklist did not, which is the
+    leak this predicate closes — so matching on shape here makes the two child
+    surfaces agree instead of introducing a new policy.
 
     This is the single source of truth for "Hermes-internal dynamic secret"
     across every spawn path — the terminal ``_make_run_env`` /
@@ -383,14 +425,16 @@ def _is_hermes_internal_secret(key: str) -> bool:
     a model-driving CLI legitimately needs matches these patterns.
     """
     upper = key.upper()
-    if upper.startswith("AUXILIARY_") and (
-        upper.endswith("_API_KEY") or upper.endswith("_BASE_URL")
-    ):
-        return True
-    if upper.startswith("GATEWAY_RELAY_") and (
-        upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
-    ):
-        return True
+    if upper.startswith("AUXILIARY_"):
+        # ``_BASE_URL`` carries no credential-shaped word but is still internal
+        # (it may address a private endpoint), so it stays explicitly matched.
+        if upper.endswith("_BASE_URL"):
+            return True
+        return any(word in upper for word in _INTERNAL_SECRET_SUBSTRINGS)
+    if upper.startswith("GATEWAY_RELAY_"):
+        if upper in _GATEWAY_RELAY_NON_SECRET_NAMES:
+            return False
+        return any(word in upper for word in _INTERNAL_SECRET_SUBSTRINGS)
     return False
 
 

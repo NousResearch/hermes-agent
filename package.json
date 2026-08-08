@@ -11,7 +11,7 @@
     "tests-js"
   ],
   "scripts": {
-    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
+    "postinstall": "echo '\u2705 Browser tools ready. Run: python run_agent.py --help'",
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",
@@ -50,7 +50,16 @@
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",
-    "brace-expansion": "5.0.8"
+    "brace-expansion": "5.0.9",
+    "mermaid": "11.16.1",
+    "dompurify": "3.4.13",
+    "ip-address": "10.3.1",
+    "nanoid@^3": "3.3.17",
+    "nanoid@^6": "6.0.0",
+    "js-yaml@^4": "4.3.1",
+    "undici@^6": "6.28.0",
+    "undici@^7": "7.29.0",
+    "postcss": "8.5.23"
   },
   "engines": {
     "node": ">=22.22.0",

@@ -717,6 +717,19 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if _gateway_surface_passes_raw_text(platform):
         return text
 
+    # Lone UTF-16 surrogates (U+D800–U+DFFF) in model output crash chat
+    # surfaces downstream: Telegram's ``utf16_len`` length check and Signal
+    # formatting both ``.encode()`` the reply and raise UnicodeEncodeError
+    # before any send (#55143, #55309). The stored-history copy is already
+    # sanitized by ``build_assistant_message`` and ``finalize_turn`` scrubs
+    # the returned ``final_response``, but this boundary is the last line of
+    # defense for every legacy/plugin delivery path that hands us raw text.
+    # Raw-text/programmatic surfaces above keep passthrough — their JSON
+    # consumers escape surrogates safely.
+    from agent.message_sanitization import _sanitize_surrogates
+
+    text = _sanitize_surrogates(str(text))
+
     # Cancellation metadata, not assistant prose. ACP/TUI already suppress
     # this sentinel; chat surfaces should too (#7921).
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):

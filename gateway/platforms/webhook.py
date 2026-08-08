@@ -128,9 +128,20 @@ _BUILTIN_DELIVER_PLATFORMS = {
 #     ``platforms.webhook.extra.host``.
 DEFAULT_HOST = None
 DEFAULT_PORT = 8644
+DEFAULT_RATE_LIMIT = 30  # requests per minute
+DEFAULT_MAX_BODY_BYTES = 1_048_576  # 1MB
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 _RATE_WINDOW_SECONDS = 60.0
+
+
+def _coerce_int(value: object, *, default: int) -> int:
+    """Parse config ints; malformed values must not crash adapter init."""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
 _LOOPBACK_HOSTS = frozenset({
@@ -190,7 +201,11 @@ class WebhookAdapter(BasePlatformAdapter):
         # also means "bind all families" rather than an invalid "" host.
         _cfg_host = config.extra.get("host", DEFAULT_HOST)
         self._host: Optional[str] = _cfg_host or None
-        self._port: int = int(config.extra.get("port", DEFAULT_PORT))
+        # Malformed port / rate / size ints must not ValueError during
+        # construction and take the webhook platform down (Teams/Raft posture).
+        self._port: int = _coerce_int(
+            config.extra.get("port", DEFAULT_PORT), default=DEFAULT_PORT
+        )
         self._global_secret: str = config.extra.get("secret", "")
         self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
         self._dynamic_routes: Dict[str, dict] = {}
@@ -225,17 +240,22 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Rate limiting: per-route timestamps in a fixed window.
         self._rate_counts: Dict[str, Deque[float]] = {}
-        self._rate_limit: int = int(config.extra.get("rate_limit", 30))  # per minute
+        self._rate_limit: int = _coerce_int(
+            config.extra.get("rate_limit", DEFAULT_RATE_LIMIT),
+            default=DEFAULT_RATE_LIMIT,
+        )
 
         # Body size limit (auth-before-body pattern)
-        self._max_body_bytes: int = int(
-            config.extra.get("max_body_bytes", 1_048_576)
-        )  # 1MB
-        self._script_timeout_seconds: int = int(
+        self._max_body_bytes: int = _coerce_int(
+            config.extra.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES),
+            default=DEFAULT_MAX_BODY_BYTES,
+        )
+        self._script_timeout_seconds: int = _coerce_int(
             config.extra.get(
                 "script_timeout_seconds",
                 DEFAULT_SCRIPT_TIMEOUT_SECONDS,
-            )
+            ),
+            default=DEFAULT_SCRIPT_TIMEOUT_SECONDS,
         )
         self._route_processor = WebhookRouteProcessor(
             script_timeout_seconds=self._script_timeout_seconds

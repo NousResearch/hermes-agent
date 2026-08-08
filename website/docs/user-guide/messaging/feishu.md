@@ -85,6 +85,35 @@ In **Events and Callbacks**:
 2. In the **Event Configuration** section, subscribe to:
    - `im.message.receive_v1` — required for receiving messages
 
+### Start a Task in a Dedicated Topic
+
+In a Feishu/Lark direct chat, use `/thread <task>` when the work should have its own conversation and scrollback:
+
+```text
+/thread Organize the files in my Downloads folder
+```
+
+Hermes replies to that command in-thread, creating a new Feishu topic, and dispatches only the text after `/thread` as the task. The generated `thread_id` is part of the Hermes session key, so progress messages, the final result, and later replies inside that topic share one isolated conversation. The parent DM session is not reused. If topic creation fails, Hermes reports the failure in the parent chat and does not start the task there.
+
+Use `/thread` for explicit task boundaries. Ordinary one-turn questions remain in the main chat; automatic promotion of arbitrary messages is intentionally not performed because Hermes cannot reliably know before execution whether a task will require multiple turns.
+
+### Bot Custom Menu Commands
+
+Hermes can turn a Feishu/Lark bot custom-menu click into a normal inbound text message. This is useful for exposing slash commands such as `/status`, `/help`, or `/new` without requiring users to type them.
+
+1. In the developer console, enable the bot's **Custom Menu** capability.
+2. Add a menu item that uses **Push Event** as its action.
+3. Set the menu item's event key to the exact text Hermes should receive, for example `/status`.
+4. In **Events and Callbacks**, subscribe to `application.bot.menu_v6` (**Bot Custom Menu Event**).
+5. No special home-chat configuration is required. Hermes routes the click to the clicking user's P2P session using the operator's Open ID.
+6. Publish a new app version after saving the menu and event subscription.
+
+When a user clicks the item, Hermes resolves the clicking user's identity, immediately sends a short acknowledgement (for example, `Received: Status — checking...`), and then processes the event key through the same direct-message admission and message-handling path as a text message. User allowlists and pairing therefore still apply, and the final result returns to the clicking user's P2P chat. Feishu event IDs are used for deduplication so a retried delivery does not send a second acknowledgement or execute the command twice. If the acknowledgement cannot be delivered, Hermes logs the delivery error and still attempts the requested command.
+
+:::tip
+Use slash-command strings as event keys when you want deterministic command behavior. Other text is also accepted and is handled as though the user sent that text in a direct message.
+:::
+
 ### Publish the App
 
 After configuring permissions and events, go to **Version Management** and publish a new version of the app. The permissions won't take effect until a version is published and approved (for enterprise apps, this may require admin approval).

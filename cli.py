@@ -11489,6 +11489,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if self._print_nous_credits_block():
             self._print_usage_cta()
 
+        # usage_extra lifecycle hook — let plugins append an extra section
+        # after the account/credits blocks (e.g. a per-provider quota summary).
+        # Observer-only: each plugin returns a string block; we print non-empty
+        # ones. Fail-open: any exception is logged and skipped.
+        try:
+            from hermes_cli.lifecycle import has_hook as _has_usage_extra_hook
+            from hermes_cli.lifecycle import invoke_hook as _invoke_usage_extra
+            if _has_usage_extra_hook("usage_extra"):
+                _usage_blocks = _invoke_usage_extra(
+                    "usage_extra",
+                    provider=provider,
+                    base_url=base_url,
+                    api_key=api_key,
+                    session_id=getattr(self, "session_id", None)
+                    or getattr(agent, "session_id", None),
+                )
+                for _block in _usage_blocks:
+                    _text = str(_block).strip() if _block is not None else ""
+                    if _text:
+                        print()
+                        print(_text)
+        except Exception as _usage_extra_err:
+            logger.debug("usage_extra hook failed: %s", _usage_extra_err)
+
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
             for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):

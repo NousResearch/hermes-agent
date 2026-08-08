@@ -216,6 +216,23 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Rendering extension hooks. Both are OBSERVERS: a plugin returns a string
+    # (or a dict with a ``text`` key) to append an extra block to a rendered
+    # surface. Return values are concatenated by the call site; a plugin that
+    # returns None contributes nothing. Call sites return early (no hook
+    # dispatch) when no plugin has registered the hook, so idle cost is zero.
+    #
+    # ``footer`` — fired after the runtime footer line is built, before it is
+    #   appended to the final response. Kwargs mirror build_footer_line:
+    #     model, context_tokens, context_length, cwd, turn_seconds,
+    #     platform_key, user_config. A plugin returns a block (e.g. a quota
+    #   summary) that is appended after the footer line.
+    # ``usage_extra`` — fired at the end of the /usage command render. Kwargs:
+    #     provider, base_url, api_key, session_id. A plugin returns an extra
+    #   section (string) appended after the account/credits blocks.
+    # Catalog + kwargs + return behavior: docs/plugins/hook-taxonomy.md
+    "footer",
+    "usage_extra",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

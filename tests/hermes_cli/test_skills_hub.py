@@ -313,3 +313,58 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
 
+
+
+def test_do_audit_scans_official_skills_with_source_provenance(
+    monkeypatch, tmp_path, hub_env
+):
+    """Audit must resolve trust from provenance, not the multi-segment id.
+
+    Regression: an installed official optional skill records a multi-segment
+    lockfile identifier (``official/software-development/…``). Passing that
+    raw identifier into the trust resolver classifies it as ``community``
+    (the resolver only recognizes the provenance value ``official``), which
+    can flip a permitted CAUTION into a spurious BLOCKED. Audit must mirror
+    install and key off the ``source`` field.
+    """
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+    from hermes_cli.skills_hub import do_audit
+
+    install_path = "software-development/subagent-driven-development"
+    skill_path = hub.SKILLS_DIR / install_path
+    skill_path.mkdir(parents=True)
+    (skill_path / "SKILL.md").write_text("# Subagent Driven Development", encoding="utf-8")
+
+    entry = {
+        "name": "subagent-driven-development",
+        "source": "official",
+        "identifier": "official/software-development/subagent-driven-development",
+        "install_path": install_path,
+    }
+
+    class _Lock:
+        def list_installed(self):
+            return [entry]
+
+    scanned = {}
+
+    def _scan_skill(path, source="community"):
+        scanned["source"] = source
+        return guard.ScanResult(
+            skill_name="subagent-driven-development",
+            source=source,
+            trust_level=guard._resolve_trust_level(source),
+            verdict="caution",
+        )
+
+    monkeypatch.setattr(hub, "HubLockFile", _Lock)
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_audit(name="subagent-driven-development", console=console)
+
+    assert scanned["source"] == "official"
+

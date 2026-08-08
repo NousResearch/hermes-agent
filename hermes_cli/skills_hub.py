@@ -1122,7 +1122,18 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
 
-        result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
+        # Mirror the install-time trust-source normalization (see do_install):
+        # official optional skills carry a multi-segment lockfile identifier
+        # such as "official/software-development/subagent-driven-development",
+        # but the trust resolver only recognizes the provenance value
+        # "official". Passing the raw identifier here would misclassify an
+        # installed official skill as community and turn a permitted CAUTION
+        # into a spurious BLOCKED even though the bundle is unchanged.
+        if entry.get("source") == "official":
+            scan_source = "official"
+        else:
+            scan_source = entry.get("identifier") or entry.get("source", "community")
+        result = scan_skill(skill_path, source=scan_source)
         c.print(format_scan_report(result))
 
         if deep:

@@ -1,5 +1,7 @@
 """Tests for hermes_cli/webhook.py — webhook subscription CLI."""
 
+import hashlib
+import hmac
 import json
 import os
 import pytest
@@ -37,6 +39,10 @@ def _make_args(**kwargs):
         "secret": "",
         "payload": "",
         "script": "",
+        "signature_header": "",
+        "signature_scheme": "",
+        "signature_prefix": "",
+        "event_header": "",
     }
     defaults.update(kwargs)
     return Namespace(**defaults)
@@ -52,6 +58,42 @@ def test_webhook_base_url_maps_wildcard_hosts_to_localhost(monkeypatch, host):
 
 
 class TestSubscribe:
+
+    def test_signature_and_event_options_are_persisted(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="gitea",
+            secret="shared-secret",
+            signature_header="X-Gitea-Signature",
+            signature_scheme="hmac-sha256",
+            signature_prefix="sha256=",
+            event_header="X-Gitea-Event",
+        ))
+
+        route = _load_subscriptions()["gitea"]
+        assert route["signature_header"] == "X-Gitea-Signature"
+        assert route["signature_scheme"] == "hmac-sha256"
+        assert route["signature_prefix"] == "sha256="
+        assert route["event_header"] == "X-Gitea-Event"
+
+    @pytest.mark.parametrize(
+        "orphan_option",
+        [
+            {"signature_scheme": "hmac-md5"},
+            {"signature_prefix": "sha256="},
+        ],
+    )
+    def test_signature_options_without_header_are_rejected(
+        self, orphan_option, capsys
+    ):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="invalid",
+            **orphan_option,
+        ))
+
+        assert "require --signature-header" in capsys.readouterr().out
+        assert _load_subscriptions() == {}
 
 
     def test_custom_secret(self):
@@ -124,6 +166,85 @@ class TestPersistence:
 
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert "FRESH" in path.read_text(encoding="utf-8")
+
+
+class _FakeHTTPResponse:
+    status = 202
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return b'{"status":"accepted"}'
+
+
+class TestWebhookTestRequest:
+    @staticmethod
+    def _capture_request(monkeypatch):
+        captured = []
+
+        def fake_urlopen(request, timeout):
+            captured.append((request, timeout))
+            return _FakeHTTPResponse()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        return captured
+
+    def test_hmac_route_uses_configured_signature_and_event_headers(
+        self, monkeypatch
+    ):
+        secret = "hmac-secret"
+        payload = '{"value":1}'
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="hmac",
+            secret=secret,
+            signature_header="X-Custom-Signature",
+            signature_scheme="hmac-sha256",
+            signature_prefix="sha256=",
+            event_header="X-Custom-Event",
+        ))
+        captured = self._capture_request(monkeypatch)
+
+        webhook_command(_make_args(
+            webhook_action="test",
+            name="hmac",
+            payload=payload,
+        ))
+
+        request, timeout = captured[0]
+        headers = {key.lower(): value for key, value in request.header_items()}
+        expected = hmac.new(
+            secret.encode(), payload.encode(), hashlib.sha256
+        ).hexdigest()
+        assert request.data == payload.encode()
+        assert headers["x-custom-signature"] == f"sha256={expected}"
+        assert headers["x-custom-event"] == "test"
+        assert "x-hub-signature-256" not in headers
+        assert timeout == 10
+
+    def test_token_route_sends_secret_verbatim_in_configured_header(
+        self, monkeypatch
+    ):
+        secret = "plain-shared-token"
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="token",
+            secret=secret,
+            signature_header="X-Auth-Token",
+            signature_scheme="token",
+        ))
+        captured = self._capture_request(monkeypatch)
+
+        webhook_command(_make_args(webhook_action="test", name="token"))
+
+        request, _timeout = captured[0]
+        headers = {key.lower(): value for key, value in request.header_items()}
+        assert headers["x-auth-token"] == secret
+        assert "x-hub-signature-256" not in headers
 
 
 class TestWebhookEnabledGate:
